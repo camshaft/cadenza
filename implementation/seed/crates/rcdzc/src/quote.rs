@@ -497,8 +497,25 @@ fn reify_inner(
                 let payload = push_atom(ast, leaf);
                 Some(ast_ctor(ast, "Bytes", payload))
             }
-            // Any other leaf kind (Char/Sym/…) has no `Ast` variant yet: not
-            // reifiable — bail so the whole quote declines rather than miscompiling.
+            // A CHAR literal (`#\a`) -> `(Ast.Char #\a)`. `Ast.Char` carries a `Char` payload (a char is a
+            // syntactic form — `type-system.md`), so the reified node captures the exact scalar; the
+            // payload REUSES the literal's leaf. This (with `Symbol` below) makes reflection/quote TOTAL
+            // over syntax leaves — a char literal reflects instead of declining (operator directive).
+            leaf @ Leaf::Char(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Char", payload))
+            }
+            // A SYMBOL literal (`#"x"`) -> `(Ast.Symbol #"x")`. `Ast.Symbol` carries a `Symbol` payload
+            // (DISTINCT from `Ast.Name`'s String and `Ast.Str`'s String — a symbol is the nominal
+            // member-key form), so `(quote #"x")` reads back as the symbol value. The payload REUSES the
+            // literal's leaf.
+            leaf @ Leaf::Sym(_) => {
+                let payload = push_atom(ast, leaf);
+                Some(ast_ctor(ast, "Symbol", payload))
+            }
+            // A reader ERROR-RECOVERY marker leaf (`BadChar`/`BadEscape`) has no `Ast` variant — it only
+            // arises from MALFORMED source (which does not compile), so leaving it un-reifiable is not a
+            // real reflection gap: bail (decline) rather than miscompile.
             _ => None,
         },
         Struct::List(items) => {

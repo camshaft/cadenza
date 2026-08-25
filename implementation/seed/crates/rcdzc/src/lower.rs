@@ -3556,6 +3556,8 @@ struct AstDiscs {
     name: u32,
     list: u32,
     bytes: u32,
+    char: u32,
+    symbol: u32,
     ty: crate::ty::Ty,
 }
 /// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
@@ -3590,6 +3592,8 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
         name: variant_disc_by_name(db, &ty, "Name")?,
         list: variant_disc_by_name(db, &ty, "List")?,
         bytes: variant_disc_by_name(db, &ty, "Bytes")?,
+        char: variant_disc_by_name(db, &ty, "Char")?,
+        symbol: variant_disc_by_name(db, &ty, "Symbol")?,
         ty,
     })
 }
@@ -3666,6 +3670,19 @@ fn encode_ast_value(
             raw.push(u8::try_from(v.to_i64().filter(|n| (0..=255).contains(n))?).ok()?);
         }
         Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
+    } else if d == disc.char && payloads.len() == 1 {
+        // A char node → `Leaf::Char` of the scalar (`Core::ConstChar`). The codec stores it as `KIND_CHAR`.
+        let Core::ConstChar(c) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        Some(b.atom_leaf(crate::ast::Leaf::Char(c)))
+    } else if d == disc.symbol && payloads.len() == 1 {
+        // A symbol node → `Leaf::Sym` of the interned text. A constant symbol shares the `Core::ConstStr`
+        // rep (at `Ty::Symbol`), so its payload is a `ConstStr` whose text is the symbol name (`KIND_SYM`).
+        let Core::ConstStr(s) = core_of(db, payloads[0]) else {
+            return None;
+        };
+        Some(b.atom_leaf(crate::ast::Leaf::Sym(s)))
     } else {
         None
     }
@@ -3999,7 +4016,33 @@ fn arenas_to_ast_value(
                         disc.ty.clone(),
                     ))
                 }
-                // Char / Sym / BadChar / BadEscape / suffixed — NOT `Ast` value variants → `Err`.
+                // A char leaf → `(Ast.Char #\c)`: a `Core::ConstChar` payload at `Ty::Char`.
+                crate::ast::Leaf::Char(c) => {
+                    let payload = synth_core(db, Core::ConstChar(c), crate::ty::Ty::Char);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.char,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                // A symbol leaf → `(Ast.Symbol #"s")`: a constant symbol shares the `Core::ConstStr` rep
+                // at `Ty::Symbol`.
+                crate::ast::Leaf::Sym(s) => {
+                    let payload = synth_core(db, Core::ConstStr(s), crate::ty::Ty::Symbol);
+                    Some(synth_core(
+                        db,
+                        Core::SumNew {
+                            disc: disc.symbol,
+                            payloads: vec![payload],
+                        },
+                        disc.ty.clone(),
+                    ))
+                }
+                // BadChar / BadEscape (reader error markers) / a suffixed leaf — NOT `Ast` value variants
+                // (they arise only from malformed source) → `Err`.
                 _ => None,
             }
         }
@@ -14889,6 +14932,16 @@ impl ShapeTableBuilder {
             // Symbol element/key declined while both rust targets computed the content-byte order. The
             // value form renders `(: … Symbol)` via `type_node_of`'s `Ty::Symbol` leaf.
             Ty::Symbol => self.push(ShapeNode::Str),
+            // A CHAR is a scalar — an i32 Unicode code-point slot at run time (Char-rep; see the value-eq
+            // note at `lower.rs`'s Char scalar handling). Its value-op descriptor is `ShapeNode::Int`: the
+            // runtime value-eq/-cmp walk compares two chars by their code-point (chars are equal iff their
+            // code-points are, and order by code-point), and value-encode writes the code-point scalar.
+            // This closes the ONLY gap that made a compound carrying a `Char` leaf (notably the built-in
+            // `Ast` sum's new `Ast.Char` variant) DECLINE its whole-value `=`/`<`; a bare-`Char` scalar
+            // compare never reaches here (it takes the scalar path). Additive — a Char-in-a-compound value
+            // op previously declined outright. (Faithful `Ast.encode`/`decode` of a char rides the cdzast
+            // CODEC's `KIND_CHAR`, not this value-form descriptor, so char reflection stays exact.)
+            Ty::Char => self.push(ShapeNode::Int),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
@@ -27209,9 +27262,18 @@ fn eq_shaped_walkable(
     match ty {
         // Blessed-Eq scalar leaves + FLOAT/BYTES (byte-canonical equality — nan==nan, -0.0≠+0.0; a Bytes
         // leaf is byte-canonical wherever the walk reaches it, exactly as `ty_heap_walkable` admits).
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
-            true
-        }
+        // `Char` is eq-walkable too: a scalar compared by its i32 code-point (its `shape_of` descriptor is
+        // `ShapeNode::Int`), so a compound carrying a `Char` leaf — notably the `Ast` sum's `Ast.Char`
+        // variant — has a walkable structural `=`. (Ordering `<` over a Char-in-compound stays a separate
+        // carve-out like Bytes/float; only equality is admitted here.)
+        Ty::Int(_)
+        | Ty::Char
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational => true,
         Ty::Float(_) | Ty::Bytes => true,
         Ty::Tuple(elems) => {
             let elems = elems.to_vec();
