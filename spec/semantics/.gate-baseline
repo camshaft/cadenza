@@ -3972,6 +3972,7 @@ pass	a typed reducer performing a nested list<list<s64>> host arg emits, loads, 
 pass	a typed reducer performing a record-with-a-list-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a run.run result host op threads the Ok bytes into the step (via an imposed WIT world)
 pass	a typed reducer performing an all-scalar record host arg emits, loads, and runs (via an imposed WIT world)
+pass	a typed reducer threading a list<tuple<bytes,bytes>> host-op result branches on its length (via an imposed WIT world)
 pass	a u16 bin field reads correctly at every runtime slice offset, odd or even
 pass	a u16 bin field straddles a byte-rope seam through a runtime-start slice
 pass	a u16 segment encodes an integer big-endian by default

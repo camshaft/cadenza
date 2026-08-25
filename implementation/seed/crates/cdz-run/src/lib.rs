@@ -3208,16 +3208,33 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             }
             // A RECORD closure argument erases to a `tuple<…>` whose fields are laid in canonical SORTED-name
             // order (`tuple_field_abi` / `Core::Record`: a `BTreeMap` over field names). The corpus writes the
-            // record value `(record (z 100) (a 3))` in SOURCE order, so when EVERY field is a `(name value)`
-            // group, sort the fields by name to match the boundary tuple's positions before coercing. A plain
-            // positional tuple (bare scalar fields) is left untouched.
-            if fields.iter().all(|f| named_field(f).is_some()) {
+            // record value `(record (z 100) (a 3))` in SOURCE order, so when the VALUE is record-headed, sort
+            // its `(name value)` fields by name to match the boundary tuple's positions, then unwrap each to its
+            // value before coercing. This name-handling is gated on the `record` head: a GENUINE positional
+            // tuple — `(a b)` / `(tuple a b)`, e.g. a `tuple<list<u8>, list<u8>>` written `((list 7) (list 9))`
+            // — is coerced POSITIONALLY, never name-unwrapped (its `(list 7)` element is a value, not a
+            // `name=value` field; the legacy `(name value)` heuristic would otherwise mistake the `list` head
+            // for a field name and strip it to a bare `7`, which then fails to coerce as a list).
+            let is_record_erased = s
+                .trim()
+                .strip_prefix('(')
+                .map(str::trim_start)
+                .and_then(|r| r.split_whitespace().next())
+                == Some("record");
+            if is_record_erased && fields.iter().all(|f| named_field(f).is_some()) {
                 fields.sort_by(|a, b| named_field(a).unwrap().0.cmp(&named_field(b).unwrap().0));
             }
             let vals: Result<Vec<Val>> = fields
                 .iter()
                 .zip(&elem_types)
-                .map(|(f, ft)| coerce_one(&unwrap_named_field(f), ft))
+                .map(|(f, ft)| {
+                    let text = if is_record_erased {
+                        unwrap_named_field(f)
+                    } else {
+                        f.clone()
+                    };
+                    coerce_one(&text, ft)
+                })
                 .collect();
             Val::Tuple(vals?)
         }
