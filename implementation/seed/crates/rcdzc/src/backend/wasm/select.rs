@@ -584,15 +584,25 @@ fn product_layout(db: &mut Db, tys: impl Iterator<Item = Ty>) -> (u32, u32) {
 /// `ptr_slot` is an i32 local holding the base address; `offset` the static byte offset of this value within
 /// it. Scratch slots are allocated ABOVE `*high` (which is bumped past them), so a nested recursion never
 /// reuses a live slot.
+#[allow(clippy::too_many_arguments)]
 fn emit_result_lift(
     db: &mut Db,
     ty: &Ty,
+    // The value's declared WIT type (the host's canonical layout), when known — drives a `record`'s field
+    // ORDER (the host writes fields in WIT DECLARATION order; the guest cell is name-lex, so the lift reads
+    // each WIT field at its declaration offset and arr-sets it to the field's name-lex slot). `None` (or a
+    // structurally-mismatched wit) falls back to the guest's name-lex order — byte-identical for a
+    // list/tuple/option/result/scalar (all POSITIONAL: their offsets are order-agnostic), so the only behavior
+    // this changes is a `record` whose WIT declaration order differs from name-lex. The result-side analogue
+    // of the ARG-side `reorder_record_fields_to_wit` (#3223): the emitted read MUST follow the host's layout.
+    wit: Option<&crate::wit_world::WitType>,
     ptr_slot: u32,
     offset: u32,
     high: &mut u32,
     scratch_ty: &mut HashMap<u32, ValType>,
     out: &mut Emit,
 ) -> Result<(), Reject> {
+    use crate::wit_world::WitType;
     match ty.strip_nominal().clone() {
         // A `list<u8>` (Bytes) / `string`: `(data-ptr@offset, len@offset+4)`. Copy the bytes out of the
         // host's linear memory into a value-heap `Bytes`; leave the handle.
@@ -655,7 +665,11 @@ fn emit_result_lift(
             out.push(Lir::I32Add);
             out.push(Lir::LocalSet(elem_ptr));
             // Lift the element (leaves its handle) on a clean stack, stash it, then arr-set(outer, i, elem).
-            emit_result_lift(db, &elem, elem_ptr, 0, high, scratch_ty, out)?;
+            let elem_wit = match wit {
+                Some(WitType::List(e)) => Some(&**e),
+                _ => None,
+            };
+            emit_result_lift(db, &elem, elem_wit, elem_ptr, 0, high, scratch_ty, out)?;
             out.push(Lir::LocalSet(elem_h));
             out.push(Lir::LocalGet(outer));
             out.push(Lir::LocalGet(i));
@@ -676,21 +690,93 @@ fn emit_result_lift(
         // A `tuple<…>` / `record{…}`: a value-heap aggregate (a raw arr — a Tuple/Record IS an arr, no
         // vec conversion). Lift each field at its canonical offset in layout order (a record's name-lex
         // order = its value-heap cell layout = the canonical field order).
+        // A `tuple<…>` — POSITIONAL, so the WIT order == the guest order; lift each field at its canonical
+        // offset (thread each element's WIT via the `tuple<…>` wit).
         Ty::Tuple(elems) => {
             let field_tys: Vec<Ty> = elems.iter().cloned().collect();
-            emit_product_lift(db, &field_tys, ptr_slot, offset, high, scratch_ty, out)
+            let field_wits: Vec<Option<&WitType>> = (0..field_tys.len())
+                .map(|j| match wit {
+                    Some(WitType::Tuple(ws)) => ws.get(j),
+                    _ => None,
+                })
+                .collect();
+            emit_product_lift(
+                db,
+                &field_tys,
+                &field_wits,
+                ptr_slot,
+                offset,
+                high,
+                scratch_ty,
+                out,
+            )
         }
+        // A `record{…}` — a value-heap aggregate whose cell slots are the guest's NAME-LEX order, but the host
+        // wrote the fields in the WIT record's DECLARATION order (their canonical offsets accumulate in that
+        // order). So lift each WIT field at its declaration offset and arr-set it to that field's name-lex
+        // slot; a `None`/non-record wit falls back to the name-lex order (byte-identical). The result-side
+        // analogue of the ARG marshal's `reorder_record_fields_to_wit`.
         Ty::Record(fields) => {
-            let field_tys: Vec<Ty> = fields.values().cloned().collect();
-            emit_product_lift(db, &field_tys, ptr_slot, offset, high, scratch_ty, out)
+            if let Some(WitType::Record(wit_fields)) = wit {
+                let names: Vec<String> = fields.keys().map(|s| s.name.to_string()).collect();
+                let arr = *high;
+                let fh = arr + 1;
+                *high = (*high).max(fh + 1);
+                scratch_ty.insert(arr, ValType::I32);
+                scratch_ty.insert(fh, ValType::I32);
+                out.push(Lir::ConstI32(fields.len() as i32));
+                out.push(Lir::CallImport(OP_ARR_ALLOC));
+                out.push(Lir::LocalSet(arr));
+                let mut foff = offset;
+                for (fname, fwit) in wit_fields {
+                    let fty = fields
+                        .iter()
+                        .find(|(s, _)| s.name.as_ref() == fname.as_str())
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| {
+                            Reject::decline(
+                                "a host WIT record-result field is absent from the guest record type",
+                            )
+                        })?;
+                    let slot = names
+                        .iter()
+                        .position(|n| n == fname)
+                        .expect("field name in name-lex set");
+                    let (fs, fa) = canonical_layout(db, &fty);
+                    foff = align_up_u32(foff, fa);
+                    emit_result_lift(db, &fty, Some(fwit), ptr_slot, foff, high, scratch_ty, out)?;
+                    out.push(Lir::LocalSet(fh));
+                    out.push(Lir::LocalGet(arr));
+                    out.push(Lir::ConstI32(slot as i32));
+                    out.push(Lir::LocalGet(fh));
+                    out.push(Lir::CallImport(OP_ARR_SET));
+                    out.push(Lir::LocalSet(arr));
+                    foff += fs;
+                }
+                out.push(Lir::LocalGet(arr));
+                Ok(())
+            } else {
+                let field_tys: Vec<Ty> = fields.values().cloned().collect();
+                let field_wits: Vec<Option<&WitType>> = vec![None; field_tys.len()];
+                emit_product_lift(
+                    db,
+                    &field_tys,
+                    &field_wits,
+                    ptr_slot,
+                    offset,
+                    high,
+                    scratch_ty,
+                    out,
+                )
+            }
         }
         // A `result<list<u8>, enum>` (both arms carry a payload — Ok: Bytes, Err: enum) vs an option-shaped
         // `Sum` (2 variants: one single-payload + one nullary). Distinguished by shape.
         Ty::Sum { decl, .. } => {
             if crate::backend::wasm::host::result_bytes_enum(db, ty).is_some() {
-                emit_result_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+                emit_result_sum_lift(db, ty, decl, wit, ptr_slot, offset, high, scratch_ty, out)
             } else {
-                emit_option_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+                emit_option_sum_lift(db, ty, decl, wit, ptr_slot, offset, high, scratch_ty, out)
             }
         }
         // A SCALAR leaf (bool/char/aliased int/float, or a `Qty` over one) — load width-correct + box. Only
@@ -707,9 +793,13 @@ fn emit_result_lift(
 
 /// The product (tuple / record) arm of [`emit_result_lift`]: `arr-alloc(n)`, then lift each field at its
 /// canonical byte offset (from `offset`) and `arr-set` it in layout order; leave the raw arr handle.
+#[allow(clippy::too_many_arguments)]
 fn emit_product_lift(
     db: &mut Db,
     field_tys: &[Ty],
+    // Per-field WIT type (index-aligned with `field_tys`) for threading a nested record's field ORDER; a
+    // POSITIONAL product (tuple, or a name-lex record fallback) passes `None` per field (byte-identical).
+    field_wits: &[Option<&crate::wit_world::WitType>],
     ptr_slot: u32,
     offset: u32,
     high: &mut u32,
@@ -729,7 +819,16 @@ fn emit_product_lift(
         let (fs, fa) = canonical_layout(db, fty);
         foff = align_up_u32(foff, fa);
         // Lift the field (leaves its handle) on a clean stack, stash, then arr-set(arr, j, field).
-        emit_result_lift(db, fty, ptr_slot, foff, high, scratch_ty, out)?;
+        emit_result_lift(
+            db,
+            fty,
+            field_wits.get(j).copied().flatten(),
+            ptr_slot,
+            foff,
+            high,
+            scratch_ty,
+            out,
+        )?;
         out.push(Lir::LocalSet(fh));
         out.push(Lir::LocalGet(arr));
         out.push(Lir::ConstI32(j as i32));
@@ -838,6 +937,9 @@ fn emit_option_sum_lift(
     db: &mut Db,
     ty: &Ty,
     decl: StructId,
+    // The `option<T>` WIT type, when known — its payload `T`'s WIT is threaded into the Some-arm payload lift
+    // (so a `option<record>` payload reorders its fields). `None`/non-option falls back to name-lex.
+    wit: Option<&crate::wit_world::WitType>,
     ptr_slot: u32,
     offset: u32,
     high: &mut u32,
@@ -891,9 +993,14 @@ fn emit_option_sum_lift(
     out.push(Lir::I32Eq);
     out.push(Lir::If(BlockType::Val(ValType::I32)));
     {
+        let payload_wit = match wit {
+            Some(crate::wit_world::WitType::Option(p)) => Some(&**p),
+            _ => None,
+        };
         emit_result_lift(
             db,
             &payload_ty,
+            payload_wit,
             ptr_slot,
             payload_off,
             high,
@@ -933,6 +1040,8 @@ fn emit_result_sum_lift(
     db: &mut Db,
     ty: &Ty,
     decl: StructId,
+    // The `result<ok, err>` WIT type, when known — the Ok arm's payload WIT is threaded into its lift.
+    wit: Option<&crate::wit_world::WitType>,
     ptr_slot: u32,
     offset: u32,
     high: &mut u32,
@@ -978,9 +1087,14 @@ fn emit_result_sum_lift(
     out.push(Lir::I32Eq);
     out.push(Lir::If(BlockType::Val(ValType::I32)));
     {
+        let ok_wit = match wit {
+            Some(crate::wit_world::WitType::Result { ok: Some(o), .. }) => Some(&**o),
+            _ => None,
+        };
         emit_result_lift(
             db,
             &ok_payload_ty,
+            ok_wit,
             ptr_slot,
             payload_off,
             high,
@@ -13334,7 +13448,21 @@ fn emit(
                 out.push(Lir::CallImport("cabi_realloc"));
                 out.push(Lir::LocalTee(retptr)); // [args…, retptr]
                 out.push(Lir::CallHostImport(index)); // (args…, retptr) -> () ; host stored the result
-                emit_result_lift(db, &result, retptr, 0, high, scratch_ty, out)?;
+                // The op's declared WIT result type (the host's canonical layout) drives a record result's
+                // field ORDER in the lift — the result-side of the follow-the-WIT rule. Fall back to the
+                // guest-`Ty`-derived WIT when the world is absent (structural results are order-agnostic).
+                let result_wit = crate::backend::wasm::host::wit_op_result_type(db, &effect, &op)
+                    .or_else(|| crate::backend::wasm::host::spilled_result_wit_type(db, &result));
+                emit_result_lift(
+                    db,
+                    &result,
+                    result_wit.as_ref(),
+                    retptr,
+                    0,
+                    high,
+                    scratch_ty,
+                    out,
+                )?;
                 return Ok(());
             }
             out.push(Lir::CallHostImport(index));
