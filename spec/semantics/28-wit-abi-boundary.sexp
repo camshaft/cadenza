@@ -115,3 +115,16 @@
   (input (do (def (f (: m (Record (: x Int64)))) (record (= d Option.None))) (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (output (: (record (= d (None unit))) (record (d (Option Int64))))))
+
+(case "a list of records with a bytes leaf crosses the export boundary via an imposed WIT world"
+  (doc    "SHAPE 9 — the reducer-echo Step shape (list of records each carrying a Bytes/list<u8> leaf,
+           AND a Bytes/list<u8> export PARAM), via an imposed world. Guest f: {tok: Bytes} ->
+           {items: [{echo: tok}]}; exercises the list result lift, the element record lift, a bytes leaf
+           that echoes the input, AND the list<u8> export-param decode. A guest Bytes field crosses as the
+           world's list<u8>. Migrated from the in-crate wasmtime test
+           `a_list_of_records_with_bytes_leaf_result_compiles_and_runs` (v-rb shape-2 feed 7).")
+  (wit-world (world w (export iface (member f (func (param m ("record" (tok ("list" (u8))))) (result ("record" (items ("list" ("record" (echo ("list" (u8)))))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: m (Record (: tok Bytes)))) (record (= items (list (record (= echo (. m tok))))))) (export f)))
+  (call f (: (record (= tok (list 10 20 30))) (Record (: tok Bytes))))
+  (output (: (record (= items ((record (= echo (10 20 30)))))) (record (items (List (record (echo (List UInt8)))))))))

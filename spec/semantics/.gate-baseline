@@ -2211,6 +2211,7 @@ pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of nominal-over-quantity newtypes is a compound Map key
 pass	a list of records in a record result crosses the export boundary
+pass	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of sets: a runtime index then tests membership in the found set
