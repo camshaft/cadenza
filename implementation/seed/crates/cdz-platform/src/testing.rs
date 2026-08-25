@@ -64,7 +64,7 @@ pub use observation::{
 };
 pub use recording::{
     RecordingBlobStore, RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProgramStore,
-    RecordingProvenance, RecordingReducer,
+    RecordingProvenance, RecordingReducer, RecordingRejectedSink,
 };
 pub use spec::{
     BlobSource, BlobSpec, DeliveryEvent, HarnessSpec, PureRun, RegistrySpec, SpecError,

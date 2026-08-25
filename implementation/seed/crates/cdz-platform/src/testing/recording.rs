@@ -14,12 +14,13 @@
 //! emits, or closes with, then defer to the wrapped reducer unchanged.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp,
+    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, RejectedCall,
 };
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId, KeyRange,
     KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore,
-    Provenance, Reducer, ReducerGraph, ReducerId, Request, Response, SpawnContext, Str,
+    Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response, SpawnContext,
+    Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -416,6 +417,41 @@ impl ReducerGraph for RecordingGraph {
             result: result.clone(),
         });
         result
+    }
+}
+
+/// A [`RejectedSink`] that records a host call rejected at the argument-parse guard — a call the reducer
+/// performed whose args did not parse to their typed form, so the host early-returned without reaching the
+/// recordable capability (`design/cadenza-platform.md` §9). Appends an [`Entry::HostCallRejected`] to the
+/// [`ObservationLog`] attributed to the reducer's [`Origin`], so no host call is silently unobservable
+/// (log-every-host-call). The host boundary (an event reducer's parse-guard else-branch) calls
+/// [`record`](RejectedSink::record); this sink turns that into an observation. Constructed per reducer, like
+/// the store/graph decorators, and wired via [`WasmProgramStore::with_rejected`](crate::WasmProgramStore).
+pub struct RecordingRejectedSink {
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+
+impl RecordingRejectedSink {
+    /// A sink attributing every rejected call to `owner`, appending to `log`, and stamping each record with
+    /// `now` (the runtime's clock).
+    pub fn new(owner: Origin, log: ObservationLog, now: fn() -> u64) -> Self {
+        Self { owner, log, now }
+    }
+}
+
+impl RejectedSink for RecordingRejectedSink {
+    fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]) {
+        self.log.record(
+            (self.now)(),
+            self.owner,
+            Entry::HostCallRejected(RejectedCall {
+                iface: Str::from(iface),
+                op: Str::from(op),
+                raw_args: raw_args.to_vec(),
+            }),
+        );
     }
 }
 
