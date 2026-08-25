@@ -26,7 +26,8 @@
 ; Later shapes (all via an imposed WIT world): SHAPE 9 — list-of-records with a Bytes leaf + a Bytes export
 ; param. SHAPE 10 — a scalar host-import RESULT (clock.now) threaded into the step. SHAPE 11 — a RECORD
 ; host-import RESULT (probe.info) with a field-order-follows-WIT reorder. SHAPE 12 — a list<s64> host-op ARG
-; (sink.push) lowered + invoked e2e (the align-8 scalar-element list-arg marshal).
+; (sink.push) lowered + invoked e2e (the align-8 scalar-element list-arg marshal). SHAPE 13 — an all-scalar
+; record{a,b} host-op ARG (deliver.push) flattened to two i64 core slots + invoked e2e.
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -176,4 +177,20 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List Int64) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list 1 2 3)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+(case "a typed reducer performing an all-scalar record host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc    "SHAPE 13 — an all-scalar `record { a: s64, b: s64 }` host-op ARG (deliver.push : (record{a,b}) -> unit)
+           driven through an imposed WIT world. The reducer on-message performs deliver.push (record a=1 b=2)
+           (a unit-result, observe-only host op) then returns a Continue step with an empty requests list.
+           Running the guest LOADS the emitted component and INVOKES deliver.push, exercising the record arg
+           lower (value-heap record -> the two i64 core slots the component record param flattens to, each field
+           unboxed in the WIT record's declared order) e2e — a strictly stronger check than the anchor's
+           emit+validate+load, since a broken field flatten (wrong arity/order/offset) fails to instantiate or
+           run. The observed host-call sequence pins that deliver.push actually fired. Migrated from the in-crate
+           wasmtime test `a_typed_reducer_with_a_record_arg_host_import_emits_and_loads` (v-rb shape-2 arg feed).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/deliver (member push (func (param r ("record" (a (s64)) (b (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect deliver (op push (-> (Record (: a Int64) (: b Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (deliver) (do (deliver.push (record (= a 1) (= b 2))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/deliver.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
