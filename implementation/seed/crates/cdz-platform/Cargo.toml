@@ -81,6 +81,9 @@ tikv-jemallocator = { version = "0.6", optional = true }
 # Bach for this crate's own tests (cfg(test)): drives the reducer tasks + the runtime-agnostic store/kv
 # futures in deterministic simulated time. (Also an optional normal dep above, for the `testing` feature.)
 bach = "0.1"
+# WAT → wasm bytes for the epoch-preemption test (a minimal looping module the wasmtime "wat" feature is not
+# built with); test-only, so it stays out of the production host build.
+wat = "1"
 
 # The platform integration-test executable: it takes opaque program-blob file paths, runs them through the
 # platform under the bach simulator, and prints the observation log for a checker (design/cadenza-platform.md

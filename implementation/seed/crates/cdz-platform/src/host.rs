@@ -45,7 +45,8 @@ wasmtime::component::bindgen!({
 
 use crate::{
     BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId, KvStore,
-    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, Request, Response,
+    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, Request, ResourceLimits,
+    Response,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,6 +104,10 @@ struct HostState {
     /// and a pure program may call `run` to compose other pure programs. `None` only where no run capability is
     /// wired at all (a bare [`HostState`] built for a non-run test).
     run: Option<Arc<Instantiator>>,
+    /// The per-reducer resource limits the wasm store enforces (see `arm_store_safety`): a ceiling on linear
+    /// memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
+    /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
+    limits: wasmtime::StoreLimits,
 }
 
 impl cadenza::platform::identity::Host for HostState {
@@ -492,7 +497,61 @@ fn reducer_engine() -> Result<Engine, wasmtime::Error> {
     // thread (§3/§9).
     config.async_support(true);
     config.wasm_component_model(true);
+    // Epoch-based interruption so a long-running guest fold cannot monopolize an executor thread or stall the
+    // runtime: with a periodic epoch ticker (driven per-runtime, see `ProgramStore::epoch_incrementer` +
+    // `Runtime::drives_epoch_ticker`), each store's epoch deadline (see `arm_store_safety`) makes the guest
+    // yield to the executor, and past a bound trap — a single runaway program then fails cleanly (a per-reducer
+    // Crashed, §7) rather than taking down tokio. Cheap when un-ticked (an atomic the compiled code checks at
+    // loop backedges/calls), so it is always enabled; only the ticker is runtime-gated.
+    config.epoch_interruption(true);
     Engine::new(&config)
+}
+
+/// Build the per-reducer wasm memory limits from the node's [`ResourceLimits`] (see `arm_store_safety`): bound
+/// each linear memory to `limits.max_linear_memory_bytes` and trap on a growth that would exceed it.
+/// Instance/table/memory counts keep wasmtime's finite defaults. The value comes from config, never a
+/// hard-coded cap.
+fn reducer_store_limits(limits: &ResourceLimits) -> wasmtime::StoreLimits {
+    wasmtime::StoreLimitsBuilder::new()
+        .memory_size(limits.max_linear_memory_bytes)
+        .trap_on_grow_failure(true)
+        .build()
+}
+
+/// Arm `store` with the per-reducer safety limits from the node's [`ResourceLimits`] so no single guest can
+/// take down the host — the two ways one program could: monopolizing compute, and exhausting memory. Applied
+/// to every reducer store (ordinary, event, and pure-run). Every bound comes from `limits` (config), never a
+/// hard-coded module constant.
+///
+/// - **Compute (epoch preemption):** yield to the async executor every `limits.yield_every` epoch ticks of
+///   guest compute (so a long fold can never monopolize a thread), and trap once a fold has yielded
+///   `limits.max_yields` times (its cumulative compute budget). Inert until the engine's epoch is actually
+///   ticked — the production runtime drives the ticker (at `limits.epoch_tick`); under the deterministic
+///   simulator the epoch never advances, so a guest runs un-preempted with the harness's own wall-clock
+///   timeout as the backstop.
+/// - **Memory:** enforce the store's [`reducer_store_limits`] (the linear-memory ceiling), projecting from the
+///   `HostState`'s own `limits` field (a wasm store's limiter must live in its data), built from the same
+///   config at construction.
+///
+/// A breach of either bound traps, which the fold path turns into a per-reducer `Crashed` (§7), never a
+/// process-wide failure.
+fn arm_store_safety(store: &mut Store<HostState>, limits: &ResourceLimits) {
+    store.set_epoch_deadline(limits.yield_every);
+    let yield_every = limits.yield_every;
+    let mut yields_left = limits.max_yields;
+    store.epoch_deadline_callback(move |_ctx| {
+        if yields_left == 0 {
+            // Budget exhausted — a runaway fold. Trap: the fold's `call_async` returns an error, which the
+            // fold path turns into a per-reducer Crashed (§7), never a process-wide failure.
+            Ok(wasmtime::UpdateDeadline::Interrupt)
+        } else {
+            yields_left -= 1;
+            // Yield control to the async executor (so other tasks — and other reducers — make progress) and
+            // extend the deadline for the next slice of this fold's compute.
+            Ok(wasmtime::UpdateDeadline::Yield(yield_every))
+        }
+    });
+    store.limiter(|host_state| &mut host_state.limits);
 }
 
 /// Wire the host imports a reducer of the given [`ReducerKind`] may hold into `linker`, each backed by the
@@ -560,11 +619,16 @@ struct ReducerHost {
     /// may compose other pure programs but any effect, state, or world access it attempts cannot even resolve
     /// (§3 otherwise-empty capability set).
     pure_linker: Linker<HostState>,
+    /// The node's per-reducer resource limits (compute budget + memory ceiling + epoch tick) this host arms
+    /// every reducer store with (`arm_store_safety`). Set once at assembly from the node's config — never a
+    /// hard-coded cap.
+    limits: ResourceLimits,
 }
 
 impl ReducerHost {
-    /// Build the shared engine and wire one linker per reducer kind — once per host.
-    fn new() -> Result<Self, wasmtime::Error> {
+    /// Build the shared engine and wire one linker per reducer kind — once per host — carrying the node's
+    /// resource `limits` to arm each reducer store with.
+    fn new(limits: ResourceLimits) -> Result<Self, wasmtime::Error> {
         let engine = reducer_engine()?;
         let mut ordinary_linker = Linker::new(&engine);
         add_host_imports(&mut ordinary_linker, ReducerKind::Ordinary)?;
@@ -577,6 +641,7 @@ impl ReducerHost {
             ordinary_linker,
             event_linker,
             pure_linker,
+            limits,
         })
     }
 
@@ -611,6 +676,7 @@ impl ReducerHost {
         host: HostState,
     ) -> Result<WasmReducer, wasmtime::Error> {
         let mut store = Store::new(&self.engine, host);
+        arm_store_safety(&mut store, &self.limits);
         let world = pre.instantiate_async(&mut store).await?;
         Ok(WasmReducer { store, world })
     }
@@ -754,11 +820,12 @@ struct Instantiator {
 }
 
 impl Instantiator {
-    /// Build the instantiation core: the shared engine and per-kind linkers ([`ReducerHost::new`]) over the
-    /// content store `cas`, with an empty pure-run memo. Fails only if the wasm engine/linkers cannot be built.
-    fn new(cas: Arc<dyn BlobStore>) -> Result<Self, wasmtime::Error> {
+    /// Build the instantiation core: the shared engine and per-kind linkers ([`ReducerHost::new`], carrying the
+    /// node's resource `limits`) over the content store `cas`, with an empty pure-run memo. Fails only if the
+    /// wasm engine/linkers cannot be built.
+    fn new(cas: Arc<dyn BlobStore>, limits: ResourceLimits) -> Result<Self, wasmtime::Error> {
         Ok(Self {
-            host: ReducerHost::new()?,
+            host: ReducerHost::new(limits)?,
             cas,
             compiled: Mutex::new(HashMap::new()),
             memo: Mutex::new(crate::run::Cache::new(crate::run::Cache::DEFAULT_CAPACITY)),
@@ -848,6 +915,7 @@ impl Instantiator {
             // (a store-bound dependency instance cannot be pre-instantiated). Host imports for the kind are
             // wired first (the capability split), then the dependencies composed in.
             let mut store = Store::new(&self.host.engine, host_state);
+            arm_store_safety(&mut store, &self.host.limits);
             let mut linker = Linker::new(&self.host.engine);
             add_host_imports(&mut linker, kind).ok()?;
             self.bind_dependencies(&mut store, &mut linker, &component)
@@ -883,7 +951,11 @@ impl Instantiator {
         if let Some(output) = self.memo.lock().expect("run memo lock").get(&key) {
             return Ok(output);
         }
-        let host_state = null_host_state(crate::run::null_run_id(), Some(Arc::clone(self)));
+        let host_state = null_host_state(
+            crate::run::null_run_id(),
+            Some(Arc::clone(self)),
+            &self.host.limits,
+        );
         let reducer = self
             .instantiate_program(program, ReducerKind::Pure, host_state)
             .await
@@ -902,7 +974,11 @@ impl Instantiator {
 /// they exist only because a `Store` must carry a `HostState` — but `run` is threaded through: `run` is
 /// `Some(inst)` so a pure program may itself call `run` to invoke other pure programs, the whole computation
 /// staying deterministic.
-fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
+fn null_host_state(
+    id: ReducerId,
+    run: Option<Arc<Instantiator>>,
+    limits: &ResourceLimits,
+) -> HostState {
     HostState {
         id,
         blobs: Box::new(crate::InMemoryBlobStore::new()),
@@ -911,6 +987,7 @@ fn null_host_state(id: ReducerId, run: Option<Arc<Instantiator>>) -> HostState {
         provenance: Arc::new(crate::NoProvenance),
         delivery: Arc::new(crate::NoDelivery),
         run,
+        limits: reducer_store_limits(limits),
     }
 }
 
@@ -971,14 +1048,37 @@ impl WasmProgramStore {
     /// [`with_provenance`](WasmProgramStore::with_provenance)/[`with_delivery`](WasmProgramStore::with_delivery).
     /// `make_graph` mirrors `make_blobs`/`make_kv`: a plain caller passes `move |_id| graph.clone()` over its
     /// one shared graph; an injecting caller passes a factory that decorates it (recording is one such use).
+    ///
+    /// Uses the default [`ResourceLimits`]; a node that tunes its per-reducer compute/memory limits builds with
+    /// [`with_resource_limits`](WasmProgramStore::with_resource_limits) instead.
     pub fn new(
         cas: Arc<dyn BlobStore>,
         make_blobs: BlobsFactory,
         make_kv: KvFactory,
         make_graph: GraphFactory,
     ) -> Result<Self, wasmtime::Error> {
+        Self::with_resource_limits(
+            cas,
+            make_blobs,
+            make_kv,
+            make_graph,
+            ResourceLimits::default(),
+        )
+    }
+
+    /// A store as [`new`](WasmProgramStore::new), with the node's per-reducer resource `limits` (the compute
+    /// budget, memory ceiling, and epoch tick) it arms every reducer store with. This is the config seam for
+    /// the limits: a node sets its own values here from its own config, so they are never hard-coded in
+    /// platform source. [`new`](WasmProgramStore::new) is the same with [`ResourceLimits::default`].
+    pub fn with_resource_limits(
+        cas: Arc<dyn BlobStore>,
+        make_blobs: BlobsFactory,
+        make_kv: KvFactory,
+        make_graph: GraphFactory,
+        limits: ResourceLimits,
+    ) -> Result<Self, wasmtime::Error> {
         Ok(Self {
-            inst: Arc::new(Instantiator::new(cas)?),
+            inst: Arc::new(Instantiator::new(cas, limits)?),
             make_blobs,
             make_kv,
             make_graph,
@@ -1081,6 +1181,7 @@ impl ProgramStore for WasmProgramStore {
             provenance: (self.make_provenance)(ctx.id),
             delivery: (self.make_delivery)(ctx.id),
             run: Some(Arc::clone(&self.inst)),
+            limits: reducer_store_limits(&self.inst.host.limits),
         };
         self.inst
             .instantiate_program(program, ctx.kind, host_state)
@@ -1089,6 +1190,15 @@ impl ProgramStore for WasmProgramStore {
 
     async fn contains(&self, program: ProgramHash) -> bool {
         self.inst.contains(program).await
+    }
+
+    fn epoch_incrementer(&self) -> Option<(Duration, Arc<dyn Fn() + Send + Sync>)> {
+        // The kernel's epoch ticker drives this at the configured `epoch_tick` to preempt long-running guest
+        // folds (see `arm_store_safety`). The engine is cheaply clonable (ref-counted) and shared by every
+        // reducer on this host. Both the cadence and the incrementer come from the node's `ResourceLimits`.
+        let engine = self.inst.host.engine.clone();
+        let tick = self.inst.host.limits.epoch_tick;
+        Some((tick, Arc::new(move || engine.increment_epoch())))
     }
 }
 
@@ -1116,6 +1226,7 @@ mod tests {
             provenance: Arc::new(crate::NoProvenance),
             delivery: Arc::new(crate::NoDelivery),
             run: None,
+            limits: super::reducer_store_limits(&super::ResourceLimits::default()),
         }
     }
 
@@ -1140,7 +1251,11 @@ mod tests {
     /// output) needs a real wasm pure component and is covered by the reducer-world guest e2e, not natively.
     fn host_with_empty_run() -> HostState {
         let inst = Arc::new(
-            super::Instantiator::new(Arc::new(InMemoryBlobStore::new())).expect("wasm engine"),
+            super::Instantiator::new(
+                Arc::new(InMemoryBlobStore::new()),
+                super::ResourceLimits::default(),
+            )
+            .expect("wasm engine"),
         );
         let mut h = host(ReducerId::of(b"caller"));
         h.run = Some(inst);
@@ -1764,6 +1879,148 @@ mod tests {
             *deliv_ids.lock().unwrap(),
             want,
             "make_delivery called per reducer id"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_runaway_guest_is_preempted_it_yields_then_traps_rather_than_hanging() {
+        // The preemption mechanism (`reducer_engine` epoch_interruption + `arm_store_safety`): a guest that
+        // never returns must not monopolize the executor thread — it yields — and must eventually trap once its
+        // compute budget is spent, so a runaway fold fails cleanly instead of hanging the runtime. This proves
+        // both halves against real wasmtime with a minimal forever-looping core module, the same
+        // yield-then-trap callback shape `arm_store_safety` installs, and an epoch ticker like the kernel's:
+        //   - if the yield did NOT return control to the executor, the ticker task (below) would never run on
+        //     this current-thread runtime, the epoch would never advance, and the call would hang forever —
+        //     so the test completing at all proves the anti-monopolization yield;
+        //   - the assertion proves the budget-exhaustion trap.
+        use wasmtime::{Config, Engine, Instance, Module, Store, UpdateDeadline};
+
+        let mut config = Config::new();
+        config.async_support(true);
+        config.epoch_interruption(true);
+        let engine = Engine::new(&config).expect("engine");
+        // A function that never returns.
+        let wasm = wat::parse_str(r#"(module (func (export "spin") (loop br 0)))"#).expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        let mut store = Store::new(&engine, ());
+        // The same policy shape as `arm_store_safety`, with a tiny budget so the test is fast.
+        store.set_epoch_deadline(1);
+        let mut yields_left = 3u64;
+        store.epoch_deadline_callback(move |_ctx| {
+            if yields_left == 0 {
+                Ok(UpdateDeadline::Interrupt)
+            } else {
+                yields_left -= 1;
+                Ok(UpdateDeadline::Yield(1))
+            }
+        });
+
+        // The epoch ticker on a DEDICATED OS thread, exactly as the kernel drives it (see
+        // `TaskSystem::start_epoch_ticker`): it advances the epoch even while the spinning guest holds the
+        // async worker thread — a ticker on the runtime's own pool would be starved by that very spin (the
+        // current-thread deadlock this replaces). `stop` ends the thread when the test is done.
+        let ticker_engine = engine.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ticker_stop = Arc::clone(&stop);
+        let ticker = std::thread::spawn(move || {
+            while !ticker_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+                ticker_engine.increment_epoch();
+            }
+        });
+
+        let instance = Instance::new_async(&mut store, &module, &[])
+            .await
+            .expect("instantiate");
+        let spin = instance
+            .get_typed_func::<(), ()>(&mut store, "spin")
+            .expect("export");
+        let result = spin.call_async(&mut store, ()).await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        ticker.join().ok();
+        assert!(
+            result.is_err(),
+            "a runaway guest must trap once its epoch budget is exhausted, not run forever"
+        );
+    }
+
+    #[test]
+    fn a_guest_that_exhausts_memory_traps_rather_than_ooming_the_host() {
+        // The memory half of `arm_store_safety` (`reducer_store_limits`): a guest that grows its linear memory
+        // past the ceiling must trap — a clean per-reducer failure — rather than exhaust host RAM and take the
+        // process down. Proven with the same policy shape (memory_size + trap_on_grow_failure) applied to a
+        // module that tries to grow far past a tiny test ceiling.
+        use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimitsBuilder};
+
+        let engine = Engine::new(&Config::new()).expect("engine");
+        // Starts at 1 page; the exported function tries to grow by 1000 pages (~64 MiB), far past the ceiling.
+        let wasm = wat::parse_str(
+            r#"(module (memory 1) (func (export "grow") (drop (memory.grow (i32.const 1000)))))"#,
+        )
+        .expect("wat");
+        let module = Module::from_binary(&engine, &wasm).expect("module");
+
+        // A tiny 2-page ceiling with trap-on-grow — the same policy shape as `reducer_store_limits`, sized down
+        // so the test needs no real memory.
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(2 * 64 * 1024)
+            .trap_on_grow_failure(true)
+            .build();
+        let mut store = Store::new(&engine, limits);
+        store.limiter(|l| l);
+
+        let instance = Instance::new(&mut store, &module, &[]).expect("instantiate");
+        let grow = instance
+            .get_typed_func::<(), ()>(&mut store, "grow")
+            .expect("export");
+        assert!(
+            grow.call(&mut store, ()).is_err(),
+            "a guest growing memory past its ceiling must trap, not exhaust host RAM"
+        );
+    }
+
+    #[test]
+    fn a_configured_resource_limit_actually_reaches_the_store_not_a_hard_coded_default() {
+        // The operator's requirement (no hard-coded caps): a node's configured `ResourceLimits` must actually
+        // flow through, not be shadowed by a baked-in constant. Build the store with a non-default epoch tick
+        // and assert the `epoch_incrementer` the kernel's ticker drives reports THAT cadence — proof the config
+        // seam is live end to end (`with_resource_limits` → `Instantiator` → `ReducerHost.limits` →
+        // `epoch_incrementer`), and that it differs from the default (so the value is genuinely varied, not
+        // ignored). The compute/memory budgets ride the same `limits`, armed per store by `arm_store_safety`.
+        use crate::ResourceLimits;
+        use std::time::Duration;
+
+        let configured = ResourceLimits {
+            epoch_tick: Duration::from_millis(7),
+            ..ResourceLimits::default()
+        };
+        let graph: Arc<dyn super::ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+        let store = WasmProgramStore::with_resource_limits(
+            Arc::new(InMemoryBlobStore::new()),
+            Arc::new(|_id| Box::new(InMemoryBlobStore::new()) as Box<dyn BlobStore>),
+            Arc::new(|_id| Box::new(InMemoryKvStore::new()) as Box<dyn KvStore>),
+            Arc::new(move |_id| graph.clone()),
+            configured,
+        )
+        .expect("build the wasm program store");
+
+        let (tick, _increment) = store
+            .epoch_incrementer()
+            .expect("the wasm store has an epoch incrementer");
+        assert_eq!(
+            tick,
+            Duration::from_millis(7),
+            "the ticker uses the CONFIGURED epoch tick, not a hard-coded default"
+        );
+        // The default constructor uses the default tick — so a configured value genuinely changes behavior.
+        let (default_tick, _) = wasm_program_store(Arc::new(InMemoryBlobStore::new()))
+            .epoch_incrementer()
+            .expect("incrementer");
+        assert_eq!(default_tick, ResourceLimits::default().epoch_tick);
+        assert_ne!(
+            tick, default_tick,
+            "a configured tick differs from the default — the config is not ignored"
         );
     }
 

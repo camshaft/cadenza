@@ -10,6 +10,7 @@
 //! through (§3/§4/§7). The system reducer, dispatch, and the request context come next (§4).
 
 mod blob_store;
+mod config;
 // A generic cancellation scope for spawned futures — wrap a future, run it, and cancel whatever is still
 // running when the scope drops. Used by the reducer loop to cancel a reducer's pending timers on exit.
 mod cancel;
@@ -46,6 +47,7 @@ mod system;
 mod timer;
 
 pub use blob_store::{BlobStore, InMemoryBlobStore};
+pub use config::ResourceLimits;
 pub use contract::Contract;
 pub use deliver::{Deliver, Delivered, deliver_contract};
 pub use event_registry::{EventRegistry, InMemoryEventRegistry};
