@@ -1719,7 +1719,13 @@
                 error|declines)
                   echo "ok (build-graded refusal): ${name} ${idx}" ;;
                 *)
-                  echo "FAIL ${name} ${idx}: expected $kind but the program did NOT compile:"; cat ${build}/compile.err; exit 1 ;;
+                  # An output/trap case whose program the compiler DECLINED. The `xtask gate` grades this
+                  # TODO (a not-yet-implemented feature, not a miscompile: `Ran::Declined` vs `Expect::Output`
+                  # → Todo), NOT a Fail — and the wasm baseline has 40 such todos and ZERO fails. So match
+                  # that: Todo (exit 0), never a hard fail here. (Catching a PASS→TODO regression needs the
+                  # gate's baseline-DIFF, which this graph does not yet do — the old gate stays authoritative
+                  # for regression detection until the baseline-diff + rust-backend slices land.)
+                  echo "TODO ${name} ${idx}: expected $kind but the compiler declined (not-yet-implemented; graded todo like the gate)" ;;
               esac
             fi
             echo "ok: corpus ${name} case ${idx} ($kind)" > "$out"
@@ -1754,6 +1760,27 @@
             ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
             echo "ok: corpus ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred→build→exec" > "$out"
           '';
+
+        # Every compiler-genre corpus file (all of `spec/semantics/*.sexp` — the platform-genre corpus lives
+        # under `spec/platform`, never here). Enumerated at EVAL time from the SOURCE dir (`readDir`, no IFD).
+        corpusFileNames = builtins.filter (pkgs.lib.hasSuffix ".sexp")
+          (builtins.attrNames (builtins.readDir ./spec/semantics));
+        # `corpus-<file>` per-file aggregates, mapped over every corpus file — each shreds its file once and
+        # runs a per-case build→exec chain. The `corpus` TOP-LEVEL aggregate forces them all (so `nix flake
+        # check` covers the whole corpus through the per-case caching graph, and CI can build/cache one file
+        # or one case in isolation).
+        corpusFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-${stem}";
+              value = mkCorpusFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        corpusAll = pkgs.runCommand "corpus-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusFileAggs)}
+          echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
+        '';
 
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
@@ -2605,14 +2632,11 @@
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
             # is the shared, built-once integration-test executable. See the mkHarnessRun framework above.
             harness-runs = harnessRunsAll;
-            # The corpus per-case caching pipeline (design/DESIGN-corpus-nix-per-case-caching.md): each case
-            # of 01-literals flows through three separately-cached derivations — shred → build (content-
-            # addressed `cdz-compile`) → exec (compiler-free `cdz-run --grade`). `corpus-01-literals` is the
-            # file aggregate; the individual `corpus-01-literals-<idx>` case checks are spread in below.
-            corpus-01-literals = mkCorpusFileAgg {
-              name = "01-literals";
-              file = ./spec/semantics/01-literals.sexp;
-            };
+            # The corpus per-case caching pipeline (design/DESIGN-corpus-nix-per-case-caching.md): EVERY
+            # corpus file, each case flowing through three separately-cached derivations — shred → build
+            # (content-addressed `cdz-compile`) → exec (compiler-free `cdz-run --grade`). `corpus` is the
+            # whole-corpus aggregate; the per-file `corpus-<file>` aggregates are spread in below.
+            corpus = corpusAll;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -2726,11 +2750,12 @@
           # candidate touching ONE run's spec (or one program) rebuilds just the affected run(s) — the
           # binary + untouched programs + other runs all cache-hit. Auto-discovered from the harness-runs dir.
           // (pkgs.lib.mapAttrs' (n: v: pkgs.lib.nameValuePair "harness-${n}" v) harnessRunChecks)
-          # PER-CASE corpus checks: each `corpus-<file>-<idx>` is its own exec derivation, so a candidate
-          # touching one case rebuilds just that case's chain (and a compiler change that re-emits identical
-          # wasm cache-hits every exec). The `corpus-<file>` aggregate above forces the whole file's graph.
-          // (pkgs.lib.mapAttrs' (n: v: pkgs.lib.nameValuePair "corpus-${n}" v)
-            (corpusCaseChecks { name = "01-literals"; file = ./spec/semantics/01-literals.sexp; }));
+          # PER-FILE corpus aggregates: `corpus-<file>` for every corpus file, so CI can build/cache one
+          # file's whole per-case graph in isolation (the top-level `corpus` forces them all). The per-CASE
+          # derivations (`corpus-build/exec-<file>-<idx>`) are cached transitively through these — a candidate
+          # touching one case rebuilds just that case's chain, and a compiler change that re-emits identical
+          # wasm cache-hits every exec (content-addressed build + store).
+          // corpusFileAggs;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
