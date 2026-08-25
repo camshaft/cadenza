@@ -239,4 +239,41 @@ mod tests {
             "the contract-id byte-form drifted (or this is a deliberate flag-day)"
         );
     }
+    #[test]
+    fn builtin_contract_ids_are_byte_stable_golden_pins_on_the_routing_keys() {
+        // The built-in contracts' ids are the platform's live ROUTING KEYS — dispatch resolves an effect by
+        // exact-hash equality on these (§1/§4). `id_is_byte_stable_…` above pins only a TEST fixture
+        // (temp.celsius); a change to the canonical declaration encoding (the `cadenza-ast` codec, a field
+        // order, the `HashTag::Contract` tag) would silently SHIFT every REAL contract-id — breaking routing
+        // for already-deployed programs and diverging from any userspace contract-id builder
+        // (`DESIGN-compiler-primitives` P4, which must reproduce these exact bytes) — while every relational
+        // test still passed. This pins each built-in routing key's actual value so such drift fails loudly. If
+        // one legitimately changes, that is a deliberate contract-id flag-day (a new contract, §1) — re-pin it
+        // intentionally, do not paper over.
+        assert_eq!(
+            crate::deliver_contract().to_string(),
+            "017nakNdnxPdydihXTT6ftU711SlTZ2ooWVkzbETVMNVs",
+            "the deliver routing key drifted (or this is a deliberate flag-day)"
+        );
+        assert_eq!(
+            crate::timer_contract().to_string(),
+            "01hgs2SpFOf18sQCE9ovNcIiZrG29Spc3fOsWup5HTBFj",
+            "the timer routing key drifted (or this is a deliberate flag-day)"
+        );
+        assert_eq!(
+            crate::lifecycle_contract().to_string(),
+            "010GbI5BHteX1jTUGN9R5pZchnUyETTRTtUGJ6nABYFfk",
+            "the lifecycle routing key drifted (or this is a deliberate flag-day)"
+        );
+        assert_eq!(
+            crate::spawned_contract().to_string(),
+            "01h7MH6VU7juBXYTo8i6I6PQFLrMNhdIE8l2h2Lz7AwFl",
+            "the spawned routing key drifted (or this is a deliberate flag-day)"
+        );
+        assert_eq!(
+            crate::run_contract().to_string(),
+            "012hF7m1p0cofeRmMDl5uXmtPB2pRRP0OvXQWzGYYjVbP",
+            "the run routing key drifted (or this is a deliberate flag-day)"
+        );
+    }
 }
