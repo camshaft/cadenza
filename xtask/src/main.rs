@@ -2486,8 +2486,15 @@ fn run_program_rust(
     // that does not build) — the exact miscompile class this gate catches. In ASYNC mode the emitted
     // module `use`s the shared `cdz_rt::CdzEnv`, so link the pre-built `cdz-rt` rlib: `-L dependency=<dir>
     // --extern cdz_rt=<dir>/libcdz_rt.rlib`.
+    // Compile at opt-level 0 (no `-O`). The gate grades the emitted program's OUTPUT (a compile failure or a
+    // wrong answer), which is identical at -O0 and -O2 for a correct program — so -O0 is verdict-equivalent
+    // (verified: 09-functions shard 298 pass / 2 todo / 0 fail at both). LLVM optimization is rustc's peak-
+    // memory phase, and it drove a per-case OOM (exit-143) on the memory-heaviest cases (04-capabilities /
+    // 09-functions / 25-verification) on the free ~16GB arm nightly runner — those cases compile fine at -O
+    // locally, so it was a runner-RAM ceiling, not a bug. -O0 cuts peak memory to fit the runner (and is
+    // faster). The gate tests the BACKEND's emit, not rustc's optimizer, so no coverage is lost.
     let mut cmd = Command::new("rustc");
-    cmd.args(["-O", "--edition", "2021"])
+    cmd.args(["--edition", "2021"])
         .arg(&src)
         .arg("-o")
         .arg(&bin);
