@@ -3958,6 +3958,7 @@ pass	a type-valued parameter threads through TWO relay layers beside a runtime o
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 pass	a typed reducer performing a bytes host arg with a scalar result threads the u64 into the step (via an imposed WIT world)
 pass	a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)
+pass	a typed reducer performing a run.run result host op threads the Ok bytes into the step (via an imposed WIT world)
 pass	a typed reducer performing an all-scalar record host arg emits, loads, and runs (via an imposed WIT world)
 pass	a u16 bin field reads correctly at every runtime slice offset, odd or even
 pass	a u16 bin field straddles a byte-rope seam through a runtime-start slice
