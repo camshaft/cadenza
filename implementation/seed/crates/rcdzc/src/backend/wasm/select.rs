@@ -684,9 +684,14 @@ fn emit_result_lift(
             let field_tys: Vec<Ty> = fields.values().cloned().collect();
             emit_product_lift(db, &field_tys, ptr_slot, offset, high, scratch_ty, out)
         }
-        // An option-shaped `Sum` (exactly 2 variants: one single-payload + one nullary, e.g. `option<T>`).
+        // A `result<list<u8>, enum>` (both arms carry a payload — Ok: Bytes, Err: enum) vs an option-shaped
+        // `Sum` (2 variants: one single-payload + one nullary). Distinguished by shape.
         Ty::Sum { decl, .. } => {
-            emit_option_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+            if crate::backend::wasm::host::result_bytes_enum(db, ty).is_some() {
+                emit_result_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+            } else {
+                emit_option_sum_lift(db, ty, decl, ptr_slot, offset, high, scratch_ty, out)
+            }
         }
         // A SCALAR leaf (bool/char/aliased int/float, or a `Qty` over one) — load width-correct + box. Only
         // reached as an ELEMENT/FIELD/PAYLOAD of a compound (a top-level scalar result crosses by value).
@@ -908,6 +913,104 @@ fn emit_option_sum_lift(
         // The nullary arm: sum-new(none_disc, IMM_UNIT) — the 2-child nullary (payload = inline unit).
         out.push(Lir::ConstI32(none_disc as i32));
         out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
+        out.push(Lir::CallImport(OP_SUM_NEW));
+    }
+    out.push(Lir::End);
+    Ok(())
+}
+
+/// The RESULT-shaped-`Sum` arm of [`emit_result_lift`]: `result<list<u8>, enum>` (run.run's `result<payload,
+/// error>`) — a 2-variant sum where BOTH arms carry a payload (Ok: `Bytes`, Err: a PAYLOAD-LESS `enum`). The
+/// canonical WIT `result` discriminant is FIXED (ok = 0, err = 1) regardless of the Cadenza `Result` decl's
+/// variant order, so the arm is selected by disc == 0. On Ok, lift the `Bytes` payload and build the value-
+/// heap `Ok` at the Cadenza `Ok` variant's own discriminant; on Err, read the enum's i32 discriminant and box
+/// it as the guest's enum-disc value (`box-int` of the zero-extended disc — an enum-disc crosses as a boxed
+/// int cell when it is a heap payload, the same store `Err(Error.X)` codegens) and build the `Err`. A payload
+/// whose Ok arm is not `Bytes` or whose Err arm is not a payload-less enum declines upstream (`result_is_
+/// liftable`/`result_bytes_enum`); a richer result is a later increment.
+#[allow(clippy::too_many_arguments)]
+fn emit_result_sum_lift(
+    db: &mut Db,
+    ty: &Ty,
+    decl: StructId,
+    ptr_slot: u32,
+    offset: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    // The Cadenza `Result` decl's own Ok / Err variant discriminants (build the value-heap sum at these,
+    // independent of the WIT-canonical ok=0/err=1 the host wrote).
+    let (ok_disc, err_disc) = {
+        let d = db
+            .type_decl_by_occ(decl)
+            .ok_or_else(|| Reject::decline("the result-shaped sum decl was not found"))?;
+        let ok = d
+            .variants
+            .iter()
+            .position(|v| v.name == "Ok")
+            .ok_or_else(|| Reject::decline("the result sum has no Ok variant"))?
+            as u32;
+        let err = d
+            .variants
+            .iter()
+            .position(|v| v.name == "Err")
+            .ok_or_else(|| Reject::decline("the result sum has no Err variant"))?
+            as u32;
+        (ok, err)
+    };
+    let ok_payload_ty = variant_payload_ty_at(db, ty, ok_disc)
+        .ok_or_else(|| Reject::decline("the result Ok payload type could not be resolved"))?;
+    let ds = disc_size_for(2); // 1 for a 2-variant result
+    // The payload area is the JOIN of the arms; both align to 4 (Bytes `(ptr,len)` / enum i32).
+    let (_, ok_align) = canonical_layout(db, &ok_payload_ty);
+    let payload_off = offset + align_up_u32(ds, ok_align.max(4));
+    // disc = mem[ptr_slot + offset] (a 1-byte discriminant, read zero-extended; WIT `result` ok=0 / err=1).
+    let disc = *high;
+    *high = (*high).max(disc + 1);
+    scratch_ty.insert(disc, ValType::I32);
+    out.push(Lir::LocalGet(ptr_slot));
+    out.push(Lir::I32Load8U { offset });
+    out.push(Lir::LocalSet(disc));
+    // if disc == 0 (WIT `result` "ok") { Ok(lift bytes) } else { Err(box enum disc) } — leaves the sum handle.
+    out.push(Lir::LocalGet(disc));
+    out.push(Lir::ConstI32(0));
+    out.push(Lir::I32Eq);
+    out.push(Lir::If(BlockType::Val(ValType::I32)));
+    {
+        emit_result_lift(
+            db,
+            &ok_payload_ty,
+            ptr_slot,
+            payload_off,
+            high,
+            scratch_ty,
+            out,
+        )?;
+        let ph = *high;
+        *high = (*high).max(ph + 1);
+        scratch_ty.insert(ph, ValType::I32);
+        out.push(Lir::LocalSet(ph));
+        out.push(Lir::ConstI32(ok_disc as i32));
+        out.push(Lir::LocalGet(ph));
+        out.push(Lir::CallImport(OP_SUM_NEW));
+    }
+    out.push(Lir::Else);
+    {
+        // The err arm's payload is the enum's i32 discriminant; box it as the guest's enum-disc value
+        // (`box-int` of the zero-extended disc), then `Err(that)`.
+        out.push(Lir::LocalGet(ptr_slot));
+        out.push(Lir::I32Load {
+            offset: payload_off,
+        });
+        out.push(Lir::I64ExtendI32U);
+        out.push(Lir::CallImport(OP_BOX_INT));
+        let eh = *high;
+        *high = (*high).max(eh + 1);
+        scratch_ty.insert(eh, ValType::I32);
+        out.push(Lir::LocalSet(eh));
+        out.push(Lir::ConstI32(err_disc as i32));
+        out.push(Lir::LocalGet(eh));
         out.push(Lir::CallImport(OP_SUM_NEW));
     }
     out.push(Lir::End);
@@ -4301,8 +4404,22 @@ fn collect_used_ops_into_seen(
         //    recurse, or the import section would omit an op the body calls (→ an invalid consumer component).
         // A `Unit` arg carries no value on either boundary. So: skip a String/Unit HOST arg; recurse into a
         // peer arg (and any scalar/compound host arg) as before.
-        Core::HostCall { args, effect, .. } => {
+        Core::HostCall {
+            args,
+            effect,
+            result,
+            ..
+        } => {
             let peer_bound = db.effect_bindings.contains_key(&*effect);
+            // A SPILLED compound host RESULT is lifted by `emit_result_lift` at the call site — collect the
+            // value-heap ops that lift emits (mirrors `declare_result_lift_ops`, the same recursion) so they
+            // are imported. Without this the lift's `CallImport` (e.g. run.run's Err-arm `box-int`) resolves
+            // to u32::MAX. (Previously the ops were only collected coincidentally, when the guest happened to
+            // use the same op elsewhere — a `list<list<u8>>`/`option` result's arr/sum ops usually overlap the
+            // guest's own; run.run's `box-int` does not.) A peer-bound compound crosses as a handle (no lift).
+            if !peer_bound && crate::backend::wasm::host::result_is_liftable(db, &result) {
+                super::declare_result_lift_ops(db, &result, out);
+            }
             for arg in args {
                 match crate::infer::type_of(db, arg) {
                     Ty::Unit => {}

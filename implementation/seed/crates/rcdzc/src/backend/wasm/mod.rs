@@ -1767,12 +1767,13 @@ fn host_op_comp_functype(
 /// per-shape offsets. Reproduces the former fixed indices for the three original shapes (bare list<u8> → 0,
 /// option → 1, list<tuple> → 2+has_option) and generalizes to any structural list/tuple nesting (e.g.
 /// graph.neighbors' `list<list<u8>>`).
+#[allow(clippy::type_complexity)] // (needs_list, [(def-bytes, is-nominal)], per-op result CRef)
 fn build_host_result_types(
     db: &mut Db,
     host_imports: &[host::HostImport],
 ) -> (
     bool,
-    Vec<Vec<u8>>,
+    Vec<(Vec<u8>, bool)>,
     Vec<Option<crate::backend::wasm::wit_ctype::CRef>>,
 ) {
     use crate::backend::wasm::wit_ctype::{CDef, CRef, add_wit_type_deduped, emit_cdef};
@@ -1799,11 +1800,85 @@ fn build_host_result_types(
         });
         result_crefs.push(cref);
     }
-    // The RESULT defined types are `table[1..]` (index 0 is the shared `(list u8)` the instance-type lays as
-    // its own prepend); emit each as its component defined-type item bytes.
+    // EXPORT-AWARE INDEXING: a NOMINAL defined type (`variant`/`enum`/`record`) that an import func's type
+    // references must be EXPORTED from the instance-type (component-model rule — the same the ARG-side records
+    // obey; a structural `list`/`option`/`result`/`tuple` is anonymous-allowed). `add_wit_type_deduped` laid
+    // the table FLAT (one index per def, `CRef::Idx(i)` = table position `i`); a nominal def instead takes TWO
+    // instance-type slots (define + export), so it SHIFTS every later index. Compute each entry's REFERENCE
+    // index (the export index for a nominal, the define index otherwise), then REMAP every `CRef::Idx` in the
+    // defs + the per-op result `CRef`s so a result's err-enum reference points at the EXPORTED enum. Without
+    // this a `result<list<u8>, enum>` (run.run) emits an unexported enum → "instance not valid as import".
+    let mut ref_idx = vec![0u32; table.len()];
+    let mut nominal = vec![false; table.len()];
+    let mut cur = 0u32;
+    for (i, def) in table.iter().enumerate() {
+        let is_nom = cdef_is_nominal(def);
+        nominal[i] = is_nom;
+        if is_nom {
+            ref_idx[i] = cur + 1; // define at `cur`, export at `cur+1` (the index references use)
+            cur += 2;
+        } else {
+            ref_idx[i] = cur;
+            cur += 1;
+        }
+    }
+    let remap = |c: &CRef| match c {
+        CRef::Idx(i) => CRef::Idx(ref_idx[*i as usize]),
+        CRef::Prim(b) => CRef::Prim(*b),
+    };
+    for c in result_crefs.iter_mut().flatten() {
+        *c = remap(c);
+    }
+    // The RESULT defined types are `table[start..]` (index 0 is the shared `(list u8)` the instance-type lays
+    // as its own prepend). Emit each with its CRefs remapped to the export-aware indices; pair with whether it
+    // is nominal (so the instance-type lays it define+export).
     let start = if needs_list { 1 } else { 0 };
-    let result_defs: Vec<Vec<u8>> = table[start..].iter().map(emit_cdef).collect();
+    let result_defs: Vec<(Vec<u8>, bool)> = table[start..]
+        .iter()
+        .enumerate()
+        .map(|(k, def)| (emit_cdef(&remap_cdef(def, &remap)), nominal[start + k]))
+        .collect();
     (needs_list, result_defs, result_crefs)
+}
+
+/// Whether a component defined type is NOMINAL — a `record`/`variant`/`enum`/`flags` that, when used by an
+/// import func's type, MUST be exported from the instance-type (unlike an anonymous-allowed structural
+/// `list`/`option`/`result`/`tuple`). The ARG-side records obey the same rule (they lay define+export).
+fn cdef_is_nominal(def: &crate::backend::wasm::wit_ctype::CDef) -> bool {
+    use crate::backend::wasm::wit_ctype::CDef;
+    matches!(
+        def,
+        CDef::Record(_) | CDef::Variant(_) | CDef::Enum(_) | CDef::Flags(_)
+    )
+}
+
+/// Rewrite every `CRef::Idx` a `CDef` holds through `remap` (leaving `CRef::Prim` untouched) — used to shift
+/// a defined type's child references onto the EXPORT-AWARE instance-type indices when a nominal def inserts an
+/// extra export slot ahead of it.
+fn remap_cdef(
+    def: &crate::backend::wasm::wit_ctype::CDef,
+    remap: &impl Fn(&crate::backend::wasm::wit_ctype::CRef) -> crate::backend::wasm::wit_ctype::CRef,
+) -> crate::backend::wasm::wit_ctype::CDef {
+    use crate::backend::wasm::wit_ctype::CDef;
+    match def {
+        CDef::Record(fields) => {
+            CDef::Record(fields.iter().map(|(n, c)| (n.clone(), remap(c))).collect())
+        }
+        CDef::Variant(cases) => CDef::Variant(
+            cases
+                .iter()
+                .map(|(n, c)| (n.clone(), c.as_ref().map(remap)))
+                .collect(),
+        ),
+        CDef::Tuple(elems) => CDef::Tuple(elems.iter().map(remap).collect()),
+        CDef::Option(c) => CDef::Option(remap(c)),
+        CDef::Result { ok, err } => CDef::Result {
+            ok: ok.as_ref().map(remap),
+            err: err.as_ref().map(remap),
+        },
+        CDef::List(c) => CDef::List(remap(c)),
+        CDef::Enum(_) | CDef::Flags(_) => def.clone(),
+    }
 }
 
 /// Build the [`envelope::HostGroup`] for ONE host interface's ops — its FQ WIT import name, the component
@@ -1997,6 +2072,14 @@ fn declare_result_lift_ops(
             used.insert("box-float32");
         }
         Ty::Qty { inner, .. } => declare_result_lift_ops(db, &inner, used),
+        // A `result<list<u8>, enum>` (run.run): `sum-new` builds both the Ok and Err value-heap arms;
+        // `box-int` boxes the err enum's discriminant into an int cell (the guest's enum-disc-as-payload rep);
+        // the Ok arm lifts a `Bytes` payload. Checked BEFORE the option shape (a result is not option-shaped).
+        _ if host::result_bytes_enum(db, ty).is_some() => {
+            used.insert("sum-new");
+            used.insert("box-int");
+            declare_result_lift_ops(db, &crate::ty::Ty::Bytes, used); // the Ok `list<u8>` payload
+        }
         // An option-shaped sum (`option<T>`): `sum-new` for the Some/None construction + the Some arm's
         // payload lift ops, recursively (general over the payload, not pinned to `Bytes`).
         _ => {
