@@ -418,6 +418,23 @@ fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
     reify_inner(ast, node, under_qq, true)
 }
 
+/// Reify `node` PURELY STRUCTURALLY — every atom to its `Ast.*` leaf variant, every list to `Ast.List` —
+/// with NO quasiquote/unquote escape interpretation (`unquote`/`quasiquote` heads are ordinary names,
+/// captured as data like any other). This is the faithful AST-reflection reifier used by import
+/// reflection (`link.rs`, the `__ast__` binding): it reflects a module's canonical AST as data, so a
+/// module that happens to contain the word `unquote`/`quasiquote` is reflected verbatim, not
+/// mis-interpreted as a template. Returns `None` only when a descendant leaf has no `Ast` variant (a
+/// Char/Sym literal — the realized `Ast` set is `Int`/`Float`/`Bool`/`Str`/`Name`/`List`/`Bytes`), so the
+/// reflection declines rather than miscompiling. Mutates `ast` in place (appends the construction tree),
+/// exactly as `reify` does; the appended tree is self-contained (fresh nodes, cloned leaf values), so it
+/// can be produced against the merged link arena and referenced by a synthesized def.
+pub(crate) fn reflect_document(ast: &mut Arenas, node: StructId) -> Option<StructId> {
+    // `under_qq = true` disables the stray-escape bail (there is no quote/quasiquote context here — we are
+    // reflecting arbitrary module syntax, not a quote body), so escapes reflect as ordinary structure.
+    // `ground_ints = true` — value position, so an int literal grounds to the `Ast.Int` `BigInt` payload.
+    reify_inner(ast, node, true, true)
+}
+
 /// The shared body of `reify`, parameterized by whether an integer-literal payload is GROUNDED to
 /// `BigInt`. In VALUE position (`ground_ints` true — the reifier building an `Ast` value) a bare int
 /// literal is wrapped `(: N BigInt)` so it grounds to `Ast.Int`'s `BigInt` payload. In PATTERN position
