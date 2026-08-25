@@ -75,6 +75,22 @@ pub struct RunArgs {
     /// `.wasm`. Omitted → the manifest's `opt-level`, else `--release`'s `O2`, else the default `O1`.
     #[arg(long, value_name = "LEVEL")]
     pub opt_level: Option<String>,
+
+    /// GRADE mode (the corpus nix pipeline's exec phase, `design/DESIGN-corpus-nix-per-case-caching.md`):
+    /// instead of a single `--call` run, run the component against a shredded `test-run.ast` (built by
+    /// `cdz corpus records --out-dir`) — every runnable trial (call + args + host tape) is run and the
+    /// outcome graded against its `(expect-output …)` / `(expect-trap …)`, reproducing the `xtask gate`
+    /// comparison. Exit `0` if all pass (or `Todo`), `1` on the first `Fail`. `--call`/`--arg`/
+    /// `--host-response` are taken from the artifact, not the CLI. Compile-outcome expectations
+    /// (`error`/`declines`/`warns`) are build-phase and not graded here.
+    #[arg(long, value_name = "TEST_RUN_AST")]
+    pub grade: Option<PathBuf>,
+
+    /// The interface a `(wit-world …)` case's guest exports under (its `(component-name …)`), used ONLY
+    /// with `--grade` to qualify a trial's call as `<iface>#<export>` — the same qualification the gate
+    /// applies for a world-imposed export. Absent → the export is called by its bare name.
+    #[arg(long, value_name = "INTERFACE")]
+    pub component_name: Option<String>,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -200,6 +216,21 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // so an explicit `--store` did not scope NFC for the peer-induced runtime (PR #1633 review follow-on).
     let runtime_cache_dir =
         resolve_runtime_cache_dir(runtime.is_some(), cli.runtime.is_some(), cli.store.clone());
+
+    // GRADE mode: run the component against a shredded `test-run.ast` and grade every runnable trial
+    // (the corpus nix pipeline's exec phase). Takes over from the single-call run below — call/args/host
+    // tape come from the artifact, not the CLI.
+    if let Some(test_run_path) = &cli.grade {
+        let test_run_ast = std::fs::read(test_run_path)
+            .map_err(|e| anyhow::anyhow!("read test-run.ast {}: {e}", test_run_path.display()))?;
+        return crate::grade::grade(
+            &component_bytes,
+            &test_run_ast,
+            runtime,
+            runtime_cache_dir,
+            cli.component_name.as_deref(),
+        );
+    }
 
     // The runtime imports `cadenza:nfc/normalize@0.0.0+<hash>` (self-describing — the NFC dependency's
     // content address is stamped inline into the import), and the host resolves that NFC component from the
