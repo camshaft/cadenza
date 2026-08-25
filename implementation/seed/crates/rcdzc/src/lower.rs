@@ -1403,7 +1403,70 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             // (`def_scheme` — an annotated recursive def types by absorption, no fixpoint
                             // needed). An unannotated/undetermined callee still declines (its signature
                             // needs the connected solve, a later step). Any other decline propagates.
-                            Err(msg) => lower_recursive_call_or_decline(g, head, &args, msg),
+                            Err(msg) => {
+                                // RECURSIVE-CONST-FOLD (P2): a recursive call INTO a callee that declares a
+                                // `const` parameter, with ALL arguments compile-time constants, fully UNROLLS
+                                // at compile time rather than emitting a runtime call. The `const` param is
+                                // the const-DEMAND signal (the author/type-system marked the collection
+                                // compile-time), so this fires ONLY on genuine const folds — NOT on ordinary
+                                // recursive-generic producers / RRB builders / dictionary consumers (no
+                                // `const` param), which still emit a runtime `Core::Call` below. Do ONE
+                                // β-level here (bypassing the recursion decline), then `core_of` the reduced
+                                // body: it folds the const-scrutinee match + arithmetic, and the residual
+                                // self-call re-enters this Apply-fold with its now-const-folded arguments →
+                                // the next level → the base arm (a constant). The descent runs under THIS
+                                // `enter_reduction` guard, so a NON-shrinking recursion exhausts the
+                                // `REDUCE_NODE_BUDGET` → `core_of` yields a `Poison` → we fall through to the
+                                // runtime-call/decline path — it can neither hang nor blow up.
+                                //
+                                // GATE (CHEAP, no `core_of`): a `const` parameter whose declared TYPE is a
+                                // `(List …)` — the shrinking collection a `(list h .. t)` fold recurses over.
+                                // This structurally distinguishes a genuine bounded list-fold (accept, try to
+                                // unroll) from a const RECORD/dictionary a counter-driven recursion passes
+                                // UNCHANGED (a dict consumer has a `const` param too, but its type is a record,
+                                // it does not fold, and even folding its args to TEST would waste the
+                                // reduction budget). Reading the param's `(: name (List …))` annotation costs
+                                // nothing, so the expensive `is_const_value`/unroll below runs ONLY for a
+                                // const-list-fold. Combined with the fully-folded-constant check, only a
+                                // terminating const list-fold is accepted; everything else emits the runtime
+                                // call as before.
+                                let has_const_list_param =
+                                    callee_def_index(g, head).is_some_and(|callee| {
+                                        let params = g.defs[callee].params.clone();
+                                        params.iter().any(|&p| {
+                                            g.const_params
+                                                .contains(&crate::eval::param_name_occ(g, p))
+                                                && g.ast
+                                                    .as_form(p, ":")
+                                                    .and_then(|t| t.get(1).copied())
+                                                    .and_then(|ty| g.ast.as_form(ty, "List"))
+                                                    .is_some()
+                                        })
+                                    });
+                                if has_const_list_param
+                                    && args.iter().all(|&a| is_const_value(g, a))
+                                    && let Ok(Some(unrolled)) =
+                                        crate::eval::apply_lambda_one_level_recursive(
+                                            g, head, &args,
+                                        )
+                                {
+                                    // Forget the β-copy's memoized resolution before folding — a copied match
+                                    // binder ref keeps a stale `SumPayload { scrutinee }` at the callee's
+                                    // ORIGINAL scrutinee, so `resolved_of` must recompute against the copy's.
+                                    crate::resolve::forget_subtree(g, unrolled);
+                                    let folded = core_of(g, unrolled);
+                                    // ACCEPT only a FULLY-FOLDED CONSTANT — the unroll succeeded end-to-end
+                                    // (a shrinking const fold reaching its base arm). A const-param recursion
+                                    // whose body reads a RUNTIME value (e.g. a dictionary consumer driven by a
+                                    // runtime op) reduces to a non-constant `Core` here; reject it and fall
+                                    // through to the runtime-call path so the unroll never REPLACES a correct
+                                    // runtime lowering with a partial/worse one.
+                                    if core_is_const_value(g, &folded) {
+                                        return folded;
+                                    }
+                                }
+                                lower_recursive_call_or_decline(g, head, &args, msg)
+                            }
                         };
                     }
                     None => {
@@ -23961,6 +24024,30 @@ fn lower_map_field_runtime(
 /// unit, or a constant compound (`SumNew`/`Tuple`/`Record`/`ListNew`/`MapNew`) all of whose parts are
 /// constant. Used to decide whether a `Map.insert` key can fold (a constant key merges into a constant
 /// map; a runtime key keeps the persistent op). Mirrors the constant test `const_value_ast` performs.
+/// Whether an already-lowered [`Core`] is a compile-time CONSTANT value — the [`is_const_value`] test on a
+/// `Core` in hand (rather than a node to lower). Used by the recursive-const-fold unroll to accept only a
+/// fully-folded constant result.
+fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
+    match c {
+        Core::ConstInt(_)
+        | Core::ConstBool(_)
+        | Core::ConstStr(_)
+        | Core::ConstBytes(_)
+        | Core::ConstFloat(_)
+        | Core::Unit => true,
+        Core::Tuple { elems } | Core::ListNew { elems } => {
+            elems.iter().all(|&e| is_const_value(db, e))
+        }
+        Core::SumNew { payloads, .. } => payloads.iter().all(|&p| is_const_value(db, p)),
+        Core::Record { fields } => fields.values().all(|&v| is_const_value(db, v)),
+        Core::MapNew { entries, .. } => entries
+            .iter()
+            .all(|&(k, v)| is_const_value(db, k) && is_const_value(db, v)),
+        Core::SetOf { elems, .. } => elems.iter().all(|&e| is_const_value(db, e)),
+        _ => false,
+    }
+}
+
 fn is_const_value(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_)

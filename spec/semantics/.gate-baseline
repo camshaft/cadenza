@@ -1547,7 +1547,7 @@ pass	a conjunction of two float compares preserves NaN-false through the connect
 pass	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 pass	a consistent annotation type-checks against the inferred type
 pass	a const closure re-passed through a recursive driver specializes and computes correctly
-pass	a const collection recursively folded is rejected, not compiled to an infinite loop
+pass	a const collection recursively folded UNROLLS to its result at compile time
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
