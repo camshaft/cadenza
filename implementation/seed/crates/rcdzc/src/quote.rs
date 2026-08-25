@@ -47,8 +47,8 @@
 //! `Ast.Bool`, String → `Ast.Str`); a RUNTIME operand (a name / a computed expression, unknown type at
 //! reify time) is wrapped in the compiler-internal `(ast-lift e)`, which `lower` resolves by `e`'s
 //! INFERRED type — IDENTITY when `e` is already an `Ast` (splice a sub-tree), else the matching leaf. A
-//! literal the `Ast` sum has no value variant for (Char/Sym/Bytes) BAILS (declines honestly, never a
-//! miscompile).
+//! literal the `Ast` sum has no value variant for BAILS (declines honestly, never a miscompile) — today
+//! only a reader error-marker leaf (`BadChar`/`BadEscape`), since the `Ast` sum covers every real leaf.
 //!
 //! An ACTIVE `(unquote-splicing e)` (depth 1) SPLICES e's list elements into the parent: `reify_active`
 //! builds the parent's element list by CONCATENATING runs of ordinary reified elements with
@@ -84,12 +84,14 @@
 //!
 //! ## Scope of this increment
 //!
-//! The built-in `Ast` sum has the full spec variant set — `Int`/`Float`/`Bool`/`Str`/`Name`/`List` — so a
-//! form built from integers, floats, booleans, strings, names, and lists is reifiable. A quote whose body
-//! mentions a leaf NO `Ast` variant carries yet (a char, symbol, or bytes literal) is LEFT UNTOUCHED here:
-//! it flows to `resolve::resolve_quote`, which DECLINES (a Todo, never a miscompile). Likewise an
-//! arity-≠1 `(quote …)` is left for `resolve_quote` to reject CDZ0201. This pass only ever rewrites a
-//! quote/quasiquote it can reify COMPLETELY — partial reification is never emitted.
+//! The built-in `Ast` sum carries a variant for EVERY syntax leaf — `Int`/`Float`/`Bool`/`Str`/`Name`/
+//! `List`/`Bytes`/`Char`/`Symbol` — so quote/reflection is TOTAL: a form built from any of them is
+//! reifiable (operator directive — reflection must never decline on a well-formed leaf). The ONLY leaf a
+//! quote still bails on is a reader ERROR MARKER (`BadChar`/`BadEscape`), which arises solely from
+//! malformed source (which does not compile); it flows to `resolve::resolve_quote`, which DECLINES (a
+//! Todo, never a miscompile). Likewise an arity-≠1 `(quote …)` is left for `resolve_quote` to reject
+//! CDZ0201. This pass only ever rewrites a quote/quasiquote it can reify COMPLETELY — partial
+//! reification is never emitted.
 //!
 //! ## Ordering / in-place rewrite
 //!
