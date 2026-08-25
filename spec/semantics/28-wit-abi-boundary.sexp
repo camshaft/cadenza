@@ -32,6 +32,8 @@
 ; COMPOUND result<Bytes, enum> host-import RESULT (run.run) matched Ok(v)->payload / Err->fallback. SHAPE 16 —
 ; the option<s64> PARAM read (the read side: a record{d: option<s64>} param matched Some(x)->x / None->-1).
 ; SHAPE 17 — the result<Bytes, enum> PARAM read (Ok(bs)->Bytes.len / Err(e)->10+disc; both arms, enum-err arg).
+; SHAPE 18 — a named-VARIANT RESULT writer NAME-matches (not positionally): a reversed guest decl still maps
+; each case to the WIT case by name (Continue->continue disc 0, Close->close disc 1).
 
 (case "an option<s64> field in a record result crosses the export boundary on both arms"
   (doc    "The general option<T> RESULT lift across the WIT export boundary. The guest takes a record
@@ -260,3 +262,19 @@
   (output (: 10 Int64))
   (call f (: (record (= a (Err (faulted unit)))) (Record (: a (Result Bytes Error)))))
   (output (: 13 Int64)))
+(case "a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)"
+  (doc    "SHAPE 18 — the named-VARIANT writer keys on the case NAME, not decl position. The guest declares its sum
+           in the OPPOSITE order to the WIT variant cases: (type Rev (Close Int64) (Continue)) (Close is guest
+           decl-disc 0) against the world's variant { continue, close(s64) } (continue is boundary case 0). A
+           name-match maps Close->close (boundary disc 1) and Continue->continue (boundary disc 0); a POSITIONAL
+           match would put Close(payload) onto the nullary continue case and the payload-shape guard would reject
+           at compile. A green run of BOTH arms (x=0 -> continue, x=5 -> close 5) proves the writer is keyed on the
+           case NAME, immune to guest decl reordering. Migrated from the in-crate wasmtime test
+           `the_named_variant_writer_name_matches_not_positionally`.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (o ("variant" (continue) (close (s64)))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type Rev (Close Int64) (Continue)) (def (f (: m (Record (: x Int64)))) (record (= o (if (= (. m x) 0) Rev.Continue (Rev.Close (. m x)))))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (output (: (record (= o (continue unit))) (record (o Rev))))
+  (call f (: (record (= x 5)) (Record (: x Int64))))
+  (output (: (record (= o (close 5))) (record (o Rev)))))
