@@ -15,39 +15,22 @@
 // but the QUERY — that the reducer asked, and about the sender — is the observable fact. Same explicit INDEX
 // RECURSION + imported-sum catch-all idiom as reducer-dispatch-check-cdz.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some record at index >= i carry a ProgramOf(reducer == r)? (the reducer read r's provenance.) The
-// index walk terminates on `List.at` returning None past the end — no separate length check needed — and a
-// match GUARD folds the "is it the ProgramOf we want" test into the pattern, so there is one recursive call.
-def has-program-of(records: List(LogRecord), i: Int64, r: Bytes) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.ProgramOf(pf) if (pf.reducer == r) => true
-        | _ => has-program-of(records, i + 1, r))
+// The sender reducer id of a delivered message (its `from` Origin), and the reducer a ProgramOf read named —
+// `join-exists` looks for a ProgramOf whose reducer is the sender of some delivered message, proving the
+// reducer read the provenance of whoever sent it the effect. (A delivered message with no `from` yields no key.)
+def delivered-sender(rec) =
+  match rec.entry with
+  | Entry.Delivered(d) => (match d.from with | Option.Some(o) => Some(o.reducer) | Option.None(_) => None)
+  | _ => None
+def program-of-reducer(rec) = match rec.entry with | Entry.ProgramOf(pf) => Some(pf.reducer) | _ => None
 
-// Is some delivered message's sender S matched by a ProgramOf(reducer = S)? Scans delivered records with a
-// present `from` (a message carries its sender Origin); for each, checks the whole log for a program-of of
-// that sender. Same index walk (None past the end ends it) with a guard on the sender's `from`.
-def prov-holds(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Delivered(d) =>
-            (match d.from with
-              | Option.Some(o) if has-program-of(records, 0, o.reducer) => true
-              | _ => prov-holds(records, i + 1))
-        | _ => prov-holds(records, i + 1))
-
-// The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
-  if prov-holds(records, 0)
+  if join-exists(records, delivered-sender, program-of-reducer)
   then pass()
   else fail("no ProgramOf named a delivered message's sender: the reducer did not read the sender's provenance")
 

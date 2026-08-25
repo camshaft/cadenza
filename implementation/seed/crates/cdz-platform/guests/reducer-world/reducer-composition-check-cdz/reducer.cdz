@@ -12,45 +12,20 @@
 // three standard schemas; settled idioms (List.at-None ends the walk; LogRecord destructured in the Some arm;
 // conditions folded into match guards).
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, any-record } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some GraphNeighbors read carry dir == "out"? (the enum arg Dir.Outgoing marshalled and crossed.) The
-// recorded dir string is the crate's canonical form "out"/"in" (log_value.rs dir_str), since the host maps
-// the WIT enum Outgoing -> crate::Dir::Out; the checker matches that recorded form, not the WIT case name.
-def has-neighbors-outgoing(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.GraphNeighbors(n) if (n.dir == "out") => true
-        | _ => has-neighbors-outgoing(records, i + 1))
-
-// Does some KvGet appear? (state.get was performed — the option-result path.)
-def has-kv-get(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.KvGet(_) => true
-        | _ => has-kv-get(records, i + 1))
-
-// Does some Emitted request appear? (the guest ran to completion: list result lifted, option matched.)
-def has-emitted(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Emitted(_) => true
-        | _ => has-emitted(records, i + 1))
-
-def composed(records: List(LogRecord)) =
-  has-neighbors-outgoing(records, 0) and has-kv-get(records, 0) and has-emitted(records, 0)
+// The three independent observables that together prove the composition fully executed: a GraphNeighbors read
+// with dir=="out" (enum arg marshalled), a KvGet (option-result path), and an Emitted (list-result lifted,
+// guest ran to completion). Each is a per-record predicate; the run passes iff all three appear.
+def neighbors-outgoing(rec) = match rec.entry with | Entry.GraphNeighbors(n) if (n.dir == "out") => true | _ => false
+def is-kv-get(rec) = match rec.entry with | Entry.KvGet(_) => true | _ => false
+def is-emitted(rec) = match rec.entry with | Entry.Emitted(_) => true | _ => false
 
 def verdict-payload(records: List(LogRecord)) =
-  if composed(records)
+  if any-record(records, neighbors-outgoing) and any-record(records, is-kv-get) and any-record(records, is-emitted)
   then pass()
   else fail("the composition did not fully execute: expected a GraphNeighbors(dir=outgoing) + a KvGet + an Emitted (enum-arg / list-result / option-result marshalling across two host interfaces)")
 

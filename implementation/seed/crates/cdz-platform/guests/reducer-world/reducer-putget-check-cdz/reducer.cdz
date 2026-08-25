@@ -8,32 +8,19 @@
 // the run-controlled key, no hardcoded bytes. NON-VACUOUS: a guest that does not put, or whose get missed
 // (hit = 0), yields no such pair. Settled idioms.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, join-exists } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some KvPut write key == k? (the value stored under k.)
-def has-put-key(records: List(LogRecord), i: Int64, k: Bytes) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.KvPut(p) if (p.key == k) => true
-        | _ => has-put-key(records, i + 1, k))
-
-// Is some KvGet(key = K, hit = 1) matched by a KvPut(key = K)? (read-after-write in one fold; the compound
-// get returned Some.)
-def put-then-get-hit(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.KvGet(g) if (g.hit == 1 and has-put-key(records, 0, g.key)) => true
-        | _ => put-then-get-hit(records, i + 1))
+// The key a SUCCESSFUL KvGet (hit==1) read, and the key a KvPut wrote — `join-exists` looks for a get-hit whose
+// key was written by a put, proving put-then-get sequencing in one fold (the compound get returned Some). The
+// hit==1 gate is load-bearing: it returns no key for a miss, so a get that did not read back fails the check.
+def get-hit-key(rec) = match rec.entry with | Entry.KvGet(g) if (g.hit == 1) => Some(g.key) | _ => None
+def put-key(rec) = match rec.entry with | Entry.KvPut(p) => Some(p.key) | _ => None
 
 def verdict-payload(records: List(LogRecord)) =
-  if put-then-get-hit(records, 0)
+  if join-exists(records, get-hit-key, put-key)
   then pass()
   else fail("no KvGet(hit) matched a KvPut of the same key: put-then-get sequencing (compound get returning Some) was not observed in one fold")
 

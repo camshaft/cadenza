@@ -16,33 +16,20 @@
 // (recording.rs), so the checker matches those recorded forms, not the WIT op names. `Entry`/`LogRecord` are
 // imported sums (variant count invisible to the matcher), so each match has a catch-all `_ =>` arm.
 import { LogRecord, Entry } from "log-schema"
-import { Decision, interpret, verdict-req, pass, fail } from "checker-lib"
+import { Decision, interpret, verdict-req, pass, fail, ordered } from "checker-lib"
 
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Is there a Routed(eventKind="notification") at index >= j? (the second, later deliver op.)
-def has-notification-from(records: List(LogRecord), j: Int64) =
-  match List.at(records, j) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Routed(rt) if (rt.eventKind == "notification") => true
-        | _ => has-notification-from(records, j + 1))
-
-// Is there a Routed(eventKind="message") at some index i followed by a Routed(eventKind="notification") at a
-// later index? (deliver-message then deliver-notification, sequenced in order — the Core::Seq of two host calls.)
-def message-then-notification(records: List(LogRecord), i: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => false
-  | Option.Some(LogRecord.LogRecord(rec)) =>
-      (match rec.entry with
-        | Entry.Routed(rt) if (rt.eventKind == "message" and has-notification-from(records, i + 1)) => true
-        | _ => message-then-notification(records, i + 1))
+// The two sequenced deliver ops, as per-record predicates: a Routed(message) then a Routed(notification).
+// `ordered` asks whether some message-routing precedes some notification-routing (deliver-message then
+// deliver-notification, in order — the Core::Seq of two host calls).
+def is-routed-message(rec) = match rec.entry with | Entry.Routed(rt) if (rt.eventKind == "message") => true | _ => false
+def is-routed-notification(rec) = match rec.entry with | Entry.Routed(rt) if (rt.eventKind == "notification") => true | _ => false
 
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
-  if message-then-notification(records, 0)
+  if ordered(records, is-routed-message, is-routed-notification)
   then pass()
   else fail("expected a Routed(message) then a Routed(notification): the two sequenced deliver ops did not both execute in order")
 
