@@ -1,0 +1,54 @@
+// The ARG-PARSE-GUARD observation checker (design/cadenza-platform.md §9) — asserts that a host call the
+// reducer performed with a MALFORMED argument was still OBSERVED, not silently dropped (log-every-host-call).
+// The paired guest (reducer-rejected-cdz) calls graph.neighbors with a short (non-ReducerId) node; the host
+// early-returns before the recordable capability and emits a HostCallRejected observation via the rejected
+// sink. This checker asserts that observation is present, LOG-ONLY and guest-agnostic.
+//
+// JUDGEMENT: pass iff some HostCallRejected(iface = "graph", op = "neighbors") is recorded — the malformed
+// graph.neighbors call was observed at the host boundary. NON-VACUOUS: without the host seam (or if the guest
+// had passed a well-formed node), no HostCallRejected is recorded and the check fails; and it names the exact
+// interface+op so an unrelated rejected call does not satisfy it. Imports the three standard schemas; settled
+// idioms (List.at-None ends the walk; LogRecord destructured in the Some arm; conditions in a match guard;
+// String equality on the recorded iface/op — the recorded form is the crate's op spelling, kebab "neighbors").
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Is some HostCallRejected recorded for graph.neighbors? (the malformed-arg call was observed.)
+def rejected-observed(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.HostCallRejected(r) if (r.iface == "graph" and r.op == "neighbors") => true
+        | _ => rejected-observed(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if rejected-observed(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no HostCallRejected(graph, neighbors) recorded: a malformed-arg host call was not observed at the parse-guard boundary"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }

@@ -31,13 +31,13 @@
 
 use cdz_platform::testing::{
     BlobSource, CheckOutcome, Harness, HarnessSpec, ObservationLog, PureRun, RecordingBlobStore,
-    RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProvenance, SpawnSpec,
-    check_message, no_verdict_reason, render, verdict_in,
+    RecordingDelivery, RecordingGraph, RecordingKvStore, RecordingProvenance,
+    RecordingRejectedSink, SpawnSpec, check_message, no_verdict_reason, render, verdict_in,
 };
 use cdz_platform::{
     BachRuntime, BlobStore, Bytes, Delivery, HostId, InMemoryBlobStore, InMemoryKvStore,
     InMemoryReducerGraph, KvStore, NoDelivery, NoProvenance, Origin, ProgramHash, Provenance,
-    ReducerGraph, ReducerId, Runner, Runtime, WasmProgramStore,
+    ReducerGraph, ReducerId, RejectedSink, Runner, Runtime, WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -312,7 +312,7 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
     // The provenance factory records each reducer's privileged `program-of` read (which program the queried
     // reducer runs) via a RecordingProvenance decorator, over a NoProvenance base — the base answers `None`
     // (the itest wires no real system), but the read ACT + the answer are recorded regardless.
-    let provenance_log = log;
+    let provenance_log = log.clone();
     let make_provenance: Arc<dyn Fn(ReducerId) -> Arc<dyn Provenance> + Send + Sync> =
         Arc::new(move |id| {
             Arc::new(RecordingProvenance::new(
@@ -322,10 +322,25 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
                 BachRuntime::now as fn() -> u64,
             )) as Arc<dyn Provenance>
         });
+    // The rejected-sink factory records each reducer's host calls REJECTED at the arg-parse guard (a
+    // malformed-arg `graph` op the host early-returns from without reaching the recordable capability, §9) via
+    // a RecordingRejectedSink over the one shared log — so a conformance run can assert that a (malformed)
+    // host call was still performed + observed, closing the silent-observation hole. Default is NoRejectedSink
+    // (drops it); wiring this makes it observed.
+    let rejected_log = log;
+    let make_rejected: Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync> =
+        Arc::new(move |id| {
+            Arc::new(RecordingRejectedSink::new(
+                Origin { reducer: id, host },
+                rejected_log.clone(),
+                BachRuntime::now as fn() -> u64,
+            )) as Arc<dyn RejectedSink>
+        });
     WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)
         .expect("build the wasm program store (the wasm engine must initialize)")
         .with_delivery(make_delivery)
         .with_provenance(make_provenance)
+        .with_rejected(make_rejected)
 }
 
 /// Drive the run to quiescence under bach over a [`WasmProgramStore`], then — if the description named a

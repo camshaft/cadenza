@@ -1,0 +1,25 @@
+// A Cadenza reducer that performs a graph host call with a MALFORMED argument — to prove the host records
+// the call regardless (design/cadenza-platform.md §9, log-every-host-call). On-message it calls
+// graph.neighbors with `msg.token` as the NODE; the run delivers a short token (not a valid 33-byte
+// ReducerId), so the host's `neighbors` fails to parse the node and early-returns an empty list WITHOUT
+// reaching the recordable graph capability. That parse-guard boundary was a silent observation hole; with the
+// host-boundary RejectedSink seam it now emits a `HostCallRejected` observation instead. The neighbors result
+// is discarded (the call is what matters). This is the driven counterpart to the arg-parse-guard root cause
+// the composition run (#3254) surfaced. Targets the privileged event-reducer-world (imports `graph`); spawned
+// as an event reducer; single host interface. on-response / on-notification are inert.
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+type Dir = | Outgoing | Incoming
+
+def on-message(msg) =
+  host graph in
+    ( graph.neighbors(msg.token, msg.contract, Dir.Outgoing) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+def on-response(_resp) =
+  { requests = [], outcome = Outcome.Continue }
+
+def on-notification(_note) =
+  { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
