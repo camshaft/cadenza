@@ -78970,7 +78970,6 @@ mod stage1 {
 
     #[test]
     fn a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds() {
-        use wasmtime::component::Val;
         // The COMPOUND face of the let-bound-closure fold — the third face of the same hazard as
         // `a_returned_capturing_closure_bound_by_let_and_applied_folds`. A capturing closure stored in a
         // record/tuple that is `let`-bound, projected, and applied: `(let ((r (record (f (fn (x) (+ x n))))))
@@ -78995,7 +78994,6 @@ mod stage1 {
             cdz_run::required_runtime(&bytes).expect("valid").is_none(),
             "the let-bound record's closure folds inline — no heap round-trip, no runtime import"
         );
-        assert_eq!(run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]), 11);
         // The TUPLE face — a capturing closure stored as tuple element 0, `let`-bound, projected, applied.
         let tuple = "(module m \
             (def (main (: n Int64)) (let ((r (tuple (fn ((: x Int64)) (+ x n)) 9))) ((. r 0) 10))) \
@@ -79005,24 +79003,10 @@ mod stage1 {
             cdz_run::required_runtime(&bt).expect("valid").is_none(),
             "the let-bound tuple's closure folds inline — no heap round-trip, no runtime import"
         );
-        assert_eq!(run_returns_with::<i64>(&bt, "main", &[Val::S64(1)]), 11);
-        // Projected and called TWICE through the one binding — each application folds independently:
-        // (10+1) + (20+1) = 32 with n = 1 (the second call passes 20).
-        let twice = "(module m \
-            (def (main (: n Int64)) \
-              (let ((r (record (f (fn ((: x Int64)) (+ x n)))))) (+ ((. r f) 10) ((. r f) 20)))) \
-            (export main))";
-        let b2 = compile_component(&crate::codec::encode(&parse(twice))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&b2, "main", &[Val::S64(1)]), 32);
-        // The capture is a LET-LOCAL rather than a def param, and the record carries an EXTRA plain field —
-        // both breaker-listed variants. `(let ((k 7)) (let ((r (record (f (fn (x) (+ x k))) (g 99)))) ((. r f) 5)))`
-        // = (+ 5 7) = 12.
-        let local_cap = "(module m \
-            (def (main) \
-              (let ((k 7)) (let ((r (record (f (fn ((: x Int64)) (+ x k))) (g 99)))) ((. r f) 5)))) \
-            (export main))";
-        let bl = compile_component(&crate::codec::encode(&parse(local_cap))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bl, "main", &[]), 12);
+        // Value parity — record/tuple projections fold to 11, projected-twice folds each application
+        // independently (= 32), and the let-local-capture-with-extra-field variant folds to 12 — is the
+        // corpus family "a capturing closure stored in a let-bound record/tuple is projected and applied"
+        // plus its twice / extra-field companions (spec/semantics/09-functions.sexp), run via cdz-run.
     }
 
     #[test]

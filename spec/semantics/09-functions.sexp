@@ -593,6 +593,29 @@
   (call   main (: 1 Int64))
   (output (: 11 Int64)))
 
+(case "a let-bound record's projected capturing closure applied twice folds each application"
+  (doc    "The compound-held closure projected and applied MORE THAN ONCE through the one binding — each
+           projection folds independently: `(let ((r (record (= f (fn (x) (+ x n)))))) (+ ((. r f) 10) ((. r
+           f) 20)))` with n = 1 is (10+1) + (20+1) = 32. Pins the compound-binding fold across repeated
+           projections, alongside the single-projection record/tuple cases above.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((r (record (= f (fn (x) (+ x n)))))) (+ ((. r f) 10) ((. r f) 20))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 32 Int64)))
+
+(case "a let-bound record with an extra field capturing a let-local is projected and applied"
+  (doc    "Two variants of the compound-held-closure fold in one program: the capture is a LET-LOCAL (`k`)
+           rather than a def parameter, and the record carries an EXTRA plain field beside the closure.
+           `(let ((k 7)) (let ((r (record (= f (fn (x) (+ x k))) (= g 99)))) ((. r f) 5)))` = 5 + 7 = 12.
+           Pins that the projection fold is agnostic to the capture's binder kind and to sibling fields.")
+  (input  (do
+            (def (main)
+              (let ((k 7)) (let ((r (record (= f (fn (x) (+ x k))) (= g 99)))) ((. r f) 5))))
+            (export main)))
+  (output (: 12 Int64)))
+
 ; The CONTROL-FLOW face of the let-bound-closure fold: a `let` whose init is an `if`-JOIN of two CAPTURING
 ; lambdas, then called — `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))`, the runtime-select
 ; twin of the compound-held-closure binding above. This was the 4th face of the both-backend
