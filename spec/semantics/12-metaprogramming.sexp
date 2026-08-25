@@ -463,10 +463,10 @@
            s-expression: `(quote (f 1.5))` prints `\"(f 1.5)\"` — the `Ast.Float` leaf renders with a `.` so
            the text re-reads as a float (not an integer). Pins that `print` handles the float leaf inside a
            compound, the companion of the leaf-level print/read round-trip cases.")
-  (input  (= (print (quote (f 1.5))) "(f 1.5)"))
+  (input  (= (Ast.print (quote (f 1.5))) "(f 1.5)"))
   (output (: true Bool)))
 
-; `print`'s EXACT canonical rendering — not just its round-trip. The `read(print v) == v` cases pin the
+; `print`'s EXACT canonical rendering — not just its round-trip. The `read(Ast.print v) == v` cases pin the
 ; printer/reader as INVERSES, but a round-trip normalizes, so it does NOT pin the exact text `print` emits
 ; (spacing between elements, nested parenthesization, the empty-list form). These assert the literal string,
 ; catching a printer that changed spacing/nesting yet still round-tripped: a deep compound with a nested
@@ -479,14 +479,14 @@
            QUOTED literal (distinct from the bare name `f`). Pins the exact rendering of nesting + spacing +
            string-quoting in one string — a printer that dropped a space or a paren would still round-trip
            but flip this literal-text assertion.")
-  (input  (= (print (quote (f (g 1) "s"))) "(f (g 1) \"s\")"))
+  (input  (= (Ast.print (quote (f (g 1) "s"))) "(f (g 1) \"s\")"))
   (output (: true Bool)))
 
 (case "print renders an empty Ast.List as the empty-parens form"
   (doc    "`print (Ast.List (list))` is exactly `\"()\"` — the zero-element list rendering (open then close
            with nothing between). Pins the empty-list edge of the printer, which the non-empty compound
            cases never reach.")
-  (input  (= (print (Ast.List (list))) "()"))
+  (input  (= (Ast.print (Ast.List (list))) "()"))
   (output (: true Bool)))
 
 (case "print renders a single-element Ast.List as one parenthesized element"
@@ -494,11 +494,11 @@
            element, close paren, no inter-element space. Completes the list-arity rendering coverage — 0
            elements → `()`, 1 → `(f)`, 2+ → the nested/compound cases above. Pins that the space-separator
            logic (only BETWEEN elements) emits none for a lone element.")
-  (input  (= (print (quote (f))) "(f)"))
+  (input  (= (Ast.print (quote (f))) "(f)"))
   (output (: true Bool)))
 
 ; The bare-LEAF companions of the compound exact-print cases above. The compound cases pin exact spacing/
-; nesting/parens; these pin the exact text a BARE scalar leaf renders — the `read(print v) == v` round-trip
+; nesting/parens; these pin the exact text a BARE scalar leaf renders — the `read(Ast.print v) == v` round-trip
 ; cases prove the printer/reader are inverses but a round-trip NORMALIZES, so it does not pin the literal
 ; string `print` emits for a lone leaf. A printer that rendered an Int with a leading `+`, a Bool as `#t`,
 ; or a Name with surrounding quotes would still round-trip yet emit the wrong exact text — caught here.
@@ -509,20 +509,20 @@
   (doc    "`print (Ast.Int 42)` is exactly `\"42\"` — the bare decimal, no `+` sign, no leading zero, no
            wrapper. The leaf companion of the compound exact-print cases; pins the literal text a lone Int
            leaf emits, which the normalizing round-trip cases don't fix.")
-  (input  (= (print (Ast.Int 42)) "42"))
+  (input  (= (Ast.print (Ast.Int 42)) "42"))
   (output (: true Bool)))
 
 (case "print renders a bare NEGATIVE Ast.Int as its exact signed text"
   (doc    "`print (Ast.Int -7)` is exactly `\"-7\"` — the minus is part of the rendered text (not dropped,
            not spaced). The signed companion of the positive-Int exact-print case.")
-  (input  (= (print (Ast.Int -7)) "-7"))
+  (input  (= (Ast.print (Ast.Int -7)) "-7"))
   (output (: true Bool)))
 
 (case "print renders a bare Ast.Bool as its exact keyword text"
   (doc    "`print (Ast.Bool true)` is exactly `\"true\"` — the bare boolean keyword the reader re-lexes as
            `Ast.Bool`, not `#t`/`True`/`1`. Pins the exact Bool rendering (a printer emitting a different
            spelling would still round-trip via read's keyword arm yet emit wrong text).")
-  (input  (= (print (Ast.Bool true)) "true"))
+  (input  (= (Ast.print (Ast.Bool true)) "true"))
   (output (: true Bool)))
 
 (case "print renders a bare Ast.Name as its exact identifier text"
@@ -530,7 +530,7 @@
            (the print-side of the Name-vs-Str distinction: a Str renders `\"foo\"` WITH quotes, a Name
            without). A printer that quoted a Name would re-lex it as an `Ast.Str` — this pins that it does
            not.")
-  (input  (= (print (Ast.Name "foo")) "foo"))
+  (input  (= (Ast.print (Ast.Name "foo")) "foo"))
   (output (: true Bool)))
 
 (case "an Ast.Bytes node constructs and deconstructs by pattern matching"
@@ -558,7 +558,7 @@
   (doc    "`print (Ast.Bytes b\"hi\")` is exactly `\"b\\\"hi\\\"\"` — the `b\"…\"` byte-literal spelling
            (printable ASCII verbatim, `\\n \\t \\r \\\\ \\\"` named, else `\\xNN`), the canonical re-readable
            form for a blob. Pins the Bytes rendering distinct from an `Ast.Str` (which has no `b` prefix).")
-  (input  (= (print (Ast.Bytes b"hi")) "b\"hi\""))
+  (input  (= (Ast.print (Ast.Bytes b"hi")) "b\"hi\""))
   (output (: true Bool)))
 
 (case "print of an Ast.Bytes escapes a non-printable byte as \\xNN"
@@ -566,7 +566,7 @@
            lowercase hex), matching the reader's byte-literal escapes. `b\"\\x00\\xff\"` (a NUL and a 0xff)
            prints back to exactly that spelling. Pins the non-printable escape path the `b\"hi\"` case
            doesn't reach.")
-  (input  (= (print (Ast.Bytes b"\x00\xff")) "b\"\\x00\\xff\""))
+  (input  (= (Ast.print (Ast.Bytes b"\x00\xff")) "b\"\\x00\\xff\""))
   (output (: true Bool)))
 
 (case "an Ast.Bytes node round-trips through encode and decode"
@@ -611,10 +611,10 @@
 
 (case "print then read round-trips an Ast.Bytes through the text path"
   (doc    "The TEXT interchange face: `print (Ast.Bytes b\"hi\")` renders `b\"hi\"` and `read` parses that
-           byte-literal back to an EQUAL `Ast.Bytes` — `read(print v) == v` for a bytes node, the byte
+           byte-literal back to an EQUAL `Ast.Bytes` — `read(Ast.print v) == v` for a bytes node, the byte
            companion of the Str/Int text round-trips. Pins the reader's `b\"…\"` arm (a `b` immediately
            before `\"`), distinct from a bare `b` name.")
-  (input  (= (read (print (Ast.Bytes b"hi"))) (Ast.Bytes b"hi")))
+  (input  (= (Ast.read (Ast.print (Ast.Bytes b"hi"))) (Ast.Bytes b"hi")))
   (output (: true Bool)))
 
 (case "print then read round-trips an Ast.Bytes carrying escapes and high bytes"
@@ -622,14 +622,14 @@
            with `\\xNN`/`\\n` escapes and `read` parses them back byte-exactly. Pins the reader's `\\xNN`
            two-hex escape + the named `\\n` — the byte-literal escape set the printer emits, which a plain
            string reader (no `\\x`) would reject.")
-  (input  (= (read (print (Ast.Bytes b"\x00\xff\n"))) (Ast.Bytes b"\x00\xff\n")))
+  (input  (= (Ast.read (Ast.print (Ast.Bytes b"\x00\xff\n"))) (Ast.Bytes b"\x00\xff\n")))
   (output (: true Bool)))
 
 (case "read of a bare b token is an Ast.Name, not a byte-literal"
   (doc    "The `b\"…\"` reader arm fires only when `b` is IMMEDIATELY followed by `\"` — a bare `b` token is
            an ordinary identifier, so `read \"b\"` is an `Ast.Name`. Pins that the byte-literal detection
            does not over-match a lone `b` (which would break reading the common single-letter name).")
-  (input  (match (read "b")
+  (input  (match (Ast.read "b")
             ((Ast.Name _) 1)
             (_            0)))
   (output (: 1 Int64)))
@@ -721,7 +721,7 @@
            so it inherits the losslessness of 'an Ast.Int carries a BEYOND-64-bit literal losslessly
            through quote'.")
   (input  (do
-            (def (main) (= (print (Ast.Int (: 99999999999999999999999999 BigInt))) "99999999999999999999999999"))
+            (def (main) (= (Ast.print (Ast.Int (: 99999999999999999999999999 BigInt))) "99999999999999999999999999"))
             (export main)))
   (output (: true Bool)))
 
@@ -982,7 +982,7 @@
            the quoted subtree `(* 2 3)` at its position, and `print` renders the whole as `\"(+ (* 2 3) 1)\"`.
            Pins that the Ast-value splice builds a WELL-FORMED tree (the eval limit is the execution surface,
            not the construction) — `print` reads through the spliced subtree with no decline.")
-  (input  (= (print (quasiquote (+ (unquote (quote (* 2 3))) 1))) "(+ (* 2 3) 1)"))
+  (input  (= (Ast.print (quasiquote (+ (unquote (quote (* 2 3))) 1))) "(+ (* 2 3) 1)"))
   (output (: true Bool)))
 
 (case "an Ast-value-spliced template round-trips through encode and decode"
@@ -1246,10 +1246,10 @@
 
 (case "print of an Ast.Bool renders the bare word and read inverts it"
   (doc    "`print : Ast → String` renders an `Ast.Bool` as the bare word `true`/`false` — the canonical
-           re-readable spelling — and `read : String → Ast` parses it back, so `read(print v) == v`
+           re-readable spelling — and `read : String → Ast` parses it back, so `read(Ast.print v) == v`
            (compiler-pipeline.md — the printer and reader are inverse over the AST value). A boolean word
            is unambiguously a boolean literal (never a name), so the round-trip is exact.")
-  (input  (= (read (print (Ast.Bool false))) (Ast.Bool false)))
+  (input  (= (Ast.read (Ast.print (Ast.Bool false))) (Ast.Bool false)))
   (output (: true Bool)))
 
 ; --- The Ast.Str leaf variant ---------------------------------------------------------------------
@@ -1326,7 +1326,7 @@
 ; number, never an identifier). So an `Ast.Name` whose spelling is digit-led (`"1.5"`, `"123"`) — a name
 ; that CANNOT arise from parsing real source, since no valid identifier starts with a digit — prints as
 ; that numeric text and reads back as `Ast.Float`/`Ast.Int`, not the original `Name`. This is the correct
-; grammar behavior, not a bug: the TEXT round-trip `read(print v) == v` holds for well-formed names (a valid
+; grammar behavior, not a bug: the TEXT round-trip `read(Ast.print v) == v` holds for well-formed names (a valid
 ; identifier). The BYTE codec is total over ANY name string — its tag delimits the payload — so a digit-led
 ; name still round-trips through `encode`/`decode`. These pin the boundary so it can't silently change and
 ; so the two interchange paths' differing domains are explicit. (Found bug-hunting; the printer docstring
@@ -1349,7 +1349,7 @@
            `Ast.Float`, not the original `Ast.Name`. This is correct grammar behavior, NOT a round-trip bug:
            `Ast.Name \"1.5\"` is a name that could never be parsed from source. Pins the boundary (matched
            via the Float arm) so a future printer/reader change is a deliberate decision, not an accident.")
-  (input  (match (read (print (Ast.Name "1.5")))
+  (input  (match (Ast.read (Ast.print (Ast.Name "1.5")))
             ((Ast.Float _) 1)
             ((Ast.Name _)  2)
             (_             0)))
@@ -1362,7 +1362,7 @@
            (`print` never emits a leading `+`, so this is not a round-trip case; it pins the reader's sign
            handling directly.) Without the guard `str::parse::<i64>` would accept the `+` and mis-read it as
            an integer. Matched via the Name arm. (v-syntax ruling A.)")
-  (input  (match (read "+5")
+  (input  (match (Ast.read "+5")
             ((Ast.Name _) 1)
             ((Ast.Int _)  2)
             (_            0)))
@@ -1374,7 +1374,7 @@
            read as an Ast.Int (i64 fast path accepts `+`) while `+<beyond-i64>` fell through the
            arbitrary-precision path (which strips only `-`) to a Name. Pinning BOTH sides of i64 witnesses
            that the leading-`+`→Name classification is now uniform across the boundary. (v-syntax ruling A.)")
-  (input  (match (read "+99999999999999999999999999")
+  (input  (match (Ast.read "+99999999999999999999999999")
             ((Ast.Name _) 1)
             ((Ast.Int _)  2)
             (_            0)))
@@ -1403,7 +1403,7 @@
            original `Ast.Name`. Like the digit-led case, `Ast.Name \"true\"` can't arise from source (the
            lexer never yields a name spelled `true`). Correct grammar behavior, not a bug — the text
            round-trip is scoped to grammatically-valid identifiers. Matched via the Bool arm.")
-  (input  (match (read (print (Ast.Name "true")))
+  (input  (match (Ast.read (Ast.print (Ast.Name "true")))
             ((Ast.Bool _) 1)
             ((Ast.Name _) 2)
             (_            0)))
@@ -1435,7 +1435,7 @@
            from source (the lexer yields a string for quote-delimited text, never a name). Correct grammar
            behavior, not a bug — the text round-trip is scoped to grammatically-valid identifiers. Matched
            via the Str arm; completes the reclassification trio (number / keyword / string spelling).")
-  (input  (match (read (print (Ast.Name "\"x\"")))
+  (input  (match (Ast.read (Ast.print (Ast.Name "\"x\"")))
             ((Ast.Str _)  1)
             ((Ast.Name _) 2)
             (_            0)))
@@ -1444,10 +1444,10 @@
 (case "print of an Ast.Str renders a quoted literal with escapes and read inverts it"
   (doc    "`print : Ast → String` renders an `Ast.Str` as a `\"…\"` literal, escaping the closed set
            (`\\n \\t \\r \\\\ \\\"`) — the canonical re-readable spelling — and `read : String → Ast`
-           parses it back, so `read(print v) == v` (compiler-pipeline.md — printer and reader are inverse).
+           parses it back, so `read(Ast.print v) == v` (compiler-pipeline.md — printer and reader are inverse).
            The payload here holds an embedded quote and newline (`a\"b\\nc`), so this pins the escape
            round-trip, not just plain text — distinct from `Ast.Name`, which prints the bare word.")
-  (input  (= (read (print (Ast.Str "a\"b\nc"))) (Ast.Str "a\"b\nc")))
+  (input  (= (Ast.read (Ast.print (Ast.Str "a\"b\nc"))) (Ast.Str "a\"b\nc")))
   (output (: true Bool)))
 
 ; --- Ast.Str / cross-variant round-trip EDGES (pinning invariants so a change can't quietly flip them) ---
@@ -1460,7 +1460,7 @@
 (case "an empty-string Ast.Str round-trips through print and read"
   (doc    "The empty string is a valid `Ast.Str` payload — `print` renders `\"\"`, `read` parses it back.
            Pins the zero-length edge of the escape/quote rendering.")
-  (input  (= (read (print (Ast.Str ""))) (Ast.Str "")))
+  (input  (= (Ast.read (Ast.print (Ast.Str ""))) (Ast.Str "")))
   (output (: true Bool)))
 
 (case "an empty-string Ast.Str round-trips through encode and decode"
@@ -1486,14 +1486,14 @@
   (doc    "A string with non-ASCII scalars (`héllo☃` — 2- and 3-byte UTF-8) round-trips: the escape set
            touches only ASCII, so a multibyte scalar passes through and reads back intact. Pins the
            reader/printer are byte-faithful over UTF-8.")
-  (input  (= (read (print (Ast.Str "héllo☃"))) (Ast.Str "héllo☃")))
+  (input  (= (Ast.read (Ast.print (Ast.Str "héllo☃"))) (Ast.Str "héllo☃")))
   (output (: true Bool)))
 
 (case "an all-escapes Ast.Str round-trips through print and read"
   (doc    "A payload with EVERY member of the closed escape set (`\\t \\r \\n \\\\ \\\"`) round-trips —
            each escaped on print, un-escaped on read. Pins the whole escape set at once, guarding against
            dropping or mis-pairing any one escape.")
-  (input  (= (read (print (Ast.Str "\t\r\n\\\""))) (Ast.Str "\t\r\n\\\"")))
+  (input  (= (Ast.read (Ast.print (Ast.Str "\t\r\n\\\""))) (Ast.Str "\t\r\n\\\"")))
   (output (: true Bool)))
 
 (case "a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name"
@@ -1501,7 +1501,7 @@
            name. `print` renders it QUOTED (`\"true\"`), so `read` parses it back as a string literal —
            never the `Ast.Bool` a bare `true` word reads as, nor an `Ast.Name`. Guards the print/read
            boundary between a quoted string and a bare keyword.")
-  (input  (= (read (print (Ast.Str "true"))) (Ast.Str "true")))
+  (input  (= (Ast.read (Ast.print (Ast.Str "true"))) (Ast.Str "true")))
   (output (: true Bool)))
 
 (case "a deep compound nesting all six leaf kinds round-trips through encode and decode"
@@ -1714,23 +1714,23 @@
 
 (case "print of an Ast.Float renders a re-readable decimal and read inverts it"
   (doc    "`print` renders an `Ast.Float` as the shortest round-tripping decimal — always carrying a `.`
-           (or `e`) so it re-reads as a float — and `read` parses it back: `read(print v) == v`.")
-  (input  (= (read (print (Ast.Float 1.5))) (Ast.Float 1.5)))
+           (or `e`) so it re-reads as a float — and `read` parses it back: `read(Ast.print v) == v`.")
+  (input  (= (Ast.read (Ast.print (Ast.Float 1.5))) (Ast.Float 1.5)))
   (output (: true Bool)))
 
 (case "print of an integer-valued Ast.Float keeps its float form through read"
   (doc    "🔑 The int-vs-float rendering pin: an integer-VALUED float `3.0` prints with an explicit `.0`
            (not the bare `3` an integer prints), so `read` parses it back as an `Ast.Float`, NOT an
-           `Ast.Int`. `read(print (Ast.Float 3.0)) == (Ast.Float 3.0)`.")
-  (input  (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0)))
+           `Ast.Int`. `read(Ast.print (Ast.Float 3.0)) == (Ast.Float 3.0)`.")
+  (input  (= (Ast.read (Ast.print (Ast.Float 3.0))) (Ast.Float 3.0)))
   (output (: true Bool)))
 
 (case "print of a NEGATIVE Ast.Float round-trips through read (sign survives the text path)"
   (doc    "The existing print/read cases use only positive `1.5`/`3.0`, so they never exercise the SIGN
            through the TEXT path (distinct from the encode/decode BYTE path pinned above). A printer that
            dropped or mis-rendered the sign would still pass those but lose a negative float here.
-           `read(print (Ast.Float -1.5)) == (Ast.Float -1.5)` pins that the minus survives print → read.")
-  (input  (= (read (print (Ast.Float -1.5))) (Ast.Float -1.5)))
+           `read(Ast.print (Ast.Float -1.5)) == (Ast.Float -1.5)` pins that the minus survives print → read.")
+  (input  (= (Ast.read (Ast.print (Ast.Float -1.5))) (Ast.Float -1.5)))
   (output (: true Bool)))
 
 ; The Ast.Int TEXT-path companions of the negative-Float case above: the print/read cases elsewhere use
@@ -1738,14 +1738,14 @@
 ; two's-complement boundary through the TEXT path (distinct from the encode/decode BYTE path, where
 ; i64::MIN is pinned below at "the Int codec round-trips i64::MIN"). A printer that dropped the minus, or
 ; one that rendered i64::MIN by negating its magnitude (which overflows i64 — |i64::MIN| is not
-; representable), would pass the positive cases yet break here. `read(print (Ast.Int n)) == (Ast.Int n)`.
+; representable), would pass the positive cases yet break here. `read(Ast.print (Ast.Int n)) == (Ast.Int n)`.
 
 (case "print then read of a NEGATIVE Ast.Int round-trips (sign survives the text path)"
   (doc    "The Int companion of the negative-Float text-path case: `print (Ast.Int -42)` renders `-42`
            and `read` parses it back to the same `Ast.Int`, so the minus survives print → read. Pins the
            sign through the TEXT path (distinct from the byte codec) — a printer that dropped the sign
            would still pass the positive `Ast.Int` cases but lose a negative one here.")
-  (input  (match (read (print (Ast.Int -42)))
+  (input  (match (Ast.read (Ast.print (Ast.Int -42)))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: -42 BigInt)))
@@ -1756,7 +1756,7 @@
            positive twin is NOT representable, so a printer that rendered a negative integer by negating its
            magnitude would overflow HERE (never on a small negative). Pins that the text path is exact at
            the boundary, not just the byte path.")
-  (input  (match (read (print (Ast.Int -9223372036854775808)))
+  (input  (match (Ast.read (Ast.print (Ast.Int -9223372036854775808)))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: -9223372036854775808 BigInt)))
@@ -1766,9 +1766,9 @@
            26-digit BigInt (no i64 could carry it) `print`s to its full decimal and `read` parses it back
            to the exact same value. Pins that the printer renders the WHOLE magnitude (a `to_i64`-based
            renderer would decline/truncate the print) and that the reader classifies an all-digits token
-           past the i64 boundary as an `Ast.Int`, not misread it as an `Ast.Name` — so `read(print v) == v`
+           past the i64 boundary as an `Ast.Int`, not misread it as an `Ast.Name` — so `read(Ast.print v) == v`
            holds at arbitrary precision, not only up to i64::MIN.")
-  (input  (match (read (print (Ast.Int (: 99999999999999999999999999 BigInt))))
+  (input  (match (Ast.read (Ast.print (Ast.Int (: 99999999999999999999999999 BigInt))))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: 99999999999999999999999999 BigInt)))
@@ -1779,7 +1779,7 @@
            and the printer's full-magnitude rendering compose past the i64 boundary — a printer that dropped
            the sign, or a reader that stripped `-` only for in-i64 tokens, would pass the positive beyond-i64
            case but lose this one.")
-  (input  (match (read (print (Ast.Int (: -99999999999999999999999999 BigInt))))
+  (input  (match (Ast.read (Ast.print (Ast.Int (: -99999999999999999999999999 BigInt))))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: -99999999999999999999999999 BigInt)))
@@ -1790,7 +1790,7 @@
            decimal path. An off-by-one at the handoff (accepting one-too-few digits, or reading this as a
            misclassified `Ast.Name`) would surface HERE but pass both the in-i64 `i64::MIN` case above and
            the comfortably-large 26-digit case. Pins the seam value itself, not just a value far past it.")
-  (input  (match (read (print (Ast.Int (: 9223372036854775808 BigInt))))
+  (input  (match (Ast.read (Ast.print (Ast.Int (: 9223372036854775808 BigInt))))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: 9223372036854775808 BigInt)))
@@ -1801,7 +1801,7 @@
            not positively i64-representable, so a reader that recovered a negative by parsing the magnitude
            as i64 then negating would already fail one step earlier — this pins that the sign + full
            magnitude compose correctly right at the negative handoff boundary.")
-  (input  (match (read (print (Ast.Int (: -9223372036854775809 BigInt))))
+  (input  (match (Ast.read (Ast.print (Ast.Int (: -9223372036854775809 BigInt))))
             ((Ast.Int n) n)
             (_           0N)))
   (output (: -9223372036854775809 BigInt)))
@@ -1816,7 +1816,7 @@
            the digit-run at `)`, would pass every bare-scalar bignum case yet drop the payload here. The
            head `f` re-reads as a name and the payload as an `Ast.Int` — so the extracted second element's
            value pins the full round-trip.")
-  (input  (match (read (print (Ast.List (list (Ast.Name "f") (Ast.Int (: 99999999999999999999999999 BigInt))))))
+  (input  (match (Ast.read (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (: 99999999999999999999999999 BigInt))))))
             ((Ast.List xs) (match xs
                              ((list _ (Ast.Int n)) n)
                              (_                     0N)))
@@ -1827,20 +1827,20 @@
   (doc    "A large-magnitude float `1e10` is rendered by `print` (shortest round-tripping form, which may
            use `e` notation) and `read` parses it back bit-exactly. Pins the exponent/large-magnitude
            rendering path of the printer, which the small `1.5`/`3.0` cases don't reach.")
-  (input  (= (read (print (Ast.Float 1e10))) (Ast.Float 1e10)))
+  (input  (= (Ast.read (Ast.print (Ast.Float 1e10))) (Ast.Float 1e10)))
   (output (: true Bool)))
 
 (case "print of a negative-zero Ast.Float preserves the sign through read (text-path signed-zero)"
   (doc    "🔑 The TEXT-path companion of the byte-path signed-zero pin (`negative zero encodes to bytes
            distinct from positive zero`): `-0.0` and `0.0` are `==` as floats but bit-distinct, and the
            canonical value form keeps them apart. A printer that rendered `-0.0` as bare `0.0` would pass
-           the byte-codec pin (which never prints) yet silently drop the sign here. `read(print (Ast.Float
+           the byte-codec pin (which never prints) yet silently drop the sign here. `read(Ast.print (Ast.Float
            -0.0)) == (Ast.Float -0.0)` pins that print → read preserves negative zero's identity too.")
-  (input  (= (read (print (Ast.Float -0.0))) (Ast.Float -0.0)))
+  (input  (= (Ast.read (Ast.print (Ast.Float -0.0))) (Ast.Float -0.0)))
   (output (: true Bool)))
 
 ; The sign/exponent/-0.0 cases above pin the FORM of the text path; these pin its PRECISION. `print` renders
-; the SHORTEST round-tripping decimal — the contract is `read(print v) == v` for EVERY Float64, so a printer
+; the SHORTEST round-tripping decimal — the contract is `read(Ast.print v) == v` for EVERY Float64, so a printer
 ; that emitted too few significant digits would pass the small-integer/sign cases yet silently corrupt a value
 ; needing full precision. These pin the round-trip at a 17-significant-digit value (the `0.1 + 0.2` result,
 ; the classic precision stress), the maximum finite magnitude, the smallest subnormal, and the INJECTIVITY
@@ -1850,39 +1850,39 @@
 
 (case "print then read an Ast.Float at full 17-significant-digit precision round-trips"
   (doc    "The precision companion of the form cases: `0.30000000000000004` (the exact `0.1 + 0.2` binary64
-           result) needs all 17 significant digits to round-trip. `read(print (Ast.Float 0.30000000000000004))
+           result) needs all 17 significant digits to round-trip. `read(Ast.print (Ast.Float 0.30000000000000004))
            == it` pins that `print` emits enough digits — a printer rendering the shorter `0.3` would re-read
            as a DIFFERENT double and fail this, though it passes the `1.5`/`3.0`/sign cases.")
-  (input  (= (read (print (Ast.Float 0.30000000000000004))) (Ast.Float 0.30000000000000004)))
+  (input  (= (Ast.read (Ast.print (Ast.Float 0.30000000000000004))) (Ast.Float 0.30000000000000004)))
   (output (: true Bool)))
 
 (case "print then read an Ast.Float at the maximum finite magnitude round-trips"
   (doc    "The large-magnitude extreme: `1.7976931348623157e308` (≈ Float64.max) round-trips through the text
-           path — `read(print v) == v`. Pins the shortest-form renderer handles the top of the exponent range
+           path — `read(Ast.print v) == v`. Pins the shortest-form renderer handles the top of the exponent range
            bit-exactly, not only the `1e10` mid-range exponent case.")
-  (input  (= (read (print (Ast.Float 1.7976931348623157e308))) (Ast.Float 1.7976931348623157e308)))
+  (input  (= (Ast.read (Ast.print (Ast.Float 1.7976931348623157e308))) (Ast.Float 1.7976931348623157e308)))
   (output (: true Bool)))
 
 (case "print then read an Ast.Float at the smallest subnormal round-trips"
   (doc    "The tiny-magnitude extreme: `5e-324` (the smallest positive subnormal Float64) round-trips —
-           `read(print v) == v`. Pins the text path preserves a subnormal (denormalized) value, the bottom of
+           `read(Ast.print v) == v`. Pins the text path preserves a subnormal (denormalized) value, the bottom of
            the magnitude range, which a renderer flushing subnormals to zero or mis-scaling the exponent
            would lose.")
-  (input  (= (read (print (Ast.Float 5e-324))) (Ast.Float 5e-324)))
+  (input  (= (Ast.read (Ast.print (Ast.Float 5e-324))) (Ast.Float 5e-324)))
   (output (: true Bool)))
 
 (case "two distinct doubles print to distinct text — 0.3 and 0.1+0.2 do not round-trip-collide"
   (doc    "The INJECTIVITY the shortest-round-tripping contract requires: `0.3` and the `0.1 + 0.2` result
            (`0.30000000000000004`) are distinct Float64 values (differing in the last ULP). `print` must
-           render them to DISTINCT text so `read` recovers each exactly — so `(= (read (print (Ast.Float 0.3)))
-           (read (print (Ast.Float (+ 0.1 0.2)))))` is FALSE (0). A printer truncating both to `0.3` would
+           render them to DISTINCT text so `read` recovers each exactly — so `(= (Ast.read (Ast.print (Ast.Float 0.3)))
+           (Ast.read (Ast.print (Ast.Float (+ 0.1 0.2)))))` is FALSE (0). A printer truncating both to `0.3` would
            collapse them to equal text and wrongly answer true — the precision-loss failure this rules out.")
-  (input  (do (def (main) (if (= (read (print (Ast.Float 0.3))) (read (print (Ast.Float (+ 0.1 0.2))))) 1 0)) (export main)))
+  (input  (do (def (main) (if (= (Ast.read (Ast.print (Ast.Float 0.3))) (Ast.read (Ast.print (Ast.Float (+ 0.1 0.2))))) 1 0)) (export main)))
   (output (: 0 Int64)))
 
 ; --- `read` is TOTAL over its input: malformed text DECLINES, never traps or panics ------------------
 ; `read : String → Ast` parses the s-expression subset `print` emits (`lower_read`/`SexprReader`). The
-; round-trip cases above only feed it WELL-FORMED text (`read(print v)`); none exercises the failure
+; round-trip cases above only feed it WELL-FORMED text (`read(Ast.print v)`); none exercises the failure
 ; paths. `read` must be total the way the reader/lexer are "never panic" (syntax-vertical invariant) and
 ; the way `Ast.decode` is total over adversarial bytes — but `read` fails at COMPILE time (a constant-only
 ; fold), so a malformed input is a clean DECLINE (`Reject::decline`), not a runtime `Err` and never a
@@ -1893,35 +1893,35 @@
 ; would break these. All → `(declines)`.
 
 (case "read of text that is not a well-formed s-expression declines"
-  (doc    "`(read \"(((\")` — unbalanced open parens are not a well-formed s-expression over the Ast
+  (doc    "`(Ast.read \"(((\")` — unbalanced open parens are not a well-formed s-expression over the Ast
            subset, so `read` DECLINES (`lower_read`'s parse-failure arm) rather than trapping or fabricating
            a partial AST. Pins that the reader is total on malformed input — the `read` companion of the
            adversarial-bytes `Ast.decode` totality cases, and of the parser/lexer never-panic invariant.")
-  (input  (read "((("))
+  (input  (Ast.read "((("))
   (declines))
 
 (case "read of text with trailing content after the first s-expression declines"
-  (doc    "`(read \"1 2\")` — a valid first node (`1`) FOLLOWED by more input (`2`). `read` must consume the
+  (doc    "`(Ast.read \"1 2\")` — a valid first node (`1`) FOLLOWED by more input (`2`). `read` must consume the
            WHOLE string (the `r.at_end()` check in `lower_read`), so trailing content declines rather than
            silently reading `1` and dropping `2`. The `read` parallel of the decode case where canonical
            bytes plus a trailing byte yield `Err`: a valid prefix is not a valid whole.")
-  (input  (read "1 2"))
+  (input  (Ast.read "1 2"))
   (declines))
 
 (case "read of the empty string declines"
-  (doc    "`(read \"\")` — no s-expression at all. The empty string parses to no node, so `read` declines
+  (doc    "`(Ast.read \"\")` — no s-expression at all. The empty string parses to no node, so `read` declines
            (never a trap or an empty/garbage AST). Pins the zero-input edge of the reader's totality.")
-  (input  (read ""))
+  (input  (Ast.read ""))
   (declines))
 
 (case "read classifies a lone punctuation token as an Ast.Name and it round-trips"
   (doc    "A bare non-numeric, non-keyword atom — even a punctuation/operator symbol like `.` — is read as an
            `Ast.Name` (the `SexprReader`'s atom fallthrough: not a number, not `true`/`false`, so a name). It
-           is a WELL-FORMED single node (does NOT decline), and prints back to `\".\"` so `read(print v) == v`.
+           is a WELL-FORMED single node (does NOT decline), and prints back to `\".\"` so `read(Ast.print v) == v`.
            Pins the reader's atom-vs-structure boundary at an operator-symbol token — the sound companion of
            the alphanumeric-name / keyword-collision cases, and of the decline cases above (a lone `.` is a
            valid name atom, not malformed input).")
-  (input  (= (print (read ".")) "."))
+  (input  (= (Ast.print (Ast.read ".")) "."))
   (output (: true Bool)))
 
 ; The `#`-prefixed-atom companion of the operator-symbol-token case above (v-syntax authoritative, their
@@ -3596,8 +3596,8 @@
 (case "the read primitive skips a line comment inside program text"
   (input  (do
         (def (main (: mode Int64))
-          (+ (* 10 (if (= (read "(+ 1 ; a comment\n 2)") (quote (+ 1 2))) 1 0))
-             (if (= (read "; leading\n(f 3)") (quote (f 3))) 1 0)))
+          (+ (* 10 (if (= (Ast.read "(+ 1 ; a comment\n 2)") (quote (+ 1 2))) 1 0))
+             (if (= (Ast.read "; leading\n(f 3)") (quote (f 3))) 1 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
 
@@ -3607,7 +3607,7 @@
 ;; ee58991cb: malformed read → CDZ0201 'not a well-formed s-expression'. breaker-routed.
 (case "a malformed read is a coded reject, not a not-yet-reducible decline"
   (input  (do
-        (def (main) (if (= (read "(+ 1") (quote (+ 1 2))) 1 0))
+        (def (main) (if (= (Ast.read "(+ 1") (quote (+ 1 2))) 1 0))
         (export main)))
   (error  CDZ0201))
 
@@ -3621,13 +3621,13 @@
 (case "a runtime-selected Name payload inside a rebuilt Ast compares against a read result"
   (input  (do
         (def (main (: mode Int64))
-          (match (read "(defn add 1)")
+          (match (Ast.read "(defn add 1)")
             ((Ast.List parts)
               (match parts
                 ((list (Ast.Name _kw) rest .. more)
                   (if (= (Ast.List (List.prepend (List.prepend more rest)
                                                  (Ast.Name (if (= mode 1) "defx" "defy"))))
-                         (read "(defx add 1)"))
+                         (Ast.read "(defx add 1)"))
                       1 0))
                 (_ -2)))
             (_ -3)))
@@ -3637,7 +3637,7 @@
 
 (case "eval does not execute the result of read — even over a constant string"
   (doc    "The FIFTH entry path to the no-runtime-AST-interpreter line (nested-eval, spliced-Ast,
-           collection-selection, and bound-name are pinned): `(eval (read \"(+ 20 22)\"))` rejects
+           collection-selection, and bound-name are pinned): `(eval (Ast.read \"(+ 20 22)\"))` rejects
            CDZ0101 even though the string is CONSTANT and `read` itself folds (print∘read and
            read-equality both compute in the pins above). eval's visible set is exactly `(quote …)`
            / literal `Ast.*` — a READ application is not in it, so text does not become executable
@@ -3646,7 +3646,7 @@
            side-effect.")
   (input  (do
         (def (main (: k Int64))
-          (+ (Int64.of (eval (read "(+ 20 22)"))) k))
+          (+ (Int64.of (eval (Ast.read "(+ 20 22)"))) k))
         (export main)))
   (error  CDZ0101))
 
@@ -3659,7 +3659,7 @@
            payload that compared by identity instead of content) breaks the arm and falls to -2.")
   (input  (do
         (def (main (: k Int64))
-          (match (read "(defn add (a b) (+ a b))")
+          (match (Ast.read "(defn add (a b) (+ a b))")
             ((Ast.List parts)
               (match parts
                 ((list (Ast.Name kw) (Ast.Name fname) (Ast.List params) (Ast.List body))

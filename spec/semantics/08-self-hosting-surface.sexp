@@ -17,7 +17,7 @@
            Re-Readable Text: read(print(v)) is equal to v under structural equality. Here v is the
            AST value for (+ 1 2); print renders it as text, read parses it back, and the two ASTs
            compare equal.")
-  (input  (= (read (print (quote (+ 1 2))))
+  (input  (= (Ast.read (Ast.print (quote (+ 1 2))))
              (quote (+ 1 2))))
   (output (: true Bool)))
 
@@ -26,7 +26,7 @@
            re-read as a float — a printer dropping the trailing '.' breaks it), a STRING (quote/escape
            discipline), a bare NAME, and a nested compound with a NEGATIVE int and ZERO. read∘print
            must be identity over the whole leaf alphabet at once, not per-kind.")
-  (input (= (read (print (quote (f 1 2.5 "s" x (g -3 0)))))
+  (input (= (Ast.read (Ast.print (quote (f 1 2.5 "s" x (g -3 0)))))
             (quote (f 1 2.5 "s" x (g -3 0)))))
   (output (: true Bool)))
 
@@ -40,10 +40,10 @@
            string's quotes breaks its digit.")
   (input  (do
         (def (main (: k Int64))
-          (+ (* 1000 (if (= (read (print (quote (f "a\"b" "c\\d")))) (quote (f "a\"b" "c\\d"))) 1 0))
-             (+ (* 100 (if (= (read (print (quote (g "é😀")))) (quote (g "é😀"))) 1 0))
-                (+ (* 10 (if (= (read (print (quote (h -2.5 "")))) (quote (h -2.5 ""))) 1 0))
-                   (if (= (read (print (quote (f "a\"b")))) (quote (f "other"))) 1 0)))))
+          (+ (* 1000 (if (= (Ast.read (Ast.print (quote (f "a\"b" "c\\d")))) (quote (f "a\"b" "c\\d"))) 1 0))
+             (+ (* 100 (if (= (Ast.read (Ast.print (quote (g "é😀")))) (quote (g "é😀"))) 1 0))
+                (+ (* 10 (if (= (Ast.read (Ast.print (quote (h -2.5 "")))) (quote (h -2.5 ""))) 1 0))
+                   (if (= (Ast.read (Ast.print (quote (f "a\"b")))) (quote (f "other"))) 1 0)))))
         (export main)))
   (call   main (: 0 Int64)) (output (: 1110 Int64)))
 
@@ -58,10 +58,10 @@
            cleanly).")
   (input  (do
         (def (main (: mode Int64))
-          (+ (* 10 (if (= (read (print (quote (f (f (f (f (f (f (f (f (f (f (f (f 7)))))))))))))))
+          (+ (* 10 (if (= (Ast.read (Ast.print (quote (f (f (f (f (f (f (f (f (f (f (f (f 7)))))))))))))))
                           (quote (f (f (f (f (f (f (f (f (f (f (f (f 7))))))))))))))
                        1 0))
-             (if (= (read (print (quote (g 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25))))
+             (if (= (Ast.read (Ast.print (quote (g 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25))))
                     (quote (g 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25)))
                  1 0)))
         (export main)))
@@ -76,10 +76,10 @@
            VALUE, so canonical-byte float equality is what unifies the spellings.")
   (input  (do
         (def (main (: _mode Int64))
-          (+ (* 10 (+ (* 100 (if (= (read "(f 2.50)") (quote (f 2.5))) 1 0))
-                      (+ (* 10 (if (= (read "(f -0.5)") (quote (f -0.5))) 1 0))
-                         (if (= (read "(f 1e3)") (quote (f 1000.0))) 1 0))))
-             (if (= (read "(f 2.5)") (quote (f 2.25))) 1 0)))
+          (+ (* 10 (+ (* 100 (if (= (Ast.read "(f 2.50)") (quote (f 2.5))) 1 0))
+                      (+ (* 10 (if (= (Ast.read "(f -0.5)") (quote (f -0.5))) 1 0))
+                         (if (= (Ast.read "(f 1e3)") (quote (f 1000.0))) 1 0))))
+             (if (= (Ast.read "(f 2.5)") (quote (f 2.25))) 1 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 1110 Int64)))
 
@@ -93,7 +93,7 @@
            same refusal (checked; one uniform message).")
   (input  (do
         (def (main (: mode Int64))
-          (if (= (read "(+ 1") (quote (+ 1))) 1 0))
+          (if (= (Ast.read "(+ 1") (quote (+ 1))) 1 0))
         (export main)))
   (error  CDZ0101))
 
@@ -103,9 +103,9 @@
   (doc    "The FIXPOINT laws over the one-trip round-trip pin: read∘print∘read∘print = id on an escape+negative-float tree (a printer that re-escapes or re-spells diverges on trip TWO); print∘read∘print = print (canonical TEXT is a fixpoint — string equality catches spelling drift value-eq cannot); and read of whitespace-laden text lands on the canonical tree.")
   (input  (do
             (def (main (: _m Int64))
-              (+ (* 100 (if (= (read (print (read (print (quote (a "x\"y" -0.5)))))) (quote (a "x\"y" -0.5))) 1 0))
-                 (+ (* 10 (if (= (print (quote (f 2.5))) (print (read (print (quote (f 2.5)))))) 1 0))
-                    (if (= (read "( a   ( b )  )") (quote (a (b)))) 1 0))))
+              (+ (* 100 (if (= (Ast.read (Ast.print (Ast.read (Ast.print (quote (a "x\"y" -0.5)))))) (quote (a "x\"y" -0.5))) 1 0))
+                 (+ (* 10 (if (= (Ast.print (quote (f 2.5))) (Ast.print (Ast.read (Ast.print (quote (f 2.5)))))) 1 0))
+                    (if (= (Ast.read "( a   ( b )  )") (quote (a (b)))) 1 0))))
             (export main)))
   (call   main (: 0 Int64))
   (output (: 111 Int64)))

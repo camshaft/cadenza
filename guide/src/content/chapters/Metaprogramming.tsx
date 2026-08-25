@@ -191,51 +191,51 @@ export default function Metaprogramming() {
       />
 
       <P>
-        There's a text round-trip too: <C>print</C> renders a tree as source text and <C>read</C> parses
+        There's a text round-trip too: <C>Ast.print</C> renders a tree as source text and <C>Ast.read</C> parses
         text back into a tree. This one survives at <em>arbitrary precision</em>, an <C>Ast.Int</C> holds a
         full <C>BigInt</C>, so a 26-digit literal that no 64-bit integer could carry prints its whole decimal
         and reads back to the exact same node, not a truncated or misread one. Here the round-tripped value
         equals the original, so this is <C>true</C>:
       </P>
       <Runnable
-        source={`(match (read (print (Ast.Int (: 99999999999999999999999999 BigInt))))
+        source={`(match (Ast.read (Ast.print (Ast.Int (: 99999999999999999999999999 BigInt))))
   ((Ast.Int n) (= n (: 99999999999999999999999999 BigInt)))
   (_           false))`}
       />
       <P>
-        <C>read</C> is careful about what counts as a number: an all-digits token (with an optional leading{" "}
+        <C>Ast.read</C> is careful about what counts as a number: an all-digits token (with an optional leading{" "}
         <C>-</C>) becomes an <C>Ast.Int</C> at any magnitude, while anything else, a name, a decimal point,
-        stays the variant it should be. So <C>read</C> and <C>print</C> compose into an identity on trees,
+        stays the variant it should be. So <C>Ast.read</C> and <C>Ast.print</C> compose into an identity on trees,
         the same guarantee as the binary codec above, along the human-readable path.
       </P>
       <P>
         The sign rule is worth pinning down, since it mirrors the lexer: a leading <C>-</C> is part of a
-        number, but a leading <C>+</C> is an ordinary operator name, so <C>read</C> classifies <C>"+5"</C> as
+        number, but a leading <C>+</C> is an ordinary operator name, so <C>Ast.read</C> classifies <C>"+5"</C> as
         an <C>Ast.Name</C>, not an <C>Ast.Int</C>. This checks both, returning <C>true</C> only if{" "}
         <C>"+5"</C> read as a name and <C>"-5"</C> read as an integer:
       </P>
       <Runnable
-        source={`(and (match (read "+5") ((Ast.Name _n) true) (_ false))
-     (match (read "-5") ((Ast.Int _n)  true) (_ false)))`}
+        source={`(and (match (Ast.read "+5") ((Ast.Name _n) true) (_ false))
+     (match (Ast.read "-5") ((Ast.Int _n)  true) (_ false)))`}
       />
       <P>
-        A byte-string node prints and reads back the same way. <C>print</C> renders an <C>Ast.Bytes</C> as
-        its <C>{`b"…"`}</C> literal, and <C>read</C> parses that back to an equal node, so the text round-trip
+        A byte-string node prints and reads back the same way. <C>Ast.print</C> renders an <C>Ast.Bytes</C> as
+        its <C>{`b"…"`}</C> literal, and <C>Ast.read</C> parses that back to an equal node, so the text round-trip
         holds for binary blobs just as it does for numbers, this time carrying a byte no text string could,
         the non-UTF-8 <C>{`\\xff`}</C>:
       </P>
       <Runnable
-        source={`(= (read (print (Ast.Bytes b"\\x00\\xff")))
+        source={`(= (Ast.read (Ast.print (Ast.Bytes b"\\x00\\xff")))
    (Ast.Bytes b"\\x00\\xff"))`}
       />
       <P>
-        It's the <C>{`b"…"`}</C> form that marks a byte literal, and <C>read</C> only treats it as one when
+        It's the <C>{`b"…"`}</C> form that marks a byte literal, and <C>Ast.read</C> only treats it as one when
         the <C>b</C> is immediately followed by the quote: a bare <C>b</C> on its own is an ordinary
-        identifier, so <C>{`(read "b")`}</C> is an <C>Ast.Name</C>, not a zero-length <C>Ast.Bytes</C>. That
+        identifier, so <C>{`(Ast.read "b")`}</C> is an <C>Ast.Name</C>, not a zero-length <C>Ast.Bytes</C>. That
         keeps a variable named <C>b</C> from being mistaken for an empty blob:
       </P>
       <Runnable
-        source={`(match (read "b")
+        source={`(match (Ast.read "b")
   ((Ast.Name _n) true)
   (_             false))`}
       />

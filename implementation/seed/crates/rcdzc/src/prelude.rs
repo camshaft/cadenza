@@ -288,24 +288,11 @@ pub fn install(ast: &mut Arenas) -> BTreeMap<String, StructId> {
         names.insert("trap".to_string(), list_op_record(ast, "trap", lambda));
     }
 
-    // `print` / `read` — the compiler-exposed PRINTER and READER over the `Ast` value type (self-hosting-
-    // surface.md §Text Is A Projection Reached By A Reader And A Printer). `print : Ast → String` renders an
-    // AST value as its canonical re-readable text; `read : String → Ast` parses that text back. Bare-name
-    // operator records (like `trap`), MONOMORPHIC — a zero-parameter `(fn () (-> …))` wrapper so `scheme_of`
-    // reads a monomorphic scheme, not a bare type-value. `(meta apply)` = the `print`/`read` intrinsic
-    // (`Prim::Print`/`Prim::Read`), folded on a compile-time-visible operand in `lower`. Reading the text a
-    // printer produced round-trips: `read(print(v)) == v` (the invariant the corpus witnesses).
-    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
-    //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
-    {
-        let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
-        names.insert(
-            "print".to_string(),
-            list_op_record(ast, "print", print_lambda),
-        );
-        let read_lambda = mono_op_type_lambda(ast, "String", "Ast");
-        names.insert("read".to_string(), list_op_record(ast, "read", read_lambda));
-    }
+    // `print` / `read` are NO LONGER bare top-level names — they are NAMESPACED as `Ast.print` / `Ast.read`
+    // (operator directive: prelude records with associated functions, not bare globals). Their op-records are
+    // attached as the `print` / `read` fields on the built-in `Ast` record via `TypeDecl.associated` (set in
+    // `sums::prelude_decls` at the Ast declaration, `ast_associated_fields`), reached as `(. Ast print)` /
+    // `Ast.print v : String` and `(. Ast read)` / `Ast.read s : Ast`. See `ast_print_field` / `ast_read_field`.
 
     // SCHEMA-TYPED PAYLOAD DECODE (type-system.md §An Open Sum's Payload May Be Schema-Typed;
     // value-interchange.md §Decode Inverts Serialize And Refuses Otherwise). Three prelude names realize
@@ -2172,14 +2159,50 @@ pub(crate) fn ast_module_field(ast: &mut Arenas) -> StructId {
     push_list(ast, vec![module_name, op]) // (module <op-record>)
 }
 
+/// The `(print <op-record>)` field for the built-in `Ast` record — `Ast.print v : String`, the compiler-
+/// exposed PRINTER that renders an AST value as its canonical re-readable text (`self-hosting-surface.md`
+/// §Text Is A Projection Reached By A Reader And A Printer). The NAMESPACED home of the former top-level
+/// `print` (operator directive: prelude records with associated functions, no bare globals). The field
+/// value is the EXACT op-record `print` was — a monomorphic `list_op_record` with `(meta t) = (fn () (-> Ast
+/// String))` and `(meta apply) = (intrinsic print)` (`Prim::Print`), folded on a compile-time-visible operand
+/// in `lower` — so `Ast.print` reduces identically to the old `print`, no new prim. Carried on the `Ast`
+/// `TypeDecl.associated` (set in `sums::prelude_decls`, appended by `sum_record`), the SAME pattern as
+/// `Ast.module`; a user `type Ast` carries no associated, so it shadows it.
+pub(crate) fn ast_print_field(ast: &mut Arenas) -> StructId {
+    //= spec/capabilities/self-hosting-surface.md#a-printer-renders-the-canonical-representation-as-re-readable-text
+    //# Reading the text a printer produced for a value MUST yield a value equal to the original under structural equality, so that the reader and printer round-trip.
+    let print_lambda = mono_op_type_lambda(ast, "Ast", "String");
+    let op = list_op_record(ast, "print", print_lambda);
+    let print_name = push_atom(ast, Leaf::Name("print".into()));
+    push_list(ast, vec![print_name, op]) // (print <op-record>)
+}
+
+/// The `(read <op-record>)` field for the built-in `Ast` record — `Ast.read s : Ast`, the compiler-exposed
+/// READER that parses canonical text back into an AST value (`self-hosting-surface.md` §Text Is A Projection
+/// Reached By A Reader And A Printer). The NAMESPACED home of the former top-level `read`; the EXACT op-record
+/// `read` was — monomorphic `(meta t) = (fn () (-> String Ast))`, `(meta apply) = (intrinsic read)`
+/// (`Prim::Read`) — so `Ast.read` reduces identically, no new prim. Carried on the `Ast` `TypeDecl.associated`
+/// (the SAME pattern as `Ast.module`); a user `type Ast` shadows it. `Ast.read (Ast.print v) == v` round-trips.
+pub(crate) fn ast_read_field(ast: &mut Arenas) -> StructId {
+    let read_lambda = mono_op_type_lambda(ast, "String", "Ast");
+    let op = list_op_record(ast, "read", read_lambda);
+    let read_name = push_atom(ast, Leaf::Name("read".into()));
+    push_list(ast, vec![read_name, op]) // (read <op-record>)
+}
+
 /// The built-in `Ast` record's ASSOCIATED FUNCTIONS — the prelude-defined non-ctor member fields
 /// (`(name <op-record>)` nodes) that `sums::sum_record` appends to the synthesized `Ast` record, so they
 /// are reached as `(. Ast member)`. Defined HERE in the prelude (attached to the Ast `TypeDecl` in
 /// `sums::prelude_decls`), like `bigint_module`'s fields live in the prelude — NOT a `Db::load`
-/// post-synthesis special-case. Currently just `Ast.module` (self-reflection); `Ast.print`/`Ast.read`
-/// join this list when those relocations land (a user `type Ast` carries none, so it shadows them).
+/// post-synthesis special-case. `Ast.module` (self-reflection), `Ast.print` (printer), `Ast.read` (reader) —
+/// all the former top-level self-hosting names, NAMESPACED onto the `Ast` record (a user `type Ast` carries
+/// none, so it shadows them).
 pub(crate) fn ast_associated_fields(ast: &mut Arenas) -> Vec<StructId> {
-    vec![ast_module_field(ast)]
+    vec![
+        ast_module_field(ast),
+        ast_print_field(ast),
+        ast_read_field(ast),
+    ]
 }
 
 /// The `(of <op-record>)` field for the built-in `Ordering` record — `Ordering.of a b : Ordering`, the

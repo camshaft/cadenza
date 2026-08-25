@@ -6519,6 +6519,42 @@ fn ordering_of_resolves_and_types_as_the_three_way_compare() {
     );
 }
 
+/// NAMESPACED `Ast.print` / `Ast.read` (former top-level `print` / `read`): the compiler-exposed printer and
+/// reader are members on the built-in `Ast` record (operator directive: prelude records with associated
+/// functions, no bare globals) — carried on the `Ast` `TypeDecl.associated`, the SAME pattern as `Ast.module`.
+/// `(. Ast print) v : String` and `(. Ast read) s : Ast`, reducing identically to the old bare names (same
+/// `Prim::Print` / `Prim::Read`). Pins the FRONT-END: both resolve + type, no unbound / no-such-field.
+#[test]
+fn ast_print_and_read_resolve_and_type_as_the_printer_and_reader() {
+    use crate::db::Db;
+    let src = "(module m (def (pr (: v Ast)) ((. Ast print) v)) (def (rd (: s String)) ((. Ast read) s)) (export pr) (export rd))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("unbound")
+            || d.message.contains("field `print`")
+            || d.message.contains("field `read`")),
+        "(. Ast print)/(. Ast read) must resolve on the built-in Ast record: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let pr = db.def_by_name("pr").expect("def pr");
+    let pr_body = db.defs[pr].body.expect("pr body");
+    let pr_ty = crate::infer::type_of(&mut db, pr_body);
+    assert_eq!(
+        pr_ty.render_name(&db.name_ctx()),
+        "String",
+        "Ast.print v : String (same reduction as the former `print`), got {pr_ty:?}"
+    );
+    let rd = db.def_by_name("rd").expect("def rd");
+    let rd_body = db.defs[rd].body.expect("rd body");
+    let rd_ty = crate::infer::type_of(&mut db, rd_body);
+    assert_eq!(
+        rd_ty.render_name(&db.name_ctx()),
+        "Ast",
+        "Ast.read s : Ast (same reduction as the former `read`), got {rd_ty:?}"
+    );
+}
+
 /// SELF-REFLECTION `Ast.module` (front-end): the reflection member on the built-in `Ast` record resolves via
 /// ordinary member access and TYPES as the built-in `Ast` sum — the type-directed, prelude-derived,
 /// NAMESPACED replacement for the retired `(. Ast self)` blind syntax-rewrite (operator directive: namespace
@@ -41373,8 +41409,8 @@ mod match_engine {
         // Int64 must be the same type here" (unlike `print : Ast → String`, whose distinctive `Ast` operand
         // the checker names directly). It now names the real fault, exactly as the `trap` arm.
         for (src, ty) in [
-            ("(module m (def (f) (read 5)) (export f))", "Int64"),
-            ("(module m (def (f) (read true)) (export f))", "Bool"),
+            ("(module m (def (f) (Ast.read 5)) (export f))", "Int64"),
+            ("(module m (def (f) (Ast.read true)) (export f))", "Bool"),
         ] {
             let d = crate::diagnostics(&mut crate::db::Db::load(parse(src)))
                 .into_iter()
@@ -41391,8 +41427,8 @@ mod match_engine {
         }
         // NO false positive: a String literal and a String-typed param argument are clean.
         for ok in [
-            "(module m (def (f) (read \"(+ 1 2)\")) (export f))",
-            "(module m (def (f (: s String)) (read s)) (export f))",
+            "(module m (def (f) (Ast.read \"(+ 1 2)\")) (export f))",
+            "(module m (def (f (: s String)) (Ast.read s)) (export f))",
         ] {
             assert!(
                 !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
@@ -52602,7 +52638,7 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         );
         // print renders the bare word and read inverts it — `read(print v) == v` over the boolean leaf.
         let print_read = "(module m (def (main) \
-            (= (read (print (Ast.Bool false))) (Ast.Bool false))) \
+            (= (Ast.read (Ast.print (Ast.Bool false))) (Ast.Bool false))) \
             (export main))";
         assert!(
             run_returns::<bool>(
@@ -52646,7 +52682,7 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         // print renders a `"…"` literal escaping the closed set; read inverts it — `read(print v) == v`
         // over a payload with an embedded quote AND newline, so this exercises the escape path.
         let print_read = "(module m (def (main) \
-            (= (read (print (Ast.Str \"a\\\"b\\nc\"))) (Ast.Str \"a\\\"b\\nc\"))) \
+            (= (Ast.read (Ast.print (Ast.Str \"a\\\"b\\nc\"))) (Ast.Str \"a\\\"b\\nc\"))) \
             (export main))";
         assert!(
             run_returns::<bool>(
@@ -52756,13 +52792,13 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             ),
             (
                 "(module m (def (main) \
-                   (= (read (print (Ast.Float 1.5))) (Ast.Float 1.5))) \
+                   (= (Ast.read (Ast.print (Ast.Float 1.5))) (Ast.Float 1.5))) \
                  (export main))",
                 "print/read round-trips an Ast.Float",
             ),
             (
                 "(module m (def (main) \
-                   (= (read (print (Ast.Float 3.0))) (Ast.Float 3.0))) \
+                   (= (Ast.read (Ast.print (Ast.Float 3.0))) (Ast.Float 3.0))) \
                  (export main))",
                 "an integer-valued Ast.Float (3.0) stays a float through read, not Ast.Int",
             ),
@@ -53545,19 +53581,19 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         // (`lower_read`), both folded on the compile-time-visible operand. Compiles clean and runs true.
         for (src, what) in [
             (
-                "(module m (def (main) (= (read (print (quote (+ 1 2)))) (quote (+ 1 2)))) (export main))",
+                "(module m (def (main) (= (Ast.read (Ast.print (quote (+ 1 2)))) (quote (+ 1 2)))) (export main))",
                 "a compound form round-trips",
             ),
             (
-                "(module m (def (main) (= (read (print (quote 42))) (quote 42))) (export main))",
+                "(module m (def (main) (= (Ast.read (Ast.print (quote 42))) (quote 42))) (export main))",
                 "an integer atom round-trips",
             ),
             (
-                "(module m (def (main) (= (read (print (quote foo))) (quote foo))) (export main))",
+                "(module m (def (main) (= (Ast.read (Ast.print (quote foo))) (quote foo))) (export main))",
                 "a bare name round-trips",
             ),
             (
-                "(module m (def (main) (= (read (print (quote (f (g 1) 2)))) (quote (f (g 1) 2)))) (export main))",
+                "(module m (def (main) (= (Ast.read (Ast.print (quote (f (g 1) 2)))) (quote (f (g 1) 2)))) (export main))",
                 "a NESTED form round-trips",
             ),
         ] {
