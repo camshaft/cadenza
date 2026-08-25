@@ -192,7 +192,8 @@ impl cadenza::platform::graph::Host for HostState {
             Some(node) => self.graph.insert(node).await,
             None => {
                 if self.rejected.enabled() {
-                    self.rejected.record("graph", "insert", &[Bytes::from(node)]);
+                    self.rejected
+                        .record("graph", "insert", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -204,7 +205,8 @@ impl cadenza::platform::graph::Host for HostState {
             Some(node) => self.graph.contains(node).await,
             None => {
                 if self.rejected.enabled() {
-                    self.rejected.record("graph", "contains", &[Bytes::from(node)]);
+                    self.rejected
+                        .record("graph", "contains", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -216,7 +218,8 @@ impl cadenza::platform::graph::Host for HostState {
             Some(node) => self.graph.remove(node).await,
             None => {
                 if self.rejected.enabled() {
-                    self.rejected.record("graph", "remove", &[Bytes::from(node)]);
+                    self.rejected
+                        .record("graph", "remove", &[Bytes::from(node)]);
                 }
                 false
             }
@@ -266,8 +269,11 @@ impl cadenza::platform::graph::Host for HostState {
     ) -> Vec<Vec<u8>> {
         let (Some(node_id), Some(kind_id)) = (to_reducer(&node), to_kind(&kind)) else {
             if self.rejected.enabled() {
-                self.rejected
-                    .record("graph", "neighbors", &[Bytes::from(node), Bytes::from(kind)]);
+                self.rejected.record(
+                    "graph",
+                    "neighbors",
+                    &[Bytes::from(node), Bytes::from(kind)],
+                );
             }
             return Vec::new();
         };
@@ -285,7 +291,8 @@ impl cadenza::platform::graph::Host for HostState {
                 .collect(),
             None => {
                 if self.rejected.enabled() {
-                    self.rejected.record("graph", "in-kinds", &[Bytes::from(node)]);
+                    self.rejected
+                        .record("graph", "in-kinds", &[Bytes::from(node)]);
                 }
                 Vec::new()
             }
@@ -1158,9 +1165,7 @@ impl WasmProgramStore {
             make_graph,
             make_provenance: Arc::new(|_id| Arc::new(crate::NoProvenance) as Arc<dyn Provenance>),
             make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
-            make_rejected: Arc::new(|_id| {
-                Arc::new(crate::NoRejectedSink) as Arc<dyn RejectedSink>
-            }),
+            make_rejected: Arc::new(|_id| Arc::new(crate::NoRejectedSink) as Arc<dyn RejectedSink>),
         })
     }
 
@@ -1460,10 +1465,11 @@ mod tests {
         }
         impl RejectedSink for Capturing {
             fn record(&self, iface: &str, op: &str, raw_args: &[Bytes]) {
-                self.calls
-                    .lock()
-                    .unwrap()
-                    .push((iface.to_string(), op.to_string(), raw_args.to_vec()));
+                self.calls.lock().unwrap().push((
+                    iface.to_string(),
+                    op.to_string(),
+                    raw_args.to_vec(),
+                ));
             }
         }
 
