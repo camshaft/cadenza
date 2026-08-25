@@ -1861,6 +1861,7 @@ pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-t
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
 pass	a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept
+pass	a full reducer-step-shaped guest writes every field of the step and runs (via an imposed WIT world)
 pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
@@ -3103,6 +3104,7 @@ pass	a recursively-built binary tree renders its full runtime structure
 pass	a recursively-built byte sequence assembles its bytes at run time
 pass	a recursively-built linked list renders its full runtime spine
 pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
+pass	a reducer emitting no effects builds an empty-requests step and runs (via an imposed WIT world)
 pass	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 pass	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
 pass	a redundant full-width mask on an unsigned runtime value is elided
