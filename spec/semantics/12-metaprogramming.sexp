@@ -2541,6 +2541,42 @@
             (export main)))
   (output (: true Bool)))
 
+(case "a TWO-PASS transform over Ast.module — one recursion consuming another's result — const-evaluates"
+  (doc    "The sharpest form of the `Ast.module`-source composition: the result of ONE recursion over the
+           reflected module forms feeds a SECOND recursion. `unwrap-all` rebuilds the forms, peeling each
+           through the recursive `unwrap` (pass 1); `keep-types` then FILTERS that result to the `type`
+           declarations (pass 2). Because `Ast.module` const-evaluates to a value (not just an encodable
+           constant), the pass-1 result flows as a fully-const value into pass 2 — the exact case that
+           declined before (`keep-types(unwrap-all(Ast.module-forms))` folds over a plain literal but declined
+           over `Ast.module`, because a recursion-result rooted at `Ast.module` was not recognized as a
+           constant by the second recursion). This two-pass-over-the-reflected-module is the composition a
+           comment-tolerant contract-id transform performs; the const-encode forces it to a constant.
+           Content-agnostic (`> -1` → `true`): the point is that it FOLDS, not the exact byte length.")
+  (input  (do
+            (def (child (const (: form Ast)) (: i Int64))
+              (match form
+                ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+                (_ (Ast.Name "?"))))
+            (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+            (def (head-name (const (: form Ast))) (name-of (child form 0)))
+            (def (peel (const (: x Ast)))
+              (if (= (head-name x) "comment") (peel (child x 2)) x))
+            (def (unwrap-all (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t) (List.prepend (unwrap-all t) (peel h)))))
+            (def (keep-types (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t)
+                  (if (= (head-name h) "type") (List.prepend (keep-types t) h) (keep-types t)))))
+            (def (forms-of (const (: mm Ast)))
+              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+            (def (main)
+              (> (Bytes.len (Ast.encode (Ast.List (keep-types (unwrap-all (forms-of Ast.module)))))) (- 0 1)))
+            (export main)))
+  (output (: true Bool)))
+
 (case "decoding bytes that are not a canonical AST yields the error case, not a trap"
   (doc    "contracts/value-interchange.md #Decode Inverts Serialize And Refuses Otherwise + #A Decode Over
            External Bytes Is Total: `Ast.decode` consumes bytes that may come from an EXTERNAL source, so it

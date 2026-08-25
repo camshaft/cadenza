@@ -1129,6 +1129,7 @@ pass	a TUPLE-returning operation resumes a pair built from the handler state, th
 pass	a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent
 pass	a TWICE combinator stacks — a closure capturing a closure capturing a closure applies through the tower
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
+pass	a TWO-PASS transform over Ast.module — one recursion consuming another's result — const-evaluates
 pass	a TWO-argument capture closure through a fold-style HOF — the capture rides both applications
 pass	a TWO-field open-row projection instantiates at three widths with slot-shifting extras
 pass	a TWO-of-THREE partial application binds a prefix and the LET-BOUND residual completes
