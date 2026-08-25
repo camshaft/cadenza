@@ -11,19 +11,31 @@ Shred each corpus file into one unit per `(case …)`, and run each case through
 derivations whose keys are chosen so unrelated changes are cache hits:
 
 ```
-corpus file ──shred──▶ per-case record ──build──▶ emitted artifact ──exec──▶ pass/fail ──▶ aggregate
-             (parser)                    (compiler)                  (runtime, NO compiler)
+corpus file ─shred─▶ per-case binary ASTs ─build─▶ emitted artifact ─exec─▶ pass/fail ─▶ aggregate
+            (parser)  program/compile-unit  (compiler)               (runtime, NO compiler)
+                      /test-run
 ```
 
-- **shred** (one derivation per corpus file): parse the file, emit one record file per case.
-  Key = `{corpus-file, shred-bin}`. Re-shreds only a *changed* file.
-- **build** (one per case): compile the case's `input` program → emitted wasm (value-case) or the
-  captured compile outcome / error-code (error-case). Key = `{case-record, compile-bin}`.
-- **exec** (one per case): run the emitted artifact and grade against the case's `expect`
-  (`(output (: v T))` | `(error CODE)` | `(trap …)` | `(declines)`). Key = **`{emitted-artifact,
-  expect, exec-bin}` — the compiler is NOT an input.** So a compiler change that emits byte-identical
-  wasm for a case leaves this derivation's inputs unchanged → nix reuses the cached result.
-- **aggregate**: collect all exec results → suite verdict + counts.
+- **shred** (one derivation per corpus file): parse the file, emit per case up to THREE **binary-AST**
+  artifacts (via `cadenza_ast::codec::encode` — we already parse the `.sexp`, so we emit the parsed form,
+  not a third text format), split BY CONSUMER (SHIPPED, `cdz corpus records --out-dir`):
+  - `program.ast` (+ `module-<name>.ast` per package sibling) — the program(s), a **compiler** input.
+  - `compile-unit.ast` — wit-world + component-name, the compilation config, a **compiler** input;
+    omitted for the common synthesized-world case.
+  - `test-run.ast` — description + trials (call/args/expect) + host-calls/responses + warns, the
+    **runner/grader** metadata; NOT a compiler input.
+  Key = `{corpus-file, shred-bin}`. Re-shreds only a *changed* file. A `manifest` per file lists the case
+  dirs so nix enumerates cases (tiny IFD) without re-parsing the `.sexp`.
+- **build** (one per case, per backend): compile `{program.ast (+modules), compile-unit.ast}` → emitted
+  wasm (value-case) or the captured compile outcome / error-code (error/declines-case).
+  Key = `{program.ast, modules, compile-unit.ast, compile-bin}` — a **run-metadata** edit (expected
+  output, args, host tape → `test-run.ast`) is NOT a build input, so it never rebuilds.
+- **exec** (one per case, per backend): run the emitted artifact and grade against `test-run.ast`
+  (`(expect-output …)` | `(expect-error CODE msg?)` | `(expect-trap …)` | `(expect-declines msg?)`,
+  per-trial, + host tape + warns). Key = **`{emitted-artifact, test-run.ast, exec-bin}` — the compiler is
+  NOT an input.** So a compiler change that emits byte-identical wasm for a case leaves this derivation's
+  inputs unchanged → nix reuses the cached result.
+- **aggregate**: collect all exec results → suite verdict + counts (per case × backend).
 
 ## Why smaller binaries (operator preference — and it sharpens caching)
 

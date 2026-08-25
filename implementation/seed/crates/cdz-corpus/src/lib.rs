@@ -24,14 +24,22 @@
 /// `cdz corpus`. The standalone `cdz-corpus` bin is a thin shim over it.
 pub mod cli;
 
-use cadenza_syntax::ast::{Arenas, Builder, StructId};
-use cadenza_syntax::sexpr;
+use std::sync::Arc;
+
+use cadenza_syntax::ast::{Arenas, Builder, Leaf, StructId};
+use cadenza_syntax::{codec, sexpr};
 
 /// A single parsed + normalized corpus case, ready to run.
 pub struct Record {
     pub description: String,
-    /// The `input` rewritten to the runnable export shape, as one-line s-expression text.
+    /// The `input` rewritten to the runnable export shape, as one-line s-expression text. Consumed by
+    /// the stdout record stream + the xtask gate driver.
     pub program: String,
+    /// The SAME normalized program as `program`, encoded as BINARY AST (`codec::encode`) — the form the
+    /// nix corpus pipeline's shred emits (`program.ast`), fed straight to the compiler with no reparse.
+    /// Built from the one normalized arena alongside `program` (the text is `sexpr::print` of it, the
+    /// bytes are `codec::encode` of it — neither round-trips through the other).
+    pub program_ast: Vec<u8>,
     /// Sibling LIBRARY modules of a multi-file PACKAGE case (`DESIGN-package-linking.md`), each a
     /// `(name, program-text)` from a `(module "name" <prog>)` clause — the files the ENTRY (`program`,
     /// named `main`) may `(import …)` from. Empty for the common single-file case (then `program` is
@@ -71,6 +79,11 @@ pub struct Record {
     /// passed to `cdz compile --component-name` and used to qualify the run export as `<iface>#<export>`.
     /// `None` when no world is imposed.
     pub component_name: Option<String>,
+    /// The COMPILE-UNIT config as BINARY AST (`codec::encode`) — `(compile-unit (component-name "…")?
+    /// (wit-world <world-subtree>)?)` — the shred's `compile-unit.ast`, a compiler input alongside the
+    /// program. Built in the reader (where the world's arena node is live, so its subtree is `clone_into`'d
+    /// directly — no reparse). `None` for the common synthesized-world case (no `compile-unit.ast` emitted).
+    pub compile_unit_ast: Option<Vec<u8>>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -81,6 +94,9 @@ pub struct Module {
     pub name: String,
     /// The module's program, as one-line s-expression text (same normalization as the entry program).
     pub program: String,
+    /// The module's program as BINARY AST (`codec::encode`) — the shred's `module-<name>.ast`, built
+    /// from the one normalized arena alongside `program` (no reparse).
+    pub program_ast: Vec<u8>,
 }
 
 /// One (call, expected-result) pair of a case — a single run of the compiled program.
@@ -592,6 +608,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
     let mut wit_world: Option<String> = None;
+    let mut wit_world_id: Option<StructId> = None;
     let mut component_name: Option<String> = None;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
@@ -617,9 +634,11 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     && let Some(name) = string_leaf(a, name_id)
                     && let Some(&prog) = tail.get(1)
                 {
+                    let (program, program_ast) = normalize_program_text_and_ast(a, prog);
                     modules.push(Module {
                         name,
-                        program: normalize_program(a, prog),
+                        program,
+                        program_ast,
                     });
                 }
             }
@@ -769,10 +788,13 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // general WIT-ABI shape), vs synthesized from the guest. Store the world subtree as one-line
             // s-expr text; the gate driver converts it to a `wit-world` binary-AST artifact for `cdz compile`.
             Some("wit-world") => {
-                wit_world = a
+                if let Some(id) = a
                     .as_form(clause, "wit-world")
                     .and_then(|t| t.first().copied())
-                    .map(|id| sexpr::print_from(a, id));
+                {
+                    wit_world = Some(sexpr::print_from(a, id));
+                    wit_world_id = Some(id);
+                }
             }
             // `(component-name "cadenza:pkg/iface")` — the interface the `(wit-world …)` guest publishes its
             // export under; passed to `cdz compile --component-name` and used to qualify the run `--call`.
@@ -788,15 +810,38 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     }
 
     let input = input.ok_or_else(|| format!("case {description:?} has no (input …)"))?;
-    let program = normalize_program(a, input);
+    let (program, program_ast) = normalize_program_text_and_ast(a, input);
 
     if trials.is_empty() {
         return Err(format!("case {description:?} has no primary result clause"));
     }
 
+    // COMPILE-UNIT config (wit-world + component-name), built arena-direct while the world's node is live
+    // in `a` (clone_into embeds its subtree — no reparse). `None` unless the case imposes a world/name.
+    let compile_unit_ast = if wit_world_id.is_some() || component_name.is_some() {
+        let mut b = Builder::new();
+        let head = b.name("compile-unit");
+        let mut kids = vec![head];
+        if let Some(cn) = &component_name {
+            let cnh = b.name("component-name");
+            let cnv = b.atom_leaf(Leaf::Str(Arc::from(cn.as_str())));
+            kids.push(b.list(vec![cnh, cnv]));
+        }
+        if let Some(id) = wit_world_id {
+            let wh = b.name("wit-world");
+            let wsub = clone_into(a, id, &mut b);
+            kids.push(b.list(vec![wh, wsub]));
+        }
+        let root = b.list(kids);
+        Some(codec::encode(&b.finish(root)))
+    } else {
+        None
+    };
+
     Ok(Record {
         description,
         program,
+        program_ast,
         modules,
         trials,
         host_responses,
@@ -804,6 +849,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         warns,
         wit_world,
         component_name,
+        compile_unit_ast,
     })
 }
 
@@ -1122,41 +1168,60 @@ fn child_name_arg(a: &Arenas, tail: &[StructId], head: &str) -> Option<String> {
 ///   - `(module name def…)` → `(do def… (export main))`
 ///   - a bare expression `E` → `(do (def (main) E) (export main))`
 fn normalize_program(a: &Arenas, input: StructId) -> String {
+    normalize_program_text_and_ast(a, input).0
+}
+
+/// Normalize `input` to the runnable export-shape program, once, yielding BOTH serializations from one
+/// build (no round-trip through the other's format): the one-line s-expression TEXT (the stdout/xtask
+/// path), and the BINARY AST bytes (`codec::encode`, the shred's `program.ast`). The bytes are
+/// DOCUMENT-WRAPPED in the synthetic `(do …)` root that `sexpr::read_all` produces, so `program.ast` is
+/// byte-identical to what `cdz convert --to binary` (thus the compiler's binary-AST input convention)
+/// expects; the text is `print_from` of the INNER program node (bare, unwrapped — exactly the historical
+/// text), the bytes are `encode` of the whole `(do <program>)` document.
+pub(crate) fn normalize_program_text_and_ast(a: &Arenas, input: StructId) -> (String, Vec<u8>) {
+    let mut b = Builder::new();
+    let prog = build_normalized_program(a, input, &mut b);
+    // Wrap in the synthetic document root `sexpr::read_all` uses (a `do` head over the top-level forms),
+    // so the encoded AST matches the universal read_all/convert convention.
+    let do_head = b.name("do");
+    let doc = b.list(vec![do_head, prog]);
+    let arenas = b.finish(doc);
+    (sexpr::print_from(&arenas, prog), codec::encode(&arenas))
+}
+
+/// Build the normalized program node into `b` and return its `StructId` (the `(do (def (main) …)
+/// (export main))` form) — the shared core of both serializations. Does NOT finish `b`.
+fn build_normalized_program(a: &Arenas, input: StructId, b: &mut Builder) -> StructId {
     match a.head_name(input) {
-        // A `(do …)` input that ALREADY declares `(export …)` is a full program — passed verbatim. A
+        // A `(do …)` input that ALREADY declares `(export …)` is a full program — cloned verbatim. A
         // `(do …)` WITHOUT an export is a bare SEQUENCING-block VALUE (`(do 1 2 3)`, `(do (record …) 42)`),
-        // an expression whose value is the program result: it falls through to the `_` arm below and is
-        // wrapped as `(do (def (main) <the-do>) (export main))`, exactly like any other bare expression (a
-        // `do` value-block is just an expression with a `do` head — no separate arm needed).
-        Some("do") if do_block_has_export(a, input) => sexpr::print_from(a, input),
+        // an expression whose value is the program result: it falls through to the `_` arm and is wrapped
+        // as `(do (def (main) <the-do>) (export main))`, like any bare expression.
+        Some("do") if do_block_has_export(a, input) => clone_into(a, input, b),
         Some("module") => {
-            // Rebuild `(do <module's forms after the name> (export main))` in a fresh arena.
+            // Rebuild `(do <module's forms after the name> (export main))`.
             let forms = match a.get(input) {
                 cadenza_syntax::ast::Struct::List(items) => &items[2..], // skip `module` head + the name
                 _ => &[][..],
             };
-            let mut b = Builder::new();
             let do_head = b.name("do");
             let mut children = vec![do_head];
             for &f in forms {
-                children.push(clone_into(a, f, &mut b));
+                children.push(clone_into(a, f, b));
             }
-            children.push(export_main(&mut b));
-            let root = b.list(children);
-            sexpr::print(&b.finish(root))
+            children.push(export_main(b));
+            b.list(children)
         }
         _ => {
             // Bare expression E → (do (def (main) E) (export main)).
-            let mut b = Builder::new();
             let do_head = b.name("do");
             let def_head = b.name("def");
             let main_name = b.name("main");
             let main_sig = b.list(vec![main_name]);
-            let e = clone_into(a, input, &mut b);
+            let e = clone_into(a, input, b);
             let def_main = b.list(vec![def_head, main_sig, e]);
-            let export = export_main(&mut b);
-            let root = b.list(vec![do_head, def_main, export]);
-            sexpr::print(&b.finish(root))
+            let export = export_main(b);
+            b.list(vec![do_head, def_main, export])
         }
     }
 }
@@ -1250,6 +1315,30 @@ fn string_leaf(a: &Arenas, id: StructId) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SHRED FAITHFULNESS: the whole-stream render equals concatenating the per-record renders. The nix
+    /// corpus pipeline (`design/DESIGN-corpus-nix-per-case-caching.md`) shreds a file into one `.rec` per
+    /// case via `render(&[record])`; this pins that a per-case file is byte-identical to that case's slice
+    /// of the stdout stream, so the shred and the stream can never disagree.
+    #[test]
+    fn per_record_render_concatenates_to_the_stream() {
+        let recs = read(
+            r#"(case "one" (input 1) (output (: 1 Int64)))
+               (case "two" (input 2) (output (: 2 Int64)))
+               (case "err" (input bogus) (error CDZ0201))"#,
+        )
+        .unwrap();
+        assert_eq!(recs.len(), 3);
+        let stream = render(&recs);
+        let concat: String = recs
+            .iter()
+            .map(|r| render(std::slice::from_ref(r)))
+            .collect();
+        assert_eq!(
+            stream, concat,
+            "per-record renders must concatenate to the whole-stream render"
+        );
+    }
 
     /// A single-result case (the common shape) parses to ONE trial — no call, one output.
     #[test]
