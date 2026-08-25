@@ -18,13 +18,15 @@ import { LogRecord, Entry } from "log-schema"
 type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
-// Does some GraphNeighbors read carry dir == "outgoing"? (the enum arg Dir.Outgoing marshalled and crossed.)
+// Does some GraphNeighbors read carry dir == "out"? (the enum arg Dir.Outgoing marshalled and crossed.) The
+// recorded dir string is the crate's canonical form "out"/"in" (log_value.rs dir_str), since the host maps
+// the WIT enum Outgoing -> crate::Dir::Out; the checker matches that recorded form, not the WIT case name.
 def has-neighbors-outgoing(records: List(LogRecord), i: Int64) =
   match List.at(records, i) with
   | Option.None(_) => false
   | Option.Some(LogRecord.LogRecord(rec)) =>
       (match rec.entry with
-        | Entry.GraphNeighbors(n) if (n.dir == "outgoing") => true
+        | Entry.GraphNeighbors(n) if (n.dir == "out") => true
         | _ => has-neighbors-outgoing(records, i + 1))
 
 // Does some KvGet appear? (state.get was performed — the option-result path.)
