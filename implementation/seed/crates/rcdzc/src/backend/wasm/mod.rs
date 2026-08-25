@@ -1795,7 +1795,13 @@ fn build_host_result_types(
     let mut result_crefs = Vec::with_capacity(host_imports.len());
     for h in host_imports {
         let cref = h.spilled_result.as_ref().and_then(|ty| {
-            let wt = host::spilled_result_wit_type(db, ty)?;
+            // Prefer the WORLD's declared result WitType (the authoritative host contract) so a nominal err
+            // arm follows the host's `variant`/`enum` CONSTRUCTOR (the #3228 rule, result-side — else
+            // `result<_, enum>` silently fails to instantiate against a host `result<_, variant>`). Falls back
+            // to the guest-`Ty`-derived type when the world is absent/undecodable; byte-neutral for a
+            // STRUCTURAL result (the two views coincide) and corrective only for a variant/enum arm.
+            let wt = host::wit_op_result_type(db, &h.effect, &h.op)
+                .or_else(|| host::spilled_result_wit_type(db, ty))?;
             add_wit_type_deduped(&wt, &mut table, &mut memo)
         });
         result_crefs.push(cref);

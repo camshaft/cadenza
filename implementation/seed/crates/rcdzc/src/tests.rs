@@ -3728,6 +3728,37 @@ fn a_reducer_performing_run_with_a_result_host_result_emits_and_loads() {
     );
 }
 
+/// The spilled-RESULT component type follows the WORLD's declared result WIT type, so its err arm emits the
+/// host's CONSTRUCTOR (`variant`/`enum`) rather than the guest-`Ty`-derived one — the #3228 variant-vs-enum
+/// rule, result-side. `wit_op_result_type` reads `run.run`'s `result<list<u8>, VARIANT error>` off the world;
+/// `build_host_result_types` prefers it (over `spilled_result_wit_type`), so the emitted result err arm is a
+/// `variant` matching the host (`result<_, enum>` and `result<_, variant>` are distinct component types — a
+/// mismatch silently fails to instantiate).
+#[test]
+fn a_host_op_result_wit_type_follows_the_world_variant() {
+    use crate::db::Db;
+    use crate::wit_world::WitType;
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (main) 0) (export main))",
+    ));
+    db.wit_world = Some(run_result_world_bytes()); // run.run : (...) -> result<list<u8>, variant(...)>
+    let wt = crate::backend::wasm::host::wit_op_result_type(&mut db, "run", "run")
+        .expect("run.run has a declared result WIT type in the world");
+    match wt {
+        WitType::Result { ok, err } => {
+            assert!(
+                matches!(ok.as_deref(), Some(WitType::List(_))),
+                "the Ok arm is `list<u8>`, got {ok:?}"
+            );
+            assert!(
+                matches!(err.as_deref(), Some(WitType::Variant(_))),
+                "the err arm follows the world's `variant` constructor (NOT an enum), got {err:?}"
+            );
+        }
+        other => panic!("run.run's declared result is a WIT `result`, got {other:?}"),
+    }
+}
+
 /// A reducer world importing `cadenza:platform/deliver`.`push` — a host op taking an ALL-SCALAR `record`
 /// PARAMETER (`record { a: s64, b: s64 }`) and returning unit. Drives shape d (record host-arg): the guest
 /// FLATTENS the value-heap record field-by-field into the two core slots the component `record` param
