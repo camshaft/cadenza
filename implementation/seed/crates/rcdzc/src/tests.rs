@@ -24809,7 +24809,7 @@ mod runtime_ops {
 // recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
 // parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
 mod recursion {
-    use super::{call_traps, run_returns, run_returns_with};
+    use super::run_returns;
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -25743,25 +25743,10 @@ mod recursion {
             div_before, 0,
             "no `(/ a b)` may be hoisted before the branch (would speculate its trap): {code:?}"
         );
-        // TRAP + VALUE PARITY: c=false takes `5` and must NOT evaluate the then-arm's division (b=0 safe);
-        // c=true with b=0 traps on the taken division; c=true with b!=0 computes (a/b)+(a/b).
-        use wasmtime::component::Val;
-        let bytes =
-            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::S64(9), Val::S64(0)]),
-            5,
-            "c=false → 5; the untaken (/ a 0) must NOT be speculated (no trap)"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(4)]),
-            10,
-            "c=true → (20/4)+(20/4) = 10"
-        );
-        assert!(
-            call_traps(&bytes, "f", &[Val::Bool(true), Val::S64(9), Val::S64(0)]),
-            "c=true with b=0: the TAKEN (/ a 0) divides by zero → must trap"
-        );
+        // Value + trap parity — c=false → 5 (the untaken `(/ a 0)` is NOT speculated, no trap), c=true
+        // with a safe divisor → (a/b)+(a/b), c=true with b=0 → traps on the taken divide — is the corpus
+        // case "a repeated trapping divide inside one if-arm is not speculated past the branch"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]

@@ -1491,6 +1491,20 @@
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: 1 Int64)))
 
+(case "a repeated trapping divide inside one if-arm is not speculated past the branch"
+  (doc    "The if-branch companion of the connective CSE-shield cases above: `(if c (+ (/ a b) (/ a b)) 5)`
+           uses the checked `(/ a b)` TWICE, but only on the THEN path. Straight-line CSE is gated to a
+           body with no `if`/`match` (so every shared node is unconditionally reached), so a body WITH an
+           `if` is ineligible — `(/ a b)` stays inside the then-arm, never hoisted to the function top.
+           `c`=false takes `5` and must NOT evaluate the divide (`b`=0 stays safe → no trap); `c`=true with
+           a safe divisor computes `(a/b)+(a/b)` (20/4 + 20/4 = 10); `c`=true with `b`=0 traps on the TAKEN
+           divide. Pins that speculatively hoisting a repeated trapping node past an `if` branch does not
+           fire the trap on the skip path (the CSE dual of the LICM frontier restriction).")
+  (input  (do (def (f (: c Bool) (: a Int64) (: b Int64)) (if c (+ (/ a b) (/ a b)) 5)) (export f)))
+  (call   f (: false Bool) (: 9 Int64)  (: 0 Int64)) (output (: 5 Int64))
+  (call   f (: true Bool)  (: 20 Int64) (: 4 Int64)) (output (: 10 Int64))
+  (call   f (: true Bool)  (: 9 Int64)  (: 0 Int64)) (trap   "division by zero"))
+
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
            a block evaluates to its last form's value). The earlier forms are pure here, so the block's
