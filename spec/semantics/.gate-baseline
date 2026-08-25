@@ -3980,6 +3980,10 @@ pass	a unit MISMATCH in the resume value is rejected — the arm cannot resume a
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a unit-result host op consumes its response row so the next value op reads its own (adv-65)
+pass	a user (type Ast …) shadows the built-in, so Ast.module is no longer the self-reflection
+pass	a user (type Ast …) shadows the built-in, so Ast.print is no longer the printer
+pass	a user (type Ast …) shadows the built-in, so Ast.read is no longer the reader
+pass	a user (type Ordering …) shadows the built-in, so Ordering.of is no longer the three-way comparison
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM is constructed AND matched inside the arm (per-dispatch classification)
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload

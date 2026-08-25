@@ -109,3 +109,42 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 111 Int64)))
+
+; --- The self-hosting members are NAMESPACED on the built-in Ast record, so a user Ast shadows them. ---
+
+(case "a user (type Ast …) shadows the built-in, so Ast.print is no longer the printer"
+  (doc    "`Ast.print` (Ast -> String) is the NAMESPACED printer — an associated function on the BUILT-IN
+           `Ast` record (the former top-level `print`), reached by ordinary member access. A user
+           `(type Ast …)` shadows the built-in (a top-level type declaration resolves before the prelude)
+           and carries no associated `print` member, so `Ast.print` is an ordinary unknown-member access
+           (CDZ0201), NOT the printer. This is the binding-respecting property namespacing on a shadowable
+           record delivers and a bare global `print` could not: the self-hosting surface follows binding.")
+  (input  (do
+            (type Ast (Foo))
+            (def (main) (Ast.print 0))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a user (type Ast …) shadows the built-in, so Ast.read is no longer the reader"
+  (doc    "The reader twin of the printer shadow: `Ast.read` (String -> Ast) is a NAMESPACED associated
+           function on the built-in `Ast` record (the former top-level `read`). A user `(type Ast …)`
+           carries no associated `read`, so `Ast.read` against it is an ordinary unknown-member access
+           (CDZ0201), NOT the reader.")
+  (input  (do
+            (type Ast (Foo))
+            (def (main) (Ast.read "x"))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a user (type Ast …) shadows the built-in, so Ast.module is no longer the self-reflection"
+  (doc    "`Ast.module` is the NAMESPACED self-reflection member (the enclosing module as an `Ast` value)
+           on the BUILT-IN `Ast` record — the type-directed, binding-respecting replacement for the retired
+           blind `(. Ast self)` syntax-rewrite. A user `(type Ast …)` shadows the built-in and carries no
+           associated `module` member, so `Ast.module` against it is an ordinary unknown-member access
+           (CDZ0201), NOT the reflection — a user shadowing `Ast` routes away from the reflection, which a
+           blind syntax-rewrite could never honor.")
+  (input  (do
+            (type Ast (Foo))
+            (def (main) Ast.module)
+            (export main)))
+  (error  CDZ0201))
