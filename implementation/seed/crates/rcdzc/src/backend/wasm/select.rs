@@ -274,6 +274,9 @@ const OP_STR_FROM_BYTES: &str = "str-from-bytes";
 /// fresh normalized leaf with the original dropped). A raw Bytes / `str-from-bytes` decode NEVER calls it
 /// (the decode-exemption, L90-94). Runtime op at WIT index 89.
 const OP_STR_NFC_NORMALIZE: &str = "str-nfc-normalize";
+/// `hash-blake3(bytes) -> handle` — the blake3 content hash (heap op 91). BORROWS the Bytes handle (an
+/// inspector), returns a FRESH OWNED 32-byte Bytes leaf. Backs `Core::Blake3Of` (P3b runtime lowering).
+const OP_HASH_BLAKE3: &str = "hash-blake3";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -1215,6 +1218,10 @@ fn binding_escapes_dup_aware(
         Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
+        // `Blake3.of` BORROWS its Bytes operand (reads it, returns a FRESH hash — operand not retained).
+        Core::Blake3Of { operand } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             binding_escapes_dup_aware(db, operand, binder, scalar_element, dup_sites)
@@ -2074,6 +2081,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand }
         | Core::BytesCompact { operand }
+        | Core::Blake3Of { operand }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
         | Core::SetToList { set: operand, .. }
@@ -2592,6 +2600,8 @@ fn mark_binder_dups_inner(
         Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
             borrow(db, operand, live_after, sites)
         }
+        // `Blake3.of` BORROWS its Bytes operand (an inspector, like `Bytes.len`).
+        Core::Blake3Of { operand } => borrow(db, operand, live_after, sites),
         // `Bytes.compact` (adv-66) is NOT a borrow — it lowers to the SAME runtime `bytes-compact` op as
         // `StrToBytes` (op_bytes_compact: flattens the rope IN PLACE and returns the SAME handle), so it
         // CONSUMES its operand and hands the handle back as the result. `binding_escapes_dup_aware` already
@@ -4365,6 +4375,11 @@ fn collect_used_ops_into_seen(
         }
         Core::BytesCompact { operand } => {
             out.insert(OP_BYTES_COMPACT);
+            collect_used_ops_into_seen(db, operand, out, visited);
+        }
+        // `Blake3.of` calls the `hash-blake3` heap op (op 91) over its Bytes operand.
+        Core::Blake3Of { operand } => {
+            out.insert(OP_HASH_BLAKE3);
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
@@ -11022,6 +11037,13 @@ fn emit(
         Core::NfcNormalize { string } => {
             emit(db, string, slots, base, high, scratch_ty, layout, out)?; // [string]
             out.push(Lir::CallImport(OP_STR_NFC_NORMALIZE)); // → [NFC leaf] (consumes string)
+            Ok(())
+        }
+        // `Blake3.of` — the blake3 content hash. Emit the Bytes operand (leaves its handle), then the
+        // `hash-blake3` heap op (op 91): it BORROWS the handle and returns a FRESH 32-byte Bytes leaf.
+        Core::Blake3Of { operand } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
+            out.push(Lir::CallImport(OP_HASH_BLAKE3)); // → [digest] (borrows bytes)
             Ok(())
         }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,

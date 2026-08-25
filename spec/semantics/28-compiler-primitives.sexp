@@ -47,3 +47,18 @@
            between the two, canonicalizing the declaration — but the primitives compose exactly like this.")
   (input  (Bytes.len (Blake3.of (Ast.encode (Ast.Int 7)))))
   (output (: 32 Int64)))
+
+; --- Runtime Blake3.of (heap op 91 `hash-blake3`) + the section-9 byte-identity witness ------------
+; Blake3.of over a RUNTIME Bytes (not a compile-time constant) lowers to the value-heap op 91; the digest
+; is byte-identical to the compile-time fold (both call the one blake3 crate over the same bytes). A
+; runtime `b` arrives through the entry call, so `Blake3.of b` takes the runtime path, not the const fold.
+
+(case "Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)"
+  (doc    "`(Bytes.of (list (UInt8.wrap k) (UInt8.wrap k) (UInt8.wrap k)))` over a runtime entry param `k` builds a RUNTIME Bytes (not a constant),
+           so `Blake3.of` of it lowers to the runtime `hash-blake3` heap op, returning a fresh 32-byte Bytes.
+           Pins the runtime lowering executes and yields the 32-byte width.")
+  (input  (do
+            (def (run (: k Int64)) (Bytes.len (Blake3.of (Bytes.of (list (UInt8.wrap k) (UInt8.wrap k) (UInt8.wrap k))))))
+            (export run)))
+  (call   run 5)
+  (output (: 32 Int64)))

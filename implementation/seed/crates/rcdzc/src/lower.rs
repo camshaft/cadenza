@@ -2915,9 +2915,11 @@ fn lower_blake3_of(db: &mut Db, id: StructId, bytes: StructId) -> Core {
         return Core::Poison(r);
     }
     let Some(raw) = const_byte_slice(db, bytes) else {
-        return Core::Poison(Reject::decline(
-            "Blake3.of of a runtime byte sequence is not yet computed (constant Bytes only)",
-        ));
+        // A RUNTIME `Bytes` — lower to the value-heap `hash-blake3` op (heap index 91) via
+        // `Core::Blake3Of`. Byte-identical to the compile-time fold below (both call the one `blake3`
+        // crate over the same bytes, design-compiler-primitives §9). (P3b runtime half.)
+        trace!(target: "rcdzc::lower", node = id.0, "Blake3.of of a runtime Bytes → Core::Blake3Of (runtime hash-blake3 op 91)");
+        return Core::Blake3Of { operand: bytes };
     };
     let digest = blake3::hash(&raw);
     trace!(target: "rcdzc::fold", node = id.0, len = raw.len(), "Blake3.of folds a constant Bytes to its 32-byte blake3 digest");

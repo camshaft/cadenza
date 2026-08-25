@@ -7179,3 +7179,4 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	two adapter records with different state types drive a take-while fold in one program
+todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
