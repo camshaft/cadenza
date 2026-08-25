@@ -2148,27 +2148,28 @@ fn schema_witness_type(ast: &mut Arenas, target: &str) -> StructId {
     push_list(ast, vec![fn_head, params, body])
 }
 
-/// The `(here <op-record>)` field for the built-in `Ast` record — the `Ast.here` self-reflection member
+/// The `(module <op-record>)` field for the built-in `Ast` record — the `Ast.module` self-reflection member
 /// (self-hosting-surface.md §A Program's Syntax Tree Is An Ordinary Value). A bare-value magic-constant
-/// (like `Int64-schema`), NAMESPACED on the `Ast` record (operator directive: no bare globals). `Ast.here`
+/// (like `Int64-schema`), NAMESPACED on the `Ast` record (operator directive: no bare globals). `Ast.module`
 /// resolves through ordinary member access on the built-in `Ast` and types as the built-in `Ast` sum; a
-/// user `type Ast` has no `here` field, so it shadows the reflection (the field lives ONLY on the built-in
+/// user `type Ast` has no `module` field, so it shadows the reflection (the field lives ONLY on the built-in
 /// Ast record — see `sums`/`Db::load_linked`, which augments only the built-in Ast decl). `(meta t)` is
 /// `(fn () Ast)` (a bare Ast value); `(meta apply) = (intrinsic reflect-module)` (`Prim::ReflectModule`),
-/// filled at lowering from the enclosing module's canonical source (never applied). Replaces the retired
-/// blind `(. Ast self)` syntax-rewrite with a resolved, shadow-respecting, type-directed form.
-pub(crate) fn ast_here_field(ast: &mut Arenas) -> StructId {
+/// filled at lowering from the ENCLOSING MODULE's canonical source (never applied). Named `module` (operator:
+/// clearer about the capture's SCOPE — the enclosing module — leaving room for future item/caller captures).
+/// Replaces the retired blind `(. Ast self)` syntax-rewrite with a resolved, shadow-respecting, type-directed form.
+pub(crate) fn ast_module_field(ast: &mut Arenas) -> StructId {
     // Type `(fn () Ast)` — a bare value of the built-in Ast sum (the zero-param `fn` wrapper makes
     // `scheme_of` read a monomorphic SCHEME, as `schema_witness_type` does for `Int64-schema`).
-    let here_type = {
+    let module_type = {
         let ast_ty = push_atom(ast, Leaf::Name("Ast".into()));
         let fn_head = push_atom(ast, Leaf::Name("fn".into()));
         let params = push_list(ast, vec![]);
         push_list(ast, vec![fn_head, params, ast_ty]) // (fn () Ast)
     };
-    let op = list_op_record(ast, "reflect-module", here_type);
-    let here_name = push_atom(ast, Leaf::Name("here".into()));
-    push_list(ast, vec![here_name, op]) // (here <op-record>)
+    let op = list_op_record(ast, "reflect-module", module_type);
+    let module_name = push_atom(ast, Leaf::Name("module".into()));
+    push_list(ast, vec![module_name, op]) // (module <op-record>)
 }
 
 /// The type-lambda `(fn (a) (-> a a))` for `payload-of` — `∀v. v → v`. Typed as identity: the extracted

@@ -511,8 +511,8 @@ pub enum Prim {
     /// (`hash-blake3`) lands. Byte-identical to that runtime op — both call the one `blake3` crate over the
     /// same bytes (design §9). The compile-time half of the third contract-agnostic primitive.
     Blake3Of,
-    /// `Ast.here` — the enclosing module's own source as an `Ast` value: the `(meta apply)` of the `here`
-    /// field on the built-in `Ast` record, a bare VALUE `Ast.here : Ast` (magic-constant style, like
+    /// `Ast.module` — the enclosing module's own source as an `Ast` value: the `(meta apply)` of the `module`
+    /// field on the built-in `Ast` record, a bare VALUE `Ast.module : Ast` (magic-constant style, like
     /// `Int64-schema : (Schema Int64)` — never applied; the `() -> Ast` is its internal shape). The
     /// TYPE-DIRECTED, prelude-derived self-reflection (operator redesign of the retired `(. Ast self)`
     /// syntax-rewrite): it resolves through ordinary member access on the built-in `Ast` (so a user
