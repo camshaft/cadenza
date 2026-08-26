@@ -707,6 +707,7 @@ pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, no
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float32 NaN map key is found by a differently-produced NaN
 pass	a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer
+pass	a Float32 if-branch literal rounds through binary32, not binary64
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a Float32 set dedups NaN elements and keeps zero signs distinct
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected

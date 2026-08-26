@@ -9672,39 +9672,6 @@ fn a_float_width_conversion_const_fold_reads_the_source_at_its_own_width() {
 }
 
 #[test]
-fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // A bare-`ConstFloat` branch of an `if` whose RESULT is `Float32` (in TAIL position — the whole body
-    // is the `if`, annotated Float32) emitted an `f64.const` while the block type was `f32` → an INVALID
-    // wasm module ("expected f32, found f64"). The annotation is on the `if`, so each branch literal solves
-    // to the default `Float64`; unlike a narrow INT (masked into the shared i32 slot), f32/f64 are DISTINCT
-    // machine types so the mismatch is a hard validation error. The tail `Core::If` arm now grounds a
-    // bare-`ConstFloat` branch to the result's f32 width (the float twin of its bare-`ConstInt` grounding).
-    // Regression for the invalid-module bug (breaker-filed, routed by corpus-bugfix).
-    let src = "(module m (def (f (: n Int64)) (: (if (< n 5) 1.5 0.25) Float32)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let then_: f32 = run_returns_with(&bytes, "f", &[Val::S64(3)]);
-    assert_eq!(then_.to_bits(), 1.5f32.to_bits(), "then branch 1.5 as f32");
-    let else_: f32 = run_returns_with(&bytes, "f", &[Val::S64(7)]);
-    assert_eq!(
-        else_.to_bits(),
-        0.25f32.to_bits(),
-        "else branch 0.25 as f32"
-    );
-    // A value needing real f32 rounding (0.1 is inexact in binary32) rounds through f32, not f64.
-    let round_src = "(module m (def (f (: c Bool)) (: (if c 0.1 0.2) Float32)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(round_src))).expect("compile");
-    let got: f32 = run_returns_with(&bytes, "f", &[Val::Bool(true)]);
-    assert_eq!(got.to_bits(), 0.1f32.to_bits(), "0.1 rounds through f32");
-    // A Float64 `if` result is UNCHANGED (its branch literals were always the default f64).
-    let f64src = "(module m (def (f (: c Bool)) (: (if c 1.5 0.25) Float64)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
-    let got: f64 = run_returns_with(&bytes, "f", &[Val::Bool(true)]);
-    assert_eq!(got.to_bits(), 1.5f64.to_bits(), "Float64 if unchanged");
-}
-
-#[test]
 fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
     use crate::testkit::parse;
     // Skip when the value-heap runtime store is absent (storeless CI `cargo test --workspace`) — this test

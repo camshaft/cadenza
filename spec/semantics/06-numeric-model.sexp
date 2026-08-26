@@ -899,6 +899,16 @@
   (call   main (: false Bool))
   (output (: 1 Int64)))
 
+(case "a Float32 if-branch literal rounds through binary32, not binary64"
+  (doc    "The rounding face of the bare-ConstFloat Float32 if-branch grounding (the valid-emit companion
+           returns Int64 via a comparison; this returns the f32 DIRECTLY and pins the rounding). 0.1 is
+           inexact in binary32, so grounding the branch literal at Float32 rounds through f32 — the returned
+           value is the f32-rounded 0.1, which renders 0.10000000149011612 (bit-distinct from the f64 0.1
+           that would render 0.1). Confirms the branch literal is solved at f32 width, not defaulted to f64
+           then narrowed, AND that a grounded f32 branch value crosses the boundary as an f32.")
+  (input  (do (def (f (: c Bool)) (: (if c 0.1 0.2) Float32)) (export f)))
+  (call   f (: true Bool)) (output (: 0.10000000149011612 Float32)))
+
 ; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
 ; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
 ; branchless SELECT (2-arm) or a probe-chain terminal pair, and those paths grounded arm values from
