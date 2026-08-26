@@ -47057,17 +47057,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             "a non-identity wrapping-add keeps the raw i64.add"
         );
 
-        // The annihilator DISCARDS the other operand, so a TRAPPING operand blocks it: `(/ 10 b) *% 0`
-        // must keep the division (and trap on b = 0), NOT fold to 0.
-        use wasmtime::component::Val;
-        let src = "(module m (def (f (: b Int64)) (Int64.wrapping-mul (/ 10 b) 0)) (export f))";
-        let bytes =
-            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(2)]), 0);
-        assert!(
-            call_traps(&bytes, "f", &[Val::S64(0)]),
-            "`(/ 10 b) *% 0` must still trap on b = 0 — the annihilator must not drop a trapping operand"
-        );
+        // Value/trap parity (the identity values a+%0=a / a*%1=a / a*%0=0, and the annihilator NOT dropping a
+        // trapping operand — `(/ 10 b) *% 0` traps at b=0) migrated to the corpus (run via cdz-run): cases
+        // "wrapping-arithmetic identities compute the identity value over a runtime operand" and "the
+        // wrapping-mul zero annihilator does not drop a trapping operand" in spec/semantics/06-numeric-model.sexp.
     }
 
     #[test]
