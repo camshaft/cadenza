@@ -284,6 +284,8 @@ pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee
 pass	Ok carrying a Some keeps both variant tags
+pass	Option.expect over an owned Some shell from List.at reclaims the shell across a loop (no live objects)
+pass	Option.expect over an owned Some shell from Map.lookup reclaims the shell across a loop (no live objects)
 pass	Ordering values order Less below Equal below Greater
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
@@ -868,6 +870,7 @@ pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result t
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+pass	a NON-FINAL dependent-size bin-match with a dynamic-offset rest read reclaims every slice (no live objects)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
@@ -1764,6 +1767,7 @@ pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match
+pass	a dependent-size bin-match payload read reclaims its slice across a loop (no live objects)
 pass	a dependent-size body over a runtime-start slice re-bases its size arithmetic per call
 pass	a dependent-size body re-matches under a second bin pattern
 pass	a dependent-size body straddling a rope seam stitches, and an oversize count fails the match
@@ -7526,3 +7530,8 @@ pass	cnm3 runtime Int8 checked-mul of -128 by -1 yields None (the narrow sign-fl
 pass	cnm4 runtime UInt16 checked-mul at the 65535 top
 pass	lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects
 pass	lk6 SIBLING handles each with a heap MAP state leave no live objects
+pass	cn02a a NON-recursive const fn taken trap is a RUNTIME trap on the bare call (by-design: it may sit under a runtime branch)
+pass	cn02b the Option twin — bare-call taken trap stays a runtime trap (by-design)
+pass	cn02c the tuple twin — bare-call taken trap stays a runtime trap (by-design)
+pass	cn02d the SAME shape under a (const ...) demand DOES surface CDZ0304 (the explicit fail-loud opt-in)
+pass	cx8 an effect-performing closure RETURNED from a helper then invoked

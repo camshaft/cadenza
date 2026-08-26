@@ -5769,13 +5769,16 @@ fn render_ast(h: Handle, d: &AstDiscs, out: &mut String) {
         }
         out.push('"');
     } else if disc == d.list {
+        // `Ast.List`'s payload is a Cadenza `(list …)` — a persistent RRB VECTOR, read by `vec-len`/
+        // `vec-get` (NOT the `arr-*` tuple/record accessors: an RRB root node's `handles` arity is its
+        // branch/leaf count, not the element count, so `arr-len` misreads a multi-element list as 1).
         out.push('(');
-        let n = op_arr_len(payload);
+        let n = op_vec_len(payload);
         for i in 0..n {
             if i > 0 {
                 out.push(' ');
             }
-            render_ast(op_arr_get(payload, i), d, out);
+            render_ast(op_vec_get(payload, i), d, out);
         }
         out.push(')');
     }
@@ -19566,18 +19569,41 @@ mod tests {
         let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6]); // int,float,bool,str,name,bytes,list
 
         // (+ 1 2): Ast.List(6) [Ast.Name(4,"+"), Ast.Int(0,1), Ast.Int(0,2)] — the print_ast_value example.
+        // The list payload is a persistent RRB VECTOR (built with `vec-*`, exactly as the compiler lowers a
+        // `(list …)`), NOT an `arr-*` tuple — a tuple-built list would pass with the wrong `arr-*` reader and
+        // mask the RRB-vs-tuple accessor bug (v-cp's nested-element repro below is the regression lock).
         let name = op_sum_new(4, op_str_new("+".to_string()));
         let i1 = op_sum_new(0, op_bigint_of_i64(1));
         let i2 = op_sum_new(0, op_bigint_of_i64(2));
-        let mut arr = op_arr_alloc(3);
-        arr = op_arr_set(arr, 0, name);
-        arr = op_arr_set(arr, 1, i1);
-        arr = op_arr_set(arr, 2, i2);
-        let list = op_sum_new(6, arr);
+        let mut vec = op_vec_empty();
+        vec = op_vec_push(vec, name);
+        vec = op_vec_push(vec, i1);
+        vec = op_vec_push(vec, i2);
+        let list = op_sum_new(6, vec);
         let out = op_ast_print(list, discs);
         assert_eq!(op_str_get(out), "(+ 1 2)", "List of Name + two Ints → (+ 1 2)");
         op_drop(list);
         op_drop(out);
+
+        // v-cp's nested-element repro (regression lock): a SINGLE-element list Ast.List[Ast.Int 5] → "(5)"
+        // (was "(0)" when the List arm read the RRB vec with `arr-*`).
+        let v1 = op_vec_push(op_vec_empty(), op_sum_new(0, op_bigint_of_i64(5)));
+        let single = op_sum_new(6, v1);
+        let o = op_ast_print(single, discs);
+        assert_eq!(op_str_get(o), "(5)", "single-element list reads its element via vec-get, not arr-get");
+        op_drop(single);
+        op_drop(o);
+
+        // A NESTED list Ast.List[Ast.List[Ast.Name f, Ast.Int 2]] → "((f 2))" — the recursion + vec read.
+        let mut inner = op_vec_empty();
+        inner = op_vec_push(inner, op_sum_new(4, op_str_new("f".to_string())));
+        inner = op_vec_push(inner, op_sum_new(0, op_bigint_of_i64(2)));
+        let outer = op_vec_push(op_vec_empty(), op_sum_new(6, inner));
+        let nested = op_sum_new(6, outer);
+        let o = op_ast_print(nested, discs);
+        assert_eq!(op_str_get(o), "((f 2))", "nested list recurses and reads each element via vec-get");
+        op_drop(nested);
+        op_drop(o);
 
         // Ast.Name → the bare word.
         let nm = op_sum_new(4, op_str_new("foo".to_string()));

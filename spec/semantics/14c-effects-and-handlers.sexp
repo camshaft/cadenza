@@ -17798,3 +17798,16 @@
     (export main)))
   (call main (: inf Float64))
   (output (: 1 Int64)))
+
+;; -- an effect-performing closure RETURNED from a helper then invoked at the handler scope WORKS — the out-direction boundary pin (breaker batch 392; the applied-param in-direction remains the open cx5d seam) --
+(case "cx8 an effect-performing closure RETURNED from a helper then invoked"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (mk (: k Int64)) (fn (x) (+ (* x k) (E.tick))))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((g (mk 2))) (+ (g 3) (g 4)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 24 Int64)))
