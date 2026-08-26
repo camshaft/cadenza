@@ -1,0 +1,112 @@
+// The shared self-reflection contract-id library (design/cadenza-platform.md §1/§4, P4). A contract module
+// self-reflects via `Ast.module` and calls this to obtain its own content-addressed contract-id —
+// `0x01 (Contract tag) ++ blake3(canonical (contract <name> (types <type>…) <input> <output>))` — byte-
+// identical to the host (`cdz_platform::Contract` / `cdz_contract::contract_id_from_module`). So a guest
+// (e.g. a reducer) can match `msg.contract` against a contract's id WITHOUT a hardcoded hash literal.
+//
+// Two entry points:
+//   contract-id(m) -> Bytes                     -- just the id (the routing key). Crosses module imports.
+//   contract(m)    -> Record(id, name, input, output, types)  -- the full descriptor (the id plus the
+//     structured AST pieces). Import the accessor under a name DISTINCT from the record fields
+//     (`def cid() = contract(Ast.module).id`, not `def id()`), so it crosses module imports.
+//
+// Handles the NATURAL contract-module shape: doc comments nest following forms (peeled per form via
+// `unwrap`), and `def`/`@test`/`export` forms are dropped (only `(type …)` forms collected). The whole
+// transform const-folds at compile time (general const-eval): `Ast.encode` requires a compile-time-const
+// AST, and the `const` params force the fold. This is a compile-time library — it computes ids, never runs.
+
+// The i-th child of an Ast.List form — `None` when the form is not a list or `i` is out of range.
+def child(const form: Ast, i: Int64) -> Option(Ast) =
+  match form with
+  | Ast.List(elems) => List.at(elems, i)
+  | _ => Option.None
+
+// The symbol a Name form carries — `None` for any other form.
+def name-of(const form: Ast) -> Option(String) =
+  match form with
+  | Ast.Name(n) => Option.Some(n)
+  | _ => Option.None
+
+// The text a Str form carries — `None` for any other form.
+def str-of(const form: Ast) -> Option(String) =
+  match form with
+  | Ast.Str(s) => Option.Some(s)
+  | _ => Option.None
+
+// The Name symbol of the i-th child, if that child is a Name.
+def child-name(const form: Ast, i: Int64) -> Option(String) =
+  match child(form, i) with
+  | Option.Some(c) => name-of(c)
+  | Option.None => Option.None
+
+// The head symbol of a `(head …)` list form. Callers compare it as `head-name(f) == Option.Some("type")`.
+def head-name(const form: Ast) -> Option(String) = child-name(form, 0)
+
+// Peel `(comment <text> <form>)` wrappers (chained comments nest). Mirrors the host `unwrap_comment`.
+def unwrap(const form: Ast) -> Ast =
+  if head-name(form) == Option.Some("comment")
+  then match child(form, 2) with
+       | Option.Some(inner) => unwrap(inner)
+       | Option.None => form
+  else form
+
+// Collect the `(type …)` declarations in order, peeling comments, dropping pragmas / def / @test / export.
+def collect-types(const forms: List(Ast)) -> List(Ast) =
+  match forms with
+  | [] => ([] : List(Ast))
+  | [f, .. rest] =>
+      let g = unwrap(f) in
+      let tail = collect-types(rest) in
+      if head-name(g) == Option.Some("type") then List.prepend(tail, g) else tail
+
+// Find a `(pragma <key> <value>)` and return <value> (peeling comments). TRAPS if a REQUIRED pragma is
+// absent (a malformed contract module) — a genuine error, so the const-fold fails rather than emit a wrong id.
+def find-pragma(const forms: List(Ast), const key: String) -> Ast =
+  match forms with
+  | [] => trap(String.concat("contract-id: contract module is missing a required pragma: ", key))
+  | [f, .. rest] =>
+      let g = unwrap(f) in
+      if (head-name(g) == Option.Some("pragma")) and (child-name(g, 1) == Option.Some(key))
+      then match child(g, 2) with
+           | Option.Some(value) => value
+           | Option.None => trap(String.concat("contract-id: pragma has no value: ", key))
+      else find-pragma(rest, key)
+
+// The `(types …)` node — every declared type, in order.
+def types-of(const forms: List(Ast)) -> Ast =
+  Ast.List(List.prepend(collect-types(forms), Ast.Name("types")))
+
+// The canonical declaration `(contract <name> (types …) <input> <output>)` the host hashes.
+def declaration(const m: Ast) -> Ast =
+  match m with
+  | Ast.List(forms) =>
+      Ast.List([Ast.Name("contract"),
+                find-pragma(forms, "contract"),
+                types-of(forms),
+                find-pragma(forms, "input"),
+                find-pragma(forms, "output")])
+  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
+
+// The contract-id: 0x01 Contract tag ++ blake3 of the canonical declaration's encoding.
+def contract-id(const m: Ast) -> Bytes =
+  Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m))))
+
+// The contract name from `@!contract`. TRAPS if that pragma's value is not a string literal (a malformed
+// contract module) — a genuine error, so the fold fails rather than yield an empty name.
+def contract-name(const forms: List(Ast)) -> String =
+  match str-of(find-pragma(forms, "contract")) with
+  | Option.Some(s) => s
+  | Option.None => trap("contract-id: @!contract value is not a string literal")
+
+// The full descriptor: the id plus the structured pieces.
+def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
+  match m with
+  | Ast.List(forms) =>
+      { id = contract-id(m),
+        name = contract-name(forms),
+        input = find-pragma(forms, "input"),
+        output = find-pragma(forms, "output"),
+        types = types-of(forms) }
+  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
+
+export { contract-id, contract }
