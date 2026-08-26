@@ -14220,6 +14220,48 @@ mod tests {
     }
 
     #[test]
+    fn materialize_source_deploys_prune_stale_targets_script_executable_into_the_hub() {
+        // Pins the #3793 deploy invariant: `fleet up` must materialize the disk-hygiene script from the
+        // tracked `fleet/` source into the hub runtime dir WITH the executable bit — the concierge's
+        // maintenance cron calls the hub copy, so a refactor that drops it from the materialize set (or
+        // its chmod) would silently leave the cron pointing at a stale/absent/non-exec file.
+        let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("fleet");
+        let root = base.join("hub");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            src.join("prune-stale-targets.sh"),
+            "#!/usr/bin/env bash\necho hi\n",
+        )
+        .unwrap();
+
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: root.join("worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: src.clone(),
+        };
+        fleet.materialize_source();
+
+        let dst = root.join("prune-stale-targets.sh");
+        assert!(dst.exists(), "the script is materialized into the hub");
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "#!/usr/bin/env bash\necho hi\n",
+            "content is copied verbatim"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "the materialized .sh gets the executable bit");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn agent_name_rejects_path_traversal_and_non_roster_chars() {
         // The PR#391 class: a name that escapes the inbox tree must be refused — plus dots/underscores
         // (no real name uses them, and a dot is what enables the `..` traversal), matching the Slack
