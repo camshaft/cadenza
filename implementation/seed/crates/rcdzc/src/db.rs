@@ -304,6 +304,11 @@ pub(crate) struct FileScopeTable {
     /// `(. T A)`: `T`'s handle visible + `A` a genuine variant of `T` but `A` NOT here = a withheld
     /// constructor (an abstract or partially-concrete import). Superset of `visible_ctors`.
     visible_ctors_qualified: Vec<crate::fxhash::FxHashMap<String, StructId>>,
+    /// Per file, WHOLE-MODULE ALIAS imports (`(import "path" alias)`) → the SPLICED index of the aliased
+    /// module. A local name here is NOT a value/type binding but a MODULE HANDLE: `(. alias member)`
+    /// projects `member` against that module's exports (`resolve_member`), the collision-free path for a
+    /// uniformly-named export imported from 2+ modules. Empty for a single-file / alias-free program.
+    module_aliases: Vec<crate::fxhash::FxHashMap<String, usize>>,
 }
 
 impl FileScopeTable {
@@ -460,8 +465,18 @@ fn build_file_scope(
     // the exporting file declares a type under the exported name, bring its handle + constructors into
     // the importing file (via `add_type_to_file`); if it defines a value def, bind that. A name may be
     // both (rare); both bindings are made and the resolver's ordered steps disambiguate by position.
+    let mut module_aliases: Vec<crate::fxhash::FxHashMap<String, usize>> =
+        (0..linkage.scopes.len())
+            .map(|_| Default::default())
+            .collect();
     for (fi, scope) in linkage.scopes.iter().enumerate() {
         for imp in &scope.imports {
+            // WHOLE-MODULE ALIAS import (`(import "path" alias)`): record the alias as a module HANDLE for
+            // `resolve_member` to project against `from_file`'s exports — NOT a flat value/type binding.
+            if imp.module_alias {
+                module_aliases[fi].insert(imp.local.clone(), imp.from_file);
+                continue;
+            }
             // Type import: the exporting file's own `(type …)` under the exported name.
             if let Some(decl) = type_decls.iter().find(|d| {
                 d.name == imp.exported
@@ -503,6 +518,7 @@ fn build_file_scope(
         visible_types,
         visible_ctors,
         visible_ctors_qualified,
+        module_aliases,
     }
 }
 
@@ -3662,6 +3678,24 @@ impl Db {
         let fs = self.file_scope.as_ref()?;
         let file = fs.file_of(at)?;
         Some(fs.visible[file].get(name).copied().ok_or(()))
+    }
+
+    /// The SPLICED module index a WHOLE-MODULE ALIAS `(import "path" alias)` binds `alias` to, as seen from
+    /// node `at`'s file — or `None` if `alias` is not a module alias here (a value/type name, or no
+    /// linkage). Used by `resolve_member` to project `(. alias member)` against the aliased module's
+    /// exports. File-scoped via `visibility_file_of` (an alias is visible only in the file that imported it).
+    pub(crate) fn module_alias_target(&self, at: StructId, alias: &str) -> Option<usize> {
+        let fs = self.file_scope.as_ref()?;
+        let file = self.visibility_file_of(at)?;
+        fs.module_aliases.get(file)?.get(alias).copied()
+    }
+
+    /// The def INDEX a `from_file` module exports under `key` (its own defs + re-exported imports) — the
+    /// exact `visible` surface a named import binds from. `None` if `from_file` does not export a VALUE def
+    /// `key`. The projection target for a module-alias `(. alias key)`.
+    pub(crate) fn export_def_in_file(&self, from_file: usize, key: &str) -> Option<usize> {
+        let fs = self.file_scope.as_ref()?;
+        fs.visible.get(from_file)?.get(key).copied()
     }
 
     /// File-scoped TYPE-name lookup for a multi-file package — the type analogue of `file_scoped_def`.

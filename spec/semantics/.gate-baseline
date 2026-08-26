@@ -7581,3 +7581,5 @@ todo	two runtime String entry args compare by content including multibyte
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
 pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
 pass	cpp3 partials of a COMPARISON operator select via a HOF
+pass	two whole-module alias imports project a uniformly-named export with no collision
+pass	a whole-module alias projects an exported FUNCTION and applies it

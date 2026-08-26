@@ -977,6 +977,37 @@
             (export main)))
   (output (: 42 Int64)))
 
+; WHOLE-MODULE ALIAS import `(import path alias)` (bare-name spec, positionally distinct from the named-list
+; form): binds the whole module under `alias`, reached by qualified projection `(. alias member)`. This is
+; the collision-free path when two modules export a UNIFORMLY-NAMED member (`descriptor`) that the flat
+; named-list form would bind twice into one scope (v-platform-itest multi-contract dispatch). Scope: DEFS
+; project today; qualified TYPES/CTORS via `(. alias T)` are a separate, larger gap.
+(case "two whole-module alias imports project a uniformly-named export with no collision"
+  (doc    "Modules `aaa` and `bbb` both export a def `descriptor`; the flat named-list import of both would
+           bind `descriptor` twice (a colliding-import CDZ0201). The whole-module alias form binds each
+           module under its own local handle `a`/`b`, and `(. a descriptor)` / `(. b descriptor)` project
+           each module export: 10 + 20 = 30. Pins that a uniform export name is reachable from 2+ modules
+           without collision.")
+  (module "aaa" (do (def (descriptor) 10) (export descriptor)))
+  (module "bbb" (do (def (descriptor) 20) (export descriptor)))
+  (input  (do
+            (import "aaa" a)
+            (import "bbb" b)
+            (def (main) (+ (. a descriptor) (. b descriptor)))
+            (export main)))
+  (output (: 30 Int64)))
+
+(case "a whole-module alias projects an exported FUNCTION and applies it"
+  (doc    "The alias handle projects a function export too: `aaa` exports `descriptor`, a one-parameter
+           function; `((. a descriptor) 41)` = 42. Qualified projection reaches the def and applies it as
+           any member access does.")
+  (module "aaa" (do (def (descriptor (: x Int64)) (+ x 1)) (export descriptor)))
+  (input  (do
+            (import "aaa" a)
+            (def (main) ((. a descriptor) 41))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "an unimported sibling definition is not in scope"
   (doc    "Witnesses modules-and-namespaces.md #Imports Are Explicit (2nd sentence: an import introduces
            no names beyond those it names) + #Visibility Is Explicit: WITHOUT an `(import …)`, a sibling

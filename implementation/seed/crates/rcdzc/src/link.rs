@@ -175,6 +175,10 @@ pub struct Import {
     pub from_file: usize,
     /// The name as the source module exports it (== `local` for the named-list form).
     pub exported: String,
+    /// WHOLE-MODULE ALIAS import (`(import "path" alias)`): `local` binds the module `from_file` (its
+    /// exports) as a handle reached by qualified projection `(. local member)`, NOT a single flat name.
+    /// `false` for the ordinary named-list / `__ast__` forms (which bind `local == exported` to one def).
+    pub module_alias: bool,
     /// The `(import …)` clause's GLOBAL occurrence, for a diagnostic to anchor to.
     pub occ: StructId,
 }
@@ -632,14 +636,45 @@ fn resolve_import_clause(
     // The name spec must be a `(name…)` LIST (the named-list form). A bare NAME spec is the ALIAS
     // form `(import "path" alias)`, which needs module-as-record projection — deferred (§2/§7). This
     // is a DECLINE (unrealized), not an ill-formed program.
+    // A BARE-NAME spec is the WHOLE-MODULE ALIAS form `(import "path" alias)`: bind the local `alias` to
+    // the module `path` (its exports), reached by qualified projection `(. alias member)` — the resolution
+    // of a uniformly-named export (`descriptor`) imported from 2+ modules that would COLLIDE under the
+    // flat named-list form (v-platform-itest's multi-contract dispatch). Distinguished POSITIONALLY from
+    // the named-list `(import "path" (name…))` (a LIST spec) — the two never collide. Record ONE
+    // module-alias `Import` (local = the alias, `module_alias` true); `build_file_scope` registers it as a
+    // module handle and `resolve_member` projects members against `from_file`'s exports (defs).
     let names: &[StructId] = match ast.get(spec_id) {
         Struct::List(items) => items,
         Struct::Atom(_) => {
-            return Err(Reject::decline(
-                "qualified import `(import \"path\" alias)` is a later phase; \
-                 use the named-list form `(import \"path\" (name…))`",
-            )
-            .at(occ));
+            let Some(alias) = ast.as_name(spec_id) else {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "`(import \"path\" alias)`: the alias must be a bare name",
+                )
+                .at(occ));
+            };
+            let Some(&from_file) = name_to_ix.get(path) else {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!("`(import …)` names unknown package file `{path}`"),
+                )
+                .at(occ));
+            };
+            if out.iter().any(|i| i.local == alias) {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    format!("`(import …)`: `{alias}` is imported more than once into this file"),
+                )
+                .at(occ));
+            }
+            out.push(Import {
+                local: alias.to_string(),
+                from_file,
+                exported: alias.to_string(),
+                module_alias: true,
+                occ,
+            });
+            return Ok(());
         }
     };
     let Some(&from_file) = name_to_ix.get(path) else {
@@ -699,6 +734,7 @@ fn resolve_import_clause(
                 local: AST_REFLECT_NAME.to_string(),
                 from_file,
                 exported: ast_reflect_def_name(from_file),
+                module_alias: false,
                 occ,
             });
             continue;
@@ -754,6 +790,7 @@ fn resolve_import_clause(
             local: name.to_string(),
             from_file,
             exported: name.to_string(),
+            module_alias: false,
             occ,
         });
     }
