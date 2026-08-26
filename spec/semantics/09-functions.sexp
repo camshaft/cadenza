@@ -7516,3 +7516,31 @@
            wrong result. (f 1 2 4 8 16 32) -> p1 + p3 + p5 = 2+8+32 = 42.")
   (input  (do (def (f (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64)) (+ p1 (+ p3 p5))) (def (main) (f 1 2 4 8 16 32)) (export main)))
   (call   main) (output (: 42 Int64)))
+
+;; -- partial-operator COMPOSITIONS (post-#3641): partial to a recursive HOF, runtime-operand partial through a record field, comparison-operator partial as a predicate (breaker batch 396) --
+(case "cpp1 a PARTIAL operator passed directly to a recursive HOF"
+  (input (do
+    (def (each3 (: k Int64) (: acc Int64) (: g (-> Int64 Int64)))
+      (if (= k 0) acc (each3 (- k 1) (+ acc (g k)) g)))
+    (def (main (: n Int64)) (each3 3 0 (+ n)))
+    (export main)))
+  (call main (: 10 Int64))
+  (output (: 36 Int64)))
+
+(case "cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied"
+  (input (do
+    (def (main (: n Int64))
+      (let ((r (record (= f (+ n)))))
+        ((. r f) 2)))
+    (export main)))
+  (call main (: 40 Int64))
+  (output (: 42 Int64)))
+
+(case "cpp3 partials of a COMPARISON operator select via a HOF"
+  (input (do
+    (def (count3 (: p (-> Int64 Bool)))
+      (+ (if (p 1) 1 0) (+ (if (p 5) 1 0) (if (p 9) 1 0))))
+    (def (main (: n Int64)) (count3 (< n)))
+    (export main)))
+  (call main (: 4 Int64))
+  (output (: 2 Int64)))
