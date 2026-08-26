@@ -1320,6 +1320,25 @@ pub(crate) fn param_name_occ(db: &Db, param: StructId) -> StructId {
 /// a runtime argument keeps its own (already-checked) type. The annotation type occurrence `T` is shared
 /// from the parameter (pinned by the caller's `resolve_subtree` of the signature) — a type expression
 /// resolves position-independently (its names are global), so sharing it into the wrap is sound.
+/// Whether `arg` is a 1-of-2 PARTIAL binary-operator application `(+ 10)` / `(< 3)` — a curried operator
+/// (ch01e). Peels a `Ref` (a `let`-bound partial `(let ((add10 (+ 10))) …)`) to reach the application.
+/// `Sub` at one operand is unary negation (not a curry), so it is excluded, matching `partial_binop_eta`.
+fn is_partial_binop_app(db: &mut Db, arg: StructId) -> bool {
+    let mut cur = arg;
+    while let Resolved::Ref { value } = resolved_of(db, cur) {
+        cur = value;
+    }
+    if let Resolved::Apply { head, args } = resolved_of(db, cur)
+        && args.len() == 1
+        && let Some(p) = meta_apply_of(db, head)
+        && p != crate::resolved::Prim::Sub
+        && (p.is_arith() || p.is_comparison() || p.is_float_arith())
+    {
+        return true;
+    }
+    false
+}
+
 fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
     // Only an annotated `(: name T)` parameter carries a type to check; a bare param substitutes its arg
     // directly. (`param` may itself be the `(: name T)` list — read its type child `T`.)
@@ -1368,6 +1387,16 @@ fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
         && !matches!(resolved_of(db, arg), Resolved::Apply { .. })
         && meta_apply_of(db, arg).is_some()
     {
+        return arg;
+    }
+    // A 1-of-2 PARTIAL binary-operator application `(+ 10)` as the argument — the ch01e curry: it IS a
+    // first-class function of the remaining operand. Like the bare-operator case above, substitute it RAW
+    // when the parameter is a function arrow: wrapping it `(: (+ 10) (-> …))` puts an annotated partial in
+    // HEAD position once β-reduction splices it — `(apply1 (+ 10) 5)` → `((: (+ 10) …) 5)` — where the
+    // dispatch cannot see through to fold `((+ 10) 5)` (the un-annotated `((+ 10) 5)` folds fine). Substituting
+    // raw keeps the curried spine foldable. Gated on the arrow parameter type (as above), so a partial op to a
+    // non-function parameter is unaffected.
+    if db.ast.as_form(ty_occ, "->").is_some() && is_partial_binop_app(db, arg) {
         return arg;
     }
     // Pin the annotation type before it is shared into the synthesized `(: arg T)` — its names resolve

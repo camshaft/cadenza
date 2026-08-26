@@ -1567,6 +1567,20 @@
             (def (main) (ap * 6 7)) (export main)))
   (output (: 42 Int64)))
 
+; A PARTIALLY-applied operator `(+ 10)` — a curried operator (ch01e: operators curry) — passed to a named
+; HOF whose function parameter is the RESULT arrow `(-> Int64 Int64)`. The partial IS a first-class function
+; `\b. 10 + b`; passing it to `apply1` and applying it to `5` yields `10 + 5 = 15`. The HOF INLINES, and the
+; β-reduction substitutes the partial for the annotated parameter RAW (not wrapped `(: (+ 10) …)`, which
+; would block the fold) — the partial-application twin of the bare-operator see-through above.
+(case "a partially-applied operator passed to an annotated named HOF applies its remaining operand"
+  (doc    "`(+ 10)` curries to `\\b. 10 + b`; `(apply1 (+ 10) 5)` hands that partial to a HOF taking `(->
+           Int64 Int64)` and applies it: 10 + 5 = 15. The inlined β-reduction substitutes the partial RAW
+           into the annotated parameter, so the reduced `((+ 10) 5)` folds like the bare `(+ 10 5)`.")
+  (input  (do
+            (def (apply1 (: f (-> Int64 Int64)) (: x Int64)) (f x))
+            (def (main) (apply1 (+ 10) 5)) (export main)))
+  (output (: 15 Int64)))
+
 ; The operator-as-value support is not arithmetic-specific: a Bool-returning COMPARISON operator
 ; (`<`/`>`/`=`) passed to a HOF works the same, through both the inline fold and the emitted-call eta. The
 ; HOF's function parameter is annotated with the comparison arrow `(-> Int64 Int64 Bool)`, which grounds the
