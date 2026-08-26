@@ -1709,3 +1709,30 @@
 (case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
   (input (do (def (main) (const (List.len (Set.to-list (: (Set.of (list)) (Set (Tuple Int64 Int64))))))) (export main)))
   (output (: 0 Int64)))
+
+; -- breaker batch 424 (2026-08-26): #3783 same-hour edge pins (the ConstBlock fall-through fix) —
+; a SET-accumulator recursion's to-list reads its sorted head and surfaces the taken trap as CDZ0304
+; (fail-loud through the whole fold), and a recursive const-param walk SUMS the folded list. Both
+; rejected the CDZ0201 catch-all pre-#3783. Residue: Char (blocked on v-runtime) / Bytes elements.
+
+(case "sar1 a recursion-built set accumulator to-list reads its sorted head under the trap detector (CDZ0304)"
+  (input (do
+    (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+      (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
+    (def (main)
+      (const (match (List.at (Set.to-list (grow (Set.of (list)) 4)) 0)
+               ((Option.Some v) (if (= v 7) (trap "cst1 sorted head seven") (trap "cst1 WRONG")))
+               ((Option.None) (trap "cst1 EMPTY")))))
+    (export main)))
+  (error CDZ0304 (message "cst1 sorted head seven")))
+
+(case "sar2 a recursive const walk SUMS a folded Set.to-list"
+  (input (do
+    (def (suml (const (: xs (List Int64))) (const (: i Int64)))
+      (match (List.at xs i)
+        ((Option.Some v) (+ v (suml xs (+ i 1))))
+        ((Option.None) 0)))
+    (def (main)
+      (const (suml (Set.to-list (Set.of (list 5 1 3))) 0)))
+    (export main)))
+    (output (: 9 Int64)))

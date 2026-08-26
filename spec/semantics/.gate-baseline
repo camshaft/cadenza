@@ -7824,3 +7824,5 @@ pass	lol1 a list-of-LISTS scrutinee matched and read via List.len reclaims (the 
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 pass	xf5 a handler threads a SET state and the final answer materializes its sorted head
+pass	sar1 a recursion-built set accumulator to-list reads its sorted head under the trap detector (CDZ0304)
+pass	sar2 a recursive const walk SUMS a folded Set.to-list
