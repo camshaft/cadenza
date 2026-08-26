@@ -3237,6 +3237,7 @@ pass	a reducer performing a RECORD host import reads a field of the result (via 
 pass	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
+pass	a reference buried under many non-binding forms resolves to its outer let binder
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a refined-newtype shrink stays IN-DOMAIN — it converges to the minimal value the invariant still admits, not below the floor
@@ -6697,6 +6698,7 @@ pass	sh1 a NESTED handler for the SAME effect shadows the outer — inner draws 
 pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — folds (let-crossing seed freshened)
 pass	sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)
 pass	sh2x a let binder feeds a nested handle's SEED and is read again AFTER the region — the freshened seed reference and the tail reference are the same binder
+pass	shadowing resolves nearest-wins through the scope-skip index
 pass	shd1 DYNAMIC shift amounts from the state — two drawn widths, the value-63 draw traps the checked shift overflow
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
