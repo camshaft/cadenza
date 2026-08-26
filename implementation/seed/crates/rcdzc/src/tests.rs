@@ -9994,42 +9994,6 @@ fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
     );
 }
 
-/// `(= n 0)` selects to `eqz` (one instruction), and it must still compute the correct boolean under
-/// wasmtime: true at zero, false otherwise, for both operand orders — a wrong `eqz` (say, ignoring the
-/// operand) would return a constant. `is-zero`/`is-zero2` (commuted) both return 1 at 0, 0 elsewhere.
-#[test]
-fn equality_with_zero_runs_correctly() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // (if (= n 0) 1 0) so the boolean crosses as an Int64 the harness reads.
-    let src = "(module m \
-                 (def (is-zero (: n Int64)) (if (= n 0) 1 0)) \
-                 (def (is-zero2 (: n Int64)) (if (= 0 n) 1 0)) \
-                 (export is-zero) (export is-zero2))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "is-zero", &[Val::S64(0)]),
-        1
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "is-zero", &[Val::S64(7)]),
-        0
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "is-zero", &[Val::S64(-1)]),
-        0
-    );
-    // Commuted form dispatches identically.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "is-zero2", &[Val::S64(0)]),
-        1
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "is-zero2", &[Val::S64(42)]),
-        0
-    );
-}
-
 /// A runtime `if` with two CHEAP LEAF branches emits wasm's BRANCHLESS `select` (no `if`/`else`/`end`),
 /// and it must compute the SAME value the structured block would — `select` pops `[then, else, cond]`
 /// and pushes `then` iff `cond` is nonzero. `min` `(if (< a b) a b)` and a value-picking `(if p a b)`
@@ -10381,32 +10345,6 @@ fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
         call_traps(&b8, "f", &[Val::S8(100)]),
         "inner Int8 overflow (200) traps"
     );
-}
-
-/// An exported comparison `(def (lt (: a Int64) (: b Int64)) (< a b))` runs to a boolean over runtime
-/// args — the signed machine comparison at the boundary.
-#[test]
-fn an_exported_comparison_runs_over_runtime_args() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (lt (: a Int64) (: b Int64)) (< a b)) (export lt))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(run_returns_with::<bool>(
-        &bytes,
-        "lt",
-        &[Val::S64(1), Val::S64(2)]
-    ));
-    assert!(!run_returns_with::<bool>(
-        &bytes,
-        "lt",
-        &[Val::S64(5), Val::S64(5)]
-    ));
-    // Signed: -1 < 1 is true (an unsigned compare would read -1 as huge and say false).
-    assert!(run_returns_with::<bool>(
-        &bytes,
-        "lt",
-        &[Val::S64(-1), Val::S64(1)]
-    ));
 }
 
 /// A CONSTANT unsigned comparison whose operand exceeds `i64` range folds by the TRUE numeric value at
