@@ -327,6 +327,49 @@ pub fn variant_scalar_payload_cases(
     any_payload.then_some(cases)
 }
 
+/// RESULT-SIDE ONLY: whether `ty` is a variant each of whose cases is nullary or carries ONE `leaf_liftable`
+/// payload — a SCALAR (as [`variant_scalar_payload_cases`]) OR a liftable COMPOUND (`list`/`Bytes`/`tuple`/
+/// `record`/nested). Returns `(case-name, has-payload)` per case in declaration order (= the component disc
+/// order). This is the RESULT-lift admission (the payload is read from the spilled retptr'd region by
+/// `select::emit_variant_sum_lift`, which recurses `emit_result_lift` for a compound payload); it is DISTINCT
+/// from `variant_scalar_payload_cases` (the ARG marshal's register-flatten path stays scalar-only — a compound
+/// payload there would need an in-memory arg marshal, a later increment). Excludes option/result-shaped sums
+/// (their own arms). Requires ≥1 payload case (an all-nullary sum is an `enum`, handled by value).
+pub fn variant_liftable_payload_cases(db: &mut Db, ty: &Ty) -> Option<Vec<(String, bool)>> {
+    use crate::backend::common::export_name::kebab_extern_name;
+    let Ty::Sum { decl, .. } = ty.strip_nominal() else {
+        return None;
+    };
+    if option_payload_ty(db, ty).is_some() || result_bytes_enum(db, ty).is_some() {
+        return None;
+    }
+    let decl = *decl;
+    let variants: Vec<(String, usize)> = {
+        let d = db.type_decl_by_occ(decl)?;
+        d.variants
+            .iter()
+            .map(|v| (kebab_extern_name(&v.name), v.payloads.len()))
+            .collect()
+    };
+    let mut cases = Vec::with_capacity(variants.len());
+    let mut any_payload = false;
+    for (disc, (name, n)) in variants.into_iter().enumerate() {
+        match n {
+            0 => cases.push((name, false)),
+            1 => {
+                let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
+                if !leaf_liftable(db, &pty) {
+                    return None; // a non-liftable payload (e.g. a Set/Map/String) → not this increment
+                }
+                any_payload = true;
+                cases.push((name, true));
+            }
+            _ => return None, // a multi-payload case → a later increment
+        }
+    }
+    any_payload.then_some(cases)
+}
+
 /// The boundary ABI of a shape-d record FIELD, or `None` if the field has no boundary form yet. Supports a
 /// NO-WRAP scalar (`Int64`/`UInt64`/`Bool`/`Float64`/`Float32` — the read needs no i64→i32 narrow), a
 /// `Bytes` (`list<u8>`) field, a NESTED record (recurse), and a `result<list<u8>, enum>` field
@@ -675,12 +718,12 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
         // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
         // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
         _ if option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)) => true,
-        // A general scalar-payload VARIANT (N cases, each nullary or a scalar payload; NOT option/result-
-        // shaped — those took their own arms above and `variant_scalar_payload_cases` excludes them). The lift
-        // (`select::emit_variant_sum_lift`) reads the disc + the selected case's scalar payload from the spilled
-        // retptr'd region and rebuilds the guest Sum; its component `variant` DEFINED type comes from
-        // `spilled_result_wit_type` → `add_wit_type_deduped`. The RESULT-side twin of the bare-variant ARG.
-        _ => variant_scalar_payload_cases(db, ty).is_some(),
+        // A general VARIANT (N cases, each nullary or ONE liftable payload — scalar OR a liftable compound
+        // like `list<u8>`/`list<T>`/`tuple`/`record`; NOT option/result-shaped, which took their own arms).
+        // The lift (`select::emit_variant_sum_lift`) reads the disc + the selected case's payload from the
+        // spilled retptr'd region (recursing `emit_result_lift` for a compound payload) and rebuilds the guest
+        // Sum; its component `variant` DEFINED type comes from `spilled_result_wit_type` → `add_wit_type_deduped`.
+        _ => variant_liftable_payload_cases(db, ty).is_some(),
     }
 }
 
@@ -715,14 +758,14 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
             err: Some(Box::new(WitType::Enum(err_cases))),
         });
     }
-    // A general scalar-payload VARIANT result → a `variant` WIT type: each case is `(name, Some(scalar-wit))`
-    // for a payload case or `(name, None)` for a nullary case, in declaration order (= the component disc
-    // order). The scalar payload's WIT comes from its own `ty_natural_wit`. The result-side twin of the
-    // bare-variant ARG's component type (`build_host_group`'s CDef::Variant).
-    if let Some(cases) = variant_scalar_payload_cases(db, ty) {
+    // A general VARIANT result → a `variant` WIT type: each case is `(name, Some(payload-wit))` for a payload
+    // case or `(name, None)` for a nullary case, in declaration order (= the component disc order). The
+    // payload's WIT comes from its own `ty_natural_wit` — a SCALAR or a liftable COMPOUND (`list<u8>` etc.).
+    // The result-side twin of the bare-variant ARG's component type (`build_host_group`'s CDef::Variant).
+    if let Some(cases) = variant_liftable_payload_cases(db, ty) {
         let mut wit_cases: Vec<(String, Option<WitType>)> = Vec::with_capacity(cases.len());
-        for (i, (name, payload)) in cases.iter().enumerate() {
-            let pw = if payload.is_some() {
+        for (i, (name, has_payload)) in cases.iter().enumerate() {
+            let pw = if *has_payload {
                 let pt = crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)?;
                 Some(crate::wit_world::ty_natural_wit(&pt)?)
             } else {

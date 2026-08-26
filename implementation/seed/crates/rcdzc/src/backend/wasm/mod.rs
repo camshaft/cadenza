@@ -2271,14 +2271,15 @@ fn declare_result_lift_ops(
                 declare_result_lift_ops(db, &payload, used);
             }
         }
-        // A general scalar-payload VARIANT result (`emit_variant_sum_lift`): `sum-new` builds every case's
-        // arm; each payload case's scalar is boxed by its own leaf op (recursed). Mirrors the lift so the
-        // marshal's `CallImport`s resolve (else u32::MAX → an invalid module — the arg-side trap's twin).
+        // A general VARIANT result (`emit_variant_sum_lift`): `sum-new` builds every case's arm; each payload
+        // case's payload is lifted by its OWN ops (recursed via `declare_result_lift_ops` — a scalar boxes, a
+        // compound `list<u8>`/`record`/… recurses its own alloc/set/copy ops). Mirrors the lift so its
+        // `CallImport`s resolve (else u32::MAX → an invalid module — the arg-side trap's twin).
         _ => {
-            if let Some(cases) = host::variant_scalar_payload_cases(db, ty) {
+            if let Some(cases) = host::variant_liftable_payload_cases(db, ty) {
                 used.insert("sum-new");
-                for (i, (_, p)) in cases.iter().enumerate() {
-                    if p.is_some()
+                for (i, (_, has_payload)) in cases.iter().enumerate() {
+                    if *has_payload
                         && let Some(pt) =
                             crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)
                     {

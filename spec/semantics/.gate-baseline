@@ -4236,6 +4236,7 @@ pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
 pass	a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)
+pass	a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a velocity multiplied by a time recovers the distance dimension
