@@ -97,3 +97,11 @@ def notification-envelope-conforms() =
     match d.event with
     | Event.Notification(n) => if n.id == b"id" then unit else trap("notification id mismatch")
     | _ => trap("expected an Event.Notification")
+
+// Self-reflect this contract's own id (design §1, P4): `contract-id(Ast.module)` folds THIS
+// module to its content-addressed id, byte-identical to the host `cdz_contract::contract_id`.
+// Exported so a reducer can import it to route on (`msg.contract == deliver-id()`) without a
+// hardcoded hash. Inert for the Rust codegen (which reads the schema, not this def/export).
+import { contract-id } from "contract-id"
+def deliver-id() -> Bytes = contract-id(Ast.module)
+export { deliver-id }

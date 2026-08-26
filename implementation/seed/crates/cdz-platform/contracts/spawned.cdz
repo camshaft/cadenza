@@ -35,3 +35,11 @@ def a-spawned-event() -> Event =
 def spawned-event-conforms() =
   match a-spawned-event() with
   | Event.Spawned(e) => if e.parent == b"parent" then unit else trap("spawned parent mismatch")
+
+// Self-reflect this contract's own id (design §1, P4): `contract-id(Ast.module)` folds THIS
+// module to its content-addressed id, byte-identical to the host `cdz_contract::contract_id`.
+// Exported so a reducer can import it to route on (`msg.contract == spawned-id()`) without a
+// hardcoded hash. Inert for the Rust codegen (which reads the schema, not this def/export).
+import { contract-id } from "contract-id"
+def spawned-id() -> Bytes = contract-id(Ast.module)
+export { spawned-id }

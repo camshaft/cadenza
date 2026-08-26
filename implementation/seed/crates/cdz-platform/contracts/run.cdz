@@ -41,3 +41,11 @@ def run-conforms() =
 def output-conforms() =
   match an-output() with
   | Output.Output(o) => if o == b"result" then unit else trap("run output mismatch")
+
+// Self-reflect this contract's own id (design §1, P4): `contract-id(Ast.module)` folds THIS
+// module to its content-addressed id, byte-identical to the host `cdz_contract::contract_id`.
+// Exported so a reducer can import it to route on (`msg.contract == run-id()`) without a
+// hardcoded hash. Inert for the Rust codegen (which reads the schema, not this def/export).
+import { contract-id } from "contract-id"
+def run-id() -> Bytes = contract-id(Ast.module)
+export { run-id }

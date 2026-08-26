@@ -42,4 +42,7 @@ def fail-conforms() =
 // `.*` exports every constructor (a bare `Verdict` would expose only the opaque type handle). This is how a
 // guest shares this contract's shape from its single source of truth rather than re-declaring it. Inert for
 // the Rust codegen (which reads the schema, not the export clause) and for a single-file compile.
-export { Verdict.*, Ack.* }
+import { contract-id } from "contract-id"
+def verdict-id() -> Bytes = contract-id(Ast.module)
+
+export { Verdict.*, Ack.*, verdict-id }
