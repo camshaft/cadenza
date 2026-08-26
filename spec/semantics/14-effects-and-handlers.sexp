@@ -6732,6 +6732,39 @@
             (export main)))
   (call   main) (output (: 17 Int64)))
 
+(case "ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold"
+  (doc    "Decline-witness (v-effects capture-once/bind-once fold arc). A closure whose init-let binds a
+           PERFORMING draw referenced by the returned lambda — (let ((f (let ((a (St.next))) (fn (x) (* a
+           x))))) (f 10)) under a +1-stride St handler seeded n — currently DECLINES cleanly (the lambda
+           body would re-run the draw at each application; the capture-once fold that threads the draw ONCE
+           and closes over the result is a later increment). Pinned as a decline-witness (verdict todo)
+           with the CORRECT capture-once value: a = St.next captured ONCE = seed n; (f 10) = 10*n. At n=5
+           that is 50 (NOT the old silent 60 re-performing miscompile). Flips to 50 PASS when the fold lands.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (f 10))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 50 Int64)))
+
+(case "cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold"
+  (doc    "The FACTORY-arg face of the capture-once decline-witness (v-effects fold arc). A helper mk returns
+           a closure over its param, fed by a performing arg — (let ((f (mk (St.next)))) (+ (f 10) (f
+           (St.next)))) under a +1-stride St handler seeded n — currently DECLINES cleanly (same re-run-the-
+           draw-per-application gap as ca1c). Pinned as a decline-witness (verdict todo) with the CORRECT
+           capture-once value: m = first St.next captured ONCE = seed n; (f 10) = 10*n; the second St.next
+           = n+1, (f (n+1)) = (n+1)*n; sum = n*n + 11*n. At n=5 that is 80 (NOT the old silent 116). Flips
+           to 80 PASS when the fold lands. (Oracle derivation to confirm with v-effects on review.)")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (mk (: m Int64)) (fn ((: x Int64)) (* x m)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((f (mk (St.next)))) (+ (f 10) (f (St.next))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 80 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))

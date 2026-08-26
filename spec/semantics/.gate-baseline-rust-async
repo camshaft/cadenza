@@ -4914,6 +4914,7 @@ pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
+todo	ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
@@ -4921,6 +4922,7 @@ pass	cc1 a closure over the fn PARAM built before the handle, applied twice insi
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
 pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
+todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
 pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
