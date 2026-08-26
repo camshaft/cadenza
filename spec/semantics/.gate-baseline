@@ -2612,6 +2612,8 @@ pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
 pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
+pass	a multiply by a constant power of two on the left strength-reduces
+pass	a multiply by a constant power of two strength-reduces and traps like the multiply
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
@@ -2653,6 +2655,7 @@ pass	a named variant-with-payload field in a record result crosses the export bo
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
+pass	a narrow UInt8 multiply by two strength-reduces and traps on width overflow
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
