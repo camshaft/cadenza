@@ -5136,6 +5136,7 @@ pass	cc5 composed closures over three draws — g(f(draw)) where f and g each ca
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
 pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
+pass	cc9 a closure capturing a value computed UNDER a handler escapes and applies after the handle
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round

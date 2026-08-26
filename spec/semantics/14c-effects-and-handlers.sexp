@@ -218,6 +218,23 @@
   (call   main (: 5 Int64)) (output (: 62 Int64))
   (call   main (: 2 Int64)) (output (: 17 Int64)))
 
+(case "cc9 a closure capturing a value computed UNDER a handler escapes and applies after the handle"
+  (doc    "The discharge-then-capture sound half: a closure that captures a value COMPUTED in-extent (a
+           handler-discharged St.get) may escape the handle and be applied outside it. In
+           (handle St k ((get (u) s (resume s s))) (let ((v (St.get))) (fn (x) (+ x v)))) the St.get runs
+           while the handler is live (v resolves to the seed k), and the escaping closure captures the pure
+           Int64 v — no further perform. Applied directly to 10 with k=7: v=7, (fn (x) (+ x 7)) 10 = 17. The
+           in-extent discharge is folded to its value first, so escape is sound (distinct from cc2, which
+           applies the escaped closure inside a second handle).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              ((handle St k ((get (u) s (resume s s)))
+                 (let ((v (St.get))) (fn ((: x Int64)) (+ x v))))
+               10))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 17 Int64)))
+
 (case "dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state"
   (input  (do
             (effect St (op next (-> Int64)))
