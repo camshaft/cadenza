@@ -7556,3 +7556,63 @@
            add(100, -1) = 99.")
   (input  (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
   (call   add (: 100 Int64) (: -1 Int64)) (output (: 99 Int64)))
+
+; -- breaker batch 403 (2026-08-26): higher-order APPLICATION flip pins — closures as first-class
+; runtime values through storage and selection shapes (record field, list element, runtime branch),
+; the eta-expanded prim-as-value control, a bare operator through an uncurried-annotated HOF, and
+; String.from-bytes validating runtime-built bytes. All were filed as declines; flipped on trunk.
+; Siblings ch01/ch01e (bare prim as value, partial application) pinned above.
+
+(case "ch02 a closure stored in a record field projects and applies"
+  (input  (do
+            (def (main (: n Int64))
+              (let ((r (record (= f (fn (x) (+ x n))))))
+                ((. r f) 2)))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
+
+(case "ch03 a closure stored in a LIST is fetched and applied"
+  (input  (do
+            (def (main (: n Int64))
+              (match (List.at (list (fn (x) (+ x n)) (fn (x) (* x n))) 1)
+                ((Option.Some g) (g 3))
+                ((Option.None) -1)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 30 Int64)))
+
+(case "ch04 a runtime-branch-selected closure applies"
+  (input  (do
+            (def (main (: n Int64))
+              (let ((g (if (> n 5) (fn (x) (+ x 1)) (fn (x) (* x 2)))))
+                (g n)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64)))
+
+(case "ch08 String.from-bytes of RUNTIME-built bytes validates"
+  (input  (do
+            (def (main (: k Int64))
+              (match (String.from-bytes (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 98))))
+                ((Option.Some s) (String.byte-len s))
+                ((Option.None) -1)))
+            (export main)))
+  (call   main (: 97 Int64))
+  (output (: 2 Int64)))
+
+(case "ch01b eta-expanded closure control for prim-as-value"
+  (input  (do
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) ((g a) b))
+            (def (main (: n Int64)) (ap (fn (a) (fn (b) (+ a b))) n 2))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
+
+(case "ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)"
+  (input  (do
+            (def (ap (: g (-> Int64 Int64 Int64)) (: a Int64) (: b Int64)) (g a b))
+            (def (main (: n Int64)) (ap + n 2))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
