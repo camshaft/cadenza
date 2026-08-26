@@ -9148,3 +9148,44 @@
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: 1 Int64))
   (output (: (Some -9223372036854775808) (Option Int64))))
+
+;; -- runtime UInt64 checked-arith twin ladder: the u64 exact-fit top (2^32-1 x 2^32+1), past-top, add-wrap boundary, sub-underflow/exact-zero (breaker batch 384) --
+(case "cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) (if (= v (UInt64.wrap -1)) 1 0))
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: 4294967295 Int64) (: 4294967297 Int64))
+  (output (: 1 Int64)))
+
+(case "cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) 0)
+        ((Option.None) 1)))
+    (export main)))
+  (call main (: 4294967296 Int64) (: 4294967296 Int64))
+  (output (: 1 Int64)))
+
+(case "cmu3 runtime UInt64 checked-add wraps None at max, Some just below"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt64.checked-add (UInt64.wrap a) (UInt64.wrap k))
+        ((Option.Some v) 1)
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: -1 Int64) (: 1 Int64)) (output (: 0 Int64))
+  (call main (: -2 Int64) (: 1 Int64)) (output (: 1 Int64)))
+
+(case "cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-sub (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) (if (= v (UInt64.wrap 0)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 5 Int64) (: 7 Int64)) (output (: 0 Int64))
+  (call main (: 7 Int64) (: 7 Int64)) (output (: 2 Int64)))
