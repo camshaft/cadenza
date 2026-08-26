@@ -183,3 +183,27 @@
               (= (Ast.encode (label (Ast.Int (BigInt.of 5)))) (Ast.encode (Ast.Name "none"))))
             (export run)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — HIGHER-ORDER folds (a closure passed to a `const` fn parameter) -----
+; A `const f: (T) -> U` parameter carrying a `fn` argument is captured as a first-class closure and APPLIED
+; per element, so a user recursive map/filter/fold that threads a closure const-folds. Without first-class
+; const closures the fold declined (a lambda is not a `is_const_value`, and a closure parameter has no
+; static lambda for the evaluator to reduce). (The stdlib `List.map`/`filter`/`fold` are augmentations that
+; expand to iterator pipelines the evaluator does not yet interpret — a separate decline class.)
+
+(case "const execution folds a higher-order recursion — a closure applied per element"
+  (doc    "`mymap` threads a `const` closure `f` and applies it to each element of a `const` list. Fed the
+           mapper `(fn (x) (Ast.Int (BigInt.of x)))` over `(list 1 2 3)`, the whole higher-order recursion
+           const-folds to `(list (Ast.Int 1) (Ast.Int 2) (Ast.Int 3))`. `Ast.encode` DEMANDS a compile-time
+           constant, so a non-folding higher-order call would decline the encode; the fold's bytes equal the
+           encoding of the literal list, witnessing that the closure was captured + applied at compile time.")
+  (input  (do
+            (def (mymap (const (: xs (List Int64))) (const (: f (-> Int64 Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t) (List.prepend (mymap t f) (f h)))))
+            (def (run)
+              (= (Ast.encode (Ast.List (mymap (list 1 2 3) (fn ((: x Int64)) (Ast.Int (BigInt.of x))))))
+                 (Ast.encode (Ast.List (list (Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2)) (Ast.Int (BigInt.of 3)))))))
+            (export run)))
+  (output (: true Bool)))
