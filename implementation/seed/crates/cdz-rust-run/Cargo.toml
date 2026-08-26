@@ -20,8 +20,19 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "cdz-rust-run"
+path = "src/main.rs"
+
 [dependencies]
 # The shared Rust-render helpers (identifier sanitize + call-arg / BigInt-arg marshalling) the rcdzc rust
 # backend emits through; the driver's call-expression builder reuses them so a corpus arg crosses the
 # native boundary exactly as the compiled fn's parameter type expects.
 cdz-rust-render = { path = "../cdz-rust-render" }
+# The shared corpus grade compare — decode a test-run.ast + grade an outcome, identical to the wasm
+# backend's `cdz-run`, so the compare lives in one crate both exec bins depend on (the rust trial-runner
+# is the only backend-specific piece). Dep-minimal (cadenza-syntax + anyhow), no wasmtime / no compiler.
+cdz-corpus-grade = { path = "../cdz-corpus-grade" }
+# Typed CLI with generated --help — the same parser the rest of the workspace uses.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

@@ -474,7 +474,10 @@ version = "0.0.0"
 name = "cdz-rust-run"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "cdz-corpus-grade",
  "cdz-rust-render",
+ "clap",
 ]
 
 [[package]]

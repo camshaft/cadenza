@@ -210,6 +210,25 @@ pub fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
     None
 }
 
+/// The SOLE export's source name — the fn to call for a corpus case with no `(call …)` (the common
+/// nullary-entry shape). Recovered from the emitted signature: sync mode emits `pub fn <name>(`, async
+/// mode `pub async fn <name><E: CdzEnv>(`, so split on whichever marker is present and stop the name at
+/// `(` OR `<` (the async generic-parameter list). `None` if no exported fn header is present. MUST match
+/// `parse_emitted_sig`'s marker so the recovered name parses back.
+pub fn sole_export_name(module: &str, async_mode: bool) -> Option<String> {
+    let marker = if async_mode {
+        "pub async fn "
+    } else {
+        "pub fn "
+    };
+    module
+        .split(marker)
+        .nth(1)
+        .map(|s| s.split(['(', '<']).next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +356,24 @@ mod tests {
         );
         // A plain non-factory call has no application group.
         assert_eq!(split_factory_application("f(1, 2)"), None);
+    }
+
+    #[test]
+    fn sole_export_name_recovers_the_entry() {
+        assert_eq!(
+            sole_export_name("// note\npub fn main() -> i64 { 42 }", false).as_deref(),
+            Some("main")
+        );
+        // Async: stop the name at the generic-parameter list `<`, not run into it.
+        assert_eq!(
+            sole_export_name(
+                "pub async fn run<E: cdz_rt::CdzEnv>(__cdz_env: &mut E) {}",
+                true
+            )
+            .as_deref(),
+            Some("run")
+        );
+        // No exported fn → None.
+        assert_eq!(sole_export_name("fn helper() {}", false), None);
     }
 }

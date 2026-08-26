@@ -124,10 +124,18 @@ three gaps remain:
    That driver-gen + rustc-run logic lives ONLY in `xtask` today (which is bloated) — so EXTRACT it into a
    DEDICATED CRATE `cdz-rust-run` (operator 2026-08-26: "make a dedicated crate for the rust runners; the
    xtask is just getting so bloated"): the crate holds the rust driver-gen + rustc-invoke + run + grade
-   (reusing the ported `cdz-run` grade logic for the outcome compare), exposes a `cdz-rust-run` bin the
-   nix per-case rust exec layer invokes, and xtask's `run_program_rust` becomes a thin call into it (so the
+   (reusing the shared `cdz-corpus-grade` compare for the outcome), exposes a `cdz-rust-run` bin the nix
+   per-case rust exec layer invokes, and xtask's `run_program_rust` becomes a thin call into it (so the
    logic has ONE home and xtask sheds weight). Plus a nix derivation that pre-builds the rlibs ONCE (CA) +
    a per-case rust build+exec layer mirroring the wasm one. Multi-tick.
+
+   STATUS: the crate is BUILT — `sig` (signature analysis), `driver` (export call + host-response shims),
+   `run` (rustc compile+run, linking the caller-supplied `cdz_rt`/`cdz_num`/`cadenza_ast` rlibs), and
+   `grade` (the rust trial-runner through `cdz-corpus-grade`), plus the `cdz-rust-run --grade` bin the nix
+   layer shells out to. REMAINING: the nix CA-rlib derivation + per-case rust build+exec layer (mirror the
+   wasm `mkCorpusBuild`/`mkCorpusExec`), then wire xtask's `run_program_rust` to delegate at cutover. The
+   host-closure factory/consumer application + the async `block_on` harness (the small closure/async corpus
+   subset) are deferred — those cases decline-to-Todo until added.
 7. **Regression detection (baseline-diff)**: the gate diffs each case's verdict against `.gate-baseline`
    (7225 pass + 40 todo + 0 fail), so a `Pass→Todo/Fail` REGRESSION fails it; the nix graph only catches
    an outright Fail (a declined value-case is Todo, exit 0). Options: (a) port a committed per-case
