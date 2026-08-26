@@ -23285,6 +23285,19 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x.cmp(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x.cmp(&y)),
+        // Bytes order is UNSIGNED byte-lexicographic — the raw canonical bytes compared element-wise, shorter
+        // prefix less (Rust `[u8]: Ord`). This is EXACTLY the runtime `set-to-list`/`map-to-list` Bytes order
+        // (0x80 sorts as 128, not signed −128) pinned in `19-sets` (the Set-element + Map-key Bytes-order
+        // cases). A `Bytes` element/key can be a baked `Core::ConstBytes` OR a `Core::BytesOf` of constant
+        // bytes, so read both via `const_byte_slice`.
+        (Core::ConstBytes(_), _)
+        | (_, Core::ConstBytes(_))
+        | (Core::BytesOf { .. }, _)
+        | (_, Core::BytesOf { .. }) => {
+            let xb = const_byte_slice(db, a)?;
+            let yb = const_byte_slice(db, b)?;
+            Some(xb.cmp(&yb))
+        }
         (Core::Unit, Core::Unit) => Some(std::cmp::Ordering::Equal),
         // A nested-compound or runtime key has no compile-time canonical order here — decline.
         _ => None,
@@ -23302,6 +23315,8 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
         (CVal::Int(x), CVal::Int(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
         (CVal::Str(x), CVal::Str(y)) => Some(x.cmp(y)),
         (CVal::Bool(x), CVal::Bool(y)) => Some(x.cmp(y)),
+        // Bytes: UNSIGNED byte-lexicographic (Rust `[u8]: Ord`) = the runtime to-list Bytes order (19-sets).
+        (CVal::Bytes(x), CVal::Bytes(y)) => Some(x.cmp(y)),
         (CVal::Unit, CVal::Unit) => Some(std::cmp::Ordering::Equal),
         _ => None,
     }
