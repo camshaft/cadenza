@@ -103,6 +103,13 @@ const KIND_SYM: u8 = 15;
 // A TYPE-SUFFIXED numeric literal (`100N`/`0.5R`). Payload: one suffix byte (`SUFFIX_*`), one
 // body-shape byte (`BODY_*`), then the body encoded as a bare int/float would be.
 const KIND_SUFFIXED: u8 = 16;
+// The non-finite float VALUES — payloadless kind tags (like `KIND_BOOL_*`), a single byte with no body,
+// so they are canonical and byte-identical by construction and total over the non-finite space. A
+// frozen-contract assignment shared byte-identically with the rcdzc codec twin (and the runtime's op93/
+// decode, which `include!`s that twin): `Ast.encode` of a computed NaN/±∞ emits one of these.
+const KIND_FLOAT_NAN: u8 = 17;
+const KIND_FLOAT_POS_INF: u8 = 18;
+const KIND_FLOAT_NEG_INF: u8 = 19;
 const SUFFIX_BIGINT: u8 = 0;
 const SUFFIX_RATIONAL: u8 = 1;
 const BODY_INT: u8 = 0;
@@ -507,6 +514,15 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
         Leaf::Float(d) => {
             out.push(KIND_FLOAT);
             write_float_body(out, d);
+        }
+        // Non-finite float VALUES — a single kind byte, no body (like the bool tags).
+        Leaf::FloatNan => out.push(KIND_FLOAT_NAN),
+        Leaf::FloatInf { negative } => {
+            out.push(if *negative {
+                KIND_FLOAT_NEG_INF
+            } else {
+                KIND_FLOAT_POS_INF
+            });
         }
         Leaf::Str(s) => {
             out.push(KIND_STR);
@@ -1151,6 +1167,10 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
             Leaf::Int { value, radix }
         }
         KIND_FLOAT => Leaf::Float(read_float_body(r)?),
+        // Non-finite float VALUES — payloadless, so the tag alone reconstructs the leaf.
+        KIND_FLOAT_NAN => Leaf::FloatNan,
+        KIND_FLOAT_POS_INF => Leaf::FloatInf { negative: false },
+        KIND_FLOAT_NEG_INF => Leaf::FloatInf { negative: true },
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -1573,13 +1593,60 @@ mod tests {
         let back = decode(&bytes).expect("decode of the every-leaf-kind fixture");
         assert!(
             a.structurally_eq(&back),
-            "every-leaf-kind arena (Sym/Char/Bytes/BadChar/BadEscape/Suffixed) not preserved through the \
-             codec: {a:?} vs {back:?}"
+            "every-leaf-kind arena (Sym/Char/Bytes/BadChar/BadEscape/Suffixed/FloatNan/FloatInf) not \
+             preserved through the codec: {a:?} vs {back:?}"
         );
         assert_eq!(
             bytes,
             encode(&back),
             "re-encode of the decoded (canonical) every-leaf-kind arena is not byte-identical"
+        );
+    }
+
+    #[test]
+    fn non_finite_float_leaves_encode_to_the_frozen_payloadless_tags_17_18_19() {
+        // The operator-directed non-finite float VALUES (so `Ast.encode` of NaN/±∞ SUCCEEDS) are a
+        // FROZEN contract shared byte-identically across cadenza-ast, the rcdzc codec twin, and the
+        // runtime's op93/decode: KIND_FLOAT_NAN=17, KIND_FLOAT_POS_INF=18, KIND_FLOAT_NEG_INF=19 —
+        // each a single kind byte with NO body (canonical + total). Pin the EXACT tag bytes (a future
+        // edit cannot silently renumber them), payloadlessness (a lone-atom leaf section is exactly the
+        // one kind byte), and that each round-trips encode->decode equal.
+        for (leaf, tag) in [
+            (Leaf::FloatNan, 17u8),
+            (Leaf::FloatInf { negative: false }, 18u8),
+            (Leaf::FloatInf { negative: true }, 19u8),
+        ] {
+            let mut raw = Vec::new();
+            write_leaf(&mut raw, &leaf);
+            assert_eq!(
+                raw,
+                vec![tag],
+                "{leaf:?} must encode to the single frozen tag byte {tag}"
+            );
+            let mut r = Reader::new(&raw);
+            assert_eq!(
+                read_leaf(&mut r).unwrap(),
+                leaf,
+                "read_leaf inverts tag {tag}"
+            );
+            let mut b = Builder::new();
+            let root = b.atom_leaf(leaf.clone());
+            let a = b.finish(root);
+            let back = decode(&encode(&a)).expect("decode of a lone non-finite-float leaf");
+            assert!(a.structurally_eq(&back), "{leaf:?} arena round-trip");
+        }
+        // The three tags are distinct — no two non-finite leaves collide on the wire.
+        let enc = |l: &Leaf| {
+            let mut v = Vec::new();
+            write_leaf(&mut v, l);
+            v
+        };
+        let nan = enc(&Leaf::FloatNan);
+        let pinf = enc(&Leaf::FloatInf { negative: false });
+        let ninf = enc(&Leaf::FloatInf { negative: true });
+        assert!(
+            nan != pinf && pinf != ninf && nan != ninf,
+            "the three non-finite float tags are distinct"
         );
     }
 
@@ -2210,8 +2277,11 @@ mod tests {
             },
             kind: SuffixKind::BigInt,
         });
+        let nan = b.atom_leaf(Leaf::FloatNan);
+        let pinf = b.atom_leaf(Leaf::FloatInf { negative: false });
+        let ninf = b.atom_leaf(Leaf::FloatInf { negative: true });
         let inner = b.list(vec![sym, ch, by]);
-        let root = b.list(vec![inner, bad, esc, suf]);
+        let root = b.list(vec![inner, bad, esc, suf, nan, pinf, ninf]);
         b.finish(root)
     }
 

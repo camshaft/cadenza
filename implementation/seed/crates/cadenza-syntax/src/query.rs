@@ -3908,6 +3908,11 @@ pub mod hash {
     const TAG_BAD_CHAR: u8 = 0x09;
     const TAG_SYM: u8 = 0x0a;
     const TAG_SUFFIXED: u8 = 0x0b;
+    // Non-finite float VALUES — a distinct digest tag each (NaN payloadless; infinity carries a sign
+    // byte, mirroring TAG_BOOL), so the content hash separates NaN, +∞ and −∞ from each other and from
+    // any finite float. Independent of the codec's kind tags (this is a separate digest scheme).
+    const TAG_FLOAT_NAN: u8 = 0x0c;
+    const TAG_FLOAT_INF: u8 = 0x0d;
 
     /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
     pub fn hash_tree(t: &Tree) -> u64 {
@@ -3947,6 +3952,9 @@ pub mod hash {
                 h.update((sig.len() as u64).to_be_bytes());
                 h.update(&sig);
             }
+            // Non-finite float values — payloadless NaN, sign-tagged infinity.
+            Leaf::FloatNan => h.update([TAG_FLOAT_NAN]),
+            Leaf::FloatInf { negative } => h.update([TAG_FLOAT_INF, *negative as u8]),
             Leaf::Str(s) => update_bytes(h, TAG_STR, s.as_bytes()),
             Leaf::Bytes(b) => update_bytes(h, TAG_BYTES, b),
             Leaf::Bool(b) => h.update([TAG_BOOL, *b as u8]),

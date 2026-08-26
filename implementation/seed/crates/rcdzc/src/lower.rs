@@ -16409,7 +16409,10 @@ fn resolve_leaf_offsets(
             crate::ast::Leaf::Bytes(bs) => {
                 off += 1 + leb_len(bs.len() as u64) + bs.len();
             }
-            crate::ast::Leaf::Float(_) => return None, // floats not yet in the runtime escape
+            // No float (finite or non-finite NaN/±∞) is in the runtime escape yet — bail the template.
+            crate::ast::Leaf::Float(_)
+            | crate::ast::Leaf::FloatNan
+            | crate::ast::Leaf::FloatInf { .. } => return None,
             // A char leaf encodes like a Str (kind byte + len LEB + utf8 bytes); a char does not yet
             // cross the boundary in the runtime escape, so advance past it (no runtime hole).
             crate::ast::Leaf::Char(c) => {

@@ -106,6 +106,10 @@ fn leaf(l: &Leaf) -> String {
     match l {
         Leaf::Int { value, radix } => format!("Int {value} ({})", radix_name(*radix)),
         Leaf::Float(d) => format!("Float {}", crate::literal::render_decimal(d)),
+        Leaf::FloatNan => "FloatNan".to_string(),
+        Leaf::FloatInf { negative } => {
+            format!("FloatInf {}", if *negative { "-inf" } else { "inf" })
+        }
         Leaf::Str(s) => format!("Str {s:?}"),
         Leaf::Bytes(b) => format!("Bytes {b:?}"),
         Leaf::Bool(b) => format!("Bool {b}"),

@@ -18,14 +18,14 @@
 //! *name*, never a change to this frozen shape. This is what keeps the AST stable and macro
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::collections::BTreeMap;
+use alloc::vec;
+use alloc::vec::Vec;
 // `String`/`ToString`/`format!` from `alloc` (not std's prelude) so this file compiles under the
 // `#![no_std]` `cdz-runtime` that `include!`s it as well as under std `rcdzc`; `alloc::string::String`
 // == `std::string::String`.
-use alloc::string::{String, ToString};
 use alloc::format;
+use alloc::string::{String, ToString};
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -33,7 +33,9 @@ use alloc::format;
 /// `Int` is arbitrary-precision and `Float` is an exact width-free decimal: a literal's magnitude
 /// or precision is never a well-formedness ceiling, and the concrete machine width (`Int64`,
 /// `(Int N)`, `f32`, `f64`, …) is a *type* decision made downstream, not a representation choice
-/// made here. `nan`/`inf`/`-inf` are ordinary `Name`s, so a `Float` only ever holds a finite value.
+/// made here. `Float` always holds a FINITE decimal; a non-finite float VALUE (NaN, ±∞) — e.g. the
+/// result of `Ast.encode` of a computed float — is a dedicated payloadless leaf ([`Leaf::FloatNan`] /
+/// [`Leaf::FloatInf`]), since a decimal cannot represent it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum Leaf {
     /// An integer literal: its exact value plus the base its text used. The base is display-only
@@ -44,6 +46,18 @@ pub enum Leaf {
         radix: Radix,
     },
     Float(Decimal),
+    /// The non-finite float value NaN — a single canonical, sign-less, payloadless leaf. Every NaN
+    /// bit-pattern collapses to this one value (so it is `Eq`/`Hash` and byte-identical by construction),
+    /// letting `Ast.encode` of a computed NaN succeed where the finite-only [`Leaf::Float`] decimal cannot
+    /// represent it. Distinct codec tag; no body.
+    FloatNan,
+    /// A non-finite float value infinity — `+∞` (`negative == false`) or `−∞` (`negative == true`). One
+    /// variant with a sign discriminant (mirroring [`Leaf::Bool`] → two payloadless codec tags), so a
+    /// computed infinite float `Ast.encode`s to a payloadless, canonical leaf the finite-only
+    /// [`Leaf::Float`] decimal cannot hold. Distinct codec tags per sign; no body.
+    FloatInf {
+        negative: bool,
+    },
     Str(alloc::rc::Rc<str>),
     /// A CHAR literal (`#\a`, `#\u+00E9`) — a single Unicode scalar value, the element type of a string's
     /// scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). A `char` is a

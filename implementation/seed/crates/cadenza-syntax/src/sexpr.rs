@@ -350,6 +350,12 @@ fn print_leaf(leaf: &Leaf, out: &mut String) {
     match leaf {
         Leaf::Int { value, radix } => out.push_str(&crate::literal::render_int(value, *radix)),
         Leaf::Float(d) => out.push_str(&crate::literal::render_decimal(d)),
+        // Non-finite float VALUES render `nan`/`inf`/`-inf`. These leaves are produced only by
+        // `Ast.encode` of a computed float, NEVER by the reader (which reads a source `nan`/`inf`
+        // identifier to a `Name`), so a value-DISPLAY spelling is enough; a round-tripping source
+        // literal for them is a separate surface slice.
+        Leaf::FloatNan => out.push_str("nan"),
+        Leaf::FloatInf { negative } => out.push_str(if *negative { "-inf" } else { "inf" }),
         Leaf::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Leaf::Str(s) => {
             out.push('"');
