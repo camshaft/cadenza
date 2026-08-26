@@ -493,6 +493,25 @@ interface heap {
   //    7 LEB varints in slot order [int,float,bool,str,name,bytes,list] the runtime reads. BORROWS `handle`
   //    + `discs`; returns a fresh owned String handle. APPENDED last (frozen-contract rule). See `op_ast_print`.
   ast-print: func(handle: u32, discs: u32) -> u32;     // 92 — runtime Ast heap value + baked discs → canonical s-expr text String (borrows both)
+
+  //  ast-encode(handle, discs) -> handle
+  //    The runtime half of the compiler's `Ast.encode`: serialize a RUNTIME `Ast` heap value to its
+  //    canonical `cdzast` binary form (a fresh owned Bytes leaf), BYTE-IDENTICAL to the compile-time
+  //    `Ast.encode` fold — both walk the value into the SAME shared cadenza-ast arena builder and run the
+  //    SAME `codec::encode` (the codec-core is `#[path]`-shared into the runtime, not re-implemented). The
+  //    `discs` Bytes bakes NINE Ast-variant discs (LEB) in slot order [int,float,bool,str,name,list,bytes,
+  //    char,symbol] — two more than `ast-print` (encode round-trips every variant). BORROWS both. See
+  //    `op_ast_encode`. APPENDED last (frozen-contract rule).
+  ast-encode: func(handle: u32, discs: u32) -> u32;    // 93 — runtime Ast heap value + baked 9 discs → canonical cdzast Bytes (borrows both)
+
+  //  ast-decode(bytes-handle, discs) -> handle
+  //    The runtime half of the compiler's `Ast.decode`, the TOTAL inverse of `ast-encode`: parse a Bytes
+  //    leaf as one canonical `cdzast` document (shared `codec::decode`) and rebuild the heap `Ast` value.
+  //    Returns the `Ast` handle on success, or 0 (NULL) on ANY parse failure (wrong header / malformed /
+  //    trailing bytes / a non-`Ast` leaf); the compiler's `Core::AstDecode` emit wraps the result
+  //    (`h != 0 → Ok(h)`, else `Err`), so decode is total — a bad byte sequence is DATA, never a trap. Takes
+  //    the SAME 9-disc `discs` as `ast-encode`. BORROWS both. See `op_ast_decode`. APPENDED last.
+  ast-decode: func(bytes-handle: u32, discs: u32) -> u32; // 94 — canonical cdzast Bytes + baked 9 discs → heap Ast handle, or 0 on parse failure (borrows both)
 }
 
 world runtime {

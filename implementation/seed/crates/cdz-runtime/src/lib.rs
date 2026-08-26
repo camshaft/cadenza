@@ -108,6 +108,8 @@ extern crate alloc;
 // `vec!` sites read the same under `no_std` as they did under `std`'s prelude.
 use alloc::boxed::Box;
 use alloc::string::String;
+// `ToString` for `&Rc<str> -> String` in the `ast-decode` leaf rebuild (no_std has no std prelude).
+use alloc::string::ToString;
 use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -6343,6 +6345,12 @@ impl Guest for Component {
     // `op_ast_print`.
     fn ast_print(handle: u32, discs: u32) -> u32 {
         op_ast_print(Handle::from_u32(handle), Handle::from_u32(discs)).to_u32()
+    }
+    fn ast_encode(handle: u32, discs: u32) -> u32 {
+        op_ast_encode(Handle::from_u32(handle), Handle::from_u32(discs)).to_u32()
+    }
+    fn ast_decode(bytes_handle: u32, discs: u32) -> u32 {
+        op_ast_decode(Handle::from_u32(bytes_handle), Handle::from_u32(discs)).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
