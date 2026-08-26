@@ -48612,31 +48612,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             2,
             "different variable kept"
         );
-
-        // VALUE PARITY: `and` keeps the tighter, `or` the looser — verified across the two bounds.
-        use wasmtime::component::Val;
-        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (and (< x 5) (< x 10))) (export f))",
-        )))
-        .expect("compile");
-        assert!(run_returns_with::<bool>(&andfn, "f", &[Val::S64(3)])); // < 5 & < 10
-        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(7)])); // 7 not < 5
-        assert!(!run_returns_with::<bool>(&andfn, "f", &[Val::S64(12)]));
-        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (or (< x 5) (< x 10))) (export f))",
-        )))
-        .expect("compile");
-        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(3)]));
-        assert!(run_returns_with::<bool>(&orfn, "f", &[Val::S64(7)])); // 7 < 10
-        assert!(!run_returns_with::<bool>(&orfn, "f", &[Val::S64(12)]));
-        // TRAP SAFETY: the kept comparison still evaluates the operand, so a trapping `(/ 100 z)` traps.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (< (/ 100 z) 10)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "the kept comparison preserves the operand's trap"
-        );
+        // Value + trap parity (and→tighter, or→looser, trapping operand keeps its trap) is the corpus
+        // family "a same-direction and/or of two upper-bound comparisons subsumes …" +
+        // "the same-direction subsumption fold keeps a trapping operand's trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
@@ -48987,51 +48966,12 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             0,
             "singleton and collapses to equality"
         );
-
-        // VALUE PARITY across the boundary.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: x Int64)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for x in [0, 3, 5, 12] {
-            assert!(
-                !run_returns_with::<bool>(&f("(and (< x 5) (> x 10))"), "f", &[Val::S64(x)]),
-                "disjoint and @{x}"
-            );
-        }
-        for x in [0, 4, 100, -5] {
-            assert!(
-                run_returns_with::<bool>(&f("(or (< x 5) (> x 3))"), "f", &[Val::S64(x)]),
-                "covering or @{x}"
-            );
-        }
-        // The gapped-or computes its real (non-constant) value: x=5 is in the gap [3,10] → false.
-        assert!(
-            !run_returns_with::<bool>(&f("(or (< x 3) (> x 10))"), "f", &[Val::S64(5)]),
-            "gapped or @5 = false"
-        );
-        // The non-empty-and computes correctly: 5 < x < 10.
-        assert!(run_returns_with::<bool>(
-            &f("(and (< x 10) (> x 5))"),
-            "f",
-            &[Val::S64(7)]
-        ));
-        assert!(!run_returns_with::<bool>(
-            &f("(and (< x 10) (> x 5))"),
-            "f",
-            &[Val::S64(3)]
-        ));
-        // TRAP SAFETY: a trapping operand in a disjoint-and keeps its trap.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (> (/ 100 z) 10)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "a trapping operand keeps its trap"
-        );
+        // Value + trap parity (disjoint-and → false, covering-or → true, real-gap-or / non-empty-and
+        // compute their non-constant value, and the disjoint-and fold keeps a trapping operand) is the
+        // corpus family "opposite-direction comparisons over a disjoint gap / that cover the line …",
+        // "an opposite-direction or with a real gap …", "… and over a non-empty interval …", and "the
+        // opposite-direction disjoint-and fold keeps a trapping operand's trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
@@ -49100,49 +49040,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             (0, 2),
             "exclusive width-2 left un-folded"
         );
-
-        // VALUE PARITY: the collapsed form equals `(= v c)` at, below, and above the point — signed AND
-        // unsigned, and at a negative constant.
-        use wasmtime::component::Val;
-        let f = |ty: &str, body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: x {ty})) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        let sgn = f("Int64", "(if (and (>= x 5) (<= x 5)) 1 0)");
-        for (x, want) in [(4, 0), (5, 1), (6, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&sgn, "f", &[Val::S64(x)]),
-                want,
-                "signed @{x}"
-            );
-        }
-        let uns = f("UInt64", "(if (and (>= x 5) (<= x 5)) 1 0)");
-        for (x, want) in [(4u64, 0), (5, 1), (6, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&uns, "f", &[Val::U64(x)]),
-                want,
-                "unsigned @{x}"
-            );
-        }
-        let neg = f("Int64", "(if (and (>= x -3) (<= x -3)) 1 0)");
-        for (x, want) in [(-2, 0), (-3, 1), (-4, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&neg, "f", &[Val::S64(x)]),
-                want,
-                "negative @{x}"
-            );
-        }
-        // TRAP SAFETY: a trapping operand in the collapsed pair still traps (the DISCARDED second bound's
-        // trap is preserved by the `is_trap_free` gate — here both bounds share the trapping `/`).
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (and (>= (/ 100 z) 5) (<= (/ 100 z) 5)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "trapping operand keeps its trap"
-        );
+        // Value + trap parity (the collapsed form equals `(= x c)` signed/unsigned/negative, and keeps a
+        // trapping operand's trap) is the corpus family "two inclusive bounds … collapse to equality …" +
+        // "the inclusive-bounds collapse keeps a trapping operand's trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
@@ -49219,53 +49120,12 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             2,
             "distinct var kept"
         );
-
-        // VALUE PARITY.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: x Int64)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for (x, w) in [(5, true), (3, false), (200, false)] {
-            assert_eq!(
-                run_returns_with::<bool>(&f("(and (= x 5) (> x 0))"), "f", &[Val::S64(x)]),
-                w,
-                "and-sat @{x}"
-            );
-        }
-        for x in [5, 3, 200] {
-            assert!(
-                !run_returns_with::<bool>(&f("(and (= x 5) (> x 100))"), "f", &[Val::S64(x)]),
-                "contradiction @{x}"
-            );
-        }
-        for (x, w) in [(5, true), (3, true), (-5, false)] {
-            assert_eq!(
-                run_returns_with::<bool>(&f("(or (= x 5) (>= x 0))"), "f", &[Val::S64(x)]),
-                w,
-                "or-subsume @{x}"
-            );
-        }
-        // The not-subsumed `or` keeps the extra equality point.
-        assert!(
-            run_returns_with::<bool>(&f("(or (= x 5) (> x 100))"), "f", &[Val::S64(5)]),
-            "or @5 = true (the point)"
-        );
-        assert!(!run_returns_with::<bool>(
-            &f("(or (= x 5) (> x 100))"),
-            "f",
-            &[Val::S64(50)]
-        ));
-        // TRAP SAFETY: a trapping operand in the contradiction case keeps its trap.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (and (= (/ 10 z) 5) (> (/ 10 z) 100)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "a trapping operand keeps its trap"
-        );
+        // Value + trap parity (equality+satisfiable-range → the equality; equality+contradicting-range →
+        // false; equality-or-covering-range → the range; equality-or-non-covering → keeps the point; and
+        // the contradiction fold keeps a trapping operand) is the corpus family "an equality combined
+        // with a satisfiable/contradicting range …", "an equality or-ed with a covering/non-covering
+        // range …", and "the equality-and-range contradiction fold keeps a trapping operand's trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
