@@ -1281,6 +1281,17 @@ fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: b
     binding_escapes_dup_aware(db, id, binder, tail_borrowed, None)
 }
 
+/// Whether the parameter `binder` ESCAPES (is consumed / flows out) the function `body`, vs is only
+/// BORROWED. The exact escape query the reclaim discipline uses (via [`binding_escapes`], which handles a
+/// `Core::Param` occurrence): `true` = the callee takes ownership (a consuming op / the result), so the
+/// CALLER must NOT reclaim it; `false` = the callee only borrows it (a `byte-len` / content compare /
+/// field read), so its OWNER reclaims it. The plain-export entry-param LIFT wrapper (`backend::wasm::mod`)
+/// owns the value-heap value it lifts from `(ptr, len)`, so it must `drop` a lifted param the def only
+/// borrows (`!param_escapes_body`) — the borrowed-owned-operand reclaim, at the boundary wrapper.
+pub(crate) fn param_escapes_body(db: &mut Db, body: StructId, binder: StructId) -> bool {
+    binding_escapes(db, body, binder, false)
+}
+
 /// The worker of [`binding_escapes`], with an optional `dup_sites` set. When `dup_sites` is `Some`, a
 /// CONSUMING occurrence of `binder` that is a Perceus RETAIN site (in `dup_sites`) does NOT count as an
 /// escape: the retain `dup`'d a fresh reference for the consuming op to take, leaving the binding's OWN

@@ -846,13 +846,15 @@ pub struct WrapperDesc {
     /// name-lex-ordered record, or a scalar param). The permute for a declaration-ordered WIT record.
     pub param_slots: Vec<Option<Vec<u32>>>,
     /// Parallel to `params`: for a TOP-LEVEL memory-bearing leaf param (a `String`/`Bytes` crossing the
-    /// boundary as `string`/`list<u8>`, flattened to `(ptr, len)`), `Some(kind)` says to lift it — copy the
-    /// bytes out of linear memory into a value-heap `Bytes` (like a [`FieldRebuild::BytesLeaf`], but the
-    /// handle is passed DIRECTLY as the def arg, not stored into a record cell), then for a `Str` build a
-    /// `String` from it (`str-from-bytes`). `None` = a scalar or `record` param (handled via `params`). The
-    /// `params` entry for such a param is `None` (its build is here, not a scalar passthrough). Reuses the
-    /// two `list<u8>` scratch locals + the core module's memory 0 (`wrapper_needs_memory`).
-    pub mem_leaf_params: Vec<Option<MemLeafKind>>,
+    /// boundary as `string`/`list<u8>`, flattened to `(ptr, len)`), `Some((kind, drop_after))` says to lift
+    /// it — copy the bytes out of linear memory into a value-heap byte-leaf handle (like a
+    /// [`FieldRebuild::BytesLeaf`], but the handle is passed DIRECTLY as the def arg, not stored into a
+    /// record cell; a Cadenza `String` IS a UTF-8 byte-leaf, so no decode). `drop_after` = the def only
+    /// BORROWS this param (does not consume it), so the wrapper — which OWNS the lifted value — must `drop`
+    /// it after the call (the borrowed-owned-operand reclaim; a consuming def, e.g. `String.concat`, takes
+    /// ownership and sets this false so the wrapper does not double-free). `None` = a scalar/`record` param
+    /// (handled via `params`). Reuses the two `list<u8>` scratch locals + memory 0 (`wrapper_needs_memory`).
+    pub mem_leaf_params: Vec<Option<(MemLeafKind, bool)>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
@@ -1258,6 +1260,10 @@ fn core_module_impl(
             let mut next_local = p + if has_bytes { 2 } else { 0 };
             let mut inner = Vec::new();
             let mut leaf = 0u32;
+            // Locals holding a lifted memory-leaf handle the def only BORROWED — the wrapper owns them and
+            // reclaims (`drop`) them AFTER the def call (a consuming param sets `drop_after` false, so nothing
+            // is saved and the def's own consumption reclaims it — never a double-free).
+            let mut drop_locals: Vec<u32> = Vec::new();
             for (pi, pp) in wrap.params.iter().enumerate() {
                 // A TOP-LEVEL memory-bearing leaf param (String/Bytes) takes precedence: copy its boundary
                 // `(ptr, len)` bytes out of linear memory into a value-heap byte-leaf handle and leave that
@@ -1267,11 +1273,20 @@ fn core_module_impl(
                 // copied buffer is already a canonical String handle — no `str-from-bytes` decode (a WIT
                 // `string` param is guaranteed valid UTF-8, and that op would re-wrap it). Only the boundary
                 // TYPE differs (`string` vs `list<u8>`), fixed at the routing site via `ty_natural_wit`.
-                if wrap.mem_leaf_params.get(pi).copied().flatten().is_some() {
+                if let Some((_kind, drop_after)) = wrap.mem_leaf_params.get(pi).copied().flatten() {
                     let (buf, ctr) =
                         scratch.expect("a memory-bearing leaf param needs the scratch locals");
                     emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
                     leaf += 2; // the string/list flattened to (ptr, len)
+                    if drop_after {
+                        // The def borrows this param; save the handle (it stays on the stack as the def arg)
+                        // so the wrapper can reclaim it after the call.
+                        let dl = next_local;
+                        next_local += 1;
+                        inner.push(op::LOCAL_TEE);
+                        uleb128(dl as u64, &mut inner); // [buf] stays; buf also saved in `dl`
+                        drop_locals.push(dl);
+                    }
                     continue;
                 }
                 match pp {
@@ -1288,6 +1303,14 @@ fn core_module_impl(
             }
             inner.push(op::CALL);
             uleb128(wrap.def_abs as u64, &mut inner); // → [def result]
+            // Reclaim each lifted memory-leaf param the def only BORROWED (the wrapper is its sole owner).
+            // `drop` takes the handle and leaves the def result beneath untouched (stack-balanced).
+            for dl in &drop_locals {
+                inner.push(op::LOCAL_GET);
+                uleb128(*dl as u64, &mut inner);
+                inner.push(op::CALL);
+                uleb128(imp("drop"), &mut inner);
+            }
             // Result: a scalar/unit passes straight through; a compound spills to a memory return area.
             if let ResultLower::SpillRecord { size, align, write } = &wrap.result {
                 let rec = next_local;
