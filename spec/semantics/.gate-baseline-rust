@@ -4069,6 +4069,7 @@ pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
+pass	a value-pick (if p a b) selects the arg matching the runtime condition's truth value
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
@@ -4621,6 +4622,7 @@ pass	an integer literal in a type annotation's type position is rejected
 pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
+pass	an integer min via (if (< a b) a b) returns the smaller in either operand order
 pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
 pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
