@@ -1712,11 +1712,11 @@
           '';
 
         # EXEC — grade one case. Closure = the COMPILER-FREE `cdzRun` + the runtime store; NO compiler, so a
-        # compiler change cannot rotate this beyond the (content-addressed) build input. `expect-kind` routes:
-        #   - output/trap → the compile MUST have succeeded, then `cdz-run --grade` runs + grades the wasm.
-        #   - error/declines → the compile MUST have been refused (a compile-dependent outcome; this increment
-        #     asserts the refusal, the exact code/message match is the build-grade follow-on).
-        # A value-case that did not compile, or a refusal-case that did, fails here.
+        # compiler change cannot rotate this beyond the (content-addressed) build input. `cdz-run --grade` is
+        # the UNIVERSAL grader (reproduces the `xtask gate` for every outcome kind): it runs the wasm for
+        # output/trap, and grades error/declines + warns from the captured compile outcome
+        # (`--compile-status`/`--compile-diag`). So exec just hands it the build output — no bash routing.
+        # `emit.wasm` is passed only when the compile succeeded (a refusal has none). Exit 1 = a real Fail.
         mkCorpusExec = { name, build, idx }:
           pkgs.runCommand "corpus-exec-${name}-${idx}"
             {
@@ -1726,31 +1726,11 @@
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             export CDZ_STORE="${componentStore}"
             status=$(cat ${build}/compile.status)
-            kind=$(cat ${build}/expect-kind)
-            if [ "$status" = 0 ]; then
-              case "$kind" in
-                output|trap)
-                  gcn=()
-                  if [ -e ${build}/component-name ]; then gcn=(--component-name "$(cat ${build}/component-name)"); fi
-                  cdz-run ${build}/emit.wasm --grade ${build}/test-run.ast "''${gcn[@]}" ;;
-                *)
-                  echo "FAIL ${name} ${idx}: expected $kind but the program COMPILED (a refusal was expected)"; exit 1 ;;
-              esac
-            else
-              case "$kind" in
-                error|declines)
-                  echo "ok (build-graded refusal): ${name} ${idx}" ;;
-                *)
-                  # An output/trap case whose program the compiler DECLINED. The `xtask gate` grades this
-                  # TODO (a not-yet-implemented feature, not a miscompile: `Ran::Declined` vs `Expect::Output`
-                  # → Todo), NOT a Fail — and the wasm baseline has 40 such todos and ZERO fails. So match
-                  # that: Todo (exit 0), never a hard fail here. (Catching a PASS→TODO regression needs the
-                  # gate's baseline-DIFF, which this graph does not yet do — the old gate stays authoritative
-                  # for regression detection until the baseline-diff + rust-backend slices land.)
-                  echo "TODO ${name} ${idx}: expected $kind but the compiler declined (not-yet-implemented; graded todo like the gate)" ;;
-              esac
-            fi
-            echo "ok: corpus ${name} case ${idx} ($kind)" > "$out"
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err)
+            if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
+            if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            cdz-run "''${args[@]}"
+            echo "ok: corpus ${name} case ${idx}" > "$out"
           '';
 
         # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
