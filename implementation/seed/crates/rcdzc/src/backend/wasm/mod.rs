@@ -1330,6 +1330,53 @@ pub fn emit(
     Ok(envelope::assemble(&core, &boundary, &imports, &import_name))
 }
 
+/// Collect the DISTINCT fully-constant `Bytes` literals used anywhere in the reachable program (`order` =
+/// the emission def indices), interned BY CONTENT in stable first-seen order — the build-once static-bytes
+/// table (`DESIGN-static-data.md` §2d, increment 2). Each distinct byte sequence is materialized ONCE into a
+/// module global (the build-once emit slice that follows); every use then reads that global (`global.get` +
+/// dup) instead of re-`bytes-alloc`+`bytes-set`-ing the buffer per evaluation. Two literals with identical
+/// content collapse to ONE entry (constant-CSE over the canonical byte value). A `Bytes.of` with any runtime
+/// element contributes nothing — it is not constant, so `constant_bytes_value` returns `None` and it keeps
+/// building per call.
+///
+/// Walks each def body over [`core_child_ids`](crate::backend::wasm::select::core_child_ids) — the complete
+/// child enumerator the B2 sharing analysis uses — with an explicit work stack + a visited set, so a shared
+/// (DAG) node is examined once and a deep or cyclic core graph cannot overflow the stack. The visited set is
+/// shared across defs (a node id is unique in the arena, so a node reachable from two defs is walked once).
+/// Returns the distinct payloads (index = the global slot each will occupy); the EMPTY vec for a program with
+/// no constant bytes literal — then the build-once emit adds no GLOBAL/START section and the module is
+/// byte-identical to before.
+pub fn collect_static_bytes(db: &mut Db, order: &[usize]) -> Vec<Vec<u8>> {
+    let mut distinct: Vec<Vec<u8>> = Vec::new();
+    let mut seen_content: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<crate::ast::StructId> =
+        std::collections::HashSet::new();
+    for &def in order {
+        let Ok(body) = def_body(db, def) else {
+            continue;
+        };
+        let mut stack = vec![body];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(bytes) = crate::lower::constant_bytes_value(db, id)
+                && seen_content.insert(bytes.clone())
+            {
+                distinct.push(bytes);
+            }
+            // Descend to children. A constant `BytesOf`'s own children are `ConstInt` leaves (no nested
+            // static bytes), but descending them is harmless — they contribute nothing — so the walk stays
+            // uniform. Push in reverse so children pop in `core_child_ids` order (a stable pre-order DFS).
+            let children = crate::backend::wasm::select::core_child_ids(db, id);
+            for &c in children.iter().rev() {
+                stack.push(c);
+            }
+        }
+    }
+    distinct
+}
+
 /// The component functype item (`0x40 <params> <result>`) for a host op — its parameter and result
 /// COMPONENT valtype bytes (the faithful boundary primitives). Params are NAMED (`p0`, `p1`, …) as the
 /// component model requires. A SCALAR param is its `AbiValType::comp_byte`; a STRING param is the

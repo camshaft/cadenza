@@ -95209,3 +95209,65 @@ fn constant_bytes_value_extracts_the_byte_content_of_constant_literals_only() {
         "a scalar constant is not a `Core::BytesOf`, so it never extracts to bytes"
     );
 }
+
+/// §2d STATIC bytes (`DESIGN-static-data.md` increment 2 — the whole-program collection pass).
+/// Pins [`crate::backend::wasm::collect_static_bytes`]: it walks the reachable program and returns the
+/// DISTINCT constant `Bytes` payloads interned by content in first-seen order — the build-once static-bytes
+/// table (index = the module global slot each will occupy). Identical literals across defs collapse to one
+/// entry (constant-CSE); distinct literals each get an entry in first-seen order; a runtime `Bytes.of`
+/// contributes nothing; and a constant bytes literal NESTED inside a larger value is still found (the walk
+/// descends every child via `core_child_ids`). A regression here would either merge distinct literals into
+/// one shared global (a miscompile once emit consumes the table) or miss a hoistable literal.
+#[test]
+fn collect_static_bytes_interns_distinct_constant_bytes_literals() {
+    use crate::backend::wasm::collect_static_bytes;
+    use crate::db::Db;
+    let collect = |src: &str, defs: &[&str]| -> Vec<Vec<u8>> {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let order: Vec<usize> = defs
+            .iter()
+            .map(|n| db.def_by_name(n).unwrap_or_else(|| panic!("def {n}")))
+            .collect();
+        collect_static_bytes(&mut db, &order)
+    };
+    // Two defs with IDENTICAL constant bytes → interned to ONE entry (constant-CSE across the module).
+    assert_eq!(
+        collect(
+            "(module m (def (a) (Bytes.of (list 7 8 9))) (def (b) (Bytes.of (list 7 8 9))) \
+             (def (main) 0) (export main))",
+            &["a", "b"]
+        ),
+        vec![vec![7u8, 8, 9]],
+        "identical constant bytes across defs must intern to one static-bytes entry"
+    );
+    // Distinct literals → distinct entries, in first-seen order (stable global-slot assignment).
+    assert_eq!(
+        collect(
+            "(module m (def (a) (Bytes.of (list 1))) (def (b) (Bytes.of (list 2))) \
+             (def (main) 0) (export main))",
+            &["a", "b"]
+        ),
+        vec![vec![1u8], vec![2u8]],
+        "distinct constant bytes must each get an entry, in first-seen order"
+    );
+    // A runtime `Bytes.of` contributes no static-bytes entry (it is not constant — builds per call).
+    assert_eq!(
+        collect(
+            "(module m (def (f (: n Int64)) (Bytes.of (list (UInt8.wrap n)))) \
+             (def (main) 0) (export main))",
+            &["f"]
+        ),
+        Vec::<Vec<u8>>::new(),
+        "a runtime Bytes.of must contribute no static-bytes entry"
+    );
+    // A constant bytes NESTED inside a larger value (a record field) is still found — the walk descends
+    // every child, so a literal is hoistable wherever it appears, not only as a whole function body.
+    assert_eq!(
+        collect(
+            "(module m (def (g) (record (pl (Bytes.of (list 5 6))))) (def (main) 0) (export main))",
+            &["g"]
+        ),
+        vec![vec![5u8, 6]],
+        "a constant bytes literal nested in a record field must be collected by the descent"
+    );
+}
