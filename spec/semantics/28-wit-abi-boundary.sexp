@@ -1101,3 +1101,91 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (def (f (: x Int64)) (record (= b1 x) (= b2 (* x 2)) (= b3 (+ x 100)))) (export f)))
   (call f (: 7 Int64))
   (output (: (record (= b1 7) (= b2 14) (= b3 107)) (record (b1 Int64) (b2 Int64) (b3 Int64)))))
+
+; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
+; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
+; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
+; record 2-field (minimal, no spill) / 20-field (spill-sized), option-in-record Some+None, bare
+; option, list, TWO scalar params, variant-with-payload. cord1 pins the SYNTHESIZED-world (no
+; wit-world clause) 2-field record result twin, which passes BOTH targets.
+
+(case "sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (b1 (s64)) (b2 (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64)) (record (= b1 x) (= b2 2)))
+    (export f)))
+  (call f (: 1 Int64))
+  (output (: (record (= b1 1) (= b2 2)) (record (b1 Int64) (b2 Int64)))))
+
+(case "sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (b1 (s64)) (b2 (s64)) (b3 (s64)) (b4 (s64)) (b5 (s64)) (b6 (s64)) (b7 (s64)) (b8 (s64)) (b9 (s64)) (b10 (s64)) (b11 (s64)) (b12 (s64)) (b13 (s64)) (b14 (s64)) (b15 (s64)) (b16 (s64)) (b17 (s64)) (b18 (s64)) (b19 (s64)) (b20 (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64))
+      (record (= b1 x) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 (* x 2))))
+    (export f)))
+  (call f (: 9 Int64))
+  (output (: (record (= b1 9) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 18)) (record (b1 Int64) (b2 Int64) (b3 Int64) (b4 Int64) (b5 Int64) (b6 Int64) (b7 Int64) (b8 Int64) (b9 Int64) (b10 Int64) (b11 Int64) (b12 Int64) (b13 Int64) (b14 Int64) (b15 Int64) (b16 Int64) (b17 Int64) (b18 Int64) (b19 Int64) (b20 Int64)))))
+
+(case "sp3 SCALAR param + record result with an Option field (Some side)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (a (s64)) (d ("option" (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64)) (record (= a 9) (= d (Option.Some x))))
+    (export f)))
+  (call f (: 5 Int64))
+  (output (: (record (= a 9) (= d (Some 5))) (record (a Int64) (d (Option Int64))))))
+
+(case "sp3n SCALAR param + record result with an Option field (None side, branch-selected)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (a (s64)) (d ("option" (s64))))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64)) (record (= a x) (= d (if (> x 0) (Option.Some x) Option.None))))
+    (export f)))
+  (call f (: 0 Int64))
+  (output (: (record (= a 0) (= d (None unit))) (record (a Int64) (d (Option Int64))))))
+
+(case "sp4 SCALAR param + bare option result"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("option" (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64)) (Option.Some (* x 3)))
+    (export f)))
+  (call f (: 4 Int64))
+  (output (: (Some 12) (Option Int64))))
+
+(case "sp5 SCALAR param + list result"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("list" (s64))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64)) (list x (* x 2) (* x 3)))
+    (export f)))
+  (call f (: 2 Int64))
+  (output (: (2 4 6) (List Int64))))
+
+(case "sp6 TWO scalar params + 2-field record result (multi-scalar face)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (param y (s64)) (result ("record" (b1 (s64)) (b2 (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: x Int64) (: y Int64)) (record (= b1 (+ x y)) (= b2 (* x y))))
+    (export f)))
+  (call f (: 3 Int64) (: 4 Int64))
+  (output (: (record (= b1 7) (= b2 12)) (record (b1 Int64) (b2 Int64)))))
+
+(case "sp7 SCALAR param + variant-with-payload result (sum face of the same gate)"
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("variant" (small (s64)) (big))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type Pick (Small Int64) (Big))
+    (def (f (: x Int64)) (if (< x 100) (Pick.Small x) Pick.Big))
+    (export f)))
+  (call f (: 5 Int64))
+  (output (: (small 5) pick)))
+
+(case "cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)"
+  (input (do
+    (def (f (: x Int64)) (record (= b1 1) (= b2 2)))
+    (export f)))
+  (call f (: 1 Int64))
+  (output (: (record (= b1 1) (= b2 2)) (Record (: b1 Int64) (: b2 Int64)))))
