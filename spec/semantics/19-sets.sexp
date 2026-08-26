@@ -3843,7 +3843,8 @@
       (if (Set.contains (Set.of (list (Ast.encode (Ast.Int (BigInt.of n))))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
     (export main)))
   (call main (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
 
 (case "xf4 a Map keyed by encode-Bytes discriminates two different encodes"
   (input (do
@@ -3854,4 +3855,5 @@
           ((Option.None) -1))))
     (export main)))
   (call main (: 7 Int64))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  (live-objects 0))
