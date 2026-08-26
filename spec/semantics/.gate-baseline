@@ -5149,6 +5149,17 @@ pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
 pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
+pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
+pass	ce02 checked addition over a RUNTIME operand yields None on overflow
+pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
+pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
+pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
+pass	ce07 literal-tuple pattern matches a RUNTIME tuple
+pass	ce08 equality of two RUNTIME-built Maps
+pass	ce09 equality of two RUNTIME-built Sets
+pass	ce10 equality of RUNTIME lists of records
+pass	ce11 wrapping addition over a RUNTIME operand wraps
+pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
 pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
 pass	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 pass	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
@@ -5192,6 +5203,7 @@ pass	chg1 a BATTERY controller with a protected reserve — charge clamps at one
 pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
 pass	chk2 a closed handle with STRING state folds under (const ...)
 pass	chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole
+pass	cj03 Ast.print of a RUNTIME AST value renders
 pass	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 pass	cj03r Ast.print of a RUNTIME AST value renders
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
@@ -5933,6 +5945,7 @@ pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count 
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
+pass	iso-b a let-bound escaped-closure helper-call answer inside the handle body folds — the recovery forces the re-parented load-time ref onto the structural walk so it resolves against the rebuilt let (was a false CDZ0101)
 pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
@@ -5995,7 +6008,9 @@ pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, th
 pass	lm1 a branch-selected owned list scrutinee is reclaimed after the match
 pass	lm2 a helper-built branch-selected list scrutinee reclaims across the call
 pass	lm3 a branch-selected list-of-tuples match computes (KNOWN LEAK: 4 cells on the debug runtime, heap-element list class — v-runtime fixing; live-objects clause returns with the fix)
+pass	lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells
 pass	lm5 a rest-binder match computes (KNOWN LEAK: 2 cells on the debug runtime, derived-tail vec-drop — v-runtime fixing; live-objects clause returns with the fix)
+pass	lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail
 pass	lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list
 pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
@@ -6124,6 +6139,12 @@ pass	ms1 an op returns a THREE-variant sum built from state parity — two seque
 pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
 pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
 pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match
+pass	msr1 a branch-selected owned STRING scrutinee dispatched by literal arms reclaims
+pass	msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims
+pass	msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims
+pass	msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element
+pass	msr6 a NESTED match — outer list arm rebinds an inner record — reclaims both shells
+pass	msr6 a nested list+record match computes (KNOWN LEAK: 4 cells on the debug runtime — v-runtime fixing; live-objects clause returns with the fix)
 pass	mts1 a Map whose VALUES are TUPLES — per-key (count,sum) stats update through tuple rebuild inside the arm, the answer packs the fresh pair
 pass	multi-argument application is curried application
 pass	multi-export Set-result closures — the singleton one
@@ -6949,6 +6970,13 @@ pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escape
 pass	stacked line comments on a top-level form are all seen through
 pass	stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players
 pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
+pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
+pass	sto3 to-list length + sum are order-independent invariants
+pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
+pass	sto5 a STRING set to-list is lexicographically sorted
+pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
+pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
+pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb
 pass	stp1 TIERED flat-fee billing — use accrues usage answering it, bill answers the current tier's flat fee (five under ten, twelve under twenty-five, twenty above) resetting usage, total reads the collected fees, and the seed pre-loads usage so the FIRST bill lands in a different tier while the later cycles converge
 pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
@@ -7753,30 +7781,5 @@ todo	an exported entry with a String parameter is called with a string argument
 todo	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	iso-b a let-bound escaped-closure helper-call answer inside the handle body declines cleanly — must NOT mis-reject CDZ0101 (recovery falls back to the honest todo when its rewrite would drop the let binder)
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
-pass	ce02 checked addition over a RUNTIME operand yields None on overflow
-pass	ce11 wrapping addition over a RUNTIME operand wraps
-pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
-pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
-pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
-pass	ce07 literal-tuple pattern matches a RUNTIME tuple
-pass	ce08 equality of two RUNTIME-built Maps
-pass	ce09 equality of two RUNTIME-built Sets
-pass	ce10 equality of RUNTIME lists of records
-pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
-pass	cj03 Ast.print of a RUNTIME AST value renders
-pass	msr1 a branch-selected owned STRING scrutinee dispatched by literal arms reclaims
-pass	msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims
-pass	msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims
-pass	msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element
-pass	msr6 a nested list+record match computes (KNOWN LEAK: 4 cells on the debug runtime — v-runtime fixing; live-objects clause returns with the fix)
-pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
-pass	sto3 to-list length + sum are order-independent invariants
-pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
-pass	sto5 a STRING set to-list is lexicographically sorted
-pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
-pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
-pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb

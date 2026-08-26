@@ -30321,22 +30321,23 @@ mod tests {
     }
 
     #[test]
-    fn a_let_bound_escaped_closure_answer_never_misrejects_unbound() {
+    fn a_let_bound_escaped_closure_answer_folds_not_misrejects() {
         // breaker iso-b: let-binding the escaped-closure helper-call answer inside the handle body and
         // returning the binder — `(handle E s (arms) (let ((a (ap (fn (x) (+ x (E.tick)))))) a))` — is a
-        // WELL-FORMED program. The escaped-closure recovery's inline rewrite can rebuild the `let` in a way
-        // that drops the binder identity, so its re-reduced body's `a` reference re-resolves UNBOUND. That
-        // must NEVER surface as a CDZ0101 rejection (a wrong diagnostic on valid code): the recovery commits
-        // its result only if it folds to a poison-free core, else falls back to the honest
-        // HANDLER_NOT_REDUCIBLE todo. So the outcome is either a fold or that honest decline — never Unbound.
+        // WELL-FORMED program that must FOLD (the `let` just names cx5d's answer). The escaped-closure
+        // recovery rebuilds the `let` and re-parents the load-time body ref under the fresh `let`; that ref
+        // kept its stale LOAD-TIME scope-skip entry (→ its original init), so it resolved to the OLD init and
+        // a later hygiene rename missed it → it re-resolved UNBOUND (a false CDZ0101). The recovery now forces
+        // the rebuilt subtree's load-time nodes onto the exhaustive walk, so the ref resolves against the
+        // CURRENT (rebuilt) `let` and the handle folds — NOT a poison of any kind (was Unbound).
         let ast = crate::testkit::parse(
             "(module m (effect E (op tick (-> Int64))) (def (ap (: g (-> Int64 Int64))) (g 5)) (def (main (: n Int64)) (handle E (% n 3) ((tick () s (resume (* s 10) (+ s 1)))) (let ((a (ap (fn (x) (+ x (E.tick)))))) a))) (export main))",
         );
         let mut db = Db::load(ast);
         let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
         assert!(
-            !matches!(core_of(&mut db, body), Core::Poison(ref r) if r.code == Some(crate::diag::Code::Unbound)),
-            "a let-bound escaped-closure answer must not mis-reject CDZ0101 on a well-formed program"
+            !matches!(core_of(&mut db, body), Core::Poison(_)),
+            "a let-bound escaped-closure answer must FOLD (recovery forces structural resolution), not decline or mis-reject"
         );
     }
 

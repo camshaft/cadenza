@@ -4935,6 +4935,17 @@ pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
 pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
+pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
+pass	ce02 checked addition over a RUNTIME operand yields None on overflow
+pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
+pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
+pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
+pass	ce07 literal-tuple pattern matches a RUNTIME tuple
+pass	ce08 equality of two RUNTIME-built Maps
+pass	ce09 equality of two RUNTIME-built Sets
+pass	ce10 equality of RUNTIME lists of records
+pass	ce11 wrapping addition over a RUNTIME operand wraps
+pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
 pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
 pass	cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities
 pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
@@ -5696,6 +5707,7 @@ pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count 
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
+pass	iso-b a let-bound escaped-closure helper-call answer inside the handle body folds — the recovery forces the re-parented load-time ref onto the structural walk so it resolves against the rebuilt let (was a false CDZ0101)
 pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
@@ -6675,6 +6687,13 @@ pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escape
 pass	stacked line comments on a top-level form are all seen through
 pass	stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players
 pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
+pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
+pass	sto3 to-list length + sum are order-independent invariants
+pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
+pass	sto5 a STRING set to-list is lexicographically sorted
+pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
+pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
+pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb
 pass	stp1 TIERED flat-fee billing — use accrues usage answering it, bill answers the current tier's flat fee (five under ten, twelve under twenty-five, twenty above) resetting usage, total reads the collected fees, and the seed pre-loads usage so the FIRST bill lands in a different tier while the later cycles converge
 pass	straight-line add-then-subtract keeps the value but is not cancelled to the operand
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
@@ -7440,6 +7459,7 @@ todo	bo1 bare order over two runtime encode results compares content-lexicograph
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
+todo	cj03 Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
@@ -7462,7 +7482,6 @@ todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	iso-b a let-bound escaped-closure helper-call answer inside the handle body declines cleanly — must NOT mis-reject CDZ0101 (recovery falls back to the honest todo when its rewrite would drop the let binder)
 todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
 todo	nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)
@@ -7486,22 +7505,3 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
-pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
-pass	ce02 checked addition over a RUNTIME operand yields None on overflow
-pass	ce11 wrapping addition over a RUNTIME operand wraps
-pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
-pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
-pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
-pass	ce07 literal-tuple pattern matches a RUNTIME tuple
-pass	ce08 equality of two RUNTIME-built Maps
-pass	ce09 equality of two RUNTIME-built Sets
-pass	ce10 equality of RUNTIME lists of records
-pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
-todo	cj03 Ast.print of a RUNTIME AST value renders
-pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
-pass	sto3 to-list length + sum are order-independent invariants
-pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
-pass	sto5 a STRING set to-list is lexicographically sorted
-pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
-pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
-pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb
