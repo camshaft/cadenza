@@ -1516,3 +1516,40 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7009 Int64)))
+
+; --- Ast IS a runtime value: the R2 codec round-trips it (operator challenge 2026-08-26). ---
+; Ast is a built-in RECURSIVE SUM (Int(BigInt)/Float/Bool/Str/Name/List((List Ast))/Bytes) with a full
+; runtime representation — NOT compile-time-only (compiler-primitives.md §3a: "the Ast sum has a runtime
+; representation and Ast.encode works at runtime"). So a RUNTIME Ast value Value.encode/decode round-trips
+; like any recursive sum (the descriptor closes the List-of-Ast recursion via a Ref). These pin that
+; invariant so a userspace value that HOLDS an Ast (e.g. a contract descriptor with Ast-typed fields) is a
+; valid runtime value. (A runtime param drives construction so it does NOT const-fold.)
+
+(case "a runtime Ast value round-trips through the R2 value codec (Value.encode/decode)"
+  (doc    "Ast is just a recursive sum, so a RUNTIME Ast value has a runtime rep and Value.encode/decode
+           round-trips it. `Value.decode (Value.encode (Ast.Bool b)) : Option Ast` is `Some` — the encoded
+           value form is the sum's variant/payload, decoded back to the Ast node. `main true` → 1 (Some);
+           an all-`None` decode would give 0. Uses `Ast.Bool` (a Bool payload) to keep the leaf simple —
+           `Ast.Int` carries a `BigInt`, not an Int64. wasm-only (the rust `Value` emit is a later
+           increment) — additive baseline.")
+  (input  (do
+            (def (main (: b Bool))
+              (match (: (Value.decode (Value.encode (Ast.Bool b))) (Option Ast))
+                ((Some m) 1)
+                ((None u) 0)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64)))
+
+(case "a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec"
+  (doc    "The homoiconic/recursive case: `(Ast.List (list (Ast.Bool b) (Ast.Str \"x\")))` — an Ast whose
+           payload is a `(List Ast)` of further Ast nodes — round-trips through Value.encode/decode to
+           `Some`. Proves the codec handles the recursive Ast shape (the shape descriptor closes the
+           List-of-Ast back-edge via a `Ref`, exactly as for any recursive sum), so an arbitrarily nested
+           Ast value is a valid runtime value. `main true` → 1; an all-`None` decode → 0. wasm-only.")
+  (input  (do
+            (def (main (: b Bool))
+              (match (: (Value.decode (Value.encode (Ast.List (list (Ast.Bool b) (Ast.Str "x"))))) (Option Ast))
+                ((Some m) 1)
+                ((None u) 0)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64)))
