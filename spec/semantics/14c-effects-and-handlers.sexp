@@ -17618,3 +17618,47 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 403 Int64)))
+
+;; -- abort x delegation: continuation-discard vs outer state, abort-observes-state, abort value delegates outward (breaker batch 378) --
+(case "abd1 an inner ABORT discards its continuation — the outer handler's state advances only for dispatches that ran"
+  (input (do
+    (effect Out (op o (-> Int64)))
+    (effect In (op stop (-> Int64)))
+    (def (main (: n Int64))
+      (handle Out n
+        ((o () s (resume (* s 10) (+ s 1))))
+        (+ (Out.o)
+           (+ (handle In 0
+                ((stop () s 777))
+                (+ (In.stop) (Out.o)))
+              (Out.o)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 847 Int64)))
+
+(case "abd2 an abort arm observes the state threaded by earlier resuming dispatches"
+  (input (do
+    (effect In (op tick (-> Int64)) (op stop (-> Int64)))
+    (def (main (: n Int64))
+      (handle In n
+        ((tick () s (resume s (+ s 1)))
+         (stop () s (* s 100)))
+        (do (In.tick) (In.tick) (In.stop) 999)))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 400 Int64)))
+
+(case "abd3 an abort VALUE computed by delegating to the outer handler threads the outer state"
+  (input (do
+    (effect Out (op o (-> Int64)))
+    (effect In (op stop (-> Int64)))
+    (def (main (: n Int64))
+      (handle Out n
+        ((o () s (resume (* s 10) (+ s 1))))
+        (+ (Out.o)
+           (handle In 0
+             ((stop () s (+ 1000 (Out.o))))
+             (In.stop)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1150 Int64)))

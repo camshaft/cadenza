@@ -7275,3 +7275,6 @@ pass	shx3 a helper installing a FRESH handle per call gets a fresh state each ti
 pass	dd1 a FIVE-level nested delegation chain threads every level's state per inner dispatch
 pass	dd2 a delegation that SKIPS intervening handler levels routes to the right outer handler
 pass	dd3 two inner effects FAN IN to one shared outer counter in body order
+pass	abd1 an inner ABORT discards its continuation — the outer handler's state advances only for dispatches that ran
+pass	abd2 an abort arm observes the state threaded by earlier resuming dispatches
+pass	abd3 an abort VALUE computed by delegating to the outer handler threads the outer state
