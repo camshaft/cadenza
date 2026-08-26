@@ -207,3 +207,43 @@
                  (Ast.encode (Ast.List (list (Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2)) (Ast.Int (BigInt.of 3)))))))
             (export run)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — a COMPOUND-typed const param activates the recursive fold ----------
+; The const-fold activation gate accepts a `const` parameter of a SHRINKING type-constructor shape (`(Option
+; T)`, `(Result …)`, a user sum), not only `(List …)`/bare-name — the evaluator carries those values, so a
+; total recursion over such a const param folds. Before, an `(Option Int64)` const param NEVER activated the
+; fold: the recursion emitted a RUNTIME call whose trap base case then ran to a NON-TERMINATING wasm loop
+; (a wasm/rust divergence — breaker adv-const-option-param-recursive-trap-wasm-hang). Folding it removes the
+; runtime artifact entirely (a taken trap surfaces CDZ0304; a value base case folds to the value). (Product/
+; dictionary forms — `(Record …)`/`(Tuple …)`/`(Map …)`/`(Set …)` — stay EXCLUDED: a counter-driven dict
+; consumer passes them unchanged, so the fold would not terminate on the shape.)
+
+(case "a recursive const (Option Int64) param reaching a trap folds to CDZ0304, not a runtime hang"
+  (doc    "`f (Option.Some 2)` counts the payload down and reaches `trap` at 0. The `(Option Int64)` const
+           param now ACTIVATES the recursive const-fold, which executes the countdown and surfaces the taken
+           trap's MESSAGE as CDZ0304 — where before the param type failed the activation gate, so a runtime
+           recursive call was emitted whose trap base case ran to a non-terminating wasm loop (divergent from
+           the rust backend, which trapped). Folding eliminates the runtime artifact, closing the divergence.")
+  (input  (do
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (if (= k 0) (trap "adv option reached zero") (f (Option.Some (- k 1)))))
+                ((Option.None) 0)))
+            (def (main) (f (Option.Some 2)))
+            (export main)))
+  (error  CDZ0304 (message "adv option reached zero")))
+
+(case "a recursive const (Option Int64) param with a VALUE base case folds to the value"
+  (doc    "The trap-free twin: the same `(Option Int64)` const-param countdown returns a value at 0. It
+           const-folds to that value (99), witnessed by encoding it and comparing to the encoded literal —
+           `Ast.encode` demands a compile-time constant, so a non-folding recursion would decline the encode.")
+  (input  (do
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (if (= k 0) 99 (f (Option.Some (- k 1)))))
+                ((Option.None) 0)))
+            (def (run)
+              (= (Ast.encode (Ast.Int (BigInt.of (f (Option.Some 2)))))
+                 (Ast.encode (Ast.Int (BigInt.of 99)))))
+            (export run)))
+  (output (: true Bool)))

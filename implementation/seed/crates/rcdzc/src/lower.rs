@@ -1464,8 +1464,46 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                                     .as_form(p, ":")
                                                     .and_then(|t| t.get(1).copied())
                                                     .is_some_and(|ty| {
-                                                        g.ast.as_form(ty, "List").is_some()
-                                                            || g.ast.as_name(ty).is_some()
+                                                        // A const param whose declared TYPE is a bare NAME
+                                                        // (a scalar / nullary sum) OR a SHRINKING type-
+                                                        // constructor application `(<Name> …)` activates the
+                                                        // recursive const-fold: a total recursion PEELS a
+                                                        // `(List …)` / `(Option …)` / `(Result …)` / user sum
+                                                        // toward a base case, and the evaluator now carries
+                                                        // those values. EXCLUDE the non-shrinking PRODUCT/
+                                                        // DICTIONARY forms — `(Record …)` / `(Tuple …)` /
+                                                        // `(Map …)` / `(Set …)` — which a counter-driven
+                                                        // recursion passes UNCHANGED (an ad-hoc-polymorphism
+                                                        // dictionary consumer): activating the fold there
+                                                        // does not terminate on the shape, wastes the budget,
+                                                        // and preempts the intended runtime inline+erase.
+                                                        // Also EXCLUDE a FUNCTION type `(-> …)`: a `const`
+                                                        // arrow param is a higher-order CLOSURE, folded via
+                                                        // the closure-arg binding (triggered by a sibling
+                                                        // data-typed const param), NOT this data-recursion
+                                                        // gate — activating here would fold a DERIVED-closure
+                                                        // re-pass that must stay a CDZ0201 reject. (Broadening
+                                                        // beyond the former List-or-bare-name is what folds
+                                                        // `(Option Int64)` recursion — closing the breaker
+                                                        // wasm-hang; it is NOT a fully-open gate.)
+                                                        let head_ok = |xs: &[StructId]| {
+                                                            xs.first()
+                                                                .and_then(|&h| g.ast.as_name(h))
+                                                                .is_some_and(|n| {
+                                                                    !matches!(
+                                                                        n,
+                                                                        "Record"
+                                                                            | "Tuple"
+                                                                            | "Map"
+                                                                            | "Set"
+                                                                            | "->"
+                                                                    )
+                                                                })
+                                                        };
+                                                        g.ast.as_name(ty).is_some()
+                                                            || matches!(g.ast.get(ty),
+                                                                crate::ast::Struct::List(xs)
+                                                                if head_ok(xs))
                                                     })
                                         })
                                     });
