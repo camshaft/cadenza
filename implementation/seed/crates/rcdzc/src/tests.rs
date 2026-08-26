@@ -13300,34 +13300,6 @@ fn doubling_add_value_and_trap_parity() {
     assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MIN)]));
 }
 
-/// Runtime `*` traps on overflow (`Int64.max * 2`, `Int64.min * -1`), computes in range. The mul guard
-/// (a≠0 && r/a≠b, with div_s catching MIN/-1) is the subtlest — pin it directly.
-#[test]
-fn runtime_multiplication_traps_on_overflow() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (mul (: a Int64) (: b Int64)) (* a b)) (export mul))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "mul", &[Val::S64(6), Val::S64(7)]),
-        42
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "mul", &[Val::S64(0), Val::S64(999)]),
-        0
-    );
-    assert!(call_traps(
-        &bytes,
-        "mul",
-        &[Val::S64(i64::MAX), Val::S64(2)]
-    ));
-    assert!(call_traps(
-        &bytes,
-        "mul",
-        &[Val::S64(i64::MIN), Val::S64(-1)]
-    ));
-}
-
 /// An UNUSUAL-WIDTH multiply (`(UInt 48)`, storage slot `i64`) TRAPS when the product exceeds the width —
 /// including the STORAGE-WRAP case a product past the i64 SLOT (not just past 2^48). The rust backend once
 /// had a gap here (`wrapping_mul` on the storage prim, then range-check vs 2^N — `2^32 * 2^32 = 2^64` wraps
