@@ -490,6 +490,54 @@
             (export main)))
   (output (: true Bool)))
 
+; --- Primitive 2: const execution — a BARE nullary `Map.empty` value folds a Map query ----------------
+; The const-evaluator's `Member` arm (`(. Map empty)`) used to const-evaluate its MODULE operand, get None,
+; and hard-decline — so a BARE `Map.empty` (the nullary collection-empty VALUE, not the parenthesized
+; application `(Map.empty)`) never folded, and a `Map.insert`/`Map.lookup`/`Map.len` chain starting from it
+; declined even though it is fully compile-time-known. The arm now falls back to `core_of` + `core_to_cval`
+; (the same bridge the catch-all uses) for a member the module-operand can't project, folding the bare
+; `Map.empty` to a constant `Core::MapNew` → `CVal::Map`. The `Map.insert`/`lookup`/`len` query arms already
+; existed in `apply_const_prim`; this connects the bare-empty base to them. (`Set` has no `.empty` member —
+; you build an empty set as `Set.of (list)` — so this is Map-specific; the Set path folds via `Set.of`.)
+
+(case "a bare Map.empty const-folds its length to zero"
+  (doc    "`(const (Map.len Map.empty))` folds to 0. Pins the bare nullary `Map.empty` value flowing into the
+           const-evaluator as an empty `CVal::Map` (the Member-arm `core_of` fallback), then `Map.len` → 0.")
+  (input  (const (Map.len Map.empty)))
+  (output (: 0 Int64)))
+
+(case "a bare Map.empty threaded through Map.insert folds its length"
+  (doc    "`(const (Map.len (Map.insert Map.empty 7 100)))` folds to 1 — the bare `Map.empty` folds to a
+           constant empty map, `Map.insert` appends `7 ↦ 100` (a `CVal::Map` query, key compared by
+           `cval_eq`), and `Map.len` counts one entry. This is the standalone shape behind the Map-state
+           const handle (v-effects cms3): before, the bare `Map.empty` base declined the whole query.")
+  (input  (const (Map.len (Map.insert Map.empty (: 7 Int64) (: 100 Int64)))))
+  (output (: 1 Int64)))
+
+(case "a bare Map.empty threaded through two distinct Map.inserts folds its length to two"
+  (doc    "Two inserts at DISTINCT keys grow the constant map to two entries — `cval_eq` decides the keys are
+           unequal, so both append. `(const (Map.len (Map.insert (Map.insert Map.empty 7 100) 0 5)))` → 2.")
+  (input  (const (Map.len (Map.insert (Map.insert Map.empty (: 7 Int64) (: 100 Int64)) (: 0 Int64) (: 5 Int64)))))
+  (output (: 2 Int64)))
+
+(case "a Map.insert replacing an existing key does not grow the constant map"
+  (doc    "Re-inserting the SAME key REPLACES (latest-write-wins) rather than appends — `cval_eq` finds the
+           existing `7` entry. `(const (Map.len (Map.insert (Map.insert Map.empty 7 1) 7 2)))` stays 1.")
+  (input  (const (Map.len (Map.insert (Map.insert Map.empty (: 7 Int64) (: 1 Int64)) (: 7 Int64) (: 2 Int64)))))
+  (output (: 1 Int64)))
+
+(case "a bare Map.empty threaded through Map.insert then Map.lookup folds the found value"
+  (doc    "`(const (Map.lookup (Map.insert Map.empty 7 100) 7))` folds to `(Some 100)` — the const `Map.lookup`
+           arm finds the key (`cval_eq`) and returns its value under the result type's Some disc.")
+  (input  (const (Map.lookup (Map.insert Map.empty (: 7 Int64) (: 100 Int64)) (: 7 Int64))))
+  (output (: (Some 100) (Option Int64))))
+
+(case "a Map.lookup of an absent key over a constant map folds to None"
+  (doc    "`(const (Map.lookup (Map.insert Map.empty 7 100) 9))` folds to `(None unit)` — `cval_eq` decides
+           `9 ≠ 7` for the one entry, so the const lookup returns None under the result type's None disc.")
+  (input  (const (Map.lookup (Map.insert Map.empty (: 7 Int64) (: 100 Int64)) (: 9 Int64))))
+  (output (: (None unit) (Option Int64))))
+
 ; --- Primitive 2: const execution — a compound BUILT IN A RECURSION folds -----------------------------
 ; The value-interpreter reduces an applied compound constructor (`RecordNew`/`TupleNew`/`ListNew`) in the
 ; CURRENT env (#3516), so a recursion that constructs a FRESH compound each step — the record analogue of
