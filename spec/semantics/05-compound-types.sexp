@@ -18913,3 +18913,58 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 7035 Int64)))
+
+;; -- Perceus dup-site boundary faces III (final): handler-arm update + continuation read, and the Map/Set/Bytes/String shared-operand twins (breaker batch 375) --
+(case "pd7 a List.update inside a HANDLER ARM's resume value leaves the original readable in the continuation"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (handle E 0
+          ((tick () s (resume (rd (List.update xs 0 500) 0) s)))
+          (+ (E.tick) (rd xs 0)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 503 Int64)))
+
+(case "pd8 a shared MAP operand survives an insert — both views keep their own len"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (map) n 10)))
+        (let ((m2 (Map.insert m (+ n 1) 20)))
+          (+ (Map.len m) (* 10 (Map.len m2))))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 21 Int64)))
+
+(case "pd9 a shared SET operand survives an insert — both views keep their own len"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (Set.of (list n))))
+        (let ((s2 (Set.insert s (+ n 1))))
+          (+ (Set.len s) (* 10 (Set.len s2))))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 21 Int64)))
+
+(case "pd10 a shared BYTES operand survives a concat — both views keep their own len"
+  (input (do
+    (def (main (: n Int64))
+      (let ((b (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 2) (UInt8.wrap 3)))))
+        (let ((b2 (Bytes.concat b b"\x04")))
+          (+ (Bytes.len b) (* 10 (Bytes.len b2))))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 43 Int64)))
+
+(case "pd11 a shared STRING operand survives a concat — both views keep their own byte-len"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (if (> n 0) "abc" "x")))
+        (let ((s2 (String.concat s "d")))
+          (+ (String.byte-len s) (* 10 (String.byte-len s2))))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 43 Int64)))
