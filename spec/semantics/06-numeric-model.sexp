@@ -9603,3 +9603,15 @@
   (call   add (: 20 Int64) (: 22 Int64)) (output (: 42 Int64))
   (call   add (: -5 Int64) (: -3 Int64)) (output (: -8 Int64))
   (call   add (: 9223372036854775807 Int64) (: 1 Int64)) (trap "integer overflow"))
+
+(case "a full-width add overflow names the integer overflow trap reason"
+  (doc    "The machine overflow guard surfaces the DISTINGUISHABLE integer-overflow trap reason (not a
+           reasonless unreachable): Int64.max + 1 traps with reason integer overflow.")
+  (input  (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
+  (call   add (: 9223372036854775807 Int64) (: 1 Int64)) (trap "integer overflow"))
+
+(case "a narrow-width add overflow names the integer overflow trap reason"
+  (doc    "The narrow range-check on the exact result also names integer overflow: Int8 100 + 100 = 200 >
+           127 traps with reason integer overflow.")
+  (input  (do (def (f (: a Int8) (: b Int8)) (+ a b)) (export f)))
+  (call   f (: 100 Int8) (: 100 Int8)) (trap "integer overflow"))
