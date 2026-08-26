@@ -74,8 +74,8 @@ pub use runtime::{Runtime, TokioRuntime};
 pub use spawned::{Spawned, spawned_contract};
 pub use str::Str;
 pub use system::{
-    ArgProbeSink, Delivery, Links, NoDelivery, NoProvenance, Provenance, ReducerKind, RejectedSink,
-    RunSink, Spawn, System, SystemError, TaskSystem,
+    ArgProbeSink, Delivery, Links, NoDelivery, NoProvenance, NodeDeliverySlot, Provenance,
+    ReducerKind, RejectedSink, RunSink, Spawn, System, SystemError, TaskSystem,
 };
 pub use timer::{FireAfter, Fired, timer_contract};
 

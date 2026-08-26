@@ -37,8 +37,8 @@ use cdz_platform::testing::{
 };
 use cdz_platform::{
     ArgProbeSink, BachRuntime, BlobStore, Bytes, Delivery, HostId, InMemoryBlobStore,
-    InMemoryKvStore, InMemoryReducerGraph, KvStore, NoDelivery, NoProvenance, Origin, ProgramHash,
-    Provenance, ReducerGraph, ReducerId, RejectedSink, RunSink, Runner, Runtime, WasmProgramStore,
+    InMemoryKvStore, InMemoryReducerGraph, KvStore, NoProvenance, Origin, ProgramHash, Provenance,
+    ReducerGraph, ReducerId, RejectedSink, RunSink, Runner, Runtime, WasmProgramStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -307,14 +307,20 @@ fn wasm_store(
                 BachRuntime::now as fn() -> u64,
             )) as Arc<dyn ReducerGraph>
         });
-    // The delivery factory records each reducer's privileged `deliver` (the §4 routing ACT) into the log via a
-    // RecordingDelivery decorator, over a NoDelivery base — the base never lands (the itest has no live
-    // routing target), but the ACT itself is what a §4 dispatch run asserts, and it is recorded regardless.
+    // Build the program store now so its node-delivery slot exists: the delivery factory wraps THAT slot, so a
+    // reducer's privileged `deliver` (§4) reaches the LIVE system. `TaskSystem::new` fills the slot once it runs
+    // this store, so a forward lands in the target's mailbox and the simulator drives it to quiescence — a
+    // multi-hop chain (A->B->C) actually flows, and a single-hop forward is end-to-end, not just an observed act.
+    // The RecordingDelivery decorator still records the §4 routing ACT per reducer (§9); only its BACKEND changed
+    // from NoDelivery (drop) to the live node.
+    let store = WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)
+        .expect("build the wasm program store (the wasm engine must initialize)");
+    let node_delivery = store.node_delivery_slot();
     let delivery_log = log.clone();
     let make_delivery: Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync> =
         Arc::new(move |id| {
             Arc::new(RecordingDelivery::new(
-                Arc::new(NoDelivery),
+                node_delivery.clone(),
                 Origin { reducer: id, host },
                 delivery_log.clone(),
                 BachRuntime::now as fn() -> u64,
@@ -373,8 +379,7 @@ fn wasm_store(
                 BachRuntime::now as fn() -> u64,
             )) as Arc<dyn ArgProbeSink>
         });
-    WasmProgramStore::new(cas, make_blobs, make_kv, make_graph)
-        .expect("build the wasm program store (the wasm engine must initialize)")
+    store
         .with_delivery(make_delivery)
         .with_provenance(make_provenance)
         .with_rejected(make_rejected)

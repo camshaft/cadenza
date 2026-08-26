@@ -64,6 +64,14 @@ pub trait ProgramStore: Send + Sync {
     ) -> Option<(std::time::Duration, std::sync::Arc<dyn Fn() + Send + Sync>)> {
         None
     }
+
+    /// Install the node-side [`Delivery`](crate::Delivery) a reducer's privileged `deliver` host import (§4)
+    /// injects through — set by [`TaskSystem::new`](crate::TaskSystem) once the system exists, since the store
+    /// is built first (the store↔system circularity). A store that wires no `deliver` import ignores it;
+    /// default is a no-op, so only a store that gives reducers a live `deliver` (the wasm store) overrides.
+    fn set_node_delivery(&self, delivery: std::sync::Arc<dyn crate::Delivery>) {
+        let _ = delivery;
+    }
 }
 
 /// A [`ProgramStore`] for tests: program hash to a Rust factory, so a test can make native reducers

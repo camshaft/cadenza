@@ -31,7 +31,7 @@ use futures_util::FutureExt; // catch_unwind, to turn a fold panic into a Crashe
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 /// A failure carrying out a system operation — a backend's store or transport error. The in-memory system
@@ -232,6 +232,62 @@ impl Delivery for NoDelivery {
     }
 }
 
+/// A [`Delivery`] whose backend is set once the live system exists — breaking the store↔system circularity.
+/// A program store is built *before* the [`TaskSystem`] that will run it (the store is handed to
+/// [`TaskSystem::new`]), yet the `deliver` host import a store gives a reducer must reach *that* system to
+/// inject into a target's live mailbox. So the store holds an (initially empty) slot as its node-side
+/// delivery; [`TaskSystem::new`] fills it (via [`ProgramStore::set_node_delivery`](crate::ProgramStore::set_node_delivery))
+/// with a [`Weak`] handle to itself once built. Empty until set (a store with no system delivers nowhere,
+/// exactly like [`NoDelivery`]), so it is behaviour-preserving where a system never fills it (a pure/native
+/// path). `Send + Sync`, held behind an `Arc` and shared between the store and the factory that wraps it.
+#[derive(Default)]
+pub struct NodeDeliverySlot {
+    inner: Mutex<Option<Arc<dyn Delivery>>>,
+}
+
+impl NodeDeliverySlot {
+    /// An empty slot — delivers nowhere until [`set`](NodeDeliverySlot::set).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Install the live node-side delivery. Called once, by [`TaskSystem::new`], after the system exists.
+    pub fn set(&self, delivery: Arc<dyn Delivery>) {
+        *self.inner.lock().expect("node delivery slot lock") = Some(delivery);
+    }
+}
+
+#[async_trait]
+impl Delivery for NodeDeliverySlot {
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> bool {
+        // Clone the Arc out and drop the lock before awaiting — never hold a std mutex across `.await`.
+        let backend = self.inner.lock().expect("node delivery slot lock").clone();
+        match backend {
+            Some(delivery) => delivery.deliver(target, event).await,
+            None => false,
+        }
+    }
+}
+
+/// The node-side [`Delivery`] a [`TaskSystem`] hands its store, backed by a [`Weak`] to the system's shared
+/// state so a `deliver` host import injects into the live mailbox map ([`Shared::send`]) — the same mechanism
+/// [`TaskSystem`]'s own [`Delivery`] uses. `Weak`, so the store holding this (inside the system) does not keep
+/// the system alive: once the system drops, delivery becomes a no-op (`false`) rather than a leak.
+struct SharedDelivery<R: Runtime> {
+    shared: Weak<Shared<R>>,
+}
+
+#[async_trait]
+impl<R: Runtime> Delivery for SharedDelivery<R> {
+    async fn deliver(&self, target: ReducerId, event: Delivered) -> bool {
+        match self.shared.upgrade() {
+            Some(shared) => shared.send(target, event),
+            None => false,
+        }
+    }
+}
+
 /// A sink for a host call the host boundary **rejected** before it reached a recordable capability — a call
 /// whose raw `list<u8>` argument failed to parse into the typed id/kind it needed (a `graph` op given a
 /// malformed node/edge-kind). The call still returns its empty/false result (the host imports are total and
@@ -320,6 +376,16 @@ impl<R: Runtime> TaskSystem<R> {
                 host,
             }),
         };
+        // Break the store↔system circularity: the store was built before this system, so its `deliver` host
+        // import had no live node to reach. Now that the system exists, hand the store a `Weak`-backed node
+        // delivery so a reducer's `deliver` injects into the live mailbox map (§4) — the privileged forward a
+        // default handler performs must actually land, not just be observed. `Weak`, so the store (inside the
+        // system) does not keep the system alive. A store that ignores this (the native test store) stays a
+        // no-op, so this is behaviour-preserving elsewhere.
+        let node_delivery: Arc<dyn Delivery> = Arc::new(SharedDelivery {
+            shared: Arc::downgrade(&system.shared),
+        });
+        system.shared.programs.set_node_delivery(node_delivery);
         system.start_epoch_ticker();
         system
     }
@@ -819,6 +885,131 @@ mod tests {
                 assert!(graph.ancestors(sink).await.contains(&router));
             }
             .group("system")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn node_delivery_slot_is_empty_until_set_then_delegates() {
+        use super::{Delivery, NodeDeliverySlot};
+        use bach::ext::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A Delivery that records it was called and answers `true`.
+        struct Recorder(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl Delivery for Recorder {
+            async fn deliver(&self, _t: ReducerId, _e: Delivered) -> bool {
+                self.0.store(true, Ordering::SeqCst);
+                true
+            }
+        }
+
+        bach::sim(|| {
+            async {
+                let slot = NodeDeliverySlot::new();
+                // Empty: delivers nowhere, like NoDelivery — behaviour-preserving where no system fills it.
+                assert!(!slot.deliver(rid(b"t"), a_message(cid(b"c"))).await);
+                // Once set, it delegates to the installed backend.
+                let hit = Arc::new(AtomicBool::new(false));
+                slot.set(Arc::new(Recorder(hit.clone())));
+                assert!(slot.deliver(rid(b"t"), a_message(cid(b"c"))).await);
+                assert!(
+                    hit.load(Ordering::SeqCst),
+                    "the installed backend received the delivery"
+                );
+            }
+            .group("node-delivery-slot")
+            .primary()
+            .spawn();
+        });
+    }
+
+    #[test]
+    fn task_system_installs_a_node_delivery_that_reaches_a_live_reducer() {
+        use super::Delivery;
+        use bach::ext::*;
+
+        // A ProgramStore wrapper that captures the node delivery `TaskSystem::new` installs, so the test can
+        // exercise the wired-in delivery directly. Forwards spawn/contains to the inner native store.
+        struct CapturingStore {
+            inner: crate::testing::program::Store,
+            captured: Arc<std::sync::Mutex<Option<Arc<dyn Delivery>>>>,
+        }
+        #[async_trait::async_trait]
+        impl super::ProgramStore for CapturingStore {
+            async fn spawn(
+                &self,
+                program: ProgramHash,
+                ctx: crate::SpawnContext,
+            ) -> Option<Box<dyn Reducer>> {
+                self.inner.spawn(program, ctx).await
+            }
+            async fn contains(&self, program: ProgramHash) -> bool {
+                self.inner.contains(program).await
+            }
+            fn set_node_delivery(&self, delivery: Arc<dyn Delivery>) {
+                *self.captured.lock().unwrap() = Some(delivery);
+            }
+        }
+
+        bach::sim(|| {
+            async {
+                let target = rid(b"target");
+                let (saw, mut saw_rx) = bach::sync::mpsc::unbounded_channel();
+                let saw_target = saw.clone();
+                let mut inner = crate::testing::program::Store::new();
+                inner.register(prog(b"target"), move || {
+                    Box::new(Probe {
+                        saw: saw_target.clone(),
+                        me: target,
+                        deliver_to: None,
+                    })
+                });
+                let captured = Arc::new(std::sync::Mutex::new(None));
+                let store = CapturingStore {
+                    inner,
+                    captured: captured.clone(),
+                };
+
+                let system = TaskSystem::<BachRuntime>::new(
+                    Arc::new(store),
+                    Arc::new(InMemoryReducerGraph::new()) as _,
+                    Arc::new(InMemoryEventRegistry::new(prog(b"sys"))),
+                    HostId::of(b"node"),
+                );
+                // TaskSystem::new wired a node delivery into the store (breaking the store<->system circularity).
+                let node_delivery = captured
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("TaskSystem::new installed a node delivery via set_node_delivery");
+
+                // A delivery to a NOT-YET-RUNNING target reaches no mailbox.
+                assert!(
+                    !node_delivery.deliver(target, a_message(cid(b"c"))).await,
+                    "no reducer is running under the target yet"
+                );
+
+                system
+                    .spawn(root(target, prog(b"target"), ReducerKind::Ordinary))
+                    .await
+                    .unwrap();
+
+                // Now the wired-in node delivery injects into the LIVE target's mailbox — the fix: a `deliver`
+                // host import (this is the backend it routes through) lands, and the target processes it.
+                assert!(
+                    node_delivery.deliver(target, a_message(cid(b"c"))).await,
+                    "the node delivery reaches the live target's mailbox"
+                );
+                assert_eq!(
+                    saw_rx.recv().await,
+                    Some(target),
+                    "the target folded the delivered message"
+                );
+            }
+            .group("node-delivery")
             .primary()
             .spawn();
         });
