@@ -1762,6 +1762,47 @@
   (call   main (: 40 Int64) (: 2 Int64)) (output (: 42 Int64))
   (live-objects 0))
 
+(case "a borrowed BigInt let-binding used by three ops leaves no live heap objects"
+  (doc    "`(let ((big (BigInt.of a))) (Int64.of (/ (* big big) big)))` — `big` is a let-binding BORROWED by
+           `*` (twice) and `/`; the owned `(* big big)` temporary is dropped by `/`, and `big` is reclaimed
+           by the `let`. The unbounded product narrows back through Int64.of. a=5000000000 -> 5000000000
+           (5e9 * 5e9 / 5e9), and after the run the live-cell count is 0 (no leak / no double-free of the
+           borrowed binding or the intermediate).")
+  (input  (do (def (main (: a Int64)) (let ((big (BigInt.of a))) (Int64.of (/ (* big big) big)))) (export main)))
+  (call   main (: 5000000000 Int64)) (output (: 5000000000 Int64))
+  (live-objects 0))
+
+(case "a BigInt comparison drops both owned operands and leaves no live heap objects"
+  (doc    "A comparison borrows both operands and returns a scalar Bool, so each owned `BigInt.of` operand
+           must be dropped. `(if (< (BigInt.of a) (BigInt.of b)) 1 0)` at a=2, b=5 -> 1, and the live-cell
+           count is 0 after the borrowing compare.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (< (BigInt.of a) (BigInt.of b)) 1 0)) (export main)))
+  (call   main (: 2 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "an inline-materialized BigInt constant operand is dropped, leaving no live heap objects"
+  (doc    "`(let ((big (BigInt.of a))) (Int64.of (* big (BigInt.of 2))))` — the inline constant `(BigInt.of
+           2)` is boxed at the use site, a FRESH owned temporary the `*` must drop, while `big` is the
+           borrowed binding the `let` reclaims. a=21 -> 42, live-objects 0.")
+  (input  (do (def (main (: a Int64)) (let ((big (BigInt.of a))) (Int64.of (* big (BigInt.of 2))))) (export main)))
+  (call   main (: 21 Int64)) (output (: 42 Int64))
+  (live-objects 0))
+
+(case "a beyond-i64 BigInt constant operand is materialized and dropped, leaving no live heap objects"
+  (doc    "A constant too large for the i64 fast path — `(: 100000000000000000000 BigInt)` (1e20) —
+           materializes via baked sign-magnitude bytes, an owned temporary. Compared for equality against
+           the runtime product `(* (BigInt.of 10000000000) (BigInt.of 10000000000))` (1e10 * 1e10 = 1e20) ->
+           1. The beyond-i64 constant leaf, the two operands of the product, and the product temporary must
+           all be dropped after the borrowing compare — live-objects 0.")
+  (input  (do
+            (def (main)
+              (if (= (: 100000000000000000000 BigInt)
+                     (* (BigInt.of 10000000000) (BigInt.of 10000000000)))
+                  1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
+
 ; The multiply case above pins ONE multi-limb product's value. This pins that ARITHMETIC over a multi-limb
 ; BigInt carries and borrows exactly across the 64-bit limb boundary — the low-level limb-library
 ; correctness: from a ~2^126 value (Int64.max², 2 limbs), +1 then −1 round-trips (carry then borrow across
