@@ -1751,6 +1751,17 @@
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
 
+(case "runtime BigInt arithmetic leaves no live heap objects (balanced)"
+  (doc    "`(Int64.of (+ (BigInt.of a) (BigInt.of b)))` over two runtime Int64 params allocates two owned
+           BigInt operands on the value heap, the borrowing add produces a result, and narrowing back to
+           Int64 consumes it — so after the run NO heap cell remains live. `(live-objects 0)` asserts that
+           balance on the debug-counters runtime (no leak, no double-free): a+b = 40+2 = 42, live-objects 0.
+           The first corpus case driving the heap-balance assertion (the migration home for the rcdzc Perceus
+           leak-check tests).")
+  (input  (do (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) (BigInt.of b)))) (export main)))
+  (call   main (: 40 Int64) (: 2 Int64)) (output (: 42 Int64))
+  (live-objects 0))
+
 ; The multiply case above pins ONE multi-limb product's value. This pins that ARITHMETIC over a multi-limb
 ; BigInt carries and borrows exactly across the 64-bit limb boundary — the low-level limb-library
 ; correctness: from a ~2^126 value (Int64.max², 2 limbs), +1 then −1 round-trips (carry then borrow across

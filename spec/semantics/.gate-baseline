@@ -6429,6 +6429,7 @@ pass	runtime <= on a self operand is true for finite but FALSE for NaN (no refle
 pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
 pass	runtime BigInt add/subtract carries and borrows exactly across the 64-bit limb boundary
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
+pass	runtime BigInt arithmetic leaves no live heap objects (balanced)
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
