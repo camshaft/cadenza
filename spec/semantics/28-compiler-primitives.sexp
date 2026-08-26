@@ -764,3 +764,36 @@
             (def (main) (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64))))))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — SET ALGEBRA + Set/Map removal fold (query-only) -------------------
+; The value-interpreter folds `Set.union`/`intersection`/`difference` + `Set.remove` + `Map.remove`, the
+; companions of the `Set.of`/`insert`/`contains`/`len` + `Map.*` ops it already carried. Membership is by
+; `cval_eq`; an undecidable comparison declines the whole op (never a wrong member set). Like every const
+; Set/Map these are QUERY-ONLY — the result set/map is never MATERIALIZED (`cval_to_core` declines a
+; `CVal::Set`/`CVal::Map`, since the runtime CHAMP iteration order must not be presumed); only order-
+; INDEPENDENT results (a size, a membership) leave the fold. A `(const …)` block forces the fold.
+
+(case "Set.union const-folds a membership count"
+  (doc "`{1,2} ∪ {2,3}` has 3 distinct members; the union folds and `Set.len` reads 3 (order-independent).")
+  (input (do (def (main) (const (Set.len (Set.union (Set.of (list 1 2)) (Set.of (list 2 3)))))) (export main)))
+  (output (: 3 Int64)))
+(case "Set.intersection const-folds a membership count"
+  (doc "`{1,2,3} ∩ {2,3,4}` = `{2,3}`; `Set.len` reads 2.")
+  (input (do (def (main) (const (Set.len (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))))) (export main)))
+  (output (: 2 Int64)))
+(case "Set.difference const-folds a membership count"
+  (doc "`{1,2,3} ∖ {2}` = `{1,3}`; `Set.len` reads 2.")
+  (input (do (def (main) (const (Set.len (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2)))))) (export main)))
+  (output (: 2 Int64)))
+(case "Set.remove then contains const-folds to false"
+  (doc "Removing `2` from `{1,2,3}` then testing membership of `2` folds to false.")
+  (input (do (def (main) (const (Set.contains (Set.remove (Set.of (list 1 2 3)) 2) 2))) (export main)))
+  (output (: false Bool)))
+(case "Map.remove then len const-folds"
+  (doc "Removing key `1` from a 2-entry map leaves 1 entry; `Map.len` reads 1.")
+  (input (do (def (main) (const (Map.len (Map.remove (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 1)))) (export main)))
+  (output (: 1 Int64)))
+(case "Map.remove then lookup misses"
+  (doc "Looking up the removed key `1` folds to `Option.None` (the match's absent arm → -1).")
+  (input (do (def (main) (const (match (Map.lookup (Map.remove (Map.insert (Map.empty) 1 10) 1) 1) ((Option.Some v) v) ((Option.None) -1)))) (export main)))
+  (output (: -1 Int64)))
