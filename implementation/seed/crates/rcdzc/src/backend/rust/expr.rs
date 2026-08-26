@@ -5959,6 +5959,14 @@ fn emit_match_impl(
                     "a runtime string-literal match is not yet emitted",
                 ));
             }
+            // A byte-string-literal probe reaching a scalar `Core::Match` emit is unreachable in practice
+            // (a runtime Bytes match desugars to a `value-eq` if-chain in `lower`, and a Bytes is not
+            // `is_scalar`, so no `Probe::Bytes` survives to a scalar match); decline defensively like `Str`.
+            crate::core::Probe::Bytes(_) => {
+                return Err(crate::diag::Reject::decline(
+                    "a runtime byte-string-literal match is not yet emitted",
+                ));
+            }
             // A runtime char-literal probe (Char-rep 3/N): the scrutinee is a native rust `char`
             // (`rust_type(Ty::Char) = char`), so the arm pattern is a char LITERAL — the SAME
             // `rust_char_literal` `Core::ConstChar` emits, so the pattern's escaping exactly matches the
@@ -6871,7 +6879,12 @@ fn emit_sum_cont(
                         "a non-scalar literal-payload probe is not rendered by the Rust backend",
                     ));
                 }
+                // A nested byte-string-literal payload probe (`(Some b"AB")` over a runtime `Some`) is
+                // rendered on wasm (the `value-eq` byte-leaf compare) but not yet by the Rust backend —
+                // decline cleanly. (Top-level runtime Bytes dispatch desugars to a `value-eq` if-chain in
+                // `lower` and works on BOTH backends; only this nested-sum payload probe is Rust-deferred.)
                 crate::core::Probe::Char(_)
+                | crate::core::Probe::Bytes(_)
                 | crate::core::Probe::ListLen { .. }
                 | crate::core::Probe::MapHasKeys { .. }
                 | crate::core::Probe::Wild => {

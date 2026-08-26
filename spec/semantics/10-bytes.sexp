@@ -2043,3 +2043,71 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 40 Int64)))
+
+; ============================================================================================
+; Byte-string-literal DISPATCH — a runtime Bytes value matched against `b"…"` whole-value literals
+; (`match b (b"…" …) … (_ …)`), the Bytes twin of runtime string keyword/opcode dispatch. A Bytes is
+; a heap value (not a scalar), so the scalar probe-chain cannot drive it; instead the match desugars to
+; a chain of `(= b b"…")` `value-eq` content compares (a direct-Bytes `=` compacts each operand, so a
+; rope compares by content). The catch-all `_`/binder arm is required (a Bytes match never exhausts by
+; literals — an unequal sequence always falls through), exactly as a scalar/String match needs one.
+; ============================================================================================
+
+(case "a runtime Bytes value dispatches on byte-string literals"
+  (doc    "The byte-string dispatch idiom: a runtime `Bytes` scrutinee (built from a parameter, so it
+           does not fold) matched against `b\"\\x01B\"` / `b\"\\x02B\"` literals with a catch-all. Each arm
+           is a content `value-eq` against a freshly built literal leaf, so `[1,66]` selects arm 1,
+           `[2,66]` arm 2, and any other sequence the `_` tail. Pins that a whole-value byte-string
+           literal pattern dispatches a runtime Bytes by content — the magic-number / opcode-header idiom
+           the `bin` binary matcher (16-binary-matching) generalizes.")
+  (input  (do
+            (def (classify (: b Bytes))
+              (match b
+                (b"\x01B" 1)
+                (b"\x02B" 2)
+                (_ 0)))
+            (def (main (: n Int64))
+              (classify (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 66)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 0 Int64)))
+
+(case "a guarded byte-string-literal arm gates a runtime Bytes match on a condition"
+  (doc    "A guarded byte-string arm `(guard b\"\\x01B\" (> n 10))` matches the literal AND the runtime
+           guard; on a false guard it falls through to the plain `b\"\\x01B\"` arm — the Bytes twin of a
+           guarded scalar/string arm. Same scrutinee `[1,66]` both calls: n=20 takes the guarded arm (1),
+           n=5 falls through to the unguarded literal arm (2). Pins that a guard nests inside the matched
+           byte-literal branch and threads its else to the next arm.")
+  (input  (do
+            (def (classify (: b Bytes) (: n Int64))
+              (match b
+                ((guard b"\x01B" (> n 10)) 1)
+                (b"\x01B" 2)
+                (_ 0)))
+            (def (main (: n Int64))
+              (classify (Bytes.of (list (UInt8.wrap 1) (UInt8.wrap 66))) n))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "a byte-string literal nested in a sum payload refines a runtime Bytes"
+  (doc    "The nested-sum face — `(Some b\"\\x01B\")` refines a runtime `Some` payload by CONTENT (the
+           Bytes twin of a nested string-literal payload like `(Some \"…\")`, `core-semantics.md #Pattern
+           Matching`: a literal refines the match). The decision tree tests the `Some` discriminant, then
+           the payload's bytes against each literal; `[1,66]`→1, `[2,66]`→2, another `Some` payload→the
+           `(Some _)` binding arm (3), `None`→0. Pins that a byte-literal payload probe emits a runtime
+           `value-eq` leaf compare inside the sum decision tree, not only at a top-level scrutinee.")
+  (input  (do
+            (def (classify (: o (Option Bytes)))
+              (match o
+                ((Some b"\x01B") 1)
+                ((Some b"\x02B") 2)
+                ((Some _) 3)
+                ((None) 0)))
+            (def (main (: n Int64))
+              (classify (Some (Bytes.of (list (UInt8.wrap n) (UInt8.wrap 66))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 9 Int64)) (output (: 3 Int64)))

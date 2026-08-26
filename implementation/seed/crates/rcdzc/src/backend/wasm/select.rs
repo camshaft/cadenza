@@ -5087,6 +5087,17 @@ fn collect_cont_ops_rec(
                 // A char-literal probe only FOLDS (a constant char payload) — a runtime char has no machine
                 // rep, so a runtime-char payload declines at emit rather than reaching here; no op to collect.
                 crate::core::Probe::Char(_) => false,
+                // A byte-string-literal probe over a RUNTIME payload emits the SAME `value-eq` content
+                // compare a `Str` probe does — a Bytes is a flat byte leaf built by `bytes-alloc`+`bytes-set`
+                // and compared by `value-eq` after `bytes-compact`ing the payload handle (rope→flat). So it
+                // needs the same four ops. (A CONSTANT bytes sub-value still folds in `build_tree`.)
+                crate::core::Probe::Bytes(_) => {
+                    out.insert(OP_BYTES_COMPACT);
+                    out.insert(OP_BYTES_ALLOC);
+                    out.insert(OP_BYTES_SET);
+                    out.insert(OP_VALUE_EQ);
+                    out.insert(OP_DROP)
+                }
                 // A `ListLen` probe over a runtime list payload reads `vec-len` of the sub-list handle to
                 // gate the arm (a constant list folds instead, never reaching here).
                 crate::core::Probe::ListLen { .. } => out.insert(OP_VEC_LEN),
@@ -15189,9 +15200,10 @@ fn emit_probe_condition(probe: &crate::core::Probe, src: OperandSrc, it: IntTy, 
         crate::core::Probe::Bool(false) => out.push(Lir::I32Eqz),
         // A string-literal probe only ever FOLDS (a constant scrutinee) — a runtime string scrutinee is
         // not a scalar (`is_scalar`), so a `Probe::Str` never reaches the runtime scalar probe emit.
-        crate::core::Probe::Str(_) => {
+        crate::core::Probe::Str(_) | crate::core::Probe::Bytes(_) => {
             unreachable!(
-                "a string-literal probe folds; it is never emitted as a runtime scalar probe"
+                "a string/byte-literal probe folds or desugars to a value-eq if-chain; it is never \
+                 emitted as a runtime scalar probe"
             )
         }
         // A runtime char-literal probe (Char-rep 3/N): the scrutinee is the char's i32 code-point slot, so
@@ -16222,9 +16234,10 @@ fn emit_probe_chain(
                 out.push(Lir::ConstI32(if *b { 1 } else { 0 }));
                 out.push(Lir::I32Eq);
             }
-            crate::core::Probe::Str(_) => {
+            crate::core::Probe::Str(_) | crate::core::Probe::Bytes(_) => {
                 unreachable!(
-                    "a string-literal probe folds; a runtime string match declines at is_scalar"
+                    "a string/byte-literal probe folds; a runtime String/Bytes match desugars to a \
+                     value-eq if-chain, never reaching the scalar probe emit"
                 )
             }
             crate::core::Probe::Char(c) => {
@@ -17355,6 +17368,36 @@ fn emit_littest_probe(
             out.push(Lir::CallImport(OP_DROP));
             // `value-eq` left [bool] then we pushed/dropped the literal — the drop consumed its own
             // arg, so the stack is back to [bool]. Fall through to the shared `if`.
+        }
+        crate::core::Probe::Bytes(p) => {
+            // A byte-string-literal payload over a RUNTIME Bytes value (`(Some b"AB")` matched on a runtime
+            // `Some`) — the Bytes twin of the `Str` arm above, byte-for-byte the same shape. A Bytes is a
+            // flat byte leaf, so: `bytes-compact` the borrowed payload handle (rope→flat, refcount-neutral),
+            // stash it, build the literal as a fresh OWNED byte-leaf (`bytes-alloc`+`bytes-set` — exactly
+            // what `Core::ConstBytes` emits, so `value-eq` compares two canonical leaves), `value-eq`
+            // (borrows + pops both → bool), then DROP the owned literal (the payload leaf is left to its
+            // owner). The ONLY difference from `Str` is the literal's bytes are `p` verbatim (arbitrary,
+            // not necessarily UTF-8), not `s.as_bytes()`.
+            out.push(Lir::CallImport(OP_BYTES_COMPACT)); // [leaf'] — canonical flat leaf, same handle
+            let leaf_slot = *high;
+            let lit_slot = *high + 1;
+            *high += 2;
+            scratch_ty.insert(leaf_slot, ValType::I32);
+            scratch_ty.insert(lit_slot, ValType::I32);
+            out.push(Lir::LocalSet(leaf_slot)); // stash the borrowed leaf handle
+            out.push(Lir::ConstI32(p.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [buf]
+            for (i, &byte) in p.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [buf]
+            }
+            out.push(Lir::LocalTee(lit_slot)); // [lit] — keep the owned literal handle for the drop
+            out.push(Lir::LocalGet(leaf_slot)); // [lit, leaf]
+            out.push(Lir::CallImport(OP_VALUE_EQ)); // pops both (borrowed) → [bool]
+            out.push(Lir::LocalGet(lit_slot));
+            out.push(Lir::CallImport(OP_DROP));
+            // Stack is back to [bool]. Fall through to the shared `if`.
         }
         crate::core::Probe::ListLen { len, at_least } => {
             // A list-pattern payload over a RUNTIME list: the path walked to the sub-value's LIST
