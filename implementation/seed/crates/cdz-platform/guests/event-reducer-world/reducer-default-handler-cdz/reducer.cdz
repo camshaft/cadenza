@@ -22,9 +22,11 @@
 //
 // Both are the privileged event reducer performing `deliver` on the emitter's behalf — the emitter only ever
 // emitted an effect. Targets the privileged event-reducer-world (the world importing `graph` + `deliver`).
-// on-response / on-notification are inert (this handler acts on the emitted effect, folded through on-message).
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+// on-response / on-notification are the inert shared handlers from reducer-lib (this handler acts on the
+// emitted effect, folded through on-message). Outcome + Error also come from reducer-lib (Error because the
+// no-handler arm builds an `Err(Error.MissingHandler)` answer); this guest re-declares only its own Dir.
+import { Outcome, Error, on-response, on-notification } from "reducer-lib"
+
 // Matches the world's `dir` enum { outgoing, incoming } by case-name set (kebab-normalized); the world-import
 // synthesis binds this sum to the enum so `Dir.Outgoing` crosses as the enum arg to `graph.neighbors`.
 type Dir = | Outgoing | Incoming
@@ -47,11 +49,5 @@ def on-message(msg) =
                 payload = msg.payload,
                 token = msg.token })) ;
       { requests = [], outcome = Outcome.Continue } )
-
-def on-response(_resp) =
-  { requests = [], outcome = Outcome.Continue }
-
-def on-notification(_note) =
-  { requests = [], outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }
