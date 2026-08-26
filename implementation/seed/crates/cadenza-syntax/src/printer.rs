@@ -306,6 +306,11 @@ impl<'a> Printer<'a> {
         match leaf {
             Leaf::Int { value, radix } => self.doc.word(literal::render_int(value, *radix)),
             Leaf::Float(d) => self.doc.word(literal::render_decimal(d)),
+            // Non-finite float VALUES render `nan`/`inf`/`-inf` (value display). Produced only by
+            // `Ast.encode` of a computed float, never by the reader, so — like a `Rational` value's
+            // display form — a round-tripping source literal is deferred to a separate surface slice.
+            Leaf::FloatNan => self.doc.word("nan"),
+            Leaf::FloatInf { negative } => self.doc.word(if *negative { "-inf" } else { "inf" }),
             Leaf::Bool(b) => self.doc.word(if *b { "true" } else { "false" }),
             Leaf::Str(s) => self.doc.word(format!("\"{}\"", literal::escape_string(s))),
             Leaf::Bytes(b) => self.doc.word(format!("b\"{}\"", literal::escape_bytes(b))),

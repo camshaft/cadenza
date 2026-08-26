@@ -105,10 +105,10 @@
 //! is an optional strengthening of the same check — not a gap: the refuse-on-mismatch guarantee holds
 //! today, and swapping the tag's content is a drop-in change.
 
-use alloc::vec::Vec;
-use alloc::string::String;
 use crate::ast::{Arenas, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId};
 use crate::leb128::{self, Reader};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 // Leaf kind tags. Int folds (sign, radix) into the tag.
 const KIND_INT_POS_DEC: u8 = 0;
@@ -132,6 +132,12 @@ const KIND_SYM: u8 = 15;
 // Rational)`, so the compiler needs only the bare literal. This tag therefore decodes to a plain
 // `Int`/`Float` leaf (the suffix is dropped — its type role is carried by the surrounding annotation).
 const KIND_SUFFIXED: u8 = 16;
+// The non-finite float VALUES — payloadless kind tags (like `KIND_BOOL_*`), a single byte with no body.
+// A frozen-contract assignment shared BYTE-IDENTICALLY with the cadenza-ast codec twin (this file is the
+// vendored copy; the runtime's op93/decode `include!`s it, so it carries the tags for free).
+const KIND_FLOAT_NAN: u8 = 17;
+const KIND_FLOAT_POS_INF: u8 = 18;
+const KIND_FLOAT_NEG_INF: u8 = 19;
 const SUFFIX_BIGINT: u8 = 0;
 const SUFFIX_RATIONAL: u8 = 1;
 const BODY_INT: u8 = 0;
@@ -204,6 +210,15 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
             // The significand is a non-negative magnitude; its sign lives in `d.negative`.
             leb128::write_u64(out, d.significand.len() as u64);
             out.extend_from_slice(&d.significand);
+        }
+        // Non-finite float VALUES — a single kind byte, no body (like the bool tags).
+        Leaf::FloatNan => out.push(KIND_FLOAT_NAN),
+        Leaf::FloatInf { negative } => {
+            out.push(if *negative {
+                KIND_FLOAT_NEG_INF
+            } else {
+                KIND_FLOAT_POS_INF
+            });
         }
         Leaf::Str(s) => {
             out.push(KIND_STR);
@@ -365,6 +380,10 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
                 exponent,
             })
         }
+        // Non-finite float VALUES — payloadless, so the tag alone reconstructs the leaf.
+        KIND_FLOAT_NAN => Leaf::FloatNan,
+        KIND_FLOAT_POS_INF => Leaf::FloatInf { negative: false },
+        KIND_FLOAT_NEG_INF => Leaf::FloatInf { negative: true },
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -538,6 +557,35 @@ mod tests {
             panic!()
         };
         assert!(d.negative, "-0.0 must stay negative");
+    }
+
+    #[test]
+    fn non_finite_float_leaves_encode_to_the_frozen_payloadless_tags_17_18_19() {
+        // The non-finite float VALUES are a FROZEN wire contract that MUST stay byte-identical with the
+        // cadenza-ast codec twin (and the runtime's op93/decode, which `include!`s this file): NaN=17,
+        // +∞=18, −∞=19, each a single payloadless kind byte. Pin the exact tag bytes here too so a drift
+        // between the twins is caught in whichever crate is edited.
+        for (leaf, tag) in [
+            (Leaf::FloatNan, 17u8),
+            (Leaf::FloatInf { negative: false }, 18u8),
+            (Leaf::FloatInf { negative: true }, 19u8),
+        ] {
+            let mut raw = Vec::new();
+            write_leaf(&mut raw, &leaf);
+            assert_eq!(
+                raw,
+                vec![tag],
+                "{leaf:?} must encode to the frozen tag byte {tag}"
+            );
+            let mut b = Builder::new();
+            let root = b.atom_leaf(leaf.clone());
+            let a = b.finish(root);
+            assert_eq!(
+                decode(&encode(&a)).expect("decode of a lone non-finite-float leaf"),
+                a,
+                "{leaf:?} round-trip"
+            );
+        }
     }
 
     #[test]

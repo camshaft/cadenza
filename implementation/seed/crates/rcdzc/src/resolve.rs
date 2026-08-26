@@ -372,6 +372,13 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     ))
                 }
             }
+            // A non-finite float VALUE leaf (NaN, ±∞) — produced by `Ast.encode` of a computed float,
+            // never by the reader. In a SOURCE atom position it has no written form the reader accepts,
+            // so — exactly like the out-of-Float64-range literal above — it is a malformed literal.
+            Leaf::FloatNan | Leaf::FloatInf { .. } => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "non-finite float value has no source literal form".to_string(),
+            )),
             // A bad-escape MARKER the reader emitted for a string literal with an UNRECOGNIZED escape
             // (`"\q"`). The reader cannot report through the artifact channel (its stderr is not the
             // diagnostic surface), so the COMPILER is where the lexical defect becomes a coded rejection:

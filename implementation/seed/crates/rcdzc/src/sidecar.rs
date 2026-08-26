@@ -1744,7 +1744,10 @@ fn classify_highlight(db: &mut Db, id: StructId) -> Option<HighlightKind> {
     };
     // A literal leaf: colour by the constant kind, read off the leaf directly (no resolution needed).
     match db.ast.leaf(leaf) {
-        crate::ast::Leaf::Int { .. } | crate::ast::Leaf::Float(_) => {
+        crate::ast::Leaf::Int { .. }
+        | crate::ast::Leaf::Float(_)
+        | crate::ast::Leaf::FloatNan
+        | crate::ast::Leaf::FloatInf { .. } => {
             return Some(HighlightKind::Number);
         }
         crate::ast::Leaf::Str(_) => return Some(HighlightKind::Str),
