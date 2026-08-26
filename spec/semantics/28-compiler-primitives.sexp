@@ -123,3 +123,37 @@
                  (quote (contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp)))))
              b"\x01\x86\x0c\x7a\xcb\x43\xd2\x6c\xb9\x3a\x8c\xed\xd7\xd6\x97\xb2\x30\x08\x8a\x50\xd5\x0e\xb2\x37\x6c\xcf\xee\x60\xca\xba\x2c\x52\x3a"))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — a TAKEN trap on the const-folded path is FAIL-LOUD ---------------
+; A `trap("msg")` reached while const-EXECUTING a total function (const-demanded arguments) is not a silent
+; decline to a runtime value: the evaluator surfaces the trap's MESSAGE as the compile error CDZ0304 (the
+; provable-trap code). This is what makes a userspace self-reflection transform's genuine-absence trap (a
+; malformed contract module, a missing required pragma) a fail-loud, actionable authoring error at the
+; fold — not a corrupt id. A `trap` on an UN-taken branch of a const fold is never executed, so it does not
+; decline the fold (the sibling cases above fold through such dead arms); only a TAKEN trap surfaces.
+
+(case "a taken const-fold trap surfaces its message as a compile error (CDZ0304)"
+  (doc    "A recursive `const`-param countdown reaches `trap(\"…\")` on the const-executed path when its
+           argument is compile-time-known (`f 3` counts down to 0). The general const-evaluator executes the
+           trap and surfaces its MESSAGE as the provable-trap compile error CDZ0304 — a const-executed trap
+           is fail-loud, not a decline to a runtime trap. Message-matched so the surfaced text is pinned.")
+  (input  (do
+            (def (f (const (: n Int64)))
+              (if (= n 0) (trap "const countdown reached zero") (f (- n 1))))
+            (def (main) (f 3))
+            (export main)))
+  (error  CDZ0304 (message "const countdown reached zero")))
+
+(case "a const trap consumed by Ast.encode surfaces its message, not the generic decline"
+  (doc    "The self-reflection shape: a trap reached while folding `Ast.encode`'s operand. `Ast.encode`
+           DEMANDS a compile-time-constant AST, and the trapping operand comes through a NON-recursive
+           `const`-param fn the ordinary inliner reduces to a textless trap (message dropped) — so
+           `Ast.encode` const-evaluates its operand and surfaces the trap's MESSAGE as CDZ0304 rather than
+           the generic \"Ast.encode of a runtime AST value\" decline. This is the P4 contract-id library's
+           genuine-absence trap (a missing required pragma) surfacing an actionable compile error.")
+  (input  (do
+            (def (f (const (: n Int64)))
+              (if (= n 0) (trap "const trap under Ast.encode") n))
+            (def (g) (Ast.encode (Ast.Int (BigInt.of (f 0)))))
+            (export g)))
+  (error  CDZ0304 (message "const trap under Ast.encode")))
