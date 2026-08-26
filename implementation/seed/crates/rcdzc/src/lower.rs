@@ -2903,7 +2903,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         {
                             db.reparent(rw2, Some(id), db.child_ix_of(id) as u32);
                             if !crate::effects::reduced_body_leaks_escaped_perform(db, rw2, &arms) {
-                                return core_of(db, rw2);
+                                // Commit the recovery ONLY if it folds to a POISON-FREE core. The inline
+                                // rewrite can rebuild a `let` whose binding-init held the helper call (a
+                                // let-bound helper-call answer, `(let ((a (ap …))) a)`), and that rebuild
+                                // can drop the let-binder's identity so the body reference re-resolves
+                                // UNBOUND — a `core_of` that is a CDZ0101 `Poison` on a WELL-FORMED program
+                                // (breaker iso-b). Surfacing that would be a wrong-diagnostic REJECTION; the
+                                // recovery's contract is to be used only when it folds CLEAN, so a
+                                // poison result must fall back to the honest `HANDLER_NOT_REDUCIBLE` todo
+                                // (the same state the un-recovered leak would decline to). A genuinely
+                                // folding recovery (cx5d/cx6/cx9…) yields a non-poison core, unchanged.
+                                let c2 = core_of(db, rw2);
+                                if !matches!(c2, Core::Poison(_)) {
+                                    return c2;
+                                }
                             }
                         }
                         return Core::Poison(Reject::decline(
@@ -30304,6 +30317,26 @@ mod tests {
         assert!(
             !matches!(core_of(&mut db, body), Core::Poison(_)),
             "cx6 two-hop escaped-closure handle must fold (recovery inlines both hops), not decline"
+        );
+    }
+
+    #[test]
+    fn a_let_bound_escaped_closure_answer_never_misrejects_unbound() {
+        // breaker iso-b: let-binding the escaped-closure helper-call answer inside the handle body and
+        // returning the binder — `(handle E s (arms) (let ((a (ap (fn (x) (+ x (E.tick)))))) a))` — is a
+        // WELL-FORMED program. The escaped-closure recovery's inline rewrite can rebuild the `let` in a way
+        // that drops the binder identity, so its re-reduced body's `a` reference re-resolves UNBOUND. That
+        // must NEVER surface as a CDZ0101 rejection (a wrong diagnostic on valid code): the recovery commits
+        // its result only if it folds to a poison-free core, else falls back to the honest
+        // HANDLER_NOT_REDUCIBLE todo. So the outcome is either a fold or that honest decline — never Unbound.
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op tick (-> Int64))) (def (ap (: g (-> Int64 Int64))) (g 5)) (def (main (: n Int64)) (handle E (% n 3) ((tick () s (resume (* s 10) (+ s 1)))) (let ((a (ap (fn (x) (+ x (E.tick)))))) a))) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
+        assert!(
+            !matches!(core_of(&mut db, body), Core::Poison(ref r) if r.code == Some(crate::diag::Code::Unbound)),
+            "a let-bound escaped-closure answer must not mis-reject CDZ0101 on a well-formed program"
         );
     }
 

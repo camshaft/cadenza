@@ -4915,6 +4915,10 @@ pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one ma
 pass	cc9 a closure capturing a value computed UNDER a handler escapes and applies after the handle
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
+pass	cdf1 recursive AST leaf-count via Option-threaded walk under an explicit (const ...) demand surfaces the taken trap
+pass	cdf2b decode-of-encode navigation (Result-correct) under (const ...) surfaces the taken trap
+pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
+pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
 pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
@@ -5138,6 +5142,9 @@ pass	cx5d effectful closure through a NON-recursive helper that calls it once
 pass	cx6 an effect-performing closure through TWO nested one-shot helper hops folds via the escaped-closure recovery
 pass	cx7 a closure performing TWO different effects passed as a fn argument
 pass	cx8 an effect-performing closure RETURNED from a helper then invoked
+pass	cx9a a performing closure through THREE nested one-shot helper hops folds
+pass	cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure
+pass	cx9c TWO different performing closures through the same helper on separate calls
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
 pass	cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamped to the range answering the landed ratio's tens digit, pedal answers rpm times the ratio over a hundred accumulating distance, the big downshift clamps BOTH runs to the same bottom gear so the tails converge while the opening gears diverge, and the final row reads the odometer
 pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
@@ -7434,6 +7441,7 @@ todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+todo	iso-b a let-bound escaped-closure helper-call answer inside the handle body declines cleanly — must NOT mis-reject CDZ0101 (recovery falls back to the honest todo when its rewrite would drop the let binder)
 todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
 todo	nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)
@@ -7457,10 +7465,3 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
-pass	cx9a a performing closure through THREE nested one-shot helper hops folds
-pass	cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure
-pass	cx9c TWO different performing closures through the same helper on separate calls
-pass	cdf1 recursive AST leaf-count via Option-threaded walk under an explicit (const ...) demand surfaces the taken trap
-pass	cdf2b decode-of-encode navigation (Result-correct) under (const ...) surfaces the taken trap
-pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
-pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap
