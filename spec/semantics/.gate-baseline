@@ -7584,3 +7584,6 @@ pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected,
 pass	cpp3 partials of a COMPARISON operator select via a HOF
 pass	two whole-module alias imports project a uniformly-named export with no collision
 pass	a whole-module alias projects an exported FUNCTION and applies it
+pass	cvp1 a variant host RESULT with a LIST payload lifts and is measured
+pass	cvp2 a variant host RESULT with a RECORD payload lifts and projects
+pass	mal1 a whole-module ALIAS import projects a member fn
