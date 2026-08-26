@@ -427,3 +427,17 @@
             (def (main) (const (if (Set.contains (Set.of (list 1 2 3)) 9) 100 200)))
             (export main)))
   (output (: 200 Int64)))
+
+(case "a `(const …)` force-eval block preserves its operand's ascribed width"
+  (doc    "The force-eval block folds its operand at the ascribed width: `(const (: 5 Int32))` reduces to the
+           32-bit constant 5, not a default-width Int64. Pins that the const-demand block is transparent to
+           type grounding — it forces the ascribed value and carries its declared width through the fold.")
+  (input  (const (: 5 Int32)))
+  (output (: 5 Int32)))
+
+(case "a `(const …)` block with the wrong operand count is a malformed reject (arity guard)"
+  (doc    "The block is written `(const <expression>)` — EXACTLY one operand. `(const 1 2)` (two) is a coded
+           malformed reject at resolve (CDZ0201), a DISTINCT path from the runtime-dependence reject above: it
+           fires on the FORM's arity before any force-eval, never a silent pass-through of the first operand.")
+  (input  (const 1 2))
+  (error  CDZ0201))

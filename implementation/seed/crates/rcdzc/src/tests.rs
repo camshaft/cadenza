@@ -4453,49 +4453,14 @@ fn ast_module_resolves_and_types_as_the_builtin_ast() {
 // built-in, so Ast.module is no longer the self-reflection"), NOT a Rust `#[test]` locked to this
 // implementation (operator directive: semantics belong in the corpus, other-language compilers are planned).
 
-/// `(const <expr>)` FORCE-EVAL block — v-inference's front-end half (operator greenlit). It is an
-/// EXPRESSION form, distinct from the `(const (: d T))` PARAM modifier that `strip_const_params` unwraps
-/// (that pass never touches a body). This pins the FRONT-END: `(const <expr>)` resolves to
-/// `Resolved::ConstBlock` (NOT an unbound `const` name), types SEE-THROUGH as its inner expr, and lowers
-/// see-through to the same constant as the bare expr (transparent until v-compiler-primitives adds the
-/// force-eval / reject-if-not-const semantics + the const-demand flag). The full force-eval BEHAVIOR
-/// witness is a corpus case, added once the ML surface (`const(expr)`, v-syntax) + the force semantics
-/// (v-compiler-primitives) land — a `(const …)` cannot ML-round-trip until v-syntax's grammar exists.
-#[test]
-fn const_block_resolves_and_is_see_through_for_typing_and_lowering() {
-    use crate::db::Db;
-    let src = "(module m (def (main) (const (+ 1 2))) (export main))";
-    let mut db = Db::load(crate::testkit::parse(src));
-    let diags = crate::compile::diagnostics(&mut db);
-    assert!(
-        !diags.iter().any(|d| d.message.contains("unbound")),
-        "(const <expr>) must resolve as a force-eval block, never an unbound `const` name: {:?}",
-        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    let d = db.def_by_name("main").expect("def main");
-    let body = db.defs[d].body.expect("main body");
-    assert!(
-        matches!(
-            crate::resolve::resolved_of(&mut db, body),
-            crate::resolved::Resolved::ConstBlock { .. }
-        ),
-        "(const <expr>) in expression position resolves to Resolved::ConstBlock"
-    );
-    let ty = crate::infer::type_of(&mut db, body);
-    assert_eq!(
-        ty.render_name(&db.name_ctx()),
-        "Int64",
-        "(const (+ 1 2)) types see-through as its inner expr (Int64), got {ty:?}"
-    );
-    match crate::lower::core_of(&mut db, body) {
-        crate::core::Core::ConstInt(v) => assert_eq!(
-            v.to_i64(),
-            Some(3),
-            "(const (+ 1 2)) lowers see-through to the same constant as the bare expr"
-        ),
-        other => panic!("expected a see-through ConstInt(3), got {other:?}"),
-    }
-}
+// NOTE: the `(const <expr>)` FORCE-EVAL block front-end (see-through resolve/type/lower + the arity
+// reject) is BEHAVIORAL coverage, so it lives in the language-neutral corpus, NOT a Rust `#[test]`
+// (operator directive: compiler/behavioral coverage belongs in the corpus, other-language compilers are
+// planned). See `spec/semantics/28-compiler-primitives.sexp`, section "Primitive 2: const execution — the
+// `(const <expr>)` force-eval BLOCK (front-end see-through; force semantics pending)": the see-through fold
+// value, the see-through inner-annotation width, the application-head see-through, and the arity reject
+// (CDZ0201). The force-eval / reject-if-not-const semantics + the const-demand flag are v-compiler-
+// primitives' downstream cases in the same file.
 
 /// NO-ANNOTATION EXPORT BOUNDARY (`derive_world_export_param_annotations`): a reducer writes its guest-export
 /// entry point with a BARE param — `(def (on-message msg) …)` — and the export-param pre-pass DERIVES `msg`'s
