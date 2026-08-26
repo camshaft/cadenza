@@ -13175,31 +13175,6 @@ fn an_unannotated_exported_parameter_declines() {
 
 // ── runtime overflow TRAPS, never wraps (numeric-model §Overflow Is Defined) ─────────────────────
 
-/// The unqualified `+` on runtime operands TRAPS on overflow (the numeric-model default) rather than
-/// silently wrapping — the checked-arith guard. In range it computes; `Int64.max + 1` traps.
-#[test]
-fn runtime_addition_traps_on_overflow() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // In range: computes.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "add", &[Val::S64(20), Val::S64(22)]),
-        42
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "add", &[Val::S64(-5), Val::S64(-3)]),
-        -8
-    );
-    // Overflow: TRAPS (does not wrap to Int64.min).
-    assert!(call_traps(
-        &bytes,
-        "add",
-        &[Val::S64(i64::MAX), Val::S64(1)]
-    ));
-}
-
 /// A runtime integer-overflow trap surfaces the DISTINGUISHABLE "integer overflow" reason, not a
 /// reasonless "unreachable". The arithmetic overflow guards + narrow range-checks emit
 /// `Lir::IfIntegerOverflowEnd` (an `i32.div_s` of `i32::MIN / -1` — the one wasm op that traps as

@@ -6659,6 +6659,7 @@ pass	runtime Set.of at THREE different element types in one program all build vi
 pass	runtime Set.of at two different element types in one program each build via a per-site monomorphic fold
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime UInt64 division and remainder above the Int64 boundary compute unsigned
+pass	runtime addition computes in range and traps on overflow, not wrapping
 pass	runtime char-literal match dispatches by Unicode code point
 pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
