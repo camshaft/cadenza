@@ -34,6 +34,9 @@ cdz-contract = { path = "../cdz-contract" }
 # Canonical value rendering (string escape, decimal form) — reused so a runner-printed value is
 # byte-identical to what the front-end prints and reads back.
 cadenza-syntax = { path = "../cadenza-syntax" }
+# The shared corpus grade compare (`--grade` mode) — decode a test-run.ast + grade an outcome, identical
+# to the rust backend's `cdz-rust-run`, so the compare lives in one crate both exec bins depend on.
+cdz-corpus-grade = { path = "../cdz-corpus-grade" }
 
 [dev-dependencies]
 # TEST-ONLY: assemble a tiny hand-written `.wat` module (e.g. an infinite `(loop br 0)`) to bytes, to

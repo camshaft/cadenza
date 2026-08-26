@@ -1,0 +1,20 @@
+# cdz-corpus-grade — the shared corpus GRADE compare, backend-independent.
+#
+# Decode a shredded `test-run.ast` and grade a run/compile OUTCOME against it, reproducing the
+# `cargo xtask gate` comparison EXACTLY (value string-match, canonical trap-kind, exact error-code +
+# message, warns presence, host-call sequence). The GRADE is identical for the wasm and rust backends —
+# only HOW a trial produces an `Outcome` differs — so it lives here, shared by BOTH `cdz-run` (wasm exec)
+# and `cdz-rust-run` (rust exec) via the `grade_run` orchestrator (which takes the per-backend trial
+# runner as a closure). No wasmtime / no compiler in the closure — a tiny dep (cadenza-syntax for the
+# binary-AST decode + anyhow), so it does not drag either exec bin's closure.
+#
+# A ROOT workspace member (the `crates/*` glob) — MUST be registered in the flake's `rootWorkspaceCrates`.
+[package]
+name = "cdz-corpus-grade"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+cadenza-syntax = { path = "../cadenza-syntax" }
