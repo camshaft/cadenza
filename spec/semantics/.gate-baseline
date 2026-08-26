@@ -175,9 +175,13 @@ pass	List.at over a let-bound constant list folds through the binder on both bac
 pass	List.at with near-i64::MAX and i32-wrap indices declines to None, not a wrapped read
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	List.len over a NESTED owned-producer chain (concat of two pushes) reclaims every temporary (no live objects)
 pass	List.len over a let-bound constant list folds to the arity on both backends
 pass	List.len over a list with a TRAPPING element construction preserves the trap (does not fold it away)
 pass	List.len over a trap-free pure-data list still folds to the length
+pass	List.len over an owned-temporary List.concat result reclaims it (no live objects)
+pass	List.len over an owned-temporary List.push result reclaims it (no live objects)
+pass	List.len over an owned-temporary List.update result reclaims it (no live objects)
 pass	List.update at BOTH extremes of a 2000-element list lands and preserves the original
 pass	List.update at the 32-boundary changes one slot and leaves both neighbors shared
 pass	List.update through a concat-built RELAXED node changes one slot with exact neighbors
