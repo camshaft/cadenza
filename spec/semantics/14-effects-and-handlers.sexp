@@ -526,7 +526,10 @@
 (case "a trap-init let in one handler branch short-circuits while the sibling threads state"
   (doc    "`(if b (let ((it (trap \"dead\"))) (+ it (St.tick))) (St.tick))` seeded 0, arm `(tick (u) s (resume
            (+ s 1) (+ s 1)))`. b=false threads the tick normally -> 1. b=true binds a trap in the let-init, so
-           the whole let folds to the trap (the `(+ it (St.tick))` and its perform never run) -> traps. Pins
+           the whole let folds to the trap (the `(+ it (St.tick))` and its perform never run) -> traps as a
+           raw `unreachable` (a user `trap`'s message is not surfaced on the wasm/rust backends — the
+           observable reason is 'unreachable', not the source 'dead', matching every other user-`trap`
+           case; see 07-type-system's `(let ((x (trap \"boom\"))) …)` -> `(trap \"unreachable\")`). Pins
            that the trap-init short-circuit does not perturb the sibling branch's state threading nor force
            the dead branch's perform.")
   (input  (do
@@ -536,7 +539,7 @@
                 (if b (let ((it (trap "dead"))) (+ it (St.tick))) (St.tick))))
             (export main)))
   (call   main (: false Bool)) (output (: 1 Int64))
-  (call   main (: true Bool)) (trap "dead"))
+  (call   main (: true Bool)) (trap "unreachable"))
 
 (case "two successive self-recursive folds thread state between them"
   (doc    "Two successive `(dn 2)` folds under one Counter handler: `dn n = if n==0 then 0 else dn(n-1) +
