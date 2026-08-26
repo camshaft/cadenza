@@ -26696,32 +26696,16 @@ mod match_engine {
         );
     }
 
-    /// Verification Inc-b (D): a BARE `@ensures(Q)` (not stacked under `@test`) is ENFORCED at body-EXIT —
-    /// `verify_enforce::enforce` rewrites the def body to `(let ((it BODY)) (if Q it (trap)))`, so a violated
-    /// postcondition TRAPS and a satisfied one is value-transparent (returns the def's own value). This is the
-    /// teeth of the universal-@ensures enforcement: assert BOTH a violating input traps AND a satisfying input
-    /// returns the computed value unchanged. (A `@test @ensures` STACK is v-property-testing's TESTED tier —
-    /// this pass skips that shape to avoid double-injection — so this test uses a BARE `@ensures`.)
+    /// Verification Inc-b (D) CAPTURE-GUARD: a def whose PARAM is literally named `ret` cannot carry
+    /// `@ensures` — the `@ensures` result binder `ret` would shadow the param, so enforcement is impossible.
+    /// Rather than silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it
+    /// (CDZ0201) naming the fix. A pure diagnostics invariant (no run). The RUN-TIME enforcement of a bare
+    /// `@ensures` — a violated postcondition traps, a satisfied one is value-transparent — is pinned in the
+    /// corpus (`26-program-conditions.sexp`: "a PLAIN @ensures postcondition is ENFORCED at body-exit" and
+    /// "… is value-transparent when SATISFIED"), which links the runtime the check needs.
     #[test]
-    fn a_bare_ensures_postcondition_is_enforced_at_body_exit() {
+    fn a_bare_ensures_on_a_param_named_ret_is_rejected_not_silently_skipped() {
         use crate::testkit::parse;
-        use wasmtime::component::Val;
-        // `@ensures (>= it 0)` on `f(x) = x - 100`: the body becomes `(let ((it (- x 100))) (if (>= it 0) it
-        // (trap)))`. f(5) = -95 violates it → TRAP; f(200) = 100 satisfies it → returns 100 (value-transparent).
-        let src = "(module m (@ (ensures (>= ret 0)) (def (f (: x Int64)) (- x 100))) (export f))";
-        let comp =
-            compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
-        // VIOLATING input x=5 (result -95 < 0) → the injected postcondition check takes the trap arm.
-        assert!(
-            call_traps(&comp, "f", &[Val::S64(5)]),
-            "a violated bare @ensures postcondition traps on x=5 (result -95 < 0)"
-        );
-        // SATISFYING input x=200 (result 100 >= 0) → value-transparent, returns the def's own value 100.
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "f", &[Val::S64(200)]),
-            100,
-            "a satisfied bare @ensures is value-transparent — the def returns its computed value 100, not unit"
-        );
         // CAPTURE-GUARD REJECT: a def whose PARAM is literally named `ret` cannot carry `@ensures` — the
         // `@ensures` result binder `ret` would shadow the param, so enforcement is impossible. Rather than
         // silently skip (a footgun — a quietly-unenforced contract), `collect_faults` REJECTS it (CDZ0201)
