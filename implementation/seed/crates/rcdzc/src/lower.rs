@@ -12819,6 +12819,103 @@ fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> Option<bool
 /// `inline-never` def (which the author asked NOT to inline). Because both route here, an `inline-never`
 /// GENERIC or `const`-dict def is specialized (polymorphism + dict erasure kept) AND emitted once + called
 /// (inline avoided) — "avoid the inline but keep polymorphism", for free.
+/// Eta-expand any ARGUMENT that is a bare operator used as a first-class function value, grounded by the
+/// callee's parameter type at that position. Returns `None` when no argument needs rewriting (the common
+/// case — the caller keeps the original slice, no allocation). See the call site in
+/// [`emit_call_or_specialize`] for why: a bare operator has no runtime closure form.
+///
+/// Precise + conservative: an argument is rewritten ONLY when (a) the callee's parameter at that position
+/// is a fully-GROUND arrow (`is_ground`, no `Any`) — so we know the exact closure signature and never touch
+/// a generic/undetermined position — AND (b) the argument is a bare operation VALUE (`meta_apply_of` is a
+/// `Prim`, and it is not itself an application). Every `Prim` is an operation (constructors dispatch through
+/// `variant_disc_of`, not `meta_apply_of`), so this never eta-expands a constructor (those have their own
+/// [`eta_ctor_closure`]) or an ordinary value. A normal call — no function-typed parameter — scans zero
+/// candidate positions and returns `None` immediately.
+fn eta_operator_args(
+    db: &mut Db,
+    scheme: &crate::ty::Scheme,
+    args: &[StructId],
+) -> Option<Vec<StructId>> {
+    // The callee's per-position parameter types (peel the declared arrow). A generic scheme's quantified
+    // vars are `Ty::Var`, so those positions are not `is_ground` and are skipped below.
+    let mut param_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = scheme.ty.clone();
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        param_tys.push(*p);
+        cur = *r;
+    }
+    // Cheap pre-scan: is there a GROUND-ARROW parameter fed a bare-operator argument? Most calls have no
+    // function-typed parameter, so this returns None with no synthesis and no allocation.
+    let needs = args.iter().enumerate().any(|(i, &a)| {
+        param_tys
+            .get(i)
+            .is_some_and(|p| matches!(p, crate::ty::Ty::Fn(..)) && p.is_ground() && !p.has_any())
+            && !matches!(resolved_of(db, a), Resolved::Apply { .. })
+            && crate::eval::meta_apply_of(db, a).is_some()
+    });
+    if !needs {
+        return None;
+    }
+    let rewritten = args
+        .iter()
+        .enumerate()
+        .map(|(i, &a)| {
+            let is_op_arg = param_tys.get(i).is_some_and(|p| {
+                matches!(p, crate::ty::Ty::Fn(..)) && p.is_ground() && !p.has_any()
+            }) && !matches!(resolved_of(db, a), Resolved::Apply { .. })
+                && crate::eval::meta_apply_of(db, a).is_some();
+            if is_op_arg {
+                let arrow = param_tys[i].clone();
+                synth_operator_eta(db, a, &arrow).unwrap_or(a)
+            } else {
+                a
+            }
+        })
+        .collect();
+    Some(rewritten)
+}
+
+/// Synthesize the eta lambda `(fn (__eta0 …) (<op_occ> __eta0 …))` for a bare operator `op_occ` at the
+/// ground arrow `arrow` (the callee's parameter type), returning the lambda's occurrence id. The arrow's
+/// parameter types seed the synthesized params so the lambda lowers without any inference context on the
+/// synthesized nodes (mirrors [`eta_ctor_closure`], but the ground type comes from the call site rather
+/// than the operator's own polymorphic scheme). `None` if `arrow` has no parameter or synthesis does not
+/// classify as a lambda.
+fn synth_operator_eta(db: &mut Db, op_occ: StructId, arrow: &crate::ty::Ty) -> Option<StructId> {
+    let mut param_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = arrow.clone();
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        param_tys.push(*p);
+        cur = *r;
+    }
+    if param_tys.is_empty() {
+        return None;
+    }
+    let n = param_tys.len();
+    let param_occs: Vec<StructId> = (0..n).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + n);
+    body_children.push(op_occ);
+    for k in 0..n {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(param_occs);
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    let params = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, .. } => params,
+        _ => return None,
+    };
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| param_tys[k].clone());
+    }
+    Some(lambda)
+}
+
 fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[StructId]) -> Core {
     // RECORD "emitted as a real call": this call did NOT inline — it emits a `Core::Call` to a standalone
     // function (a recursive callee, an `inline-never` def, or — via `type_specialize` below — a
@@ -12875,6 +12972,15 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
             ));
         }
     };
+    // A bare OPERATOR passed as a first-class function VALUE — `(apply2 + 3 4)` passes `+` where the
+    // callee's parameter is a function `(-> Int64 Int64 Int64)`. A bare operator has no runtime closure
+    // form (it lowers to its operator RECORD, which is "not applyable" when the callee applies it), so
+    // ETA-EXPAND each such argument to the equivalent lambda `(fn (a b) (+ a b))`, GROUNDED by the callee's
+    // parameter type here (the ground arrow the bare operator's own `type_of` lacks — `def_scheme` supplies
+    // it). Only a bare-operator arg at a ground-arrow parameter position is rewritten; every other argument
+    // is unchanged (a normal call is byte-identical). Mirrors [`eta_ctor_closure`] (bare payload ctor).
+    let eta_rewritten = eta_operator_args(db, &scheme, args);
+    let args: &[StructId] = eta_rewritten.as_deref().unwrap_or(args);
     // RECURSIVE-GENERIC MONOMORPHIZATION. A GENERIC scheme (`ty_vars` non-empty — a parameter the body
     // only threads, generalized in `compute_def_scheme`) has no machine representation for its generic
     // params. Monomorphize THIS call: synthesize (or reuse) a copy of the callee whose generic params are
