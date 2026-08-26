@@ -15635,6 +15635,12 @@ fn reusable_handle_slot(
 /// copy-into-scratch was pure waste. A COMPUTED scrutinee (a call result, an `if`, a fresh construction) is
 /// evaluated ONCE into a fresh i32 slot as before (re-emitting it would recompute + its scratch would clash
 /// with the arm bodies').
+///
+/// Returns `(arm_slots, len_slot, arm_base, owned_stash)` — the arm-body slot map (scrutinee handle bound),
+/// the `vec-len` slot, the scratch floor past both, and the fresh owned-temporary handle slot for the
+/// post-arms shell reclaim (`None` for a resident param/binding — see `list_shell_reclaim_slot`).
+type ListMatchScrutinee = (HashMap<StructId, u32>, u32, u32, Option<u32>);
+
 #[allow(clippy::too_many_arguments)]
 fn materialize_list_match_scrutinee(
     db: &mut Db,
@@ -15644,7 +15650,7 @@ fn materialize_list_match_scrutinee(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
-) -> Result<(HashMap<StructId, u32>, u32, u32, Option<u32>), Reject> {
+) -> Result<ListMatchScrutinee, Reject> {
     // `owned_stash` = the fresh slot holding a COMPUTED (non-resident) scrutinee handle — the shell-reclaim
     // (below, at the emit sites) drops it after the arms when it is an owned temporary, mirroring the
     // `MatchSum` owned-shell reclaim. `None` for a resident `Param`/`LocalRef` (its owner drops it).
