@@ -390,15 +390,28 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `Core::ConstRational` here rather than pass through as the inner `ConstInt`/`ConstFloat` (which
         // would carry the wrong value type). Inference already grants the grounding (no CDZ0203).
         // `(const e)` — the FORCE-EVAL / const-DEMAND block (operator-requested). It REQUIRES `e` to reduce
-        // to a compile-time constant. Run the general const-evaluator on `e` DIRECTLY — the block IS the
-        // demand signal, so this bypasses the recursive-call activation gate (`has_const_foldable_param`):
-        // any total computation over compile-time-known data folds, WITHOUT threading `const` params through
-        // its callees (which is exactly the clunk the operator wanted to drop — `const(contract-id(Ast.
-        // module))` folds even though the helper fns declare no const params). If it fully folds, the block
-        // IS that constant (a taken `trap` surfaces its CDZ0304 message via `CVal::Trap`). If it does NOT
-        // fully fold, REJECT (CDZ0201): the block ASSERTS compile-time evaluability, so a residual runtime
-        // value is an authoring error, not a silent pass-through to a runtime computation.
+        // to a compile-time constant. TWO fold paths, in order:
+        //   1. the ORDINARY fold `core_of(e)` — everything the compiler already const-folds outside a block
+        //      (Float/Int arithmetic, a constant record/tuple/list/Bytes, `Ast.encode`/`Blake3.of`, …). The
+        //      block must NEVER be STRICTER than the plain fold: `(const (+ 1.5 2.0))` folds exactly like
+        //      `(+ 1.5 2.0)`. This is what the general value-interpreter (`const_eval`) does NOT carry (no
+        //      Float/Char/Map value), so trying it FIRST is what fixes the false CDZ0201 on those classes.
+        //   2. else the general const-EVALUATOR on `e` directly — the block IS the demand signal, so it
+        //      bypasses the recursive-call activation gate (`has_const_foldable_param`): a total recursion /
+        //      composition over compile-time-known data folds WITHOUT threading `const` params through its
+        //      callees (`const(contract-id(Ast.module))` folds though the helpers declare no const params).
+        //      A taken `trap` surfaces its CDZ0304 message via `CVal::Trap`.
+        // If NEITHER yields a constant, REJECT (CDZ0201): the block ASSERTS compile-time evaluability, so a
+        // residual runtime value is an authoring error, not a silent pass-through to a runtime computation.
         Resolved::ConstBlock { expr } => {
+            let ordinary = core_of(db, expr);
+            if core_is_const_value(db, &ordinary) {
+                return ordinary;
+            }
+            // A poison from the ordinary fold (e.g. a provable ConstTrap) IS the block's outcome — surface it.
+            if let Core::Poison(r) = ordinary {
+                return Core::Poison(r);
+            }
             let mut budget: u64 = 1_000_000;
             if let Some(cv) = const_eval(db, expr, &CEnv::default(), &mut budget)
                 && let Some(core) = cval_to_core(db, &cv)

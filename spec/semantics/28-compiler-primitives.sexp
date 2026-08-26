@@ -326,3 +326,18 @@
             (def (main) (const (f (tuple 3 0))))
             (export main)))
   (output (: 3 Int64)))
+
+; --- Primitive 2: const execution — `(const …)` is never STRICTER than the ordinary fold --------------
+; The force-eval block first tries the ORDINARY compile-time fold (`core_of`) and only falls back to the
+; general value-interpreter for what that doesn't reach (recursion/composition). So `(const e)` folds
+; EVERYTHING the plain compiler already folds — a `Float`/`Bytes`/record/tuple constant expression the
+; value-interpreter has no value for still folds through the block, rather than a false CDZ0201 reject.
+
+(case "a `(const …)` block folds a constant Float expression (never stricter than the ordinary fold)"
+  (doc    "`(const (+ 1.5 2.0))` folds to 3.5 — the ordinary `core_of` fold already produces the constant
+           Float, so the force-eval block returns it rather than rejecting (the general value-interpreter
+           carries no Float value, so a const_eval-only block wrongly rejected this perfectly-constant expr).")
+  (input  (do
+            (def (main) (const (+ 1.5 2.0)))
+            (export main)))
+  (output (: 3.5 Float64)))
