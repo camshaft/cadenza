@@ -7498,3 +7498,10 @@ pass	ce09 equality of two RUNTIME-built Sets
 pass	ce10 equality of RUNTIME lists of records
 pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
 todo	cj03 Ast.print of a RUNTIME AST value renders
+pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
+pass	sto3 to-list length + sum are order-independent invariants
+pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
+pass	sto5 a STRING set to-list is lexicographically sorted
+pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
+pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
+pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb
