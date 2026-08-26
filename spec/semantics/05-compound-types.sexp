@@ -3911,6 +3911,25 @@
             (export main)))
   (call main (: 40 Int64)) (output (: 42 Int64)))
 
+(case "a MULTI-LEVEL concat-built list SET element does not over-match a genuinely different element"
+  (doc    "The NEGATIVE companion of the concat-built-found-by-push-built SET case: the element canonicalize
+           compares by elements-in-order and must NOT collapse DISTINCT lists into one. `concat-elem` is
+           [0..40) (relaxed RRB via List.concat of two halves), inserted into an empty `(Set.of (list))`
+           (Var element-type field); the query `other` is [1..41) — a genuinely different sequence — so
+           `Set.contains` is FALSE → -1. Guards that the node-resolved-type fallback canonicalization is not
+           over-eager: a bug that collapsed distinct lists would wrongly report the different element present
+           (42). Pairs with the positive found=42 case above. n=40 (>32, load-bearing relaxed interior).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (main (: n Int64))
+              (let ((half (/ n 2))
+                    (concat-elem (List.concat (build 0 half (list)) (build half n (list))))
+                    (other (build 1 (+ n 1) (list))))
+                (if (Set.contains (Set.insert (Set.of (list)) concat-elem) other) 42 (- 0 1))))
+            (export main)))
+  (call   main (: 40 Int64)) (output (: -1 Int64)))
+
 (case "a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)"
   (doc    "The standalone `=` companion of the list-KEY case above. Two lists with the SAME elements built two
            ways — `concat-list = List.concat(build 0..half, build half..n)` (RELAXED interior RRB nodes at
