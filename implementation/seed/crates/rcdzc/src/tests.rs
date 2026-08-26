@@ -4664,6 +4664,69 @@ fn const_block_resolves_and_is_see_through_for_typing_and_lowering() {
     }
 }
 
+/// `(const <expr>)` block ARITY guard — `resolve_const_block` accepts EXACTLY one operand; `(const)` (none)
+/// and `(const a b)` (two) are a coded `Malformed` reject, NOT a silent see-through of the first operand or
+/// an unbound-`const` misread. Pins the classifier so a future edit to the block form cannot quietly widen
+/// its arity. (The `(const (: n Int64))` PARAM-modifier malformed path is a separate `strip_const_params`
+/// concern, tested elsewhere; this is the EXPRESSION-position block.)
+#[test]
+fn const_block_rejects_wrong_operand_count() {
+    use crate::db::Db;
+    for (src, parts) in [
+        ("(module m (def (main) (const)) (export main))", "none"),
+        ("(module m (def (main) (const 1 2)) (export main))", "two"),
+    ] {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let diags = crate::compile::diagnostics(&mut db);
+        assert!(
+            diags.iter().any(|d| d
+                .message
+                .contains("a `const` block is written `(const <expression>)`")),
+            "a {parts}-operand `const` block must be a coded Malformed reject, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// `(const <expr>)` is SEE-THROUGH past the transparent-wrapper walks, not just for a bare literal: an
+/// APPLICATION whose head is a `(const (fn …))` still finds the lambda (`lambda_of` peels the block), and a
+/// block wrapping an ANNOTATION carries the inner ascription's grounded width. Pins that the block does not
+/// opaque-wrap its operand for inference — the property v-compiler-primitives' force-eval upgrade must keep.
+#[test]
+fn const_block_is_see_through_through_application_and_annotation() {
+    use crate::db::Db;
+    // Head-position block: `((const (fn (x) x)) 5)` — identity applied, types as its argument (Int64).
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (main) ((const (fn (x) x)) 5)) (export main))",
+    ));
+    let diags = crate::compile::diagnostics(&mut db);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("unbound")),
+        "a `(const (fn …))` application head must resolve see-through, not as an unbound name: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let d = db.def_by_name("main").expect("def main");
+    let body = db.defs[d].body.expect("main body");
+    let ty = crate::infer::type_of(&mut db, body);
+    assert_eq!(
+        ty.render_name(&db.name_ctx()),
+        "Int64",
+        "((const (fn (x) x)) 5) types see-through as Int64, got {ty:?}"
+    );
+
+    // Block wrapping an annotation: `(const (: 5 Int32))` carries the inner ascription's 32-bit grounding.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (main) (const (: 5 Int32))) (export main))",
+    ));
+    let d = db.def_by_name("main").expect("def main");
+    let body = db.defs[d].body.expect("main body");
+    let ty = crate::infer::type_of(&mut db, body);
+    assert!(
+        ty.render_name(&db.name_ctx()).contains("32"),
+        "(const (: 5 Int32)) types see-through as the inner ascription's 32-bit width, got {ty:?}"
+    );
+}
+
 /// NO-ANNOTATION EXPORT BOUNDARY (`derive_world_export_param_annotations`): a reducer writes its guest-export
 /// entry point with a BARE param — `(def (on-message msg) …)` — and the export-param pre-pass DERIVES `msg`'s
 /// type from the matching world guest-export member (`on-message`'s declared `msg` param, a record), injecting
