@@ -7466,3 +7466,7 @@ pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the ent
 pass	fse1 NaN handler state survives the seam — canonical equality says nan = nan across dispatches
 pass	fse2 negative-zero handler state stays distinct from +0.0 across the seam (canonical bits)
 pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
+pass	lk1 divergent update aliases leave no live heap objects after the run
+pass	lk2b a closure capturing a BRANCH-SELECTED list across an interleaved update leaves no live heap objects
+pass	lk3 a persistent update inside a handler ARM plus continuation read leaves no live heap objects
+pass	lk4 shared Map and Set operands across inserts leave no live heap objects
