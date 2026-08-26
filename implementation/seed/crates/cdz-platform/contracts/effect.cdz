@@ -37,7 +37,17 @@ def effect-conforms() =
   match an-effect() with
   | Effect.Perform(p) => if p == b"effect-payload" then unit else trap("effect payload mismatch")
 
+// Self-reflect this contract's own id (design/cadenza-platform.md §1, P4). `Ast.module` reflects THIS
+// module's AST (its @!contract/@!input/@!output pragmas + type decls), which `contract-id` folds — at compile
+// time — to `0x01 ++ blake3(canonical declaration)`, byte-identical to the host `cdz_contract::contract_id`
+// (pinned by the cdz-platform contract.rs goldens). Exporting it lets a reducer IMPORT this contract's id to
+// route on, without a hardcoded hash: `Ast.module` is self-only, so a contract can only expose its OWN id and
+// a consumer imports it. (Codegen validates this file with `contract-id` staged as a resolvable sibling; the
+// generated schema reads the types, not this def.)
+import { contract-id } from "contract-id"
+def effect-id() -> Bytes = contract-id(Ast.module)
+
 // Make the schema types importable as a LIBRARY (`import { Effect, Ack } from "effect"`), consistent with
-// check.cdz / verdict.cdz. Inert for the Rust codegen (which reads the schema, not the export clause) and for
-// a single-file compile.
-export { Effect.*, Ack.* }
+// check.cdz / verdict.cdz, plus the self-reflecting `effect-id`. Inert for the Rust codegen (which reads the
+// schema, not the export clause) and for a single-file compile.
+export { Effect.*, Ack.*, effect-id }

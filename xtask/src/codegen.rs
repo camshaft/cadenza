@@ -262,6 +262,42 @@ fn generate_contracts(paths: &Paths, check: bool) {
         std::process::exit(1);
     }
 
+    // A contract source may `import { contract-id } from "contract-id"` to export its own self-reflecting
+    // contract-id (P4 self-reflection): `def <c>-id() = contract-id(Ast.module); export { <c>-id }`, so a
+    // reducer can import another contract's id to route on. Per-file `cdz test <contract>.cdz` cannot resolve
+    // that import — the lib lives in `guests/`, not beside the contract — so validate each contract from a
+    // STAGING dir holding the contract sources ALONGSIDE a copy of `guests/contract-id.cdz`, where `cdz test`'s
+    // same-directory module resolution finds it. `guests/contract-id.cdz` stays the single source (only copied
+    // here); `cdz convert` reads the real source (it needs no import resolution). The staging dir is under
+    // `target/` (gitignored) and is rebuilt each run so a renamed/removed contract leaves no stale sibling.
+    let stage = paths.repo.join("target/codegen-contract-stage");
+    let lib = paths
+        .seed
+        .join("crates/cdz-platform/guests/contract-id.cdz");
+    let _ = std::fs::remove_dir_all(&stage);
+    if let Err(e) = std::fs::create_dir_all(&stage) {
+        eprintln!(
+            "xtask codegen: create staging dir {}: {e}",
+            stage.display()
+        );
+        std::process::exit(1);
+    }
+    let stage_copy = |from: &std::path::Path, to: PathBuf| {
+        if let Err(e) = std::fs::copy(from, &to) {
+            eprintln!(
+                "xtask codegen: stage {} -> {}: {e}",
+                from.display(),
+                to.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    stage_copy(&lib, stage.join("contract-id.cdz"));
+    for src in &sources {
+        let file = src.file_name().expect("a contract file name");
+        stage_copy(src, stage.join(file));
+    }
+
     let mut names: Vec<String> = Vec::with_capacity(sources.len());
     for src in &sources {
         let name = src
@@ -300,9 +336,13 @@ fn generate_contracts(paths: &Paths, check: bool) {
         // them) seeds them into the store (`seed_store_component`) — so `--check` in a bare CI job (which does
         // not run `cargo xtask build`) still resolves the runtime for the contract self-tests.
         let src_str = src.to_str().expect("a UTF-8 contract path");
+        // Validate from the STAGED copy (beside contract-id.cdz) so a contract that imports the self-reflection
+        // lib resolves it; `cdz convert` below still reads the real source (no import resolution needed).
+        let staged = stage.join(src.file_name().expect("a contract file name"));
+        let staged_str = staged.to_str().expect("a UTF-8 staged contract path");
         run_cdz(
             paths,
-            &["test", src_str],
+            &["test", staged_str],
             &format!("validate {}", src.display()),
         );
         let ast_bytes = run_cdz_capture(
