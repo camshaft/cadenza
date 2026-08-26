@@ -5791,14 +5791,36 @@
   (call   main (: 0 Int8)) (output (: -1 Int64))
   (call   main (: -128 Int8)) (output (: -99 Int64)))
 
-(case "a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)"
-  (doc    "`(UInt8.checked-mul a (UInt8.wrap 2))` with a runtime UInt8 declines: the narrow add/sub widen-and-
-           range-check trick does NOT extend uniformly to MUL (a u32×u32 product exceeds the i64 accumulator,
-           so a single wide-accumulator range-check cannot cover every narrow width). Soundly declines rather
-           than mis-verdicting; the 64-bit checked-mul (division round-trip) is above. Pins the narrow-mul
-           boundary — the sole remaining runtime-checked-integer decline.")
-  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-mul a (UInt8.wrap 2)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
-  (declines))
+; A NARROW-width checked-MUL emits by the SAME widen-and-range-check as narrow add/sub — the product of two
+; ≤32-bit operands fits a 64-bit accumulator (u32×u32 max = 2^64−2^33 < 2^64 fits UInt64; i32×i32 ≤ 2^62 fits
+; Int64), with the accumulator SIGNEDNESS matching the op so the range-check reads the product's true
+; magnitude (an unsigned narrow mul uses a UInt64 accumulator + unsigned compares). This closes the LAST
+; runtime-checked-integer decline: conversion .of, add/sub, and mul now all emit at every width.
+(case "a NARROW-width checked-mul over a RUNTIME operand range-checks the narrow bounds (unsigned, UInt64 accumulator)"
+  (doc    "`(UInt8.checked-mul a (UInt8.wrap 20))` with a runtime UInt8: widen to UInt64, multiply exactly,
+           range-check `[0,255]` (unsigned). `main(10)` = 200 (fits); `main(20)` = 400 > 255 → None → -1. The
+           unsigned narrow mul uses a UInt64 accumulator so the product's magnitude is read correctly. The
+           executing upgrade of the former narrow-mul decline.")
+  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-mul a (UInt8.wrap 20)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
+  (call   main (: 10 UInt8)) (output (: 200 Int64))
+  (call   main (: 20 UInt8)) (output (: -1 Int64)))
+
+(case "a NARROW-width signed checked-mul range-checks BOTH bounds incl. the min×-1 edge (Int8)"
+  (doc    "`(Int8.checked-mul a (Int8.wrap -1))` with a runtime Int8: `main(100)` = -100 (fits); `main(-128)`
+           = +128 > 127 → None → -99 (the Int8.min × -1 overflow, caught against the narrow upper bound). Pins
+           the signed narrow mul over BOTH bounds, incl. the sign-flip edge a magnitude check would miss.")
+  (input  (do (def (main (: a Int8)) (match (Int8.checked-mul a (Int8.wrap -1)) ((Some v) (Int64.of v)) ((None _) -99))) (export main)))
+  (call   main (: 100 Int8)) (output (: -100 Int64))
+  (call   main (: -128 Int8)) (output (: -99 Int64)))
+
+(case "a NARROW UInt32 checked-mul fits the UInt64 accumulator exactly (the widest narrow product)"
+  (doc    "`(UInt32.checked-mul a 65536)` with a runtime UInt32: the product can approach 2^64, which the
+           UInt64 accumulator holds exactly (a u32×u32 max = 2^64−2^33 < 2^64). `main(32768)` = 2^31 (fits
+           UInt32); `main(65536)` = 2^32 > UInt32.max → None → -1. Pins that the widest narrow mul is exact in
+           the accumulator (an i64 accumulator would misread it as negative).")
+  (input  (do (def (main (: a UInt32)) (match (UInt32.checked-mul a 65536) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
+  (call   main (: 32768 UInt32)) (output (: 2147483648 Int64))
+  (call   main (: 65536 UInt32)) (output (: -1 Int64)))
 
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
   (doc    "`(Int64.wrapping-add Int64.max 1)` = Int64.min (-9223372036854775808): wrapping addition does
