@@ -24643,6 +24643,23 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
             None
         };
     }
+    // A BARE nullary `Map.empty` VALUE (`(. Map empty)`, `meta_apply_of == MapEmpty`): `core_of` folds it to
+    // a constant empty `Core::MapNew`; bridge that to a `CVal::Map` so a `Map.insert`/`Map.lookup`/`Map.len`
+    // chain starting from a bare empty map folds (the `apply_const_prim` arms fold the ops; this supplies
+    // their empty-map base). Handled HERE, before the `match` — the `Member` arm below would otherwise try to
+    // PROJECT `empty` off the `Map` MODULE operand (which does not const-evaluate to a record) and decline,
+    // so a bare `Map.empty` under `(const …)`/a demand path never folded. The PARENTHESIZED application form
+    // `(Map.empty)` already folds via `const_eval_apply`'s `Prim::MapEmpty` arm; this closes the bare-member
+    // gap the same way `ReflectModule`/`variant_disc_of` close theirs. Kept tight to `MapEmpty` (a nullary
+    // prim `core_of` folds to a constant) so it never shadows a genuine record projection.
+    if crate::eval::meta_apply_of(db, node) == Some(crate::resolved::Prim::MapEmpty) {
+        let c = core_of(db, node);
+        return if core_is_const_value(db, &c) {
+            core_to_cval(db, &c)
+        } else {
+            None
+        };
+    }
     // A NULLARY VARIANT used as a bare VALUE (`Option.None`, a `(. Sum V)` member form, a bare-name variant):
     // it carries a `(meta variant)` discriminant and DENOTES the empty-payload sum value, WHATEVER its
     // resolved shape. Handle it BEFORE the `match` — the `Member`/`Ref` arms would otherwise try to PROJECT
