@@ -17525,3 +17525,45 @@
     (export main)))
   (call main (: 4 Int64))
   (output (: 72 Int64)))
+
+;; -- handler instance lifecycles: sibling + sequential + fresh-per-call installs of one effect (breaker batch 376) --
+(case "shx1 two SIBLING handles of one effect in one expression keep independent states"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main (: n Int64))
+      (+ (handle E n
+           ((tick () s (resume (* s 10) (+ s 1))))
+           (+ (E.tick) (E.tick)))
+         (* 1000 (handle E (* n 2)
+           ((tick () s (resume (* s 10) (+ s 1))))
+           (+ (E.tick) (E.tick))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 130070 Int64)))
+
+(case "shx2 a SEQUENTIAL second handle is seeded by the first handle's result"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main (: n Int64))
+      (let ((first (handle E n
+                     ((tick () s (resume (* s 10) (+ s 1))))
+                     (+ (E.tick) (E.tick)))))
+        (handle E first
+          ((tick () s (resume (+ s 1) (* s 2))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 212 Int64)))
+
+(case "shx3 a helper installing a FRESH handle per call gets a fresh state each time"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (round (: seed Int64))
+      (handle E seed
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (+ (E.tick) (E.tick))))
+    (def (main (: n Int64))
+      (+ (round n) (* 1000 (round n))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 70070 Int64)))

@@ -7269,3 +7269,6 @@ pass	pd8 a shared MAP operand survives an insert — both views keep their own l
 pass	pd9 a shared SET operand survives an insert — both views keep their own len
 pass	pd10 a shared BYTES operand survives a concat — both views keep their own len
 pass	pd11 a shared STRING operand survives a concat — both views keep their own byte-len
+pass	shx1 two SIBLING handles of one effect in one expression keep independent states
+pass	shx2 a SEQUENTIAL second handle is seeded by the first handle's result
+pass	shx3 a helper installing a FRESH handle per call gets a fresh state each time
