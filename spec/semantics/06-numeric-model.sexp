@@ -9536,3 +9536,49 @@
   (input  (do (def (g (: a Int64)) (+ 1 a)) (export g)))
   (call   g (: 41 Int64)) (output (: 42 Int64))
   (call   g (: 9223372036854775807 Int64)) (trap "integer overflow"))
+
+(case "runtime multiplication computes in range and traps on overflow"
+  (doc    "Runtime `(* a b)` computes in range (6*7=42, 0*999=0) and its mul overflow guard (a!=0 && r/a!=b,
+           with div_s catching MIN/-1) traps: Int64.max*2 and Int64.min*-1 both overflow.")
+  (input  (do (def (mul (: a Int64) (: b Int64)) (* a b)) (export mul)))
+  (call   mul (: 6 Int64) (: 7 Int64)) (output (: 42 Int64))
+  (call   mul (: 0 Int64) (: 999 Int64)) (output (: 0 Int64))
+  (call   mul (: 9223372036854775807 Int64) (: 2 Int64)) (trap "integer overflow")
+  (call   mul (: -9223372036854775808 Int64) (: -1 Int64)) (trap "integer overflow"))
+
+(case "a doubling add computes in range and traps on overflow like the general add"
+  (doc    "`(+ a a)` uses the collapsed single-xor overflow guard; value + trap must match the general
+           two-operand add. dbl(21)=42, dbl(-21)=-42, dbl(0)=0, dbl(max/2)=9223372036854775806,
+           dbl(min/2)=Int64.min; and dbl((max/2)+1) / dbl(max) / dbl(min) all trap.")
+  (input  (do (def (dbl (: a Int64)) (+ a a)) (export dbl)))
+  (call   dbl (: 21 Int64)) (output (: 42 Int64))
+  (call   dbl (: -21 Int64)) (output (: -42 Int64))
+  (call   dbl (: 0 Int64)) (output (: 0 Int64))
+  (call   dbl (: 4611686018427387903 Int64)) (output (: 9223372036854775806 Int64))
+  (call   dbl (: -4611686018427387904 Int64)) (output (: -9223372036854775808 Int64))
+  (call   dbl (: 4611686018427387904 Int64)) (trap "integer overflow")
+  (call   dbl (: 9223372036854775807 Int64)) (trap "integer overflow")
+  (call   dbl (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "a multiply by a constant power of two strength-reduces and traps like the multiply"
+  (doc    "`(* n 8)` strength-reduces to x<<3 but keeps the multiply's value + overflow trap: f(5)=40,
+           f(-5)=-40, f(0)=0, and 2^60 * 8 = 2^63 overflows Int64 -> trap.")
+  (input  (do (def (f (: n Int64)) (* n 8)) (export f)))
+  (call   f (: 5 Int64)) (output (: 40 Int64))
+  (call   f (: -5 Int64)) (output (: -40 Int64))
+  (call   f (: 0 Int64)) (output (: 0 Int64))
+  (call   f (: 1152921504606846976 Int64)) (trap "integer overflow"))
+
+(case "a multiply by a constant power of two on the left strength-reduces"
+  (doc    "Const-on-the-left `(* 32 n)` also strength-reduces: f(3)=96, f(-3)=-96.")
+  (input  (do (def (f (: n Int64)) (* 32 n)) (export f)))
+  (call   f (: 3 Int64)) (output (: 96 Int64))
+  (call   f (: -3 Int64)) (output (: -96 Int64)))
+
+(case "a narrow UInt8 multiply by two strength-reduces and traps on width overflow"
+  (doc    "`(* n 2)` over UInt8: the range-check (result may fit the i32 slot but exceed the 8-bit type)
+           fires. f(100)=200, f(127)=254, f(128) -> 256 exceeds the 8-bit type -> trap.")
+  (input  (do (def (f (: n UInt8)) (* n 2)) (export f)))
+  (call   f (: 100 UInt8)) (output (: 200 UInt8))
+  (call   f (: 127 UInt8)) (output (: 254 UInt8))
+  (call   f (: 128 UInt8)) (trap "integer overflow"))

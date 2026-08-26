@@ -1853,6 +1853,7 @@ pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
+pass	a doubling add computes in range and traps on overflow like the general add
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
@@ -2611,6 +2612,8 @@ pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
 pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
+pass	a multiply by a constant power of two on the left strength-reduces
+pass	a multiply by a constant power of two strength-reduces and traps like the multiply
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
@@ -2652,6 +2655,7 @@ pass	a named variant-with-payload field in a record result crosses the export bo
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
+pass	a narrow UInt8 multiply by two strength-reduces and traps on width overflow
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
 pass	a narrow match binder used in arithmetic with the scrutinee
@@ -6663,6 +6667,7 @@ pass	runtime float multiplication overflows to infinity, not a trap or a wrap
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder
+pass	runtime multiplication computes in range and traps on overflow
 pass	runtime shaped equality of two owned List-Float64 operands reclaims both (no live objects)
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
