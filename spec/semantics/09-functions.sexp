@@ -7983,3 +7983,52 @@
   (call main (: 0 Int64))
   (output (: 100 Int64))
   (live-objects 0))
+
+; -- breaker batch 438 (2026-08-26): closure captures across the OTHER heap kinds (batch 436
+; covered lists) — a MAP capture queried through the closure, a SET membership closure invoked on
+; hit+miss, a STRING capture measured, and a runtime AST capture matched. All live-objects 0 under
+; the new default-enforcement regime (#3808); wasm-only rows.
+
+(case "clk1 a closure capturing a MAP reclaims after invocation"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
+        (let ((f (fn (k) (match (Map.lookup m k) ((Option.Some v) v) ((Option.None) -1)))))
+          (f (+ n 1)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (live-objects 0))
+
+(case "clk2 a closure capturing a SET reclaims after invocation"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (Set.of (list n (+ n 1) (+ n 2)))))
+        (let ((f (fn (k) (if (Set.contains s k) 1 0))))
+          (+ (f n) (f 99)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case "clk3 a closure capturing a STRING reclaims after invocation"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (String.concat "ab" (if (> n 0) "c" "de"))))
+        (let ((f (fn (k) (+ k (String.byte-len s)))))
+          (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 13 Int64))
+  (live-objects 0))
+
+(case "clk4 a closure capturing a runtime AST reclaims after invocation"
+  (input (do
+    (def (main (: n Int64))
+      (let ((a (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n))))))
+        (let ((f (fn (k) (match a ((Ast.List xs) (+ k (List.len xs))) (_ -1)))))
+          (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
