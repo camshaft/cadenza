@@ -384,4 +384,23 @@ mod tests {
             "comment wrappers must not change the contract-id"
         );
     }
+
+    #[test]
+    fn the_contract_id_byte_format_is_stable_a_golden() {
+        // A GOLDEN pin on the exact contract-id text for a fixed declaration. The other tests here assert only
+        // RELATIVE properties (reproducible, nominal, input/output-sensitive, comment-tolerant) — every one of
+        // them still passes if the canonical encoding / tag / hash format shifts, because the shift moves all
+        // ids together. But the contract-id is the identity the whole platform ROUTES on and PERSISTS, and a
+        // guest self-reflecting via `Ast.module` folds this same declaration to match it (P4) — so an
+        // unintended format change silently breaks byte-identity with every stored id and every guest. This
+        // freezes the absolute output for `(contract "temp.celsius" (types (type Temp (Mk f64))) Temp Temp)`;
+        // if it fails, the wire format changed — update the golden ONLY as a deliberate, re-hash-everything
+        // decision, never as a reflexive "make the test pass."
+        let id = contract_id("temp.celsius", temp_type, "Temp", "Temp");
+        assert_eq!(id.tag(), Some(HashTag::Contract));
+        assert_eq!(
+            id.to_string(),
+            "01UUXRcMG63Ct66Z4TP7l6QfY7pvktdISpoHyTdJVtS70"
+        );
+    }
 }
