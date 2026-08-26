@@ -644,7 +644,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     let mut budget: u64 = 1_000_000;
                     if let Some(cv) = const_eval(db, id, &CEnv::default(), &mut budget)
                         && let Some(core) = cval_to_core(db, &cv)
-                        && core_is_const_value(db, &core)
+                        && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
                     {
                         return core;
                     }
@@ -1504,8 +1504,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                         &CEnv::default(),
                                         &mut budget,
                                     ) && let Some(core) = cval_to_core(g, &cv)
-                                        && core_is_const_value(g, &core)
+                                        && (core_is_const_value(g, &core)
+                                            || matches!(cv, CVal::Trap(_)))
                                     {
+                                        // A fully-folded constant, OR a taken const-fold trap (its
+                                        // `Core::Poison(ConstTrap, msg)` surfaces the trap message as the
+                                        // compile error — a const-executed trap is fail-loud, not a decline).
                                         return core;
                                     }
                                 }
@@ -1633,7 +1637,7 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     let mut budget: u64 = 1_000_000;
                     if let Some(cv) = const_eval(db, body, &CEnv::default(), &mut budget)
                         && let Some(core) = cval_to_core(db, &cv)
-                        && core_is_const_value(db, &core)
+                        && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
                     {
                         return core;
                     }
@@ -3037,6 +3041,16 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     // exactly the bytes the kernel decodes, unblocking reducer_publish/git-publish end-to-end.
     let mut b = crate::ast::Builder::new();
     let Some(root) = encode_ast_value(db, ast_val, &disc, &mut b) else {
+        // The operand did not fold to an encodable constant AST. Before the generic decline, const-EVALUATE
+        // it: `Ast.encode` DEMANDS a compile-time constant, so a `trap` reached on the (const-demanded) fold
+        // is a fail-loud authoring error — surface its MESSAGE as the compile error (CDZ0304), not the
+        // generic "runtime AST value" decline. This catches the non-recursive const-fn trap the ordinary
+        // inliner lowers to a textless `Core::Trap` (dropping the message), which `encode_ast_value` then
+        // can't lift. A non-trapping runtime AST still falls through to the honest decline below.
+        let mut budget: u64 = 1_000_000;
+        if let Some(CVal::Trap(msg)) = const_eval(db, ast_val, &CEnv::default(), &mut budget) {
+            return Core::Poison(Reject::coded(Code::ConstTrap, msg.to_string()));
+        }
         return Core::Poison(Reject::decline(
             "Ast.encode of a runtime AST value is not yet computed (constant AST values only)",
         ));
@@ -24144,6 +24158,13 @@ enum CVal {
     Record(std::collections::BTreeMap<crate::resolved::Symbol, CVal>),
     /// A TUPLE value (Stage b) — a fixed positional product; projected by index.
     Tuple(Vec<CVal>),
+    /// A TAKEN `trap` in a const-fold — the const-evaluator executed a `trap("msg")` on the folded path (e.g. a
+    /// self-reflection transform hit a genuinely-missing required pragma). Carries the trap's message. It
+    /// PROPAGATES like an exception: any operation consuming it short-circuits to it (the `ce!` combinator), so
+    /// the whole fold becomes this trap; `cval_to_core` materializes it to a `Core::Poison(ConstTrap, msg)` so
+    /// the trap's MESSAGE surfaces as the compile error (CDZ0304) — not the generic "runtime AST value"
+    /// decline. This makes a const-executed trap a fail-loud, actionable compile-time error.
+    Trap(std::rc::Rc<str>),
 }
 
 /// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
@@ -24161,6 +24182,19 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         return None;
     }
     *budget -= 1;
+    // Evaluate a sub-expression and SHORT-CIRCUIT a taken `trap`: a `CVal::Trap` propagates like an exception
+    // up through every consuming operation (a trap in any operand/element/field/scrutinee traps the whole
+    // fold), so the trap's message reaches the top. Sites that DIRECTLY return their sub-eval (a `Ref`, a
+    // `let` body, a match arm body) propagate the trap naturally and need no `ce!`.
+    macro_rules! ce {
+        ($n:expr) => {{
+            let v = const_eval(db, $n, env, budget)?;
+            if let CVal::Trap(_) = v {
+                return Some(v);
+            }
+            v
+        }};
+    }
     // `Ast.module` (whatever its resolved shape — a `(. Ast module)` member or the reflect op-record) folds
     // via `core_of` to the reflected module `Ast` (a `Core::SumNew` tree); convert that constant to a `CVal`
     // so the reflected forms flow as matchable values into a transform (the `Ast.module`-SOURCE depth gap).
@@ -24185,33 +24219,33 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::Ref { value } => const_eval(db, value, env, budget),
         // A `let`'s value is its body's value; a body reference to a bound name follows via `Ref` above.
         Resolved::Let { body, .. } => const_eval(db, body, env, budget),
-        Resolved::If { cond, then_, else_ } => match const_eval(db, cond, env, budget)? {
+        Resolved::If { cond, then_, else_ } => match ce!(cond) {
             CVal::Bool(true) => const_eval(db, then_, env, budget),
             CVal::Bool(false) => const_eval(db, else_, env, budget),
             _ => None,
         },
-        Resolved::And { lhs, rhs, is_and } => match (const_eval(db, lhs, env, budget)?, is_and) {
+        Resolved::And { lhs, rhs, is_and } => match (ce!(lhs), is_and) {
             (CVal::Bool(false), true) => Some(CVal::Bool(false)),
             (CVal::Bool(true), false) => Some(CVal::Bool(true)),
-            (CVal::Bool(_), _) => match const_eval(db, rhs, env, budget)? {
+            (CVal::Bool(_), _) => match ce!(rhs) {
                 CVal::Bool(b) => Some(CVal::Bool(b)),
                 _ => None,
             },
             _ => None,
         },
-        Resolved::Not { operand } => match const_eval(db, operand, env, budget)? {
+        Resolved::Not { operand } => match ce!(operand) {
             CVal::Bool(b) => Some(CVal::Bool(!b)),
             _ => None,
         },
         Resolved::List { elems } => {
             let mut vs = Vec::with_capacity(elems.len());
             for &e in elems.iter() {
-                vs.push(const_eval(db, e, env, budget)?);
+                vs.push(ce!(e));
             }
             Some(CVal::List(vs))
         }
         Resolved::Match { scrutinee, arms } => {
-            let v = const_eval(db, scrutinee, env, budget)?;
+            let v = ce!(scrutinee);
             for (pat, body) in arms.iter() {
                 // `None` = the match is undecidable at this stage (a pattern shape not yet interpreted):
                 // decline the whole evaluation rather than guess an arm (guessing would miscompile).
@@ -24226,12 +24260,12 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::Record { fields } => {
             let mut m = std::collections::BTreeMap::new();
             for (sym, &val) in fields.iter() {
-                m.insert(sym.clone(), const_eval(db, val, env, budget)?);
+                m.insert(sym.clone(), ce!(val));
             }
             Some(CVal::Record(m))
         }
         // Member access `(. operand key)` — project a field off a constant record.
-        Resolved::Member { operand, key } => match const_eval(db, operand, env, budget)? {
+        Resolved::Member { operand, key } => match ce!(operand) {
             CVal::Record(m) => m.get(&key).cloned(),
             _ => None,
         },
@@ -24239,12 +24273,12 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::Tuple { elems } => {
             let mut vs = Vec::with_capacity(elems.len());
             for &e in elems.iter() {
-                vs.push(const_eval(db, e, env, budget)?);
+                vs.push(ce!(e));
             }
             Some(CVal::Tuple(vs))
         }
         // A tuple projection `(. operand index)` — read element `index` off a constant tuple.
-        Resolved::Proj { operand, index } => match const_eval(db, operand, env, budget)? {
+        Resolved::Proj { operand, index } => match ce!(operand) {
             CVal::Tuple(vs) => vs.get(index).cloned(),
             _ => None,
         },
@@ -24252,7 +24286,7 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::SumPayload {
             scrutinee, steps, ..
         } => {
-            let mut v = const_eval(db, scrutinee, env, budget)?;
+            let mut v = ce!(scrutinee);
             for step in steps.iter() {
                 v = match (step, &v) {
                     (crate::core::PathStep::Elem(i), CVal::List(xs)) => xs.get(*i)?.clone(),
@@ -24377,12 +24411,35 @@ fn const_eval_apply(
     env: &CEnv,
     budget: &mut u64,
 ) -> Option<CVal> {
+    // Short-circuit a taken `trap` in an evaluated sub-expression (see `const_eval`'s `ce!`).
+    macro_rules! ce {
+        ($n:expr) => {{
+            let v = const_eval(db, $n, env, budget)?;
+            if let CVal::Trap(_) = v {
+                return Some(v);
+            }
+            v
+        }};
+    }
+    // A TAKEN `trap("msg")` on the const-folded path — the fold executed a trap (e.g. a self-reflection
+    // transform reached a genuinely-missing required pragma). Evaluate its message and yield a `CVal::Trap`,
+    // which propagates up (via `ce!`) and materializes to a `Core::Poison(ConstTrap, msg)` — so the trap's
+    // MESSAGE is the compile error, not the generic "runtime AST value" decline.
+    if crate::eval::meta_apply_of(db, head).or_else(|| crate::eval::prim_of(db, head))
+        == Some(Prim::Trap)
+    {
+        let msg = match args.first().map(|&a| const_eval(db, a, env, budget)) {
+            Some(Some(CVal::Str(s))) => s,
+            _ => std::rc::Rc::from("trap (const-executed)"),
+        };
+        return Some(CVal::Trap(msg));
+    }
     // A VARIANT CONSTRUCTOR applied to its payload(s) — an `Ast.Name`/`Ast.List`/`Option.Some`/user-sum
     // constructor. Its value is the sum with the constructor's discriminant and the evaluated payloads.
     if let Some(disc) = crate::eval::variant_disc_of(db, head) {
         let mut payloads = Vec::with_capacity(args.len());
         for &a in args {
-            payloads.push(const_eval(db, a, env, budget)?);
+            payloads.push(ce!(a));
         }
         return Some(CVal::Sum { disc, payloads });
     }
@@ -24391,7 +24448,7 @@ fn const_eval_apply(
     {
         let mut vs = Vec::with_capacity(args.len());
         for &a in args {
-            vs.push(const_eval(db, a, env, budget)?);
+            vs.push(ce!(a));
         }
         // `List.at (list, index)` → an `Option`: `Option.Some elem` in range, else `Option.None`. The
         // Some/None discriminants are read off THIS node's result type (`option_discs`). `List.at` is the
@@ -24441,7 +24498,7 @@ fn const_eval_apply(
     let body = crate::eval::lambda_body(db, head)?;
     let mut child = CEnv::default();
     for (&p, &a) in params.iter().zip(args.iter()) {
-        let av = const_eval(db, a, env, budget)?;
+        let av = ce!(a);
         child.insert(p, av);
     }
     const_eval(db, body, &child, budget)
@@ -24605,6 +24662,10 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
+        // A TAKEN const-fold trap surfaces its message as the compile error (CDZ0304 `ConstTrap`) — a
+        // const-executed `trap` is a fail-loud, actionable authoring error (e.g. "missing required pragma:
+        // input"), not a silent decline to a runtime value.
+        CVal::Trap(msg) => Core::Poison(Reject::coded(Code::ConstTrap, msg.to_string())),
         // A compound (list / sum / record / tuple) materializes to the corresponding `Core` DIRECTLY, its
         // element/payload nodes synthesized via `cval_to_ast` (each a `synth_core` node whose memoized core IS
         // the element's constant). No constructor head, no AST re-parse, no resolution — so a value with no
@@ -24670,6 +24731,9 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
             // permissive `Any` is sufficient — the authoritative fact is the core.
             synth_core(db, core, crate::ty::Ty::Any)
         }
+        // A trap is not a materializable element — it propagates (via `ce!`) before any compound is built, so
+        // this is unreachable in practice; decline defensively rather than synthesize a bogus node.
+        CVal::Trap(_) => return None,
     })
 }
 
