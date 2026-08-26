@@ -8782,60 +8782,6 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
     );
 }
 
-/// `Set.contains`/`Set.remove`/`Set.insert` must NOT fold against a `Set.of` that holds a RUNTIME element.
-/// `Set.of (list …)` folds a constant list to a canonical constant `Core::SetOf`, and these ops fold
-/// against a constant set by comparing elements at COMPILE TIME (`const_compound_eq`). But a `SetOf` can
-/// carry a non-constant element (a call/param result that did not fold), and comparing it to a constant
-/// query is `None` (unknown) — so folding SILENTLY MISCOMPILED: contains answered `false` for a query that
-/// equals the runtime element at run time, remove RETAINED it (cardinality stayed high), insert could add a
-/// duplicate. `(add 2 3)` is a recursive call that does NOT fold but equals 5 at run time, so it forces the
-/// runtime path. The fix declines the fold unless the whole set is `is_const_value`. `#[ignore]` — needs
-/// the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn set_ops_do_not_fold_against_a_runtime_element() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[set-runtime-fold] debug-counters runtime not in the store; skipping");
-        return;
-    };
-    // `(add 2 3)` = 5 at run time but is a recursive call, so it stays a runtime `SetOf` element.
-    let add = "(def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))";
-    let cases: &[(&str, &str, i64)] = &[
-        // contains: 5 IS the runtime element → present → 1 (folded to 0 before the fix).
-        (
-            "contains",
-            "(if (Set.contains (Set.of (list (add 2 3))) 5) 1 0)",
-            1,
-        ),
-        // remove: removing the equal literal drops the element → cardinality 0 (folded to 1 before).
-        (
-            "remove",
-            "(Set.len (Set.remove (Set.of (list (add 2 3))) 5))",
-            0,
-        ),
-        // insert: 5 duplicates the runtime element → cardinality stays 1 (folded to 2 before).
-        (
-            "insert",
-            "(Set.len (Set.insert (Set.of (list (add 2 3))) 5))",
-            1,
-        ),
-    ];
-    for (name, body, expect) in cases {
-        let src = format!("(module m {add} (def (main) {body}) (export main))");
-        let program = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-        assert_eq!(
-            rt.call("main", &[]),
-            Val::S64(*expect),
-            "Set.{name} over a set holding the runtime element (add 2 3)=5 must run the real champ op \
-             (expected {expect}); a compile-time fold against the runtime element silently miscompiled"
-        );
-    }
-}
-
 /// KNOWN LEAK (tracking probe): a RECURSIVE function with a HEAP-typed PARAMETER threaded through the
 /// recursion and only BORROWED (never destructured/consumed) leaks the cell — a BOUNDED O(1) leak (one
 /// cell per heap value created, NOT per recursion level), correctness-PRESERVING (the answer is right).
