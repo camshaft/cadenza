@@ -7653,3 +7653,15 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)
+pass	rop2 recursive const (Option Int64) param recursion on the value path folds to 99
+pass	rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)
+pass	dc01 Float64 const-param countdown trap surfaces CDZ0304
+pass	dc02 tuple const-param countdown trap surfaces CDZ0304
+pass	dc03 record const-param countdown trap surfaces CDZ0304
+pass	dc04 (Option Int64) const-param recursion on the VALUE path folds to 99 under Ast.encode
+pass	dc06 Map insert+lookup inside a const fn folds under Ast.encode
+pass	s2a Char const-param equality in const recursion trap surfaces CDZ0304
+pass	s2b INLINE record projection in the recursive argument trap surfaces CDZ0304
+pass	s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304
+pass	s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304

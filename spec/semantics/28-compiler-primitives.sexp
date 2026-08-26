@@ -1163,3 +1163,122 @@
           (+ (E.tick) (E.tick)))))
     (export main)))
   (output (: 3 Int64)))
+
+; -- breaker batch 401 (2026-08-26): const-eval decline-class FLIP pins. These 12 probes were filed
+; as declines (sweeps 1-2 + the recursive-const-Option wasm HANG, a non-terminating artifact from
+; terminating source); all flipped to pass with the P2 const-execution work (#3670 Map.empty fold,
+; #3695/#3697/#3698 collection-state + structural cval_eq). rop1 pins the miscompile fix; dc/s2
+; pin the closed decline classes: Float/Char/tuple/record/Option const params in recursion,
+; inline compound construct+eliminate in recursive position, and Map ops folding under Ast.encode.
+
+(case "rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)"
+  (input  (do
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (if (= k 0) (trap "adv option reached zero") (f (Option.Some (- k 1)))))
+                ((Option.None) 0)))
+            (def (main) (f (Option.Some 2)))
+            (export main)))
+  (error  CDZ0304 (message "adv option reached zero")))
+
+(case "rop2 recursive const (Option Int64) param recursion on the value path folds to 99"
+  (input  (do
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (if (= k 0) 99 (f (Option.Some (- k 1)))))
+                ((Option.None) 0)))
+            (def (run) (= (Ast.encode (Ast.Int (BigInt.of (f (Option.Some 2))))) (Ast.encode (Ast.Int (BigInt.of 99)))))
+            (export run)))
+  (output (: true Bool)))
+
+(case "rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)"
+  (input  (do
+            (def (g (const (: k Int64)))
+              (if (= k 0) (trap "adv extracted reached zero") (g (- k 1))))
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (g k))
+                ((Option.None) 0)))
+            (def (main) (f (Option.Some 2)))
+            (export main)))
+  (error  CDZ0304 (message "adv extracted reached zero")))
+
+(case "dc01 Float64 const-param countdown trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: x Float64)))
+              (if (= x 0.0) (trap "dc01 float reached zero") (f (- x 1.0))))
+            (def (main) (f 3.0))
+            (export main)))
+  (error  CDZ0304 (message "dc01 float reached zero")))
+
+(case "dc02 tuple const-param countdown trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: t (Tuple Int64 Int64))))
+              (match t
+                ((tuple a b) (if (= a b) (trap "dc02 tuple fields met") (f (tuple (- a 1) b))))))
+            (def (main) (f (tuple 3 1)))
+            (export main)))
+  (error  CDZ0304 (message "dc02 tuple fields met")))
+
+(case "dc03 record const-param countdown trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: r (Record (: n Int64)))))
+              (if (= (. r n) 0) (trap "dc03 record field reached zero") (f (record (= n (- (. r n) 1))))))
+            (def (main) (f (record (= n 2))))
+            (export main)))
+  (error  CDZ0304 (message "dc03 record field reached zero")))
+
+(case "dc04 (Option Int64) const-param recursion on the VALUE path folds to 99 under Ast.encode"
+  (input  (do
+            (def (f (const (: o (Option Int64))))
+              (match o
+                ((Option.Some k) (if (= k 0) 99 (f (Option.Some (- k 1)))))
+                ((Option.None) 0)))
+            (def (run) (= (Ast.encode (Ast.Int (BigInt.of (f (Option.Some 2))))) (Ast.encode (Ast.Int (BigInt.of 99)))))
+            (export run)))
+  (output (: true Bool)))
+
+(case "dc06 Map insert+lookup inside a const fn folds under Ast.encode"
+  (input  (do
+            (def (f (const (: n Int64)))
+              (match (Map.lookup (Map.insert (map) n "found") n)
+                ((Option.Some s) s)
+                ((Option.None) "absent")))
+            (def (run) (= (Ast.encode (Ast.Name (f 4))) (Ast.encode (Ast.Name "found"))))
+            (export run)))
+  (output (: true Bool)))
+
+(case "s2a Char const-param equality in const recursion trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: c Char)) (const (: n Int64)))
+              (if (= n 0)
+                  (if (= c #\a) (trap "s2a char was a") (trap "s2a char other"))
+                  (f c (- n 1))))
+            (def (main) (f #\a 2))
+            (export main)))
+  (error  CDZ0304 (message "s2a char was a")))
+
+(case "s2b INLINE record projection in the recursive argument trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: n Int64)))
+              (if (= n 0) (trap "s2b inline record zero") (f (. (record (= lo (- n 1)) (= hi 9)) lo))))
+            (def (main) (f 3))
+            (export main)))
+  (error  CDZ0304 (message "s2b inline record zero")))
+
+(case "s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304"
+  (input  (do
+            (def (f (const (: n Int64)))
+              (if (= n 0) (trap "s2c inline tuple zero") (match (tuple (- n 1) 9) ((tuple a b) (f a)))))
+            (def (main) (f 3))
+            (export main)))
+  (error  CDZ0304 (message "s2c inline tuple zero")))
+
+(case "s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304"
+  (input  (do
+            (def (mk (const (: n Int64))) (record (= lo n) (= hi (* n 2))))
+            (def (f (const (: n Int64)))
+              (if (= n 0) (trap "s2d projected to zero") (f (. (mk (- n 1)) lo))))
+            (def (main) (f 3))
+            (export main)))
+  (error  CDZ0304 (message "s2d projected to zero")))
