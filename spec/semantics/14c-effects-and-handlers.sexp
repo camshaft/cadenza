@@ -17200,6 +17200,30 @@
   (call   main (: 10 Int64)) (output (: 276453 Int64))
   (call   main (: 0 Int64)) (output (: 275352 Int64)))
 
+;; pyu8W: the narrow-int handler-fold is WIDTH-GENERAL, not UInt8-specific — the same answer shapes fold at
+;; UInt16 and Int32. pyu8W16 pins the CHECKED-narrowing .of face (pyu8a1 shape) at width 16 (state wraps via
+;; UInt16.wrapping-add near 60000); pyu8W32 pins the WRAP-narrowing face (pyu8r1 shape) at signed width 32.
+;; Locks that a future change to F1 / the .of emit / the tail fold cannot silently regress the non-UInt8
+;; widths the original narrowint-answer class spanned (breaker C7/C8: UInt16 + Int32).
+(case "pyu8W16 a checked-narrowing UInt16.of of the state in the resume answer folds — width-16 twin of pyu8a1"
+  (input (do
+  (effect E (op tick (-> UInt16)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (UInt16.wrapping-add (: 60000 UInt16) (UInt16.of s)) (+ s 1))))
+      (+ (* 100000 (Int64.of (E.tick))) (Int64.of (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 6000160002 Int64)))
+(case "pyu8W32 an Int32.wrap of the state in the resume answer folds — signed width-32 twin of pyu8r1"
+  (input (do
+  (effect E (op tick (-> Int32)))
+  (def (main (: n Int64))
+    (handle E n
+      ((tick () s (resume (Int32.wrap s) (+ s 1))))
+      (+ (* 1000 (Int64.of (E.tick))) (Int64.of (E.tick)))))
+  (export main)))
+  (call   main (: 100 Int64)) (output (: 100101 Int64)))
+
 ;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
 (case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
   (input (do
