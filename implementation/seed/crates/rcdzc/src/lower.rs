@@ -8526,17 +8526,13 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                         // an UNSIZED `(bytes rest)` only as the FINAL segment (non-final unsized = CDZ0220).
                         crate::resolved::SegKind::Bytes { size: Some(_) } => true,
                         crate::resolved::SegKind::Bytes { size: None } => i + 1 == segs.len(),
-                        // A FINAL `(utf8 s C)` with a CONSTANT-literal size, preceded only by static-offset
-                        // int / bit-field segments, is decoded at runtime: read its byte range (a final
-                        // tail slice) and validate as strict UTF-8, binding the decoded `String`. Ill-formed
-                        // bytes are a NON-MATCH (fall through), mirroring the const path. A dependent-size or
-                        // non-final utf8 (a following segment's offset would depend on the decoded byte
-                        // length) stays a later slice.
-                        crate::resolved::SegKind::Utf8 { size } => {
-                            i + 1 == segs.len()
-                                && db.ast.as_int(*size).is_some()
-                                && bin_static_offset(segs, i).is_some()
-                        }
+                        // A `(utf8 s SIZE)` segment — CONSTANT or DEPENDENT (name) size, at ANY position — is
+                        // decoded at runtime like a `(bytes … SIZE)` (its byte width enters the same
+                        // static-base / `off_plus` offset + length plumbing), then its range is validated as
+                        // strict UTF-8 (ill-formed = NON-MATCH → fall through, mirroring the const path).
+                        // Admitted broadly; a shape whose offset / size is not computable declines cleanly in
+                        // `build_bin_arm_predicate` / `decode_bin_field_runtime` (a Poison, not a miscompile).
+                        crate::resolved::SegKind::Utf8 { .. } => true,
                     });
                     if !ok {
                         return Core::Poison(Reject::decline(
@@ -27320,8 +27316,37 @@ fn bin_dynamic_offset(
                     ),
                 });
             }
-            // A NON-FINAL UNSIZED rest is ill-formed (CDZ0220); a utf8 segment is not yet built.
-            SegKind::Bytes { size: None } | SegKind::Utf8 { .. } => return None,
+            // A `(utf8 s SIZE)` segment consumes SIZE bytes, exactly like a `(bytes … SIZE)`: a CONSTANT
+            // literal size is a STATIC byte contribution (`off += C`); a DEPENDENT name size folds its
+            // runtime `n` into the addend (a `BinIntRead` of the earlier segment). This is what lets a
+            // segment FOLLOW a utf8 segment (the non-final utf8 case) — its offset is `static_base + Σn`.
+            SegKind::Utf8 { size } => {
+                if bits != 0 {
+                    return None;
+                }
+                if let Some(c) = db.ast.as_int(*size).and_then(|v| v.to_i64()) {
+                    if c < 0 {
+                        return None;
+                    }
+                    off += c as u32;
+                } else {
+                    let n_read = bin_size_len_read(db, bytes_src, segs, j, *size)?;
+                    off_plus = Some(match off_plus {
+                        None => n_read,
+                        Some(prev) => synth_core(
+                            db,
+                            Core::Arith {
+                                op: Prim::Add,
+                                lhs: prev,
+                                rhs: n_read,
+                            },
+                            crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                        ),
+                    });
+                }
+            }
+            // A NON-FINAL UNSIZED rest is ill-formed (CDZ0220).
+            SegKind::Bytes { size: None } => return None,
         }
     }
     if bits != 0 {
@@ -27590,29 +27615,29 @@ fn decode_bin_field_runtime(
                  segments (a mid-stream or wide bit-field is a later slice)",
             )),
         },
-        // A FINAL `(utf8 s C)` binder — decode the byte range to `Option String` and unwrap the `Some`. The
-        // arm's predicate already ANDed `is-some` (UTF-8 well-formedness), so this `SumExpect` is on a value
-        // proven present and never traps; it unboxes as the decoded `String` (the node's solved type).
-        SegKind::Utf8 { size } if seg_index + 1 == segs.len() && db.ast.as_int(*size).is_some() => {
-            // Read the range off the materialized (kept) scrutinee binding — a fresh `LocalRef` to the
-            // RAW scrutinee occurrence (the int/rest binders above do the same), NOT `off_src` re-wrapped.
+        // A `(utf8 s SIZE)` binder (constant OR dependent size, at ANY position) — decode the byte range to
+        // `Option String` and unwrap the `Some`. The arm's predicate already ANDed `is-some` (UTF-8
+        // well-formedness), so this `SumExpect` is on a value proven present and never traps; it unboxes as
+        // the decoded `String` (the node's solved type). The range read borrows a fresh `LocalRef` to the
+        // RAW scrutinee (the int / rest / dependent-bytes binders above do the same), NOT `off_src` re-wrapped.
+        SegKind::Utf8 { .. } => {
             let scrut_ref = synth_core(
                 db,
                 Core::LocalRef { binder: scrutinee },
                 crate::ty::Ty::Bytes,
             );
-            match bin_final_utf8_decode(db, scrut_ref, segs, seg_index) {
+            match bin_utf8_decode(db, scrut_ref, segs, seg_index) {
                 Some((opt_node, disc_some, _)) => Core::SumExpect {
                     scrutinee: opt_node,
                     disc_present: disc_some,
                 },
                 None => Core::Poison(Reject::decline(
-                    "a runtime bin final utf8 binder needs a constant-size byte range at a static offset",
+                    "a runtime bin utf8 binder needs a computable byte range (offset + size)",
                 )),
             }
         }
-        SegKind::Bytes { .. } | SegKind::Utf8 { .. } => Core::Poison(Reject::decline(
-            "a runtime bin non-final sized-bytes / utf8 binder is not yet decoded",
+        SegKind::Bytes { .. } => Core::Poison(Reject::decline(
+            "a runtime bin non-final sized-bytes binder is not yet decoded",
         )),
     }
 }
@@ -27679,25 +27704,45 @@ fn bin_size_len_read(
     }
 }
 
-/// Decode a FINAL constant-size `(utf8 s C)` segment's byte range out of a RUNTIME `Bytes` scrutinee to an
-/// `Option String` via the total UTF-8 decode `Core::StrFromBytes`. The segment is the LAST one and its
-/// size is a CONSTANT literal `C`, so its range is `[off, off+C)` where `off` is the static byte offset of
-/// the preceding fixed-width int / bit-field prefix; the arm's length predicate pins `bytes-len == off + C`
-/// (the utf8 byte width is folded into the fixed prefix in `build_bin_arm_predicate`), so the range is
-/// exactly `[off, bytes-len)` — read as a `BinRestRead`, the same final-tail slice the unsized `(bytes
-/// rest)` case uses. `bytes_src` is the ALREADY-MATERIALIZED scrutinee read the range borrows (a `LocalRef`
+/// Decode a `(utf8 s SIZE)` segment's byte range out of a RUNTIME `Bytes` scrutinee to an `Option String`
+/// via the total UTF-8 decode `Core::StrFromBytes`, at ANY position and for either size form. The range is
+/// `[off, off+len)` where `off` is a static base + a runtime `off_plus` addend from any preceding
+/// dependent-size segments (`bin_dynamic_offset`), and `len` is `ConstInt(C)` for a CONSTANT literal size
+/// `C` or a `BinIntRead` of the earlier named segment (`bin_size_len_read`) for a DEPENDENT name size.
+/// Read as a `Core::BinSizedRead` (exactly `len` bytes at `off` — the same sized slice the dependent
+/// `(bytes … n)` binder uses), which works for a FINAL as well as a NON-FINAL utf8 segment. The arm's
+/// length predicate pins `bytes-len == total + Σn` (the utf8 width enters that accounting), so the range is
+/// in bounds. `bytes_src` is the ALREADY-MATERIALIZED scrutinee read the range + size borrow (a `LocalRef`
 /// to the kept binding, or the predicate path's `scrut_ref`) — passed in directly, NOT re-wrapped in
 /// another `LocalRef` (which yields "no local slot"). Returns `(opt_node, disc_some, disc_none)`: the
 /// `StrFromBytes` occurrence (typed `Option String`) plus the built-in Option variants' discriminants.
-/// `None` if the static offset is not computable (a preceding bytes / dependent segment — a later slice)
-/// or the prelude `Option` is absent (a prelude-less compile).
-fn bin_final_utf8_decode(
+/// `None` if the offset / size is not computable (a shape whose plumbing declines) or the prelude `Option`
+/// is absent (a prelude-less compile).
+fn bin_utf8_decode(
     db: &mut Db,
     bytes_src: StructId,
     segs: &[crate::resolved::Segment],
     seg_index: usize,
 ) -> Option<(StructId, u32, u32)> {
-    let byte_offset = bin_static_offset(segs, seg_index)?;
+    use crate::resolved::SegKind;
+    let SegKind::Utf8 { size } = &segs.get(seg_index)?.kind else {
+        return None;
+    };
+    let size = *size;
+    let (byte_offset, off_plus) = bin_dynamic_offset(db, bytes_src, segs, seg_index)?;
+    // The segment's byte length: a constant literal `C`, or a `BinIntRead` of the earlier named segment.
+    let len = if let Some(c) = db.ast.as_int(size).and_then(|v| v.to_i64()) {
+        if c < 0 {
+            return None;
+        }
+        synth_core(
+            db,
+            Core::ConstInt(IntValue::from_i64(c)),
+            crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+        )
+    } else {
+        bin_size_len_read(db, bytes_src, segs, seg_index, size)?
+    };
     // The built-in `Option String` type + its Some/None discriminants (read off the declaration by NAME,
     // never assumed positionally — the same discipline `option_discs` uses).
     let opt_ty = {
@@ -27706,13 +27751,14 @@ fn bin_final_utf8_decode(
     };
     let disc_some = variant_disc_by_name(db, &opt_ty, "Some")?;
     let disc_none = variant_disc_by_name(db, &opt_ty, "None")?;
-    // Read the final byte range `[off, end)` as a Bytes value off the materialized (kept) scrutinee read.
+    // Read exactly `len` bytes at `off (+ off_plus)` as a Bytes value off the materialized scrutinee read.
     let range = synth_core(
         db,
-        Core::BinRestRead {
+        Core::BinSizedRead {
             bytes: bytes_src,
             byte_offset,
-            off_plus: None,
+            off_plus,
+            len,
         },
         crate::ty::Ty::Bytes,
     );
@@ -27894,6 +27940,20 @@ fn synth_if_hoisted(db: &mut Db, cond: StructId, then_: StructId, else_: StructI
     synth_core(db, Core::If { cond, then_, else_ }, ty)
 }
 
+/// The DEPENDENT-SIZE size occurrence `n` of a segment whose byte length is a RUNTIME value naming an
+/// earlier segment binder — a `(bytes body n)` (`size: Some(n)`) or a `(utf8 s n)` whose size is a NAME.
+/// `None` for a fixed-width segment, a final unsized `(bytes rest)`, or a CONSTANT-size utf8 (whose `C` is
+/// in the static prefix, not the `Σn` accounting). This is what unifies utf8 with bytes in the runtime
+/// length / offset plumbing — both fold their runtime `n` into `total + Σn` and `off_plus`.
+fn bin_dependent_size_occ(db: &Db, seg: &crate::resolved::Segment) -> Option<StructId> {
+    use crate::resolved::SegKind;
+    match &seg.kind {
+        SegKind::Bytes { size: Some(n) } => Some(*n),
+        SegKind::Utf8 { size } if db.ast.as_name(*size).is_some() => Some(*size),
+        _ => None,
+    }
+}
+
 /// Build the runtime PREDICATE for a `(bin …)` arm over a runtime `Bytes` `scrutinee`: a boolean `Core`
 /// occurrence that holds exactly when the arm matches — `bytes-len(scrutinee) == total_width` AND, for
 /// each LITERAL segment, `BinIntRead(that segment) == literal`. All segments are fixed-width ints (the
@@ -27915,9 +27975,9 @@ fn build_bin_arm_predicate(
         .map(|s| match &s.kind {
             SegKind::Int { width, .. } => (*width as u32) * 8,
             SegKind::Bits { k } => *k,
-            // A FINAL `(utf8 s C)` with a CONSTANT size contributes its `C` bytes to the fixed prefix, so
-            // the whole-scrutinee length test pins `bytes-len == total + C` (the utf8 range is exactly the
-            // tail). A dependent-size / non-final utf8 never reaches here (`lower_match_bin` declines it).
+            // A CONSTANT-size `(utf8 s C)` contributes its `C` bytes to the fixed prefix (`bytes-len ==
+            // total + …`). A DEPENDENT-size (name) utf8's size is runtime, so it contributes 0 here and
+            // instead enters the `total + Σn` accounting via `dep_seg_indices` (exactly like `(bytes … n)`).
             SegKind::Utf8 { size } => db
                 .ast
                 .as_int(*size)
@@ -27946,8 +28006,9 @@ fn build_bin_arm_predicate(
     // dependent segment's index (for `bin_size_len_read`, which resolves the size field by name).
     let mut dep_seg_indices: Vec<usize> = Vec::new();
     for (i, s) in segs.iter().enumerate() {
-        if let SegKind::Bytes { size: Some(n_occ) } = &s.kind {
-            let Some(size_name) = db.ast.as_name(*n_occ) else {
+        // Both `(bytes body n)` and dependent-size `(utf8 s n)` fold their runtime `n` into `total + Σn`.
+        if let Some(n_occ) = bin_dependent_size_occ(db, s) {
+            let Some(size_name) = db.ast.as_name(n_occ) else {
                 return Err(Reject::decline(
                     "a runtime dependent-size bin match needs a named size field",
                 ));
@@ -28018,10 +28079,10 @@ fn build_bin_arm_predicate(
         // length). AND-chain the per-size guards (each reads a fresh `BinIntRead` — the read is pure).
         let mut nonneg: Option<StructId> = None;
         for &i in &dep_seg_indices {
-            let SegKind::Bytes { size: Some(n_occ) } = &segs[i].kind else {
+            let Some(n_occ) = bin_dependent_size_occ(db, &segs[i]) else {
                 unreachable!("dep_seg_indices holds only dependent-size segments");
             };
-            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, *n_occ) else {
+            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, n_occ) else {
                 return Err(Reject::decline(
                     "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
                 ));
@@ -28057,10 +28118,10 @@ fn build_bin_arm_predicate(
         // independently, matching the literal-probe reads).
         let mut rhs = total_node;
         for &i in &dep_seg_indices {
-            let SegKind::Bytes { size: Some(n_occ) } = &segs[i].kind else {
+            let Some(n_occ) = bin_dependent_size_occ(db, &segs[i]) else {
                 unreachable!("dep_seg_indices holds only dependent-size segments");
             };
-            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, *n_occ) else {
+            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, n_occ) else {
                 return Err(Reject::decline(
                     "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
                 ));
@@ -28240,19 +28301,20 @@ fn build_bin_arm_predicate(
             crate::ty::Ty::Bool,
         );
     }
-    // A FINAL `(utf8 s C)` segment matches only if its byte range is WELL-FORMED UTF-8 — decode the range
-    // to `Option String` and AND `is-some` into the predicate (ill-formed bytes decode to `None` → the arm
-    // does not match → fall through, exactly as the const path's `str::from_utf8(..).ok()?`). `is-some` is
-    // the RHS of the AND, so it is reached ONLY after the length test (`bytes-len == total + C`) holds,
-    // which puts the range in bounds. The binder `s` reads the payload independently (a `SumExpect` in
-    // `decode_bin_field_runtime`); this decode + that one are two independent reads of the same range.
+    // Each `(utf8 s SIZE)` segment (constant or dependent size, any position) matches only if its byte range
+    // is WELL-FORMED UTF-8 — decode the range to `Option String` and AND `is-some` into the predicate
+    // (ill-formed bytes decode to `None` → the arm does not match → fall through, exactly as the const
+    // path's `str::from_utf8(..).ok()?`). `is-some` is the RHS of the AND, so it is reached ONLY after the
+    // length test (`bytes-len {==|>=} total + Σn`) holds, which puts the range in bounds. The binder `s`
+    // reads the payload independently (a `SumExpect` in `decode_bin_field_runtime`); this decode + that one
+    // are two independent reads of the same range.
     for (i, seg) in segs.iter().enumerate() {
         if !matches!(&seg.kind, SegKind::Utf8 { .. }) {
             continue;
         }
-        let Some((opt_node, disc_some, _)) = bin_final_utf8_decode(db, scrutinee, segs, i) else {
+        let Some((opt_node, disc_some, _)) = bin_utf8_decode(db, scrutinee, segs, i) else {
             return Err(Reject::decline(
-                "a runtime bin utf8 segment needs a final constant-size byte range at a static offset",
+                "a runtime bin utf8 segment needs a computable byte range (offset + size)",
             ));
         };
         let is_some = bin_option_is_some(db, opt_node, disc_some);
