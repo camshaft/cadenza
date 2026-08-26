@@ -1373,6 +1373,13 @@ impl WasmProgramStore {
     /// [`with_provenance`](WasmProgramStore::with_provenance)/[`with_delivery`](WasmProgramStore::with_delivery).
     /// `make_graph` mirrors `make_blobs`/`make_kv`: a plain caller passes `move |_id| graph.clone()` over its
     /// one shared graph; an injecting caller passes a factory that decorates it (recording is one such use).
+    /// That one graph must be the SAME instance the routing system reads and mutates (whatever seeds edges and
+    /// answers `neighbors` when a reducer forwards) — not a fresh `InMemoryReducerGraph::new()` per reducer. A
+    /// reducer reads its own `graph` host-import to route (`neighbors(sender, contract, dir)`); if the store
+    /// hands out a different instance than the one the system's spawns/edges populate, the reducer reads an
+    /// empty graph and §4 forward routing silently finds nothing (no error — it just rejects instead of
+    /// forwarding). Wire the node's routing graph through this factory (decorated or bare); the itest binary is
+    /// the reference wiring.
     ///
     /// Uses the default [`ResourceLimits`]; a node that tunes its per-reducer compute/memory limits builds with
     /// [`with_resource_limits`](WasmProgramStore::with_resource_limits) instead.
