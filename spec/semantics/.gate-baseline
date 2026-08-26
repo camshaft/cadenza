@@ -7880,3 +7880,7 @@ pass	cle1 a closure capturing a branch-selected list reclaims after invocation
 pass	cle2 TWO closures sharing one captured list both invoke and everything reclaims
 pass	cle3 a heap-capturing closure built but NEVER invoked still reclaims
 pass	cle4 a closure RETURNED from a helper (escaping env) reclaims after invocation
+pass	frl1 fifty frames each build and reduce a list — zero residue
+pass	frl2 fifty frames each build and measure a string — zero residue
+pass	frl3 fifty frames each construct and invoke a heap-capturing closure — zero residue
+pass	frl4 fifty dispatches each resume a fresh heap answer — zero residue

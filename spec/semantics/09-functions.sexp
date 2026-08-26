@@ -7794,3 +7794,58 @@
   (call main (: 5 Int64))
   (output (: 12 Int64))
   (live-objects 0))
+
+; -- breaker batch 437 (2026-08-26): PER-FRAME leak AMPLIFICATION — 50-frame recursions that build
+; and consume heap EVERY frame (list build+reduce, string concat+measure, closure construct+invoke,
+; effect dispatch with a fresh heap answer). A one-cell-per-frame leak would read >=50; all read 0.
+; The amplification detector complements the single-shot leak clauses. wasm-only rows.
+
+(case "frl1 fifty frames each build and reduce a list — zero residue"
+  (input (do
+    (def (walk (: k Int64) (: acc Int64))
+      (if (= k 0) acc
+          (walk (- k 1) (+ acc (List.len (if (> k 0) (list k (+ k 1)) (list 9)))))))
+    (def (main (: n Int64)) (walk 50 n))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 100 Int64))
+  (live-objects 0))
+
+(case "frl2 fifty frames each build and measure a string — zero residue"
+  (input (do
+    (def (walk (: k Int64) (: acc Int64))
+      (if (= k 0) acc
+          (walk (- k 1) (+ acc (String.byte-len (String.concat "ab" (if (> k 25) "c" "de")))))))
+    (def (main (: n Int64)) (walk 50 n))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 175 Int64))
+  (live-objects 0))
+
+(case "frl3 fifty frames each construct and invoke a heap-capturing closure — zero residue"
+  (input (do
+    (def (walk (: k Int64) (: acc Int64))
+      (if (= k 0) acc
+          (let ((xs (if (> k 0) (list k) (list 9 9))))
+            (let ((f (fn (j) (+ j (List.len xs)))))
+              (walk (- k 1) (+ acc (f 0)))))))
+    (def (main (: n Int64)) (walk 50 n))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 50 Int64))
+  (live-objects 0))
+
+(case "frl4 fifty dispatches each resume a fresh heap answer — zero residue"
+  (input (do
+    (effect E (op draw (-> (List Int64))))
+    (def (walk (: k Int64) (: acc Int64))
+      (if (= k 0) acc
+          (walk (- k 1) (+ acc (List.len (E.draw))))))
+    (def (main (: n Int64))
+      (handle E n
+        ((draw () s (resume (if (> s -1) (list s (+ s 1)) (list 9)) (+ s 1))))
+        (walk 50 0)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 100 Int64))
+  (live-objects 0))
