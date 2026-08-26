@@ -48090,37 +48090,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
                 .any(|i| matches!(i, Lir::I32And | Lir::If(_))),
             "distinct (and a b) is not folded, got: {distinct:?}"
         );
-
-        // VALUE PARITY.
-        use wasmtime::component::Val;
-        let fb = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: a Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for (body, wt, wf) in [("(and a a)", true, false), ("(or a a)", true, false)] {
-            let b = fb(body);
-            assert_eq!(
-                run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]),
-                wt,
-                "{body} @true"
-            );
-            assert_eq!(
-                run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]),
-                wf,
-                "{body} @false"
-            );
-        }
-        // TRAP SAFETY: a repeated trapping operand is still evaluated once (as the condition), so it traps.
-        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (> (/ 10 n) 0)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&gb, "f", &[Val::S64(0)]),
-            "(and <traps> <traps>) keeps the div-by-zero trap"
-        );
-        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 1);
+        // Value + trap parity — `(and a a)`/`(or a a)` fold to `a`, and a repeated trapping operand is
+        // still evaluated once (traps) — is the corpus family "a short-circuit and/or with identical
+        // operands folds idempotently to the operand" + "the idempotence fold keeps a repeated trapping
+        // operand's trap" (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
