@@ -1518,6 +1518,7 @@ pass	a compound-element float renders the same full expansion as the scalar path
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
+pass	a computed match scrutinee is evaluated once and its overflow guard still fires
 pass	a computed-index Bytes.at over a to-bytes view of an effect-grown rope emits valid wasm
 pass	a computed-index List.update then push across three dispatches emits valid wasm (ListUpdate index scratch width-partitioned)
 pass	a computed-index String.at over an effect-grown rope emits valid wasm
@@ -2377,6 +2378,7 @@ pass	a match binds an Ast.Bool payload
 pass	a match binds an Ast.Float payload
 pass	a match binds an Ast.Str payload
 pass	a match building one Some per arm sinks to a single Some around a payload match
+pass	a match every unguarded arm of which yields the same value collapses to that value
 pass	a match guard CALLS a user helper on the variant's heap payload to decide arm selection
 pass	a match guard performs a MAP lookup keyed by the pattern binder (guard x CHAMP)
 pass	a match guard reads a HEAP payload's length and the arm body reuses the same binder
@@ -3910,6 +3912,7 @@ pass	a trapping payload in the TAKEN arm of a same-constructor if still traps
 pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
+pass	a trapping scrutinee of an all-same-body match is still evaluated
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
 pass	a trie of 30 QUANTITY keys resolves a cross-normalized magnitude lookup at depth
 pass	a trie of 40 MULTI-LIMB BigInt keys enumerates in magnitude order
