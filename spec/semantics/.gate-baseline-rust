@@ -7521,3 +7521,7 @@ pass	nk2 +inf, -inf, and NaN are THREE distinct set members
 pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
 pass	nz1 bare = distinguishes +0.0 from a TRUE runtime -0.0
 pass	nz5 the zeros compare = only to themselves yet BEHAVE differently under division
+pass	ck1 a Char set dedups repeated members
+pass	ck2 Char set membership hits and misses
+pass	ck4 a Map keyed by Char discriminates and looks up
+pass	ck5b Symbol set dedup+membership, in-program strings
