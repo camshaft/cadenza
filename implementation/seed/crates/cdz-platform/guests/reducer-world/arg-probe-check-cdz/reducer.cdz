@@ -1,0 +1,67 @@
+// The arg-VALUE-capture checker (design/cadenza-platform.md §9). The paired guest (arg-probe-cdz) calls the
+// test host arg-probe.probe(r, items) three times with known mixed-width variant values; the host re-encodes
+// each RECEIVED r + items to its canonical Cadenza value form (Value.encode) and records Entry::ArgProbe.
+// This checker asserts, byte-for-byte, that the received values equal what the guest sent — so a wrong
+// mixed-width marshal (a sign-mangled s64, a scalar read from the wrong bits, or a memory store that overruns
+// the next list element) produces different bytes and fails the check. It is the VALUE gate for v-rb's
+// mixed-width variant lowering — structure-only "the call fired" is not enough.
+//
+// EXPECTED is built the same way the host encodes: local Cadenza sums whose CONSTRUCTOR names match the host's
+// value-form heads (CamelCase — the canonical value form carries the Cadenza constructor name, matched exactly
+// on decode; WIT lowercase is only the guest->host boundary mapping and never appears in the value). The
+// nullary case is `Absent`, NOT `None`: a `None` constructor shadows the builtin `Option.None` this module
+// relies on (via checker-lib), which is why the arg-probe WIT names it `absent`. tag is pinned to Int64 (the
+// WIT s64) so its encoding matches the host's. So Value.encode over the same literals the guest passed yields
+// byte-identical expected bytes.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail } from "checker-lib"
+
+type Mixed = | Absent | Small(UInt8) | Big(Int64)
+type Narrow = | Absent | A(UInt8) | B(UInt16)
+
+// The record must be ASCRIBED `ProbeRecord`: the host encodes the received probe-record as
+// `(: (record (= v <mixed>) (= tag <s64>)) ProbeRecord)` (the §9 canonical form pinned by #3467), so the
+// value form's root ascription carries the `ProbeRecord` type name. An anonymous `{ v = …, tag = … }`
+// literal's Value.encode ascribes no such nominal name and would never byte-match. A SINGLE-constructor sum
+// reproduces the host's exact bytes: its value form ELIDES the constructor (the record is the payload
+// directly) and the encode boundary wraps it in the root ascription `(: <record> ProbeRecord)` — identical to
+// the host's `ascribe(rec, "ProbeRecord")`. (The list ascribes the builtin `List` type name, which a bare
+// `[…]` literal's Value.encode already carries, so items need no wrapper.)
+type ProbeRecord = | ProbeRecord(Record(v: Mixed, tag: Int64))
+
+def exp-record-big() = Value.encode(ProbeRecord.ProbeRecord({ v = Mixed.Big(-5000000000), tag = (1 : Int64) }))
+def exp-record-small() = Value.encode(ProbeRecord.ProbeRecord({ v = Mixed.Small(200), tag = (2 : Int64) }))
+def exp-record-absent() = Value.encode(ProbeRecord.ProbeRecord({ v = Mixed.Absent, tag = (3 : Int64) }))
+def exp-items() = Value.encode([Narrow.A(200), Narrow.B(60000), Narrow.Absent])
+
+// Two closure-free recursive scans over the ArgProbe entries — one matches the received `record` bytes, one
+// the received `items` bytes (each threads the wanted Bytes as a param: no captured state, monomorphic, the
+// checker-lib helper shape). Split so a mismatch names which side (the register-flatten record vs the memory
+// list) diverged, rather than one opaque failure.
+def has-record(records: List(LogRecord), i: Int64, want-record: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.ArgProbe(c) =>
+            if c.record == want-record then true else has-record(records, i + 1, want-record)
+        | _ => has-record(records, i + 1, want-record))
+
+def has-items(records: List(LogRecord), i: Int64, want-items: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.ArgProbe(c) =>
+            if c.items == want-items then true else has-items(records, i + 1, want-items)
+        | _ => has-items(records, i + 1, want-items))
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(has-record(records, 0, exp-record-big())) then fail("RECORD-BIG mismatch: the probe-record encoding differs")
+  else if not(has-record(records, 0, exp-record-small())) then fail("RECORD-SMALL mismatch")
+  else if not(has-record(records, 0, exp-record-absent())) then fail("RECORD-ABSENT mismatch")
+  else if not(has-items(records, 0, exp-items())) then fail("ITEMS mismatch: the list<narrow> encoding differs")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+export { on-message, on-response, on-notification }
