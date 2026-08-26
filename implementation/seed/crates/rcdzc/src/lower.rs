@@ -2886,6 +2886,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     // grafted lexical chain (a pre-graft walk would cache free names as unbound → spurious
                     // CDZ0101), and only at the OUTER lowering fold (never an intermediate recursive one).
                     if crate::effects::reduced_body_leaks_escaped_perform(db, rewritten, &arms) {
+                        // ESCAPED-CLOSURE-LEAK RECOVERY (cx5d). The leak is a discharged perform inside a
+                        // closure passed to a NON-recursive ONE-SHOT helper that APPLIES it out of the fold's
+                        // reach. β-inline that helper in the ORIGINAL body so the closure is applied INLINE,
+                        // re-run `reduce_handle`, and use the result ONLY if it no longer leaks — turning the
+                        // decline into a fold. SAFE: a case that folds today never leaks, so never reaches
+                        // here; the inline is one-shot-gated (perform runs once) and re-checked (used only if
+                        // it now folds clean), so no value or non-leaking case changes.
+                        if let Some(inlined) =
+                            crate::effects::inline_escaped_one_shot_perform_call(db, body, &arms)
+                            && let Some(rw2) = crate::effects::reduce_handle(db, init, &arms, inlined)
+                        {
+                            db.reparent(rw2, Some(id), db.child_ix_of(id) as u32);
+                            if !crate::effects::reduced_body_leaks_escaped_perform(db, rw2, &arms) {
+                                return core_of(db, rw2);
+                            }
+                        }
                         return Core::Poison(Reject::decline(
                             crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
                         ));

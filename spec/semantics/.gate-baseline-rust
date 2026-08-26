@@ -5095,6 +5095,7 @@ pass	cv2 TWO asks each running the in-arm chain — the second chain starts wher
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
 pass	cwl1 a CIPHER WHEEL that slips every third letter — encoding adds the offset mod twenty-six and every THIRD encode advances the wheel one notch (a nine-tagged row counting the slip), other rows carry the stroke's residue tag, the read packs offset strokes and slips, and the seed's starting offset wraps one alphabet where the other doesn't so the ciphertext rows share nothing
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
+pass	cx5d an effect-performing closure through a non-recursive one-shot helper fn-arg folds via the escaped-closure recovery
 pass	cx8 an effect-performing closure RETURNED from a helper then invoked
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
 pass	cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamped to the range answering the landed ratio's tens digit, pedal answers rpm times the ratio over a hundred accumulating distance, the big downshift clamps BOTH runs to the same bottom gear so the tails converge while the opening gears diverge, and the final row reads the odometer
