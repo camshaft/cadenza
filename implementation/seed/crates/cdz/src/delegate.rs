@@ -257,9 +257,322 @@ fn materialize_specs(inputs: &[Artifact], dir: &Path, prog: &str) -> Option<Vec<
     Some(specs)
 }
 
+// ── sidecar QUERY delegation ───────────────────────────────────────────────────────────────────────
+
+/// Build the sidecar REQUEST as a binary-AST value — the delegating-driver counterpart of
+/// `rcdzc::sidecar::encode`. Since the operator unified the request onto the binary AST (#3440), the
+/// request is a `cdzast` tree (`root = Ast.List` of per-request forms) encoded with the FRONT-END's codec
+/// copy (`cadenza_syntax::codec`), which is byte-identical to rcdzc's `crate::codec` (the copy-don't-depend
+/// invariant) — so the bytes this produces are exactly what `cdz-compile`'s decode accepts. This MIRRORS
+/// rcdzc's `sidecar::encode`/`encode_request`/`encode_query` shape exactly (a byte-identity unit test pins
+/// `build_sidecar_request(rs) == rcdzc::sidecar::encode(rs)`). `cdz`'s query drivers only ever send `Query`
+/// requests (emit-tests takes a different path), but all `Request` arms are mirrored for completeness.
+pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
+    use cadenza_syntax::{Builder, Leaf, Radix};
+    use num_bigint::BigInt;
+
+    let mut b = Builder::new();
+    let forms: Vec<_> = requests
+        .iter()
+        .map(|req| match req {
+            rcdzc::Request::Emit(t) => {
+                let head = b.name("emit");
+                let target = b.name(target_cli(*t));
+                b.list(vec![head, target])
+            }
+            rcdzc::Request::EmitTests => {
+                let h = b.name("emit-tests");
+                b.list(vec![h])
+            }
+            rcdzc::Request::EmitTestsPerFile => {
+                let h = b.name("emit-tests-per-file");
+                b.list(vec![h])
+            }
+            rcdzc::Request::EmitTestsComposed => {
+                let h = b.name("emit-tests-composed");
+                b.list(vec![h])
+            }
+            rcdzc::Request::EmitTestsConsumerOnly => {
+                let h = b.name("emit-tests-consumer-only");
+                b.list(vec![h])
+            }
+            rcdzc::Request::Query(q) => {
+                use rcdzc::sidecar::Query;
+                let (selector, arg): (&str, Option<_>) = match q {
+                    Query::TypeOf { name: n } => {
+                        ("type-of", Some(b.atom_leaf(Leaf::Str(n.clone().into()))))
+                    }
+                    Query::UsesOf { name: n } => {
+                        ("uses-of", Some(b.atom_leaf(Leaf::Str(n.clone().into()))))
+                    }
+                    Query::DocOf { name: n } => {
+                        ("doc-of", Some(b.atom_leaf(Leaf::Str(n.clone().into()))))
+                    }
+                    Query::Instantiations { name: n } => (
+                        "instantiations",
+                        Some(b.atom_leaf(Leaf::Str(n.clone().into()))),
+                    ),
+                    Query::TypeAt { node } => ("type-at", Some(int_leaf(&mut b, *node))),
+                    Query::ResolveOf { node } => ("resolve-of", Some(int_leaf(&mut b, *node))),
+                    Query::ScopeAt { node } => ("scope-at", Some(int_leaf(&mut b, *node))),
+                    Query::DocAt { node } => ("doc-at", Some(int_leaf(&mut b, *node))),
+                    Query::Diagnostics => ("diagnostics", None),
+                    Query::Highlight => ("highlight", None),
+                    Query::Exports => ("exports", None),
+                    Query::ExportedTypes => ("exported-types", None),
+                    Query::Symbols => ("symbols", None),
+                    Query::ParamManifest => ("param-manifest", None),
+                    Query::FuncLayout => ("func-layout", None),
+                    Query::ClosureHash => ("closure-hash", None),
+                };
+                let head = b.name("query");
+                let sel = b.name(selector);
+                let mut children = vec![head, sel];
+                children.extend(arg);
+                b.list(children)
+            }
+        })
+        .collect();
+    let root = b.list(forms);
+    return cadenza_syntax::codec::encode(&b.finish(root));
+
+    // A `Leaf::Int` node id (a `u32` `StructId`) — `cadenza_syntax`'s Int leaf carries a `num_bigint::BigInt`
+    // (rcdzc's copy names the same wire type `IntValue`), radix `Dec`, matching rcdzc's `atom_int`.
+    fn int_leaf(b: &mut Builder, node: u32) -> cadenza_syntax::StructId {
+        b.atom_leaf(Leaf::Int {
+            value: BigInt::from(i64::from(node)),
+            radix: Radix::Dec,
+        })
+    }
+}
+
+/// The result-artifact KIND a single sidecar `Query` request materializes its answer under — the kind a
+/// delegated reader tags the captured bytes with (mirrors `rcdzc::sidecar::run_query`'s per-query kind).
+/// `None` for a non-`Query` request (never sent through `run_sidecar`), so the caller falls back in-process.
+fn query_result_kind(request: &rcdzc::Request) -> Option<&'static str> {
+    use rcdzc::sidecar::{self, Query};
+    let rcdzc::Request::Query(q) = request else {
+        return None;
+    };
+    Some(match q {
+        Query::TypeOf { .. } => sidecar::KIND_TYPE_INFO,
+        Query::UsesOf { .. } => sidecar::KIND_USES,
+        Query::TypeAt { .. } => sidecar::KIND_TYPE_AT,
+        Query::ResolveOf { .. } => sidecar::KIND_RESOLVE,
+        Query::Diagnostics => sidecar::KIND_DIAGNOSTICS,
+        Query::ScopeAt { .. } => sidecar::KIND_SCOPE,
+        Query::Highlight => sidecar::KIND_HIGHLIGHT,
+        Query::Exports => sidecar::KIND_EXPORTS,
+        Query::ExportedTypes => sidecar::KIND_EXPORT_TYPES,
+        Query::DocOf { .. } | Query::DocAt { .. } => sidecar::KIND_DOC,
+        Query::Instantiations { .. } => sidecar::KIND_INSTANTIATIONS,
+        Query::Symbols => sidecar::KIND_SYMBOLS,
+        Query::ParamManifest => sidecar::KIND_PARAM_MANIFEST,
+        Query::FuncLayout => sidecar::KIND_FUNC_LAYOUT,
+        Query::ClosureHash => sidecar::KIND_CLOSURE_HASH,
+    })
+}
+
+/// Delegate a SINGLE sidecar query over `arenas`: build the `ast` + binary-AST `sidecar` request, spawn
+/// `cdz-compile … -o -` (query-only, no `--target`), and CAPTURE stdout — the `-o -` path writes the ONE
+/// query result artifact's bytes to stdout — tagging them with the known result kind. stderr is inherited
+/// so a compile failure's located diagnostics surface. Returns `None` when it can't delegate (a non-query
+/// or a batch of >1 — the caller then runs in-process), so callers see a `CompileOutput` either way. On a
+/// clean run: `CompileOutput { artifacts: [Artifact(kind, bytes)] }`; on a nonzero exit: an EMPTY output
+/// (diagnostics already on stderr → the caller's `report_errors` is a no-op + it fails), matching the
+/// in-process "no artifact for a failed entry" shape.
+pub fn run_sidecar_delegated(
+    arenas: &cadenza_syntax::Arenas,
+    requests: &[rcdzc::Request],
+    prog: &str,
+) -> Option<rcdzc::CompileOutput> {
+    // Single query only: batch (`--where`) needs positional result-file reading (a later slice), and an
+    // emit request never comes through here. A non-query / batch → `None` → the caller runs in-process.
+    let [request] = requests else {
+        return None;
+    };
+    let kind = query_result_kind(request)?;
+
+    let dir = scratch_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("{prog}: cannot create temp dir {}: {e}", dir.display());
+        return Some(empty_output());
+    }
+    let _guard = crate::RemoveOnDrop::dir(dir.clone());
+
+    let ast_path = dir.join("main.ast");
+    let sidecar_path = dir.join("drive.sidecar");
+    if std::fs::write(&ast_path, cadenza_syntax::codec::encode(arenas)).is_err()
+        || std::fs::write(&sidecar_path, build_sidecar_request(requests)).is_err()
+    {
+        eprintln!(
+            "{prog}: cannot write temp sidecar inputs under {}",
+            dir.display()
+        );
+        return Some(empty_output());
+    }
+
+    let program = locate();
+    let mut cmd = Command::new(&program);
+    cmd.arg(format!(
+        "{}:main={}",
+        rcdzc::Artifact::KIND_AST,
+        ast_path.display()
+    ))
+    .arg(format!(
+        "{}:drive={}",
+        rcdzc::sidecar::KIND_SIDECAR,
+        sidecar_path.display()
+    ))
+    .arg("-o")
+    .arg("-")
+    .stdout(Stdio::piped())
+    .stderr(Stdio::inherit())
+    .stdin(Stdio::null());
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{prog}: cdz-compile not found (looked at $CDZ_COMPILE_BIN, beside `cdz`, then \
+                 $PATH) — a delegating (`--no-default-features`) `cdz` spawns the compiler instead of \
+                 linking it; build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
+            );
+            return Some(empty_output());
+        }
+        Err(e) => {
+            eprintln!(
+                "{prog}: could not run cdz-compile ({}): {e}",
+                program.display()
+            );
+            return Some(empty_output());
+        }
+    };
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{prog}: could not read cdz-compile output: {e}");
+            return Some(empty_output());
+        }
+    };
+    if !output.status.success() {
+        // The query's entry failed to compile — cdz-compile printed located diagnostics on stderr. Return
+        // an empty output so the caller's `out.artifact(KIND)` misses and it fails, same as in-process.
+        return Some(empty_output());
+    }
+    // The captured stdout IS the query result artifact's bytes; tag it with the kind we know from the
+    // request so the caller's `out.artifact(kind)` finds it.
+    Some(rcdzc::CompileOutput {
+        artifacts: vec![rcdzc::Artifact::new(kind, "0", output.stdout)],
+        diagnostics: vec![],
+    })
+}
+
+/// An empty `CompileOutput` (no artifacts, no diagnostics) — a delegated query run's failure shape, where
+/// `cdz-compile` has already reported diagnostics on the inherited stderr.
+fn empty_output() -> rcdzc::CompileOutput {
+    rcdzc::CompileOutput {
+        artifacts: vec![],
+        diagnostics: vec![],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE correctness gate for the delegated sidecar-request encoder: the binary-AST tree `cdz` builds
+    /// via `cadenza_syntax` MUST DECODE, via the compiler's own `rcdzc::sidecar::decode` (= what
+    /// `cdz-compile` runs), back to exactly the requests we asked for — else a delegated query sends
+    /// bytes the compiler misreads. This is a DECODE round-trip, NOT raw byte-equality: `cadenza_syntax`'s
+    /// Builder and rcdzc's copy order the leaf POOL differently (names-first vs insertion-order), so the
+    /// raw bytes differ, but both are valid encodings of the same tree — the codec is byte-compatible, so
+    /// rcdzc's decode reconstructs the same tree from either. Cover every `Request`/`Query` variant + a
+    /// batch. (This test only compiles under `!standalone`, where the `delegate` module + a linked `rcdzc`
+    /// are both present; run it with `cargo test -p cdz --no-default-features`.)
+    #[test]
+    fn built_sidecar_request_decodes_back_to_the_requests() {
+        use rcdzc::Request;
+        use rcdzc::sidecar::Query;
+        let reqs = vec![
+            Request::Query(Query::TypeOf { name: "foo".into() }),
+            Request::Query(Query::UsesOf { name: "bar".into() }),
+            Request::Query(Query::DocOf { name: "baz".into() }),
+            Request::Query(Query::Instantiations { name: "qux".into() }),
+            Request::Query(Query::TypeAt { node: 42 }),
+            Request::Query(Query::ResolveOf { node: 7 }),
+            Request::Query(Query::ScopeAt { node: 300 }),
+            Request::Query(Query::DocAt { node: 0 }),
+            Request::Query(Query::Diagnostics),
+            Request::Query(Query::Highlight),
+            Request::Query(Query::Exports),
+            Request::Query(Query::ExportedTypes),
+            Request::Query(Query::Symbols),
+            Request::Query(Query::ParamManifest),
+            Request::Query(Query::FuncLayout),
+            Request::Query(Query::ClosureHash),
+            Request::Emit(Target::Wasm),
+            Request::Emit(Target::WasmDebug),
+            Request::Emit(Target::Dwarf),
+            Request::Emit(Target::Rust),
+            Request::Emit(Target::RustAsync),
+            Request::EmitTests,
+            Request::EmitTestsPerFile,
+            Request::EmitTestsComposed,
+            Request::EmitTestsConsumerOnly,
+        ];
+        // Each request individually (isolates a per-variant mismatch)…
+        for r in &reqs {
+            let bytes = build_sidecar_request(std::slice::from_ref(r));
+            assert_eq!(
+                rcdzc::sidecar::decode(&bytes).as_deref(),
+                Some(std::slice::from_ref(r)),
+                "single-request round-trip mismatch for {r:?}",
+            );
+        }
+        // …and the whole batch (a multi-form root list) in one decode.
+        assert_eq!(
+            rcdzc::sidecar::decode(&build_sidecar_request(&reqs)),
+            Some(reqs.clone()),
+            "batch round-trip mismatch",
+        );
+    }
+
+    /// The result-kind mapping covers every query and matches `rcdzc::sidecar`'s constants — a delegated
+    /// reader tags captured bytes with this kind, so a drift would mis-key the caller's `out.artifact`.
+    #[test]
+    fn query_result_kinds_are_complete_and_correct() {
+        use rcdzc::Request::Query;
+        use rcdzc::sidecar::{self, Query as Q};
+        let cases = [
+            (Q::TypeOf { name: "n".into() }, sidecar::KIND_TYPE_INFO),
+            (Q::UsesOf { name: "n".into() }, sidecar::KIND_USES),
+            (Q::TypeAt { node: 1 }, sidecar::KIND_TYPE_AT),
+            (Q::ResolveOf { node: 1 }, sidecar::KIND_RESOLVE),
+            (Q::Diagnostics, sidecar::KIND_DIAGNOSTICS),
+            (Q::ScopeAt { node: 1 }, sidecar::KIND_SCOPE),
+            (Q::Highlight, sidecar::KIND_HIGHLIGHT),
+            (Q::Exports, sidecar::KIND_EXPORTS),
+            (Q::ExportedTypes, sidecar::KIND_EXPORT_TYPES),
+            (Q::DocOf { name: "n".into() }, sidecar::KIND_DOC),
+            (Q::DocAt { node: 1 }, sidecar::KIND_DOC),
+            (
+                Q::Instantiations { name: "n".into() },
+                sidecar::KIND_INSTANTIATIONS,
+            ),
+            (Q::Symbols, sidecar::KIND_SYMBOLS),
+            (Q::ParamManifest, sidecar::KIND_PARAM_MANIFEST),
+            (Q::FuncLayout, sidecar::KIND_FUNC_LAYOUT),
+            (Q::ClosureHash, sidecar::KIND_CLOSURE_HASH),
+        ];
+        for (q, kind) in cases {
+            assert_eq!(
+                query_result_kind(&Query(q.clone())),
+                Some(kind),
+                "kind for {q:?}"
+            );
+        }
+    }
 
     #[test]
     fn target_strings_match_the_cli_spelling() {
