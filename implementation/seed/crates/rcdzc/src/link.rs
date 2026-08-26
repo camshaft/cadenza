@@ -1139,6 +1139,30 @@ mod tests {
         crate::compile(&inputs, &[Target::Wasm])
     }
 
+    /// Compile a two-file package whose APP file is authored in the ML SURFACE (`.cdz`), driven through
+    /// the real front-end `cadenza_syntax::parser::read_ml` → cadenza-syntax codec → rcdzc decode — the
+    /// same seam the CLI uses. The `lib` stays s-expr (its surface is not under test). This exercises an
+    /// ML-surface linking feature (like the alias import) END-TO-END rather than hand-feeding the arena.
+    fn compile_package_ml_app(lib_src: &str, app_ml: &str) -> crate::abi::CompileOutput {
+        let lib = crate::codec::encode(&arena_of(lib_src));
+        let parsed = cadenza_syntax::parser::read_ml(app_ml);
+        assert!(
+            parsed.ok(),
+            "ML app failed to parse: {:?}\n  src: {app_ml}",
+            parsed.errors
+        );
+        let app_bytes = cadenza_syntax::codec::encode(&parsed.arenas);
+        let app_arena = crate::codec::decode(&app_bytes)
+            .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {app_ml}"));
+        let app = crate::codec::encode(&app_arena);
+        let inputs = vec![
+            Artifact::new(Artifact::KIND_AST, "lib", lib),
+            Artifact::new(Artifact::KIND_AST, "app", app),
+            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
+        ];
+        crate::compile(&inputs, &[Target::Wasm])
+    }
+
     /// The other half of file-scoping: WITHOUT an `(import …)`, a sibling file's def is INVISIBLE.
     /// `app`'s `main` calls `helper` (defined + exported by `lib`) but does not import it → unbound.
     #[test]
@@ -1337,6 +1361,27 @@ mod tests {
         assert!(
             !out.has_error(),
             "the alias import form must resolve + project a member; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// END-TO-END through the ML SURFACE: the alias import `import "path" as alias` (v-syntax #3686)
+    /// links + projects through the #3656 module-alias machinery when authored in a `.cdz`. `read_ml`
+    /// parses `import "lib" as lib` to the `(import "lib" lib)` arena (bare-NAME third element = the
+    /// linker's alias discriminant), so `lib.helper` → `(. lib helper)` resolves to the aliased module's
+    /// export (→ 40) and the package compiles clean. This is the seam neither v-syntax's parser tests
+    /// (parse SHAPE only) nor `the_alias_import_form_resolves_and_projects` (arena-direct s-expr) cover —
+    /// the full ML front-end → codec → rcdzc decode → link path for the alias surface.
+    #[test]
+    fn the_ml_surface_alias_import_resolves_and_projects() {
+        let out = compile_package_ml_app(
+            "(do (def (helper) 40) (export helper))",
+            "import \"lib\" as lib\ndef main() = lib.helper\nexport { main }",
+        );
+        assert!(
+            !out.has_error(),
+            "the ML-surface alias import must resolve + project a member; got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
