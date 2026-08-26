@@ -7891,3 +7891,6 @@ pass	clk4 a closure capturing a runtime AST reclaims after invocation
 pass	icp1 lifted String AND Bytes params feed an effect arm's answer
 pass	icp2 the original ch05 face RESURRECTED — literal string MATCH on a lifted param
 pass	icp3 a lifted String compared and measured through an if-chain (the viachain shape on a param)
+pass	eab1 a lifted String param CAPTURED by a closure is admitted as borrowed and reclaims
+pass	eab2 a lifted String param as an EFFECT-OP argument is admitted and reclaims
+todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims

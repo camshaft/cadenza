@@ -8072,3 +8072,39 @@
   (call main (: "other" String))
   (output (: 5 Int64))
   (live-objects 0))
+
+; -- breaker batch 440 (2026-08-26): the slice-1 escape-analysis BOUNDARY from the admitted side —
+; a lifted String CAPTURED by a closure and a lifted String as an EFFECT-OP argument are both
+; classified borrowed (admitted, wrapper-drop reclaims to 0); SLICING a lifted Bytes param declines
+; conservatively (wasm-todo / rust-pass — an escaping-slice auto-flip row alongside ep1/ckr2).
+
+(case "eab1 a lifted String param CAPTURED by a closure is admitted as borrowed and reclaims"
+  (input (do
+    (def (main (: s String))
+      (let ((f (fn (k) (+ k (String.byte-len s)))))
+        (f 10)))
+    (export main)))
+  (call main (: "abcd" String))
+  (output (: 14 Int64))
+  (live-objects 0))
+
+(case "eab2 a lifted String param as an EFFECT-OP argument is admitted and reclaims"
+  (input (do
+    (effect E (op put (-> String Int64)))
+    (def (main (: s String))
+      (handle E 0
+        ((put (t) st (resume (String.byte-len t) st)))
+        (E.put s)))
+    (export main)))
+  (call main (: "abcd" String))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case "eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims"
+  (input (do
+    (def (main (: b Bytes))
+      (Bytes.len (Option.expect (Bytes.slice b 1 2) "in bounds")))
+    (export main)))
+  (call main (: (list 9 1 2 7) Bytes))
+  (output (: 2 Int64))
+  (live-objects 0))
