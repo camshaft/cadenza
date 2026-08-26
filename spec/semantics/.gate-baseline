@@ -3194,6 +3194,7 @@ pass	a repeated runtime subexpression is computed once (CSE) and reused across a
 pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping divide inside one if-arm is not speculated past the branch
+pass	a repeated trapping divide inside one match arm is not hoisted past the match
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
@@ -3635,6 +3636,7 @@ pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
+pass	a self-shielding or does not hoist its trapping right operand past the short-circuit
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
 pass	a self-tail-recursive accumulator runs a million iterations in constant stack
