@@ -16,7 +16,7 @@
 //! `run_prepared`) stays the default, so a dev/interactive `cdz` never pays the subprocess cost.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 use rcdzc::{Artifact, OptLevel, Target};
 
@@ -138,34 +138,123 @@ pub fn delegate_from_artifacts(
     opt_level: OptLevel,
     prog: &str,
 ) -> ExitCode {
-    // A per-process unique scratch dir (pid + a monotonic counter, so concurrent `cdz` compiles in the
-    // same process don't collide — no wall-clock/rng needed).
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "cdz-delegate-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir = scratch_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("{prog}: cannot create temp dir {}: {e}", dir.display());
         return ExitCode::FAILURE;
     }
     let _guard = crate::RemoveOnDrop::dir(dir.clone());
 
+    let Some(specs) = materialize_specs(inputs, &dir, prog) else {
+        return ExitCode::FAILURE;
+    };
+    spawn(&specs, targets, out, None, None, opt_level, prog)
+}
+
+/// Delegate an IN-MEMORY project compile-to-BYTES (the quiet `cdz run <project>` / `cdz test` build):
+/// materialize the prepared `inputs` (ast/spans/entry/component-name) to temp files and spawn
+/// `cdz-compile … --target wasm -o -`, CAPTURING stdout — the `-o -` path writes ONLY the single
+/// `component` artifact's bytes to stdout (no `cdz: wrote …` notice), matching the in-process path's
+/// quiet-on-success contract — while stderr is inherited so located diagnostics still surface on failure.
+/// `Ok(Some(bytes))` = a component was produced; `Ok(None)` = compiled but produced none (empty stdout,
+/// clean exit); `Err(())` = a compile/spawn failure (diagnostics already on stderr). The in-process
+/// counterpart is `rcdzc::compile_with_opt` → the `component`-kind artifact's bytes.
+pub fn delegate_project_to_bytes(
+    inputs: &[Artifact],
+    opt_level: OptLevel,
+    prog: &str,
+) -> Result<Option<Vec<u8>>, ()> {
+    let dir = scratch_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("{prog}: cannot create temp dir {}: {e}", dir.display());
+        return Err(());
+    }
+    let _guard = crate::RemoveOnDrop::dir(dir.clone());
+
+    let Some(specs) = materialize_specs(inputs, &dir, prog) else {
+        return Err(());
+    };
+
+    let program = locate();
+    let mut cmd = Command::new(&program);
+    cmd.args(&specs)
+        .arg("--target")
+        .arg("wasm")
+        .arg("-o")
+        .arg("-")
+        .arg("--opt-level")
+        .arg(opt_cli(opt_level))
+        // Capture the bytes on stdout; let diagnostics flow to the inherited stderr; no stdin.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null());
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{prog}: cdz-compile not found (looked at $CDZ_COMPILE_BIN, beside `cdz`, then \
+                 $PATH) — a delegating (`--no-default-features`) `cdz` spawns the compiler instead of \
+                 linking it; build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
+            );
+            return Err(());
+        }
+        Err(e) => {
+            eprintln!(
+                "{prog}: could not run cdz-compile ({}): {e}",
+                program.display()
+            );
+            return Err(());
+        }
+    };
+    // `wait_with_output` reads the piped stdout; stderr was inherited (not piped), so it flows to the
+    // terminal and `output.stderr` is empty — exactly the quiet-on-success / diagnostics-on-failure split.
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("{prog}: could not read cdz-compile output: {e}");
+            return Err(());
+        }
+    };
+    if !output.status.success() {
+        // A compile error — cdz-compile already reported located diagnostics on the inherited stderr.
+        return Err(());
+    }
+    // Clean exit: non-empty stdout is the component's bytes; empty means no `component` artifact
+    // (a diagnostic-only run), the same as the in-process `Ok(None)`.
+    if output.stdout.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(output.stdout))
+    }
+}
+
+/// A per-process-unique scratch directory (pid + a monotonic counter, so concurrent `cdz` compiles in
+/// the same process don't collide — no wall-clock/rng needed). The caller creates it + guards removal.
+fn scratch_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "cdz-delegate-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Write each prepared artifact into `dir` and return its `cdz-compile` `kind:name=path` input spec, or
+/// `None` (after printing a `prog`-labelled error) on a write failure. The file stem is just the index —
+/// the `kind:name=` prefix carries the artifact's identity, so the stem need only be unique.
+fn materialize_specs(inputs: &[Artifact], dir: &Path, prog: &str) -> Option<Vec<String>> {
     let mut specs: Vec<String> = Vec::with_capacity(inputs.len());
     for (i, a) in inputs.iter().enumerate() {
-        // A stable, separator-free temp file name per artifact — the `kind:name=` spec carries the
-        // artifact's identity, so the file stem need only be unique (the index).
         let path = dir.join(i.to_string());
         if let Err(e) = std::fs::write(&path, &a.bytes) {
             eprintln!("{prog}: cannot write temp artifact {}: {e}", path.display());
-            return ExitCode::FAILURE;
+            return None;
         }
         specs.push(format!("{}:{}={}", a.kind, a.name, path.display()));
     }
-
-    spawn(&specs, targets, out, None, None, opt_level, prog)
+    Some(specs)
 }
 
 #[cfg(test)]
