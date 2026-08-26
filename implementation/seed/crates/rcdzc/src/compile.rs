@@ -391,9 +391,16 @@ fn compile_with_opt_inner(
     // the fault path (`fail_with(query_artifacts, …)`), the query-only return, and the clean emit
     // (which starts `artifacts = query_artifacts`). A single-file compile seeds nothing.
     let mut query_artifacts: Vec<Artifact> = link_map.into_iter().collect();
-    query_artifacts.extend(queries.iter().map(|q| {
+    // Each query result's artifact NAME is its REQUEST INDEX (`0`, `1`, …), not the query's semantic name
+    // (a node-id / symbol). Results ride back in request order, so a positional (index) name lets a batch
+    // caller that sent N same-kind queries (`--where`'s N `TypeAt`, an LSP multi-query sidecar) locate the
+    // i-th result WITHOUT replicating the per-query naming — the delegated-compile reader reads `<i>` by
+    // position. rcdzc's own tests read query results BY KIND, and a single-query caller captures the lone
+    // result off stdout, so neither depends on the name. (The semantic name was only ever a hidden contract
+    // for the file reader; the index makes the contract positional and reader-agnostic.)
+    query_artifacts.extend(queries.iter().enumerate().map(|(i, q)| {
         let r = sidecar::run_query(&mut db, q);
-        Artifact::new(r.kind, r.name, r.bytes)
+        Artifact::new(r.kind, i.to_string(), r.bytes)
     }));
 
     // QUERY-ONLY mode: the sidecar asked for facts but no artifact to build (`emit_targets` empty
