@@ -13,7 +13,7 @@
 // NON-VACUOUS: a missing lifecycle delivery drops the total to four and fails. It also requires the two
 // children actually closed (two Closed entries). No hardcoded id; the spawn count is fixed by the run.
 import { LogRecord, Entry } from "log-schema"
-import { respond, on-response, on-notification, pass, fail } from "checker-lib"
+import { respond, on-response, on-notification, pass, fail, count } from "checker-lib"
 
 def is-close(rec) =
   match rec.entry with | Entry.Closed(c) => c.reason == b"child-done" | _ => false
@@ -22,20 +22,9 @@ def is-notification(rec) =
   match rec.entry with | Entry.Delivered(d) => d.eventKind == "notification" | _ => false
 
 // Count every Delivered notification in the log (births + lifecycle events).
-def count-notif(records: List(LogRecord), i: Int64, acc: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => acc
-  | Option.Some(rec) => count-notif(records, i + 1, if is-notification(rec) then acc + 1 else acc)
-
-// Count the children that closed (two exits expected).
-def count-close(records: List(LogRecord), i: Int64, acc: Int64) =
-  match List.at(records, i) with
-  | Option.None(_) => acc
-  | Option.Some(rec) => count-close(records, i + 1, if is-close(rec) then acc + 1 else acc)
-
 def verdict-payload(records: List(LogRecord)) =
-  if not(count-close(records, 0, 0) == 2) then fail("expected two children to close; the run did not produce two Closed exits")
-  else if not(count-notif(records, 0, 0) == 5) then fail("expected 5 notification deliveries (3 births: watcher + 2 children, plus 2 lifecycle exits); a missing lifecycle means the watcher did not receive both children's exits")
+  if not(count(records, is-close) == 2) then fail("expected two children to close; the run did not produce two Closed exits")
+  else if not(count(records, is-notification) == 5) then fail("expected 5 notification deliveries (3 births: watcher + 2 children, plus 2 lifecycle exits); a missing lifecycle means the watcher did not receive both children's exits")
   else pass()
 
 def on-message(msg) = respond(msg, verdict-payload)
