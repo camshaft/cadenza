@@ -9674,3 +9674,39 @@
   (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
   (call   f (: 2 Int64) (: 3 Int64) (: 6 Int64)) (output (: 30 Int64))
   (call   f (: 9223372036854775807 Int64) (: 1 Int64) (: 1 Int64)) (trap "integer overflow"))
+; -- breaker batch 400 (2026-08-26): Float64.Infinity arithmetic identities (inf-inf=nan by canonical
+; byte equality, 1/inf=0, -inf ordering, saturating +), runtime div-by-zero inf crossing the export
+; boundary, and the NAMED Infinity constant threading as an effect handler seed (isolates the fse3d
+; computed-seed decline to const-folding of non-finite-producing division, not non-finite state).
+
+(case "if1 Float64.Infinity minus itself is NaN (canonical-byte equal to nan)"
+  (input (do (def (main) (if (= (- Float64.Infinity Float64.Infinity) Float64.nan) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "if2 one divided by Float64.Infinity is exactly zero"
+  (input (do (def (main) (if (= (/ 1.0 Float64.Infinity) 0.0) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "if3 negated Infinity is below every finite float"
+  (input (do (def (main) (if (< (- 0.0 Float64.Infinity) -1e300) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "if4 Infinity plus a finite float saturates to Infinity"
+  (input (do (def (main) (if (= (+ Float64.Infinity 1.0) Float64.Infinity) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "if5 runtime division by zero produces Infinity and crosses the boundary"
+  (input (do (def (f (: x Float64)) (/ x 0.0)) (export f)))
+  (call f (: 1.0 Float64))
+  (output (: inf Float64)))
+
+(case "if6 named Infinity constant as effect handler seed threads and compares"
+  (input (do
+    (effect F (op grow (-> Int64)))
+    (def (main (: n Int64))
+      (handle F Float64.Infinity
+        ((grow () s (resume (if (= (* s 2.0) s) 1 0) (* s 2.0))))
+        (F.grow)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
