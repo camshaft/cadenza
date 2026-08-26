@@ -2158,3 +2158,24 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 2 Int64)))
+
+; A runtime `(bin …)` construction builds a FRESH OWNED Bytes on the rope heap; a borrowing consumer
+; (`Bytes.len`) must drop that owned temporary or it leaks. These pin the producer-reclaim balance for the
+; `(bin …)`/`(bits …)` builders (BinBuild/BinBitsBuild = Owned) — `(live-objects 0)` on the debug-counters
+; runtime. Runtime `n` (via `UInt8.wrap`) so the `(bin …)` can't const-fold; `main` returns the scalar
+; length, so the only heap traffic is the built Bytes.
+(case "a runtime bin construction borrowed by Bytes.len leaves no live heap objects"
+  (doc    "`(Bytes.len (bin (u8 n') (u8 n'+1) (u8 n'+2)))` over a runtime `n` builds a fresh 3-byte owned
+           Bytes and reads its length (3); the owned Bytes leaf must be dropped after the borrowing length
+           read. n=3 -> length 3, live-objects 0.")
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (u8 (UInt8.wrap n)) (u8 (UInt8.wrap (+ n 1))) (u8 (UInt8.wrap (+ n 2)))))) (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "a runtime bit-field bin construction borrowed by Bytes.len leaves no live heap objects"
+  (doc    "The `(bits …)` (BinBitsBuild) sibling — two full-byte (width-8) bit-field segments build a 2-byte
+           owned Bytes: `(Bytes.len (bin (bits n' 8) (bits n'+1 8)))`. n=1 -> length 2, and the fresh
+           bit-packed Bytes must be dropped after the borrowing length read — live-objects 0.")
+  (input  (do (def (main (: n Int64)) (Bytes.len (bin (bits (UInt8.wrap n) 8) (bits (UInt8.wrap (+ n 1)) 8)))) (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (live-objects 0))
