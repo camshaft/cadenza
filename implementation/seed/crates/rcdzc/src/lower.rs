@@ -25351,6 +25351,7 @@ fn core_is_const_value(db: &mut Db, c: &Core) -> bool {
     match c {
         Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstChar(_)
         | Core::ConstStr(_)
         | Core::ConstBytes(_)
         | Core::ConstFloat(_)
@@ -25374,6 +25375,7 @@ fn is_const_value(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ConstInt(_)
         | Core::ConstBool(_)
+        | Core::ConstChar(_)
         | Core::ConstStr(_)
         | Core::ConstBytes(_)
         | Core::ConstFloat(_)
