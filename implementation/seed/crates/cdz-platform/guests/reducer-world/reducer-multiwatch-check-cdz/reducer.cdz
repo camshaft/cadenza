@@ -1,0 +1,43 @@
+// The §7 MULTI-PEER SUPERVISION checker (design/cadenza-platform.md §7/§9). The paired run spawns ONE watcher
+// and TWO children under it, each with a parentWatchesChild link; both children end themselves, and the
+// runtime delivers EACH child's Exited lifecycle event to the one watcher — the §7 property that "a reducer
+// watching several peers folds every peer's exit through the one on_notification." This checker asserts,
+// log-only and guest-agnostic, that BOTH exits reached the watcher.
+//
+// It COUNTS rather than tests existence: an `ordered(Closed, notification)` existence check would pass even if
+// only ONE of the two exits were delivered (a single post-close notification satisfies it for both closes), so
+// it cannot prove multi-peer delivery. Instead it counts every Delivered NOTIFICATION in the run: exactly FIVE
+// = three births (the watcher + two children each fold a birth `Spawned` as their first event) + two lifecycle
+// `Exited` events (one per watched child, both delivered to the one watcher). A count is ordering-independent
+// (a child's birth can interleave after a sibling's close, so "after the first close" would miscount), and
+// NON-VACUOUS: a missing lifecycle delivery drops the total to four and fails. It also requires the two
+// children actually closed (two Closed entries). No hardcoded id; the spawn count is fixed by the run.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail } from "checker-lib"
+
+def is-close(rec) =
+  match rec.entry with | Entry.Closed(c) => c.reason == b"child-done" | _ => false
+
+def is-notification(rec) =
+  match rec.entry with | Entry.Delivered(d) => d.eventKind == "notification" | _ => false
+
+// Count every Delivered notification in the log (births + lifecycle events).
+def count-notif(records: List(LogRecord), i: Int64, acc: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(rec) => count-notif(records, i + 1, if is-notification(rec) then acc + 1 else acc)
+
+// Count the children that closed (two exits expected).
+def count-close(records: List(LogRecord), i: Int64, acc: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(rec) => count-close(records, i + 1, if is-close(rec) then acc + 1 else acc)
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(count-close(records, 0, 0) == 2) then fail("expected two children to close; the run did not produce two Closed exits")
+  else if not(count-notif(records, 0, 0) == 5) then fail("expected 5 notification deliveries (3 births: watcher + 2 children, plus 2 lifecycle exits); a missing lifecycle means the watcher did not receive both children's exits")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
