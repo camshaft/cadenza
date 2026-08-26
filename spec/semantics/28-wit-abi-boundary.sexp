@@ -628,3 +628,23 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)"
+  (doc "SHAPE 49 - the runtime checked conversion `Int64.of` over a HOST-LIFTED u64 result. The emit composes `if operand > i64::MAX then trap else wrap(operand)`, which NAMES the operand in the compare AND the else; a host-call operand must be materialized ONCE (a self-keyed let) or its effect FIRES PER USE - breaker adv-tof-host-u64 saw an in-range 1000 spuriously TRAP because the second host invocation drained its lone queued response. The `(host-calls ...)` clause asserts EXACTLY ONE call to hosti.base, so a regression to per-reference re-invocation fails here (host-response exhaustion), not just a wrong value. Runtime coverage for the operand-materialize fix over the merged #3537 .of compose.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (effect hosti (op base (-> Unit UInt64))) (def (f (: m (Record (: x Int64)))) (host (hosti) (Int64.of (hosti.base unit)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1000 Int64)))
+
+(case "Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)"
+  (doc "SHAPE 50 - the runtime checked arithmetic `Int64.checked-add` over a HOST-LIFTED u64 result (narrowed by Int64.of). The overflow-check compose names the operand in the wrapping result AND the two's-complement formula, so a host-call operand is materialized ONCE (else the effect fires per reference). `(host-calls ...)` asserts EXACTLY ONE call to hosti.base. main = match (checked-add (Int64.of (hosti.base)) 1) Some v -> v, None -> -1; with the host stubbed 1000 the sum 1001 fits -> Some 1001. Runtime coverage for the operand-materialize fix over the merged #3569 checked-arith compose.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (effect hosti (op base (-> Unit UInt64))) (def (f (: m (Record (: x Int64)))) (host (hosti) (match (Int64.checked-add (Int64.of (hosti.base unit)) 1) ((Some v) v) ((None _) -1)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1001 Int64)))
