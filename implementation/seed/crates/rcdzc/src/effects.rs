@@ -2059,24 +2059,43 @@ pub fn reduce_handle(
     // wasm-masked backend divergence, not a decline. Propagate the SOLVED collection type from the joined slot
     // back onto the init subtree's open-var collection nodes so `type_of(init)` reflects the real key/value.
     refine_init_collection_ty(db, init, arms);
-    // WIDTH-CONSISTENCY GUARD (F1, corpus-bugfix/breaker 2026-07-28). The state slot's fixed int width must
-    // match the op's declared RESULT width for any arm whose resume VALUE reads the state (a bare `(resume s
-    // …)`, whose value types `Any` = "the state"). A `(next (u) s (resume s (+ s x)))` arm with a UInt8 `x`
-    // infers the state as UInt8 (i32) via the next-state `(+ s x)`, but the op result is Int64 (i64) — so the
-    // resume value (the state) is emitted as i32 where the op result demands i64. Alone latent; threaded
-    // across ≥2 performs (the state re-splices as the next perform's input) it emits an INVALID wasm module
-    // ("expected i64, found i32"; rust widens and runs — a backend divergence). DECLINE cleanly (a "not yet
-    // reducible" todo) rather than emit invalid wasm — the safe floor; a widening-coercion fold is a later
-    // increment. Fires ONLY on a FIXED-width int state whose width differs from a FIXED-width int op result,
-    // for an arm that resumes the state directly (value types `Any`/Int and next-state is state-derived);
-    // a matching-width state, a non-int state/result, or an undetermined side is untouched.
-    if let Some(crate::ty::Ty::Int(st)) = &state_ty {
-        for arm in arms {
-            if tail_resume_value_of(db, arm.body).is_some()
-                && let Some(crate::ty::Ty::Int(rt)) = op_result_type(db, arm.op)
-                && let (crate::ty::Width::Fixed(sw), crate::ty::Width::Fixed(rw)) =
-                    (st.width, rt.width)
-                && sw != rw
+    // WIDTH-CONSISTENCY GUARD (F1, corpus-bugfix/breaker 2026-07-28; refined for pyu8t1/pyu8r1 + the 14b
+    // `two do-def-bound performs` case). A tail resume value is substituted into the op's RESULT position;
+    // if its EMITTED width is narrower than the op result width, emit puts an i32 where i64 is demanded and
+    // the module is INVALID ("expected i64, found i32"; rust widens and runs — a backend divergence). The
+    // canonical hazard is a bare `(next (u) s (resume s (+ s x)))` with a UInt8 `x`: `s` infers UInt8 (i32)
+    // via the next-state, the op result is Int64 (i64), so the state read is emitted i32 into an i64 slot.
+    // DECLINE cleanly (a "not yet reducible" todo) rather than emit invalid wasm — the safe floor; a
+    // widening-coercion fold is a later increment. See the emit-width computation below for the exact test.
+    for arm in arms {
+        if let Some(rv) = tail_resume_value_of(db, arm.body)
+            && let Some(crate::ty::Ty::Int(rt)) = op_result_type(db, arm.op)
+            && let crate::ty::Width::Fixed(rw) = rt.width
+        {
+            // The width the resume value is EMITTED at, compared to the op result width it is
+            // substituted into: a narrower emit puts an i32 where i64 is demanded → invalid wasm.
+            // The emit width is the value's OWN concrete fixed-int width when it has one — an
+            // explicitly-widened answer `(resume (Int64.of s) …)` is Int64 = matches the result,
+            // SAFE (pyu8t1); a narrow op-result whose answer is narrow-typed matches too (pyu8r1).
+            // When the value type is NOT a concrete fixed int (an `Any`/deferred-width bare
+            // `(resume s …)` state read whose type is not yet pinned), fall back to the STATE slot
+            // width — the value IS the state, emitted at slot width. This supersedes the original
+            // state-width-only test (which OVER-declined a widened narrow-state thread) and the
+            // undetermined-value gate (which UNDER-declined a bare state read whose type is refined
+            // to the concrete narrow state type BY THIS POINT → the 14b `two do-def-bound performs`
+            // case regressed to an invalid module). Fires only on a determined width MISMATCH; a
+            // matching width, a non-int result, or no width info on either side is untouched.
+            let emit_w = match crate::infer::type_of(db, rv) {
+                crate::ty::Ty::Int(vt) if matches!(vt.width, crate::ty::Width::Fixed(_)) => {
+                    vt.width
+                }
+                _ => match &state_ty {
+                    Some(crate::ty::Ty::Int(st)) => st.width,
+                    _ => continue,
+                },
+            };
+            if let crate::ty::Width::Fixed(ew) = emit_w
+                && ew != rw
             {
                 return None;
             }
