@@ -7471,3 +7471,15 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
+pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
+pass	ce02 checked addition over a RUNTIME operand yields None on overflow
+pass	ce11 wrapping addition over a RUNTIME operand wraps
+pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
+pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
+pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
+pass	ce07 literal-tuple pattern matches a RUNTIME tuple
+pass	ce08 equality of two RUNTIME-built Maps
+pass	ce09 equality of two RUNTIME-built Sets
+pass	ce10 equality of RUNTIME lists of records
+pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
+todo	cj03 Ast.print of a RUNTIME AST value renders

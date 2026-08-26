@@ -4123,3 +4123,14 @@
     (export f)))
   (call f (: 1.0 Float64))
   (output (: 1 Int64)))
+
+; -- breaker batch 414 (2026-08-26): Ast.print of a RUNTIME AST value renders (base face; the
+; nested sibling cj03n and the render-text face cj03r pinned earlier). wasm pass / rust todo.
+
+(case "cj03 Ast.print of a RUNTIME AST value renders"
+  (input  (do
+            (def (main (: k Int64))
+              (String.byte-len (Ast.print (Ast.Int (BigInt.of k)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64)))
