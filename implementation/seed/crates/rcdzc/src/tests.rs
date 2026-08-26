@@ -48028,50 +48028,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn boolean_identities_over_a_runtime_operand_fold() {
-        // Boolean simplifications with a RUNTIME operand `p` (a param): `(not (not p))` = p; `(and p
-        // true)` / `(or p false)` = p (neutral, keeps p); `(and p false)` = false / `(or p true)` = true
-        // (absorbing — drops p, sound because p is trap-free here). Each returns the right value over both
-        // truth values of `p`.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: p Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for (body, want_t, want_f) in [
-            ("(not (not p))", true, false),
-            ("(and p true)", true, false),
-            ("(or p false)", true, false),
-            ("(and p false)", false, false),
-            ("(or p true)", true, true),
-        ] {
-            let b = f(body);
-            assert_eq!(
-                run_returns_with::<bool>(&b, "f", &[Val::Bool(true)]),
-                want_t,
-                "{body} @true"
-            );
-            assert_eq!(
-                run_returns_with::<bool>(&b, "f", &[Val::Bool(false)]),
-                want_f,
-                "{body} @false"
-            );
-        }
-        // TRAP-SAFETY: the absorbing fold must NOT drop a trapping left operand — `(and p false)` where
-        // `p` is a trapping expression still traps (the fold keeps `p` when it is not trap-free).
-        let g = "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) false) 1 0)) (export f))";
-        let gb =
-            compile_component(&crate::codec::encode(&crate::testkit::parse(g))).expect("compile");
-        assert!(
-            call_traps(&gb, "f", &[Val::S64(0)]),
-            "(and <traps> false) must still trap on the div-by-zero"
-        );
-        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
-    }
-
-    #[test]
     fn a_short_circuit_connective_with_identical_operands_folds_to_the_operand() {
         // IDEMPOTENCE for the boolean short-circuit connectives: `(and a a)` → `a` and `(or a a)` → `a` (the
         // sibling of the bitwise `(& a a)`/`(| a a)` fold). `a` is the short-circuit condition, always

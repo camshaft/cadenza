@@ -5633,6 +5633,22 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
+(case "a neutral or-false keeps both the trap and the value of its left operand"
+  (doc    "`(or p false)` → p — `false` is `or`'s identity, so the NEUTRAL fold hands back the left
+           operand whole: its trap fires at n = 0 (the div), and its VALUE decides the conditional at
+           trap-free inputs — n = 20 → `(> 0 0)` false → 0; n = 5 → `(> 2 0)` true → 1. The `or`
+           companion of the neutral and-true fold above (not a constant absorption, not a trap-suppress).")
+  (input  (do
+            (def (main (: n Int64))
+              (if (or (> (/ 10 n) 0) false) 1 0))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero")
+  (call   main (: 20 Int64))
+  (output (: 0 Int64))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
 (case "double negation of a runtime boolean is the identity"
   (doc    "`(not (not (> n 0)))` = `(> n 0)` — both truth values verified (n = 5 → 1, n = -1 → 0).
            The fold cancels the pair; parity (not the mere presence of `not`) must decide the answer.")
