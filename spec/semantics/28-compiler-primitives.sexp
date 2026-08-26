@@ -699,3 +699,33 @@
             (def (main) (const (. (descriptor) id)))
             (export main)))
   (output (: 3 Int64)))
+
+; --- Primitive 2: const execution — a Tuple const param folds on the BARE-CALL path (ca06) ------------
+; The recursive-call activation gate accepts a `const` param whose type is a bare NAME or a SHRINKING type-
+; constructor, but EXCLUDED `(Tuple …)` (grouped with the product/dictionary forms). A `const (: t (Tuple …))`
+; param in a counter-in-tuple recursion genuinely SHRINKS, and the value-interpreter folds tuples — but the
+; gate skipped it, so a `const` Tuple-param fn could not be called on the bare path (no `(const …)` block):
+; it emitted a runtime fn whose `const` Tuple param has no runtime slot ("function return type has no machine
+; representation"). Admitting `(Tuple …)` fires the fold, symmetric with the scalar const params. (`(Record …)`
+; stays excluded — that is the ad-hoc-polymorphism dictionary-consumer shape, which inlines+erases at runtime.)
+
+(case "a Tuple const param folds a VALUE through a bare recursive call (ca06)"
+  (doc    "`f` counts the first tuple slot to 0 while accumulating into the second; `(f (tuple 3 0))` — NO
+           `(const …)` block — folds to 3. The `const` Tuple param binds a `CVal::Tuple` and the recursion
+           folds; before, the gate excluded `(Tuple …)` so the `const`-param fn reached the emitter.")
+  (input  (do
+            (def (f (const (: t (Tuple Int64 Int64))))
+              (match t ((tuple a b) (if (= a 0) b (f (tuple (- a 1) (+ b 1)))))))
+            (def (main) (f (tuple 3 0)))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a taken trap over a Tuple const param on the bare-call path surfaces CDZ0304 (ca06)"
+  (doc    "`(f (tuple 2 0))` counts to 0 then traps; the bare recursive-call fold executes the trap and
+           surfaces its message as CDZ0304 — symmetric with the Int64/Char/Float const-param shapes.")
+  (input  (do
+            (def (f (const (: t (Tuple Int64 Int64))))
+              (match t ((tuple a b) (if (= a 0) (trap "tuple base reached") (f (tuple (- a 1) (+ b 1)))))))
+            (def (main) (f (tuple 2 0)))
+            (export main)))
+  (error  CDZ0304 (message "tuple base reached")))
