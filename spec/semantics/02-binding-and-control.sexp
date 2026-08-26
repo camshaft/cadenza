@@ -4939,6 +4939,55 @@
   (call   main (: 0 Int64))
   (output (: 5 Int64)))
 
+; ── Projecting/matching through an if- or match-selected compound folds the compound away (no heap) ───
+; A single projection/member-read/match over a compound built through an `if`/`match` pushes the read INTO
+; the branches, folding the throwaway compound away entirely (no per-call arr-alloc, no value-heap import).
+; The transform is value-transparent — the read still selects the branch's element/field/arm — so these
+; pin the observable VALUE; the "no runtime import" fold witness stays a white-box rcdzc assertion.
+(case "a projection-only runtime tuple folds to the sum of its elements"
+  (doc    "`(let ((t (tuple a b))) (+ (. t 0) (. t 1)))` over runtime params: the tuple is only projected,
+           never escaped, so it folds to `(+ a b)` — no heap. pair-sum(20, 22) = 42.")
+  (input  (do (def (pair-sum (: a Int64) (: b Int64)) (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum)))
+  (call   pair-sum (: 20 Int64) (: 22 Int64)) (output (: 42 Int64)))
+
+(case "a projection of an if-selected tuple selects the branch's element"
+  (doc    "`(. (if p (tuple a b) (tuple b a)) 0)` pushes the projection into the branches, folding to `(if p
+           a b)`: p=true selects the then-tuple's element 0 (a), p=false selects the else-tuple's element 0
+           (b, the swapped position). pick(true,10,20)=10; pick(false,10,20)=20.")
+  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p (tuple a b) (tuple b a)) 0)) (export pick)))
+  (call   pick (: true Bool) (: 10 Int64) (: 20 Int64)) (output (: 10 Int64))
+  (call   pick (: false Bool) (: 10 Int64) (: 20 Int64)) (output (: 20 Int64)))
+
+(case "a member read of an if-selected record selects the branch's field by name"
+  (doc    "The record companion, with fields written OUT of sorted order to confirm the fold is by KEY not
+           slot: `(. (if p (record (y b) (x a)) (record (y a) (x b))) x)` folds to `(if p a b)`.
+           pick(true,10,20)=10; pick(false,10,20)=20.")
+  (input  (do (def (pick (: p Bool) (: a Int64) (: b Int64)) (. (if p (record (= y b) (= x a)) (record (= y a) (= x b))) x)) (export pick)))
+  (call   pick (: true Bool) (: 10 Int64) (: 20 Int64)) (output (: 10 Int64))
+  (call   pick (: false Bool) (: 10 Int64) (: 20 Int64)) (output (: 20 Int64)))
+
+(case "a match over an if-selected sum folds each branch's constructor to its arm body"
+  (doc    "`(match (if (> x 0) (Some x) None) ((Some v) v) (None 0))` pushes the match into each branch and
+           folds each constant constructor to its arm body, giving `(if (> x 0) x 0)` — no throwaway sum
+           build. x=5 -> Some 5 -> v=5; x=-3 -> None -> 0.")
+  (input  (do
+            (type Option (Some Int64) None)
+            (def (f (: x Int64)) (match (if (> x 0) (Option.Some x) Option.None) ((Option.Some v) v) (Option.None 0)))
+            (export f)))
+  (call   f (: 5 Int64)) (output (: 5 Int64))
+  (call   f (: -3 Int64)) (output (: 0 Int64)))
+
+(case "a match over a match-selected sum folds into the inner arms"
+  (doc    "The match-of-match fusion: `(match (match (> n 0) (true (Some n)) (false None)) ((Some v) v) (None
+           0))` pushes the outer match into each inner arm body, folding each throwaway constructor away to
+           `(match (> n 0) (true n) (false 0))`. n=5 -> Some 5 -> v=5; n=-3 -> None -> 0.")
+  (input  (do
+            (type Option (Some Int64) None)
+            (def (f (: n Int64)) (match (match (> n 0) (true (Option.Some n)) (false Option.None)) ((Option.Some v) v) (Option.None 0)))
+            (export f)))
+  (call   f (: 5 Int64)) (output (: 5 Int64))
+  (call   f (: -3 Int64)) (output (: 0 Int64)))
+
 (case "a trapping payload in the TAKEN arm of a same-constructor if still traps"
   (doc    "The complement: `(if (= d 0) (Some (/ 100 d)) (Some 42))` at d = 0 takes the THEN arm, so its
            payload `(/ 100 0)` IS evaluated and must trap — a hoist that over-guards (never evaluates a
