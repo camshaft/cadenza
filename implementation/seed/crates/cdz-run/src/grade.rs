@@ -125,14 +125,23 @@ pub fn grade(
         // for the Declined arm, ported).
         match &trial.expect {
             GExpect::Error(code, msg) => {
-                worst = worst.worse(grade_compile_error(compiled, compile_diag, code, msg.as_deref()));
+                worst = worst.worse(grade_compile_error(
+                    compiled,
+                    compile_diag,
+                    code,
+                    msg.as_deref(),
+                ));
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
                 continue;
             }
             GExpect::Declines(msg) => {
-                worst = worst.worse(grade_compile_declines(compiled, compile_diag, msg.as_deref()));
+                worst = worst.worse(grade_compile_declines(
+                    compiled,
+                    compile_diag,
+                    msg.as_deref(),
+                ));
                 if matches!(worst, Grade::Fail(_)) {
                     break;
                 }
@@ -145,12 +154,15 @@ pub fn grade(
         // not-yet-implemented feature), never Fail — match that, and there is no wasm to run.
         if !compiled {
             worst = worst.worse(Grade::Todo(
-                "output/trap case the compiler declined (not-yet-implemented; todo like the gate)".into(),
+                "output/trap case the compiler declined (not-yet-implemented; todo like the gate)"
+                    .into(),
             ));
             continue;
         }
         let Some(component_bytes) = component_bytes else {
-            anyhow::bail!("grade: an output/trap case compiled (status 0) but no component was supplied");
+            anyhow::bail!(
+                "grade: an output/trap case compiled (status 0) but no component was supplied"
+            );
         };
         ran_a_trial = true;
 
@@ -194,7 +206,9 @@ pub fn grade(
             if !hit {
                 worst = Grade::Fail(format!(
                     "expected warning {code}{} not emitted; got {emitted:?}",
-                    msg.as_deref().map(|p| format!(" (message ~ {p:?})")).unwrap_or_default()
+                    msg.as_deref()
+                        .map(|p| format!(" (message ~ {p:?})"))
+                        .unwrap_or_default()
                 ));
                 break;
             }
@@ -275,9 +289,9 @@ fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             )),
         },
         // Not reached (compile-outcome expectations are graded before the run), but total for safety.
-        GExpect::Error(..) | GExpect::Declines(..) => {
-            Grade::Todo("compile-outcome expectation is graded from the diagnostic, not the run".into())
-        }
+        GExpect::Error(..) | GExpect::Declines(..) => Grade::Todo(
+            "compile-outcome expectation is graded from the diagnostic, not the run".into(),
+        ),
     }
 }
 
