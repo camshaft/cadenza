@@ -3329,6 +3329,14 @@ pub fn inline_escaped_one_shot_perform_call(
         // re-run `reduce_handle`'s `resolved_of` recomputes every ref against the inlined structure (the same
         // re-resolve hygiene `reduce_arm_deferred_resume` applies per inlined call).
         crate::resolve::forget_subtree(db, rewritten);
+        // A LOAD-TIME reference re-parented by the rebuild (e.g. a `let`-body ref when the inlined helper
+        // call sat in the binding-init) keeps its stale load-time `scope_skip` entry, so the fast-path would
+        // resolve it against its ORIGINAL scope (the pre-rebuild init) rather than the rebuilt one — leaving
+        // a later hygiene rename to miss it and the ref dangling (a false CDZ0101, breaker iso-b). Force the
+        // subtree's load-time nodes onto the exhaustive walk so every ref resolves against the CURRENT
+        // (rebuilt) parent chain. `forget_subtree` alone is insufficient — it clears the resolution memo but
+        // not the load-time skip coverage the recompute then re-consults.
+        db.force_structural_resolution_subtree(rewritten);
         Some(rewritten)
     } else {
         None

@@ -18067,14 +18067,15 @@
   (output (: 11 Int64)))
 
 ;; -- iso-b (breaker): LET-BINDING the escaped-closure helper-call answer inside the handle body and
-;; returning the binder is a WELL-FORMED program that should fold to 5 (the let just names cx5d's answer).
-;; The escaped-closure recovery's inline rewrite can rebuild the `let` in a way that drops the binder
-;; identity, so the re-reduced body's `a` re-resolves UNBOUND — which MUST NOT surface as a CDZ0101
-;; rejection (a wrong diagnostic on valid code). The recovery now commits its result only if it folds to a
-;; POISON-FREE core, else falls back to the honest HANDLER_NOT_REDUCIBLE todo. So this DECLINES CLEANLY
-;; today (todo, not an error); a later let-binder-hygiene fold fix flips it to 5. (The pure twin folds, the
-;; un-let cx5d shape folds, a scalar `let` inside the handle folds — only the let-bound EFFECTFUL answer.)
-(case "iso-b a let-bound escaped-closure helper-call answer inside the handle body declines cleanly — must NOT mis-reject CDZ0101 (recovery falls back to the honest todo when its rewrite would drop the let binder)"
+;; returning the binder is a WELL-FORMED program that folds to 5 (the `let` just names cx5d's answer). The
+;; escaped-closure recovery's inline rewrite rebuilds the `let` and re-parents the load-time body reference
+;; under the fresh `let`; that reference kept its stale LOAD-TIME `scope_skip` entry (pointing at its
+;; original scope's init), so it resolved to the OLD init — a later hygiene rename then missed it and it
+;; re-resolved UNBOUND (a false CDZ0101). Fix: the recovery forces the rebuilt subtree's load-time nodes onto
+;; the exhaustive lexical walk (`force_structural_resolution_subtree`), so the ref resolves against the
+;; CURRENT (rebuilt) `let` → folds. (The pure twin folds, the un-let cx5d shape folds, a scalar `let` inside
+;; the handle folds — this is the let-bound EFFECTFUL answer that exercised the re-parent staleness.)
+(case "iso-b a let-bound escaped-closure helper-call answer inside the handle body folds — the recovery forces the re-parented load-time ref onto the structural walk so it resolves against the rebuilt let (was a false CDZ0101)"
   (input (do
     (effect E (op tick (-> Int64)))
     (def (ap (: g (-> Int64 Int64))) (g 5))

@@ -1251,6 +1251,19 @@ pub struct Db {
     /// computed prelude-fallback. See [`scope_skip_load_boundary`].
     scope_skip_seeded: crate::fxhash::FxHashSet<StructId>,
 
+    /// Node ids FORCED to fall back to the exhaustive parent walk (never the [`scope_skip`] fast-path), even
+    /// though they are LOAD-TIME nodes the fast-path would otherwise cover. A load-time name occurrence
+    /// RE-PARENTED into a synthesized structure (e.g. the escaped-closure recovery β-inlines a helper call
+    /// inside a `let` binding-init and rebuilds the `let`, re-parenting the load-time body reference under the
+    /// fresh `let`) keeps its LOAD-TIME skip entry — which still points at its ORIGINAL enclosing scope —
+    /// because `reparent`/`push_list` do not recompute `scope_skip`. Taking the fast-path then resolves the
+    /// reference against its OLD binder (a stale init occurrence) instead of the rebuilt one, so a later
+    /// hygiene rename misses it and the reference is left dangling → a false CDZ0101 (breaker iso-b). Marking
+    /// such a node here forces the STRUCTURAL walk, which follows the CURRENT parent chain to the rebuilt
+    /// scope — the ground truth. Always safe (the walk is exhaustive-correct; the fast-path is only an
+    /// optimization), just slower for the marked nodes; applied narrowly (the recovery's small inlined body).
+    scope_skip_force_uncovered: crate::fxhash::FxHashSet<StructId>,
+
     /// The set of nested-module SYNTHESIZED RECORD ids — each is a binding scope (its members are mutually
     /// visible), so [`is_binding_candidate`] treats it as a candidate. Retained from load so the
     /// CANDIDATE-AWARE scope-skip extension (`extend_scope_skip_into_subtree`) can re-run
@@ -2786,6 +2799,7 @@ impl Db {
             scope_skip,
             scope_skip_load_boundary,
             scope_skip_seeded: crate::fxhash::FxHashSet::default(),
+            scope_skip_force_uncovered: crate::fxhash::FxHashSet::default(),
             module_records,
             def_by_body,
             doc_by_sig,
@@ -3378,7 +3392,36 @@ impl Db {
     /// [`scope_skip`]: Db::scope_skip
     /// [`scope_skip_seeded`]: Db::scope_skip_seeded
     pub fn scope_skip_covers(&self, id: StructId) -> bool {
+        // A node explicitly FORCED uncovered (a load-time occurrence re-parented into a synth scope, whose
+        // load-time skip entry is now stale) must take the exhaustive walk. Gated on non-empty so the common
+        // case (no forced nodes) pays only an `is_empty` check, not a hash lookup, on this hot path.
+        if !self.scope_skip_force_uncovered.is_empty()
+            && self.scope_skip_force_uncovered.contains(&id)
+        {
+            return false;
+        }
         ((id.0 as usize) < self.scope_skip_load_boundary) || self.scope_skip_seeded.contains(&id)
+    }
+
+    /// Force every LOAD-TIME node in `root`'s subtree to fall back to the exhaustive lexical-scope walk
+    /// (see [`scope_skip_force_uncovered`]). Call after RE-PARENTING a subtree that contains load-time name
+    /// occurrences into a freshly-synthesized scope (the escaped-closure recovery's `let` rebuild), so those
+    /// references resolve against the CURRENT parent chain instead of their stale load-time skip entry. Only
+    /// load-time ids are marked — a synth node's coverage already derives from `scope_skip_seeded`, which the
+    /// rebuild set correctly. Safe (the walk is exhaustive-correct) and idempotent.
+    pub fn force_structural_resolution_subtree(&mut self, root: StructId) {
+        let boundary = self.scope_skip_load_boundary;
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if (node.0 as usize) < boundary {
+                self.scope_skip_force_uncovered.insert(node);
+            }
+            if let Struct::List(children) = self.ast.get(node) {
+                for &c in children.clone().iter() {
+                    stack.push(c);
+                }
+            }
+        }
     }
 
     /// The nearest binding-CANDIDATE ancestor of `id` and the candidate's direct child on the path to
