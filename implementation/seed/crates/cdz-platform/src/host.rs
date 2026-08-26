@@ -75,10 +75,10 @@ fn int_leaf(b: &mut Builder, value: i64) -> StructId {
 }
 
 /// A `mixed` variant as its canonical bare-constructor Value form, using the CADENZA constructor names
-/// (CamelCase = the bindgen variant names): `(None)` / `(Small <u8>)` / `(Big <s64>)`.
+/// (CamelCase = the bindgen variant names): `(Absent)` / `(Small <u8>)` / `(Big <s64>)`.
 fn mixed_value(b: &mut Builder, m: &ap::Mixed) -> StructId {
     match m {
-        ap::Mixed::None => bare_ctor(b, "None", vec![]),
+        ap::Mixed::Absent => bare_ctor(b, "Absent", vec![]),
         ap::Mixed::Small(x) => {
             let p = uint_leaf(b, u64::from(*x));
             bare_ctor(b, "Small", vec![p])
@@ -90,10 +90,10 @@ fn mixed_value(b: &mut Builder, m: &ap::Mixed) -> StructId {
     }
 }
 
-/// A `narrow` variant: `(None)` / `(A <u8>)` / `(B <u16>)`.
+/// A `narrow` variant: `(Absent)` / `(A <u8>)` / `(B <u16>)`.
 fn narrow_value(b: &mut Builder, n: &ap::Narrow) -> StructId {
     match n {
-        ap::Narrow::None => bare_ctor(b, "None", vec![]),
+        ap::Narrow::Absent => bare_ctor(b, "Absent", vec![]),
         ap::Narrow::A(x) => {
             let p = uint_leaf(b, u64::from(*x));
             bare_ctor(b, "A", vec![p])
