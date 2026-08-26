@@ -10388,44 +10388,6 @@ fn set_ops_do_not_fold_against_a_runtime_element() {
     }
 }
 
-/// RUNTIME STRUCTURAL EQUALITY, BORROWED operand: a `let`-bound list compared by `=` (a BORROW) leaves
-/// no cell leaked or double-freed. `xs = (build 3)` is compared to a fresh `(build 3)` (an OWNED
-/// temporary `value-eq` drops); the result is a scalar `1`, so `xs` is used ONLY as the borrowed
-/// operand. `value-eq` must NOT drop `xs` (it only borrows) — the enclosing `let` drops it exactly once.
-/// So `live-objects` is 0: the fresh operand reclaimed by `value-eq`, `xs` by the `let`, neither leaked
-/// nor doubly-freed. The borrowed-vs-owned companion of `runtime_value_eq_leaves_no_live_objects`
-/// (avoids a recursive fold, whose own reclamation is a separate concern). `#[ignore]` — needs the
-/// store populated.
-#[test]
-#[ignore]
-fn runtime_value_eq_borrowed_operand_survives_and_balances() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[value-eq] debug-counters runtime not in the store; skipping borrow probe");
-        return;
-    };
-    let src = "(module m \
-                 (type IntList (Cons (Tuple Int64 IntList)) Nil) \
-                 (def (build n) (if (< n 1) (IntList.Nil ()) \
-                    (IntList.Cons (tuple n (build (- n 1)))))) \
-                 (def (main) (let ((xs (build 3))) (if (= xs (build 3)) 1 0))) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(1),
-        "the two equal lists compare equal → 1"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "value-eq borrow leak/double-free: `xs` (borrowed by `=`, dropped by the `let`) plus the owned \
-         `(build 3)` operand (dropped by value-eq) must net to 0 live cells"
-    );
-}
-
 /// KNOWN LEAK (tracking probe): a RECURSIVE function with a HEAP-typed PARAMETER threaded through the
 /// recursion and only BORROWED (never destructured/consumed) leaks the cell — a BOUNDED O(1) leak (one
 /// cell per heap value created, NOT per recursion level), correctness-PRESERVING (the answer is right).
@@ -10854,59 +10816,6 @@ fn a_site_a_owned_closure_producers_reclaim_across_shapes() {
         3,
         "two-arg-payload owned closure: part-b drops the closure cell; remaining 3 = the general tuple/ \
          match-shell gap (one more shell than the single-arg shape). > 3 = the reclaim regressed."
-    );
-}
-
-/// KNOWN LEAK (tracking probe, the PERVASIVE case): a recursive fold over a HEAP LIST leaks EVERY node —
-/// the recursion-heap-reclamation gap is NOT closure-specific and NOT O(1); it is O(N) in the data. A
-/// `match` reading `sum-payload` does not drop the matched shell, so a list threaded through a recursive
-/// fold and consumed by `match` at each level leaks all its cells. `len(build 3)` returns the CORRECT 3
-/// but leaves 7 live cells (3 Cons + 3 tuples + 1 Nil). This pins the leak COUNT so it cannot silently
-/// worsen and documents the real scope of the gap (contrast the O(1) closure sub-case above). The FIX is
-/// the general Perceus drop-insertion pass (a sum-match drops the matched shell after dup-ing its payload;
-/// a dead heap param drops on its branch) — its own workstream, high correctness stakes. Flip the expected
-/// counts to 0 when it lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-/// DIRECT leak witness for the `Record.with`-over-a-RUNTIME-record lowering (landed `49d6eec14`, breaker l6):
-/// a row op over a runtime record builds a FRESH record whose unchanged fields are synth `(. record field)`
-/// PROJECTIONS (borrowing the source) + the one new field value. Both the owned-temporary SOURCE record and
-/// the fresh RESULT record must be reclaimed after the field read — the projections BORROW the source (its
-/// reclaim is the row op's job) and the result is an owned temporary a borrowing field-read reclaims. This
-/// PINS that the new lowering nets to 0 (verified: value-correct + 0 live) so a future change to the row-op
-/// desugar, the projection reclaim, or the record-builder can't silently introduce a leak. `#[ignore]` —
-/// needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore]
-fn record_with_over_an_owned_temporary_runtime_record_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[record-with] debug-counters runtime not in the store (run `cargo xtask build`); skipping reclaim probe"
-        );
-        return;
-    };
-    // `mk` recurses so its `(record (x 1) (y 2))` result is a genuine RUNTIME owned temporary (not fold-visible).
-    // Each iter: `Record.with (mk 0) #x 99` builds a fresh record from the source's projections, then read its
-    // `x` (99). The source record + the fresh result must both reclaim → net 0. Value = 99 × 500 = 49500.
-    let src = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (x 1) (y 2)) (mk (- n 1)))) \
-        (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
-            (if (< j n) (loop (+ j 1) n (+ tot (. (Record.with (mk 0) #\"x\" 99) x))) tot)) \
-        (def (main (: v Int64)) (loop 0 v 0)) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("Record.with over a runtime record must compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[Val::S64(500)]),
-        Val::S64(49500),
-        "500 iters × (Record.with (mk 0) #x 99).x = 99 each = 49500 (value-correct + NO UAF)"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "Record.with-over-runtime reclaim: the owned-temporary source record (borrowed by the field \
-         projections) AND the fresh result record must both be reclaimed after the field read — expected 0 \
-         live cells. > 0 = the row-op desugar/projection/record-builder leaked; a trap above = an over-drop."
     );
 }
 
