@@ -358,3 +358,72 @@
                  (Ast.encode (Ast.Int (BigInt.of 7)))))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — MAP query folds (lookup / replace) under `(const …)` --------------
+; A `(const …)`-demanded MAP QUERY const-folds: `Map.empty`/`Map.insert`/`Map.lookup` evaluate over a
+; `CVal::Map` (an assoc list, latest-write-per-key wins). Only order-INDEPENDENT results fold (a looked-up
+; value); a const map is NEVER materialized to a `Core` — its runtime CHAMP iteration order is not presumed
+; (soundness), so an order-exposing use (encode / to-list) still declines rather than risk a wrong order.
+
+(case "a `(const …)` map lookup folds to the associated value"
+  (doc    "`Map.lookup (Map.insert (Map.empty) 2 20) 2` folds to `Option.Some 20`; the match extracts 20.")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.empty) 2 20) 2)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 20 Int64)))
+
+(case "a `(const …)` map insert replaces a key in place (latest write wins)"
+  (doc    "Inserting key 1 twice keeps the LATEST value; `Map.lookup … 1` folds to 99, not 10 — the const
+           map's `insert` replaces the association in place, matching the runtime persistent-map semantics.")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.insert (Map.empty) 1 10) 1 99) 1)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 99 Int64)))
+
+; --- Primitive 2: const execution — SET query folds (of / insert / contains / len) under `(const …)` --
+; Parallel to Map: a `(const …)`-demanded SET QUERY const-folds over a `CVal::Set` (distinct members).
+; `Set.of` dedups a constant list; `Set.insert` adds if absent; `Set.contains` → Bool; `Set.len` → count.
+; Same soundness guard: a const set is only QUERIED, never MATERIALIZED (its runtime CHAMP iteration order
+; is not presumed). (Bare `Set.empty` as a value is a minor residual — no `SetEmpty` prim to fold; use
+; `Set.of`.)
+
+(case "a `(const …)` set membership + dedup-len fold"
+  (doc    "`Set.of (list 1 2 2 3)` dedups to {1,2,3} (len 3); `Set.contains … 2` is true. The const set is
+           queried, never materialized. Here `Set.len` of the deduped set folds to 3.")
+  (input  (do
+            (def (main) (const (Set.len (Set.of (list 1 2 2 3)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a `(const …)` set contains after insert folds"
+  (doc    "`Set.contains (Set.insert (Set.of (list 1 2)) 3) 3` folds to true (100 branch) — insert adds a
+           new member, contains queries it, all at compile time under the force-eval block.")
+  (input  (do
+            (def (main) (const (if (Set.contains (Set.insert (Set.of (list 1 2)) 3) 3) 100 200)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "a `(const …)` map lookup MISS folds to Option.None"
+  (doc    "Negative path: `Map.lookup … 2` on a map lacking key 2 folds to `Option.None`; the match's None
+           arm yields 0. Pins the absent-key branch (the positive lookup is pinned above).")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.empty) 1 10) 2)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a `(const …)` set contains of an ABSENT member folds to false"
+  (doc    "Negative path: `Set.contains (Set.of (list 1 2 3)) 9` folds to false → the 200 branch. Pins the
+           absent-member result (the present-member case is pinned above).")
+  (input  (do
+            (def (main) (const (if (Set.contains (Set.of (list 1 2 3)) 9) 100 200)))
+            (export main)))
+  (output (: 200 Int64)))

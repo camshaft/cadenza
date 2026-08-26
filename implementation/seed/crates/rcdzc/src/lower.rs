@@ -24323,6 +24323,19 @@ enum CVal {
         node: StructId,
         env: std::rc::Rc<CEnv>,
     },
+    /// A MAP value — an association list `(key, value)` in INSERTION order (latest write per key wins;
+    /// `insert` replaces in place or appends). Kept as a `Vec` (not a sorted/hashed map) because it is only
+    /// ever QUERIED at compile time (`lookup`/`size`), NEVER MATERIALIZED to a `Core`: `cval_to_core`/
+    /// `cval_to_ast` DECLINE a `CVal::Map`. That is the soundness guard — the runtime map is a CHAMP whose
+    /// ITERATION ORDER the compiler must not presume, so a const map that would be emitted/encoded (order-
+    /// exposing) is declined; only order-INDEPENDENT results (a looked-up value, a size) fold. Equality is
+    /// order-independent (same key set → same per-key values).
+    Map(Vec<(CVal, CVal)>),
+    /// A SET value — the distinct members in INSERTION order. Like `CVal::Map`, only ever QUERIED (contains
+    /// / size), NEVER MATERIALIZED (`cval_to_core`/`cval_to_ast` decline it): the runtime set is a CHAMP
+    /// whose iteration order the compiler must not presume, so an order-exposing use declines and only
+    /// order-independent results (a membership bool, a size) fold. Equality is order-independent.
+    Set(Vec<CVal>),
 }
 
 /// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
@@ -24576,6 +24589,30 @@ fn core_to_cval(db: &mut Db, c: &Core) -> Option<CVal> {
             }
             CVal::Record(m)
         }
+        // A constant `Core::MapNew` (a `Map.empty`, a map literal, or a folded map) flows in as a `CVal::Map`
+        // assoc list, so a const map-query composes. Keys/values are the entry NODES (converted via
+        // `core_of`). Only ever queried, never re-materialized (`cval_to_core` declines a `CVal::Map`).
+        Core::MapNew { entries, .. } => {
+            let entries = entries.clone();
+            let mut m = Vec::with_capacity(entries.len());
+            for (k, v) in entries.iter() {
+                let kc = core_of(db, *k);
+                let vc = core_of(db, *v);
+                m.push((core_to_cval(db, &kc)?, core_to_cval(db, &vc)?));
+            }
+            CVal::Map(m)
+        }
+        // A constant `Core::SetOf` (a `Set.empty`, a set literal, or a folded set) flows in as a `CVal::Set`
+        // (distinct members). Elements are the entry NODES; only queried, never re-materialized.
+        Core::SetOf { elems, .. } => {
+            let elems = elems.clone();
+            let mut s = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                let ec = core_of(db, e);
+                s.push(core_to_cval(db, &ec)?);
+            }
+            CVal::Set(s)
+        }
         _ => return None,
     })
 }
@@ -24680,6 +24717,133 @@ fn const_eval_apply(
                     payloads: Vec::new(),
                 }
             });
+        }
+        // MAP ops (queried, never materialized — `CVal::Map`). `Map.empty` → an empty map; `Map.insert
+        // (m, k, v)` → `m` with `k ↦ v` (replace-in-place if present, else append — latest write wins);
+        // `Map.lookup (m, k)` → `Option v` (the Some/None discs off THIS node's result type, like
+        // `List.at`); `Map.size m` → the entry count. A key comparison the stage cannot DECIDE (`cval_eq`
+        // = None) DECLINES the whole op rather than risk a wrong verdict.
+        if prim == Prim::MapEmpty {
+            return Some(CVal::Map(Vec::new()));
+        }
+        if prim == Prim::MapInsert
+            && let [CVal::Map(m), k, v] = &vs[..]
+        {
+            let mut out = m.clone();
+            let mut replaced = false;
+            for (ek, ev) in out.iter_mut() {
+                match cval_eq(ek, k) {
+                    Some(true) => {
+                        *ev = v.clone();
+                        replaced = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            if !replaced {
+                out.push((k.clone(), v.clone()));
+            }
+            return Some(CVal::Map(out));
+        }
+        if prim == Prim::MapLookup
+            && let [CVal::Map(m), k] = &vs[..]
+        {
+            let (some_disc, none_disc) = option_discs(db, node)?;
+            let mut found: Option<CVal> = None;
+            for (ek, ev) in m.iter() {
+                match cval_eq(ek, k) {
+                    Some(true) => {
+                        found = Some(ev.clone());
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            return Some(match found {
+                Some(v) => CVal::Sum {
+                    disc: some_disc,
+                    payloads: vec![v],
+                },
+                None => CVal::Sum {
+                    disc: none_disc,
+                    payloads: Vec::new(),
+                },
+            });
+        }
+        if prim == Prim::MapSize
+            && let [CVal::Map(m)] = &vs[..]
+        {
+            return Some(CVal::Int(crate::ast::IntValue::from_i64(m.len() as i64)));
+        }
+        // SET ops (queried, never materialized — `CVal::Set`, same soundness as `CVal::Map`). `Set.of` builds
+        // a set from a LIST (deduped); `Set.insert (s, e)` adds `e` if absent; `Set.contains (s, e)` → Bool;
+        // `Set.size s` → the count. A membership comparison the stage cannot decide (`cval_eq` = None)
+        // declines the op rather than risk a wrong verdict. (`Set.empty` folds via `core_to_cval(SetOf)`.)
+        if prim == Prim::SetOf
+            && let [CVal::List(xs)] = &vs[..]
+        {
+            let mut out: Vec<CVal> = Vec::with_capacity(xs.len());
+            for e in xs.iter() {
+                let mut seen = false;
+                for x in out.iter() {
+                    match cval_eq(x, e) {
+                        Some(true) => {
+                            seen = true;
+                            break;
+                        }
+                        Some(false) => {}
+                        None => return None,
+                    }
+                }
+                if !seen {
+                    out.push(e.clone());
+                }
+            }
+            return Some(CVal::Set(out));
+        }
+        if prim == Prim::SetInsert
+            && let [CVal::Set(s), e] = &vs[..]
+        {
+            let mut out = s.clone();
+            let mut present = false;
+            for x in out.iter() {
+                match cval_eq(x, e) {
+                    Some(true) => {
+                        present = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            if !present {
+                out.push(e.clone());
+            }
+            return Some(CVal::Set(out));
+        }
+        if prim == Prim::SetContains
+            && let [CVal::Set(s), e] = &vs[..]
+        {
+            let mut found = false;
+            for x in s.iter() {
+                match cval_eq(x, e) {
+                    Some(true) => {
+                        found = true;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            return Some(CVal::Bool(found));
+        }
+        if prim == Prim::SetLen
+            && let [CVal::Set(s)] = &vs[..]
+        {
+            return Some(CVal::Int(crate::ast::IntValue::from_i64(s.len() as i64)));
         }
         if let Some(r) = apply_const_prim(prim, &vs) {
             return Some(r);
@@ -24834,6 +24998,53 @@ fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
             }
             Some(true)
         }
+        // Two MAPS are equal iff the SAME key set maps to equal values — ORDER-INDEPENDENT (insertion order
+        // is not observable). For each entry of `x`, find a key-equal entry in `y` with an equal value; equal
+        // lengths + every `x` key found ⇒ equal. A key/value comparison the stage cannot decide propagates
+        // `None` (decline). (`x`/`y` have unique keys — `insert` replaces in place — so a per-entry match is
+        // a bijection.)
+        (CVal::Map(x), CVal::Map(y)) => {
+            if x.len() != y.len() {
+                return Some(false);
+            }
+            for (kx, vx) in x.iter() {
+                let mut matched = false;
+                for (ky, vy) in y.iter() {
+                    if cval_eq(kx, ky)? {
+                        if !cval_eq(vx, vy)? {
+                            return Some(false);
+                        }
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        // Two SETS are equal iff the SAME member set — ORDER-INDEPENDENT. Equal lengths + every `x` member
+        // found in `y` ⇒ equal (members are distinct, so a per-member match is a bijection). An undecidable
+        // comparison propagates `None`.
+        (CVal::Set(x), CVal::Set(y)) => {
+            if x.len() != y.len() {
+                return Some(false);
+            }
+            for mx in x.iter() {
+                let mut matched = false;
+                for my in y.iter() {
+                    if cval_eq(mx, my)? {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
         _ => None,
     }
 }
@@ -24973,6 +25184,9 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         // A CLOSURE is not materializable data — it exists only transiently as a higher-order fold applies it.
         // A fold that would YIELD a closure as its result is not a constant value; decline cleanly.
         CVal::Closure { .. } => return None,
+        // A MAP is queried, never materialized (its runtime CHAMP iteration order must not be presumed) — decline.
+        CVal::Map(_) => return None,
+        CVal::Set(_) => return None,
         // A compound (list / sum / record / tuple) materializes to the corresponding `Core` DIRECTLY, its
         // element/payload nodes synthesized via `cval_to_ast` (each a `synth_core` node whose memoized core IS
         // the element's constant). No constructor head, no AST re-parse, no resolution — so a value with no
@@ -25043,6 +25257,9 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         CVal::Trap(_) => return None,
         // A closure is not a materializable element (a function is not data); decline defensively.
         CVal::Closure { .. } => return None,
+        // A MAP is queried, never materialized (its runtime CHAMP iteration order must not be presumed) — decline.
+        CVal::Map(_) => return None,
+        CVal::Set(_) => return None,
     })
 }
 
