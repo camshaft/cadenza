@@ -7888,3 +7888,6 @@ pass	clk1 a closure capturing a MAP reclaims after invocation
 pass	clk2 a closure capturing a SET reclaims after invocation
 pass	clk3 a closure capturing a STRING reclaims after invocation
 pass	clk4 a closure capturing a runtime AST reclaims after invocation
+pass	icp1 lifted String AND Bytes params feed an effect arm's answer
+pass	icp2 the original ch05 face RESURRECTED — literal string MATCH on a lifted param
+pass	icp3 a lifted String compared and measured through an if-chain (the viachain shape on a param)
