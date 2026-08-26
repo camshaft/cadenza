@@ -9545,3 +9545,17 @@
   (call   mul (: 0 Int64) (: 999 Int64)) (output (: 0 Int64))
   (call   mul (: 9223372036854775807 Int64) (: 2 Int64)) (trap "integer overflow")
   (call   mul (: -9223372036854775808 Int64) (: -1 Int64)) (trap "integer overflow"))
+
+(case "a doubling add computes in range and traps on overflow like the general add"
+  (doc    "`(+ a a)` uses the collapsed single-xor overflow guard; value + trap must match the general
+           two-operand add. dbl(21)=42, dbl(-21)=-42, dbl(0)=0, dbl(max/2)=9223372036854775806,
+           dbl(min/2)=Int64.min; and dbl((max/2)+1) / dbl(max) / dbl(min) all trap.")
+  (input  (do (def (dbl (: a Int64)) (+ a a)) (export dbl)))
+  (call   dbl (: 21 Int64)) (output (: 42 Int64))
+  (call   dbl (: -21 Int64)) (output (: -42 Int64))
+  (call   dbl (: 0 Int64)) (output (: 0 Int64))
+  (call   dbl (: 4611686018427387903 Int64)) (output (: 9223372036854775806 Int64))
+  (call   dbl (: -4611686018427387904 Int64)) (output (: -9223372036854775808 Int64))
+  (call   dbl (: 4611686018427387904 Int64)) (trap "integer overflow")
+  (call   dbl (: 9223372036854775807 Int64)) (trap "integer overflow")
+  (call   dbl (: -9223372036854775808 Int64)) (trap "integer overflow"))

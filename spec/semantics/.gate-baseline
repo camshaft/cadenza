@@ -1853,6 +1853,7 @@ pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
+pass	a doubling add computes in range and traps on overflow like the general add
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
