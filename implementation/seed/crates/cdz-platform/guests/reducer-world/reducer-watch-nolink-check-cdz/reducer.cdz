@@ -1,0 +1,34 @@
+// The §7 SUPERVISION ISOLATION checker — the NEGATIVE complement of reducer-watch-check-cdz (design/
+// cadenza-platform.md §7/§9). The positive run spawns a child under a watcher WITH a parentWatchesChild link and
+// asserts the child's exit is delivered to the watcher. This paired run is IDENTICAL except the link is OMITTED:
+// the child is parented to the watcher but the watcher does NOT watch it. The invariant: a lifecycle exit is
+// delivered ONLY along an explicit watch link — an unlinked peer (even the parent) must NOT receive another
+// reducer's exit. Exits are not ambiently broadcast; the link is load-bearing.
+//
+// JUDGEMENT: pass iff the child DID end (a Closed with the typed reason b"child-done") AND NO lifecycle
+// notification was delivered after that exit. Uses the same `ordered` correlation as the positive: a birth
+// notification precedes every Closed, so a notification ordered AFTER the Closed could only be the exit event —
+// here there must be NONE. NON-VACUOUS in both directions: requiring the Closed rules out a vacuous pass where
+// nothing happened, and if the runtime WRONGLY delivered the exit without a link (isolation violated), an
+// ordered post-close notification would exist and the check FAILS.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record, ordered } from "checker-lib"
+
+def child-exited(rec) =
+  match rec.entry with
+  | Entry.Closed(c) => c.reason == b"child-done"
+  | _ => false
+
+def lifecycle-delivered(rec) =
+  match rec.entry with
+  | Entry.Delivered(d) => d.eventKind == "notification"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, child-exited)) then fail("the child never ended (no Closed b\"child-done\"): vacuous — the isolation property is untested")
+  else if ordered(records, child-exited, lifecycle-delivered) then fail("a lifecycle notification was delivered AFTER the child's exit despite NO watch link: an unlinked peer received the exit (supervision isolation violated)")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
