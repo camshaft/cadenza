@@ -307,9 +307,10 @@ impl Fleet {
     /// Copy the tracked launcher + role bodies + contract into the hub runtime dir. Idempotent; mirrors
     /// `xtask setup`'s tracked→.claude materialization.
     ///
-    /// WHAT ACTUALLY READS WHAT (do not confuse these — a stale belief here bred re-investigation): only
+    /// WHAT ACTUALLY READS WHAT (do not confuse these — a stale belief here bred re-investigation):
     /// `window.sh` is READ from the hub copy — tmux launches `<hub>/.claude/fleet/window.sh`
-    /// (`fleet.window_sh()`). The ROLE BODIES (`loops/<role>.md`) + CONTRACT (`AGENTS-fleet.md`) are copied
+    /// (`fleet.window_sh()`) — and `prune-stale-targets.sh` is RUN from the hub copy (it resolves its
+    /// worktrees/heartbeat paths from its own hub location). The ROLE BODIES (`loops/<role>.md`) + CONTRACT (`AGENTS-fleet.md`) are copied
     /// here too, but at RUNTIME an agent reads them from its OWN WORKTREE (`$WORKTREE/fleet/...`, so the body
     /// is git-synced with the code it works on — see window.sh's `SRC=$WORKTREE/fleet`), and `fleet add`
     /// validates a role against the tracked source (`self.src`), NOT this hub copy. So the hub `loops/` +
@@ -325,13 +326,17 @@ impl Fleet {
                 }
             }
         }
-        for f in ["AGENTS-fleet.md", "window.sh"] {
+        // `prune-stale-targets.sh` (v-nix's disk-hygiene tool) is materialized here too so it is RUN from
+        // the hub copy — it derives its worktrees/heartbeat paths from its own location in
+        // `<hub>/.claude/fleet/`, so the tracked source must be deployed here (like window.sh) rather than
+        // run in place. Any `.sh` we materialize gets the executable bit.
+        for f in ["AGENTS-fleet.md", "window.sh", "prune-stale-targets.sh"] {
             let src = self.src.join(f);
             if src.exists() {
                 let dst = self.root.join(f);
                 let _ = std::fs::copy(&src, &dst);
                 #[cfg(unix)]
-                if f == "window.sh" {
+                if f.ends_with(".sh") {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
                 }
