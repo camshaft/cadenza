@@ -2013,6 +2013,7 @@ pass	a guarded record match arm gates the fields it binds and falls through on a
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
+pass	a handle body reads an enclosing function parameter beside a resuming perform
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose body NEVER performs is exactly its body (zero dispatches)
 pass	a handle whose head names a value rather than an effect is rejected
@@ -3495,6 +3496,7 @@ pass	a runtime-built list nested in a tuple crosses the host boundary rendering 
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
+pass	a runtime-conditioned abortive branch and its fall-through both read an enclosing parameter
 pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
