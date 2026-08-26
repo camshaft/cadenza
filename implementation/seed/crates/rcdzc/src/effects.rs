@@ -3346,9 +3346,9 @@ fn inline_escaped_worker(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) ->
         && params
             .iter()
             .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
-        && args.iter().all(|&a| {
-            matches!(resolved_of(db, a), Resolved::Lambda { .. }) || arg_is_simple_pure(db, a)
-        })
+        && args
+            .iter()
+            .all(|&a| arg_is_lambda_valued(db, a) || arg_is_simple_pure(db, a))
         && args.iter().any(|&a| lambda_body_reaches_op(db, a, arm_ops))
         && let Ok(Some(reduced)) = crate::eval::apply_lambda(db, head, &args)
     {
@@ -3379,6 +3379,22 @@ fn inline_escaped_worker(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) ->
 /// by the escaped-closure recovery's one-shot gate for the NON-lambda args (the lambda arg is the closure).
 fn arg_is_simple_pure(db: &Db, node: StructId) -> bool {
     db.ast.as_name(node).is_some() || matches!(db.ast.get(node), Struct::Atom(_))
+}
+
+/// Whether `node` is a LAMBDA VALUE — a `(fn …)`, SEEN THROUGH a type ANNOTATION `(: (fn …) (-> A B))`.
+/// A one-shot helper's β-reduction (hop 1) carries the parameter's declared type onto the substituted
+/// argument (`substituted_arg` → `(: closure (-> …))`), so at the NEXT hop the same closure arrives as an
+/// `Annot`, not a bare `Lambda` — a raw `matches!(resolved_of, Lambda)` misses it and the multi-hop inline
+/// stalls after one hop (cx6). `lambda_of` (which the reach/apply gates use) already sees through `Annot`;
+/// this mirrors that so the arg-eligibility gate agrees, letting the recovery chain through every hop. Only
+/// an annotated/bare lambda passes — an `Annot` wrapping a non-lambda does not (its `expr` recurses to
+/// `false`), keeping the one-shot gate as tight as before for non-closure args.
+fn arg_is_lambda_valued(db: &mut Db, node: StructId) -> bool {
+    match resolved_of(db, node) {
+        Resolved::Lambda { .. } => true,
+        Resolved::Annot { expr, .. } => arg_is_lambda_valued(db, expr),
+        _ => false,
+    }
 }
 
 /// Whether `node` is a lambda whose BODY reaches a perform of one of `arm_ops` (a discharged op this handle

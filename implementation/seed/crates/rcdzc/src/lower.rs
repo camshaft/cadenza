@@ -2898,7 +2898,8 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                         // it now folds clean), so no value or non-leaking case changes.
                         if let Some(inlined) =
                             crate::effects::inline_escaped_one_shot_perform_call(db, body, &arms)
-                            && let Some(rw2) = crate::effects::reduce_handle(db, init, &arms, inlined)
+                            && let Some(rw2) =
+                                crate::effects::reduce_handle(db, init, &arms, inlined)
                         {
                             db.reparent(rw2, Some(id), db.child_ix_of(id) as u32);
                             if !crate::effects::reduced_body_leaks_escaped_perform(db, rw2, &arms) {
@@ -30284,6 +30285,25 @@ mod tests {
         assert!(
             !matches!(core_of(&mut db, body), Core::Poison(_)),
             "a let binding a diverging trap init must fold to the trap, not decline compound-compare"
+        );
+    }
+
+    #[test]
+    fn an_effect_performing_closure_through_two_helper_hops_folds() {
+        // cx6: an effect-performing closure passed as a fn ARGUMENT through TWO nested one-shot helper hops
+        // (`ap1` calls `ap2`, `ap2` applies the closure). The escaped-closure-leak recovery β-inlines both
+        // hops so the perform homes inside the handle's reach; the fold then succeeds instead of declining
+        // `HANDLER_NOT_REDUCIBLE`. This exercises the MULTI-hop path: hop 1's β-reduction carries the param
+        // annotation onto the substituted closure (`(: closure (-> …))`), so hop 2 sees it as an annotated
+        // lambda — `arg_is_lambda_valued` must see through the annotation for the second inline to fire.
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op tick (-> Int64))) (def (ap2 (: g (-> Int64 Int64))) (g 5)) (def (ap1 (: g (-> Int64 Int64))) (ap2 g)) (def (main (: n Int64)) (handle E (% n 3) ((tick () s (resume (* s 10) (+ s 1)))) (ap1 (fn (x) (+ x (E.tick)))))) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
+        assert!(
+            !matches!(core_of(&mut db, body), Core::Poison(_)),
+            "cx6 two-hop escaped-closure handle must fold (recovery inlines both hops), not decline"
         );
     }
 

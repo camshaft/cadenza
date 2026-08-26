@@ -17955,3 +17955,23 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 13 Int64)))
+;; -- cx6: the TWO-HOP residual of the effectful-closure-through-fn-arg family closes. `ap1` calls `ap2`,
+;; `ap2` applies the closure — the escaped-closure recovery must β-inline BOTH hops for the perform to home.
+;; Hop 1 (inline ap1) succeeds; hop 1's substitution carries ap1's param annotation onto the closure, so at
+;; hop 2 the same closure arrives as an ANNOTATED lambda `(: (fn …) (-> …))`, not a bare Lambda. The
+;; recovery's arg-eligibility gate now sees through the annotation (`arg_is_lambda_valued`), so hop 2 (inline
+;; ap2) fires too, `(ap1 (fn (x) (+ x (E.tick))))` reduces to `(+ 5 (E.tick))`, and the fold threads it →
+;; main(3) = 5 (seed 0 → resume (* 0 10) = 0). CONTRAST cx5d (single hop) which folds via #3666, and cx5
+;; (a RECURSIVE helper) which stays declined (the one-shot gate excludes recursion). (breaker cx5 suite.)
+(case "cx6 an effect-performing closure through TWO nested one-shot helper hops folds via the escaped-closure recovery"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap2 (: g (-> Int64 Int64))) (g 5))
+    (def (ap1 (: g (-> Int64 Int64))) (ap2 g))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (ap1 (fn (x) (+ x (E.tick))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 5 Int64)))
