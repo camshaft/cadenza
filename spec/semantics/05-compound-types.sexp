@@ -16965,6 +16965,22 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1030 Int64)))
 
+(case "Record.with over a runtime-produced record leaves no live heap objects"
+  (doc    "`(Record.with (mk 0) #\"x\" 99)` builds a fresh record from a RUNTIME source record's projections
+           (`mk` recurses so its `(record (x 1) (y 2))` result is a genuine owned temporary, not fold-visible),
+           then reads the fresh record's `x` (99). The owned source record (borrowed by the field projections)
+           AND the fresh result record must both be reclaimed after the field read. Looped 500× to accumulate:
+           99 × 500 = 49500, and after the run the live-cell count is 0 (a leak would grow it; an over-drop
+           would trap/UAF).")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (x 1) (y 2)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.with (mk 0) #"x" 99) x))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 49500 Int64))
+  (live-objects 0))
+
 (case "a record pattern over a Map-STORED record reads live heap fields after retrieval"
   (doc    "The storage-round-trip face of record matching: a record with a HEAP field (`(xs (list n 2))`,
            plus a `tag` string) is stored as a CHAMP map VALUE, retrieved by `Map.lookup`, and only then

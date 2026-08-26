@@ -2897,3 +2897,17 @@
             (def (main) (Ordering.of 1 2))
             (export main)))
   (error  CDZ0201))
+
+(case "a value-equality over a borrowed heap list leaves no live heap objects"
+  (doc    "`(let ((xs (build 3))) (if (= xs (build 3)) 1 0))` — the let-bound list `xs` is BORROWED by `=`
+           (structural equality) and compared to a fresh `(build 3)` (an owned temporary `=` drops); the
+           result is the scalar 1, so `xs` is used only as the borrowed operand. `=` must NOT drop `xs` (it
+           only borrows) — the enclosing `let` reclaims it exactly once. So after the run the live-cell count
+           is 0: the fresh operand reclaimed by `=`, `xs` by the `let`, neither leaked nor double-freed.")
+  (input  (do
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
+            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (build (- n 1))))))
+            (def (main) (let ((xs (build 3))) (if (= xs (build 3)) 1 0)))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))

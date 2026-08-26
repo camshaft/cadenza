@@ -309,6 +309,7 @@ pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Record.with on a map-extracted record leaves the stored original untouched
 pass	Record.with over a RUNTIME field leaves the original record readable (persistence)
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
+pass	Record.with over a runtime-produced record leaves no live heap objects
 pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Record.without strips a field on a map-extracted record and both maps stay typed
@@ -4154,6 +4155,7 @@ pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
+pass	a value-equality over a borrowed heap list leaves no live heap objects
 pass	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a variant carrying a Char payload constructs, matches, and binds it
@@ -7405,6 +7407,7 @@ todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
+todo	a bare primitive operator passed as a first-class function value (pending eta-expansion)
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
