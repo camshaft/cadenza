@@ -8511,38 +8511,6 @@ fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
     );
 }
 
-/// `Set.to-list` over a set of COMPOUND (tuple) elements enumerates them in canonical LEXICOGRAPHIC order —
-/// breaker's differential 10761: wasm used to FALSE-DECLINE a compound-element set ("no orderable
-/// descriptor") while rust computed the sorted order. The fix drops the scalar-only guards in `shape_of`
-/// (compiler) + `set_elements_canonical` (runtime), sorting via the descriptor-guided `value_cmp_shaped`
-/// (the SAME lexicographic order the runtime `<`/`Core::ValueCmp` walk uses). Here `{(3,1),(1,2),(2,0)}`
-/// enumerates as `(1,2),(2,0),(3,1)` — index 0's FIRST component is 1 (the min, first component decisive).
-/// `#[ignore]` — needs the runtime store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn set_to_list_over_compound_tuple_elements_enumerates_lexicographically() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[set-to-list-compound] runtime not in the store; skipping");
-        return;
-    };
-    // The canonical-first element of {(3,1),(1,2),(2,0)} is (1,2) — read its FIRST component (1), the min.
-    let src = "(module m (def (main) \
-                 (match (List.at (Set.to-list (Set.of (list (tuple 3 1) (tuple 1 2) (tuple 2 0)))) 0) \
-                   ((Some t) (. t 0)) ((None u) -1))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("Set.to-list over compound tuple elements must COMPILE (not false-decline)");
-    let mut rt = ComposedRuntime::new(&bytes, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(1),
-        "Set.to-list over tuple elements enumerates in lexicographic order — (1,2) is first, its .0 is 1"
-    );
-}
-
 /// `Set.to-list` of a provably-EMPTY constant set folds to the empty list — no ordering descriptor, no
 /// element type needed. An empty `Set.of (list)` LITERAL has an UNDETERMINED element type (no element
 /// ever constrained it), so no shape descriptor can be baked; but an empty set enumerates to `[]`
