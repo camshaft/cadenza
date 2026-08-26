@@ -457,87 +457,69 @@ fn compose_and_instantiate(
     Ok((store, instance))
 }
 
-/// Run `component_bytes`'s export (like [`run`]) AND read the value-heap runtime's live-cell count
-/// (`live-objects`) after the run — the heap-balance observable the corpus `(live-objects N)` clause
-/// asserts (no leak / no double-free is `N = 0`). The component MUST import the value-heap runtime (a
-/// scalar/const program has no heap to balance and is not a `live-objects` case); the caller supplies the
-/// runtime bytes in `opts.runtime`, which MUST be the DEBUG-COUNTERS runtime — the shipped runtime's
-/// `live-objects` export returns 0 unconditionally, so a shipped runtime would vacuously "pass" every
-/// balance assertion. Returns the run outcome and the post-run live-object count.
+/// Run `component_bytes`'s export (like [`run_capturing`]) AND, when the component imports the value-heap
+/// runtime, read the runtime's live-cell count (`live-objects`) after the run — the heap-balance
+/// observable the corpus opt-out grade asserts (a heap case must end at its expected count, default 0 = no
+/// leak / no double-free). Returns the run outcome, the ordered observed host-op list (identical to
+/// [`run_capturing`], so a heap case that ALSO delegates host effects still has its `(host-calls …)`
+/// verified), and the post-run live-object count as an `Option`:
+///   - `Some(n)` — the component imports the value-heap runtime (a HEAP case); `n` is the count read from
+///     the composed runtime. The caller supplies the runtime bytes in `opts.runtime`, which MUST be the
+///     DEBUG-COUNTERS runtime for the count to be meaningful (the shipped runtime's `live-objects` export
+///     returns 0 unconditionally).
+///   - `None` — the component imports NO runtime (a scalar/const program has no heap to balance). The
+///     opt-out grade SKIPS the balance check for such a case (never a false fail). The program still runs
+///     and its value/trap outcome is returned.
 ///
-/// This drives only the PLAIN export shape (a scalar or compound value return) — the memory-liveness
-/// probes it serves return an ordinary value; the closure / resource-escape drives are the
-/// resource-protocol extension's job, not this one. It lifts the `ComposedRuntime::{call, live_objects}`
-/// test-harness capability (rcdzc `tests.rs`) into the crate so the corpus gate can drive it.
-pub fn run_with_live_objects(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome, u32)> {
+/// Reuses the same host-capturing linker + [`run_export`] drive as [`run_capturing_compiled`] (so every
+/// export shape — named, sole, kebab-normalized, resource/closure escape — is handled identically), then
+/// additionally reads the runtime instance's counter when a heap import is present.
+pub fn run_with_live_objects(
+    component_bytes: &[u8],
+    opts: &RunOpts,
+) -> Result<(Outcome, Vec<String>, Option<u32>)> {
+    use std::sync::{Arc, Mutex};
     let engine = engine();
     let component =
         Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
-    let req = find_runtime_req(&engine, &component).ok_or_else(|| {
-        anyhow!(
-            "a (live-objects ..) case must import the value-heap runtime, but this component imports \
-             none (a scalar/const program has no heap to balance)"
-        )
-    })?;
     let mut store = new_store(&engine);
-    let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
     let mut linker: Linker<()> = Linker::new(&engine);
-    bind_runtime_into(
-        &engine,
-        &mut store,
-        &mut linker,
-        &req.import_name,
-        &rt_instance,
-        &heap_names,
-    )?;
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .map_err(|e| anyhow!("instantiate component: {e}"))?;
 
-    // Resolve + drive the plain export (mirrors the plain path of `run_export`: named export or the sole
-    // function export, tried verbatim then kebab-normalized, args coerced to the declared param types).
-    let export_name = match &opts.export {
-        Some(name) => name.clone(),
-        None => sole_func_export(&engine, &component).ok_or_else(|| {
-            anyhow!(
-                "no --call given and the component has no single function export to default to{}",
-                callable_exports_hint(&engine, &component)
-            )
-        })?,
-    };
-    let func = instance
-        .get_func(&mut store, &export_name)
-        .or_else(|| {
-            let kebab = cadenza_syntax::extern_name::kebab_extern_name(&export_name);
-            (kebab != export_name)
-                .then(|| instance.get_func(&mut store, &kebab))
-                .flatten()
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "component exports no function `{export_name}`{}",
-                callable_exports_hint(&engine, &component)
-            )
-        })?;
-    let param_types: Vec<Type> = func.params(&store).iter().map(|(_, t)| t.clone()).collect();
-    let args = coerce_args(&opts.args, &param_types)?;
-    let result_count = func.results(&store).len();
-    let mut results = vec![Val::Bool(false); result_count];
-    let outcome = match func.call(&mut store, &args, &mut results) {
-        Ok(()) => {
-            let rendered = match results.first() {
-                None => "unit".to_string(),
-                Some(Val::String(s)) => s.clone(),
-                Some(other) => render_val(other),
-            };
-            let _ = func.post_return(&mut store);
-            Outcome::Value(rendered)
+    // Compose the value-heap runtime IF the component imports it, keeping the runtime instance so its
+    // `live-objects` counter can be read after the run. A component with no runtime import composes none
+    // (no heap to balance) — the balance check is then skipped (`None` returned below).
+    let rt_instance = match find_runtime_req(&engine, &component) {
+        Some(req) => {
+            let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+            bind_runtime_into(
+                &engine,
+                &mut store,
+                &mut linker,
+                &req.import_name,
+                &rt_instance,
+                &heap_names,
+            )?;
+            Some(rt_instance)
         }
-        Err(e) => Outcome::Trap(trap_message(&e)),
+        None => None,
     };
 
-    let live = read_live_objects(&mut store, &rt_instance)?;
-    Ok((outcome, live))
+    // Bind every HOST import so a delegated effect's operations are satisfied by the recorded responses,
+    // capturing the observed op sequence (inert for a program that makes no host call).
+    let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
+
+    let outcome = run_export(&engine, &component, &mut store, &linker, opts)?;
+    let calls = observed.lock().expect("observed calls mutex").clone();
+    // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
+    // heap balance is ill-defined AND the runtime instance may be unusable after the guest trap (calling
+    // its `live-objects` export could itself error and mask the real trap). A trap case therefore reports
+    // no count — the opt-out grade skips the balance check for it (the trap is the outcome).
+    let live = match (&outcome, &rt_instance) {
+        (Outcome::Value(_), Some(rt)) => Some(read_live_objects(&mut store, rt)?),
+        _ => None,
+    };
+    Ok((outcome, calls, live))
 }
 
 /// Read the runtime heap's `live-objects` export (a nullary `-> u32`) — the count of live heap cells. On

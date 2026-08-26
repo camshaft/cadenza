@@ -267,7 +267,8 @@
             (export main)))
   (call   main)
   (host-responses (respond Param.rate-num (: 7 Int64)) (respond Param.rate-den (: 2 Int64)))
-  (output (: 7/2 Rational)))
+  (output (: 7/2 Rational))
+  (live-objects known-leak 3))
 
 (case "a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)"
   (doc    "The Length layer: a `@param(...) len : (Qty Rational (Unit.base #\"meter\"))` is a Rational-
@@ -287,7 +288,8 @@
             (export main)))
   (call   main)
   (host-responses (respond Param.len-num (: 7 Int64)) (respond Param.len-den (: 2 Int64)))
-  (output (: 7/2 Rational)))
+  (output (: 7/2 Rational))
+  (live-objects known-leak 3))
 
 ; --- Param values as ORDINARY runtime values through the language's control machinery -------------
 ; The compositions above pin @param x quasiquote and @param x CHAMP-key; these drive a param value
@@ -433,7 +435,8 @@
         (export main)))
   (call   main)
   (host-responses (respond Param.cut (: 1 Int64)))
-  (output (: 23 Int64)))
+  (output (: 23 Int64))
+  (live-objects known-leak 2))
 
 (case "a @param slice window at an interior cut reads the non-straddling bytes"
   (doc    "The companion rows to the seam-straddling slice case above (which pins cut=1 -> [2,3] -> 23):
@@ -453,7 +456,8 @@
         (export main)))
   (call   main)
   (host-responses (respond Param.cut (: 3 Int64)))
-  (output (: 45 Int64)))
+  (output (: 45 Int64))
+  (live-objects known-leak 2))
 
 (case "a @param slice window whose length exceeds the remaining bytes yields None"
   (doc    "The doc's third claimed row: a cut leaving fewer than the window length yields None. cut=4 over
@@ -473,7 +477,8 @@
         (export main)))
   (call   main)
   (host-responses (respond Param.cut (: 4 Int64)))
-  (output (: -2 Int64)))
+  (output (: -2 Int64))
+  (live-objects known-leak 1))
 
 ; --- Response-consumption ORDER: one accessor performed twice, and two accessors interleaved. ---
 

@@ -1062,7 +1062,8 @@
   (call   main (: 1 Int64))
   (output (: 42 Int64))
   (call   main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a rest-binder over a runtime-start slice measures the SLICE length, not the parent's"
   (doc    "The rest-arm bounds face of the sliced scrutinee: `(bin (u8 1) (bytes rest))` over a 3-byte
@@ -1081,7 +1082,8 @@
   (call   main (: 0 Int64))
   (output (: 2 Int64))
   (call   main (: 2 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a dependent-size body over a runtime-start slice re-bases its size arithmetic per call"
   (doc    "The size-arithmetic face of the runtime-start slice, completing the axis beside tag-dispatch and
@@ -1103,7 +1105,8 @@
   (call   main (: 1 Int64))
   (output (: 2 Int64))
   (call   main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a NESTED runtime bin match re-parses a bin-decoded payload"
   (doc    "The recursive / chunked-parser shape: an outer `(bin (u8 n) (bytes body n))` decodes a
@@ -1161,7 +1164,8 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 230 Int64))
   (call main (: 2 Int64)) (output (: 18 Int64))
-  (call main (: 3 Int64)) (output (: 0 Int64)))
+  (call main (: 3 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 11))
 
 (case "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
   (doc    "The transcoder pin further down re-encodes the SAME decoded n and checks only Bytes.len;
@@ -1322,7 +1326,8 @@
                   ((None) -1)))
               (export main)))
   (call   main (: 9 Int64))
-  (output (: 2311 Int64)))
+  (output (: 2311 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee"
   (doc    "The length-prefixed-frame parse (the dependent-size crown jewel) over a RUNTIME scrutinee: a
@@ -1541,7 +1546,8 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64))
   (call main (: 2 Int64)) (output (: 70 Int64))
-  (call main (: 3 Int64)) (output (: -1 Int64)))
+  (call main (: 3 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 3))
 
 (case "a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser"
   (doc    "The reframe pins re-encode a DECODED n; this COMPUTES the header from the payload at
@@ -1567,7 +1573,8 @@
               (_ -1))))
         (export main)))
   (call main (: 1 Int64)) (output (: 318 Int64))
-  (call main (: 2 Int64)) (output (: 0 Int64)))
+  (call main (: 2 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 4))
 
 (case "a MIXED-endian frame packs big and little fields side by side and round-trips both"
   (doc    "Per-SEGMENT byte-order independence: a BIG-endian u16 beside a LITTLE-endian u16 in one
@@ -1812,7 +1819,8 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 4660 Int64))
   (call   main (: 0 Int64)) (output (: 274 Int64))
-  (call   main (: 2 Int64)) (output (: 13317 Int64)))
+  (call   main (: 2 Int64)) (output (: 13317 Int64))
+  (live-objects known-leak 2))
 
 (case "a dependent-size framing loop walks frames that straddle every rope seam"
   (doc    "The framing-LOOP composition of the dependent-size crown jewel over a ROPE: frames
@@ -1838,7 +1846,8 @@
             (frames b 0 0)))
         (export main)))
   (call   main (: 42 UInt8)) (output (: 3183 Int64))
-  (call   main (: 50 UInt8)) (output (: 3191 Int64)))
+  (call   main (: 50 UInt8)) (output (: 3191 Int64))
+  (live-objects known-leak 16))
 
 (case "a u16 bin field reads correctly at every runtime slice offset, odd or even"
   (doc    "The ALIGNMENT face of the runtime-start slice family (:987 dispatches on a u8 tag; this reads
@@ -1855,7 +1864,8 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 274 Int64))
   (call   main (: 2 Int64)) (output (: 4660 Int64))
-  (call   main (: 3 Int64)) (output (: 13398 Int64)))
+  (call   main (: 3 Int64)) (output (: 13398 Int64))
+  (live-objects known-leak 2))
 
 (case "a u32 bin binding with the top bit set does unsigned arithmetic"
   (doc    "The 32-bit UNSIGNED-arithmetic face (and the clean control of the open u64 signed-division
@@ -1894,7 +1904,8 @@
               (_ -1))))
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
-  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+  (call   main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a runtime bin match decodes a FINAL utf8 segment at a NON-ZERO static offset"
   (doc    "The static-offset companion of the final constant-size utf8 pin (:1878, which reads utf8 at
@@ -1914,7 +1925,8 @@
               (_ -1))))
         (export main)))
   (call   main (: 105 UInt8)) (output (: 12 Int64))
-  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+  (call   main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a runtime bin match decodes a FINAL DEPENDENT-size utf8 segment"
   (doc    "The dependent-size companion of the constant-size utf8 pins (:1878/:1899): a `(u8 n)` length
@@ -1935,7 +1947,8 @@
               (_ -1))))
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
-  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+  (call   main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a runtime bin match decodes a NON-FINAL dependent-size utf8 segment before a trailing field"
   (doc    "The non-final face of the dependent-size utf8 decode: `(bin (u8 n) (utf8 s n) (u8 7))` — the
@@ -1955,7 +1968,8 @@
               (_ -1))))
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
-  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+  (call   main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a dependent-size utf8 whose length prefix OVERRUNS the frame is a non-match, not a trap"
   (doc    "Trap-safety of the dependent-size utf8 read (the totality companion of the ill-formed-bytes
@@ -1977,7 +1991,8 @@
         (export main)))
   (call   main (: 1 UInt8)) (output (: 1 Int64))
   (call   main (: 5 UInt8)) (output (: -1 Int64))
-  (call   main (: 0 UInt8)) (output (: -1 Int64)))
+  (call   main (: 0 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
   (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets
@@ -2000,7 +2015,8 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 67305985 Int64))
   (call   main (: 3 Int64)) (output (: 4294837251 Int64))
-  (call   main (: 5 Int64)) (output (: -2 Int64)))
+  (call   main (: 5 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime bin ENCODE lays out le and signed fields byte-exactly"
   (doc    "The ENCODE twin of the le decode pins — expression-position `(bin (u32 x le) (i16 -2))` over a
@@ -2140,7 +2156,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 13330 Int64))
   (call   main (: 0 Int64)) (output (: 4609 Int64))
-  (call   main (: 2 Int64)) (output (: 1332 Int64)))
+  (call   main (: 2 Int64)) (output (: 1332 Int64))
+  (live-objects known-leak 2))
 
 (case "a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes"
   (doc    "The SIGN face: the seam window [255,254] reads -2 — sign-extension must run on the full stitched 16 bits, not a leaf's first byte (a per-leaf extend gives a positive splice). k=0 (511) and k=2 (-507) bracket the seam from both sides.")
@@ -2155,7 +2172,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: -2 Int64))
   (call   main (: 0 Int64)) (output (: 511 Int64))
-  (call   main (: 2 Int64)) (output (: -507 Int64)))
+  (call   main (: 2 Int64)) (output (: -507 Int64))
+  (live-objects known-leak 2))
 
 (case "a u64 bin field with the top bit set reads unsigned across a rope seam"
   (doc    "The WIDTH+TOP-BIT face: an 8-byte field whose top bit is set crosses the seam (k=1: bytes ff 02..08 -> 18375252745424078600, observed via BigInt.of). An i64-signed carrier or a per-leaf clamp corrupts the high byte; k=2 (top bit clear) is the in-range control.")
@@ -2169,7 +2187,8 @@
                   (_ (BigInt.of -1)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 18375252745424078600 BigInt))
-  (call   main (: 2 Int64)) (output (: 144964032628459529 BigInt)))
+  (call   main (: 2 Int64)) (output (: 144964032628459529 BigInt))
+  (live-objects known-leak 3))
 
 (case "bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's"
   (doc    "The BITS face of the seam family: (bits a 4)(bits b2 12) over a 2-byte window whose 16 bits straddle two leaves — the 4/12 split must run on the stitched pair (k=1: [18,52] -> a=1,b2=564 -> 10564). k=0/k=2 are the single-leaf controls (101298 / 31029).")
@@ -2184,7 +2203,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10564 Int64))
   (call   main (: 0 Int64)) (output (: 101298 Int64))
-  (call   main (: 2 Int64)) (output (: 31029 Int64)))
+  (call   main (: 2 Int64)) (output (: 31029 Int64))
+  (live-objects known-leak 2))
 
 (case "a dependent-size body straddling a rope seam stitches, and an oversize count fails the match"
   (doc    "The DEPENDENT-SIZE face: (u8 n)(bytes body n)(bytes rest) from a runtime-sliced start whose n-byte body crosses the seam (k=1: n=3, body [10,20,30] sums 60 -> 60015 with rest [7,8]); at k=0 the count byte is 9 with only 6 remaining, so the match FAILS to the catch-all (-1) — the oversize face doubles as the honest-decline row.")
@@ -2202,7 +2222,8 @@
                   (_ -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 60015 Int64))
-  (call   main (: 0 Int64)) (output (: -1 Int64)))
+  (call   main (: 0 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 11))
 
 ; --- bin construction/decode order + the frame-body perform walk. ---
 
@@ -2250,7 +2271,8 @@
                                     (UInt8.wrap 0) (UInt8.wrap 0) (UInt8.wrap 0))) 0 0))
             (export main)))
   (call   main (: 5 UInt8)) (output (: 263 Int64))
-  (call   main (: 200 UInt8)) (output (: 458 Int64)))
+  (call   main (: 200 UInt8)) (output (: 458 Int64))
+  (live-objects known-leak 7))
 
 (case "a bin-decoded frame body drives per-byte performs through a recursive walk"
   (doc    "Binary matching × effects: the dependent-size `(bytes body n)` binder feeds a RECURSIVE
@@ -2273,7 +2295,8 @@
               (_ -1))))
         (export main)))
   (call   main (: 10 UInt8)) (output (: 50 Int64))
-  (call   main (: 0 UInt8)) (output (: 40 Int64)))
+  (call   main (: 0 UInt8)) (output (: 40 Int64))
+  (live-objects known-leak 4))
 
 (case "a bits run spanning TWO bytes decodes MSB-first over a runtime scrutinee"
   (doc    "The cross-byte DECODE face (the sub-byte 3+5 run and the byte-aligned-run-then-int cases pin
@@ -2354,7 +2377,8 @@
           (_ -1))))
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
-  (call main (: 255 UInt8)) (output (: -1 Int64)))
+  (call main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "cu02 runtime FINAL dependent-size utf8 segment decodes"
   (input (do
@@ -2366,7 +2390,8 @@
           (_ -1))))
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
-  (call main (: 255 UInt8)) (output (: -1 Int64)))
+  (call main (: 255 UInt8)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "cu03 CONTROL runtime non-final dependent-size BYTES segment"
   (input (do

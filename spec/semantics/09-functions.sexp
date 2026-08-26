@@ -114,7 +114,8 @@
                        (+ (* x 10) (+ (List.len xs) y)))))))))
         (export main)))
   (call main (: 2 Int64)) (output (: 440 Int64))
-  (call main (: 0 Int64)) (output (: 40 Int64)))
+  (call main (: 0 Int64)) (output (: 40 Int64))
+  (live-objects known-leak 12))
 
 (case "a closure captures its environment by value at creation, unaffected by a later same-named binding"
   (doc    "`(let ((k n)) (let ((f (fn (x) (+ x k)))) (let ((k 1000)) (f 1))))` — `f` captures `k = n` at
@@ -161,7 +162,8 @@
             (def (main (: a Int64))
               ((make-reader (mk a)) unit))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 3 Int64)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 4))
 
 (case "a closure captures a MAP and serves lookups at call time"
   (doc    "The CHAMP-capture face: `make-getter` captures a two-entry map and returns a lookup closure; the
@@ -192,7 +194,8 @@
               (def (main (: i Int64)) (apply-at (list (mk 10) (mk 20) (mk 30)) i 1)) (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 31 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 ; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
 ; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
@@ -219,7 +222,8 @@
                   (do (Map.insert Map.empty 1 f1)
                       (f1 d)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 105 Int64)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (live-objects known-leak 1))
 
 (case "a capturing closure stored in a list and also called directly emits a valid artifact"
   (doc    "The list-container companion of the map case — same root (the collection-element boxed-fn
@@ -232,7 +236,8 @@
                   (do (list f1)
                       (f1 d)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 105 Int64)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (live-objects known-leak 1))
 
 (case "a capturing closure stored in a sum payload and also called directly emits a valid artifact"
   (doc    "The SUM-PAYLOAD companion (`(Some f1)`, boxed-cell rep like the collections) — confirms the root
@@ -245,7 +250,8 @@
                   (do (Some f1)
                       (f1 d)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 105 Int64)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (live-objects known-leak 1))
 
 (case "a capturing closure whose surviving map store and direct call both feed the result"
   (doc    "The store SURVIVES to the result (its `Map.len` is added), not merely discarded — so the lifted
@@ -271,7 +277,8 @@
                   (do (tuple f1 9)
                       (f1 d)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 105 Int64)))
+  (call   main (: 5 Int64)) (output (: 105 Int64))
+  (live-objects known-leak 1))
 
 (case "a non-capturing closure stored and also called directly emits a valid artifact"
   (doc    "The non-capturing control: `f1 = (fn (v) (+ 1 v))` closes over nothing, so it needs no env cell
@@ -470,7 +477,8 @@
             (def (main)
               (count (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))) (list 1 2 3 4) 0))
             (export main)))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  (live-objects known-leak 18))
 
 ; TWO NESTED recursive const-closure drivers — `filter-step` re-passes its const `step` closure AND is
 ; itself the const step a `drive` fold consumes. This composition (a const-driver whose closure is
@@ -505,7 +513,8 @@
             (def (sum (: it It)) (match it ((It.Mk s step) (drive step s 0))))
             (def (main) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2)))))
             (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 29))
 
 ; TWO specializations of ONE driver on DIFFERENT closures must not collide in the spec memo. Both `em`
 ; and `ef` call the same `sum`→`drive` (a `const`-closure recursive fold), but with different wrapped step
@@ -539,7 +548,8 @@
             (def (ef) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2)))))
             (export em) (export ef)))
   (call   em) (output (: 36 Int64))
-  (call   ef) (output (: 12 Int64)))
+  (call   ef) (output (: 12 Int64))
+  (live-objects known-leak 21))
 
 ; A CLOSED literal closure FORWARDED through several `const`-parameter call hops (`sum` → `fold` →
 ; `drive`'s `const g`) — the const-WRAPPER-CHAIN. This used to be a false CDZ0201 reject: a β-substitution
@@ -763,7 +773,8 @@
             (export main)))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
-  (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
@@ -896,7 +907,8 @@
             (type T (Susp (-> Int64 C)))
             (def (main) (match (T.Susp (fn (n) (C.A n))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "an unannotated closure in a Some payload is typed from the Option's element arrow"
   (doc    "The built-in companion: `(Some (fn (n) (C.A n)))` carries an unannotated closure whose element
@@ -907,7 +919,8 @@
             (type C (A Int64) B)
             (def (main) (match (Some (fn (n) (C.A n))) ((Some f) (match (f 7) ((C.A m) m) ((C.B) 0))) ((None) 0)))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "an unannotated closure with an unused parameter in a payload takes the declared parameter type"
   (doc    "The lambda's parameter is not used by its body — `(fn (n) (C.B))` ignores `n` — so the body
@@ -920,7 +933,8 @@
             (type T (Susp (-> Int64 C)))
             (def (main) (match (T.Susp (fn (n) (C.B))) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "a capturing unannotated closure in a payload is typed from the declared arrow"
   (doc    "The capturing extension: `(mk k)` returns `(T.Susp (fn (n) (C.A (+ n k))))` — an unannotated
@@ -935,7 +949,8 @@
             (def (main (: k Int64)) (match (mk k) ((T.Susp f) (match (f 7) ((C.A m) m) ((C.B) 0)))))
             (export main)))
   (call   main (: 100 Int64))
-  (output (: 107 Int64)))
+  (output (: 107 Int64))
+  (live-objects known-leak 1))
 
 (case "an unannotated closure typed Int8 from context overflows a constant like an explicit Int8 param"
   (doc    "The NARROW-WIDTH edge of context typing: `app : ((-> Int8 Int8)) -> Int8` applied `(app (fn (n)
@@ -1026,7 +1041,8 @@
                 ((Core.CBin op l r) (Bytes.concat (Bytes.concat (emit l) (emit r)) (b1 (wop op))))))
             (def (main) (Bytes.len (emit (Core.CBin 43 (Core.CNum 1) (Core.CBin 45 (Core.CNum 2) (Core.CNum 3))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 7))
 
 ; The multi-dispatch companion: the SAME recursive emitter, but the `CBin` arm dispatches through BOTH a
 ; Bool-returning `(match op (43 true) …)` (an i32 result) and, in the `if`'s else branch, a multi-arm
@@ -1060,7 +1076,8 @@
                                (if (isarith op) (b1 op) (b1 (cmpop op)))))))
             (def (main) (Bytes.len (emit (Core.CBin 60 (Core.CNum 1) (Core.CBin 43 (Core.CNum 2) (Core.CNum 3))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 7))
 
 (case "a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm"
   (doc    "A self-tail-recursive `drive` whose INNERMOST match is MIXED — one arm RECURSES (the tail call
@@ -1087,7 +1104,8 @@
                 ((Option.None) (- 0 1))
                 ((Option.Some p) (match p ((tuple x s2) x)))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 16))
 
 ; --- Tail recursion compiles to a constant-stack loop -------------------------------------------
 ; core-semantics.md: a SELF tail-call updates the parameter locals and `br`s back to the function's own
@@ -1287,7 +1305,8 @@
             (def (sum-f f (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ (f h) (sum-f f t)))))
             (def (main) (sum-f (fn ((: x Int64)) (+ x 1)) (L.Cons 1 (L.Cons 2 L.Nil))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 6))
 
 (case "a recursive map rebuilding a sum list infers its unannotated callback"
   (doc    "The map companion: `map-f` REBUILDS the list, applying an unannotated `f` to each element —
@@ -1299,7 +1318,8 @@
             (def (map-f f (: l L)) (match l ((L.Nil) L.Nil) ((L.Cons h t) (L.Cons (f h) (map-f f t)))))
             (def (main) (match (map-f (fn ((: x Int64)) (* x 2)) (L.Cons 3 (L.Cons 4 L.Nil))) ((L.Cons h t) h) ((L.Nil) 0)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 11))
 
 (case "a recursive fold with an unannotated two-argument callback parameter"
   (doc    "The callback takes TWO arguments — `(fn (a b) (+ a b))` — and `fold` threads an accumulator:
@@ -1311,7 +1331,8 @@
             (def (fold f (: acc Int64) (: l L)) (match l ((L.Nil) acc) ((L.Cons h t) (fold f (f acc h) t))))
             (def (main) (fold (fn ((: a Int64) (: b Int64)) (+ a b)) 0 (L.Cons 1 (L.Cons 2 (L.Cons 3 L.Nil)))))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 8))
 
 (case "a recursive HOF infers a callback whose RESULT is a sum matched in the body"
   (doc    "The callback's RESULT type is inferred too, not only its parameter: `find` applies an
@@ -1330,7 +1351,8 @@
             (def (main) (match (find (fn ((: x Int64)) (if (> x 1) (C.A x) (C.B))) (L.Cons 0 (L.Cons 5 L.Nil)))
                           ((C.A n) n) ((C.B) 0)))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 8))
 
 (case "a branching recursive tree fold infers its unannotated callback across both arms"
   (doc    "A tree `(type T (Leaf Int64) (Node (Tuple T T)))` folded by an unannotated callback `f` with
@@ -1348,7 +1370,8 @@
                 ((T.Node (tuple l r)) (+ (fold-t f l) (fold-t f r)))))
             (def (main) (fold-t (fn ((: x Int64)) (* x 10)) (T.Node (tuple (T.Leaf 1) (T.Leaf 2)))))
             (export main)))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 5))
 
 (case "a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT"
   (doc    "The callback is applied not to a payload but to the RESULT OF THE RECURSIVE CALL — `(f (foldn f
@@ -1365,7 +1388,8 @@
               (match n ((N.Z) z) ((N.S m) (f (foldn f z m)))))
             (def (main) (foldn (fn ((: x Int64)) (+ x 1)) 0 (N.S (N.S (N.Z)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 4))
 
 (case "a closure capturing two enclosing bindings folds through nested arithmetic"
   (doc    "`(fn (x) (+ (* x a) b))` captures BOTH `a` and `b` from enclosing lets; applied to 5 with
@@ -1556,7 +1580,8 @@
             (def (main (: n Int64)) (ap2 + 3 4 n))
             (export main)))
   (call   main 0)
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "an inline HOF applies a bare operator passed as its function argument"
   (doc    "A second operator witness: `ap` is a non-recursive named HOF, so `(ap * 6 7)` INLINES,
@@ -1605,7 +1630,8 @@
               (if (< n 1) (g x y) (ap2 g x y (- n 1))))
             (def (main (: n Int64)) (ap2 > 7 3 n)) (export main)))
   (call   main 0)
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 1))
 
 (case "a function is returned as a result"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: adder returns a closure over
@@ -1747,7 +1773,8 @@
             (def (main) (run (H.M (record (= f (fn ((: x Int64)) (+ x 1))) (= n 41)))))
             (export main)))
   (call   main)
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 1))
 
 ; The runtime-condition selection above FOLDS because the chosen function is applied AT the selection
 ; site — `((if b f g) 5)` commutes the application into each branch, so no function value survives. But
@@ -1769,7 +1796,8 @@
               (applyer (if b (fn ((: x Int64)) (+ x 10)) (fn ((: x Int64)) (* x 10))) 3))
             (export main)))
   (call   main (: true Bool))
-  (output (: 36 Int64)))
+  (output (: 36 Int64))
+  (live-objects known-leak 1))
 
 (case "a runtime-selected closure survives as a value threaded through a recursive HOF (false branch)"
   (doc    "The false branch of the case above: with b=false the chosen closure is `(* x 10)`, so applyer
@@ -1783,7 +1811,8 @@
               (applyer (if b (fn ((: x Int64)) (+ x 10)) (fn ((: x Int64)) (* x 10))) 3))
             (export main)))
   (call   main (: false Bool))
-  (output (: 60 Int64)))
+  (output (: 60 Int64))
+  (live-objects known-leak 1))
 
 ; A function argument passed to a RECURSIVE higher-order function, applied inside the recursion. This
 ; is the case a function value MUST exist at run time: the recursive `apply-sum` cannot be inlined
@@ -1803,7 +1832,8 @@
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
 
 (case "a different function argument through the same recursive higher-order function"
   (doc    "The companion pinning that the closure carries the RIGHT code — a DIFFERENT lambda `(fn (x)
@@ -1815,7 +1845,8 @@
             (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 306 Int64)))
+  (output (: 306 Int64))
+  (live-objects known-leak 1))
 
 ; A CAPTURING closure through the recursive HOF — the lambda closes over a free variable `k` from its
 ; creation scope. `core-semantics.md` §A Function Value Captures The Bindings In Scope Where It Is
@@ -1834,7 +1865,8 @@
             (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 36 Int64)))
+  (output (: 36 Int64))
+  (live-objects known-leak 1))
 
 ; The same runtime closure, but capturing TWO enclosing bindings rather than one — a MULTI-SLOT
 ; environment. `(fn (x) (+ (+ x a) b))` closes over both `main`'s parameter `a` and the let-bound `b`,
@@ -1857,7 +1889,8 @@
                 (apply-sum (fn ((: x Int64)) (+ (+ x a) b)) 3)))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 336 Int64)))
+  (output (: 336 Int64))
+  (live-objects known-leak 1))
 
 ; HIGHER-ORDER CAPTURE — a closure whose captured free variable is ITSELF A FUNCTION. `(fn (b) (g b))`
 ; closes over `g`, a fn-typed parameter of the enclosing recursive `rec`; the closure cell must store
@@ -1885,7 +1918,8 @@
             (def (main (: n Int64)) (rec (fn ((: x Int64)) (+ x 1)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects known-leak 4))
 
 (case "a compose combinator captures TWO function values and applies them in declared order"
   (doc    "The two-function capture face: `(compose f g)` returns `(fn (x) (f (g x)))` — ONE closure whose
@@ -1901,7 +1935,8 @@
                     (dbl (fn ((: x Int64)) (* x 2))))
                 (tuple ((compose inc dbl) n) ((compose dbl inc) n))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64))))
+  (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a compose combinator over HEAP-typed functions pipelines list transformers"
   (doc    "The compose pins are scalar-arrow; this combinator is over (-> (List Int64) (List Int64))
@@ -1923,7 +1958,8 @@
             (+ (* (sum-l r 0) 10) (List.len r))))
         (export main)))
   (call main (: 9 Int64)) (output (: 123 Int64))
-  (call main (: 0 Int64)) (output (: 33 Int64)))
+  (call main (: 0 Int64)) (output (: 33 Int64))
+  (live-objects known-leak 7))
 
 (case "a RUNTIME-selected combiner closure crosses a join and drives a fold"
   (doc    "The fold-fn pins take the closure as a CONST param (devirtualizable); this SELECTS the
@@ -1942,7 +1978,8 @@
             (foldc (list 1 2 3) 0 g)))
         (export main)))
   (call main (: 1 Int64)) (output (: 6 Int64))
-  (call main (: 2 Int64)) (output (: 123 Int64)))
+  (call main (: 2 Int64)) (output (: 123 Int64))
+  (live-objects known-leak 8))
 
 (case "a list of closure-carrying variants interprets as a command pipeline over an accumulator"
   (doc    "The payload pin extracts ONE closure; this folds a heterogeneous (List Op) of
@@ -1967,7 +2004,8 @@
             (run ops 10)))
         (export main)))
   (call main (: 1 Int64)) (output (: 26 Int64))
-  (call main (: 2 Int64)) (output (: 10 Int64)))
+  (call main (: 2 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 12))
 
 (case "a THREE-deep transitive closure-capture chain applies with each level's own capture live"
   (doc    "The 2-deep capture pin extended: h→g→f where EACH level adds its OWN scalar capture —
@@ -2074,7 +2112,8 @@
               (times (fn ((: v Int64)) (* v 2)) n 1))
             (export main)))
   (call   main (: 5 Int64)) (output (: 32 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "a closure built OVER another closure applies both capture layers"
   (doc    "Nested capture: `twice` captures a FUNCTION VALUE `f` (itself a closure capturing the boundary
@@ -2107,7 +2146,8 @@
               (times (if (= pick 0) (fn ((: v Int64)) (+ v 1)) (fn ((: v Int64)) (* v 3))) n 1))
             (export main)))
   (call   main (: 0 Int64) (: 4 Int64)) (output (: 5 Int64))
-  (call   main (: 1 Int64) (: 4 Int64)) (output (: 81 Int64)))
+  (call   main (: 1 Int64) (: 4 Int64)) (output (: 81 Int64))
+  (live-objects known-leak 1))
 
 ; NESTED CAPTURING CLOSURES — a closure captures another closure that ITSELF captures. `g = (fn (x) (f
 ; (+ x 1)))` captures `f`, and `f = (fn (y) (+ y k))` captures `k`. Inside `g`'s lifted body, `f` is a
@@ -2130,7 +2170,8 @@
                 (ap (fn ((: x Int64)) (f (+ x 1))) 2)))
             (export main)))
   (call   main (: 100 Int64))
-  (output (: 205 Int64)))
+  (output (: 205 Int64))
+  (live-objects known-leak 2))
 
 ; A NESTED LAMBDA inside a lifted closure body. `g = (fn (x) ((fn (y) (+ y k)) x))` is a runtime closure
 ; (passed to the recursive `ap`) whose body applies an inner lambda `(fn (y) (+ y k))` in place. The inner
@@ -2152,7 +2193,8 @@
               (ap (fn ((: x Int64)) ((fn ((: y Int64)) (+ y k)) x)) 2))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 23 Int64)))
+  (output (: 23 Int64))
+  (live-objects known-leak 1))
 
 ; A runtime closure whose body CALLS A RECURSIVE TOP-LEVEL FUNCTION. `(fn (x) (fact x))` is lifted (it is
 ; passed to the recursive `ap`, so it cannot fold), and its body invokes the recursive `fact` — a
@@ -2173,7 +2215,8 @@
             (def (main (: n Int64)) (ap (fn ((: x Int64)) (fact x)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 ; A runtime closure that COMPARES its argument to a CAPTURED value in an `if`. `(fn (x) (if (= x k) 1 0))`
 ; captures `k` and branches on `x == k` — the captured `k` feeds a comparison whose boolean drives an `if`
@@ -2189,7 +2232,8 @@
             (def (main (: k Int64)) (ap (fn ((: x Int64)) (if (= x k) 1 0)) 3))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 ; MANUAL ETA-WRAP of a genuinely-RUNTIME function value. `g` is a runtime two-parameter fn PARAMETER (of
 ; the recursive `ap`), so it has no compile-time lambda to partially apply. Writing `(fn (b) (g n b))`
@@ -2216,7 +2260,8 @@
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 21 Int64)))
+  (output (: 21 Int64))
+  (live-objects known-leak 4))
 
 ; A CURRIED lambda STORED in a tuple, then PROJECTED and applied through both levels. `(fn (a) (fn (b) (+
 ; (+ a b) x)))` (curried, capturing `x`) is stored in `ops`; `(((. ops 0) 3) 4)` projects it and applies
@@ -2241,7 +2286,8 @@
                   (((. ops 0) 3) 4))))
             (export main)))
   (call   main)
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 2))
 
 (case "a flat multi-param lambda stored in a tuple is applied through curried syntax"
   (doc    "`(let ((t (tuple (fn (a b) (+ a b))))) (((. t 0) 3) 4))` stores a FLAT 2-param lambda, projects
@@ -2329,7 +2375,8 @@
             (def (main (: k Int64)) (if (anyp (fn ((: x Int64)) (= x k)) 3) 100 0))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 100 Int64)))
+  (output (: 100 Int64))
+  (live-objects known-leak 1))
 
 ; A closure that captures a BOOLEAN. The captured value's TYPE decides the runtime op that unboxes it
 ; from the env cell — an integer capture reads `get-int`, a boolean reads `get-bool`. That op is emitted
@@ -2352,7 +2399,8 @@
               (apply-sum (fn ((: x Int64)) (if flag (* x 2) x)) 3))
             (export main)))
   (call   main (: true Bool))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
 
 ; A closure that captures a COMPOUND value — a tuple — and projects it inside the body. The captured
 ; value is a u32 heap HANDLE (not a boxed scalar), stored into the env cell as-is and read back as-is;
@@ -2373,7 +2421,8 @@
               (let ((p (tuple 10 20)))
                 (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3)))
             (export main)))
-  (output (: 96 Int64)))
+  (output (: 96 Int64))
+  (live-objects known-leak 2))
 
 ; A closure that captures a SUM value and MATCHES it inside the body. The captured `(Some 100)` is a sum
 ; handle stored in the env cell; the body's `match` reads it back and switches on its discriminant. This
@@ -2393,7 +2442,8 @@
               (let ((o (Some 100)))
                 (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3)))
             (export main)))
-  (output (: 306 Int64)))
+  (output (: 306 Int64))
+  (live-objects known-leak 2))
 
 ; PERCEUS RETAIN ACROSS A CAPTURE: a heap list `xs` is CAPTURED by a closure whose body CONSUMES it
 ; (`List.push xs k` — a persistent op that FBIP-mutates its operand in place when it holds the sole
@@ -2439,7 +2489,8 @@
             (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
 
 ; The same UNANNOTATED closure, but now the recursive HOF's FUNCTION PARAMETER is ALSO unannotated — the
 ; case above declares `(: g (-> Int64 Int64))`, whose concrete arrow fed the closure's param type. Here
@@ -2468,7 +2519,8 @@
             (def (main (: n Int64)) (mapsum (fn (x) (+ x 1)) n (list 5 7 30)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 45 Int64))
-  (call   main (: 100 Int64)) (output (: 145 Int64)))
+  (call   main (: 100 Int64)) (output (: 145 Int64))
+  (live-objects known-leak 8))
 
 ; The MULTI-PARAMETER twin: the idiomatic two-argument left fold. The closure `(fn (x a) (+ a x))` and the
 ; recursive HOF's `f` are BOTH unannotated. `fold-list` is generic in `f`, so the call MONOMORPHIZES — the
@@ -2495,7 +2547,8 @@
             (def (main (: n Int64)) (fold-list (fn (x a) (+ a x)) n (list 5 7 30)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 42 Int64))
-  (call   main (: 100 Int64)) (output (: 142 Int64)))
+  (call   main (: 100 Int64)) (output (: 142 Int64))
+  (live-objects known-leak 8))
 
 ; The same monomorphized fold, but the two closure parameters have DISTINCT types — the accumulator is
 ; `Int64` and the element is `String`. The closure `(fn (acc s) (+ acc (String.byte-len s)))` must solve
@@ -2520,7 +2573,8 @@
             (def (main (: n Int64)) (foldstr (fn (acc s) (+ acc (String.byte-len s))) n (list "ab" "abcd" "x")))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
-  (call   main (: 100 Int64)) (output (: 107 Int64)))
+  (call   main (: 100 Int64)) (output (: 107 Int64))
+  (live-objects known-leak 11))
 
 ; A single-argument unannotated closure whose RESULT is Bool — a predicate threaded through a recursive
 ; HOF that counts how many elements satisfy it. `(fn (x) (< x 10))` solves `x : Int64` from `(< x 10)` and
@@ -2542,7 +2596,8 @@
             (def (main (: n Int64)) (countif (fn (x) (< x 10)) n (list 5 20 7)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (call   main (: 100 Int64)) (output (: 102 Int64)))
+  (call   main (: 100 Int64)) (output (: 102 Int64))
+  (live-objects known-leak 8))
 
 ; The cases above each instantiate a closure-taking recursive HOF at a SINGLE closure type. This one
 ; instantiates the SAME generic recursive HOF `fold-list` at TWO distinct closure types in one program:
@@ -2573,7 +2628,8 @@
               (+ (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30))
                  (fold-list (fn (s a) (+ a (String.byte-len s))) 0 (list "ab" "abcd" "x"))))
             (export main)))
-  (output (: 49 Int64)))
+  (output (: 49 Int64))
+  (live-objects known-leak 19))
 
 ; The count-past-two companion: the SAME closure-taking `fold-list` instantiated at THREE distinct closure
 ; types in one program — an Int64-element sum, a String-element byte-length fold, AND a Bool-element
@@ -2602,7 +2658,8 @@
                  (+ (fold-list (fn (s a) (+ a (String.byte-len s))) 0 (list "ab" "abcd" "x"))
                     (fold-list (fn (b a) (if b (+ a 1) a)) 0 (list true false true)))))
             (export main)))
-  (output (: 51 Int64)))
+  (output (: 51 Int64))
+  (live-objects known-leak 27))
 
 ; A MULTI-PARAMETER runtime closure, applied at FULL arity. `core-semantics.md` §Functions Are
 ; Single-Arity says a multi-param `(fn (a b) …)` is curried sugar; when the whole function is applied to
@@ -2621,7 +2678,8 @@
             (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
 
 ; A THREE-parameter runtime closure at full arity — the multi-param lift generalizes past two params.
 ; `(fn (a b c) …)` lifts to `(env, a, b, c) → result` and applies via one `call_indirect` with all three
@@ -2639,7 +2697,8 @@
               (ap3 (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 18 Int64)))
+  (output (: 18 Int64))
+  (live-objects known-leak 1))
 
 ; CURRIED-SYNTAX application of a runtime multi-param closure. `core-semantics.md` §Functions Are
 ; Single-Arity: `(fn (a b) …)` is single-arity curried sugar, so `((g n) 1)` — apply `g` to `n`, then
@@ -2662,7 +2721,8 @@
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 ; A CURRIED-SYNTAX application of a multi-payload VARIANT CONSTRUCTOR — the constructor analogue of the
 ; curried-closure case above. `(T.Mk (Int64 Int64))` is a two-payload ctor; `((T.Mk n) 2)` applies it to
@@ -2709,7 +2769,8 @@
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 13 Int64)))
+  (output (: 13 Int64))
+  (live-objects known-leak 1))
 
 (case "a user-written MAP combinator builds a transformed list through its fn parameter"
   (doc    "The list-BUILDING HOF (the fold-list pins reduce to a scalar): `map-l` pushes `(f h)` per
@@ -2727,7 +2788,8 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 14 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 8))
 
 (case "a user-written FILTER combinator keeps elements passing a captured predicate"
   (doc    "The Bool-returning fn param: `filter-l` keeps `h` when `(p h)` — the predicate closure
@@ -2744,7 +2806,8 @@
   (call   main (: 10 Int64))
   (output (: 3 Int64))
   (call   main (: 30 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 10))
 
 (case "map THEN filter compose — one combinator's output list is the next's input"
   (doc    "The pipeline: `filter-l (>10) (map-l (·k) [1,2,3,4])` — the map's freshly-built list feeds
@@ -2768,7 +2831,8 @@
   (call   main (: 5 Int64))
   (output (: 2 Int64))
   (call   main (: 2 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 20))
 
 (case "a middle curry STAGE is reused — one s1 residual yields an s2 applied twice"
   (doc    "Three-stage curry with STAGE REUSE: `s1 = (add3 x)` (captures the boundary x), `s2 = (s1 20)`
@@ -2823,7 +2887,8 @@
             (def (main (: n Int64)) (applyer (pick n) 3))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
@@ -3262,7 +3327,8 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 6 Int64)) (output (: 80016 Int64))
   (call   main (: 27 Int64)) (output (: 1110232 Int64))
-  (call   main (: 97 Int64)) (output (: 1180232 Int64)))
+  (call   main (: 97 Int64)) (output (: 1180232 Int64))
+  (live-objects known-leak 1))
 
 (case "the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation"
   (doc    "Two totally different computations of the same survivor, cross-checked: the O(n) MODULAR
@@ -3306,7 +3372,8 @@
   (call   main (: 7 Int64) (: 3 Int64)) (output (: 41 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 11 Int64))
   (call   main (: 5 Int64) (: 2 Int64)) (output (: 31 Int64))
-  (call   main (: 10 Int64) (: 1 Int64)) (output (: 101 Int64)))
+  (call   main (: 10 Int64) (: 1 Int64)) (output (: 101 Int64))
+  (live-objects known-leak 62))
 
 ; The FAULT WALK over a nested call chain must be LINEAR too, not just the reduction. `type_errors`
 ; checks each call at its site AND collects the reduced body — and it separately descended each raw
@@ -3356,7 +3423,8 @@
               (def (main) (match (f -20) ((Mk x _) x)))
               (export main)))
   (call   main)
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 21))
 
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
@@ -3477,7 +3545,8 @@
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 10 Int64)) (output (: 551 Int64))
   (call   main (: 31 Int64)) (output (: 13462691 Int64))
-  (call   main (: 64 Int64)) (output (: 106102098577231 Int64)))
+  (call   main (: 64 Int64)) (output (: 106102098577231 Int64))
+  (live-objects known-leak 2))
 
 (case "a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity"
   (doc    "The third fibonacci computation (naive recursion, fast-doubling above, now the LINEAR-MAP
@@ -3515,7 +3584,8 @@
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 10 Int64)) (output (: 551 Int64))
   (call   main (: 30 Int64)) (output (: 8320401 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
@@ -3674,7 +3744,8 @@
                 ((Result.Err ec) (Result.Err ec))))
             (def (main) (match (check (Exp.If (Exp.Num 1) (Exp.Num 2))) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 6))
 
 (case "the well-typed branch of the mutual check returns the Ok result"
   (doc    "The companion outcome of the check/check-if pair on a well-typed input. `check(Num 5)` =
@@ -3701,7 +3772,8 @@
                 ((Result.Err ec) (Result.Err ec))))
             (def (main) (match (check (Exp.Num 5)) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 ; --- A rest-pattern head binder read inside an INLINED match-arg callee's scrutinee ------------
 ; The monomorphization pair above pins one face of the "re-parent / orphaned-binder" class: a match-arm
@@ -3744,7 +3816,8 @@
                         best)))))
             (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
             (export main)))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 8))
 
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
@@ -3802,7 +3875,8 @@
             (def (main (: n Int64)) (len (build n)))
             (export main)))
   (call   main (: 5000 Int64))
-  (output (: 5000 Int64)))
+  (output (: 5000 Int64))
+  (live-objects known-leak 10001))
 
 (case "a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack"
   (doc    "The heap twin of the scalar tail-accumulator above: `mk-tail` threads a RECURSIVE-SUM
@@ -3821,7 +3895,8 @@
             (def (main (: a Int64))
               (depth-tail (mk-tail a (Z)) 0))
             (export main)))
-  (call   main (: 10000 Int64)) (output (: 10000 Int64)))
+  (call   main (: 10000 Int64)) (output (: 10000 Int64))
+  (live-objects known-leak 10001))
 
 ; A recursive function with TWO OR MORE NARROW-WIDTH parameters (UInt8/Int8/UInt16/…) threading a narrow
 ; accumulator through the recursive call. A narrow value lives in an i32 machine slot (a wide Int64 is
@@ -3987,7 +4062,8 @@
                   (if (> x 2) (Some (tuple x s2)) (twostep s2)))))))
             (def (main) (match (twostep (list 1 2 3 4)) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 16))
 
 ; The GUARD companion of the Option-returning mixed-match tail case above. The prior cases that combine a
 ; `(guard …)` arm with a tail-recursive fall-through (03-equality: guarded-wildcard / literal-probe /
@@ -4017,7 +4093,8 @@
             (def (main (: lim Int64))
               (match (find (list 1 2 3 4) lim) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
-  (call   main (: 2 Int64)) (output (: 3 Int64)))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 10))
 
 ; A CONTROL-FLOW companion of the guarded-tail cases: the guard EXPRESSION itself calls a (non-tail)
 ; RECURSIVE helper. Every other guard×tail-loop pin uses a flat guard condition (a comparison or a
@@ -4118,7 +4195,8 @@
                 ((Some s) (String.byte-len s))
                 ((None) (- 0 1))))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 4 Int64)))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (live-objects known-leak 19))
 
 (case "nested mixed-match tail loops compose — an outer accumulator loop driving an inner seeking loop"
   (doc    "`inner` is the Option-returning mixed-match tail loop of the pin above (skip elements ≤ 2, return
@@ -4144,7 +4222,8 @@
             (def (main (: n Int64))
               (outer (list 1 3 2 4 5) 0))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 12 Int64)))
+  (call   main (: 1 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 29))
 
 ; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
 ; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
@@ -4178,7 +4257,8 @@
             (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
             (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 ; A further residual of the SAME i32/i64 slot family, on the `if`-BRANCH axis: a self-recursive function
 ; CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE. The two `if`
@@ -4204,7 +4284,8 @@
               (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
             (def (main (: p Int64)) (loop b"\x05" p 0))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 5 Int64)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "a list-carrying recursion whose base arm does a fallible indexed read compiles"
   (doc    "The LIST companion of the Bytes case above — the fault is not Bytes-specific. A self-recursive
@@ -4216,7 +4297,8 @@
               (if (= n 0) (Option.expect (List.at xs i) "v") (loop xs i (- n 1))))
             (def (main (: i Int64)) (loop (list 7 8 9) i 0))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 8 Int64)))
+  (call   main (: 1 Int64)) (output (: 8 Int64))
+  (live-objects known-leak 2))
 
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
@@ -4549,7 +4631,8 @@
                  (String.byte-len (fold-list (fn ((: a String)) (fn ((: x String)) (String.concat a x))) "" (list "ab" "cd")))))
             (export main)))
   (call   main (: 32 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 16))
 
 ; --- A bare parameter PROJECTED in the body is constrained only at the call site ------------------
 ; A companion of the polymorphic-parameter cases above, for a STRUCTURAL use: a bare (unannotated)
@@ -4661,7 +4744,8 @@
             (def (main) (be (Bytes.of (list 1 2 3)) 0 3))
             (export main)))
   (call   main)
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 1))
 
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
 ; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name
@@ -5540,7 +5624,8 @@
             (def (main) (+ (len (Lst.Cons 1 (Lst.Cons 2 Lst.Nil)))
                            (len (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 15))
 
 ; The companion of the case above: writing the EXPLICIT polymorphic annotation `(: l (Lst a))` on the
 ; same generic `len` — a type VARIABLE `a` nested inside the generic constructor `Lst` in a parameter
@@ -5594,7 +5679,8 @@
             (def (main (: n Int64)) (suml (mapl (fn (x) (+ x 1)) (list n n n))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 6 Int64))
-  (call   main (: 4 Int64)) (output (: 15 Int64)))
+  (call   main (: 4 Int64)) (output (: 15 Int64))
+  (live-objects known-leak 15))
 
 ; The same single-instantiation recursive-generic producer→consumer composition, but the produced element
 ; is a USER-DEFINED generic sum (`(type Box (Wrap a))`) rather than the built-in `List` — `wrapall : List a
@@ -5621,7 +5707,8 @@
             (def (main (: n Int64)) (sumfirst (wrapall (list n n n))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 6 Int64))
-  (call   main (: 4 Int64)) (output (: 12 Int64)))
+  (call   main (: 4 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 14))
 
 ; THE RECURSIVE-GENERIC PRODUCER TIE (was the known ≥2-type limit; LANDED): `from-list : List a -> Iter a`
 ; builds a generic `Iter` from a generic `List` — a recursive-generic PRODUCER. Its result element must be
@@ -5654,7 +5741,8 @@
               (+ (icount (from-list (list n (+ n 1)))) (icount (from-list (list "a" "b" "c")))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
-  (call   main (: 10 Int64)) (output (: 5 Int64)))
+  (call   main (: 10 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 27))
 
 ; A recursive-generic PRODUCER applied to a list whose ELEMENTS are themselves results of the SAME
 ; producer — `(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64`,
@@ -5690,7 +5778,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (from-list (list (inner) (inner)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 30))
 
 (case "an annotation on a nested generic-call argument grounds the self-nested producer and it runs"
   (doc    "The WORKAROUND for the decline above (the one the CDZ0201 message names): annotating a nested
@@ -5710,7 +5799,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (from-list (list (: (inner) (Iter Int64)) (inner)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 30))
 
 ; A recursive-generic TRANSFORMER whose ELEMENT is itself the SAME nested generic — `flatten : Iter(Iter a)
 ; -> Iter a`, `(match it ((Iter.Nil)(Iter.Nil)) ((Iter.Cons h rest)(append h (flatten rest))))`, chaining
@@ -5741,7 +5831,8 @@
             (def (main)
               (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5)))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 45))
 
 ; A recursive-generic flatten `Iter(Iter a) -> Iter a` composing at TWO element types in one program — the
 ; transformer-over-nested-generic tie at ≥2 instantiations. This DECLINED (the untied nested-generic tie:
@@ -5775,7 +5866,8 @@
               (+ (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5))))))
                  (icount (flatten (from-list (list (from-list (list "a" "b")) (from-list (list "c"))))))))
             (export main)))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 81))
 
 ; The SOUNDNESS SENTINEL for the tie above: broadening `collect_param_constraints` to accept a SumPayload-of-
 ; a-param arg (so the element flows into the callee's domain) must NOT loosen type-safety — a threaded element
@@ -5828,7 +5920,8 @@
               (+ (icount (gmap (from-list (list 1 2 3)) (fn (x) (+ x 1))))
                  (icount (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 42))
 
 (case "a recursive-generic filter threading a predicate closure composes at two element types"
   (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
@@ -5850,7 +5943,8 @@
               (+ (icount (filt (from-list (list 1 2 3)) (fn (x) (> x 1))))
                  (icount (filt (from-list (list "a" "bb")) (fn (s) (> (String.byte-len s) 1))))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 36))
 
 (case "a recursive-generic transformer with a bare-Nil STOP branch composes at two element types"
   (doc    "`take-while : (Iter a) → (a → Bool) → (Iter a)` keeps a leading run, STOPPING at a bare
@@ -5875,7 +5969,8 @@
               (+ (icount (take-while (from-list (list 1 2 3)) (fn (x) (< x 3))))
                  (icount (take-while (from-list (list "a" "bb" "ccc")) (fn (s) (< (String.byte-len s) 3))))))
             (export main)))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 43))
 
 (case "a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict"
   (doc    "AD-HOC POLYMORPHISM via a record of functions, generic over the element type — a `(: t Type)`
@@ -5898,7 +5993,8 @@
               (+ (show-with Int64 (record (= describe describe-int)) 5)
                  (show-with Bool (record (= describe describe-bool)) true)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 2))
 
 ; take-while BEHAVIORAL edges (breaker): the case above pins the inference TIE (bare-Nil stop branch keeps
 ; the result-element tie at ≥2 types); these pin the runtime BEHAVIOR the landed giter.cdz @tests (ints,
@@ -5923,7 +6019,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (take-while (from-list (list 1 2 3)) (fn (x) (< x 100)))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 22))
 
 (case "take-while where the first element fails the predicate returns the empty run"
   (doc    "The immediate-stop edge: when the FIRST element fails `p`, the `else` bare-Nil branch fires at once
@@ -5942,7 +6039,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (take-while (from-list (list 5 1 2)) (fn (x) (< x 3)))))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 16))
 
 (case "take-while excludes the failing element and everything after it (content, not just count)"
   (doc    "The content edge: take-while must drop the first failing element AND its entire tail, not merely
@@ -5962,7 +6060,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ h (isum rest)))))
             (def (main) (isum (take-while (from-list (list 10 20 3 100 5)) (fn (x) (> x 5)))))
             (export main)))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 28))
 
 (case "take-while composed after a map threads both transformers' closures"
   (doc    "take-while consuming the output of another closure-threading transformer: map `(* 10)` over
@@ -5983,7 +6082,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ h (isum rest)))))
             (def (main) (isum (take-while (imap (from-list (list 1 2 3 4)) (fn (x) (* x 10))) (fn (y) (< y 35)))))
             (export main)))
-  (output (: 60 Int64)))
+  (output (: 60 Int64))
+  (live-objects known-leak 36))
 
 ; scan (RUNNING FOLD) behavioral edges (breaker): the just-landed giter.cdz scan (slice 7) emits each
 ; intermediate accumulator — the seed first, one per element, so n+1 outputs — threading an accumulator AND
@@ -6007,7 +6107,8 @@
             (def (icount it) (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (scan (from-list (list 1 2 3 4)) 0 (fn (a x) (+ a x)))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 30))
 
 (case "scan threads its accumulator left-to-right (an order-sensitive folder)"
   (doc    "The accumulator is threaded LEFT-TO-RIGHT: with an order-sensitive folder `(a*10 + x)` over
@@ -6026,7 +6127,8 @@
             (def (last it) (match it ((Iter.Nil) -1) ((Iter.Cons h rest) (match rest ((Iter.Nil) h) (_ (last rest))))))
             (def (main) (last (scan (from-list (list 1 2 3)) 0 (fn (a x) (+ (* a 10) x)))))
             (export main)))
-  (output (: 123 Int64)))
+  (output (: 123 Int64))
+  (live-objects known-leak 24))
 
 (case "scan's kth emitted accumulator is the running fold of the first k elements"
   (doc    "Indexing INTO the running fold: the accumulator at index 2 of `scan [10,20,30] 0 (+)` is the sum
@@ -6043,7 +6145,8 @@
             (def (nth it n) (match it ((Iter.Nil) -1) ((Iter.Cons h rest) (if (= n 0) h (nth rest (- n 1))))))
             (def (main) (nth (scan (from-list (list 10 20 30)) 0 (fn (a x) (+ a x))) 2))
             (export main)))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 24))
 
 (case "scan over an empty iterator emits just the seed"
   (doc    "The base case: `scan` over an EMPTY iterator emits only the seed accumulator — one output, length
@@ -6062,7 +6165,8 @@
             (def (icount it) (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (scan (from-list (list)) 0 (fn (a x) (+ a x)))))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 6))
 
 (case "a recursive-generic transformer threading an IDENTITY closure composes at a single element type"
   (doc    "A pure IDENTITY closure `(fn (s) s)`, whose RESULT is determined only by its DOMAIN (not fixed by
@@ -6081,7 +6185,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (gmap (from-list (list "a" "b")) (fn (s) s))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 18))
 
 (case "a recursive-generic transformer threading an IDENTITY closure composes at TWO element types"
   (doc    "The multi-instantiation closure tie: a pure IDENTITY closure `(fn (s) s)` composes at a SINGLE
@@ -6104,7 +6209,8 @@
             (def (main) (+ (icount (gmap (from-list (list 1 2 3)) (fn (x) (+ x 1))))
                            (icount (gmap (from-list (list "a" "b")) (fn (s) s)))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 40))
 
 ; A TRANSITIVE recursive-generic tie: a `reduce`-shaped WRAPPER (`reduce1`) whose `Cons` arm seeds a
 ; SECOND recursive-generic helper (`go`) with the HEAD element, used at TWO element types in one program
@@ -6227,7 +6333,8 @@
             (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil)))
                            (len String (Lst.Cons "a" (Lst.Cons "b" (Lst.Cons "c" Lst.Nil))))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 15))
 
 ; AD-HOC POLYMORPHISM via a DICTIONARY RECORD — a record of functions passed as an ordinary argument,
 ; the body projecting and calling its fields. No trait resolution, no orphan rule, no coherence: it is
@@ -6391,7 +6498,8 @@
               (match xs ((list) acc) ((list h .. t) (s t (+ acc h)))))
             (def (main) (s (list 1 2 3) 0))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 7))
 
 ; The tail fold above folds a built-in list with a fixed `+`. The general HIGHER-ORDER left fold
 ; (`foldl f acc xs`) takes a COMBINING FUNCTION `f` as a parameter — the single most common higher-order
@@ -6413,7 +6521,8 @@
               (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
             (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (+ a x)) 0 (list 5 7 30)))
             (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 8))
 
 (case "a higher-order left fold over a built-in list with an annotated fn parameter"
   (doc    "The other anchor: the closure is UNannotated `(fn (x a) (+ a x))`, but the HOF's `f` parameter
@@ -6426,7 +6535,8 @@
               (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
             (def (main) (fold-list (fn (x a) (+ a x)) 0 (list 5 7 30)))
             (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 8))
 
 (case "a higher-order left fold applies its combiner, not a fixed operator"
   (doc    "The discriminator that the fold genuinely APPLIES `f` (not a hardcoded `+`): the same `fold-list`
@@ -6438,7 +6548,8 @@
               (match xs ((list) acc) ((list h .. t) (fold-list f (f h acc) t))))
             (def (main) (fold-list (fn ((: x Int64) (: a Int64)) (if (> x a) x a)) 0 (list 5 30 7)))
             (export main)))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 8))
 
 ; INLINE POLICY — the `@inline-never` / `@inline-always` ANNOTATIONS (`DESIGN-…-monomorphization`
 ; Addendum 4). `@name form` is the general-purpose annotation sigil (canonical `(@ name form)`); these are
@@ -6671,7 +6782,8 @@
             (def (main (: n Int64)) (let ((f (mkf (list n n)))) (+ (f 1) (f 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 18 Int64))
-  (call   main (: 0 Int64)) (output (: 2 Int64)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 10))
 
 (case "a captured list survives a structural rebuild of the same source between capture and application"
   (doc    "`f = (fn (k) (+ k (isum xs)))` captures `xs = [1,2,3]`; BEFORE `f` runs, `xs` is also fed to a
@@ -6692,7 +6804,8 @@
                     (+ (* 100 (f 0)) (+ (* 10 (isum rot)) (isum xs)))))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 666 Int64))
-  (call   main (: 0 Int64)) (output (: 666 Int64)))
+  (call   main (: 0 Int64)) (output (: 666 Int64))
+  (live-objects known-leak 21))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
@@ -6717,7 +6830,8 @@
                  (String.byte-len (Option.expect (List.at (wrap (list "ab")) 0) "s"))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 10))
 
 (case "the element tie survives producer self-composition"
   (doc    "`(wrap (wrap xs))` — the producer feeds ITSELF, so the inner instantiation's result
@@ -6735,7 +6849,8 @@
                  (String.byte-len (Option.expect (List.at (wrap (wrap (list "abc"))) 0) "s"))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  (live-objects known-leak 14))
 
 (case "an Option-producing recursive generic ties its payload to the list element"
   (doc    "`last : List a → Option a` (recursive, the base arm builds None, the singleton arm wraps
@@ -6753,7 +6868,8 @@
                  (match (last (list "a" "bc")) ((Some s) (String.byte-len s)) ((None _) -1))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 11))
 
 ; --- Recursive-generic transformer closure-tie: the element-change and self-compose faces -----------
 ; 7b67724e5 ties a recursive-generic transformer's closure domain to the mapped element (its pins
@@ -6775,7 +6891,8 @@
               (Option.expect (List.at (gmap (fn (s) (String.byte-len s)) (list "abc")) 0) "i"))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 5))
 
 (case "a recursive-generic transformer composes with itself"
   (doc    "`gmap (*2) (gmap (+1) [3])` = [(3+1)·2] = [8]: the inner map's RESULT element must tie to
@@ -6791,7 +6908,8 @@
               (Option.expect (List.at (gmap (fn (x) (* x 2)) (gmap (fn (x) (+ x 1)) (list 3))) 0) "i"))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 8))
 
 ; --- Identity/constant closures through a recursive-generic HOF -----------------------------------
 ; An IDENTITY closure through a recursive-generic list HOF composes at ONE element type AND at TWO
@@ -6808,7 +6926,8 @@
               (List.len (gmap (fn (x) x) (list 3 4))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 6))
 
 (case "an identity closure threads through a recursive-generic HOF at TWO element types"
   (doc    "The multi-instantiation face: the SAME `gmap` list HOF used with a pure IDENTITY closure at
@@ -6824,7 +6943,8 @@
                  (List.len (gmap (fn (s) s) (list "a" "b" "c")))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 17))
 
 (case "a constant-returning closure threads through a recursive-generic HOF"
   (doc    "`gmap (fn (x) 9) [1 2]` → [9 9], element 0 = 9: a closure that IGNORES its parameter and
@@ -6838,7 +6958,8 @@
               (Option.expect (List.at (gmap (fn (x) 9) (list 1 2)) 0) "i"))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 6))
 
 ; --- PASS-THROUGH closure NEIGHBORS of the domain-tie fix (single element type) ----------------------
 ; The domain-tie fix ties a pass-through closure's RESULT to its DOMAIN, so `(fn (s) s)` composes through
@@ -6863,7 +6984,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (gmap (gmap (from-list (list 1 2 3)) (fn (s) s)) (fn (s) s))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 30))
 
 (case "an identity closure composes over a COMPOUND (tuple) element at one element type"
   (doc    "The pass-through result←domain flow over a COMPOUND element, not a scalar: `(fn (s) s)` over an
@@ -6879,7 +7001,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (gmap (from-list (list (tuple 1 "x") (tuple 2 "y"))) (fn (s) s))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 20))
 
 (case "an identity closure composes at a single Int element type (not only String)"
   (doc    "The landed single-type case used a String element; this pins an Int element so the tie is shown
@@ -6894,7 +7017,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (gmap (from-list (list 10 20)) (fn (s) s))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 16))
 
 (case "a pass-through closure that returns its arg via a trivial let composes at one element type"
   (doc    "The pass-through body need not be a BARE variable: `(fn (s) (let ((x s)) x))` still has its
@@ -6910,7 +7034,8 @@
               (match it ((Iter.Nil) 0) ((Iter.Cons h rest) (+ 1 (icount rest)))))
             (def (main) (icount (gmap (from-list (list "p" "q")) (fn (s) (let ((x s)) x)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 18))
 
 ; ============================================================================================
 ; NON-SCALAR entry arguments across the exported-entry / (call …) boundary. The rust GATE DRIVER used to
@@ -7076,7 +7201,8 @@
                (each xs (fn ((: v Int64)) (+ v k)) 0))))
         (export main)))
   (call   main (: 2 Int64)) (output (: 1212 Int64))
-  (call   main (: 0 Int64)) (output (: 6 Int64)))
+  (call   main (: 0 Int64)) (output (: 6 Int64))
+  (live-objects known-leak 14))
 
 (case "compose builds closures capturing TWO function values in one env, both orders"
   (doc    "The two-fn-capture face (the :1397 pin stores ONE fn handle in a closure cell): `compose`
@@ -7211,7 +7337,8 @@
               (digits (msort (list 5 k 8 1 9 3 7)) 0 0))
             (export main)))
   (call   main (: 2 Int64)) (output (: 1235789 Int64))
-  (call   main (: 9 Int64)) (output (: 1357899 Int64)))
+  (call   main (: 9 Int64)) (output (: 1357899 Int64))
+  (live-objects known-leak 100))
 
 (case "ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)"
   (doc    "The recursion pins cover tail/accumulable-non-tail/mutual/tree — this is NESTED recursion: a self-call in a self-call's ARGUMENT ((ack (- m 1) (ack m (- n 1)))). The inner call fully evaluates mid-argument-list with the outer frame's operands live; the outer call LOOKS accumulable but is not, so a misfiring tail-transform or argument-slot reuse corrupts the tower. ack(3,3)=61 is a deep non-tail evaluation tower.")
@@ -7244,7 +7371,8 @@
         (export main)))
   (call   main (: 2 Int64)) (output (: 12 Int64))
   (call   main (: 3 Int64)) (output (: 21 Int64))
-  (call   main (: 0 Int64)) (output (: 12 Int64)))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 2))
 
 ; --- Tail-call parameter permutations (scalar swap, 3-cycle rotation, heap-slot swap) and the
 ; generation-capture-before-shadow closure. ---
@@ -7299,7 +7427,8 @@
           (shuffle k (list) (list 99)))
         (export main)))
   (call   main (: 3 Int64)) (output (: 22 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 4))
 
 (case "a closure captures the param generation BEFORE a shadow and applies after"
   (doc    "The capture × param-shadow face of the def-shadow fix (the generations pin covers
@@ -7412,7 +7541,8 @@
                               (fn (p) (match p ((tuple a b) (Some (tuple a (tuple b (+ a b)))))))
                               3 0 20)))
             (export main)))
-  (output (: 67 Int64)))
+  (output (: 67 Int64))
+  (live-objects known-leak 26))
 
 (case "closures extracted from a list by RUNTIME index and applied dispatch correctly"
   (doc    "The callback-REGISTRY idiom: the list-of-closures pins above store + call directly;
@@ -7432,7 +7562,8 @@
                    (match (List.at fns (% k 3)) ((Some g) (g 7)) ((None _u) -1)))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
-  (call   main (: 3 Int64)) (output (: 3008 Int64)))
+  (call   main (: 3 Int64)) (output (: 3008 Int64))
+  (live-objects known-leak 2))
 
 (case "a pipeline chain threads handler STATE left-to-right through effectful stages"
   (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar
@@ -7468,7 +7599,8 @@
                          k))
             (export main)))
   (call   main (: 5 Int64)) (output (: 55 Int64))
-  (call   main (: 0 Int64)) (output (: 5 Int64)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 10))
 
 ;; -- operators CURRY (#3633): a bare operator through a CURRIED-annotated HOF applied ((g a) b), and a let-bound partial ((+ 1)) applied — the partial-application witnesses (breaker batch 394) --
 (case "ch01 a bare prim passed as a function value applies"
@@ -7525,7 +7657,8 @@
     (def (main (: n Int64)) (each3 3 0 (+ n)))
     (export main)))
   (call main (: 10 Int64))
-  (output (: 36 Int64)))
+  (output (: 36 Int64))
+  (live-objects known-leak 1))
 
 (case "cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied"
   (input (do
@@ -7599,7 +7732,8 @@
                 ((Option.None) -1)))
             (export main)))
   (call   main (: 97 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "ch01b eta-expanded closure control for prim-as-value"
   (input  (do

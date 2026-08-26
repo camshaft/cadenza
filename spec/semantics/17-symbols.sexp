@@ -485,7 +485,8 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 2 Int64))
-  (call main (: 9 Int64)) (output (: 0 Int64)))
+  (call main (: 9 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 2))
 
 (case "a tuple with a Symbol leaf as a SET element dedups and membership-checks by content"
   (doc    "The SET-element companion of the tuple-map-key case above: the CHAMP hash/eq descends a
@@ -532,7 +533,8 @@
                 (+ (* (Set.len st) 1000) (fold-lens (Set.to-list st) 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 3211 Int64))
-  (call main (: 2 Int64)) (output (: 3214 Int64)))
+  (call main (: 2 Int64)) (output (: 3214 Int64))
+  (live-objects known-leak 10))
 
 (case "a runtime string interns to a symbol matched by content"
   (doc    "`Symbol.of` on a GENUINELY-RUNTIME string — built by the `rep` concat loop `(rep \"\" 3)` =
@@ -830,7 +832,8 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (call   main (: 3 Int64)) (output (: -1 Int64)))
+  (call   main (: 3 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 3))
 
 (case "a view-interned Symbol participates in Set.to-list content order"
   (doc    "Composes the view-intern face with the orderable-descriptor sort: the symbol interned from
@@ -848,7 +851,8 @@
                (if (= (at 2) #"c") 1 0))))
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 8))
 
 ; --- The re-intern identity loop over a runtime rope. ---
 
@@ -884,4 +888,5 @@
                (if (= v (Symbol.to-string (Symbol.of "key"))) 1 0))))
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
-  (call   main (: 0 Int64)) (output (: 0 Int64)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 6))

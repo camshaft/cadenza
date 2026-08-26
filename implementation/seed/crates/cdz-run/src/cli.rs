@@ -310,14 +310,20 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
 
     if cli.report_live_objects {
         // Run + read the heap's live-cell count, printing the value then a `live-objects\t<N>` line on
-        // stdout (the corpus `(live-objects N)` gate reads the tab line). Requires the debug-counters
-        // runtime (the shipped one always reports 0). No host-call capture on this path.
+        // stdout (the corpus opt-out gate reads the tab line to assert heap balance). The line is emitted
+        // ONLY when the component imports the value-heap runtime (a HEAP case); a scalar/const program has
+        // no heap to balance, so it runs normally and emits NO line — the gate then SKIPS the balance
+        // check for it (never a false fail). Observed host calls are captured + emitted exactly as the
+        // normal path, so a heap case that also delegates host effects still has its `(host-calls …)`
+        // verified. Requires the DEBUG-COUNTERS runtime for the count to be meaningful (the shipped one
+        // always reports 0).
         //
-        // DIAGNOSTIC (to STDERR — stdout carries only the value + the `live-objects` tab line the gate
-        // parses): name the runtime that will ACTUALLY run, by the content address of its bytes, plus how it
-        // was resolved. A `live-objects 0` from the SHIPPED release runtime is otherwise indistinguishable
-        // from a genuine leak-free run; printing the loaded hash makes a vacuous run self-evident (if the
-        // hash is the release build, the count is meaningless — pass `--runtime <debug-counters>.wasm`).
+        // DIAGNOSTIC (to STDERR — stdout carries only the value + the optional `live-objects` tab line the
+        // gate parses): name the runtime that will ACTUALLY run, by the content address of its bytes, plus
+        // how it was resolved. A `live-objects 0` from the SHIPPED release runtime is otherwise
+        // indistinguishable from a genuine leak-free run; printing the loaded hash makes a vacuous run
+        // self-evident (if the hash is the release build, the count is meaningless — pass
+        // `--runtime <debug-counters>.wasm`).
         if let Some(rt) = &opts.runtime {
             let src = if cli.runtime.is_some() {
                 "--runtime override"
@@ -329,41 +335,28 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 content_address(rt)
             );
         }
-        let (outcome, live) = run_with_live_objects(&component_bytes, &opts)?;
+        let (outcome, observed, live) = run_with_live_objects(&component_bytes, &opts)?;
+        emit_observed_host_calls(&observed);
         return match outcome {
             Outcome::Value(text) => {
                 println!("{text}");
-                println!("live-objects\t{live}");
+                if let Some(live) = live {
+                    println!("live-objects\t{live}");
+                }
                 Ok(ExitCode::SUCCESS)
             }
             Outcome::Trap(msg) => {
                 eprintln!("{prog}: trap: {msg}");
-                println!("live-objects\t{live}");
+                if let Some(live) = live {
+                    println!("live-objects\t{live}");
+                }
                 Ok(ExitCode::FAILURE)
             }
         };
     }
 
     let (outcome, observed) = run_capturing(&component_bytes, &opts)?;
-    // Emit the OBSERVED host calls to stderr, in call order. On stderr (not stdout) so the value on stdout
-    // stays clean; absent for a program that makes no host call. Each observed entry is `<op>` OR
-    // `<op>\t<message>` (the latter when the call carried STRING arguments — a `report.fail("…")` /
-    // `log.emit("…")`). Split on the FIRST tab so the op stays clean:
-    //   - `host-call\t<op>` — ALWAYS emitted (the corpus gate reads these to verify `(host-calls …)`; the
-    //     `<op>` field is unpolluted so an argument-carrying call still matches its recorded op).
-    //   - `host-arg\t<op>\t<message>` — ALSO emitted when a message rode along, so a consumer that wants
-    //     the argument (`cdz test`, whose failure path emits the assertion text) can read it. The gate
-    //     ignores an unknown `host-arg` prefix, so this is additive and backward-compatible.
-    for entry in &observed {
-        let (op, msg) = match entry.split_once('\t') {
-            Some((op, msg)) => (op, Some(msg)),
-            None => (entry.as_str(), None),
-        };
-        eprintln!("host-call\t{op}");
-        if let Some(msg) = msg {
-            eprintln!("host-arg\t{op}\t{msg}");
-        }
-    }
+    emit_observed_host_calls(&observed);
     match outcome {
         Outcome::Value(text) => {
             println!("{text}");
@@ -372,6 +365,28 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         Outcome::Trap(msg) => {
             eprintln!("{prog}: trap: {msg}");
             Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Emit the OBSERVED host calls to stderr, in call order. On stderr (not stdout) so the value on stdout
+/// stays clean; absent for a program that makes no host call. Each observed entry is `<op>` OR
+/// `<op>\t<message>` (the latter when the call carried STRING arguments — a `report.fail("…")` /
+/// `log.emit("…")`). Split on the FIRST tab so the op stays clean:
+///   - `host-call\t<op>` — ALWAYS emitted (the corpus gate reads these to verify `(host-calls …)`; the
+///     `<op>` field is unpolluted so an argument-carrying call still matches its recorded op).
+///   - `host-arg\t<op>\t<message>` — ALSO emitted when a message rode along, so a consumer that wants the
+///     argument (`cdz test`, whose failure path emits the assertion text) can read it. The gate ignores an
+///     unknown `host-arg` prefix, so this is additive and backward-compatible.
+fn emit_observed_host_calls(observed: &[String]) {
+    for entry in observed {
+        let (op, msg) = match entry.split_once('\t') {
+            Some((op, msg)) => (op, Some(msg)),
+            None => (entry.as_str(), None),
+        };
+        eprintln!("host-call\t{op}");
+        if let Some(msg) = msg {
+            eprintln!("host-arg\t{op}\t{msg}");
         }
     }
 }

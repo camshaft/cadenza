@@ -699,7 +699,8 @@
             (def (main (: n Int64)) (times (. m step) n 1))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 32 Int64)))
+  (output (: 32 Int64))
+  (live-objects known-leak 1))
 
 (case "two module functions are mutually recursive"
   (doc    "Mutual recursion between two module members: `ev` calls `od`, `od` calls `ev` — neither reaches
@@ -1120,7 +1121,8 @@
             (def (sm (: l L)) (match l ((L.Nil) 0) ((L.Cons h t) (+ h (sm t)))))
             (def (main) (sm (mk)))
             (export main)))
-  (output (: 11 Int64)))
+  (output (: 11 Int64))
+  (live-objects known-leak 5))
 
 (case "a GENERIC user sum crosses a module boundary at a concrete instantiation"
   (doc    "The generic companion of the recursive-sum crossing above: `lib` declares a GENERIC `(type Box
@@ -1614,7 +1616,8 @@
               (match (Map.lookup (Map.insert Map.empty k (mk)) k) ((Some c) (rank c)) ((None _u) -1)))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 1))
 
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
@@ -2103,7 +2106,8 @@
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 ; --- Import reflection: the reserved `__ast__` name -------------------------------------------------
 ; A module implicitly exports the reserved name `__ast__`, which reflects that module's canonical AST as

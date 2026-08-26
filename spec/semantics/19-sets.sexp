@@ -256,7 +256,8 @@
               (if (= n 0) (Set.len s) (loop (- n 1) s)))
             (def (main) (loop 3 (Set.of (list))))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "an empty map passed to a recursive callee with a non-Int64 key param grounds its key type from the param"
   (doc    "The Map twin of the empty-set-at-call-arg case above: `(loop 3 Map.empty)` where `loop`'s param is
@@ -269,7 +270,8 @@
               (if (= n 0) (Map.len m) (loop (- n 1) m)))
             (def (main) (loop 3 Map.empty))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "the number of elements counts distinct elements"
   (doc    "`(Set.len (Set.of (list 1 2 2 3)))` is 3 — the count of DISTINCT elements, since the duplicate
@@ -531,7 +533,8 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 301 Int64))
   (call   main (: 1 Int64)) (output (: 311 Int64))
-  (call   main (: 2 Int64)) (output (: 100 Int64)))
+  (call   main (: 2 Int64)) (output (: 100 Int64))
+  (live-objects known-leak 15))
 
 (case "TWO-SUM finds a complement pair via a seen-set built during one walk"
   (doc    "The complement-lookup idiom: one walk over `(2 7 11 15 3)` tests `target − h` against the
@@ -561,7 +564,8 @@
   (call   main (: 18 Int64)) (output (: 2 Int64))
   (call   main (: 5 Int64)) (output (: 4 Int64))
   (call   main (: 4 Int64)) (output (: -1 Int64))
-  (call   main (: 14 Int64)) (output (: 4 Int64)))
+  (call   main (: 14 Int64)) (output (: 4 Int64))
+  (live-objects known-leak 5))
 
 (case "HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution"
   (doc    "Cycle detection via a seen-set over a NUMERIC orbit (the two-sum above probes complements;
@@ -589,7 +593,8 @@
   (call   main (: 19 Int64)) (output (: 104 Int64))
   (call   main (: 4 Int64)) (output (: 8 Int64))
   (call   main (: 7 Int64)) (output (: 105 Int64))
-  (call   main (: 1 Int64)) (output (: 100 Int64)))
+  (call   main (: 1 Int64)) (output (: 100 Int64))
+  (live-objects known-leak 3))
 
 (case "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc    "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`
@@ -628,7 +633,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 410 Int64))
   (call   main (: 5 Int64)) (output (: 211 Int64))
-  (call   main (: 4 Int64)) (output (: 104 Int64)))
+  (call   main (: 4 Int64)) (output (: 104 Int64))
+  (live-objects known-leak 41))
 
 (case "BIPARTITE check two-colors components and rejects the odd cycle"
   (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
@@ -688,7 +694,8 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
-  (call main (: 3 Int64)) (output (: 1 Int64)))
+  (call main (: 3 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 57))
 
 (case "dropping a set derived by insert must not free members shared with the survivor"
   (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,
@@ -789,7 +796,8 @@
                 (+ (* (chk order 0) 10) (edges-fwd g order ns))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
-  (call   main (: 2 Int64)) (output (: 150 Int64)))
+  (call   main (: 2 Int64)) (output (: 150 Int64))
+  (live-objects known-leak 181))
 
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
@@ -945,7 +953,8 @@
                   (if (Set.contains (Set.difference a b) 25) 1 0))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 60 20 20 1 1 1 0) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 60 20 20 1 1 1 0) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "self-difference of a 100-element trie IS the canonical empty set by equality"
   (doc    "The self-difference law (A ∖ A = ∅) at MULTI-LEVEL trie scale, upgraded from cardinality to
@@ -1164,7 +1173,8 @@
   (input  (do
             (def (build s n) (if (< n 1) s (build (Set.insert s n) (- n 1))))
             (def (main) (build (Set.of (list)) 3)) (export main)))
-  (output (: ((. Set of) (list 1 2 3)) (Set Int64))))
+  (output (: ((. Set of) (list 1 2 3)) (Set Int64)))
+  (live-objects known-leak 1))
 
 ; The escape case above crosses an INSERT-built set. A set produced by set ALGEBRA (union / intersection /
 ; difference) is also a runtime handle that must escape to the host as its value form — exercising the
@@ -1180,7 +1190,8 @@
            set), rendered in canonical sorted order — the union companion of the insert-built escape.")
   (input  (do (def (main (: x Int64)) (Set.union (Set.of (list 1 2)) (Set.insert (Set.of (list)) x))) (export main)))
   (call   main (: 5 Int64)) (output (: ((. Set of) (list 1 2 5)) (Set Int64)))
-  (call   main (: 1 Int64)) (output (: ((. Set of) (list 1 2)) (Set Int64))))
+  (call   main (: 1 Int64)) (output (: ((. Set of) (list 1 2)) (Set Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime set-difference result escapes to the host as its value form"
   (doc    "`(Set.difference (Set.of (list 1 2 3)) (Set.insert (Set.of (list)) x))` removes a runtime element
@@ -1190,7 +1201,8 @@
            the three set operations).")
   (input  (do (def (main (: x Int64)) (Set.difference (Set.of (list 1 2 3)) (Set.insert (Set.of (list)) x))) (export main)))
   (call   main (: 2 Int64)) (output (: ((. Set of) (list 1 3)) (Set Int64)))
-  (call   main (: 9 Int64)) (output (: ((. Set of) (list 1 2 3)) (Set Int64))))
+  (call   main (: 9 Int64)) (output (: ((. Set of) (list 1 2 3)) (Set Int64)))
+  (live-objects known-leak 1))
 
 ; --- RUNTIME-element `Set.of`: equality and set algebra over a set whose element is a runtime value ----
 ; The cases above build every set from CONSTANT `Set.of` literals or a constant insert-loop, so they
@@ -1568,7 +1580,8 @@
             (def (main (: n Int64))
               (inc (Set.to-list (build n (Set.of (list)))) -1 0))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 100 Int64)))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (live-objects known-leak 304))
 
 (case "Set.of over Set.to-list round-trips a 100-element trie to the identical set"
   (doc    "The enumerate⇄rebuild closure for sets: `(Set.of (Set.to-list s))` over a 100-element
@@ -1586,7 +1599,8 @@
                 (def rt (Set.of (Set.to-list src)))
                 (+ (* 10 (if (= rt src) 1 0)) (if (= (Set.len rt) n) 1 0))))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 11 Int64)))
+  (call   main (: 100 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 106))
 
 (case "Set.to-list length is the set's cardinality (deduped)"
   (doc    "`(List.len (Set.to-list (Set.of (list 3 1 2 1 3))))` — the enumerated list has one element per
@@ -1607,7 +1621,8 @@
             (def (main) (match (List.at (Set.to-list (Set.of (list (tuple 3 1) (tuple 1 2) (tuple 2 0)))) 0)
                           ((Some t) (. t 0))
                           ((None u) -1))) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-breaker"
   (doc    "The tuple case above decides order on the FIRST (Int) component; this pins that when the first
@@ -1628,7 +1643,8 @@
                 ((Some t) (match (Bytes.at (. t 1) 0) ((Some v) (+ (* 100 (. t 0)) v)) ((None u) -1)))
                 ((None u) -1)))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 197 Int64)))
+  (call   main (: 0 Int64)) (output (: 197 Int64))
+  (live-objects known-leak 3))
 
 (case "Set.to-list orders a set of RECORD elements canonically"
   (doc    "The record companion of the tuple-element case: records order by comparing field values in the
@@ -1643,7 +1659,8 @@
                 ((Some r) (. r x))
                 ((None u) -1)))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 1 Int64)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a float-carrying SUM as a Set key dedupes by payload and probes by content"
   (doc    "The custom-Ord landing's key face (a monomorphic float-carrying sum is BTree-keyable on the
@@ -1725,7 +1742,8 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 3.5 Float64))  (output (: (tuple 3 1) (Tuple Int64 Int64)))
-  (call   main (: -1.0 Float64)) (output (: (tuple 3 1) (Tuple Int64 Int64))))
+  (call   main (: -1.0 Float64)) (output (: (tuple 3 1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order"
   (doc    "The NaN-POSITION companion of the float byte-order case above: canonical (quiet) NaN's bits are
@@ -1794,7 +1812,8 @@
               (if (= i (List.len l)) a (sumlist l (+ i 1) (+ a (Option.expect (List.at l i) "oob")))))
             (def (main (: n Int64)) (sumlist (Set.to-list (ins n (Set.of (list)))) 0 0))
             (export main)))
-  (call   main (: 10 Int64)) (output (: 10 Int64)))
+  (call   main (: 10 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 2))
 
 ; The Set.to-list order pins above are all over INT elements (and one tuple case). STRING elements take a
 ; DIFFERENT comparator arm — the zero-alloc scalar fast-path (`compare_scalar_leaf`) flattens a ROPE string
@@ -1819,7 +1838,8 @@
                 ((Some s) (if (= s "axx") 1 0))
                 ((None u) -1)))
             (export main)))
-  (call   main (: 2 Int64)) (output (: 1 Int64)))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128"
   (doc    "Bytes gained a BLESSED TOTAL ORDER (§order, operator directive 2026-08-02; rcdzc+runtime #1120):
@@ -1844,7 +1864,8 @@
                             ((list) -2)))
                    (lastbyte xs -9))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 628 Int64)))
+  (call   main (: 0 Int64)) (output (: 628 Int64))
+  (live-objects known-leak 10))
 
 (case "Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order"
   (doc    "The Map-key companion of the Set.to-list Bytes-order pin above: a `Map` keyed by single-byte `Bytes`
@@ -1868,7 +1889,8 @@
                               ((list) -2)))
                      (lastkey ps -9)))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 628 Int64)))
+  (call   main (: 0 Int64)) (output (: 628 Int64))
+  (live-objects known-leak 13))
 
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte
@@ -1887,7 +1909,8 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64))  (output (: 1 Int64))
-  (call   main (: -1 Int64)) (output (: 2 Int64)))
+  (call   main (: -1 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)"
   (doc    "`{\"axxx\",\"a\"}` — the flat literal \"a\" is a proper PREFIX of the rope `(rep \"a\" 3)` =
@@ -1905,7 +1928,8 @@
                 ((Some s) (String.byte-len s))
                 ((None u) -1)))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 1 Int64)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 ; The cases above all enumerate a NON-EMPTY set. The empty boundary matters for a real pass that walks a
 ; possibly-empty symbol table / free-var set: `Set.to-list` of an EMPTY (but element-TYPED) set is the
@@ -1957,7 +1981,8 @@
                 (if (= (Set.of (Set.to-list s)) s) 1 0)))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 4))
 
 (case "Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold"
   (doc    "The round-trip above uses SCALAR elements; this runs the same runtime-`Set.of` fold over COMPOUND
@@ -1975,7 +2000,8 @@
                   (+ (* 10 (Set.len r)) (if (= r s) 1 0)))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
-  (output (: 21 Int64)))
+  (output (: 21 Int64))
+  (live-objects known-leak 6))
 
 (case "Set.of of a computed (concatenated) runtime list dedups by value"
   (doc    "`Set.of` over a `List.concat` result — a runtime list the compiler has no element-list to fold at
@@ -1988,7 +2014,8 @@
               (Set.len (Set.of (List.concat (list a b) (list b a)))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 6))
 
 ; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
 ; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
@@ -2008,7 +2035,8 @@
                  (* 10 (Set.len (Set.of (List.concat (list (> a b)) (list (< a b))))))))
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
-  (output (: 22 Int64)))
+  (output (: 22 Int64))
+  (live-objects known-leak 9))
 
 ; The N-site generalization of the per-site monomorphic fold: THREE runtime-`Set.of` sites at THREE distinct
 ; element types in one program — a `Set Int64`, a `Set Bool`, AND a `Set String`. Each site gets its own
@@ -2043,7 +2071,8 @@
               (. (Option.expect (List.at (Map.to-list (Map.insert Map.empty k 42)) 0) "e") 1))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
 
 (case "a Float element inserted into an empty (runtime) set boxes with box-float, not box-int"
   (doc    "MISCOMPILE (invalid wasm, wasm-only): `Set.insert (Set.of (list)) x` with `x : Float64` — a
@@ -2544,7 +2573,8 @@
             (def (g xs) (match xs ((INil) (Set.of (list))) ((ICons v t) (Set.remove (g t) (+ v 1)))))
             (def (main) (Set.len (g (ICons 5 (INil)))))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 3))
 
 (case "a Set.remove of a checked-arith element that is PRESENT drops exactly it (disjoint-slot value-parity)"
   (doc    "Value-parity companion to the Set.remove disjoint-slot pin above: the two pins there observe a
@@ -2561,7 +2591,8 @@
               (let ((r (g (ICons 5 (INil)))))
                 (+ (* 10 (if (Set.contains r 6) 1 0)) (if (Set.contains r 9) 1 0))))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 (case "a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted"
   (doc    "The Map twin of the `Set.remove` disjoint-slot pin above: `(Map.remove (g t) (+ v 1))` removes a
@@ -2575,7 +2606,8 @@
             (def (g xs) (match xs ((INil) (Map.insert Map.empty 0 0)) ((ICons v t) (Map.remove (g t) (+ v 1)))))
             (def (main) (Map.len (g (ICons 5 (INil)))))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 (case "a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)"
   (doc    "Value-parity companion to the Map.remove disjoint-slot pin above: that pin observes a NO-OP removal
@@ -2593,7 +2625,8 @@
                 (+ (* 100 (match (Map.lookup r 6) ((Some v) v) ((None u) -1)))
                    (match (Map.lookup r 9) ((Some v) v) ((None u) -1)))))
             (export main)))
-  (output (: -10 Int64)))
+  (output (: -10 Int64))
+  (live-objects known-leak 3))
 
 ; `Set.union`/`Set.intersection`/`Set.difference` (`Core::SetAlgebra`) emit BOTH set operands at a SHARED
 ; scratch `base` (select.rs:7755, `emit(lhs, base); emit(rhs, base)`) — the SAME fixed-base pattern that
@@ -2618,7 +2651,8 @@
               (Set.len (Set.union (g (ICons 5 (INil))) (Set.of (list (+ n 2) (+ n 3))))))
             (export main)))
   (call   main (: 50 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 ; ---- a runtime Bytes.slice VIEW as a CHAMP key must key by CONTENT, not by the view node --------------
 ; A runtime-start `Bytes.slice` produces a borrowed [off,len] VIEW over its parent. Used as a CHAMP key
@@ -2638,7 +2672,8 @@
                ((None u) -1)))
            (export main)))
   (call main (: 1 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime slice PROBING a Map keyed by flat Bytes must hit by content"
   (input (do
@@ -2651,7 +2686,8 @@
   (call main (: 1 Int64))
   (output (: 42 Int64))
   (call main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime slice STORED as a Map key must be found by a flat Bytes probe"
   (input (do
@@ -2663,7 +2699,8 @@
                ((None u) -2)))
            (export main)))
   (call main (: 1 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime slice probes a Set of flat Bytes by content"
   (input (do
@@ -2673,7 +2710,8 @@
                ((None u) -2)))
            (export main)))
   (call main (: 1 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "CONTROL: a CONST-start slice as a Map-lookup key hits on wasm"
   (input (do
@@ -2706,7 +2744,8 @@
   (call   main (: 1 Int64))
   (output (: 1 Int64))
   (call   main (: 0 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary"
   (doc    "The set-ALGEBRA face of the view canonicalization (the entry-point pins cover per-element
@@ -2725,7 +2764,8 @@
   (call   main (: 1 Int64))
   (output (: 2 Int64))
   (call   main (: 0 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 2))
 
 (case "Set.intersection and Set.difference match a view against a flat element across operands"
   (doc    "The remaining two algebra ops in one case: intersection of {view, (1,2)} with {flat (20,30)}
@@ -2751,7 +2791,8 @@
   (call   main (: 1 Int64) (: 1 Int64))
   (output (: 1 Int64))
   (call   main (: 0 Int64) (: 1 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "Map.remove by a slice-view key drops the flat-keyed entry"
   (doc    "The remove face: `(Map.remove {flat↦42} s)` with the view key — a=1 (equal content) removes
@@ -2767,7 +2808,8 @@
   (call   main (: 1 Int64))
   (output (: 0 Int64))
   (call   main (: 0 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "Map.take by a slice-view key yields the flat-keyed value"
   (doc    "The value-yielding-remove face: `(Map.take {flat↦42} s)` — the hit binds `(Some 42)` with an
@@ -2785,7 +2827,8 @@
   (call   main (: 1 Int64))
   (output (: 42 Int64))
   (call   main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 5))
 
 (case "a float-field RECORD as a SET element dedups by content including the float leaf"
   (doc    "The float-leaf record as a champ SET element (closed with the slice-canonicalization work —
@@ -2830,7 +2873,8 @@
         (export main)))
   (call   main (: 2 Int64)) (output (: 213 Int64))
   (call   main (: 1 Int64)) (output (: 301 Int64))
-  (call   main (: 6 Int64)) (output (: 213 Int64)))
+  (call   main (: 6 Int64)) (output (: 213 Int64))
+  (live-objects known-leak 8))
 
 (case "a negative-denominator Rational sign-normalizes on the set-element path and dedupes its positive-denominator twin"
   (doc    "The SIGN axis of Rational canonicalization on the set-element path (06-numeric pins it on the
@@ -2863,7 +2907,8 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 234 Int64))
   (call   main (: 5 Int64)) (output (: 134 Int64))
-  (call   main (: 1 Int64)) (output (: 346 Int64)))
+  (call   main (: 1 Int64)) (output (: 346 Int64))
+  (live-objects known-leak 12))
 
 (case "Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin"
   (doc    "Set.intersection across CONSTRUCTION paths: set `a` holds 1/2 produced by ARITHMETIC
@@ -2960,7 +3005,8 @@
             (+ (* 100 (vat 0)) (+ (* 10 (vat 1)) (vat 2)))))
         (export main)))
   (call   main (: 3 Int64)) (output (: 231 Int64))
-  (call   main (: 1 Int64)) (output (: 312 Int64)))
+  (call   main (: 1 Int64)) (output (: 312 Int64))
+  (live-objects known-leak 15))
 
 (case "a String slice VIEW keys a map by content in both directions, rope-backed included"
   (doc    "The STRING face of the slice-view-as-CHAMP-key family (the Bytes faces :2361/:2374 pin the
@@ -3005,7 +3051,8 @@
                (if (= (at 2) "c") 1 0))))
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 4))
 
 (case "tuple set elements order by string content across reps then the scalar tiebreak"
   (doc    "The TUPLE leg of the mixed-rep content-order family (list leg banked alongside; the tuple
@@ -3025,7 +3072,8 @@
               ((None _u) -1))))
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
-  (call   main (: 0 Int64)) (output (: 2 Int64)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "one string content hashes identically from flat, rope, and view reps in one program"
   (doc    "The TRIPLE-rep completeness witness the pairwise pins imply but never run together: ONE
@@ -3205,7 +3253,8 @@
                   (Sink.total))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 123 Int64)))
+  (output (: 123 Int64))
+  (live-objects known-leak 6))
 
 ; --- Remove-path canonicalization for sets (the map companions live in 05-compound-types):
 ; a set reached VIA a remove must be byte-canonical with the directly-built set. Both sides
@@ -3608,7 +3657,8 @@
         (+ (* 100 (List.len xs)) (sum-at xs 0))))
     (export main)))
   (call main (: 3 Int64))
-  (output (: 333 Int64)))
+  (output (: 333 Int64))
+  (live-objects known-leak 2))
 
 (case "sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3"
   (input (do
@@ -3630,7 +3680,8 @@
         (String.concat (at xs 0) (String.concat (at xs 1) (at xs 2)))))
     (export main)))
   (call main (: 0 Int64))
-  (output (: "abc" String)))
+  (output (: "abc" String))
+  (live-objects known-leak 1))
 
 (case "sto6 a 20-element multi-node set to-list starts sorted 1,2,3"
   (input (do
@@ -3665,7 +3716,8 @@
         (String.concat (at xs 0) (String.concat "|" (String.concat (at xs 1) (String.concat "|" (at xs 2)))))))
     (export main)))
   (call main (: 0 Int64))
-  (output (: "ab|b|bb" String)))
+  (output (: "ab|b|bb" String))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 418 (2026-08-26): NON-FINITE and SIGNED-ZERO floats as CHAMP keys — hash and
 ; equality agree everywhere: {+0.0,-0.0} are TWO members / -0.0 is not a member of {+0.0} / a Map

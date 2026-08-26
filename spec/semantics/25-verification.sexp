@@ -212,7 +212,8 @@
                 ((Term.Eq a b) (term-eq a b))
                 (_ false)))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 2))
 
 (case "the kernel's ASSUME rule yields the sequent {p} |- p"
   (doc    "The second primitive leaf rule: `ASSUME p` produces the theorem `{p} ⊢ p` — p as both the
@@ -249,7 +250,8 @@
                        ((list h) (term-eq h p))
                        (_ false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 6))
 
 (case "the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214"
   (doc    "The soundness boundary re-asserted for the REALISTIC sequent Thm (not the toy Thm(MkThm Int64)
@@ -325,7 +327,8 @@
                     (match (concl th) ((Term.Eq l r) (term-eq l r)) (_ false)))
                   ((Option.None) false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 8))
 
 (case "the kernel's EQ_MP rule: from |- p=q and G |- p derive G |- q (hypotheses unioned)"
   (doc    "Modus ponens for equality — the rule that lets a proof MOVE across a proven equality. EQ_MP
@@ -372,7 +375,8 @@
                          (match (hyps th) ((list h) (term-eq h p)) (_ false))))
                   ((Option.None) false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 10))
 
 (case "the kernel's DEDUCT_ANTISYM rule: from A |- p and B |- q derive (A-q)++(B-p) |- p=q"
   (doc    "The rule that BUILDS an equality from bidirectional entailment (HOL's DEDUCT_ANTISYM_RULE):
@@ -415,7 +419,8 @@
                   ((Term.Eq l r) (and (term-eq l p) (term-eq r q)))
                   (_ false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 4))
 
 (case "a multi-step kernel derivation composes several primitive rules into one theorem"
   (doc    "The kernel as a real proof engine: a derivation chaining TRANS and MK_COMB. From refl we get
@@ -471,7 +476,8 @@
                       ((Option.None) false)))
                   ((Option.None) false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 21))
 
 ; ============================================================================================
 ; Increment 4 — the λ-calculus layer: Abs (lambda), capture-naive substitution, and the BETA and ABS
@@ -525,7 +531,8 @@
                 ((Term.Eq lhs rhs) (term-eq rhs (Term.Var 9)))
                 (_ false)))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 3))
 
 (case "the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone"
   (doc    "The design doc's §2 first-theorem milestone: a genuine result about the λ-calculus, DERIVED
@@ -569,7 +576,8 @@
                          (term-eq rhs y)))
                   (_ false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 15))
 
 (case "the kernel's ABS rule lifts an equation under a binder: from |- t=u derive |- (λx.t)=(λx.u)"
   (doc    "ABS, the rule that abstracts an equational theorem under a lambda: from G ⊢ t = u derive
@@ -611,7 +619,8 @@
                     (_ false)))
                 ((Option.None) false)))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 6))
 
 (case "the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214"
   (doc    "Re-asserts the soundness boundary after extending Term with the Abs binder: adding a term form
@@ -697,7 +706,8 @@
                     (body (Term.Abs 0 (Term.Var 1))))
                 (free-in 0 (subst 1 s body))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 7))
 
 (case "a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents"
   (doc    "The control that gives the pin above its teeth: a NAIVE subst that does not α-rename binders
@@ -729,7 +739,8 @@
             (def (main)
               (free-in 0 (naive-subst 1 (Term.Var 0) (Term.Abs 0 (Term.Var 1)))))
             (export main)))
-  (output (: false Bool)))
+  (output (: false Bool))
+  (live-objects known-leak 6))
 
 (case "BETA over the capture-avoiding substitution still proves the identity theorem (no regression)"
   (doc    "Guards that hardening subst to be capture-avoiding did not break β-reduction: BETA on the
@@ -792,7 +803,8 @@
                   ((Term.Eq lhs rhs) (term-eq rhs y))
                   (_ false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 3))
 
 ; ============================================================================================
 ; Increment 6 — α-EQUIVALENCE (aconv): the term equality a real HOL kernel actually uses. The structural
@@ -837,7 +849,8 @@
               (and (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 1 (Term.Var 1)))
                    (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 9))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 21))
 
 (case "α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable"
   (doc    "The subtle correctness edges that make aconv a REAL α-equivalence, not a toy: (a) nested
@@ -875,7 +888,8 @@
                      (and (not (aconv (Term.Abs 0 (Term.Var 5)) (Term.Abs 9 (Term.Var 6))))
                           (not (aconv (Term.Abs 0 (Term.Var 0)) (Term.Abs 0 (Term.Var 5))))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 59))
 
 (case "a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject"
   (doc    "Why the kernel NEEDS aconv, not structural term-eq: EQ_MP takes ⊢ p=q and a theorem whose
@@ -928,7 +942,8 @@
                     ((Option.Some r) (match (concl r) ((Term.Var n) (= n 100)) (_ false)))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 ; ============================================================================================
 ; Increment 7 — the IMPLICATION fragment and the FLAGSHIP LOGICAL THEOREM ⊢ p ⇒ p. This lifts the kernel
@@ -985,7 +1000,8 @@
                   (and (term-eq (concl th) (Term.Imp p p))
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 (case "the kernel's modus ponens (⇒-elimination): from ⊢ p⇒q and ⊢ p derive ⊢ q"
   (doc    "The elimination rule dual to DISCH: MP takes ⊢ p ⇒ q and ⊢ p and derives ⊢ q, checking the
@@ -1033,7 +1049,8 @@
                     ((Option.Some r) (term-eq (concl r) p))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 (case "the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214"
   (doc    "Re-asserts the soundness boundary after adding the Imp term form and the DISCH/MP rules: the
@@ -1154,7 +1171,8 @@
                       ((Option.None) false)))
                   ((Option.None) false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 24))
 
 (case "the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness"
   (doc    "∀-elimination: from ⊢ ∀x.P derive ⊢ P[t/x], substituting the witness t for the bound variable
@@ -1231,7 +1249,8 @@
                 ((Option.Some s) (term-eq (concl s) (Term.Eq (Term.Var 42) (Term.Var 42))))
                 ((Option.None) false)))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 11))
 
 (case "the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214"
   (doc    "Re-asserts the soundness boundary after adding the Forall term form and GEN/SPEC: first-order
@@ -1326,7 +1345,8 @@
                                     (match p ((Term.Eq l r) (and (term-eq l idfn-app) (term-eq r (Term.Var 7)))) (_ false)))))))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 30))
 
 (case "a purely-logical composed proof over a quantified proposition: DISCH then MP"
   (doc    "Composition within the logical layer, over a QUANTIFIED proposition P = (∀x0. x0 = x0). DISCH P
@@ -1374,7 +1394,8 @@
                          ((Option.Some r) (term-eq (concl r) p))
                          ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 65))
 
 ; ============================================================================================
 ; Increment 11 — SOUNDNESS FIX (breaker-found): the CHAINING rules must UNION their operands'
@@ -1432,7 +1453,8 @@
                            (match (hyps r) ((list h) (term-eq h eqab)) (_ false))))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 22))
 
 (case "MK_COMB unions its operands' hypotheses — an assumption threaded through MK_COMB survives (soundness)"
   (doc    "The soundness pin for MK_COMB (congruence). th1 = ASSUME (f=g) : {f=g} ⊢ f=g; th2 = refl(x) :
@@ -1479,7 +1501,8 @@
                            (match (hyps r) ((list h) (term-eq h eqfg)) (_ false))))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 28))
 
 ; ============================================================================================
 ; Increment 10 — the premise-matching rules should match up to α-EQUIVALENCE, not structural equality.
@@ -1547,7 +1570,8 @@
                     (match (mp-struct imp th) ((Option.None) true) ((Option.Some _) false))
                     (match (mp-aconv imp th) ((Option.Some r) (term-eq (concl r) q)) ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 16))
 
 (case "TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects"
   (doc    "Premise-matching completeness for TRANS. t1 : ⊢ (Var 1) = (λx0.x0); t2 : ⊢ (λx5.x5) = (Var 2) —
@@ -1603,7 +1627,8 @@
                     (match (trans-struct t1 t2) ((Option.None) true) ((Option.Some _) false))
                     (match (trans-aconv t1 t2) ((Option.Some r) (term-eq (concl r) (Term.Eq a c))) ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 22))
 
 ; ============================================================================================
 ; Increment 12 — the HOL-FAITHFUL LOGICAL LAYER: logical constants as DEFINED constants (via
@@ -1665,7 +1690,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 21))
 
 (case "the kernel's conjunction: CONJ unions hypotheses, CONJUNCT1/2 project (hyps survive)"
   (doc    "Conjunction as an intro/elim connective. CONJ takes A ⊢ a and B ⊢ b and derives A∪B ⊢ a∧b —
@@ -1716,7 +1742,8 @@
                              (match (hyps c1) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 17))
 
 ; ============================================================================================
 ; Increment 12 slice 2 — the remaining logical connectives: disjunction (∨) and the existential (∃).
@@ -1766,7 +1793,8 @@
                   (and (term-eq (concl d) (Term.Disj a b))
                        (match (hyps d) ((list h) (term-eq h a)) (_ false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 12))
 
 (case "the kernel's existential introduction (EXISTS) checks the witness and preserves hypotheses"
   (doc    "∃-introduction, the dual of SPEC. To prove ∃x.P, EXISTS takes a witness t and a theorem of
@@ -1821,7 +1849,8 @@
                            (match (hyps e) ((list h) (term-eq h pinst)) (_ false))))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 32))
 
 ; ============================================================================================
 ; Increment 13 — pin the single-variant abstract-Thm MATCH-outside case as CDZ0214. A HOL-kernel `Thm` is
@@ -1905,7 +1934,8 @@
                   (and (term-eq (concl th) (Term.Eq (Term.Abs 0 (Term.Comb f (Term.Var 0))) f))
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 19))
 
 (case "an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel"
   (doc    "The axiomatic base does not weaken the trust boundary. new_axiom is the KERNEL's privileged
@@ -1964,7 +1994,8 @@
                     ((Option.Some s) (term-eq (concl s) (Term.Eq f lam)))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 18))
 
 ; ============================================================================================
 ; Increment 15 — a minimal TACTIC layer (UNTRUSTED code above the kernel). In LCF, tactics are ordinary
@@ -2018,7 +2049,8 @@
                 (and (prove g-ok (refl-tac g-ok))
                      (not (prove g-bad (refl-tac g-bad))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 16))
 
 (case "a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)"
   (doc    "The backward-proof shape: a tactic reduces a GOAL to a SUBGOAL and a JUSTIFICATION that builds
@@ -2070,7 +2102,8 @@
                       (_ false)))
                   ((Option.None) false))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 10))
 
 ; Increment 16 — the SELECT (choice / Hilbert-ε) axiom, the second of HOL's three. SELECT_AX states
 ; |- (P x) ⇒ (P (@ P)): if a predicate P holds of some witness x, it holds of the choice element (@ P).
@@ -2118,7 +2151,8 @@
                                 (Term.Imp (Term.Comb p x) (Term.Comb p (Term.Select p))))
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 23))
 
 (case "a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
   (doc    "The choice axiom does not weaken the boundary: like every Thm, a SELECT-shaped axiom is minted
@@ -2189,7 +2223,8 @@
                                 (Term.Exists 0 (Term.Conj (Term.Comb one-one f) (Term.Neg (Term.Comb onto f)))))
                        (match (hyps th) ((list) true) (_ false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 27))
 
 (case "an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel"
   (doc    "Completing the axiom set does not weaken the boundary. Like ETA and SELECT, an INFINITY-shaped
@@ -2303,7 +2338,8 @@
               (term-eq (subst 1 (Term.Var 9) (Term.Imp (Term.Var 1) (Term.Var 2)))
                        (Term.Imp (Term.Var 9) (Term.Var 2))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 12))
 
 (case "capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)"
   (doc    "Capture-avoidance must hold under the LOGICAL quantifier binder Forall, exactly as under Abs
@@ -2358,7 +2394,8 @@
                 (let ((term (Term.Forall 0 (Term.Imp (Term.Comb p (Term.Var 0)) (Term.Comb p y)))))
                   (free-in 0 (subst 1 (Term.Var 0) term)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 34))
 
 (case "a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection"
   (doc    "The bare-pattern twin of the qualified-pattern case above. Unforgeability must not depend on pattern
@@ -2405,4 +2442,5 @@
                   ((Option.None _u) -1))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 7))

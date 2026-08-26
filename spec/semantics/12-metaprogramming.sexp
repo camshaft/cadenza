@@ -142,7 +142,8 @@
             (def (main)
               (depth (eval (quote (S (S (Z)))))))
             (export main)))
-  (call   main) (output (: 2 Int64)))
+  (call   main) (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "an Ast.Int carries a BEYOND-64-bit literal losslessly through quote"
   (doc    "The lossless-storage acceptance witness of the Ast.Int Int64→BigInt flip: a 26-digit literal
@@ -2305,7 +2306,8 @@
                 (_ 0N)))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 5 BigInt)))
+  (output (: 5 BigInt))
+  (live-objects known-leak 1))
 
 (case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
   (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
@@ -2534,7 +2536,8 @@
             (def (main (: b Bool)) (f b))
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
-  (call   main (: false Bool)) (output (: 0 Int64)))
+  (call   main (: false Bool)) (output (: 0 Int64))
+  (live-objects known-leak 2))
 
 (case "the full contract-descriptor record (Bytes/String/Ast fields) materializes whole at runtime; scalar fields read"
   (doc    "The full self-describing descriptor shape `Record(id: Bytes, name: String, input: Ast, output: Ast,
@@ -2586,7 +2589,8 @@
                    15)))
             (export main)))
   (call   main (: true Bool)) (output (: true Bool))
-  (call   main (: false Bool)) (output (: false Bool)))
+  (call   main (: false Bool)) (output (: false Bool))
+  (live-objects known-leak 4))
 
 (case "a recursive transform composed over Ast.module const-evaluates at compile time"
   (doc    "The general const-evaluator evaluates a total function applied to `Ast.module` — the reflected
@@ -3102,7 +3106,8 @@
                 (_ 0N)))
             (def (main) (eval-expr (quote (* (+ 1 2) 4))))
             (export main)))
-  (output (: 12 BigInt)))
+  (output (: 12 BigInt))
+  (live-objects known-leak 14))
 
 (case "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
   (doc    "The n-ary / variadic-macro idiom, using the FINAL `,@rest` splice binder: `` `(f ,@rest) `` binds
@@ -3122,7 +3127,8 @@
                 (_ -1N)))
             (def (main) (sum-form (quote (f 10 20 30))))
             (export main)))
-  (output (: 60 BigInt)))
+  (output (: 60 BigInt))
+  (live-objects known-leak 14))
 
 (case "a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)"
   (doc    "The DECLINE-GUARD companion of the two working walks above. The idiomatic fold shape — a recursive
@@ -3729,7 +3735,8 @@
                        1 0))))))
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
-  (call main (: 2 Int64)) (output (: 1 Int64)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 76))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`
@@ -4148,7 +4155,8 @@
       (Ast.print (Ast.Float (/ x 0.0))))
     (export main)))
   (call main (: 1.0 Float64))
-  (output (: "inf.0" String)))
+  (output (: "inf.0" String))
+  (live-objects known-leak 1))
 
 (case "nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0"
   (input (do
@@ -4156,7 +4164,8 @@
       (Ast.print (Ast.Float (- (/ x 0.0) (/ x 0.0)))))
     (export main)))
   (call main (: 1.0 Float64))
-  (output (: "NaN.0" String)))
+  (output (: "NaN.0" String))
+  (live-objects known-leak 1))
 
 (case "nfp3 Ast.print renders a -inf leaf inside a list as -inf.0"
   (input (do
@@ -4164,4 +4173,5 @@
       (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Float (/ (- 0.0 x) 0.0))))))
     (export main)))
   (call main (: 1.0 Float64))
-  (output (: "(f -inf.0)" String)))
+  (output (: "(f -inf.0)" String))
+  (live-objects known-leak 1))

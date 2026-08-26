@@ -79,7 +79,8 @@
             (+ (* (sum-l (. m xs) 0) 10) (sum-l (. m ys) 0))))
         (export main)))
   (call main (: 2 Int64)) (output (: 37 Int64))
-  (call main (: 0 Int64)) (output (: 17 Int64)))
+  (call main (: 0 Int64)) (output (: 17 Int64))
+  (live-objects known-leak 8))
 
 (case "Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live"
   (doc    "The update path's heap discipline: one LIST field replaced, the runtime-valued sibling
@@ -99,7 +100,8 @@
                   (sum-l (. r xs) 0)))))
         (export main)))
   (call main (: 3 Int64)) (output (: 1003 Int64))
-  (call main (: 0 Int64)) (output (: 973 Int64)))
+  (call main (: 0 Int64)) (output (: 973 Int64))
+  (live-objects known-leak 13))
 
 (case "an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm"
   (doc    "The nesting pins put open sums in SUM payloads; this is the collection slot — stored as
@@ -117,7 +119,8 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 100 Int64))
   (call main (: 2 Int64)) (output (: 7 Int64))
-  (call main (: 9 Int64)) (output (: 0 Int64)))
+  (call main (: 9 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 2))
 
 (case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
@@ -348,7 +351,8 @@
                 (def p0 (record (= pos (record (= x 1) (= y 2))) (= vel (record (= x 30) (= y 40)))))
                 (. (. (bump p0 d) pos) y)))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 7 Int64)))
+  (call   main (: 5 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once"
   (doc    "The materialize-once discipline for a runtime-record row-op (v-inference 13fd27095, after the
@@ -479,7 +483,8 @@
                 (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 6))
 
 (case "the same without-extend chain on a LIST-borne record computes"
   (doc    "Finding #45 control: the identical extend-of-without chain, but the base record is read out of a
@@ -512,7 +517,8 @@
                    (. (Record.extend r #"extra" 5) extra))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 65 Int64)))
+  (output (: 65 Int64))
+  (live-objects known-leak 6))
 
 (case "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
   (doc    "The ALIAS face of Record.with persistence: the existing persistence pins read the original
@@ -551,7 +557,8 @@
                 (let ((done (go-n seed 5)))
                   (+ (. done x) (* 1000 (. seed x))))))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 3008 Int64)))
+  (call   main (: 3 Int64)) (output (: 3008 Int64))
+  (live-objects known-leak 5))
 
 (case "the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)"
   (doc    "Finding #45 boundary: the same chain but `r` is read via a DOUBLE lookup (a map nested in a map).
@@ -568,7 +575,8 @@
                 (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 10))
 
 (case "a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value"
   (doc    "Finding #45 witness 2 — the borrowed-operand face (wasm fix v-wasm-opt 8f18044a3, v-memory-safety
@@ -592,7 +600,8 @@
                 (match v ((Slot.Filled r) (. r qty)) ((Slot.Empty _u) -1))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 6))
 
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
@@ -701,7 +710,8 @@
                        (+ (* 100 (. (. r1 x) p))
                           (+ (* 10 (. r2 y)) (. (. r2 x) q))))))))
             (export main)))
-  (call   main (: 7 Int64)) (output (: 30790 Int64)))
+  (call   main (: 7 Int64)) (output (: 30790 Int64))
+  (live-objects known-leak 2))
 
 (case "Record.with grows a LIST field by pushing onto the projected old value"
   (doc    "The collection-field update idiom: `(Record.with r #\"items\" (List.push (. r items) a))` — the
@@ -716,7 +726,8 @@
                   (+ (* 10 (List.len (. r2 items))) (List.len (. r items))))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 32 Int64)))
+  (output (: 32 Int64))
+  (live-objects known-leak 2))
 
 (case "chained Record.with updates on one field compose with the last write winning"
   (doc    "`(Record.with (Record.with r #\"x\" 10) #\"x\" 20)` — two updates of the SAME field chained:
@@ -749,7 +760,8 @@
                 (def p1 (Record.with p0 #"pos" (Record.with (. p0 pos) #"y" d)))
                 (+ (* (. (. p1 pos) y) 10) (. (. p1 pos) x))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 51 Int64)))
+  (call   main (: 5 Int64)) (output (: 51 Int64))
+  (live-objects known-leak 2))
 
 (case "a nested-record parameter projects its inner fields through two dot levels"
   (doc    "The read face of the nested-record param surface: a fn whose parameter is annotated
@@ -795,7 +807,8 @@
   (call   main (: true Bool))
   (output (: 1099 Int64))
   (call   main (: false Bool))
-  (output (: 1010 Int64)))
+  (output (: 1010 Int64))
+  (live-objects known-leak 2))
 
 (case "the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)"
   (doc    "Witnesses DESIGN-record-update-syntax.md §2/§6 (operator DECISION 2026-07-15): the field-pair
@@ -1245,7 +1258,8 @@
             (+ (* 10 ((. m f) 3)) (. m b))))
         (export main)))
   (call   main (: 5 Int64)) (output (: 87 Int64))
-  (call   main (: 0 Int64)) (output (: 37 Int64)))
+  (call   main (: 0 Int64)) (output (: 37 Int64))
+  (live-objects known-leak 1))
 
 (case "Record.pop hands back a CLOSURE field as the popped value and it applies"
   (doc    "The fn-field face of the value-yielding removal: `(Record.pop r f)` returns
@@ -1293,7 +1307,8 @@
                       ((. r2 neg) (- 0 7))))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 907 Int64)))
+  (output (: 907 Int64))
+  (live-objects known-leak 3))
 
 ; --- Open sums through program structure: a three-module concrete chain and a generic tuple
 ; slot; Record.extend widening a map-extracted record into a new map. ---
@@ -1360,7 +1375,8 @@
                (. (Option.expect (Map.lookup m 1) "p") x))))
         (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
-  (call   main (: 0 Int64)) (output (: 10 Int64)))
+  (call   main (: 0 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 6))
 
 ; --- Record.without on a map-extracted record, both maps staying typed. ---
 
@@ -1383,7 +1399,8 @@
                (. (Option.expect (Map.lookup m 1) "p") y))))
         (export main)))
   (call   main (: 5 Int64)) (output (: 1005 Int64))
-  (call   main (: 0 Int64)) (output (: 1000 Int64)))
+  (call   main (: 0 Int64)) (output (: 1000 Int64))
+  (live-objects known-leak 6))
 
 ; --- Open-row projection over COLLECTION-borne records. ---
 
@@ -1400,7 +1417,8 @@
                  (get-x (record (= x 5) (= y 6) (= z 7)))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 28 Int64)))
+  (output (: 28 Int64))
+  (live-objects known-leak 7))
 
 ; --- Construction-path equality for row-op results with RUNTIME leaves (the const twins
 ; above fold before emit; these run the heap path-copies). ---
@@ -1501,7 +1519,8 @@
                            ((Some v) v) ((None _u) -1)))
                    (if (= derived (record (= a 5) (= b 2))) 1 0))))
             (export main)))
-  (call   main (: 9 Int64)) (output (: 421 Int64)))
+  (call   main (: 9 Int64)) (output (: 421 Int64))
+  (live-objects known-leak 1))
 
 (case "a record reached via a with-CHAIN keys like the final direct build, generations intact"
   (doc    "Three `Record.with` generations replace EVERY field of `g0` in turn (a→1, b→2, c→3); the

@@ -391,7 +391,8 @@
                     (match (List.at xs 3) ((Some v) v) ((None) -99))))))
             (export main)))
   (call   main (: -7 Int64))
-  (output (: (tuple -3 -4 -3 -4) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple -3 -4 -3 -4) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
@@ -500,7 +501,8 @@
            `+` runs over them — the math 'just works' over the suffixed spelling exactly as over
            `(BigInt.of …)`.")
   (input  (+ 100N 1N))
-  (output (: 101 BigInt)))
+  (output (: 101 BigInt))
+  (live-objects known-leak 1))
 
 (case "a RADIX literal carries the N type suffix"
   (doc    "The `N` (BigInt) / `R` (Rational) type suffix applies to a RADIX body (`0x…`/`0b…`) exactly as
@@ -518,7 +520,8 @@
            BigInt 65535 — the radix suffix peel composes with `_` digit separators, as the decimal path
            does. Pins that the whole `<radix-body-with-underscores><suffix>` is one suffixed literal.")
   (input  (+ 0b1010N 0xFF_FFN))
-  (output (: 65545 BigInt)))
+  (output (: 65545 BigInt))
+  (live-objects known-leak 1))
 
 (case "a radix literal carries the R (Rational) suffix"
   (doc    "The `R` suffix over a radix body: `0xFFR` is the Rational 255/1 (an integer body grounds to
@@ -1781,7 +1784,8 @@
            repeated-squaring chain would blow up at compile time), then rendered at the host boundary via
            the `value-encode` walker (`Shape::BigInt`, a variable-length KIND_INT leaf).")
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
-  (output (: 85070591730234615847396907784232501249 BigInt)))
+  (output (: 85070591730234615847396907784232501249 BigInt))
+  (live-objects known-leak 1))
 
 (case "runtime BigInt arithmetic leaves no live heap objects (balanced)"
   (doc    "`(Int64.of (+ (BigInt.of a) (BigInt.of b)))` over two runtime Int64 params allocates two owned
@@ -1895,7 +1899,8 @@
                     (if (< big up) 1 0)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a beyond-i64 constant BigInt is an operand of a runtime bigint op"
   (doc    "`(: 100000000000000000000 BigInt)` is a constant BigInt = 1e20, BEYOND i64::MAX (~9.2e18). As an
@@ -1922,7 +1927,8 @@
            the overflow product exercises — a BigInt result is a variable-length leaf, so it routes
            through the looping `value-encode` (like a runtime collection), not the fixed hole-template.")
   (input  (+ (BigInt.of 40) (BigInt.of 2)))
-  (output (: 42 BigInt)))
+  (output (: 42 BigInt))
+  (live-objects known-leak 1))
 
 (case "a negative runtime BigInt result crosses the host boundary with its sign"
   (doc    "`(- (BigInt.of 42) (BigInt.of 100))` = -58 : BigInt — a runtime BigInt SUBTRACT whose result is
@@ -1930,7 +1936,8 @@
            `bigint_leaf` emits the sign-magnitude `KIND_INT` leaf, neg kind for a non-zero negative). Pins
            the sign path of the runtime-BigInt escape, distinct from the positive `(+ 40 2)` companion.")
   (input  (- (BigInt.of 42) (BigInt.of 100)))
-  (output (: -58 BigInt)))
+  (output (: -58 BigInt))
+  (live-objects known-leak 1))
 
 (case "a runtime BigInt divide crosses the host boundary as its truncated quotient"
   (doc    "`(/ (BigInt.of 100) (BigInt.of 7))` = 14 : BigInt — a runtime BigInt DIVIDE (truncating toward
@@ -1938,7 +1945,8 @@
            as its exact quotient. Pins that `/` — not just `+`/`-`/`*` — routes through the runtime op and
            the escape walker (100/7 = 14 remainder 2, truncated to 14).")
   (input  (/ (BigInt.of 100) (BigInt.of 7)))
-  (output (: 14 BigInt)))
+  (output (: 14 BigInt))
+  (live-objects known-leak 1))
 
 ; The divide/remainder cases here use SMALL single-limb operands (100/7, 17%5). This pins the division
 ; INVARIANT on a genuinely MULTI-LIMB dividend: the runtime limb-library `divmod` must satisfy the
@@ -1968,7 +1976,8 @@
                     (if (= (/ n n) (BigInt.of 1)) 1 0)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "multi-limb BigInts equal in the LOW limb compare by the HIGH limb"
   (doc    "The bigint-cmp pins use single-limb values; these operands are EQUAL in the low limb and
@@ -2019,7 +2028,8 @@
             (if (= s (Rational.of 1 1)) 1 0)))
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
-  (call main (: 2 Int64)) (output (: 1 Int64)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 16))
 
 (case "mixed-sign Rational add and multiply normalize signs through one runtime chain"
   (doc    "Runtime sign params steer add AND multiply against one expected value (-1/6): face 1 hits
@@ -2224,7 +2234,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 5121 Int64))
   (call   main (: 3 Int64)) (output (: 3041 Int64))
-  (call   main (: 5 Int64)) (output (: 13121 Int64)))
+  (call   main (: 5 Int64)) (output (: 13121 Int64))
+  (live-objects known-leak 4))
 
 (case "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"
   (doc    "Two user-written popcounts DIFFERENTIALLY cross-checked (the gcd/modpow certificate style,
@@ -2286,7 +2297,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 21 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (call   main (: 3 Int64)) (output (: 41 Int64)))
+  (call   main (: 3 Int64)) (output (: 41 Int64))
+  (live-objects known-leak 16))
 
 (case "GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit"
   (doc    "The reflected binary code, all three bitwise pins composed: encode = `n ^ (n >> 1)` (one
@@ -2348,7 +2360,8 @@
   (call   main (: 2 Int64)) (output (: 91 Int64))
   (call   main (: 0 Int64)) (output (: 51 Int64))
   (call   main (: -3 Int64)) (output (: -759 Int64))
-  (call   main (: 1 Int64)) (output (: 41 Int64)))
+  (call   main (: 1 Int64)) (output (: 41 Int64))
+  (live-objects known-leak 16))
 
 (case "TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list"
   (doc    "The runtime digit decomposition (the RADIX pins read literal forms; this DERIVES digits):
@@ -2383,7 +2396,8 @@
   (call   main (: 5 Int64)) (output (: 10501 Int64))
   (call   main (: 907 Int64)) (output (: 31601 Int64))
   (call   main (: 1000 Int64)) (output (: 40101 Int64))
-  (call   main (: 999999 Int64)) (output (: 65401 Int64)))
+  (call   main (: 999999 Int64)) (output (: 65401 Int64))
+  (live-objects known-leak 4))
 
 (case "a BASE-N conversion round-trips one value through three runtime radices"
   (doc    "The digits pin above fixes base 10; here the RADIX is the runtime parameter — the same
@@ -2416,7 +2430,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 10100000100001 Int64))
   (call   main (: 7 Int64)) (output (: 200021 Int64))
-  (call   main (: 16 Int64)) (output (: 6041 Int64)))
+  (call   main (: 16 Int64)) (output (: 6041 Int64))
+  (live-objects known-leak 28))
 
 (case "BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries"
   (doc    "The spreadsheet-column numbering: BIJECTIVE base 26 has NO zero digit (A=1 … Z=26), so the
@@ -2460,7 +2475,8 @@
   (call   main (: 26 Int64)) (output (: 11 Int64))
   (call   main (: 27 Int64)) (output (: 21 Int64))
   (call   main (: 702 Int64)) (output (: 21 Int64))
-  (call   main (: 703 Int64)) (output (: 31 Int64)))
+  (call   main (: 703 Int64)) (output (: 31 Int64))
+  (live-objects known-leak 8))
 
 (case "the LUHN checksum doubles alternate digits from the right with the nine-fold correction"
   (doc    "The check-digit walk over the digit peel: positions count from the RIGHT (the `% 10` /
@@ -2527,7 +2543,8 @@
   (call   main (: 493193 Int64)) (output (: 231 Int64))
   (call   main (: 9 Int64)) (output (: 901 Int64))
   (call   main (: 99999999 Int64)) (output (: 921 Int64))
-  (call   main (: 10 Int64)) (output (: 111 Int64)))
+  (call   main (: 10 Int64)) (output (: 111 Int64))
+  (live-objects known-leak 1))
 
 (case "DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers"
   (doc    "The sqrt-paired divisor walk (the trial-division pin below STOPS at the first divisor;
@@ -2634,7 +2651,8 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 2030507111317198 Int64))
   (call   main (: 2 Int64)) (output (: 21 Int64))
-  (call   main (: 1 Int64)) (output (: 0 Int64)))
+  (call   main (: 1 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 56))
 
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
@@ -2643,7 +2661,8 @@
            `Shape::BigInt` leaf nested under the Option's variant), the sum-payload companion of the bare
            runtime-BigInt escape — a BigInt in a sum crosses with its exact value, not dropped or folded.")
   (input  (Some (* (BigInt.of 1000000) (BigInt.of 1000000))))
-  (output (: (Some 1000000000000) (Option BigInt))))
+  (output (: (Some 1000000000000) (Option BigInt)))
+  (live-objects known-leak 2))
 
 (case "a parameterized export drives an Option-of-runtime-BigInt on both arms"
   (doc    "The parameterized companion: `main(v)` returns `None` for v=0 else `(Some (v * 10^6))`, a
@@ -2653,7 +2672,8 @@
   (input  (do (def (main (: v Int64))
                 (if (= v 0) (None) (Some (* (BigInt.of v) (BigInt.of 1000000))))) (export main)))
   (call   main (: 5 Int64)) (output (: (Some 5000000) (Option BigInt)))
-  (call   main (: 0 Int64)) (output (: (None unit) (Option BigInt))))
+  (call   main (: 0 Int64)) (output (: (None unit) (Option BigInt)))
+  (live-objects known-leak 2))
 
 (case "an arbitrary-precision literal beyond 64 bits is an exact BigInt"
   (doc    "`(: 100000000000000000000 BigInt)` annotates a literal larger than Int64.max as a BigInt — an
@@ -2851,7 +2871,8 @@
                     (if (< n (BigInt.of 0)) 1 0)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime BigInt intermediate that overflows Int64 does not trap"
   (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
@@ -2996,7 +3017,8 @@
               (pragma default-integer BigInt)
               (def (double x) (* x 2)))
             ((. crypto double) (BigInt.of 21))))
-  (output (: 42 BigInt)))
+  (output (: 42 BigInt))
+  (live-objects known-leak 1))
 
 (case "a default-integer pragma fixes a type but adds no conversion — no-promotion still holds"
   (doc    "In a `(pragma default-integer BigInt)` module, `(mix)` writes `(+ 2 (Int64.of 1))`: the bare 2
@@ -3444,7 +3466,8 @@
             (def (main (: a Float64) (: b Float64))
               (tuple (> (/ a b) 1.0e300) (< (/ (- 0.0 a) b) -1.0e300)))
             (export main)))
-  (call   main (: 1.0 Float64) (: 0.0 Float64)) (output (: (tuple true true) (Tuple Bool Bool))))
+  (call   main (: 1.0 Float64) (: 0.0 Float64)) (output (: (tuple true true) (Tuple Bool Bool)))
+  (live-objects known-leak 1))
 
 (case "a runtime nan subtracted from itself is nan, not zero"
   (doc    "`(- x x)` with `x` = NaN is NaN, NOT 0 — subtracting a NaN from ITSELF does not cancel to zero
@@ -3505,7 +3528,8 @@
                     (if (= posinf posinf) 1 0)))))
             (export run)))
   (call   run (: 5 Int64))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
-  (call   run (: -5 Int64)) (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64))))
+  (call   run (: -5 Int64)) (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime Float32 indeterminate op yields nan at binary32 width"
   (doc    "The Float32 twin: the special-value ARITHMETIC faces at binary32 — nan propagates through a
@@ -3523,7 +3547,8 @@
                   (if (= (- posinf posinf) Float32.nan) 1 0))))
             (export run)))
   (call   run (: 1.5 Float32))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
-  (call   run (: 3.0 Float32))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64))))
+  (call   run (: 3.0 Float32))  (output (: (tuple 1 1 1) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime integer converts to a float with the machine convert"
   (doc    "`(Float64.of-int n)` over a runtime Int64 `n` emits `f64.convert_i64_s`; `(of-int 42)` = 42.0.
@@ -3967,7 +3992,8 @@
   (input  (do (def (main (: x Int64)) (tuple (* x -1) (* -1 x))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple -5 -5) (Tuple Int64 Int64)))
   (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (call   main (: -9223372036854775808 Int64)) (trap "overflow"))
+  (call   main (: -9223372036854775808 Int64)) (trap "overflow")
+  (live-objects known-leak 1))
 
 (case "multiply-by-negative-one strength reduction keeps its operand's own trap"
   (doc    "The strength-reduced `* -1` negation keeps the OTHER operand's trap (no is_trap_free guard drops
@@ -4140,7 +4166,8 @@
             (export main)))
   (call   main (: 9223372036854775807 Int64)) (output (: (tuple 1 0) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64)) (output (: (tuple 0 2) (Tuple Int64 Int64)))
-  (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64))))
+  (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "multiplication"
   (input  (* 6 7))
@@ -4185,7 +4212,8 @@
   (call   main (: 7 Int64) (: 2 Int64)) (output (: (tuple 3 1) (Tuple Int64 Int64)))
   (call   main (: -7 Int64) (: 2 Int64)) (output (: (tuple -3 -1) (Tuple Int64 Int64)))
   (call   main (: 7 Int64) (: -2 Int64)) (output (: (tuple -3 1) (Tuple Int64 Int64)))
-  (call   main (: -7 Int64) (: -2 Int64)) (output (: (tuple 3 -1) (Tuple Int64 Int64))))
+  (call   main (: -7 Int64) (: -2 Int64)) (output (: (tuple 3 -1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime negative dividend divided by a constant power of two truncates toward zero"
   (doc    "Division by a constant power of two may be strength-reduced to a shift, but a signed division
@@ -4386,7 +4414,8 @@
   (call   main (: 5 Int64))
   (output (: (tuple 0 1 0 1) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: 3 Int64))
-  (output (: (tuple 0 1 0 0) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple 0 1 0 0) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The SELF-COMPARISON fold (`x < x` → false, `x <= x`/`x >= x`/`x = x` → true — the ordering is fixed
 ; when both operands are the SAME value) is the sibling the type-bound cases above reference. It DISCARDS
@@ -4436,7 +4465,8 @@
   (call   main (: 7 Int64))
   (output (: (tuple 0 0 7 7) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
-  (output (: (tuple 0 0 -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple 0 0 -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "self-operand division is NOT folded to one — it still traps at zero"
   (doc    "The critical NON-identity: `(/ x x)` is NOT `1` in general, because at x = 0 it is `0 / 0`, a
@@ -4496,7 +4526,8 @@
   (call   main (: 1234 Int64))
   (output (: (tuple 4 2) (Tuple Int64 Int64)))
   (call   main (: -25 Int64))
-  (output (: (tuple -5 -1) (Tuple Int64 Int64))))
+  (output (: (tuple -5 -1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The by-ONE identities above have SIGNED mirrors at a literal -1 divisor, each with a guard the fold
 ; must keep: `x / -1` is negation — EXCEPT at Int64.min, where the true quotient 2^63 overflows and
@@ -5136,7 +5167,8 @@
   (call   main (: 42 Int64))
   (output (: (tuple 0 -1) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
-  (output (: (tuple 0 -1) (Tuple Int64 Int64))))
+  (output (: (tuple 0 -1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1"
   (doc    "On an UNSIGNED UInt8, `~x` is `(^ x 255)`. `(& x (^ x 255))` → 0 (the `&`-complement law holds at
@@ -5147,7 +5179,8 @@
            guard on the `-1` fold), both backends.")
   (input  (do (def (main (: x UInt8)) (tuple (& x (^ x 255)) (| x (^ x 255)))) (export main)))
   (call   main (: 200 UInt8))
-  (output (: (tuple 0 255) (Tuple UInt8 UInt8))))
+  (output (: (tuple 0 255) (Tuple UInt8 UInt8)))
+  (live-objects known-leak 1))
 
 ; ── The KEEPING identities (`x + 0`, `x << 0`, `x >> 0`) preserve a runtime operand exactly ──────────
 ; The additive/shift-by-zero identities RETURN the surviving operand (unlike the annihilators, which
@@ -5172,7 +5205,8 @@
            backends.")
   (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
   (call   main (: -7 Int64))
-  (output (: (tuple -7 -7) (Tuple Int64 Int64))))
+  (output (: (tuple -7 -7) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a shift by a RUNTIME amount computes (both operands off the fold)"
   (doc    "Every shift pin above fixes the COUNT as a constant (the fold/guard genre needs it so); this
@@ -5220,7 +5254,8 @@
   (call   main (: 1 Int64))
   (output (: (tuple 32 0) (Tuple Int64 Int64)))
   (call   main (: -256 Int64))
-  (output (: (tuple -8192 -32) (Tuple Int64 Int64))))
+  (output (: (tuple -8192 -32) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a combined left shift that overflows Int64 traps like the single shift it folds to"
   (doc    "`(<< (<< y 40) 20)` folds to `(<< y 60)` (60 < 64): y = 1 → 2^60 fits, but y = 8 → 8·2^60 = 2^63
@@ -5290,7 +5325,8 @@
            on a runtime unsigned operand, both backends.")
   (input  (do (def (main (: x UInt8)) (tuple (>> (& x 15) 4) (>> (& x 7) 3))) (export main)))
   (call   main (: 255 UInt8))
-  (output (: (tuple 0 0) (Tuple UInt8 UInt8))))
+  (output (: (tuple 0 0) (Tuple UInt8 UInt8)))
+  (live-objects known-leak 1))
 
 (case "the logical-shift-drops-all-bits fold does not discard a trapping runtime operand"
   (doc    "The trap-preservation face: `(>> (& (/ 100 z) 15) 4)` still folds to 0 for the VALUE (the masked
@@ -5320,7 +5356,8 @@
   (input  (do (def (main (: x Int64)) (tuple (* x 1) (* 1 x) (- x 0))) (export main)))
   (call   main (: -9223372036854775808 Int64))
   (output (: (tuple -9223372036854775808 -9223372036854775808 -9223372036854775808)
-             (Tuple Int64 Int64 Int64))))
+             (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 4))
 
 ; The `x * -1` STRENGTH REDUCTION must be value- AND trap-identical to the multiply it replaces.
 ; `arith_identity` rewrites `(* x -1)` / `(* -1 x)` to the negation `(- 0 x)` (a cheaper single-overflow
@@ -5772,7 +5809,8 @@
            Int64.min / -2^31 = 2^32 = b`, so no overflow. A naive `|a|*|b| <= max` or a widening-off-by-one
            check wrongly returns None here. The key edge the breaker's ladder targets.")
   (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
-  (call   main (: -2147483648 Int64) (: 4294967296 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+  (call   main (: -2147483648 Int64) (: 4294967296 Int64)) (output (: (Some -9223372036854775808) (Option Int64)))
+  (live-objects known-leak 2))
 
 (case "a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)"
   (doc    "`(Int64.checked-mul Int64.min -1)` = +2^63, one past Int64.max, so checked-mul reports None. The
@@ -5782,7 +5820,8 @@
            multiply fits.")
   (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call   main (: -9223372036854775808 Int64) (: -1 Int64)) (output (: (None unit) (Option Int64)))
-  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: (Some -9223372036854775808) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime checked-mul over UInt64 operands emits the unsigned division round-trip"
   (doc    "The UNSIGNED face: `(UInt64.checked-mul a b)` emits `if a==0 then Some(0) else (p/a==b ? Some(p) :
@@ -5883,7 +5922,8 @@
            a=-3 -> (-3 -3 0).")
   (input  (do (def (main (: a Int64)) (tuple (Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))) (export main)))
   (call   main (: 7 Int64)) (output (: (tuple 7 7 0) (Tuple Int64 Int64 Int64)))
-  (call   main (: -3 Int64)) (output (: (tuple -3 -3 0) (Tuple Int64 Int64 Int64))))
+  (call   main (: -3 Int64)) (output (: (tuple -3 -3 0) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "the wrapping-mul zero annihilator does not drop a trapping operand"
   (doc    "`a *% 0` folds to 0, but the annihilator must NOT discard a TRAPPING other operand:
@@ -6573,7 +6613,8 @@
   (call   main (: 12 Int64) (: 10 Int64))
   (output (: (tuple 12 12) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64) (: -7 Int64))
-  (output (: (tuple -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64))))
+  (output (: (tuple -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "the absorption law does not discard a trapping runtime operand"
   (doc    "The trap-preservation face: `(& x (| x (/ 10 z)))` still absorbs to `x` for the VALUE, but the
@@ -6595,7 +6636,8 @@
            idempotent collapse for both `|` and `&`, both backends.")
   (input  (do (def (main (: x Int64) (: y Int64)) (tuple (| (| x y) y) (& (& x y) y))) (export main)))
   (call   main (: 1 Int64) (: 8 Int64))
-  (output (: (tuple 9 0) (Tuple Int64 Int64))))
+  (output (: (tuple 9 0) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; --- The bitwise/shift/truncation primitives COMPOSE into the LEB128 encoding step ----------
 ; The cases above exercise `&`, `|`, `>>`, and `UInt8.wrap` INDIVIDUALLY on constant operands. The
@@ -7601,7 +7643,8 @@
               (if (= n 0) acc (loop (- n 1) (* acc (BigInt.of 2)))))
             (def (main) (loop 70 (BigInt.of 1)))
             (export main)))
-  (output (: 1180591620717411303424 BigInt)))
+  (output (: 1180591620717411303424 BigInt))
+  (live-objects known-leak 71))
 
 (case "a BigInt factorial accumulator computes 25! exactly"
   (doc    "THE canonical BigInt program: `fac(25)` with a BigInt accumulator — `(* acc (BigInt.of n))` at
@@ -7616,7 +7659,8 @@
               (if (= n 0) acc (fac (- n 1) (* acc (BigInt.of n)))))
             (def (main) (fac 25 (BigInt.of 1)))
             (export main)))
-  (output (: 15511210043330985984000000 BigInt)))
+  (output (: 15511210043330985984000000 BigInt))
+  (live-objects known-leak 26))
 
 (case "a BigInt is usable as a set element, deduplicated by its arbitrary-precision value"
   (doc    "`(Set.len (Set.of (list (BigInt.of 5) (BigInt.of 5) (BigInt.of 7))))` = 2: a set of BigInt
@@ -7676,7 +7720,8 @@
             (def (main (: n Int64))
               (inc (Map.to-list (fill n Map.empty)) (BigInt.of 0) 0))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 40 Int64)))
+  (call   main (: 40 Int64)) (output (: 40 Int64))
+  (live-objects known-leak 203))
 
 (case "a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving"
   (doc    "The churn-identity face for multi-limb BigInt keys: 29 keys (i = 1..n-1 at n = 30), each `(i+10)·(2^63-1)` — all
@@ -7753,7 +7798,8 @@
               (if (= n 0) a (loop (- n 1) b (+ a b))))
             (def (main) (Int64.of (loop 10 (BigInt.of 0) (BigInt.of 1))))
             (export main)))
-  (output (: 55 Int64)))
+  (output (: 55 Int64))
+  (live-objects known-leak 12))
 
 (case "a runtime Rational built from a parameter compares by its exact value"
   (doc    "`(< (Rational.of a 3) (Rational.of 1 2))` with runtime `a` builds a Rational from a runtime
@@ -7868,7 +7914,8 @@
 (case "a Rational accumulator threaded through recursion sums exactly"
   (doc "Threading a Rational through a recursive accumulator sums 1/2 three times to 3/2, then compares 3/2 < 2/1 as true, exercising borrow/consume drop discipline across the recursion.")
   (input (do (def (loop (: n Int64) (: acc Rational)) (if (= n 0) acc (loop (- n 1) (+ acc (Rational.of 1 2))))) (def (main) (if (< (loop 3 (Rational.of 0 1)) (Rational.of 2 1)) 1 0)) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 (case "a runtime-computed Rational crosses the host boundary as its exact value"
   (doc    "`(Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000))))` — a Rational built
@@ -7879,7 +7926,8 @@
            18), which reads the 2-BigInt-handle node and formats the `num/den` name leaf — the same value
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input  (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
-  (output (: 1000000000000/1 Rational)))
+  (output (: 1000000000000/1 Rational))
+  (live-objects known-leak 3))
 
 ; The boundary escapes above are all RESULT-side (a Rational crosses OUT to the host). The ENTRY-arg
 ; direction — a Rational boundary PARAMETER marshaled IN by the driver — is realized on the rust targets
@@ -8023,7 +8071,8 @@
            Rational from a parameterized export all declined identically before).")
   (input  (do (def (main (: a Int64)) (* (BigInt.of a) (BigInt.of 3))) (export main)))
   (call   main (: 5000000000 Int64))
-  (output (: 15000000000 BigInt)))
+  (output (: 15000000000 BigInt))
+  (live-objects known-leak 1))
 
 ; `BigInt.of` is `∀a.(Int a)->BigInt`, so its runtime widening MUST honor the source width's SIGNEDNESS. A
 ; SIGNED source (Int8..Int64) widens through `bigint-of-i64`, whose operand is a signed i64 — correct. But a
@@ -8243,7 +8292,8 @@
            the argument crossing the boundary via the param-forwarding resource escape.")
   (input  (do (def (main (: a Int64)) (+ (Rational.of a 6) (Rational.of 1 6))) (export main)))
   (call   main (: 1 Int64))
-  (output (: 1/3 Rational)))
+  (output (: 1/3 Rational))
+  (live-objects known-leak 3))
 
 (case "runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms"
   (doc    "The MULTIPLY companion of the runtime-Rational add cases above (add is pinned at :4282/:4455; the
@@ -8804,7 +8854,8 @@
   (doc    "`(- b)` with b a BigInt is unbounded negation (`0 - b` via the runtime bigint-sub), yielding
            -5 — never overflowing (the point of the type). Witnesses negation over BigInt.")
   (input  (let ((b (BigInt.of 5))) (- b)))
-  (output (: -5 BigInt)))
+  (output (: -5 BigInt))
+  (live-objects known-leak 1))
 
 (case "unary negation of a quantity preserves its unit"
   (doc    "`(- q)` with q = 5 meter negates the erased magnitude while keeping the dimension: -5 meter.
@@ -8865,7 +8916,8 @@
             (if (= (gcd a b) (* (BigInt.of 2147483648) (BigInt.of 6))) 1 0)))
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
-  (call main (: 3 Int64)) (output (: 0 Int64)))
+  (call main (: 3 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 4))
 
 (case "a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps"
   (doc    "`Int64.of` on a runtime BigInt at the EXACT signed-64 maximum: 2·2^62 - 1 + k narrows cleanly at
@@ -8915,7 +8967,8 @@
         (def (main (: e Int64))
           (Int64.of (f (BigInt.of 7) e (BigInt.of 100))))
         (export main)))
-  (call main (: 8 Int64)) (output (: 7 Int64)))
+  (call main (: 8 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "recursive repeated-squaring modpow over BigInt computes a Mersenne-modulus power"
   (doc    "The capstone of the recursive-BigInt-bound-result arc (collect_callees not descending do-def
@@ -8938,7 +8991,8 @@
         (export main)))
   (call   main (: 100 Int64)) (output (: 969801349263044856 Int64))
   (call   main (: 8 Int64)) (output (: 5764801 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "runtime UInt64 division and remainder above the Int64 boundary compute unsigned"
   (doc    "A GENUINE runtime UInt64 above 2^63 (x=3037000500 squares to 2^63 + 145474192, top bit
@@ -9046,7 +9100,8 @@
                 (Int64.of (/ (gcd big-a big-b) b64))))
             (export main)))
   (call   main (: 12 Int64) (: 18 Int64))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 5))
 
 (case "Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact"
   (doc    "The f32 family covers width-overflow rejects and match arms; this runs f32 ARITHMETIC at its precision limit: (+ 2^24 1) rounds back to 2^24 (nearest-even absorption at the mantissa boundary) while (+ 2^24 2) is exactly representable — the minimal witness the add itself runs at binary32.")
@@ -9077,7 +9132,8 @@
                    (Int64.of (Rational.denominator r)))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 705 Int64)))
+  (output (: 705 Int64))
+  (live-objects known-leak 2))
 
 (case "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"
   (doc    "The Newton isqrt probes small operands; this runs at the CHECKED-ARITH ceiling: n=i64::MAX with hi capped at isqrt(MAX)=3037000499 keeps mid*mid exactly inside checked range, so the search completes WITHOUT the overflow trap — a hi one larger would trap at a later midpoint square once mid climbs past isqrt(MAX).")
@@ -9173,7 +9229,8 @@
               (if (= (tele 1 n (Rational.of 0 1)) (Rational.of n (+ n 1))) 1 0))
             (export main)))
   (call   main (: 20 Int64)) (output (: 1 Int64))
-  (call   main (: 7 Int64)) (output (: 1 Int64)))
+  (call   main (: 7 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 60))
 
 ;; -- guard-elision trap-preservation boundaries: masks and remainders never license dropping overflow guards (breaker batch 372, from the 2026-07-17 banked candidate) --
 (case "geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX"
@@ -9209,27 +9266,32 @@
 (case "cmul1 runtime checked-mul in range yields Some"
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: 6 Int64) (: 7 Int64))
-  (output (: (Some 42) (Option Int64))))
+  (output (: (Some 42) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)"
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: 2147483648 Int64) (: 4294967296 Int64))
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer"
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -2147483648 Int64) (: 4294967296 Int64))
-  (output (: (Some -9223372036854775808) (Option Int64))))
+  (output (: (Some -9223372036854775808) (Option Int64)))
+  (live-objects known-leak 2))
 
 (case "cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)"
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: -1 Int64))
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)"
   (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
   (call main (: -9223372036854775808 Int64) (: 1 Int64))
-  (output (: (Some -9223372036854775808) (Option Int64))))
+  (output (: (Some -9223372036854775808) (Option Int64)))
+  (live-objects known-leak 2))
 
 ;; -- runtime UInt64 checked-arith twin ladder: the u64 exact-fit top (2^32-1 x 2^32+1), past-top, add-wrap boundary, sub-underflow/exact-zero (breaker batch 384) --
 (case "cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits"
@@ -9761,12 +9823,14 @@
 (case "ce01 checked addition over a RUNTIME operand yields Some when it fits"
   (input  (do (def (f (: k Int64)) (Int64.checked-add k 22)) (export f)))
   (call   f 20)
-  (output (: (Some 42) (Option Int64))))
+  (output (: (Some 42) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "ce02 checked addition over a RUNTIME operand yields None on overflow"
   (input  (do (def (f (: k Int64)) (Int64.checked-add k 1)) (export f)))
   (call   f 9223372036854775807)
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "ce11 wrapping addition over a RUNTIME operand wraps"
   (input  (do (def (f (: k Int64)) (Int64.wrapping-add k 1)) (export f)))
@@ -9776,7 +9840,8 @@
 (case "ce12 checked multiplication over a RUNTIME operand yields Some when it fits"
   (input  (do (def (f (: k Int64)) (Int64.checked-mul k 3)) (export f)))
   (call   f 14)
-  (output (: (Some 42) (Option Int64))))
+  (output (: (Some 42) (Option Int64)))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 418 (2026-08-26): signed-zero equality faces — bare = distinguishes +0.0 from a
 ; TRUE runtime -0.0 (made via (* x -1.0); note (- 0.0 x) at x=+0.0 yields +0.0 per IEEE), and the

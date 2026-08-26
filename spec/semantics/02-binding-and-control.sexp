@@ -78,7 +78,8 @@
             (+ (* inner 100) (sum-l xs 0))))
         (export main)))
   (call main (: 3 Int64)) (output (: 1806 Int64))
-  (call main (: 0 Int64)) (output (: 1803 Int64)))
+  (call main (: 0 Int64)) (output (: 1803 Int64))
+  (live-objects known-leak 12))
 
 (case "a LET shadow of a do-def heap binding closes its scope and the do-def survives"
   (doc    "The mixed-BINDER-KIND interleave: do-def xs at do-scope, a let re-binds xs for an inner
@@ -97,7 +98,8 @@
             (+ (* inner 100) (sum-l xs 0))))
         (export main)))
   (call main (: 5 Int64)) (output (: 706 Int64))
-  (call main (: 0 Int64)) (output (: 701 Int64)))
+  (call main (: 0 Int64)) (output (: 701 Int64))
+  (live-objects known-leak 8))
 
 (case "a closure captures a heap binding BEFORE a shadow and applies AFTER seeing the original"
   (doc    "The face where capture-time vs apply-time name resolution DIVERGE observably: f captures
@@ -116,7 +118,8 @@
             (+ (* (f 0) 100) (sum-l xs 0))))
         (export main)))
   (call main (: 2 Int64)) (output (: 315 Int64))
-  (call main (: 0 Int64)) (output (: 115 Int64)))
+  (call main (: 0 Int64)) (output (: 115 Int64))
+  (live-objects known-leak 10))
 
 (case "TWO closures capture DIFFERENT generations of one shadowed name and each sees its own"
   (doc    "Two live capture cells holding DIFFERENT heap handles under ONE source name: f captures
@@ -136,7 +139,8 @@
             (+ (* (f 0) 100) (g 0))))
         (export main)))
   (call main (: 2 Int64)) (output (: 315 Int64))
-  (call main (: 0 Int64)) (output (: 115 Int64)))
+  (call main (: 0 Int64)) (output (: 115 Int64))
+  (live-objects known-leak 10))
 
 (case "a let shadowing a parameter with a differently-typed value is not an invalid component"
   (doc    "`(def (f x) (let ((x true)) x))` shadows the Int64 parameter `x` with the Bool `x = true`; the
@@ -731,7 +735,8 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 18 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
-  (call main (: 3 Int64)) (output (: 0 Int64)))
+  (call main (: 3 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 8))
 
 (case "THREE stacked guards on one constructor classify a heap payload into bands in order"
   (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →
@@ -755,7 +760,8 @@
   (call main (: 5 Int64)) (output (: 3 Int64))
   (call main (: 3 Int64)) (output (: 2 Int64))
   (call main (: 1 Int64)) (output (: 1 Int64))
-  (call main (: 0 Int64)) (output (: 0 Int64)))
+  (call main (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 3))
 
 (case "a match guard performs a MAP lookup keyed by the pattern binder (guard x CHAMP)"
   (doc    "The guard-predicate cases above read the destructured payload directly (List.len bands); this
@@ -855,7 +861,8 @@
             (+ (* s 10) (List.len xs))))
         (export main)))
   (call main (: 0 Int64)) (output (: 63 Int64))
-  (call main (: 5 Int64)) (output (: 91 Int64)))
+  (call main (: 5 Int64)) (output (: 91 Int64))
+  (live-objects known-leak 11))
 
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
@@ -1342,7 +1349,8 @@
               (match (pos (Env.ECons (tuple 5 (Env.ECons (tuple 7 (Env.ECons (tuple 5 (Env.ENil ()))))))) 5 0)
                 ((Some p)  p)
                 ((None _u) (trap "unreachable")))) (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 7))
 
 (case "a reference to an unbound name is rejected before running"
   (doc    "Witnesses core-semantics.md #Binding Is Lexical: a reference to a name with no enclosing
@@ -4191,7 +4199,8 @@
                   (match (pair n) ((tuple v k) (go (- n 1) (+ acc v))))))
             (def (pair n) (tuple n n))
             (def (main) (match (go 3 0) ((tuple a b) a))) (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 1))
 
 (case "a tail-recursive function returning a tuple is tuple-valued"
   (doc    "The MINIMAL isolation of the case above — no accumulator, no helper, no heap: a tail-recursive
@@ -4207,7 +4216,8 @@
   (input  (do
             (def (go n) (if (< n 1) (tuple 0 0) (go (- n 1))))
             (def (main) (match (go 3) ((tuple a b) (+ a b)))) (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched"
   (doc    "The MUTUAL-RECURSION sibling of the tail-recursive tuple return above. `dn` (decode-node) and
@@ -4234,7 +4244,8 @@
                   (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child))))))
             (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
             (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 4))
 
 ; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
 ; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser
@@ -4272,7 +4283,8 @@
             (def (run)
               (let ((a (pa 0))) (let ((b (pa (. a 1)))) (+ (ev (. a 0)) (ev (. b 0))))))
             (export run)))
-  (output (: -14 Int64)))
+  (output (: -14 Int64))
+  (live-objects known-leak 7))
 
 ; --- A binding position accepts an irrefutable pattern ---------------------------------------
 ; core-semantics.md #A Binding Position Accepts An Irrefutable Pattern: a `let` binder (and a parameter)
@@ -4347,7 +4359,8 @@
                 ((tuple s t len) (+ (* 100 s) (+ (* 10 (String.byte-len t)) len)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 633 Int64)))
+  (output (: 633 Int64))
+  (live-objects known-leak 7))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
@@ -4407,7 +4420,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 100 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a def parameter may be a record pattern that destructures by field"
   (doc    "`(def (f (record (x a) (y b))) (+ a b))` destructures its single record argument by field,
@@ -4563,7 +4577,8 @@
             (def (all (: ys (List Int64))) (let (((list .. rest) ys)) (sum rest)))
             (def (main) (all (list 7 8 9)))
             (export main)))
-  (output (: 24 Int64)))
+  (output (: 24 Int64))
+  (live-objects known-leak 7))
 
 (case "a leading-element list rest pattern in a def parameter is refutable and rejected"
   (doc    "`(def (head (list x .. rest)) x)` binds a LEADING element `x` before the rest — a REFUTABLE
@@ -5113,7 +5128,8 @@
   (call   main (: false Bool) (: true Bool) (: 10 Int64) (: 20 Int64))
   (output (: 21 Int64))
   (call   main (: false Bool) (: false Bool) (: 10 Int64) (: 20 Int64))
-  (output (: 11 Int64)))
+  (output (: 11 Int64))
+  (live-objects known-leak 1))
 
 ; --- The list face of the common-constructor hoist (same-length ListNew arms) ---------------------
 ; The hoist's list extension: `(if c (list …p) (list …q))` with SAME-length arms builds one list with
@@ -6226,7 +6242,8 @@
                      (if (and (or  (> a 0) (> b 0)) (> a 0)) 1 0)))
             (export main)))
   (call   main (: 5 Int64) (: -1 Int64)) (output (: (tuple 1 1) (Tuple Int64 Int64)))
-  (call   main (: -1 Int64) (: 5 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64))))
+  (call   main (: -1 Int64) (: 5 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "the dual-absorption fold keeps a trapping absorbed operand's short-circuit form"
   (doc    "When the absorbed-away operand carries a trap, the fold's trap-free guard declines, leaving the
@@ -6251,7 +6268,8 @@
   (call   main (: 5 Int64) (: -1 Int64))
   (output (: (tuple 1 1) (Tuple Int64 Int64)))
   (call   main (: -1 Int64) (: 5 Int64))
-  (output (: (tuple 0 0) (Tuple Int64 Int64))))
+  (output (: (tuple 0 0) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; ── COMPLEMENTARY COMPARISONS: two ordering tests that PARTITION every value fold to true / false ─────
 ; When two comparisons on the SAME operand pair are exact complements over the total order — `<`/`>=` or
@@ -6277,7 +6295,8 @@
   (call   main (: 3 Int64) (: 5 Int64))
   (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: 5 Int64) (: 5 Int64))
-  (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The complementary-comparison fold above fires on IDENTICAL operand pairs. These pin its GUARDS —
 ; the faces where a fold keyed on comparison SHAPE rather than operand identity (or one that dropped
@@ -6383,7 +6402,8 @@
   (call   main (: 3 Int64) (: 5 Int64) (: 9 Int64))
   (output (: (tuple 0 1) (Tuple Int64 Int64)))
   (call   main (: 5 Int64) (: 3 Int64) (: -9 Int64))
-  (output (: (tuple 0 1) (Tuple Int64 Int64))))
+  (output (: (tuple 0 1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; ── EQUALITY does not subsume: two `=` to different constants are a contradiction / a 2-point set ─────
 ; The same-direction subsumption fold (upper/lower half-lines collapse to the tighter/looser bound) is
@@ -6422,7 +6442,8 @@
             (export main)))
   (call   main (: 5 Int64))  (output (: (tuple 1 0) (Tuple Int64 Int64)))
   (call   main (: 6 Int64))  (output (: (tuple 0 0) (Tuple Int64 Int64)))
-  (call   main (: 12 Int64)) (output (: (tuple 0 1) (Tuple Int64 Int64))))
+  (call   main (: 12 Int64)) (output (: (tuple 0 1) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; ── BRANCHLESS boolean connectives over trap-free operands (value parity of the no-short-circuit emit) ─
 ; `(and p q)` / `(or p q)` over cheap trap-free operands (leaves or comparisons) need no short-circuit
@@ -6765,7 +6786,8 @@
                     (classify ""))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 120 Int64)))
+  (output (: 120 Int64))
+  (live-objects known-leak 3))
 
 ; --- The do-def shadow WORKING perimeter (banked as box-the-fix pins around the v-inference
 ; do-def-shadow-over-param/let unbind fix): the shapes that were CORRECT before and after —

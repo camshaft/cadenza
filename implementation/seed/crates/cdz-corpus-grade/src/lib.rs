@@ -179,11 +179,21 @@ pub struct TestRun {
     pub host_calls: Vec<String>,
     /// Pinned warnings `(code, optional message-substring)` — a PRESENCE check against the compile diag.
     pub warns: Vec<(String, Option<String>)>,
-    /// The live-heap-cell count a `(live-objects N)` case asserts after the run (the heap-balance invariant,
-    /// N=0 is no leak). When set, the wasm exec runs on the debug-counters runtime and fails the case if the
-    /// reported count differs. `None` for a case with no `(live-objects …)`. (The nix exec branches on this
-    /// marker at build time to add `--runtime <debug-counters>`; cdz-run's `--grade` asserts it.)
+    /// The live-heap-cell count a case asserts after the run (the heap-balance invariant). Under the
+    /// OPT-OUT model the absent-clause default depends on whether the component imports the value-heap
+    /// runtime: a HEAP-importing case with `None` here enforces == 0 (the new default — no leak), a
+    /// NO-HEAP case with `None` is skipped (no heap to balance, never a false fail). `Some(N)` asserts
+    /// == N exactly (an explicit `(live-objects N)`, or a `(live-objects known-leak N)` marker — see
+    /// `live_objects_known_leak`). The wasm exec runs a heap case on the debug-counters runtime (the
+    /// shipped one reports 0 vacuously) and fails on a count mismatch.
     pub live_objects: Option<u32>,
+    /// `true` iff the count above came from a `(live-objects known-leak N)` OPT-OUT MARKER — N is the
+    /// TOLERATED current leak of a case not yet reclaim-clean (grandfathered when the opt-out default
+    /// landed). Graded identically to a plain `(live-objects N)` (assert == N, which doubles as a
+    /// regression guard: if the count drifts the case fails, forcing a deliberate marker update as the
+    /// runtime reclaims). This flag only records the INTENT (a shrinking exception set), so tooling can
+    /// find + retire markers; it does not change the assertion. `false` for `None` or a plain count.
+    pub live_objects_known_leak: bool,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -459,6 +469,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut host_calls = Vec::new();
     let mut warns = Vec::new();
     let mut live_objects: Option<u32> = None;
+    let mut live_objects_known_leak = false;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -509,13 +520,25 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                     }
                 }
             }
-            // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf).
+            // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). A
+            // `(live-objects known-leak <N>)` marker prefixes the count with the literal `known-leak`
+            // (the opt-out grandfather form); both assert == N, the marker also records the intent.
             Some("live-objects") => {
-                live_objects = a
-                    .as_form(clause, "live-objects")
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| str_leaf(&a, id))
-                    .and_then(|s| s.trim().parse::<u32>().ok());
+                let items = a.as_form(clause, "live-objects").unwrap_or(&[]);
+                let first = items.first().copied().and_then(|id| str_leaf(&a, id));
+                match first.as_deref() {
+                    Some("known-leak") => {
+                        live_objects_known_leak = true;
+                        live_objects = items
+                            .get(1)
+                            .copied()
+                            .and_then(|id| str_leaf(&a, id))
+                            .and_then(|s| s.trim().parse::<u32>().ok());
+                    }
+                    _ => {
+                        live_objects = first.and_then(|s| s.trim().parse::<u32>().ok());
+                    }
+                }
             }
             _ => {}
         }
@@ -528,6 +551,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         host_calls,
         warns,
         live_objects,
+        live_objects_known_leak,
     })
 }
 
@@ -892,13 +916,15 @@ mod tests {
         );
     }
 
-    /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects`; a test-run without
-    /// one leaves it `None`.
+    /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects` (and the
+    /// `(live-objects known-leak <N>)` marker form into `live_objects_known_leak` + the count); a
+    /// test-run with no clause leaves the count `None` and the flag `false`.
     #[test]
     fn decode_reads_live_objects() {
         use cadenza_syntax::ast::{Builder, Leaf};
         use std::sync::Arc;
-        let build = |with_lo: bool| -> Vec<u8> {
+        // `clause`: None = no live-objects form; Some(leaves) = a `(live-objects <leaves…>)` form.
+        let build = |clause: Option<&[&str]>| -> Vec<u8> {
             let mut b = Builder::new();
             let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
             let head = b.name("test-run");
@@ -908,15 +934,29 @@ mod tests {
             let trials_head = b.name("trials");
             let trials = b.list(vec![trials_head]);
             let mut kids = vec![head, desc, trials];
-            if with_lo {
+            if let Some(leaves) = clause {
                 let loh = b.name("live-objects");
-                let lov = s(&mut b, "0");
-                kids.push(b.list(vec![loh, lov]));
+                let mut lo = vec![loh];
+                for &l in leaves {
+                    let v = s(&mut b, l);
+                    lo.push(v);
+                }
+                kids.push(b.list(lo));
             }
             let root = b.list(kids);
             codec::encode(&b.finish(root))
         };
-        assert_eq!(decode_test_run(&build(true)).unwrap().live_objects, Some(0));
-        assert_eq!(decode_test_run(&build(false)).unwrap().live_objects, None);
+        // Plain count.
+        let tr = decode_test_run(&build(Some(&["0"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(0));
+        assert!(!tr.live_objects_known_leak);
+        // known-leak marker → count + flag.
+        let tr = decode_test_run(&build(Some(&["known-leak", "3"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(3));
+        assert!(tr.live_objects_known_leak);
+        // No clause.
+        let tr = decode_test_run(&build(None)).unwrap();
+        assert_eq!(tr.live_objects, None);
+        assert!(!tr.live_objects_known_leak);
     }
 }

@@ -114,6 +114,7 @@ mod tests {
             host_calls: vec![],
             warns: vec![],
             live_objects: None,
+            live_objects_known_leak: false,
         }
     }
 

@@ -504,7 +504,8 @@
            RUNTIME element value (not a constant), on both backends.")
   (input  (do (def (main (: a Int64) (: b Int64)) (tuple (. (tuple a b) 0) (. (tuple a b) 1))) (export main)))
   (call   main (: 7 Int64) (: 9 Int64))
-  (output (: (tuple 7 9) (Tuple Int64 Int64))))
+  (output (: (tuple 7 9) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "reading a field of a record built from runtime elements folds to the field"
   (doc    "The record companion: `(. (record (a x) (b (+ x 1))) b)` folds to the field initializer
@@ -802,7 +803,8 @@
             (def (nc (: n Ast)) (match n (((. Ast Int) _) 1) (((. Ast List) _) 9)))
             (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 ; A recursion that CARRIES a heap collection (Bytes / List) as a parameter and, at its BASE arm, performs
 ; a FALLIBLE INDEXED READ (`Bytes.at` / `List.at`, which materializes an Option HANDLE in a scratch slot)
@@ -822,7 +824,8 @@
               (if (= n 0) (Option.expect (Bytes.at b p) "v") (loop b p (- n 1))))
             (def (main (: p Int64)) (loop b"\x05" p 0))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 5 Int64)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "a recursion carrying a List parameter does a fallible read in its base arm"
   (doc    "The List companion — the shape is not Bytes-specific. `loop` carries a `(List Int64)` and reads
@@ -835,7 +838,8 @@
             (def (main (: i Int64)) (loop (list 10 20 30) i 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (call   main (: 2 Int64)) (output (: 30 Int64)))
+  (call   main (: 2 Int64)) (output (: 30 Int64))
+  (live-objects known-leak 2))
 
 (case "two fallible reads of one collection parameter share its resident handle slot"
   (doc    "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its
@@ -871,7 +875,8 @@
               (if (= n 0) (Option.expect (Bytes.at b p) "v") (+ 0 (loop b p (- n 1)))))
             (def (main (: p Int64)) (loop b"\x07" p 0))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 7 Int64)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 ; A self-tail loop that threads a (node, cursor) pair — a BOXED-SUM accumulator `(. r 0)` AND a cursor
 ; `(. r 1)`, BOTH projected from the same tuple returned by an `if`-builder — must thread each projection
@@ -899,7 +904,8 @@
             (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
             (def (main (: pos Int64)) (wval (loop b"\x05\x07\x09" 3 pos ((. W Atom) 0))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 9 Int64)))
+  (call   main (: 0 Int64)) (output (: 9 Int64))
+  (live-objects known-leak 4))
 
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
@@ -947,7 +953,8 @@
             (def (mk) (tuple (NLit 5) 9))
             (def (ev e) (match e ((Node.NLit v) v) ((Node.NAdd (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (let ((l (mk))) (ev (. l 0)))) (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "a scalar element is projected directly from a function's runtime tuple result"
   (doc    "The `let`-free companion of the projected-element cases above: `(. x N)` applied DIRECTLY to a
@@ -1084,7 +1091,8 @@
                                 (if false (Core.KConst (bad)) (Core.KConst 0))))))
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
@@ -1515,7 +1523,8 @@
   (input  (do
             (def (f n) (if (= n 0) (tuple n 7) (f (- n 1))))
             (def (main) (f 3)) (export main)))
-  (output (: (tuple 0 7) (Tuple Int64 Int64))))
+  (output (: (tuple 0 7) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime record built behind a recursive call escapes to the host"
   (doc    "The record companion of the recursive-tuple escape: `(f 3)` recurses to `(f 0)`, which builds
@@ -1527,7 +1536,8 @@
   (input  (do
             (def (f n) (if (= n 0) (record (= a n) (= b 7)) (f (- n 1))))
             (def (main) (f 3)) (export main)))
-  (output (: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64)))))
+  (output (: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64))))
+  (live-objects known-leak 1))
 
 (case "a nested runtime tuple built behind a recursive call escapes to the host"
   (doc    "`(tuple n (tuple n n))` with n=0 (reached via recursion so it does NOT constant-fold) →
@@ -1539,7 +1549,8 @@
   (input  (do
             (def (f n) (if (= n 0) (tuple n (tuple n n)) (f (- n 1))))
             (def (main) (f 2)) (export main)))
-  (output (: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64)))))
+  (output (: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64))))
+  (live-objects known-leak 2))
 
 (case "a runtime record whose field is a runtime tuple escapes to the host"
   (doc    "`(record (x n) (y (tuple n 1)))` with n=0 (recursion, unfoldable) →
@@ -1549,7 +1560,8 @@
   (input  (do
             (def (f n) (if (= n 0) (record (= x n) (= y (tuple n 1))) (f (- n 1))))
             (def (main) (f 2)) (export main)))
-  (output (: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))))
+  (output (: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64)))))
+  (live-objects known-leak 2))
 
 (case "a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload"
   (doc    "A recursive `map` over a linked list `(type ILst (INil) (ICons Int64 ILst))` whose `ICons`
@@ -1569,7 +1581,8 @@
             (def (bump xs) (match xs ((INil) (INil)) ((ICons h t) (ICons (+ h 1) (bump t)))))
             (def (main) (match (bump (ICons 5 (ICons 6 (INil)))) ((INil) 0) ((ICons h t) h)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 10))
 
 (case "a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted"
   (doc    "The `List.push` sibling of the recursive-sum-constructor scratch-slot case above: `(List.push (h
@@ -1585,7 +1598,8 @@
             (def (h xs) (match xs ((INil) (list)) ((ICons v t) (List.push (h t) (+ v 1)))))
             (def (main) (match (h (ICons 5 (INil))) ((list x) x) (_ 0)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 (case "a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted"
   (doc    "The `List.concat` sibling of the `List.push` scratch-slot case above: `(List.concat (list (+ v
@@ -1603,7 +1617,8 @@
             (def (g xs) (match xs ((INil) (list)) ((ICons v t) (List.concat (list (+ v 1)) (g t)))))
             (def (main) (match (g (ICons 5 (INil))) ((list x) x) (_ 0)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 (case "a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted"
   (doc    "The `List.update` sibling of the `List.push`/`List.concat` scratch-slot cases above: `(List.update
@@ -1619,7 +1634,8 @@
             (def (u xs) (match xs ((INil) (list 0)) ((ICons v t) (List.update (u t) 0 (+ v 1)))))
             (def (main) (match (u (ICons 5 (INil))) ((list x) x) (_ 99)))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 (case "a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted"
   (doc    "The RETAIN-CHILD-SLOT sibling of the disjoint-slot family above (the `Core::Proj`/`Core::SumPayload`
@@ -1647,7 +1663,8 @@
             (def (main)
               (List.len (remap (List.push (List.push (list) (Note 1 10)) (Note 2 20)) 1 (list))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 7))
 
 (case "a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted"
   (doc    "The `Core::Proj`-RECLAIM sibling of the retain-child slot case above (the OTHER retain-child arm:
@@ -1667,7 +1684,8 @@
               (if (< i 3) (loop (+ i 1) (+ acc (Map.len (. (mk i) a)))) acc))
             (def (main) (loop 0 0))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 ; --- Runtime RECORD and LIST results (the same positional heap array as a tuple) ----------
 ; A record and a list carrying a runtime element are, at run time, the SAME positional heap
@@ -1721,7 +1739,8 @@
   (input  (do
             (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out i)) out))
             (def (main) (build 0 3 (list))) (export main)))
-  (output (: (list 0 1 2) (List Int64))))
+  (output (: (list 0 1 2) (List Int64)))
+  (live-objects known-leak 2))
 
 ; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
 ; `List.push`/`update`/`concat` are PERSISTENT — each produces a new list and MUST leave its operand
@@ -1767,7 +1786,8 @@
               (let ((xs (list 1 2 3 n)))
                 (+ (sum xs) (sum xs))))
             (export main)))
-  (call   main (: 4 Int64)) (output (: 20 Int64)))
+  (call   main (: 4 Int64)) (output (: 20 Int64))
+  (live-objects known-leak 16))
 
 (case "a runtime list aliased into two record fields is read intact through both"
   (doc    "One runtime-built spine stored in TWO fields of one record: `(record (a xs) (b xs))` — each
@@ -1890,7 +1910,8 @@
                   (let ((g (graft t (Leaf 100))))
                     (+ (sum g) (* 1000 (sum t)))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 22117 Int64)))
+  (call   main (: 5 Int64)) (output (: 22117 Int64))
+  (live-objects known-leak 25))
 
 (case "pushing through ONE alias of a doubly-held list leaves the sibling field intact"
   (doc    "The same-value-in-BOTH-FIELDS consume face: `(Mk xs xs)` holds ONE list in two payload slots
@@ -1937,7 +1958,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: 3 Int64))
-  (call   main (: 5 Int64)) (output (: 11 Int64)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 11))
 
 (case "a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)"
   (doc    "The projection-DEPTH companion of the case above: the shared list lives TWO projections deep,
@@ -1962,7 +1984,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: 3 Int64))
-  (call   main (: 5 Int64)) (output (: 11 Int64)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 15))
 
 (case "a map built at run time escapes to the host as its value form"
   (doc    "A Map built at RUN TIME (an insert-loop, not a constant literal) crosses the host boundary.
@@ -1974,7 +1997,8 @@
   (input  (do
             (def (build m n) (if (< n 1) m (build (Map.insert m n n) (- n 1))))
             (def (main) (build Map.empty 3)) (export main)))
-  (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64))))
+  (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
 ; node, so the trie machinery (multi-level descent, per-level bitmap indexing, node splitting on
@@ -1999,7 +2023,8 @@
             (def (main (: n Int64))
               (getsum n (ins n Map.empty) 0))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 50500 Int64)))
+  (call   main (: 100 Int64)) (output (: 50500 Int64))
+  (live-objects known-leak 33))
 
 (case "a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)"
   (doc    "The 100-key checksum above reads every key back in a dedicated pass over a finished map; this
@@ -2016,7 +2041,8 @@
             (def (main (: n Int64))
               (walk n (fill n Map.empty) 0))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 22140 Int64)))
+  (call   main (: 40 Int64)) (output (: 22140 Int64))
+  (live-objects known-leak 9))
 
 (case "a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk"
   (doc    "The transform companion: an incremental rebuild walks 40 keys, looks each up in the SOURCE
@@ -2042,7 +2068,8 @@
                 (+ (* 10 (Map.len dst))
                    (match (Map.lookup dst 25) ((Some v) (if (= v 51) 1 0)) ((None _u) -1)))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 401 Int64)))
+  (call   main (: 40 Int64)) (output (: 401 Int64))
+  (live-objects known-leak 9))
 
 (case "a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members"
   (doc    "The SET analog of the 100-key deep-CHAMP-map checksum: `build` inserts 0..n into a Set (`Set.insert`
@@ -2072,7 +2099,8 @@
               (let ((s (build 0 n (Set.of (list)))))
                 (- (present 0 n s 0) (absent n (+ n 50) s 0))))
             (export main)))
-  (call   main (: 200 Int64)) (output (: 200 Int64)))
+  (call   main (: 200 Int64)) (output (: 200 Int64))
+  (live-objects known-leak 33))
 
 (case "a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order"
   (doc    "Combines the blessed Bytes total order with a SCALE CHAMP set — a gap the small-Bytes-set cases and
@@ -2101,7 +2129,8 @@
               (let ((s (build 0 n (Set.of (list)))))
                 (- (present 0 n s 0) (absent 0 50 s 0))))
             (export main)))
-  (call   main (: 200 Int64)) (output (: 200 Int64)))
+  (call   main (: 200 Int64)) (output (: 200 Int64))
+  (live-objects known-leak 233))
 
 (case "an overwrite-churn runtime map holds one entry with the last value winning"
   (doc    "`churn` inserts the SAME key 7 fifty times with values n..1 (the last insert is value 1). The
@@ -2164,7 +2193,8 @@
                            (get m 50) (Map.len emptied) (get regrown 37) (Map.len regrown))))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a map churned up to 200 entries and back to its original 2 EQUALS the direct 2-entry build"
   (doc    "HISTORY-INDEPENDENCE under deep churn: grow a 2-entry map by 199 inserts (a multi-level trie),
@@ -2277,7 +2307,8 @@
             (def (main (: n Int64))
               (readsum (- n 1) (build 0 n (list)) 0))
             (export main)))
-  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64))
+  (live-objects known-leak 39))
 
 (case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
   (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
@@ -2347,7 +2378,8 @@
                 (match (Map.lookup (Map.insert Map.empty base 42) restored)
                   ((Some v) v) ((None _u) -1))))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 42 Int64)))
+  (call   main (: 100 Int64)) (output (: 42 Int64))
+  (live-objects known-leak 6))
 
 (case "a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine"
   (doc    "`build` prepends i for i in 0..n via `List.prepend`, so after prepending 0,1,...,n-1 the list is
@@ -2368,7 +2400,8 @@
             (def (main (: n Int64))
               (readsum (- n 1) (build 0 n (list)) 0))
             (export main)))
-  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64))
+  (live-objects known-leak 18972))
 
 ; --- Large-vector CONCATENATION (the RRB MERGE/rebalance path, distinct from push/prepend growth) ---
 ; The push/prepend cases above grow ONE RRB vector element-by-element. `List.concat` of two ALREADY-LARGE
@@ -2464,7 +2497,8 @@
                 (- (sum-present 0 n s 0)
                    (sum-absent n (+ n 50) s 0))))
             (export main)))
-  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64))
+  (live-objects known-leak 370))
 
 (case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
   (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
@@ -2481,7 +2515,8 @@
                   (+ (h (Map.insert env "x" 2) 0) (h env 0))))
             (def (main) (h (Map.insert (map) "x" 1) 1))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 (case "a map threaded through recursion is read at every depth and once more at the base"
   (doc    "The MULTI-DEPTH borrow face of the recursive seam above (that one pins persistence across
@@ -2505,7 +2540,8 @@
               (walk (build 1 3 Map.empty) 3 k))
             (export main)))
   (call main (: 2 Int64)) (output (: 80 Int64))
-  (call main (: 9 Int64)) (output (: 59 Int64)))
+  (call main (: 9 Int64)) (output (: 59 Int64))
+  (live-objects known-leak 1))
 
 (case "a map threaded through MUTUAL recursion is read in both functions at alternating depths"
   (doc    "The TWO-function escalation of the threaded-borrow pin above: the map crosses fa⇄fb call
@@ -2534,7 +2570,8 @@
                 (if (= which 1) (fa m 3) (fb m 3))))
             (export main)))
   (call main (: 1 Int64)) (output (: 79 Int64))
-  (call main (: 2 Int64)) (output (: 100 Int64)))
+  (call main (: 2 Int64)) (output (: 100 Int64))
+  (live-objects known-leak 1))
 
 (case "a closure capturing a heap map is applied twice and the map is read once more after"
   (doc    "The CAPTURE-CELL face of heap-map liveness: f captures m; each of two applications
@@ -2752,7 +2789,8 @@
                 (+ (* (sum-list keep 0) 10) (List.len keep))))
             (export main)))
   (call main (: 1 Int64)) (output (: 104 Int64))
-  (call main (: 2 Int64)) (output (: 605 Int64)))
+  (call main (: 2 Int64)) (output (: 605 Int64))
+  (live-objects known-leak 9))
 
 (case "a select between a base map and its derived generation frees the loser but not shared nodes"
   (doc    "The COMPOSITION of generation sharing with the escape shape (the #20 family, pinned per
@@ -2834,7 +2872,8 @@
                 (+ (* v 100) x)))
             (export main)))
   (call main (: 1 Int64)) (output (: 2030 Int64))
-  (call main (: 2 Int64)) (output (: 2040 Int64)))
+  (call main (: 2 Int64)) (output (: 2040 Int64))
+  (live-objects known-leak 4))
 
 (case "a map consumed by Map.swap in one operand is unchanged for a later read of the same binding"
   (doc    "The VALUE-YIELDING-insert twin of the Map.insert persistence case above: `Map.swap` returns
@@ -2875,7 +2914,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: 9 Int64))
-  (call   main (: 4 Int64)) (output (: 12 Int64)))
+  (call   main (: 4 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 2))
 
 (case "a loop-invariant heap projection consumed in the loop body is not LICM-hoisted"
   (doc    "The LOOP-INVARIANT-CODE-MOTION face of the still-live-binding family: LICM hoists a loop-invariant
@@ -2900,7 +2940,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: 9 Int64))
-  (call   main (: 4 Int64)) (output (: 12 Int64)))
+  (call   main (: 4 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 3))
 
 (case "a sum-match payload's heap child consumed while the scrutinee is live is retained"
   (doc    "The SUM-PAYLOAD face of the still-live-binding family: a sum-match payload binder lowers to a
@@ -2926,7 +2967,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: 9 Int64))
-  (call   main (: 4 Int64)) (output (: 12 Int64)))
+  (call   main (: 4 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 2))
 
 ; The SCALAR-RESULT SHELL-RECLAIM face: when a match over an OWNED compound-payload sum has a SCALAR (non-heap)
 ; result, the emit reclaims the owned sum SHELL after the arm (the scalar answer cannot carry a shell-child
@@ -3018,7 +3060,8 @@
             (def (main (: d Int64))
               (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
             (export main)))
-  (call   main (: 7 Int64)) (output (: 12 Int64)))
+  (call   main (: 7 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 3))
 
 (case "a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably"
   (doc    "The CHAINED-extraction face of the SumExpect retain: `(Option.expect (Option.expect s))` over a
@@ -3037,7 +3080,8 @@
             (def (main (: d Int64))
               (go (Option.Some (Option.Some (List.push (List.push (list) d) 8))) 4 0))
             (export main)))
-  (call   main (: 7 Int64)) (output (: 12 Int64)))
+  (call   main (: 7 Int64)) (output (: 12 Int64))
+  (live-objects known-leak 4))
 
 ; The mutual-recursion companion of the still-live-binding family above: the IDIOMATIC homoiconic-AST
 ; walker shape — a `fc` (per-node) / `fl` (per-child-list) mutual pair over a recursive `Ast` sum. Here
@@ -3076,7 +3120,8 @@
               (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
-  (output (: 101 Int64)))
+  (output (: 101 Int64))
+  (live-objects known-leak 10))
 
 ; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
 ; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
@@ -3116,7 +3161,8 @@
               (match elems ((list) 0) ((list h .. r) (+ (fc h) (fl r)))))
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
-  (output (: 101 Int64)))
+  (output (: 101 Int64))
+  (live-objects known-leak 10))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -3141,7 +3187,8 @@
                                ((ANode elems) (List.len (List.push elems (ALit 9)))))))))
             (def (main) (go (ANode (mb 0 2 (list))) 4 0))
             (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 5))
 
 ; --- Sum ctor-head render qualification: keyed on the per-sum VARIANT collision, not the type name -----
 ; A sum's ctor heads render BARE (Node) unless a variant name COLLIDES with a built-in reflection ctor, in
@@ -3169,7 +3216,8 @@
             (def (main (: n Int64))
               (Node (list (Lit n) (Lit (+ n 1)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: (Node (list (Lit 5) (Lit 6))) Ast)))
+  (call   main (: 5 Int64)) (output (: (Node (list (Lit 5) (Lit 6))) Ast))
+  (live-objects known-leak 5))
 
 (case "a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends"
   (doc    "The disambiguation arm: `(type Ast (Int Int64) (Node (List Ast)))` — the variant `Int` COLLIDES
@@ -3217,7 +3265,8 @@
               (+ (* 100 (lhs (contract (App (Ix 1) (Ix 0)) (Ix 7))))
                  (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 26))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
@@ -3232,7 +3281,8 @@
                 ((Option.Some c) (match c ((C.R) 0) ((C.G) 1)))
                 ((Option.None) -1)))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "a user-sum variant value as a Map KEY keys by variant and payload"
   (doc    "The KEY companion of the sum-VALUE case above: a payload-carrying user sum as the map key. Over
@@ -3378,7 +3428,8 @@
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
-  (call   main (: 5 Int64)) (output (: 3 Int64)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 1))
 
 (case "a recursive fold over a runtime Peano spine recovers its depth"
   (doc    "The consume dual of the parameterized render: `depth` matches `(S rest)` and recurses on the
@@ -3395,7 +3446,8 @@
             (def (main (: a Int64)) (depth (mk a)))
             (export main)))
   (call   main (: 4 Int64)) (output (: 4 Int64))
-  (call   main (: 0 Int64)) (output (: 0 Int64)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 5))
 
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
@@ -3426,7 +3478,8 @@
                 ((Err e) e)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (call   main (: -1 Int64)) (output (: 99 Int64)))
+  (call   main (: -1 Int64)) (output (: 99 Int64))
+  (live-objects known-leak 5))
 
 (case "a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller"
   (doc    "The environment-lookup shape: `get` looks a key up in a `(Map Int64 Ty)`, wraps the found `Ty`
@@ -3445,7 +3498,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 7 Int64))
   (call   main (: 2 Int64)) (output (: 103 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 3))
 
 (case "a returned lookup result consumed with a wildcard never inspects the payload"
   (doc    "The wildcard-consume companion: the caller matches the returned `Out` but binds the payload with
@@ -3461,7 +3515,8 @@
             (def (present (: o Out)) (match o ((Out.Ok _) 1) ((Out.Err _) 0)))
             (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 4))
 
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
@@ -3482,7 +3537,8 @@
                 (match (Map.lookup m (if b "add" "neg")) ((Some s) (if (= s "plus") 1 2)) (None -1))))
             (def (main (: b Bool)) (canon b)) (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
-  (call   main (: false Bool)) (output (: 2 Int64)))
+  (call   main (: false Bool)) (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "a map with a String value: a missing key takes the None arm"
   (doc    "The absent companion: looking up a key the String-valued map does not hold takes the `None` arm
@@ -3493,7 +3549,8 @@
               (let ((m (Map.insert (map) "add" "plus")))
                 (match (Map.lookup m "sub") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a map with a String value: the looked-up value's byte length is read in the arm"
   (doc    "The looked-up String value is consumed non-comparatively too: `((Some s) (String.byte-len s))`
@@ -3505,7 +3562,8 @@
               (let ((m (Map.insert (Map.insert (map) "a" "hello") "b" "hi")))
                 (match (Map.lookup m "a") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 2))
 
 (case "a map KEYED by a user sum looks up by the variant"
   (doc    "A user sum used as a Map KEY — `(Map.insert Map.empty (C.R) 42)` keys the entry by the variant
@@ -3601,7 +3659,8 @@
             (def (main (: k Int64)) (f (build k)))))
   (call   main (: 3 Int64)) (output (: 12 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (call   main (: 5 Int64)) (output (: 14 Int64)))
+  (call   main (: 5 Int64)) (output (: 14 Int64))
+  (live-objects known-leak 4))
 
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
@@ -3615,7 +3674,8 @@
             (def (build i n out)
               (if (< i n) (build (+ i 1) n (List.push out (list i))) out))
             (def (main) (build 0 3 (list))) (export main)))
-  (output (: (list (list 0) (list 1) (list 2)) (List (List Int64)))))
+  (output (: (list (list 0) (list 1) (list 2)) (List (List Int64))))
+  (live-objects known-leak 8))
 
 (case "a two-level index reads an inner element of a list of lists"
   (doc    "The READ companion of the escape case above: `(List.at (List.at xss i) j)` indexes a `(List (List
@@ -3637,7 +3697,8 @@
   (call   main (: 0 Int64) (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 30 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 3))
 
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
@@ -4232,7 +4293,8 @@
                 ((tuple _ _)                               0)))
             (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt))))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 10))
 
 ; --- A variant payload may be ANY monomorphic leaf type, including Char and Symbol -----------------
 ; core-semantics.md #Sum Types Are Structural Types: a variant's payload type is any type. The leaf
@@ -4439,7 +4501,8 @@
   (call   main (: 0 Int64))
   (output (: 0 Int64))
   (call   main (: -5 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a Result-of-Option threads both wrappers through one runtime match"
   (doc    "The mixed-wrapper composition: `(Result (Option Int64) Int64)` — Err carries a code, Ok
@@ -4461,7 +4524,8 @@
   (call   main (: 0 Int64))
   (output (: 0 Int64))
   (call   main (: -7 Int64))
-  (output (: -7 Int64)))
+  (output (: -7 Int64))
+  (live-objects known-leak 2))
 
 (case "an Option-of-Option survives a Map VALUE cell with its exact nesting"
   (doc    "The collection round-trip: `(Some (Some n))` stored as a map value and read back through
@@ -4478,7 +4542,8 @@
                   ((None u) -4))))
             (export main)))
   (call   main (: 42 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 3))
 
 (case "a Some carrying an inner-annotated None matches its arm (the control)"
   (doc    "The control pinning the reject above is about the inner nullary variant's UNCONSTRAINED
@@ -4722,7 +4787,8 @@
                            ((IntList.Nil _)            0)))
             (def (build n) (IntList.Cons (tuple n (IntList.Cons (tuple 8 (IntList.Cons (tuple 2 (IntList.Nil ()))))))))
             (def (main) (sm (build 5))) (export main)))
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects known-leak 7))
 
 (case "a recursive function folds a linked list of runtime-determined length"
   (doc    "The genuine self-hosting idiom, distinct from the case above: the list's LENGTH is decided at
@@ -4744,7 +4810,8 @@
                            ((IntList.Cons (tuple h t)) (+ h (sm t)))
                            ((IntList.Nil _)            0)))
             (def (main) (sm (count 5))) (export main)))
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
 
 (case "a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix"
   (doc    "A binary-tree fold — the canonical AST-walker shape. `sum-tree` matches `(Tree.Node (tuple l
@@ -4765,7 +4832,8 @@
             (def (main (: x Int64)) (sum-tree (build x)))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 115 Int64)))
+  (output (: 115 Int64))
+  (live-objects known-leak 7))
 
 (case "a lowercase-named type is referenceable in a field (types are values, not gated by case)"
   (doc    "A type is a VALUE, referenceable by name regardless of case — so a lowercase-named sum
@@ -4784,7 +4852,8 @@
             (def (len (: l mylist)) (match l ((Nil) 0) ((Cons h t) (+ 1 (len t)))))
             (def (main) (len (mylist.Cons 1 (mylist.Cons 2 (mylist.Cons 3 (mylist.Nil))))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a lowercase-named type cross-references another lowercase-named type in a field"
   (doc    "The cross-reference companion: a lowercase `(type wrap (W num))` whose field references ANOTHER
@@ -4817,7 +4886,8 @@
             (def (main) (f (Cons 5 (Nil))))
             (export main)))
   (call   main)
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 3))
 
 (case "a recursive NEWTYPE-wrapped linked list folds to a scalar"
   (doc    "The single-variant NEWTYPE spelling of the recursive linked list above: `(type Lst (Mk (Option
@@ -4839,7 +4909,8 @@
                                             ((None) 0)))))
             (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None)))))))))))))
             (export main)))
-  (output (: 60 Int64)))
+  (output (: 60 Int64))
+  (live-objects known-leak 7))
 
 (case "a recursive NEWTYPE traversal recurses on its projected recursive field"
   (doc    "The single-variant NEWTYPE form of the linked-list traversal: `(type Lst (Mk (Option (Tuple
@@ -4859,7 +4930,8 @@
                                             ((None u) 0)))))
             (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (Some (tuple 30 (Mk (None unit)))))))))))))
             (export main)))
-  (output (: 60 Int64)))
+  (output (: 60 Int64))
+  (live-objects known-leak 7))
 
 (case "passing one newtype where a different newtype is expected names both nominal types"
   (doc    "Two DISTINCT single-variant newtypes over the same underlying Int64 — `A` and `B` — do not
@@ -4896,7 +4968,8 @@
                 ((FL.FNil _)            out)
                 ((FL.FCons (tuple h t)) (recompute t (List.push out h)))))
             (def (main) (List.len (recompute (FL.FCons (tuple 5 (FL.FCons (tuple 6 (FL.FNil ()))))) (list)))) (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 5))
 
 (case "a fixpoint loop that threads a growing list accumulator returns that list"
   (doc    "The self-hosting return-kind machinery next needs a monotone FIXPOINT loop — `iterate` a
@@ -4943,7 +5016,8 @@
             (def (iterate funcs ktab passes)
               (if (< passes 1) ktab (iterate funcs (recompute funcs (list)) (- passes 1))))
             (def (main) (List.len (iterate (FL.FCons (tuple 1 (FL.FNil ()))) (list) 2))) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 6))
 
 (case "an element pattern matches a list by its length and elements"
   (doc    "A list is deconstructed by ELEMENT patterns — `(list)` matches exactly the empty list, a
@@ -4985,7 +5059,8 @@
                             ((list)           0)
                             ((list x .. rest) (+ x (sum rest)))))
             (def (main) (sum (list 10 20 30))) (export main)))
-  (output (: 60 Int64)))
+  (output (: 60 Int64))
+  (live-objects known-leak 7))
 
 (case "a tail list fold reads its scrutinee handle from its own parameter slot"
   (doc    "`(def (go (: xs (List Int64)) (: acc Int64)) (match xs ((list) acc) ((list h .. rest) (go rest (+
@@ -5000,7 +5075,8 @@
             (def (go (: xs (List Int64)) (: acc Int64))
               (match xs ((list) acc) ((list h .. rest) (go rest (+ acc (* h 2))))))
             (def (main) (go (list 1 2 3 4 5) 0)) (export main)))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 11))
 
 (case "a two-arm list match with constant arms dispatches branchlessly on the length — empty"
   (doc    "`(def (f (: xs (List Int64))) (match xs ((list) 0) ((list a .. r) 1)))` — an empty-vs-nonempty
@@ -5060,7 +5136,8 @@
                                    ((list)                    0)
                                    ((list (tuple a _) .. rest) (+ a (sum-firsts rest)))))
             (def (main) (sum-firsts (build 1 4 (list)))) (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 10))
 
 ; A push-loop accumulator that threads a `(List (Tuple Int64 Int64))` — its element a TUPLE built from a
 ; parameter being solved — must infer the tuple's FIRST component as `Int64`, not strand it at `Any`. In
@@ -5257,7 +5334,8 @@
             (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
             (def (main (: n UInt64)) (secs n))
             (export main)))
-  (call   main (: 5 UInt64)) (output (: 5000000000 Duration)))
+  (call   main (: 5 UInt64)) (output (: 5000000000 Duration))
+  (live-objects known-leak 1))
 
 (case "two newtypes over the SAME inner type do not cross-assign"
   (doc    "The type-distinctness half of the newtype contract (the erasure pins above are the runtime
@@ -5358,7 +5436,8 @@
               (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 0 UInt8))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "a narrow-width newtype boxed as a tuple element falls through on a non-matching payload"
   (doc    "The miss: n=9 ≠ 0, so `(tuple (W.Wrap 0) y)` does not match → -1. Pins the boxed narrow newtype's
@@ -5367,7 +5446,8 @@
               (def (f (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 9 UInt8))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a narrow-width newtype boxed as a list element matches by its literal payload"
   (doc    "The LIST position: `(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))`, `W = (Wrap
@@ -5450,7 +5530,8 @@
                 ((Meters v) v)))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 14))
 
 (case "a narrow newtype boxed in a list round-trips two payloads through binder reads"
   (doc    "The READ/unbox side: a list of two `(W.Wrap n)` narrow newtypes matched with binder payloads
@@ -5484,7 +5565,8 @@
                 (let ((xs (list (W.Wrap 5) (W.Wrap 7))))
                   (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0))))
               (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
@@ -5843,7 +5925,8 @@
                                     ((Call (list _ .. rest)) 99)
                                     (_                       0)))
             (def (main) (top (build 2))) (export main)))
-  (output (: 99 Int64)))
+  (output (: 99 Int64))
+  (live-objects known-leak 9))
 
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
@@ -5866,7 +5949,8 @@
                                (Expr.Lit 2)
                                (Expr.Add (tuple (Expr.Lit k) (build (- k 1))))))
             (def (main) (ev (build 4))) (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 13))
 
 (case "a function returns a heap sub-node selected by a match arm"
   (doc    "A helper whose `match` arm yields a heap value bound by the pattern (a payload binder) — the
@@ -5907,7 +5991,8 @@
                                         (tuple (Expr.Lit 20)
                                                (Expr.Bin (tuple 1
                                                  (tuple (Expr.Lit 22) (Expr.Lit 8))))))))) (export main)))
-  (output (: 34 Int64)))
+  (output (: 34 Int64))
+  (live-objects known-leak 9))
 
 (case "a constructor pattern nested under Some matches a runtime list element"
   (doc    "A `match` arm whose binder is ITSELF a constructor pattern nested under `Some` —
@@ -6208,7 +6293,8 @@
             (def (main) (eval (resolve (Node.NPrim (tuple "+"
                                           (Node.NInt 20)
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 16))
 
 (case "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
   (doc    "The ordered-tree discipline over a user sum (the resolver above transforms a FIXED tree;
@@ -6249,7 +6335,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 13589 Int64))
   (call   main (: 5 Int64)) (output (: 1589 Int64))
-  (call   main (: 9 Int64)) (output (: 1589 Int64)))
+  (call   main (: 9 Int64)) (output (: 1589 Int64))
+  (live-objects known-leak 48))
 
 (case "tree HEIGHT and BALANCE derive from insertion order over the same BST shape"
   (doc    "Structural metrics over the BST above (the in-order pin reads VALUES; these read SHAPE):
@@ -6307,7 +6394,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 31 Int64))
   (call   main (: 2 Int64)) (output (: 50 Int64))
-  (call   main (: 3 Int64)) (output (: 21 Int64)))
+  (call   main (: 3 Int64)) (output (: 21 Int64))
+  (live-objects known-leak 64))
 
 (case "BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree"
   (doc    "The tree family's REMOVAL face (insert, read-back, and shape metrics are pinned above;
@@ -6362,7 +6450,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 103589 Int64))
   (call   main (: 2 Int64)) (output (: 200057 Int64))
-  (call   main (: 3 Int64)) (output (: 400000 Int64)))
+  (call   main (: 3 Int64)) (output (: 400000 Int64))
+  (live-objects known-leak 51))
 
 (case "a recursive user sum type is built at run time and renders its variant names"
   (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
@@ -6403,7 +6492,8 @@
               (sm (Tree.Branch (tuple (Tree.Leaf 3)
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 7))
 
 (case "an unannotated generic branching sum fold infers its parameter's instantiation from the arms"
   (doc    "The UNANNOTATED companion: the same generic branching tree folded by `sm` with NO annotation on
@@ -6425,7 +6515,8 @@
               (sm (Tree.Branch (tuple (Tree.Leaf 3)
                                       (Tree.Branch (tuple (Tree.Leaf 4) (Tree.Leaf 5)))))))
             (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 7))
 
 (case "an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it"
   (doc    "A running-max fold threads an `Option Int64` accumulator through a recursive list walk with NO
@@ -6454,7 +6545,8 @@
                 ((Some m) m)
                 ((None)   0)))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 10))
 
 (case "a generic recursive sum with a bare self-reference nested in a list parameter"
   (doc    "The companion where the bare self-reference is nested inside another type constructor: `(type
@@ -6492,7 +6584,8 @@
                 ((Tree.Node (tuple l r)) (+ (cnt l) (cnt r)))))
             (def (main) (cnt (Tree.Node (tuple (Tree.Leaf 3) (Tree.Leaf 4)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 4))
 
 (case "a recursively-built linked list renders its full runtime spine"
   (doc    "The RENDER counterpart of the runtime-fold cases: a list whose spine is built by a
@@ -6513,7 +6606,8 @@
                                (IntList.Nil ())
                                (IntList.Cons (tuple n (count (- n 1))))))
             (def (main) (count 3)) (export main)))
-  (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList)))
+  (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList))
+  (live-objects known-leak 7))
 
 (case "a runtime-PARAMETERIZED recursive sum renders per-call depths from one export"
   (doc    "The parameterized face of the recursive-sum render: the spine/tree render pins above build with
@@ -6527,7 +6621,8 @@
             (def (main (: a Int64)) (mk a))
             (export main)))
   (call   main (: 2 Int64)) (output (: (S (S (Z unit))) Nat))
-  (call   main (: 0 Int64)) (output (: (Z unit) Nat)))
+  (call   main (: 0 Int64)) (output (: (Z unit) Nat))
+  (live-objects known-leak 3))
 
 (case "a recursively-built binary tree renders its full runtime structure"
   (doc    "The MULTI-WAY recursive counterpart of the linked-list spine: a `Tree` whose `Node` variant
@@ -6546,7 +6641,8 @@
             (def (main) (build 2)) (export main)))
   (output (: (Node (tuple
                 (Node (tuple (Leaf 0) (Leaf 0)))
-                (Node (tuple (Leaf 0) (Leaf 0))))) Tree)))
+                (Node (tuple (Leaf 0) (Leaf 0))))) Tree))
+  (live-objects known-leak 10))
 
 (case "a deep balanced tree is built and folded to a scalar, consuming both children"
   (doc    "The FOLD dual of the render case above, at DEPTH: a balanced binary `Tree` is built to a
@@ -6564,7 +6660,8 @@
             (def (main (: d Int64)) (sm (build d 1)))
             (export main)))
   (call   main (: 8 Int64))
-  (output (: 256 Int64)))
+  (output (: 256 Int64))
+  (live-objects known-leak 766))
 
 (case "a recursively-built MULTI-PAYLOAD-variant list renders its spine FLAT"
   (doc    "The two cases above use a SINGLE tuple-typed payload `(Cons (Tuple Int64 IntList))`, matched
@@ -6586,7 +6683,8 @@
                                          (L.Cons n (build (- n 1)))))
             (def (main) (build 3)) (export main)))
   (call   main)
-  (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L)))
+  (output (: (Cons 3 (Cons 2 (Cons 1 (Nil unit)))) L))
+  (live-objects known-leak 7))
 
 (case "a multi-payload variant whose spread element is itself a compound escapes correctly"
   (doc    "The flattening `Spread` recurses into each element's own shape, so a multi-payload variant one
@@ -6601,7 +6699,8 @@
             (def (mk (: b Int64)) (if (> b 0) (W.P b (Some b)) (W.E)))
             (def (main) (mk 5)) (export main)))
   (call   main)
-  (output (: (P 5 (Some 5)) W)))
+  (output (: (P 5 (Some 5)) W))
+  (live-objects known-leak 3))
 
 (case "a multi-payload variant with a scalar AND two recursive payloads escapes flat"
   (doc    "The multi-way-recursive counterpart of the flat multi-payload list: a `Node` variant carries a
@@ -6619,7 +6718,8 @@
                                          (T.Node n (build (- n 1)) (T.Leaf n))))
             (def (main) (build 2)) (export main)))
   (call   main)
-  (output (: (Node 2 (Node 1 (Leaf 0) (Leaf 1)) (Leaf 2)) T)))
+  (output (: (Node 2 (Node 1 (Leaf 0) (Leaf 1)) (Leaf 2)) T))
+  (live-objects known-leak 7))
 
 ; The case above dispatches a nested Sum by matching the outer variant then a SEPARATE inner match on
 ; the bound payload. A nested pattern deconstructs both tags in ONE arm — `(Ok (Ok n))` matches an Ok
@@ -6672,7 +6772,8 @@
             (def (main (: k Int64)) (f (if (> k 0) (Some (Ok k)) (None))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 2))
 
 (case "a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime"
   (doc    "The deepest runtime nested-constructor pattern: `Option (Result C Int64)` where the innermost
@@ -6696,7 +6797,8 @@
             (def (main (: k Int64)) (f (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 3))
 
 (case "a total match on a partly-un-built sum compiles its dead arm's unconstrained payload"
   (doc    "The scrutinee `(if … (Some (Ok (C.R k))) None)` only ever builds `Some(Ok …)` or `None` — NO
@@ -6721,7 +6823,8 @@
             (def (main (: k Int64)) (f k))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 3))
 
 ; `Option` is the partial-lookup carrier; chaining two lookups so a `None` short-circuits the rest is the
 ; partial-lookup pipeline (the Option analogue of the Result-pipeline cases). And a `(Map.lookup m k)` over
@@ -6766,7 +6869,8 @@
   (call   main (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
   (call   main (: 3 Int64) (: 0 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64) (: 4 Int64)) (output (: 4 Int64))
-  (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64)))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 3))
 
 (case "sibling patterns over a two-sum tuple diverge on PER-POSITION literals"
   (doc    "The 2×2 literal grid over multi-payload sums: four arms test `(P 0 x)` vs `(P _ x)` at EACH
@@ -6792,7 +6896,8 @@
   (call   main (: 5 Int64) (: 0 Int64))
   (output (: 2001 Int64))
   (call   main (: 5 Int64) (: 5 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 3))
 
 (case "a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind"
   (doc    "A literal buried at spine position 2 of a runtime 3-node list: `(Cons 1 (Cons 2 (Cons v
@@ -6811,7 +6916,8 @@
   (call   main (: 2 Int64))
   (output (: 3 Int64))
   (call   main (: 9 Int64))
-  (output (: 30 Int64)))
+  (output (: 30 Int64))
+  (live-objects known-leak 7))
 
 (case "a homogeneous nested Option distinguishes its outer and inner None"
   (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
@@ -7260,7 +7366,8 @@
                 ((None) -1)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 1 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 3))
 
 (case "an erased-newtype's list payload split across empty and rest arms dispatches with vec-get"
   (doc    "The ERASED-NEWTYPE twin: `(type Box (Bx (List Int64)))` (a single-variant sum, its box erased)
@@ -7279,7 +7386,8 @@
                 ((Bx (list x .. r)) x)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 2 Int64))
-  (output (: 8 Int64)))
+  (output (: 8 Int64))
+  (live-objects known-leak 2))
 
 (case "the empty and None arms of a list-payload split dispatch to their own values"
   (doc    "The two cases above call the non-empty arm (`mk 1`/`mk 2`); this exercises the OTHER arms of the
@@ -7298,7 +7406,8 @@
                 ((None) -1)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64)) (output (: 100 Int64))
-  (call   main (: 5 Int64)) (output (: -1 Int64)))
+  (call   main (: 5 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a list-payload split missing the non-empty arm is non-exhaustive"
   (doc    "The soundness counterpart of the exhaustive-split cases: the empty+rest split is total only
@@ -7413,7 +7522,8 @@
             (def (len (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ 1 (len t)))))
             (def (main) (len (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
   (call   main)
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a multi-payload destructure binds the head and recurses on the tail"
   (doc    "The companion binding BOTH payloads meaningfully: `sm` sums a linked list — the `Cons` arm
@@ -7425,7 +7535,8 @@
             (def (sm (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ h (sm t)))))
             (def (main) (sm (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main)))
   (call   main)
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 7))
 
 (case "a sum whose variants are named after target-language keywords constructs and matches"
   (doc    "A user sum is free to name its variants whatever the language permits — including words that are
@@ -7635,7 +7746,8 @@
             (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))))
             (export main)))
   (call   main)
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects known-leak 2))
 
 (case "a three-payload constructor partially applied in a runtime tuple completes via eta-closure"
   (doc    "The multi-remaining-param eta lift: `(mk n)` stashes the one-of-three-applied `(Tri.Mk 1)` in a
@@ -7648,7 +7760,8 @@
             (def (main) (let ((p (mk 1))) (match (((. p 0) 2) 3) ((Tri.Mk a b c) (+ a (+ b c))))))
             (export main)))
   (call   main)
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 ; --- A compound bound from a sum payload, extracted ACROSS A FUNCTION BOUNDARY, then projected ---
 ; A value bound out of a sum payload carries its shape WITHIN THE MATCH ARM (the payload-bound cases
@@ -7769,7 +7882,8 @@
   (input  (do
             (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1)))))
             (def (main) (. (go 3 (tuple 0 0)) 0)) (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 (case "an association list is searched by key with a tuple-carrying Option match"
   (doc    "The compiler's symbol-table / environment idiom: a list of `(key value)` tuples searched by
@@ -7789,7 +7903,8 @@
                 ((Some (tuple key val)) (if (= key k) val (lookup xs (+ i 1) k)))
                 ((None _)               -1)))
             (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main)))
-  (output (: 200 Int64)))
+  (output (: 200 Int64))
+  (live-objects known-leak 6))
 
 (case "a linear index-of search returns the POSITION of a runtime key, or -1 past the end"
   (doc    "The index-returning twin of the assoc-list search above (that returns the stored VALUE with
@@ -7807,7 +7922,8 @@
               (find (list 10 20 30) k 0))
             (export main)))
   (call   main (: 30 Int64)) (output (: 2 Int64))
-  (call   main (: 99 Int64)) (output (: -1 Int64)))
+  (call   main (: 99 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 5))
 
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
@@ -7881,7 +7997,8 @@
                   (if (= (tuple 0 (list 1 2)) (tuple 0 (list 2 1))) 1 0)))
               (export main)))
   (call   main (: 2 Int64))
-  (output (: (tuple 1 0) (Tuple Int64 Int64))))
+  (output (: (tuple 1 0) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; --- A list is homogeneous: its elements share one type ----------------------------------
 ; collections-and-text.md #A List Is An Ordered Homogeneous Sequence: "A list MUST be an ordered
@@ -8026,7 +8143,8 @@
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 30 Int64))
   (call   main (: 2 Int64) (: 1 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 3))
 
 (case "the length of a list looked up from a map by a runtime key"
   (doc    "`(List.len xs)` where `xs` is the list value found by `(Map.lookup … k)`: the two keys hold lists
@@ -8038,7 +8156,8 @@
                   ((Some xs) (List.len xs))
                   (None -1))) (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
-  (call   main (: 2 Int64)) (output (: 2 Int64)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit"
   (doc    "The full upsert idiom (the read-modify-write pin below returns the map UNCHANGED on a miss;
@@ -8058,7 +8177,8 @@
                    (match (Map.lookup m 9) ((Some xs) (List.len xs)) ((None u) -1)))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 21 Int64)))
+  (output (: 21 Int64))
+  (live-objects known-leak 12))
 
 (case "SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused"
   (doc    "The 0/1 counting DP — the coin-change below REUSES coins freely (its inner loop reads the
@@ -8098,7 +8218,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (call   main (: 4 Int64)) (output (: 0 Int64)))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 25))
 
 (case "CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form"
   (doc    "The SELF-convolution (the subset-sum above convolves the table with an INPUT element; the
@@ -8187,7 +8308,8 @@
   (call   main (: 3 Int64) (: 1 Int64)) (output (: 123 Int64))
   (call   main (: 3 Int64) (: 6 Int64)) (output (: 321 Int64))
   (call   main (: 4 Int64) (: 9 Int64)) (output (: 2314 Int64))
-  (call   main (: 1 Int64) (: 1 Int64)) (output (: 1 Int64)))
+  (call   main (: 1 Int64) (: 1 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 26))
 
 (case "COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1"
   (doc    "The corpus's first bottom-up DP TABLE: dp grows as a list where entry i is computed from
@@ -8238,7 +8360,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
-  (call   main (: 4 Int64)) (output (: 0 Int64)))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 367))
 
 (case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
   (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
@@ -8283,7 +8406,8 @@
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (call   main (: 4 Int64)) (output (: 1 Int64)))
+  (call   main (: 4 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 34))
 
 (case "LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima"
   (doc    "The DP trio's third indexing shape (coin-change indexes by AMOUNT, LIS by POSITION, this
@@ -8328,7 +8452,8 @@
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
-  (call   main (: 4 Int64)) (output (: 0 Int64)))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 83))
 
 (case "a memoizing fold caches computed results in a Map and counts its hits"
   (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
@@ -8354,7 +8479,8 @@
   (call   main (: 3 Int64))
   (output (: 361 Int64))
   (call   main (: 4 Int64))
-  (output (: 275 Int64)))
+  (output (: 275 Int64))
+  (live-objects known-leak 17))
 
 (case "an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality"
   (doc    "The frequency-histogram composite: a scalar walk tallies each one-scalar STRING into a
@@ -8392,7 +8518,8 @@
             )
             (export main)))
   (call   main (: 1 Int64)) (output (: 101 Int64))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 41))
 
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
@@ -8419,7 +8546,8 @@
                              ((None _u) 0))))))))
             (export main)))
   (call   main (: 5 Int64) (: 3 Int64) (: 7 Int64))
-  (output (: 2111 Int64)))
+  (output (: 2111 Int64))
+  (live-objects known-leak 18))
 
 (case "a list of maps: a runtime index then looks a runtime key up in the found map"
   (doc    "`(List.at [{1↦100}, {2↦200}] i)` returns a MAP value (present) or None; the returned map handle is
@@ -8434,7 +8562,8 @@
   (call   main (: 0 Int64) (: 1 Int64)) (output (: 100 Int64))
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 200 Int64))
   (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
-  (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64)))
+  (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 2))
 
 (case "re-inserting a LIST row into a map replaces that row and leaves the original map's row intact"
   (doc    "The overwrite+persistence face of the map-of-lists (the query pins read; this WRITES a row):
@@ -8452,7 +8581,8 @@
                      (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) -1))))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 31 Int64))
-  (call   main (: 2 Int64)) (output (: 22 Int64)))
+  (call   main (: 2 Int64)) (output (: 22 Int64))
+  (live-objects known-leak 6))
 
 (case "a list of sets: a runtime index then tests membership in the found set"
   (doc    "The SET sibling of the list-of-maps case: `(List.at [{1,2}, {3}] i)` returns a SET value (present)
@@ -8469,7 +8599,8 @@
   (call   main (: 0 Int64) (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 1 Int64)) (output (: 0 Int64))
-  (call   main (: 5 Int64) (: 1 Int64)) (output (: -1 Int64)))
+  (call   main (: 5 Int64) (: 1 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a list of records: a runtime index then reads a field of the found record"
   (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned
@@ -8483,7 +8614,8 @@
                   (None -1))) (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 1 Int64)) (output (: 20 Int64))
-  (call   main (: 5 Int64)) (output (: -1 Int64)))
+  (call   main (: 5 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a FILTER-COUNT fold over a list of records tallies by a field predicate"
   (doc    "The predicate-count over the record-list (the index-read case above reads ONE record; this walks
@@ -8503,7 +8635,8 @@
                                   (record (= name 3) (= age cutoff-age))) 0 0))
             (export main)))
   (call   main (: 20 Int64)) (output (: 2 Int64))
-  (call   main (: 10 Int64)) (output (: 1 Int64)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 (case "a set as a map value: runtime membership tested through the lookup"
   (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
@@ -8516,7 +8649,8 @@
                   (None -1))) (export main)))
   (call   main (: 1 Int64) (: 10 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 99 Int64)) (output (: 0 Int64))
-  (call   main (: 9 Int64) (: 10 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64) (: 10 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a map as a map value: a nested lookup queries the inner map through the outer lookup"
   (doc    "The Map-of-Maps case — a Map whose VALUE is itself a Map (nested CHAMP-in-CHAMP), the fourth
@@ -8537,7 +8671,8 @@
   (call   main (: 1 Int64) (: 11 Int64)) (output (: 110 Int64))
   (call   main (: 2 Int64) (: 20 Int64)) (output (: 200 Int64))
   (call   main (: 1 Int64) (: 99 Int64)) (output (: -1 Int64))
-  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 2))
 
 (case "a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact"
   (doc    "The WRITE path of the map-of-maps case above (that one only reads): `bump` is a two-level
@@ -8575,7 +8710,8 @@
                             (+ (read outer0 1 10) (read outer0 1 11))))))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 103752099 Int64))
-  (call   main (: -100 Int64)) (output (: 752099 Int64)))
+  (call   main (: -100 Int64)) (output (: 752099 Int64))
+  (live-objects known-leak 95))
 
 (case "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
   (doc    "The map-of-maps rows above store DISTINCT inner maps; this pins the SHARED-value face: one
@@ -8597,7 +8733,8 @@
                 (+ (* 100 (match (Map.lookup bumped 1) ((Some m1) (Map.len m1)) ((None _u) -1)))
                    (match (Map.lookup bumped 2) ((Some m2) (Map.len m2)) ((None _u) -1)))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 4140 Int64)))
+  (call   main (: 40 Int64)) (output (: 4140 Int64))
+  (live-objects known-leak 15))
 
 (case "one RRB list shared as two map VALUES diverges by List.update without cross-talk"
   (doc    "The vector twin of the shared-inner-map case above: one 50-element list is stored as the
@@ -8623,7 +8760,8 @@
                      ((Some l2) (match (List.at l2 5) ((Some v) (if (= v 777) 0 1)) ((None _u) -1)))
                      ((None _u) -1)))))
             (export main)))
-  (call   main (: 50 Int64)) (output (: 11 Int64)))
+  (call   main (: 50 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 11))
 
 (case "a shared inner map retrieved through BOTH outer keys stays ONE canonical value for keying"
   (doc    "The keying witness of the shared-value pins above: one 40-entry inner map stored under both
@@ -8644,7 +8782,8 @@
                 (match (Map.lookup (Map.insert Map.empty k1 42) k2)
                   ((Some v) v) ((None _u) -1))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 42 Int64)))
+  (call   main (: 40 Int64)) (output (: 42 Int64))
+  (live-objects known-leak 11))
 
 (case "a trie of 40 TUPLE keys resolves compound-key descent at depth"
   (doc    "The compound-key rows above run on 1-2 keys; this pins the tuple-key descent over a POPULATED
@@ -8680,7 +8819,8 @@
                                 (match (List.at xs 2) ((Some v) v) ((None _u) -1))))
                   ((None _u) -1))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 105 Int64)))
+  (call   main (: 40 Int64)) (output (: 105 Int64))
+  (live-objects known-leak 3))
 
 (case "overwriting ONE deep list value leaves the neighbors AND the original map live"
   (doc    "The three-way isolation face for heap VALUES (the churn pins isolate keys): overwrite entry
@@ -8700,7 +8840,8 @@
                    (+ (* 10 (match (Map.lookup m2 24) ((Some xs) (List.len xs)) ((None _u) -1)))
                       (match (Map.lookup m 25) ((Some xs) (List.len xs)) ((None _u) -1))))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 122 Int64)))
+  (call   main (: 40 Int64)) (output (: 122 Int64))
+  (live-objects known-leak 9))
 
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
@@ -8725,7 +8866,8 @@
   (call   main (: 1 Int64) (: 1 Int64)) (output (: 133 Int64))
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 221 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
+  (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 6))
 
 (case "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
   (doc    "One level deeper than the three-level query above, adding a RECORD as the innermost layer —
@@ -8747,7 +8889,8 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 300 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 8))
 
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
@@ -8776,7 +8919,8 @@
                 ((list h .. t) (match h ((tuple _i by) (match (Bytes.at by 0) ((Some v) v) ((None u) -1)))))
                 ((list) -2)))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 1 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 6))
 
 (case "a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent"
   (doc    "A Map key `(Bytes, Int64)` is orderable/keyable because both components are; the champ key descent
@@ -8894,7 +9038,8 @@
                           ((Core.KConst v) v)
                           ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
             (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 10))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
@@ -9540,7 +9685,8 @@
               (match (pe start) ((Ok r) (. r 0)) ((Err e) (- 0 (String.byte-len e)))))
             (export run)))
   (call   run (: 0 Int64)) (output (: 7 Int64))
-  (call   run (: 5 Int64)) (output (: -3 Int64)))
+  (call   run (: 5 Int64)) (output (: -3 Int64))
+  (live-objects known-leak 10))
 
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
@@ -9629,7 +9775,8 @@
             (def (f (: x Int64)) (match (L.Cons x (L.Nil)) ((L.Cons 0 t) 100) ((L.Cons h t) h) ((L.Nil) -1)))
             (export f)))
   (call   f (: 0 Int64))
-  (output (: 100 Int64)))
+  (output (: 100 Int64))
+  (live-objects known-leak 3))
 
 (case "a nested constructor match on a variant past the first dispatches on that variant's payload"
   (doc    "A NESTED constructor pattern on a variant that is NOT the first — `(type W (A Int64) (V (Option
@@ -9647,7 +9794,8 @@
                                    ((W.A h) h) ((W.V (Option.Some n)) n) ((W.V (Option.None)) -2)))
             (export f)))
   (call   f (: 7 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 2))
 
 (case "two variants past the first each carry a different nested sum, over a runtime discriminant"
   (doc    "The harder disc-≥1 nested shape: `(type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64)))`
@@ -10058,7 +10206,8 @@
            heap element are the same rule: type-directed `(tuple)`.")
   (input  (do (def (main) (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple)))))) (export main)))
   (call   main)
-  (output (: (tuple (tuple 21.04) (tuple (tuple (tuple 21.04) (tuple)))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple))))))
+  (output (: (tuple (tuple 21.04) (tuple (tuple (tuple 21.04) (tuple)))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple)))))
+  (live-objects known-leak 5))
 
 ; --- A UNIT element in a HEAP-STORED compound occupies its slot with the inline-unit sentinel ----------
 ; A `Unit` has no machine slot (`valtype_of(Unit) = None`), so the VALUE emits nothing — but a heap slot
@@ -10132,7 +10281,8 @@
     (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (tuple (Option.expect o "u") o) (loop o (- k 1))))
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 5) ((None) 0)))
     (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "a Unit payload MATCH-bound from a still-live sum at a dup-site drops the sentinel"
   (doc    "The `SumPayload` twin (a `match` binder rather than `Option.expect`): the Some arm binds the Unit
@@ -10144,7 +10294,8 @@
     (def (loop (: o (Option Unit)) (: k Int64)) (if (= k 0) (match o ((Some u) (tuple u o)) ((None) (tuple () o))) (loop o (- k 1))))
     (def (main) (match (. (loop (mk 1) 2) 1) ((Some _) 6) ((None) 0)))
     (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 1))
 
 (case "a two-payload sum escapes its second variant with a bare name"
   (doc    "A sum whose variants are both payload-carrying — `(type E (A Int64) (B Int64))` — escaping its
@@ -10384,7 +10535,8 @@
               (zip-sum (list 1 2 3 n) (list 10 20 30) 0))
             (export main)))
   (call   main (: 999 Int64))
-  (output (: 140 Int64)))
+  (output (: 140 Int64))
+  (live-objects known-leak 15))
 
 (case "run-length encode/decode round-trips a runtime list of tuples"
   (doc    "The RLE pipeline: encode `(5 5 n 2 2 7 n n)` (n=5 runtime, so the runs 5×3 / 2×2 / 7×1 / 5×2
@@ -10422,7 +10574,8 @@
                 (+ (* 10 (checksum rs 0)) (if (= (decode rs (list)) xs) 1 0))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 532271521 Int64)))
+  (output (: 532271521 Int64))
+  (live-objects known-leak 37))
 
 (case "a comparison-driven MERGE of two sorted lists interleaves and drains the remainder"
   (doc    "The merge step of merge sort: walk two sorted spines, at each step taking the smaller head
@@ -10458,7 +10611,8 @@
                  (chk (merge (list) (list 2 n 8) (list)) 0)))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 1233589258 Int64)))
+  (output (: 1233589258 Int64))
+  (live-objects known-leak 46))
 
 (case "INTERLEAVE alternates two spines and drains the longer tail after the shorter empties"
   (doc    "The order-blind counterpart of the sorted MERGE above (merge picks by COMPARISON; weave
@@ -10493,7 +10647,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 123456 Int64))
   (call   main (: 2 Int64)) (output (: 1234579 Int64))
-  (call   main (: 3 Int64)) (output (: 24 Int64)))
+  (call   main (: 3 Int64)) (output (: 24 Int64))
+  (live-objects known-leak 27))
 
 (case "PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts"
   (doc    "The rebuild-REORDERING face of the two-head destructure (the stack-machine and Pascal pins
@@ -10523,7 +10678,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 21431 Int64))
   (call   main (: 2 Int64)) (output (: 214351 Int64))
-  (call   main (: 3 Int64)) (output (: 71 Int64)))
+  (call   main (: 3 Int64)) (output (: 71 Int64))
+  (live-objects known-leak 17))
 
 (case "WAVE reorder alternates <= and >= by index parity through a carried-element walk"
   (doc    "The VALUE-conditional sibling of the pairwise swap above (that one swaps unconditionally;
@@ -10570,7 +10726,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 141531 Int64))
   (call   main (: 2 Int64)) (output (: 452311 Int64))
-  (call   main (: 3 Int64)) (output (: 121 Int64)))
+  (call   main (: 3 Int64)) (output (: 121 Int64))
+  (live-objects known-leak 39))
 
 (case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
   (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
@@ -10621,7 +10778,8 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 124457 Int64))
   (call   main (: 0 Int64)) (output (: 1257 Int64))
-  (call   main (: 9 Int64)) (output (: 125799 Int64)))
+  (call   main (: 9 Int64)) (output (: 125799 Int64))
+  (live-objects known-leak 97))
 
 (case "INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed"
   (doc    "The sortedness METRIC (inversions are exactly what the merge sort above eliminates —
@@ -10651,7 +10809,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 0 Int64))
   (call   main (: 3 Int64)) (output (: 10 Int64))
-  (call   main (: 4 Int64)) (output (: 0 Int64)))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 36))
 
 (case "TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow"
   (doc    "The bounded-selection composite: each element insorts into a DESCENDING list (`>=` walk —
@@ -10690,7 +10849,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 987 Int64))
   (call   main (: 1 Int64)) (output (: 9 Int64))
-  (call   main (: 10 Int64)) (output (: 9875321 Int64)))
+  (call   main (: 10 Int64)) (output (: 9875321 Int64))
+  (live-objects known-leak 97))
 
 (case "a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number"
   (doc    "The stable priority queue over an ordered assoc list: each element carries (priority, seq),
@@ -10721,7 +10881,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 4213 Int64))
   (call   main (: 5 Int64)) (output (: 4123 Int64))
-  (call   main (: 9 Int64)) (output (: 4132 Int64)))
+  (call   main (: 9 Int64)) (output (: 4132 Int64))
+  (live-objects known-leak 25))
 
 (case "a TWO-LIST FIFO queue reverses the back list exactly when the front drains"
   (doc    "The amortized banker's queue: enqueue prepends to BACK, dequeue pops FRONT — and when the
@@ -10766,7 +10927,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1269 Int64))
   (call   main (: 8 Int64)) (output (: 1869 Int64))
-  (call   main (: 0 Int64)) (output (: 1069 Int64)))
+  (call   main (: 0 Int64)) (output (: 1069 Int64))
+  (live-objects known-leak 174))
 
 (case "a multi-use runtime list do-def escapes an if-select inside a match arm and stays live"
   (doc    "The LIST member of the #20 escape-shape family (the rope original is pinned in 13-strings:
@@ -10799,7 +10961,8 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 1567 Int64))
   (call main (: 2 Int64)) (output (: 117 Int64))
-  (call main (: 3 Int64)) (output (: 7 Int64)))
+  (call main (: 3 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 5))
 
 (case "a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live"
   (doc    "The MAP member of the #20 escape-shape family, completing the heap-collection triad
@@ -10823,7 +10986,8 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 1004 Int64))
   (call main (: 2 Int64)) (output (: 101 Int64))
-  (call main (: 3 Int64)) (output (: 1001 Int64)))
+  (call main (: 3 Int64)) (output (: 1001 Int64))
+  (live-objects known-leak 2))
 
 (case "a FLATTEN fold over a runtime list of lists joins across an empty inner spine"
   (doc    "The flatten idiom: fold `List.concat` over a `(List (List Int64))` whose inner lists have
@@ -10853,7 +11017,8 @@
                       (if (= flat (list 1 2 n 4 5)) 1 0)))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 1234551 Int64)))
+  (output (: 1234551 Int64))
+  (live-objects known-leak 27))
 
 (case "a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines"
   (doc    "The column peel: each transpose level takes `heads` (column i) and `tails` (every row
@@ -10907,7 +11072,8 @@
                 (+ (* (chk2 tm 0) 10) ((. List len) tm))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1425363 Int64))
-  (call   main (: 0 Int64)) (output (: 1420363 Int64)))
+  (call   main (: 0 Int64)) (output (: 1420363 Int64))
+  (live-objects known-leak 53))
 
 (case "ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix"
   (doc    "The rotation as a COMPOSITION law: rot90 = transpose ∘ reverse-rows (reversing first then
@@ -10967,7 +11133,8 @@
                    (if (= (rot4 m) m) 1 0))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 4152631 Int64))
-  (call   main (: 9 Int64)) (output (: 4152691 Int64)))
+  (call   main (: 9 Int64)) (output (: 4152691 Int64))
+  (live-objects known-leak 247))
 
 (case "CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact"
   (doc    "The inverse-of-flatten builder (transpose above builds a list-of-lists by COLUMN; chunk
@@ -11014,7 +11181,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 4101 Int64))
   (call   main (: 3 Int64)) (output (: 3101 Int64))
-  (call   main (: 7 Int64)) (output (: 1701 Int64)))
+  (call   main (: 7 Int64)) (output (: 1701 Int64))
+  (live-objects known-leak 52))
 
 (case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
   (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint
@@ -11050,7 +11218,8 @@
   (call   main (: 40 Int64)) (output (: 3 Int64))
   (call   main (: 35 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
-  (call   main (: 99 Int64)) (output (: -1 Int64)))
+  (call   main (: 99 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length"
   (doc    "The asymmetric partition (the general partition below keeps BOTH sides as lists; here one
@@ -11087,7 +11256,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 1031200005 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
-  (call   main (: 3 Int64)) (output (: 102033 Int64)))
+  (call   main (: 3 Int64)) (output (: 102033 Int64))
+  (live-objects known-leak 39))
 
 (case "a PARTITION fold splits one spine into two lists by a runtime predicate"
   (doc    "The partition idiom: ONE walk over `(4 n 7 1 8 2)` grows TWO accumulator lists — `(< h 5)`
@@ -11118,7 +11288,8 @@
                 (+ (* (chk (. parts 0) 0) 1000) (chk (. parts 1) 0))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 412678 Int64))
-  (call   main (: 0 Int64)) (output (: 4012078 Int64)))
+  (call   main (: 0 Int64)) (output (: 4012078 Int64))
+  (live-objects known-leak 28))
 
 (case "MERGE INTERVALS coalesces overlapping spans, touching endpoints join, containment absorbs"
   (doc    "The span-coalescing fold with its state OUTSIDE the accumulator: the current (start, end)
@@ -11159,7 +11330,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 106081015183 Int64))
   (call   main (: 2 Int64)) (output (: 1051 Int64))
-  (call   main (: 3 Int64)) (output (: 1101 Int64)))
+  (call   main (: 3 Int64)) (output (: 1101 Int64))
+  (live-objects known-leak 30))
 
 (case "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
   (doc    "The selection composite over the partition step above (there the split IS the answer; here
@@ -11200,7 +11372,8 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (call   main (: 5 Int64)) (output (: 9 Int64))
-  (call   main (: 6 Int64)) (output (: -1 Int64)))
+  (call   main (: 6 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 32))
 
 (case "a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted"
   (doc    "The three-way upgrade of the two-way partition and quickselect pins above: ONE walk routes
@@ -11237,7 +11410,8 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 21330078 Int64))
   (call   main (: 1 Int64)) (output (: 5285853 Int64))
-  (call   main (: 9 Int64)) (output (: 5275185300000 Int64)))
+  (call   main (: 9 Int64)) (output (: 5275185300000 Int64))
+  (live-objects known-leak 32))
 
 (case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
   (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
@@ -11270,7 +11444,8 @@
                      ((None _u) -1)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
-  (call   main (: -6 Int64)) (output (: 29701021 Int64)))
+  (call   main (: -6 Int64)) (output (: 29701021 Int64))
+  (live-objects known-leak 18))
 
 (case "EQUILIBRIUM INDEX finds where left and right sums balance using total minus running"
   (doc    "The pivot-balance scan (the range-sum pin below materializes a prefix TABLE; this needs
@@ -11305,7 +11480,8 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
-  (call   main (: 4 Int64)) (output (: 2 Int64)))
+  (call   main (: 4 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 23))
 
 (case "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
   (doc    "The QUERY side of the prefix table (the scan above pins construction): `rq(i,j) =
@@ -11343,7 +11519,8 @@
   (call   main (: 0 Int64) (: 7 Int64)) (output (: 311 Int64))
   (call   main (: 2 Int64) (: 4 Int64)) (output (: 101 Int64))
   (call   main (: 3 Int64) (: 3 Int64)) (output (: 11 Int64))
-  (call   main (: 0 Int64) (: 0 Int64)) (output (: 31 Int64)))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 31 Int64))
+  (live-objects known-leak 32))
 
 (case "PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division"
   (doc    "The two-sided upgrade of the prefix-sum scan above (that one accumulates ONE direction;
@@ -11382,7 +11559,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 60040030024 Int64))
   (call   main (: 0 Int64)) (output (: 40000000 Int64))
-  (call   main (: 1 Int64)) (output (: 20040010008 Int64)))
+  (call   main (: 1 Int64)) (output (: 20040010008 Int64))
+  (live-objects known-leak 54))
 
 (case "a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum"
   (doc    "The row-derivation composite: `pairs` slides a 2-element window over the previous row
@@ -11423,7 +11601,8 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 1040604011 Int64))
-  (call   main (: 6 Int64)) (output (: 10615201506011 Int64)))
+  (call   main (: 6 Int64)) (output (: 10615201506011 Int64))
+  (live-objects known-leak 4))
 
 (case "BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut"
   (doc    "The single-coefficient form against the Pascal row above as its oracle: the multiplicative
@@ -11461,7 +11640,8 @@
   (call   main (: 10 Int64) (: 3 Int64)) (output (: 1201 Int64))
   (call   main (: 10 Int64) (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 10 Int64) (: 10 Int64)) (output (: 11 Int64))
-  (call   main (: 20 Int64) (: 10 Int64)) (output (: 1847561 Int64)))
+  (call   main (: 20 Int64) (: 10 Int64)) (output (: 1847561 Int64))
+  (live-objects known-leak 110))
 
 (case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
   (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
@@ -11494,7 +11674,8 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 455 Int64))
   (call   main (: 9 Int64)) (output (: 999 Int64))
-  (call   main (: 0 Int64)) (output (: 355 Int64)))
+  (call   main (: 0 Int64)) (output (: 355 Int64))
+  (live-objects known-leak 9))
 
 (case "LOCAL PEAKS counts strict interior maxima through a three-element sliding window"
   (doc    "The sliding-window max above RE-READS by index; this SLIDES the window through the
@@ -11525,7 +11706,8 @@
             (export main)))
   (call   main (: 9 Int64)) (output (: 322 Int64))
   (call   main (: 0 Int64)) (output (: 213 Int64))
-  (call   main (: 5 Int64)) (output (: 318 Int64)))
+  (call   main (: 5 Int64)) (output (: 318 Int64))
+  (live-objects known-leak 24))
 
 (case "a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged"
   (doc    "The TRANSFORMING sibling of the local-peaks pin above (same parameter-sliding window;
@@ -11565,7 +11747,8 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 12833 Int64))
   (call   main (: 2 Int64)) (output (: 555 Int64))
-  (call   main (: 3 Int64)) (output (: 1234 Int64)))
+  (call   main (: 3 Int64)) (output (: 1234 Int64))
+  (live-objects known-leak 18))
 
 (case "KADANE max-subarray threads a best-ending-here and a global best through one fold"
   (doc    "TWO COUPLED accumulators through one fold, coupled ASYMMETRICALLY: `cur = max(h, cur+h)`
@@ -11596,7 +11779,8 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 7 Int64))
   (call   main (: -10 Int64)) (output (: 6 Int64))
-  (call   main (: 20 Int64)) (output (: 23 Int64)))
+  (call   main (: 20 Int64)) (output (: 23 Int64))
+  (live-objects known-leak 11))
 
 (case "PAINT FENCE threads same/diff state tracks where no three consecutive posts match"
   (doc    "The constraint-as-state recurrence (Kadane above couples accumulators through a MAX; this
@@ -11662,7 +11846,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: 90 Int64))
-  (call   main (: 7 Int64)) (output (: 71 Int64)))
+  (call   main (: 7 Int64)) (output (: 71 Int64))
+  (live-objects known-leak 28))
 
 (case "MAX PROFIT tracks the running minimum and best spread in one forward pass"
   (doc    "The buy-low-sell-high single pass (Kadane's cousin two pins up — Kadane couples through a
@@ -11698,7 +11883,8 @@
   (call   main (: 1 Int64)) (output (: 62 Int64))
   (call   main (: 2 Int64)) (output (: 71 Int64))
   (call   main (: 3 Int64)) (output (: 80 Int64))
-  (call   main (: 4 Int64)) (output (: 3 Int64)))
+  (call   main (: 4 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 24))
 
 (case "take-while and drop-while split a leading run and reassemble to the original"
   (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
@@ -11736,7 +11922,8 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 1307241 Int64))
   (call   main (: 0 Int64)) (output (: 1302400001 Int64))
-  (call   main (: 9 Int64)) (output (: 1309241 Int64)))
+  (call   main (: 9 Int64)) (output (: 1309241 Int64))
+  (live-objects known-leak 20))
 
 (case "a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len"
   (doc    "The positional split-and-swap (the span pin above splits by PREDICATE; this splits by
@@ -11783,7 +11970,8 @@
   (call   main (: 2 Int64)) (output (: 345121 Int64))
   (call   main (: 0 Int64)) (output (: 123451 Int64))
   (call   main (: 7 Int64)) (output (: 345121 Int64))
-  (call   main (: 5 Int64)) (output (: 123451 Int64)))
+  (call   main (: 5 Int64)) (output (: 123451 Int64))
+  (live-objects known-leak 29))
 
 (case "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
   (doc    "The stable-dedup idiom couples a GROWING CHAMP set to a growing list in one fold: each new
@@ -11815,7 +12003,8 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 35124 Int64))
   (call   main (: 3 Int64)) (output (: 3123 Int64))
-  (call   main (: 2 Int64)) (output (: 3213 Int64)))
+  (call   main (: 2 Int64)) (output (: 3213 Int64))
+  (live-objects known-leak 25))
 
 (case "a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values"
   (doc    "The debounce twin of the stable dedup above — the two BRACKET the dedup semantics: the
@@ -11848,7 +12037,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1233 Int64))
   (call   main (: 1 Int64)) (output (: 12134 Int64))
-  (call   main (: 3 Int64)) (output (: 13234 Int64)))
+  (call   main (: 3 Int64)) (output (: 13234 Int64))
+  (live-objects known-leak 24))
 
 (case "LONGEST RUN tracks the current and best streak, first run winning ties"
   (doc    "The MEASURING face of run detection (the dedup above COLLAPSES runs; the string-RLE counts
@@ -11880,7 +12070,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 32 Int64))
   (call   main (: 7 Int64)) (output (: 47 Int64))
-  (call   main (: 1 Int64)) (output (: 37 Int64)))
+  (call   main (: 1 Int64)) (output (: 37 Int64))
+  (live-objects known-leak 32))
 
 (case "an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original"
   (doc    "The unzip/zip inverse law: one walk destructures each pair `((list (tuple k v) .. t))` and
@@ -11918,7 +12109,8 @@
                       (if (= (rezip (. kv 0) (. kv 1) (list)) ps) 1 0)))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 1236781 Int64))
-  (call   main (: 0 Int64)) (output (: 1230781 Int64)))
+  (call   main (: 0 Int64)) (output (: 1230781 Int64))
+  (live-objects known-leak 35))
 
 (case "a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates"
   (doc    "A 4-field RECORD as the fold accumulator (the multi-accumulator stats at 02-binding threads
@@ -11949,7 +12141,8 @@
                    (+ (* (. st sm) 100) (. st ct)))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 2092204 Int64))
-  (call   main (: -5 Int64)) (output (: -4908996 Int64)))
+  (call   main (: -5 Int64)) (output (: -4908996 Int64))
+  (live-objects known-leak 13))
 
 (case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
   (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
@@ -11974,7 +12167,8 @@
               (run (list (Add 10) (Sub 3) (Add n) (Reset) (Add 42)) 0))
             (export main)))
   (call   main (: 100 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 16))
 
 (case "a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack"
   (doc    "The interpreter-dispatch composite (the event fold above threads a SCALAR through variant
@@ -12024,7 +12218,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 114 Int64))
   (call   main (: 0 Int64)) (output (: 24 Int64))
-  (call   main (: -1 Int64)) (output (: 34 Int64)))
+  (call   main (: -1 Int64)) (output (: 34 Int64))
+  (live-objects known-leak 35))
 
 (case "a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state"
   (doc    "The state-machine fold (the event fold above threads a scalar; here the STATE ITSELF is the
@@ -12054,7 +12249,8 @@
   (call   main (: 22 Int64))
   (output (: 42 Int64))
   (call   main (: -1 Int64))
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects known-leak 13))
 
 (case "a two-variant enum match with constant arms dispatches branchlessly — first variant"
   (doc    "A TWO-variant enum `(type Flag On Off)` matched to constant arms is `(if (disc == On) 1 0)` —
@@ -12154,7 +12350,8 @@
             (type Expr (Lit Int64) (Neg Expr))
             (def (depth e) (match e ((Expr.Lit n) 0) ((Expr.Neg x) (+ 1 (depth x)))))
             (def (main)    (depth (Expr.Neg (Expr.Lit 5)))) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a bare prelude-colliding variant name matches as the local variant"
   (doc    "`(type T (Int Int64))` declares a variant named `Int`, colliding with the prelude `Int` type
@@ -12289,7 +12486,8 @@
                              ((Expr.Lit n) (Bytes.of (list 66)))
                              ((Expr.Neg x) (Bytes.concat (lower x) (Bytes.of (list 124))))))
             (def (main)    (lower (Expr.Neg (Expr.Lit 5)))) (export main)))
-  (output (: b"B|" Bytes)))
+  (output (: b"B|" Bytes))
+  (live-objects known-leak 3))
 
 (case "two MUTUALLY-recursive sum types fold across their boundary"
   (doc    "Two sum types reference EACH OTHER in their payloads: `Expr` has a `(Block Stmt)` variant and
@@ -12309,7 +12507,8 @@
               (ev (Expr.Block (Stmt.Seq (tuple (Stmt.Ret (Expr.Lit k)) (Stmt.Ret (Expr.Neg (Expr.Lit 3))))))))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 8))
 
 (case "a recursive sum recurses THROUGH a record-typed payload"
   (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
@@ -12328,7 +12527,8 @@
             (def (main (: k Int64)) (sum (Tree.Br (record (= l (Tree.Leaf k)) (= r (Tree.Leaf 2)) (= w 1)))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  (live-objects known-leak 4))
 
 (case "a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer"
   (doc    "A user declares a generic sum `(type Box (W a) (E))` — its NAME collides with a backend's heap
@@ -12346,7 +12546,8 @@
             (def (main (: k Int64)) (unwrap (Box.W (Tree.Node (tuple (Tree.Leaf k) (Tree.Leaf 2))))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 4))
 
 (case "a sum type NAMED after a primitive scalar does not collide with the primitive"
   (doc    "A user names a sum `i64` — colliding with a backend TARGET TYPE (Rust's primitive `i64`). The
@@ -12415,7 +12616,8 @@
             (def (main (: k Int64)) (leftmost (GTree.GNode (tuple (GTree.GLeaf k) (GTree.GLeaf 9)))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 4))
 
 (case "a two-parameter sum whose variants use the parameters in different orders instantiates correctly"
   (doc    "`(type Pair (First a b) (Swapped b a))` has two type parameters used in DIFFERENT orders across
@@ -12451,7 +12653,8 @@
             (def (main (: k Int64)) (cnt (mk k)))
             (export main)))
   (call   main (: 500 Int64))
-  (output (: 500 Int64)))
+  (output (: 500 Int64))
+  (live-objects known-leak 501))
 
 (case "two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity"
   (doc    "`evn` and `od` are mutually recursive over a recursive `Nat`: each MATCHES the sum and, on the
@@ -12468,7 +12671,8 @@
             (def (main (: k Int64)) (evn (mk k)))
             (export main)))
   (call   main (: 4 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 5))
 
 (case "a four-level nested-constructor pattern with a generic user sum in the middle matches"
   (doc    "A deeply nested match pattern `(Some (Ok (Box.W (Some n))))` descends FOUR sum layers —
@@ -13186,7 +13390,8 @@
   (call   main (: 1 Int64) (: 0 Int64) (: 5 Int64))
   (output (: 2005 Int64))
   (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64))
-  (output (: 3005 Int64)))
+  (output (: 3005 Int64))
+  (live-objects known-leak 2))
 
 (case "two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant"
   (doc    "TWO erased single-variant newtypes stacked over a sum — `Outer (Wrap Mid)`, `Mid (Box Inner)`,
@@ -13241,7 +13446,8 @@
   (call   main (: -1 Int64))
   (output (: 1 Int64))
   (call   main (: 1 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 3))
 
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
@@ -13517,7 +13723,8 @@
                        (Option.expect (List.at xs 0) "index 0 in range")
                        (Option.expect (List.at xs 32) "index 32 in range"))))
             (export main)))
-  (call   main (: 99 Int64)) (output (: (tuple 33 99 1) (Tuple Int64 Int64 Int64))))
+  (call   main (: 99 Int64)) (output (: (tuple 33 99 1) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The replace-at-index operation is DEFINED ONLY for an in-bounds index (collections-and-text.md #A List
 ; Is Grown By Functional Construction, 2nd sentence: "The replace-at-index operation MUST be defined only
@@ -13599,7 +13806,8 @@
                   (tuple (at ys 35) (at ys 3) (at ys 38) (List.len ys) (at xs 35)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The update case above touches ONE deep index; this pins the whole-spine TRAVERSAL of a large list. A List
 ; is an RRB vector, so a 100-element list is a multi-node trie — a fold reading every element in order (a
@@ -13625,7 +13833,8 @@
                 (tuple (List.len xs) (sum xs 0 0) (at xs 0) (at xs 63) (at xs 99) (at xs 100))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 108))
 
 ; The cases above span TWO RRB levels (n≤1024 = a leaf of leaves). An RRB branches by 32, so n>32²=1024
 ; forces a THIRD level (level 2): the trie root now indexes interior nodes that index leaves. These pin that
@@ -13648,7 +13857,8 @@
                 (tuple (List.len xs) (at xs 5) (at xs 1050) (at xs 1099) (at xs 1100))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 1100 5 1050 1099 -1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1100 5 1050 1099 -1) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a List.update at a third-level RRB index lands and preserves persistence and siblings"
   (doc    "The update companion at three levels: on the same n=1100 three-level trie, `(List.update xs 1050
@@ -13669,7 +13879,8 @@
                   (tuple (at ys 1050) (at ys 5) (at ys 1099) (List.len ys) (at xs 1050)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64))))
+  (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 (case "a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element"
   (doc    "The comparison-accumulator fold (the sum-fold above threads `(+ acc v)` — every element
            contributes; here the accumulator advances only when the comparison holds): `maxf` walks the
@@ -13687,7 +13898,8 @@
               (maxf (list 3 k 7 1) 0 -9999))
             (export main)))
   (call   main (: 50 Int64)) (output (: 50 Int64))
-  (call   main (: 0 Int64)) (output (: 7 Int64)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 7))
 
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
@@ -13743,7 +13955,8 @@
                   (List.len xs))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: (tuple 1000000 1 7 3) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple 1000000 1 7 3) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime-index list read at a NEGATIVE index is None, not an unsigned wrap"
   (doc    "`(List.at (list 10 20 30) i)` at a NEGATIVE runtime index is `None` — the distinct SIGNEDNESS
@@ -13840,7 +14053,8 @@
                                      (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) (sum-at xs (+ i 1) n))
                                      0))
             (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 (List.len xs)))) (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 2))
 
 (case "a list value consumed by two operations in one function is not freed early"
   (doc    "A list is an immutable value: passing the SAME list to two operations must let BOTH observe it
@@ -13856,7 +14070,8 @@
             (def (use e n) (scan (List.push e n) 0))
             (def (both e) (+ (* 10 (use e 1)) (use e 2)))
             (def (main) (both (list))) (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 4))
 
 ; The case above shares an EMPTY-LITERAL list under CONSTANT arithmetic, which const-folds away before the
 ; heap runs — so it does not actually exercise the runtime reference-count discipline. The cases below force
@@ -13898,7 +14113,8 @@
             (def (f n xs) (if (= n 0) (List.len xs) (+ (List.len (List.push xs 9)) (f 0 xs))))
             (def (main) (f 1 (build 0 2 (list))))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime map shared across two recursive-call operands is not mutated by an insert in one"
   (doc    "The tree-walking interpreter's environment shape, on a `Map`: `ev` recurses over an expression
@@ -13919,7 +14135,8 @@
                 (((. E Add) a b)   (+ (ev a env) (ev b env)))))
             (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) 0 1)))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a runtime set shared across two recursive-call operands is not mutated by an insert in one"
   (doc    "The `Set` face of the same aliasing invariant, in the recursive interpreter shape: `ev` threads a
@@ -13939,7 +14156,8 @@
                 (((. E Add) a b)   (+ (ev a s) (ev b s)))))
             (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert (Set.of (list)) 1)))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
@@ -13968,7 +14186,8 @@
                 ((Core.KConst n)         (one (Instr.IConst n)))
                 ((Core.KAdd (tuple a b)) (code-cat (lower a) (code-cat (lower b) (one (Instr.IAdd ())))))))
             (def (main) (len (lower (Core.KAdd (tuple (Core.KConst 20) (Core.KConst 22)))))) (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 20))
 
 ; --- The Map OPERATION surface (collections-and-text.md §A Map Is Built By Functional Construction,
 ; §Keys Are Compared By Value, §A Map Renders As Its Entries In Canonical Key Order). The map value
@@ -13984,14 +14203,16 @@
            Construction); `Map.lookup` is total, yielding `(Some v)` for a present key (§Indexing And
            Lookup Are Fallible, Not Trapping — the map clause). Here the key `1` maps to `10`.")
   (input  (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 1)) (export main)))
-  (output (: (Some 10) (Option Int64))))
+  (output (: (Some 10) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "looking up an absent key yields None"
   (doc    "`Map.lookup` on a key the map does not contain yields `(None unit)` — the total-lookup rule
            (collections-and-text.md, the map clause of §Indexing And Lookup Are Fallible, Not
            Trapping): absence is data, not a trap. `2` is not a key of a map that holds only `1`.")
   (input  (do (def (main) (Map.lookup (Map.insert Map.empty 1 10) 2)) (export main)))
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 ; A `Map.lookup` result MUST match its true variant regardless of how the map was constructed. A map built
 ; by a `(map …)` LITERAL with a RUN-TIME-computed key is mis-represented: `Map.lookup` on it renders the
@@ -14088,7 +14309,8 @@
                          (Map.len m)
                          (Map.len m2)))))
             (export main)))
-  (output (: (tuple 10 -1 2 1) (Tuple Int64 Int64 Int64 Int64))))
+  (output (: (tuple 10 -1 2 1) (Tuple Int64 Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "the value-yielding insert reports the value it replaced"
   (doc    "`Map.swap` is the value-yielding add: it produces `(tuple <prior-value-optional> <new-map>)`
@@ -14097,7 +14319,8 @@
            optional. Adding a NEW key would report `(None unit)`.")
   (input  (do
             (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 1 99) 0)) (export main)))
-  (output (: (Some 10) (Option Int64))))
+  (output (: (Some 10) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "the value-yielding remove reports the value it dropped"
   (doc    "`Map.take` is the value-yielding remove: it produces `(tuple <removed-value-optional>
@@ -14106,7 +14329,8 @@
            the reported optional.")
   (input  (do
             (def (main) (. (Map.take (Map.insert Map.empty 1 10) 1) 0)) (export main)))
-  (output (: (Some 10) (Option Int64))))
+  (output (: (Some 10) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "the value-yielding insert reports None when the key is new"
   (doc    "The None arm the `Map.swap` case above only describes: swapping a value into a key the map does
@@ -14116,7 +14340,8 @@
            form the runtime-key swap case reaches only through a match.")
   (input  (do
             (def (main) (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 0)) (export main)))
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "the value-yielding insert of a new key adds the entry"
   (doc    "The second tuple element of the new-key `Map.swap` is the map with the new entry added: swapping
@@ -14156,7 +14381,8 @@
            absent-dropped form as a constant, the companion of the `(Some 10)` present-key take.")
   (input  (do
             (def (main) (. (Map.take (Map.insert Map.empty 1 10) 2) 0)) (export main)))
-  (output (: (None unit) (Option Int64))))
+  (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "the value-yielding remove of an absent key leaves the map unchanged"
   (doc    "The second tuple element of the absent-key `Map.take` is the map itself, unchanged: taking absent
@@ -14188,7 +14414,8 @@
   (call   main (: 2 Int64))
   (output (: 22 Int64))
   (call   main (: 9 Int64))
-  (output (: -3 Int64)))
+  (output (: -3 Int64))
+  (live-objects known-leak 3))
 
 (case "Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body"
   (doc    "`(Map.swap {1↦10,2↦20} k 99)`: k=2 hits — the prior value `(Some 20)` comes back and the new
@@ -14206,7 +14433,8 @@
   (call   main (: 2 Int64))
   (output (: 119 Int64))
   (call   main (: 7 Int64))
-  (output (: -3 Int64)))
+  (output (: -3 Int64))
+  (live-objects known-leak 3))
 
 (case "Map.remove at a RUNTIME key shrinks only on a hit"
   (doc    "The plain-remove companion: `(Map.remove {1↦10,2↦20} k)` at k=1 drops the entry (len 1); at
@@ -14343,7 +14571,8 @@
                     ((tuple p m2) (+ (* 10 (match p ((Some v) v) ((None) -1)))
                                      (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) 0))))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64))))
+  (call   main (: 5 Int64)) (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "tuple keys differing only in the FLOAT component stay distinct and look up"
   (doc    "The float-component face of the compound-key family: a tuple key whose distinguishing slot is a
@@ -14673,7 +14902,8 @@
                    (+ (match (Map.lookup m 2) ((Some v) v) (None 0))
                       (match (Map.lookup m 3) ((Some v) v) (None 0))))))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 7))
 
 (case "a built map renders its entries in canonical key order"
   (doc    "A map returned as the program RESULT renders its entries as key-value pairs in the
@@ -14731,7 +14961,8 @@
                 (match (Map.lookup (Map.insert Map.empty 1 (map (2 20))) 1)
                   ((Some inner) (Map.len inner))
                   ((None _) 0))) (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 ; A map's KEY type is likewise unrestricted — a KEY may itself be a MAP. Keys are compared BY VALUE under
 ; structural equality (collections-and-text.md #Keys Are Compared By Value), and a map value is CANONICAL
@@ -14808,7 +15039,8 @@
                 (+ (* 100 (Map.len m))
                    (match (Map.lookup m a) ((Some v) v) ((None _u) -1)))))
             (export main)))
-  (call main (: 5 Int64) (: 7 Int64)) (output (: 230 Int64)))
+  (call main (: 5 Int64) (: 7 Int64)) (output (: 230 Int64))
+  (live-objects known-leak 8))
 
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`
@@ -15121,21 +15353,24 @@
            now forwards scalar params, so a computed-from-input collection crosses.")
   (input  (do (def (main (: a Int64)) (list a (* a 2))) (export main)))
   (call   main (: 7 Int64))
-  (output (: (list 7 14) (List Int64))))
+  (output (: (list 7 14) (List Int64)))
+  (live-objects known-leak 2))
 
 (case "a parameterized export returns a tuple computed from its argument"
   (doc    "The tuple companion: `main(100) = (tuple 100 101 102)`, a fixed-shape compound built from the
            argument crossing via the param-forwarding resource escape.")
   (input  (do (def (main (: a Int64)) (tuple a (+ a 1) (+ a 2))) (export main)))
   (call   main (: 100 Int64))
-  (output (: (tuple 100 101 102) (Tuple Int64 Int64 Int64))))
+  (output (: (tuple 100 101 102) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a parameterized export returns a sum value computed from its argument"
   (doc    "The sum companion: `main(9) = (Some 81)` over a user `(type Option …)` — the runtime
            disc-switch encoder renders the variant the host built from the argument.")
   (input  (do (type Option (Some Int64) None) (def (main (: a Int64)) (Option.Some (* a a))) (export main)))
   (call   main (: 9 Int64))
-  (output (: (Some 81) Option)))
+  (output (: (Some 81) Option))
+  (live-objects known-leak 1))
 
 ; The list/tuple/sum companions above pin ONE call each. These extend the param-forwarding resource escape
 ; to the RECORD and built-in Option compound kinds, and add a case whose TWO calls prove the argument
@@ -15152,7 +15387,8 @@
            argument, not a constant.")
   (input  (do (def (main (: a Int64)) (record (= lo a) (= hi (+ a 10)))) (export main)))
   (call   main (: 5 Int64)) (output (: (record (= hi 15) (= lo 5)) (Record (: hi Int64) (: lo Int64))))
-  (call   main (: 0 Int64)) (output (: (record (= hi 10) (= lo 0)) (Record (: hi Int64) (: lo Int64)))))
+  (call   main (: 0 Int64)) (output (: (record (= hi 10) (= lo 0)) (Record (: hi Int64) (: lo Int64))))
+  (live-objects known-leak 1))
 
 (case "a parameterized export returns a built-in Option computed from its argument"
   (doc    "The built-in `Option` companion (the sum case above used a user `(type Option …)`): `main(a)`
@@ -15162,7 +15398,8 @@
            renders the argument-selected variant.")
   (input  (do (def (main (: a Int64)) (if (> a 0) (Some a) (None unit))) (export main)))
   (call   main (: 5 Int64)) (output (: (Some 5) (Option Int64)))
-  (call   main (: 0 Int64)) (output (: (None unit) (Option Int64))))
+  (call   main (: 0 Int64)) (output (: (None unit) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "a parameterized compound-return export forwards distinct arguments to make"
   (doc    "The regression guard for runtime ARGUMENT FORWARDING: `main(n) = (tuple n (+ n 1))` returns a
@@ -15174,7 +15411,8 @@
            constant-baking or arg-dropping escape cannot produce.")
   (input  (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 5 6) (Tuple Int64 Int64)))
-  (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64))))
+  (call   main (: 40 Int64)) (output (: (tuple 40 41) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 ; The parameterized COLLECTION-return cases above always return a NON-EMPTY collection. The EMPTY boundary
 ; — a parameterized export whose result is a runtime-SELECTED empty-or-nonempty collection (an `if` choosing
@@ -15191,7 +15429,8 @@
            parameterized-return cases above cannot witness.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (list n) (list))) (export main)))
   (call   main (: 0 Int64)) (output (: (list) (List Int64)))
-  (call   main (: 5 Int64)) (output (: (list 5) (List Int64))))
+  (call   main (: 5 Int64)) (output (: (list 5) (List Int64)))
+  (live-objects known-leak 1))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty map"
   (doc    "The map companion: `main(n) = (if (> n 0) (Map.insert Map.empty n n) Map.empty)` returns an empty
@@ -15200,7 +15439,8 @@
            export, not only a populated map.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (Map.insert Map.empty n n) Map.empty)) (export main)))
   (call   main (: 0 Int64)) (output (: (map) (Map Int64 Int64)))
-  (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64))))
+  (call   main (: 5 Int64)) (output (: (map (5 5)) (Map Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a parameterized export returns a runtime-selected empty-or-nonempty set"
   (doc    "The set companion: `main(n) = (if (> n 0) (Set.of (list n)) (Set.of (list)))` returns an empty or
@@ -15209,7 +15449,8 @@
            value form from a parameterized export.")
   (input  (do (def (main (: n Int64)) (if (> n 0) (Set.of (list n)) (Set.of (list)))) (export main)))
   (call   main (: 0 Int64)) (output (: ((. Set of) (list)) (Set Int64)))
-  (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64))))
+  (call   main (: 5 Int64)) (output (: ((. Set of) (list 5)) (Set Int64)))
+  (live-objects known-leak 1))
 
 ; The parameterized returns above are FLAT collections (a list/map/set of scalars). A NESTED collection
 ; return — a `(List (Tuple …))` (an association / key-value list) or a `(List (List …))` — is the shape a
@@ -15226,7 +15467,8 @@
            the key-value-list shape a compiler emits (distinct from the flat parameterized-list return).")
   (input  (do (def (main (: n Int64)) (list (tuple n (* n 10)) (tuple (+ n 1) (* (+ n 1) 10)))) (export main)))
   (call   main (: 5 Int64)) (output (: (list (tuple 5 50) (tuple 6 60)) (List (Tuple Int64 Int64))))
-  (call   main (: 0 Int64)) (output (: (list (tuple 0 0) (tuple 1 10)) (List (Tuple Int64 Int64)))))
+  (call   main (: 0 Int64)) (output (: (list (tuple 0 0) (tuple 1 10)) (List (Tuple Int64 Int64))))
+  (live-objects known-leak 4))
 
 (case "a parameterized export returns a list of lists built from its argument"
   (doc    "The list-of-lists companion: `main(n) = (list (list n) (list n n))` returns a `(List (List Int64))`
@@ -15235,7 +15477,8 @@
            a runtime argument, the operand-lists shape a code emitter builds.")
   (input  (do (def (main (: n Int64)) (list (list n) (list n n))) (export main)))
   (call   main (: 5 Int64)) (output (: (list (list 5) (list 5 5)) (List (List Int64))))
-  (call   main (: 0 Int64)) (output (: (list (list 0) (list 0 0)) (List (List Int64)))))
+  (call   main (: 0 Int64)) (output (: (list (list 0) (list 0 0)) (List (List Int64))))
+  (live-objects known-leak 6))
 
 (case "a parameterized export builds a list of tuples by a runtime-length loop and measures it"
   (doc    "The runtime-length form: `build` pushes `(tuple i (* i 2))` for i in 0..n-1 into a
@@ -15256,21 +15499,24 @@
            side of the heap-return boundary (a scalar param already worked); the value is a runtime List.")
   (input  (do (def (main (: p (Tuple Int64 Int64))) (list (. p 0) (. p 1))) (export main)))
   (call   main (: (tuple 7 9) (Tuple Int64 Int64)))
-  (output (: (list 7 9) (List Int64))))
+  (output (: (list 7 9) (List Int64)))
+  (live-objects known-leak 3))
 
 (case "a tuple-parameter export returns a BigInt computed from its fields"
   (doc    "`main((tuple 5000000000 6000000000)) = 5e9 + 6e9 = 11000000000` as a BigInt — a heap numeric
            value computed from a tuple parameter's fields, past Int64's reach.")
   (input  (do (def (main (: p (Tuple Int64 Int64))) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1)))) (export main)))
   (call   main (: (tuple 5000000000 6000000000) (Tuple Int64 Int64)))
-  (output (: 11000000000 BigInt)))
+  (output (: 11000000000 BigInt))
+  (live-objects known-leak 4))
 
 (case "a record-parameter export returns a tuple computed from its fields"
   (doc    "A RECORD parameter crosses as a `tuple<…>` in canonical sorted-key order; `main((record (x 3)
            (y 8))) = (tuple 8 3)` swaps the fields. Proves the record-param + tuple-result compound path.")
   (input  (do (def (main (: p (Record (: x Int64) (: y Int64)))) (tuple (. p y) (. p x))) (export main)))
   (call   main (: (record (= x 3) (= y 8)) (Record (: x Int64) (: y Int64))))
-  (output (: (tuple 8 3) (Tuple Int64 Int64))))
+  (output (: (tuple 8 3) (Tuple Int64 Int64)))
+  (live-objects known-leak 2))
 
 (case "an export mixing a scalar and a tuple parameter returns a list from both"
   (doc    "`make` forwards a MIX of parameter shapes: a scalar leaf AND a fixed-shape tuple (crossing as a
@@ -15278,7 +15524,8 @@
            9)) = (list 5 7 9)` draws from both — the scalar directly, the tuple's fields rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (list a (. p 0) (. p 1))) (export main)))
   (call   main (: 5 Int64) (: (tuple 7 9) (Tuple Int64 Int64)))
-  (output (: (list 5 7 9) (List Int64))))
+  (output (: (list 5 7 9) (List Int64)))
+  (live-objects known-leak 3))
 
 (case "an export with a tuple parameter before a scalar returns a list from both"
   (doc    "Parameter ORDER is preserved across the mix: a tuple param FOLLOWED by a scalar. `main((tuple
@@ -15286,7 +15533,8 @@
            trailing scalar.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: a Int64)) (list (. p 0) (. p 1) a)) (export main)))
   (call   main (: (tuple 20 30) (Tuple Int64 Int64)) (: 40 Int64))
-  (output (: (list 20 30 40) (List Int64))))
+  (output (: (list 20 30 40) (List Int64)))
+  (live-objects known-leak 3))
 
 (case "an export with two tuple parameters returns a list from both"
   (doc    "MULTIPLE compound params compose: two tuples each cross as their own native `tuple<…>` (the
@@ -15294,14 +15542,16 @@
            `main((tuple 1 2), (tuple 3 4)) = (list 1 2 3 4)`.")
   (input  (do (def (main (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64))) (list (. p 0) (. p 1) (. q 0) (. q 1))) (export main)))
   (call   main (: (tuple 1 2) (Tuple Int64 Int64)) (: (tuple 3 4) (Tuple Int64 Int64)))
-  (output (: (list 1 2 3 4) (List Int64))))
+  (output (: (list 1 2 3 4) (List Int64)))
+  (live-objects known-leak 4))
 
 (case "an export mixing a scalar and a tuple parameter returns a BigInt from both"
   (doc    "The mixed-param compound path composes with a BigInt result: `main(1e9, (tuple 2e9 3e9)) =
            1e9 + 2e9 + 3e9 = 6000000000`, past Int64, from a scalar and a tuple parameter.")
   (input  (do (def (main (: a Int64) (: p (Tuple Int64 Int64))) (+ (BigInt.of a) (+ (BigInt.of (. p 0)) (BigInt.of (. p 1))))) (export main)))
   (call   main (: 1000000000 Int64) (: (tuple 2000000000 3000000000) (Tuple Int64 Int64)))
-  (output (: 6000000000 BigInt)))
+  (output (: 6000000000 BigInt))
+  (live-objects known-leak 4))
 
 (case "an export with a nested-tuple parameter returns a list from its leaves"
   (doc    "A NESTED fixed-shape compound param — a tuple whose first field is itself a tuple — crosses as
@@ -15310,21 +15560,24 @@
            3)) = (list 1 2 3)`.")
   (input  (do (def (main (: p (Tuple (Tuple Int64 Int64) Int64))) (list (. (. p 0) 0) (. (. p 0) 1) (. p 1))) (export main)))
   (call   main (: (tuple (tuple 1 2) 3) (Tuple (Tuple Int64 Int64) Int64)))
-  (output (: (list 1 2 3) (List Int64))))
+  (output (: (list 1 2 3) (List Int64)))
+  (live-objects known-leak 4))
 
 (case "an export with a record-with-a-tuple-field parameter returns a list from its leaves"
   (doc    "A record whose field is a tuple is likewise a nested fixed-shape compound; its fields cross in
            canonical sorted-key order. `main((record (pt (tuple 10 20)) (n 30))) = (list 10 20 30)`.")
   (input  (do (def (main (: p (Record (: pt (Tuple Int64 Int64)) (: n Int64)))) (list (. (. p pt) 0) (. (. p pt) 1) (. p n))) (export main)))
   (call   main (: (record (= pt (tuple 10 20)) (= n 30)) (Record (: pt (Tuple Int64 Int64)) (: n Int64))))
-  (output (: (list 10 20 30) (List Int64))))
+  (output (: (list 10 20 30) (List Int64)))
+  (live-objects known-leak 4))
 
 (case "an export mixing a scalar and a nested-tuple parameter returns a list from both"
   (doc    "A nested compound composes with a scalar param: `main(9, (tuple (tuple 5 6) 7)) = (list 9 5 7)`
            — the scalar leaf, then the nested tuple's depth-first leaves, rebuilt.")
   (input  (do (def (main (: a Int64) (: p (Tuple (Tuple Int64 Int64) Int64))) (list a (. (. p 0) 0) (. p 1))) (export main)))
   (call   main (: 9 Int64) (: (tuple (tuple 5 6) 7) (Tuple (Tuple Int64 Int64) Int64)))
-  (output (: (list 9 5 7) (List Int64))))
+  (output (: (list 9 5 7) (List Int64)))
+  (live-objects known-leak 4))
 
 (case "a composed call over a record-transforming function with an arithmetic field compiles"
   (doc    "`(f (f (record (a 0) (b 5))))` where `f : (Record (: a Int64) (: b Int64)) -> (Record …)`
@@ -15363,7 +15616,8 @@
             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node)))
             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
             (export main)))
-  (output (: 100 Int64)))
+  (output (: 100 Int64))
+  (live-objects known-leak 6))
 
 ; --- Non-variant-0 payload TYPE resolution: the remaining slot/shape faces -------------------------
 ; 134dee198 fixed the wasm discriminant walk resolving a Payload step's type via variant 0 (the
@@ -15683,7 +15937,8 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 6 Int64))
   (call   main (: 4 Int64)) (output (: 10 Int64))
-  (call   main (: 0 Int64)) (output (: 0 Int64)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 4))
 
 (case "a shared list concatenated with itself has twice its length"
   (doc    "`(List.concat xs xs)` over a runtime-built `xs` (rc≥2 — the binding is used as BOTH operands)
@@ -15722,7 +15977,8 @@
   (call   main (: 10 Int64)) (output (: 55 Int64))
   (call   main (: 32 Int64)) (output (: 528 Int64))
   (call   main (: 33 Int64)) (output (: 561 Int64))
-  (call   main (: 100 Int64)) (output (: 5050 Int64)))
+  (call   main (: 100 Int64)) (output (: 5050 Int64))
+  (live-objects known-leak 2))
 
 (case "a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index"
   (doc    "The heap-element companion of the scalar RRB-boundary case above: the scalar case pushes Int64s;
@@ -15747,7 +16003,8 @@
   (call   main (: 32 Int64)) (output (: 32320 Int64))
   (call   main (: 33 Int64)) (output (: 33330 Int64))
   (call   main (: 39 Int64)) (output (: 39390 Int64))
-  (call   main (: 40 Int64)) (output (: -1 Int64)))
+  (call   main (: 40 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 ; --- Projection-chain child retains: the generalization faces beyond depth 2 -----------------------
 ; The single-level (e6e284f9) and doubly-nested (3d416e6c1) child-retain fixes each pinned their own
@@ -15781,7 +16038,8 @@
                    (List.len (. (. t 0) f)))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 2))
 
 (case "a projection chain through a tuple inside a record retains the consumed child"
   (doc    "The mirror kind-mix: `(. (. r a) 0)` — a record field projection then a tuple projection.
@@ -15973,7 +16231,8 @@
             (def (main (: n Int64))
               (sorted (Map.to-list (fill n Map.empty)) -1 0))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 100 Int64)))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (live-objects known-leak 404))
 
 (case "a trie spanning NEGATIVE and positive keys enumerates in signed numeric order"
   (doc    "The signed face of the deep-trie sortedness pin above (whose keys are all positive): 100 keys
@@ -15998,7 +16257,8 @@
                      ((Some p) (match p ((tuple k _v) (if (= k -343) 1 0))))
                      ((None _u) -1)))))
             (export main)))
-  (call   main (: 100 Int64)) (output (: 1001 Int64)))
+  (call   main (: 100 Int64)) (output (: 1001 Int64))
+  (live-objects known-leak 406))
 
 (case "a negative-key trie churned back keys and enumerates like the direct build"
   (doc    "The negative-keyspace face of the churn-identity family: churn 60 NEGATIVE keys (-3i) around
@@ -16041,7 +16301,8 @@
                 (def rt (rebuild (Map.to-list src) Map.empty))
                 (+ (* 10 (if (= rt src) 1 0)) (if (= (Map.len rt) n) 1 0))))
             (export main)))
-  (call   main (: 60 Int64)) (output (: 11 Int64)))
+  (call   main (: 60 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 242))
 
 (case "a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)"
   (doc    "The filtering upgrade of the enumerate-rebuild case above (which keeps every entry): walk a
@@ -16064,7 +16325,8 @@
                 (+ (* 10 (Map.len evens))
                    (match (Map.lookup evens 30) ((Some v) (if (= v 60) 1 0)) ((None _u) -1)))))
             (export main)))
-  (call   main (: 60 Int64)) (output (: 301 Int64)))
+  (call   main (: 60 Int64)) (output (: 301 Int64))
+  (live-objects known-leak 242))
 
 (case "the filtered rebuild EQUALS the direct selection build (selection is canonical)"
   (doc    "The identity witness of the select-rebuild case above: the filtered rebuild must EQUAL a map
@@ -16089,7 +16351,8 @@
                 (def direct (fill-even n Map.empty))
                 (if (= filtered direct) 1 0)))
             (export main)))
-  (call   main (: 60 Int64)) (output (: 1 Int64)))
+  (call   main (: 60 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 242))
 
 (case "Map.to-list length is the map's entry count"
   (doc    "`(List.len (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 1 99)))` —
@@ -16121,7 +16384,8 @@
                 ((Some p) (match p ((tuple k v) (+ k v))))
                 ((None u) (- 0 1))))
             (export main)))
-  (call   main (: 4 Int64)) (output (: 11 Int64)))
+  (call   main (: 4 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 2))
 
 ; The Map.to-list order pins above use INTEGER keys (canonical order = numeric). STRING keys order by
 ; content byte-lexicographics — the SAME unsigned byte order Set.to-list pins for string ELEMENTS
@@ -16143,7 +16407,8 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "the LAST Map.to-list entry over runtime String keys is the byte-largest"
   (doc    "The far-end companion: index 2 of the same z/a/m rope-keyed map is the byte-LARGEST key
@@ -16159,7 +16424,8 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 3))
 
 ; The cases above enumerate/index/count a Map.to-list; this closes the ROUND-TRIP that the "map→list-of-
 ; pairs→fold" idiom relies on — rebuilding a map by folding Map.insert over its OWN Map.to-list recovers an
@@ -16186,7 +16452,8 @@
                 (if (= (rebuild (Map.to-list m) 0 Map.empty) m) 1 0)))
             (export main)))
   (call   main (: 3 Int64) (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 6))
 
 (case "a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom"
   (doc    "The identity rebuild above recovers an EQUAL map; this rebuilds with a per-value TRANSFORM
@@ -16205,7 +16472,8 @@
                      (match (Map.lookup dst 2) ((Some v) v) ((None u) -1))))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 80 Int64)))
+  (output (: 80 Int64))
+  (live-objects known-leak 7))
 
 (case "a MAP MERGE folds one map's entries into another, summing values on key collision"
   (doc    "The two-map combine (the rebuild pins above fold a map's entries into an EMPTY map; here the
@@ -16239,7 +16507,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 315240 Int64))
   (call   main (: 7 Int64)) (output (: 215660 Int64))
-  (call   main (: 1 Int64)) (output (: 225290 Int64)))
+  (call   main (: 1 Int64)) (output (: 225290 Int64))
+  (live-objects known-leak 8))
 
 (case "a map INVERSION flips keys and values, last-writer-wins on duplicate values"
   (doc    "The reverse-index build: fold `Map.to-list` of the forward map into an empty map with key
@@ -16269,7 +16538,8 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 3123 Int64))
   (call   main (: 10 Int64)) (output (: 2223 Int64))
-  (call   main (: 30 Int64)) (output (: 2133 Int64)))
+  (call   main (: 30 Int64)) (output (: 2133 Int64))
+  (live-objects known-leak 10))
 
 (case "a FILTERED rebuild keeps only entries passing a runtime predicate"
   (doc    "The filter companion: the rebuild's insert is CONDITIONAL on `(> v cut)` with the cutoff a
@@ -16291,7 +16561,8 @@
   (call   main (: 25 Int64))
   (output (: 1 Int64))
   (call   main (: 99 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 10))
 
 (case "Map.to-list over Float64 KEYS enumerates by canonical byte key order"
   (doc    "The Float-KEY twin of the Float Set.to-list case (19-sets): a map keyed by Float64 enumerates its
@@ -16327,7 +16598,8 @@
                   ((Some p) (match p ((tuple k v) v)))
                   ((None u) -1))))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 10 Int64)))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 3))
 
 (case "Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)"
   (doc    "The same three-entry tuple-keyed map read at index 1: the middle key (2,0) → value 20. Together
@@ -16341,7 +16613,8 @@
                   ((Some p) (match p ((tuple k v) v)))
                   ((None u) -1))))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 20 Int64)))
+  (call   main (: 1 Int64)) (output (: 20 Int64))
+  (live-objects known-leak 3))
 
 ; The Map.to-list cases above enumerate a NON-EMPTY map. The empty boundary — a pass dumping a
 ; possibly-empty symbol table — is `Map.to-list` of an EMPTY (but key/value-TYPED) map: the empty entry
@@ -16540,7 +16813,8 @@
               (+ (f (List.push (list) (Op.Add 1))) (f (List.push (list) (Op.Add v)))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 207 Int64)))
+  (output (: 207 Int64))
+  (live-objects known-leak 3))
 
 (case "literal payload refinement works in a non-head element position"
   (doc    "The refined element sits at index 1: [Neg, Add 0] -> 100, [Neg, Add 9] -> 9 -> 109. The
@@ -16558,7 +16832,8 @@
                  (f (List.push (List.push (list) (Op.Neg unit)) (Op.Add v)))))
             (export main)))
   (call   main (: 9 Int64))
-  (output (: 109 Int64)))
+  (output (: 109 Int64))
+  (live-objects known-leak 1))
 
 (case "literal refinement on two elements of one list pattern"
   (doc    "BOTH elements carry same-variant ctors, the second refined by literal vs binder: input
@@ -16575,7 +16850,8 @@
               (f (List.push (List.push (list) (Op.Add 0)) (Op.Add v))))
             (export main)))
   (call   main (: 4 Int64))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 1))
 
 (case "a string literal payload refines a ctor list element"
   (doc    "`(Tag \"a\")` -> 1 vs `(Tag s)` -> byte-len s: the literal is a HEAP payload compared by
@@ -16630,7 +16906,8 @@
               (+ (f (tuple 5 9) 3) (f (tuple v 9) 3)))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 1))
 
 (case "a failing tuple guard falls to a later arm re-binding the elements"
   (doc    "Arm one guards `(> a 9)` (→ 100+a), arm two re-binds both elements unguarded (→ a+b):
@@ -16646,7 +16923,8 @@
               (+ (f (tuple 15 1)) (f (tuple v 1))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 121 Int64)))
+  (output (: 121 Int64))
+  (live-objects known-leak 1))
 
 (case "a tuple guard reads a ctor payload binder inside a tuple element"
   (doc    "`(guard (tuple (Op.Add n) b) (> n b))` — the compound head contains a REFUTABLE ctor
@@ -16714,7 +16992,8 @@
                 (_ -1)))
             (export main)))
   (call   main (: 5 Int64) (: 2 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 (case "a recursive unifier distinguishes arrow components through the payload slots"
   (doc    "The full HM-unify shape run END TO END: `unify (TArrow (TInt, TBool)) (TArrow (TInt, TInt))`
@@ -16737,7 +17016,8 @@
                      (Ty.TArrow (tuple (Ty.TInt unit) (Ty.TInt unit)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 11))
 
 ; --- Deep push-chain retain placement (the memoized dup-site scan's value guard) --------------------
 ; 3d5d48eea memoized mark_binder_dups' occurrence pre-pass (was exponential — depth 30 timed out).
@@ -16822,7 +17102,8 @@
                 ((Some p) (match p ((tuple v rest) (+ v (sum-it rest)))))))
             (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 29))
 
 (case "a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
   (doc    "The MAP twin of the list-arm coded-head case above. A `(Map …)` scrutinee has no user
@@ -16931,7 +17212,8 @@
   (call   main (: 3 Int64))
   (output (: 4 Int64))
   (call   main (: 9 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a guarded record match arm gates the fields it binds and falls through on a failing guard"
   (doc    "A record match arm may carry a `(guard <pattern> <cond>)`: the record's fields are bound and then
@@ -16955,7 +17237,8 @@
   (call   main (: -5 Int64))
   (output (: -1 Int64))
   (call   main (: 0 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "an empty record pattern matches any record of its type"
   (doc    "The empty record pattern `(record)` names NO fields, so it is irrefutable over any record of the
@@ -17070,7 +17353,8 @@
                   ((Some r) (match r ((record (= xs ys)) (List.len ys))))
                   ((None _u) -1))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 2 Int64)))
+  (call   main (: 5 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 5))
 
 (case "a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)"
   (doc    "A record match binds its fields to bare names at the TOP level, and a BARE-binder record
@@ -17157,7 +17441,8 @@
               (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 3))
 
 (case "a record-field loop invariant consumed per iteration accumulates stably"
   (doc    "The record-extraction face: `(. r f)` consumed per iteration over a threaded record →
@@ -17171,7 +17456,8 @@
               (go (record (= f (List.push (List.push (list) d) 8))) 4 0))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 3))
 
 (case "a sum-payload loop invariant consumed per iteration accumulates stably"
   (doc    "`(Option.expect s \"v\")` consumed per iteration over a threaded Option → 4 × 3 = 12. THE
@@ -17187,7 +17473,8 @@
               (go (Option.Some (List.push (List.push (list) d) 8)) 4 0))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 3))
 
 (case "a consumed and a borrowed read of one loop invariant coexist per iteration"
   (doc    "Each iteration BOTH consumes the projected child (push → len 3) AND borrows it (len → 2):
@@ -17201,7 +17488,8 @@
               (go (tuple (List.push (List.push (list) d) 8) 0) 4 0))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects known-leak 3))
 
 (case "a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth"
   (doc    "MISCOMPILE regression (was Todo→Fail-class silent wrong-value). A match nesting a variant of the
@@ -17281,7 +17569,8 @@
               (def (cnt (: it L)) (match it ((L.N _) 0) ((L.C h r) (+ 1 (cnt r)))))
               (def (main) (cnt (L.C 1 (L.C 2 (L.C 3 (L.N unit))))))
               (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)"
   (doc    "A NESTED-payload non-exhaustive match NAMES the uncovered inner variant — `(match o ((Some (A))
@@ -17403,7 +17692,8 @@
   (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
               (def (main) (tuple (build 3) 30))
               (export main)))
-  (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))))
+  (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64)))
+  (live-objects known-leak 3))
 
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
@@ -17438,7 +17728,8 @@
                                      (_ -1)))
               (export main)))
   (call   main (: 7 Int64) (: 7 Int64) (: 0 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 ; The TUPLE-PARAM twin of the inline-tuple value guard above: matching a bound tuple PARAMETER `t`
 ; (`(: t (Tuple Int64 Int64 Int64))`) rather than an inline `(tuple a b c)`. Both shapes now lower to a
@@ -17498,7 +17789,8 @@
                 (let ((mn (v3min lo hi)) (mx (v3max lo hi)))
                   (match mn ((MkV3 a _ _) (match mx ((MkV3 b _ _) (if (= (- b a) (+ m m)) 1 0))))))))
             (export main)))
-  (call main (: 5 Int64)) (output (: 1 Int64)))
+  (call main (: 5 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 12))
 
 ; A structural-record variant payload written in the ML surface's field spelling — each field a `(: name
 ; type)` annotation triple, `(type DbBox (DbBox (Record (: a Int64) (: b Int64))))` — must register the
@@ -17547,7 +17839,8 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 50 Int64))
   (call   main (: 1 Int64)) (output (: 40 Int64))
-  (call   main (: 9 Int64)) (output (: 29 Int64)))
+  (call   main (: 9 Int64)) (output (: 29 Int64))
+  (live-objects known-leak 20))
 
 ; A TRANSITIVE chain of single-variant (erasable) newtypes declared in REVERSED dependency order — `A`
 ; wraps `B`, `B` wraps `C`, `C` wraps `Int64`, declared A-FIRST — must construct + read through all three
@@ -17623,7 +17916,8 @@
               (total (mark 0 n (build 0 n (list))) 0 0))
             (export main)))
   (call   main (: 1000 Int64))
-  (output (: 990 Int64)))
+  (output (: 990 Int64))
+  (live-objects known-leak 1035))
 
 (case "a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels"
   (doc    "The map twin at 40× the 50-entry churn pin: 2000 keys force additional CHAMP levels. get(0)=0,
@@ -17697,7 +17991,8 @@
                   ((None u) -99))))
             (export main)))
   (call   main (: 42 Int64))
-  (output (: -42 Int64)))
+  (output (: -42 Int64))
+  (live-objects known-leak 4))
 
 (case "alternating prepend and push keep both list ends straight"
   (doc    "The deque shape: `push(prepend(push([5],6),a),7)` builds [a,5,6,7] — index 0 is the
@@ -17729,7 +18024,8 @@
               (sum-weighted (build n (list)) 0))
             (export main)))
   (call   main (: 4 Int64))
-  (output (: 1234 Int64)))
+  (output (: 1234 Int64))
+  (live-objects known-leak 9))
 
 ; ---- rust no-build regression guards (breaker FINDING #18; v-rust-backend bb104ceaf).
 ; A recursive list helper called INSIDE a match arm with its result immediately matched used to make the
@@ -17763,7 +18059,8 @@
               (match (pick (list) (list n 2) n) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
             (export main)))
   (call main (: 5 Int64)) (output (: 3 Int64))
-  (call main (: -5 Int64)) (output (: -2 Int64)))
+  (call main (: -5 Int64)) (output (: -2 Int64))
+  (live-objects known-leak 18))
 
 (case "a recursive list-match in an arm whose arms return a LIST builds on all backends"
   (doc    "breaker #18 neighbor n18b. `deq`'s empty-`f` arm matches `(rev b (list))` (recursive helper in an
@@ -17788,7 +18085,8 @@
                 (def out (deq (list) (list n 2)))
                 (+ (* (Option.expect (List.at out 0) "h") 10) ((. List len) out))))
             (export main)))
-  (call main (: 5 Int64)) (output (: 22 Int64)))
+  (call main (: 5 Int64)) (output (: 22 Int64))
+  (live-objects known-leak 10))
 
 ; ---- The two FINDING #18 faces that additionally needed empty-list-FIELD grounding (v-rust-backend
 ; 015eeef55, landed same batch as bb104ceaf's brace/call-arg fixes). A recursive nested-match arm whose
@@ -17817,7 +18115,8 @@
             (def (main (: n Int64))
               (match (deq (list) (list n 2)) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
             (export main)))
-  (call main (: 5 Int64)) (output (: 3 Int64)))
+  (call main (: 5 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 18))
 
 (case "a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends"
   (doc    "breaker #18 n18c — the minimal trigger: a tuple of TWO bare `(List Int64)` fields (no scalar) from
@@ -17840,7 +18139,8 @@
             (def (main (: n Int64))
               (match (deq (list) (list n 2)) ((tuple f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2)))))
             (export main)))
-  (call main (: 5 Int64)) (output (: 10 Int64)))
+  (call main (: 5 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 18))
 
 (case "Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds"
   (doc    "The value-yielding insert through the CANONICALIZING key path: the map holds 1/2 -> 10 and the
@@ -17959,7 +18259,8 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
-  (call   main (: 3 Int64)) (output (: 1 Int64)))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a Set taken out of a map grows independently of the original binding"
   (doc    "The SET-as-VALUE escape face: {7 -> {1,2}} taken apart by Map.take — the taken set reads
@@ -17984,7 +18285,8 @@
   (call   main (: 1 Int64)) (output (: 2 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
-  (call   main (: 4 Int64)) (output (: 2 Int64)))
+  (call   main (: 4 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 2))
 
 (case "a record key with a SET field matches by set content across build orders"
   (doc    "The record-key family descends into a full sub-CHAMP: the key's `s` field is a SET, so
@@ -18102,7 +18404,8 @@
                    (match (Map.lookup m 1) ((Option.Some v) v) ((Option.None _u) -1)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 299 Int64))
-  (call   main (: 1 Int64)) (output (: 199 Int64)))
+  (call   main (: 1 Int64)) (output (: 199 Int64))
+  (live-objects known-leak 9))
 
 (case "lists built by PUSH and by CONCAT compare equal by content, and order stays decisive"
   (doc    "Construction-ROUTE equality: the RRB rep can differ by route (tail-buffer vs spine merge), so content-eq must normalize across a push-built and a concat-built pair. The k=1 face makes the wrong-order list a PALINDROME [1,1] equal to the target — maximal route difference with matching content.")
@@ -18132,7 +18435,8 @@
                    (match (Map.lookup m 7) ((Option.Some v) (String.byte-len v)) ((Option.None _u) -1)))))
             (export main)))
   (call   main (: 500 Int64))
-  (output (: 206 Int64)))
+  (output (: 206 Int64))
+  (live-objects known-leak 2))
 
 (case "a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms"
   (doc    "The nested-Result pins are CONST (fold at compile time); this (Result (Result Int64 String) Int64) flows at RUNTIME through validate∘parse chaining — the inner Result rides as the outer's heap payload, both tags decode at run time, and the mixed error types force distinct payload reps per level.")
@@ -18147,7 +18451,8 @@
             (export main)))
   (call   main (: 5 Int64))   (output (: 5 Int64))
   (call   main (: -3 Int64))  (output (: -1 Int64))
-  (call   main (: 200 Int64)) (output (: -999 Int64)))
+  (call   main (: 200 Int64)) (output (: -999 Int64))
+  (live-objects known-leak 2))
 
 (case "a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without"
   (doc    "Corpus records top out at ~5 fields; 16 crosses the small-bitmap/inline-layout width and the MIXED types (String/list/rope/scalars/tuple) force a non-uniform slot map. Projections at start/heap-mid/runtime/end + a mid-layout without re-slotting all higher fields — heap fields must move with their handles (a scalar-width memmove splits a heap slot).")
@@ -18162,7 +18467,8 @@
                          (match (. r2 f16) ((tuple a b) (+ a b))))))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 7223 Int64)))
+  (output (: 7223 Int64))
+  (live-objects known-leak 5))
 
 ; --- Scale faces: the 5000-deep recursive-sum spine and the 33-variant wide sum. ---
 
@@ -18181,7 +18487,8 @@
                     (if (= (mk a) (mk (+ b 1))) 1 0))))
             (export main)))
   (call   main (: 5000 Int64) (: 5000 Int64))
-  (output (: 10010 Int64)))
+  (output (: 10010 Int64))
+  (live-objects known-leak 5001))
 
 (case "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
   (doc    "Corpus sums top out ~6 variants; 33 crosses the 32 boundary (i32-bitmask/5-bit-tag reps saturate; jump-table vs if-chain dispatch switches here). Faces: first/middle/last nullary discriminants, the PAYLOAD variant at index 32, and the wildcard covering the other 29.")
@@ -18216,7 +18523,8 @@
                   ((Option.None _u) -1))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 50 Int64)))
+  (output (: 50 Int64))
+  (live-objects known-leak 3))
 
 (case "a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns"
   (doc    "The api-error idiom: a user sum with MIXED payload kinds (String/Int64/nullary) as Result.Err's payload, dispatched via nested patterns ((Result.Err (IoErr.Denied c))) — Ok, both payload variants, and the nullary Timeout each take their arm; digit-banded results separate every path.")
@@ -18238,7 +18546,8 @@
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
-  (call   main (: 9 Int64)) (output (: -1 Int64)))
+  (call   main (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 ; --- A sum leaf inside a tuple CHAMP key. ---
 
@@ -18278,7 +18587,8 @@
                       (Option.expect (Map.lookup h 6) "k6")))))
             (export main)))
   (call   main (: 1000 Int64))
-  (output (: 8563 Int64)))
+  (output (: 8563 Int64))
+  (live-objects known-leak 993))
 
 (case "a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket"
   (doc    "The multimap grow step exists as one read-modify-write; this is the FULL pipeline: group via upsert into (Map Int64 (List Int64)), enumerate via Map.to-list into key/bucket tuples, and fold each bucket's LIST inside the entry walk — the destructure binds a scalar key AND a heap bucket per frame. The reduction is POSITIONAL (acc*100 + key*10 + bucket-sum per entry), so it pins BOTH membership/bucket-sum AND the canonical entry order: reordering Map.to-list's entries flips the encode (a commutative sum would not). Canonical order 0,1,2 over buckets {0:[3,6]=9, 1:[1,4]=5, 2:[2,5]=7} encodes 9 -> 915 -> 91527.")
@@ -18305,7 +18615,8 @@
               (reduce-groups (Map.to-list (group (list 1 2 3 4 5 (* k 6)) 0 Map.empty)) 0 0))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 91527 Int64)))
+  (output (: 91527 Int64))
+  (live-objects known-leak 48))
 
 (case "an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators"
   (doc    "Set dedup is canonical-order everywhere; keep-first-occurrence dedup preserves WRITTEN order by threading TWO collection accumulators through one recursion (contains->skip / insert+push). The runtime k lands both faces and the digit-encode verifies ORDER, not membership.")
@@ -18325,7 +18636,8 @@
               (digits (dedup-keep-first (list 3 1 3 k 1 2) 0 (Set.of (list)) (list)) 0 0))
             (export main)))
   (call   main (: 4 Int64)) (output (: 3142 Int64))
-  (call   main (: 3 Int64)) (output (: 312 Int64)))
+  (call   main (: 3 Int64)) (output (: 312 Int64))
+  (live-objects known-leak 17))
 
 ; --- Little-interpreter idioms: memoized recursion, an environment-threading evaluator, and a
 ; stack machine. Each threads collection state through recursion in a distinct discipline
@@ -18351,7 +18663,8 @@
                 ((tuple v memo) (+ (* 100 v) (Map.len memo)))))
             (export main)))
   (call   main (: 20 Int64))
-  (output (: 676521 Int64)))
+  (output (: 676521 Int64))
+  (live-objects known-leak 61))
 
 (case "an expression INTERPRETER threads a Map environment through Let-shadowing scopes"
   (doc    "The self-hosting core idiom (the structural eval-exp is env-free): an inner Let SHADOWS x via Map.insert on the recursive call while the sibling Add operand still sees the OUTER x — the env is PERSISTENT: (let x=10 in (let x=x+1 in x) + x) = 21; a mutable-env interpreter computes 22.")
@@ -18373,7 +18686,8 @@
                 Map.empty))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 21 Int64)))
+  (output (: 21 Int64))
+  (live-objects known-leak 21))
 
 (case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
   (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
@@ -18405,7 +18719,8 @@
                 ((Option.None _u) -1)))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 20 Int64)))
+  (output (: 20 Int64))
+  (live-objects known-leak 17))
 
 ; --- The map-borne record literal-rebuild guard, and the uniform malformed-collection code
 ; (set-element + map-key kinds, completing the MUST clause's list/map/set coverage). ---
@@ -18421,7 +18736,8 @@
                 (+ (* 10 (. fresh qty)) (String.byte-len (. fresh name)))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 86 Int64)))
+  (output (: 86 Int64))
+  (live-objects known-leak 6))
 
 (case "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
   (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; `(Set.of (list 1 true))` reaches the SET-construction surface with the SAME code (CDZ0201), via its heterogeneous element-list literal. (The fault attaches at the inner list literal — Set.of takes a homogeneous list; a mismatched Set.insert of a Bool instead takes CDZ0203, the type-mismatch code, not CDZ0201 — so CDZ0201 for a set specifically arrives through the element-list construction, not a post-hoc insert.)")
@@ -18460,7 +18776,8 @@
                       (match (List.at enc 2) ((Option.Some (tuple _v n)) n) ((Option.None _u) -1))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 313 Int64))
-  (call   main (: 7 Int64)) (output (: 209 Int64)))
+  (call   main (: 7 Int64)) (output (: 209 Int64))
+  (live-objects known-leak 18))
 
 (case "a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product"
   (doc    "No matrix arithmetic existed (transpose peels but never multiplies): the dot walks TWO lists in LOCKSTEP (the zip-consume shape), col extracts a column across rows (nested indexed reads), and the r00/r11 corners compose both with the runtime k in one operand.")
@@ -18482,7 +18799,8 @@
                 (+ (* 100 r00) r11)))
             (export main)))
   (call   main (: 4 Int64))
-  (output (: 1950 Int64)))
+  (output (: 1950 Int64))
+  (live-objects known-leak 26))
 
 ; --- Remove-path canonicalization under runtime whole-map equality: the existing runtime map
 ; equality pins build both sides by INSERT only; these pin that a map reached VIA a remove
@@ -18645,7 +18963,8 @@
               (go (Map.insert (Map.insert Map.empty 1 100) 2 200) n))
             (export main)))
   (call   main (: 3 Int64)) (output (: 4 Int64))
-  (call   main (: 4 Int64)) (output (: 8 Int64)))
+  (call   main (: 4 Int64)) (output (: 8 Int64))
+  (live-objects known-leak 1))
 
 (case "a shared runtime rope survives per-level extension ropes that are read or dropped"
   (doc    "The rope-String twin: the shared base `\"ab\"+\"cde\"` (5 bytes, a runtime concat) threads
@@ -18664,7 +18983,8 @@
               (go (String.concat "ab" "cde") n))
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
-  (call   main (: 4 Int64)) (output (: 17 Int64)))
+  (call   main (: 4 Int64)) (output (: 17 Int64))
+  (live-objects known-leak 1))
 
 ; breaker probe X — List.update at RRB DEPTH 3: the fresh 1055 pin covers List.at/len over the
 ; 1100-element 3-level trie; UPDATE at that depth is the path-copy face (copy the root + one
@@ -18708,7 +19028,8 @@
                    (+ (* 10 (match (Map.lookup m0 2) ((Some i) (Map.len i)) ((None _u) -1)))
                       (Map.len m0)))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 212 Int64)))
+  (call   main (: 0 Int64)) (output (: 212 Int64))
+  (live-objects known-leak 31))
 
 ; pr1 (breaker): prepend onto a CONCAT-merged RRB vector — the new front element and the
 ; original seam-adjacent elements all read back correctly through the merged trie.
@@ -18866,7 +19187,8 @@
                       (= correlation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P))))))
+  (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
+  (live-objects known-leak 6))
 
 (case "vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second"
   (input  (do
@@ -18877,7 +19199,8 @@
                       (= second (Some (Q.D (record (= y 7)))))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q))))))
+  (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q)))))
+  (live-objects known-leak 8))
 
 (case "vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair"
   (input  (do
@@ -18887,7 +19210,8 @@
                       (= zcorrelation (: (None unit) (Option Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes))))))
+  (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
+  (live-objects known-leak 6))
 
 (case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
   (input  (do
@@ -18896,7 +19220,8 @@
                       (= second (: (Err (String.to-bytes "no")) (Result Int64 Bytes)))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes))))))
+  (output (: (record (= first (Ok 7)) (= second (Err b"no"))) (record (first (Result Int64 String)) (second (Result Int64 Bytes)))))
+  (live-objects known-leak 4))
 
 (case "vse11 two LIST fields of different element types encode independently — the list control of the generic-instantiation family"
   (input  (do
@@ -18905,7 +19230,8 @@
                       (= tags (list "a" "b"))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String))))))
+  (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String)))))
+  (live-objects known-leak 7))
 
 ;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
 (case "pd1 a list shared into a RECORD field survives an update through the original binding"
@@ -19122,7 +19448,8 @@
                 (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
-  (call   main (: -4 Int64)) (output (: 1 Int64)))
+  (call   main (: -4 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 ;; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
 (case "lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects"
@@ -19323,7 +19650,8 @@
             (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (probe 3))) tot))
             (def (main) (loop 0 4 0))
             (export main)))
-  (call   main) (output (: 12 Int64)))
+  (call   main) (output (: 12 Int64))
+  (live-objects known-leak 8))
 
 (case "a match arm ordering a compound sum-shell child via a borrowing compare computes correctly"
   (doc    "A 2-variant sum `Box=(Mk(List))(Nil)`; `probe` matches a fresh owned `Mk(list)` and in the arm
@@ -19337,7 +19665,8 @@
             (def (loop (: j Int64) (: n Int64) (: acc Int64)) (if (< j n) (loop (+ j 1) n (+ acc (probe 0))) acc))
             (def (main (: z Int64)) (loop 0 4 0))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 4 Int64)))
+  (call   main (: 0 Int64)) (output (: 4 Int64))
+  (live-objects known-leak 12))
 
 (case "a let-bound runtime tuple inside a parameterized function projects element 0"
   (doc    "`(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`; t's init substitutes n=10 and
@@ -19465,7 +19794,8 @@
 (case "ce07 literal-tuple pattern matches a RUNTIME tuple"
   (input  (do (def (f (: n Int64)) (match (tuple n 2) ((tuple 1 2) 100) (_ 0))) (export f)))
   (call   f 1)
-  (output (: 100 Int64)))
+  (output (: 100 Int64))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 415 (2026-08-26): owned-temporary match-scrutinee reclaim across the OTHER heap
 ; kinds (#3726 covered lists, MatchSum covered sums): branch-selected String literal-dispatch, Bytes

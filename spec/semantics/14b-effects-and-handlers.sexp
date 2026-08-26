@@ -789,7 +789,8 @@
                 ((bump (u) s (resume s (+ s 1))))
                 (+ (* 10 (walk (build n (Exp.Lit 5)))) (Cnt.bump))))
             (export main)))
-  (call   main (: 199 Int64)) (output (: 2240 Int64)))
+  (call   main (: 199 Int64)) (output (: 2240 Int64))
+  (live-objects known-leak 598))
 
 (case "two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right"
   (doc    "The performs sit in the argument list of a non-primitive, effect-free USER function, whose call
@@ -1034,7 +1035,8 @@
               (handle Diag (list) ((emit (code) s (resume unit (List.push s code))) (collect (u) s (resume s s))) (do (Diag.emit 201)
                     (Diag.emit 210)
                     (Diag.collect)))) (export main)))
-  (output (: (list 201 210) (List Int64))))
+  (output (: (list 201 210) (List Int64)))
+  (live-objects known-leak 2))
 
 (case "a handler threads a SET as its state — the seen-set idiom, deduping across performs"
   (doc    "The Set analogue of the list-accumulator handler: the threaded state is a SET (a `seen`/`visited`
@@ -1100,7 +1102,8 @@
             (+ (* (sum-l xs 0) 10) (List.len xs))))
         (export main)))
   (call main (: 5 Int64)) (output (: 63 Int64))
-  (call main (: 0 Int64)) (output (: 13 Int64)))
+  (call main (: 0 Int64)) (output (: 13 Int64))
+  (live-objects known-leak 7))
 
 (case "a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys"
   (doc    "The CHAMP composition: the map's KEYS are perform results — insert-arg evaluation
@@ -1277,7 +1280,8 @@
                 (+ (* 10 (List.len tagged))
                    (match (List.at tagged 2) ((Some v) v) ((None u) -1)))))
             (export main)))
-  (call   main (: 30 Int64)) (output (: 360 Int64)))
+  (call   main (: 30 Int64)) (output (: 360 Int64))
+  (live-objects known-leak 6))
 
 (case "a closure capturing a handler-computed VALUE escapes the handle and applies outside"
   (doc    "The escaping-closure acceptance witness (breaker finding, fixed): the perform runs INSIDE the
@@ -2162,7 +2166,8 @@
               (handle Log (list) ((add (v) s (resume v (List.push s v))) (count (u) s (resume (List.len s) s)))
                 (walk 3)))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 2))
 
 (case "a MATCH-arm perform in a self-recursive performer threads the advance across recursion (rw-match)"
   (doc    "The MATCH-arm face of the recursive-branch-perform fix (the `if`-branch cases rw1/rw3/rw5 are its
@@ -2553,7 +2558,8 @@
                 (Sink.tally (list a 2 30))))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 7))
 
 (case "a MAP argument to an effect op is looked up inside the arm at the handler's own state"
   (doc    "The CHAMP-descent-in-arm face: the perform carries a 2-entry map, and the arm looks it up at
@@ -2593,7 +2599,8 @@
                 ((tally (m) s (resume (sum-pairs (Map.to-list m) 0) s)))
                 (Sink.tally (fill n Map.empty))))
             (export main)))
-  (call   main (: 60 Int64)) (output (: 1830 Int64)))
+  (call   main (: 60 Int64)) (output (: 1830 Int64))
+  (live-objects known-leak 242))
 
 (case "a handler's heap STATE grows to a 40-key trie across resumes and enumerates at the end"
   (doc    "The state-side companion: the handler's STATE is a map that GROWS by one insert per resume
@@ -2618,7 +2625,8 @@
                   (feed 1 (+ n 1))
                   (Acc.total))))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 8200 Int64)))
+  (call   main (: 40 Int64)) (output (: 8200 Int64))
+  (live-objects known-leak 171))
 
 (case "a handler SEEDED with a 40-key trie reads it across resumes"
   (doc    "The deep-trie SEED face (the state-growth case above starts EMPTY and grows; here the heap
@@ -3216,7 +3224,8 @@
                   (feed 0 n)
                   (Seen.count))))
             (export main)))
-  (call   main (: 20 Int64)) (output (: 7 Int64)))
+  (call   main (: 20 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 21))
 
 (case "the mark op's dup-flag RESULT counts repeats while the set state dedupes"
   (doc    "The companion reading the op RESULTS instead of the final state: each mark resumes 1 iff the
@@ -3234,7 +3243,8 @@
                 ((mark (v) s (resume (if (Set.contains s v) 1 0) (Set.insert s v))))
                 (feed 0 n)))
             (export main)))
-  (call   main (: 20 Int64)) (output (: 13 Int64)))
+  (call   main (: 20 Int64)) (output (: 13 Int64))
+  (live-objects known-leak 21))
 
 (case "a perform in a match-arm guard is discharged by the enclosing handle"
   (doc    "`(handle Ask 5 ((get () s (resume s (- s 1)))) (match 9 ((guard n (> (Ask.get) 3)) 100) (n 200)))`
@@ -3447,7 +3457,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (relabel (Node (Node (Leaf) (Leaf)) (Leaf)))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "sibling-recursive effect threading is left-to-right (order-observing)"
   (doc    "The same tree walk but with a NON-COMMUTATIVE combiner `(- (relabel l) (relabel r))`, so the
@@ -3466,7 +3477,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a perform BETWEEN two sibling recursive calls threads the intervening state"
   (doc    "`relabel(Node l r) = (relabel l) + Fresh.next() + (relabel r)` — a discharged perform sits
@@ -3485,7 +3497,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 4))
 
 (case "sibling recursive calls sequenced through let bindings thread state"
   (doc    "The `let`-sequenced form of the sibling walk — `(Node l r) => let a = relabel l in let b =
@@ -3507,7 +3520,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (relabel (Node (Leaf) (Leaf)))))
             (export main)))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 4))
 
 (case "a sibling-recursive walk threads a HEAP list accumulator across the siblings"
   (doc    "The ssa/collect face of the multi-value-return walk: each leaf draws a fresh id into a
@@ -3529,7 +3543,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 ((. List len) (collect (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 17))
 
 (case "a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)"
   (doc    "The exact SSA register-allocation shape: a node's own id is drawn AFTER lowering both children
@@ -3551,7 +3566,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (lower (Bin (Lit 1) (Bin (Lit 2) (Lit 3))))))
             (export main)))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 7))
 
 (case "a cross-function recursive fold's out-state threads to a later perform in the caller's continuation"
   (doc    "The CALLER-observed out-state face of the multi-value return (the recursive analogue of the
@@ -3573,7 +3589,8 @@
               (handle Prim 0 ((run (tag) s (resume s (+ s 1))))
                 (do (run-ops (list 1 2 3)) (Prim.run 0))))
             (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
 
 (case "a LET-BOUND perform after a cross-function recursive helper observes the helper's out-state"
   (doc    "The LET-INIT face of the caller-observed out-state (breaker tk3d; the bare-do-item face is pinned
@@ -3602,7 +3619,8 @@
                     (let ((out (Sink.flush)))
                       (Bytes.len out))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 3 Int64)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 1))
 
 (case "the let-bound-after-helper observation is state-type-general (scalar counter)"
   (doc    "The scalar face of tk3d (breaker tk3h): the SAME [cross-fn helper advances a slot] x [let-bound
@@ -3672,7 +3690,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (root-id (relabel (Node (Node (Leaf) (Leaf)) (Leaf))))))
             (export main)))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 18))
 
 (case "a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms"
   (doc    "The gensym walk generalized to a real `Expr` sum with THREE constructors of DIFFERENT arities —
@@ -3693,7 +3712,8 @@
               (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
                 (count-ids (Add (Neg (Lit)) (Lit)))))
             (export main)))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 5))
 
 (case "an effect-performing helper called inside a recursive self-call's argument folds"
   (doc    "A recursive driver `run` whose SELF-CALL argument contains a call to a separate effect-performing
@@ -4474,7 +4494,8 @@
                             ((None _u) -2)) s)))
                 (+ (St.put n) (+ (St.put 7) (* 100 (St.get))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 2212 Int64)))
+  (call   main (: 5 Int64)) (output (: 2212 Int64))
+  (live-objects known-leak 8))
 
 (case "triple-nested same-op performs — each argument is the inner perform's result"
   (doc    "Perform-in-ARGUMENT-position chains freely with a single-site arm: `(St.dbl (St.dbl
@@ -4552,7 +4573,8 @@
                     (resume -1 s))))
                 (+ (* 100 (St.feed 7)) (+ (* 10 (St.feed 8)) (St.feed 9)))))
             (export main)))
-  (call   main (: 2 Int64)) (output (: 779 Int64)))
+  (call   main (: 2 Int64)) (output (: 779 Int64))
+  (live-objects known-leak 3))
 
 (case "a two-site arm branches on SYMBOL equality of the state"
   (doc    "The interned-symbol face of the served multi-site family: the condition is `(= s (Symbol.of
@@ -4944,7 +4966,8 @@
                 ((grow (v) s (resume (Tree.Node (Tree.Leaf v) (Tree.Node (Tree.Leaf (* v 2)) (Tree.Leaf 1))) s)))
                 (sum-tree (St.grow n))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 16 Int64)))
+  (call   main (: 5 Int64)) (output (: 16 Int64))
+  (live-objects known-leak 7))
 
 (case "a recursive sum as op ARGUMENT — the arm dispatches on its shape"
   (doc    "The argument direction: the body hands trees to the op and the ARM pattern-dispatches on
@@ -5443,7 +5466,8 @@
                 ((next (u) s (resume s (+ s 1))))
                 (apply-all (list (fn ((: x Int64)) (* x 10)) (fn ((: x Int64)) (+ x 100)) (fn ((: x Int64)) x)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 163 Int64)))
+  (call   main (: 5 Int64)) (output (: 163 Int64))
+  (live-objects known-leak 10))
 
 (case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
   (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
@@ -5805,7 +5829,8 @@
                 (eval-e (Expr.Add (tuple (Expr.Var "x") (Expr.Add (tuple (Expr.Var "y") (Expr.Lit 1))))))))
             (export main)))
   (call   main (: 10 Int64))
-  (output (: 14 Int64)))
+  (output (: 14 Int64))
+  (live-objects known-leak 16))
 
 (case "a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk"
   (doc    "The writer idiom: each Add/Mul node logs its op tag BEFORE recursing (pre-order), the handler concats onto a String state, and dump reads the trace back beside the value ((2+3)*4: trace exactly \"*+\" — order-sensitive; the result triple-encodes value/len/content-eq).")
@@ -5827,7 +5852,8 @@
                   (+ (* 100 v) (+ (* 10 (String.byte-len trace)) (if (= trace "*+") 1 0))))))
             (export main)))
   (call   main (: 3 Int64))
-  (output (: 2021 Int64)))
+  (output (: 2021 Int64))
+  (live-objects known-leak 13))
 
 (case "a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols"
   (doc    "The allocator idiom at the SYMBOL level (the scalar-id gensym pin sums draws): the arm concats the string op-arg with a counter suffix and interns — the same base twice yields DISTINCT symbols (x_e/x_o); results accumulate into a list and compare against a literal intern, exercising Option<Symbol> slot equality.")
@@ -5847,7 +5873,8 @@
                         (if (= (Option.expect (List.at syms 0) "s0") (Symbol.of "x_e")) 1 0))))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 301 Int64)))
+  (output (: 301 Int64))
+  (live-objects known-leak 11))
 
 ; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
 ; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member
@@ -6005,7 +6032,8 @@
             (export main)))
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
-  (output (: 2131 Int64)))
+  (output (: 2131 Int64))
+  (live-objects known-leak 3))
 
 (case "two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)"
   (doc    "The two-distinct-calls ORDER companion of the adv-62 single-call pin above (breaker escalation):
@@ -6027,7 +6055,8 @@
             (export main)))
   (host-responses (respond io.a (: 3 Int64)) (respond io.b (: 5 Int64)))
   (host-calls (call io.a) (call io.b))
-  (output (: 513 Int64)))
+  (output (: 513 Int64))
+  (live-objects known-leak 3))
 
 (case "a unit-result host op consumes its response row so the next value op reads its own (adv-65)"
   (doc    "adv-65 (breaker, HIGH wasm differential): a UNIT-result host op must CONSUME its response row,
@@ -6092,7 +6121,8 @@
             (export main)))
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
-  (output (: 2131 Int64)))
+  (output (: 2131 Int64))
+  (live-objects known-leak 3))
 
 (case "a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)"
   (doc    "The wasm host-ARG Bytes path: a runtime `Bytes` argument to a host op crosses the component
@@ -6115,7 +6145,8 @@
             (export main)))
   (host-responses (respond io.sink (: 99 Int64)))
   (host-calls (call io.sink))
-  (call   main (: 2 Int64)) (output (: 99 Int64)))
+  (call   main (: 2 Int64)) (output (: 99 Int64))
+  (live-objects known-leak 2))
 
 (case "a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)"
   (doc    "Coverage for the wasm Bytes-host-arg increment's MIXED-ARITY face: a host op `sink2 : (-> Bytes
@@ -6133,7 +6164,8 @@
             (export main)))
   (host-responses (respond io.sink2 (: 9 Int64)))
   (host-calls (call io.sink2))
-  (call   main (: 65 Int64)) (output (: 9 Int64)))
+  (call   main (: 65 Int64)) (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 (case "a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)"
   (doc    "adv-62 family, NESTED-destructure face: the let-bound host result `v` is shared by closures at
@@ -6154,7 +6186,8 @@
             (export main)))
   (host-responses (respond io.get (: 10 Int64)))
   (host-calls (call io.get))
-  (output (: 38 Int64)))
+  (output (: 38 Int64))
+  (live-objects known-leak 5))
 
 (case "a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)"
   (doc    "adv-62 family, SWITCH-path face (vs the Leaf-fold face the base cases pin): the host block `(mk)`
@@ -6365,7 +6398,8 @@
                   (fill n)
                   (Store.size))))
             (export main)))
-  (call   main (: 50 Int64)) (output (: 50 Int64)))
+  (call   main (: 50 Int64)) (output (: 50 Int64))
+  (live-objects known-leak 19))
 (case "a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance"
   (doc    "The recursive-nested-arm-resume fix (v-effects self-probe, concierge-steered pre-spec-lift): a
            recursive `loop` calls a nested `B` handler's op `B.step` whose ARM resume-value performs the OUTER
@@ -6562,7 +6596,8 @@
                     ((Some f) (f (St.feed)))
                     ((None _u) -1)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1006 Int64)))
+  (call   main (: 5 Int64)) (output (: 1006 Int64))
+  (live-objects known-leak 2))
 
 (case "a record-LITERAL scrutinee whose fields perform, destructured by a `(record …)` arm, DECLINES (breaker finding #8)"
   (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #8, breaker 3-backend-agree-wrong). A record-pattern
@@ -7398,7 +7433,8 @@
                 ((grow () s (resume (depth s) (S (S s)))))
                 (+ (T.grow) (+ (* 10 (T.grow)) (* 100 (T.grow))))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 420 Int64)))
+  (call   main (: 0 Int64)) (output (: 420 Int64))
+  (live-objects known-leak 9))
 
 (case "su4 a sum variant carrying a HEAP list — Empty seeds on first put, Full grows the payload thereafter"
   (input  (do
@@ -8481,7 +8517,8 @@
                 (S.dec)))
             (export main)))
   (call   main (: 65 Int64)) (output (: 1 Int64))
-  (call   main (: 200 Int64)) (output (: -1 Int64)))
+  (call   main (: 200 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "the LET-BOUND twin of finding #20 — a state byte LET-bound as a Bytes then decoded by a from-bytes match in a tail-resumptive arm folds (flatten+pin fix landed; regression-guard)"
   (doc    "adv-20 (breaker via corpus-bugfix, v-effects lane): the LET-BOUND face of the inline sentinel directly
@@ -8518,7 +8555,8 @@
                 (S.dec)))
             (export main)))
   (call   main (: 65 Int64)) (output (: 1 Int64))
-  (call   main (: 200 Int64)) (output (: -1 Int64)))
+  (call   main (: 200 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "the PASSING FLOOR of adv-20's bisection — a state byte LET-bound as a Bytes and consumed by Bytes.len (NO decode-match) in a tail-resumptive arm folds correctly"
   (doc    "adv-20 bisection floor (v-effects lane): the PASSING control that isolates the finding-#20 decline
@@ -8767,4 +8805,5 @@
                             (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 (+ (* 100 a) b)) c)) d)) e)) f)))))))))
             (export main)))
   (call   main (: 10 Int64)) (output (: 120404040707 Int64))
-  (call   main (: 0 Int64)) (output (: 20202019697 Int64)))
+  (call   main (: 0 Int64)) (output (: 20202019697 Int64))
+  (live-objects known-leak 242))

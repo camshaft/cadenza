@@ -244,12 +244,18 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         kids.push(b.list(wk));
     }
-    // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). The nix exec
-    // branches on this marker at build time to add `--runtime <debug-counters>` + the assert; cdz-run's
-    // `--grade` reads it back (decode_test_run) and checks it. Absent for a case with no `(live-objects …)`.
+    // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). A
+    // `(live-objects known-leak <N>)` marker prefixes the count with the literal `known-leak` (both graded
+    // as assert == N; the marker records the opt-out intent). Under the opt-out default the nix exec runs
+    // EVERY heap-importing case on `--runtime <debug-counters>` and cdz-run's `--grade` asserts == N
+    // (heap case) / == 0 (absent + heap) / skips (no-heap). Absent for a case with no `(live-objects …)`.
     if let Some(n) = rec.live_objects {
-        let nl = str_leaf(&mut b, &n.to_string());
-        kids.push(form(&mut b, "live-objects", vec![nl]));
+        let mut leaves = Vec::new();
+        if rec.live_objects_known_leak {
+            leaves.push(str_leaf(&mut b, "known-leak"));
+        }
+        leaves.push(str_leaf(&mut b, &n.to_string()));
+        kids.push(form(&mut b, "live-objects", leaves));
     }
 
     let root = b.list(kids);
@@ -406,6 +412,19 @@ mod tests {
         assert!(
             !nobal.contains("live-objects"),
             "a case without the clause emits no live-objects form: {nobal}"
+        );
+        // A `(live-objects known-leak N)` marker shreds to `(live-objects "known-leak" "N")`.
+        let leak = crate::read(
+            r#"(case "leak"
+                 (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
+                 (call main) (output (: (L.Cons (tuple 1 (L.Nil ()))) L))
+                 (live-objects known-leak 2))"#,
+        )
+        .unwrap();
+        let leak_tr = sexpr::print(&codec::decode(&test_run_ast(&leak[0])).unwrap());
+        assert!(
+            leak_tr.contains("(live-objects \"known-leak\" \"2\")"),
+            "known-leak marker shreds distinctly: {leak_tr}"
         );
     }
 
