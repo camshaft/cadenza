@@ -448,6 +448,120 @@ fn compose_and_instantiate(
     Ok((store, instance))
 }
 
+/// Run `component_bytes`'s export (like [`run`]) AND read the value-heap runtime's live-cell count
+/// (`live-objects`) after the run — the heap-balance observable the corpus `(live-objects N)` clause
+/// asserts (no leak / no double-free is `N = 0`). The component MUST import the value-heap runtime (a
+/// scalar/const program has no heap to balance and is not a `live-objects` case); the caller supplies the
+/// runtime bytes in `opts.runtime`, which MUST be the DEBUG-COUNTERS runtime — the shipped runtime's
+/// `live-objects` export returns 0 unconditionally, so a shipped runtime would vacuously "pass" every
+/// balance assertion. Returns the run outcome and the post-run live-object count.
+///
+/// This drives only the PLAIN export shape (a scalar or compound value return) — the memory-liveness
+/// probes it serves return an ordinary value; the closure / resource-escape drives are the
+/// resource-protocol extension's job, not this one. It lifts the `ComposedRuntime::{call, live_objects}`
+/// test-harness capability (rcdzc `tests.rs`) into the crate so the corpus gate can drive it.
+pub fn run_with_live_objects(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome, u32)> {
+    let engine = engine();
+    let component =
+        Component::new(&engine, component_bytes).map_err(|e| anyhow!("invalid component: {e}"))?;
+    let req = find_runtime_req(&engine, &component).ok_or_else(|| {
+        anyhow!(
+            "a (live-objects ..) case must import the value-heap runtime, but this component imports \
+             none (a scalar/const program has no heap to balance)"
+        )
+    })?;
+    let mut store = new_store(&engine);
+    let (rt_instance, heap_names) = instantiate_runtime(&engine, &mut store, &req, opts)?;
+    let mut linker: Linker<()> = Linker::new(&engine);
+    bind_runtime_into(
+        &engine,
+        &mut store,
+        &mut linker,
+        &req.import_name,
+        &rt_instance,
+        &heap_names,
+    )?;
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .map_err(|e| anyhow!("instantiate component: {e}"))?;
+
+    // Resolve + drive the plain export (mirrors the plain path of `run_export`: named export or the sole
+    // function export, tried verbatim then kebab-normalized, args coerced to the declared param types).
+    let export_name = match &opts.export {
+        Some(name) => name.clone(),
+        None => sole_func_export(&engine, &component).ok_or_else(|| {
+            anyhow!(
+                "no --call given and the component has no single function export to default to{}",
+                callable_exports_hint(&engine, &component)
+            )
+        })?,
+    };
+    let func = instance
+        .get_func(&mut store, &export_name)
+        .or_else(|| {
+            let kebab = cadenza_syntax::extern_name::kebab_extern_name(&export_name);
+            (kebab != export_name)
+                .then(|| instance.get_func(&mut store, &kebab))
+                .flatten()
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "component exports no function `{export_name}`{}",
+                callable_exports_hint(&engine, &component)
+            )
+        })?;
+    let param_types: Vec<Type> = func.params(&store).iter().map(|(_, t)| t.clone()).collect();
+    let args = coerce_args(&opts.args, &param_types)?;
+    let result_count = func.results(&store).len();
+    let mut results = vec![Val::Bool(false); result_count];
+    let outcome = match func.call(&mut store, &args, &mut results) {
+        Ok(()) => {
+            let rendered = match results.first() {
+                None => "unit".to_string(),
+                Some(Val::String(s)) => s.clone(),
+                Some(other) => render_val(other),
+            };
+            let _ = func.post_return(&mut store);
+            Outcome::Value(rendered)
+        }
+        Err(e) => Outcome::Trap(trap_message(&e)),
+    };
+
+    let live = read_live_objects(&mut store, &rt_instance)?;
+    Ok((outcome, live))
+}
+
+/// Read the runtime heap's `live-objects` export (a nullary `-> u32`) — the count of live heap cells. On
+/// the debug-counters runtime this is the real balance; on the shipped runtime it is always 0.
+fn read_live_objects(
+    store: &mut Store<()>,
+    rt_instance: &wasmtime::component::Instance,
+) -> Result<u32> {
+    let heap_idx = rt_instance
+        .get_export_index(&mut *store, None, RUNTIME_IFACE)
+        .ok_or_else(|| anyhow!("runtime does not export {RUNTIME_IFACE}"))?;
+    let lo_idx = rt_instance
+        .get_export_index(&mut *store, Some(&heap_idx), "live-objects")
+        .ok_or_else(|| {
+            anyhow!(
+                "runtime heap has no `live-objects` export (build the debug-counters runtime with \
+                 `cargo xtask build`)"
+            )
+        })?;
+    let lo_func = rt_instance
+        .get_func(&mut *store, lo_idx)
+        .ok_or_else(|| anyhow!("`live-objects` is not a func"))?;
+    let mut r = [Val::U32(0)];
+    lo_func
+        .call(&mut *store, &[], &mut r)
+        .map_err(|e| anyhow!("calling live-objects: {e}"))?;
+    let _ = lo_func.post_return(&mut *store);
+    match r[0] {
+        Val::U32(n) => Ok(n),
+        ref other => Err(anyhow!("live-objects returned a non-u32: {other:?}")),
+    }
+}
+
 /// A component-model `list<u8>` argument value from raw bytes (each byte a `Val::U8` element).
 fn list_u8_val(bytes: &[u8]) -> Val {
     Val::List(bytes.iter().map(|b| Val::U8(*b)).collect())

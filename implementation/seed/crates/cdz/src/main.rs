@@ -5402,6 +5402,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 compile_status: 0,
                 compile_diag: None,
                 component_name: None,
+                report_live_objects: false,
             }),
         }
     };

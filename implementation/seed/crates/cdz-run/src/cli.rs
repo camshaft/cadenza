@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::{
-    HostResponse, Outcome, Peer, RunOpts, required_runtime, run_capturing, run_with_peers,
+    HostResponse, Outcome, Peer, RunOpts, required_runtime, run_capturing, run_with_live_objects,
+    run_with_peers,
 };
 
 /// The arguments to `cdz run` / `cdz-run` — run a finished Cadenza wasm component and print its result.
@@ -101,6 +102,13 @@ pub struct RunArgs {
     /// applies for a world-imposed export. Absent → the export is called by its bare name.
     #[arg(long, value_name = "INTERFACE")]
     pub component_name: Option<String>,
+
+    /// After running, ALSO read the value-heap runtime's live-cell count (`live-objects`) and print it as
+    /// a `live-objects\t<N>` line on stdout (after the result). The corpus `(live-objects N)` clause drives
+    /// this to assert heap balance (no leak / no double-free). Requires the component to import the runtime,
+    /// and the resolved runtime MUST be the debug-counters build (the shipped one always reports 0).
+    #[arg(long)]
+    pub report_live_objects: bool,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -280,6 +288,25 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             }
             Outcome::Trap(msg) => {
                 eprintln!("{prog}: trap: {msg}");
+                Ok(ExitCode::FAILURE)
+            }
+        };
+    }
+
+    if cli.report_live_objects {
+        // Run + read the heap's live-cell count, printing the value then a `live-objects\t<N>` line on
+        // stdout (the corpus `(live-objects N)` gate reads the tab line). Requires the debug-counters
+        // runtime (the shipped one always reports 0). No host-call capture on this path.
+        let (outcome, live) = run_with_live_objects(&component_bytes, &opts)?;
+        return match outcome {
+            Outcome::Value(text) => {
+                println!("{text}");
+                println!("live-objects\t{live}");
+                Ok(ExitCode::SUCCESS)
+            }
+            Outcome::Trap(msg) => {
+                eprintln!("{prog}: trap: {msg}");
+                println!("live-objects\t{live}");
                 Ok(ExitCode::FAILURE)
             }
         };
