@@ -7252,3 +7252,5 @@ todo	two adapter records with different state types drive a take-while fold in o
 pass	rrow1 Record.without over RUNTIME leaves drops the field and the rest projects
 pass	rrow2 Record.project over RUNTIME leaves keeps the named fields readable
 pass	rrow3 a Record.merge result with a COMPUTED runtime leaf VALUE-EQUALS the directly-written literal across field order
+pass	a Bool-returning comparison operator passed to an inline HOF
+pass	a comparison operator passed to a recursive HOF (emit-call)
