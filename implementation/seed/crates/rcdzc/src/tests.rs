@@ -48430,34 +48430,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
                 .any(|i| matches!(i, Lir::I32And | Lir::I32Eqz | Lir::If(_))),
             "(and a (not b)) is not folded, got: {distinct:?}"
         );
-
-        // VALUE PARITY over both truth values: `and a !a` is always false, `or a !a` always true.
-        use wasmtime::component::Val;
-        let fb = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: a Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for a in [true, false] {
-            assert!(
-                !run_returns_with::<bool>(&fb("(and a (not a))"), "f", &[Val::Bool(a)]),
-                "and a !a @{a}"
-            );
-            assert!(
-                run_returns_with::<bool>(&fb("(or a (not a))"), "f", &[Val::Bool(a)]),
-                "or a !a @{a}"
-            );
-        }
-        // TRAP SAFETY: a trapping operand in `(and a (not a))` — the fold discards it, so it must still trap.
-        let gb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: n Int64)) (if (and (> (/ 10 n) 0) (not (> (/ 10 n) 0))) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&gb, "f", &[Val::S64(0)]),
-            "a trapping operand in the complement-law fold keeps its trap"
-        );
-        assert_eq!(run_returns_with::<i64>(&gb, "f", &[Val::S64(2)]), 0);
+        // Value + trap parity — `(and a (not a))` is always false, `(or a (not a))` always true, and a
+        // trapping operand keeps its trap — is the corpus family "a short-circuit and/or of a boolean and
+        // its negation folds to false/true" + "the boolean complement-law fold keeps a trapping operand's
+        // trap" (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
