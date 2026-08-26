@@ -9751,36 +9751,6 @@ fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
     );
 }
 
-/// A runtime `if` with two CHEAP LEAF branches emits wasm's BRANCHLESS `select` (no `if`/`else`/`end`),
-/// and it must compute the SAME value the structured block would — `select` pops `[then, else, cond]`
-/// and pushes `then` iff `cond` is nonzero. `min` `(if (< a b) a b)` and a value-picking `(if p a b)`
-/// exercise both operand orders under wasmtime. The point is that the operand ORDER the backend emits
-/// (then, else, cond, select) matches the `if`'s truth sense — a swapped order would silently return
-/// the wrong branch, which no instruction-count check would catch.
-#[test]
-fn a_branchless_select_computes_the_if_value() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // min via (if (< a b) a b): the SMALLER of the two, either arg order.
-    let min = "(module m (def (f (: a Int64) (: b Int64)) (if (< a b) a b)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(min))).expect("compile");
-    let min_of = |a, b| run_returns_with::<i64>(&bytes, "f", &[Val::S64(a), Val::S64(b)]);
-    assert_eq!(min_of(3, 7), 3);
-    assert_eq!(min_of(7, 3), 3);
-    assert_eq!(min_of(-5, -5), -5);
-    // value pick (if p a b): p true → a, p false → b (the two condition truth values).
-    let pick = "(module m (def (f (: p Bool) (: a Int64) (: b Int64)) (if p a b)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(pick))).expect("compile");
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::S64(11), Val::S64(22)]),
-        11
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::S64(11), Val::S64(22)]),
-        22
-    );
-}
-
 /// A POSSIBLY-TRAPPING arm blocks select-ification: a wasm `select` evaluates BOTH arms unconditionally
 /// (it picks between two already-computed values), so an `if` whose arm contains a trapping op — e.g. a
 /// checked `/` (divide-by-zero / MIN/-1 overflow) — must STAY an `if` (which evaluates only the taken

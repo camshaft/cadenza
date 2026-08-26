@@ -6915,3 +6915,25 @@
            `(let ((x 1)) (let ((x 2)) x))` = 2, not 1 (a skip jumping past the inner let would return 1).")
   (input  (do (def (main) (let ((x 1)) (let ((x 2)) x))) (export main)))
   (call   main) (output (: 2 Int64)))
+
+; ── Branchless select (if with two cheap leaf branches) computes the right value (migrated from rcdzc) ──
+(case "an integer min via (if (< a b) a b) returns the smaller in either operand order"
+  (doc    "The branchless-select base case: `(if (< a b) a b)` with two cheap leaf branches lowers to wasm's
+           branchless `select` (pops [then, else, cond], pushes then iff cond nonzero). It must compute the
+           SAME value the structured block would — the smaller of a,b — in either order, so the emitted
+           operand order (then, else, cond) matches the if's truth sense (a swapped order would silently
+           return the wrong branch, which no instruction-count check catches). min(3,7)=3, min(7,3)=3,
+           min(-5,-5)=-5.")
+  (input  (do (def (f (: a Int64) (: b Int64)) (if (< a b) a b)) (export f)))
+  (call   f (: 3 Int64) (: 7 Int64)) (output (: 3 Int64))
+  (call   f (: 7 Int64) (: 3 Int64)) (output (: 3 Int64))
+  (call   f (: -5 Int64) (: -5 Int64)) (output (: -5 Int64)))
+
+(case "a value-pick (if p a b) selects the arg matching the runtime condition's truth value"
+  (doc    "The value-picking companion of the min select: `(if p a b)` over a runtime Bool and two Int64
+           args picks a when p is true, b when false — both cheap leaves, so it select-ifies, and the pick
+           must honor the condition's truth sense (a swapped select operand order would return the wrong
+           arg). p=true -> a=11; p=false -> b=22.")
+  (input  (do (def (f (: p Bool) (: a Int64) (: b Int64)) (if p a b)) (export f)))
+  (call   f (: true Bool) (: 11 Int64) (: 22 Int64)) (output (: 11 Int64))
+  (call   f (: false Bool) (: 11 Int64) (: 22 Int64)) (output (: 22 Int64)))
