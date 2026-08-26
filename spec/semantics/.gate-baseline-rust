@@ -4924,6 +4924,11 @@ pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remain
 pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
 pass	cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities
 pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
+pass	cgf01 leaf count via list-REST-pattern recursion folds (CDZ0304 detector) under FORCED (const ...) demand
+pass	cgf02 leaf count via indexed walk with NON-const index folds (CDZ0304 detector) under FORCED (const ...) demand
+pass	cgf04t leaf count over Ast.module — trap detector distinguishes fold from runtime walk under FORCED (const ...) demand
+pass	cgf05 leaf count via SELF-recursive explicit-stack walk folds (CDZ0304 detector) under FORCED (const ...) demand
+pass	cgf06 corpus-style linear collect under TRAP demand (H2 test) under FORCED (const ...) demand
 pass	ch01 a bare prim passed as a function value applies
 pass	ch01b eta-expanded closure control for prim-as-value
 pass	ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)

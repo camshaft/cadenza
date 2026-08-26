@@ -1423,3 +1423,94 @@
                  (trap "cdf3 WRONG"))))
     (export main)))
   (error CDZ0304 (message "cdf3 lambda applied in fold")))
+
+; -- breaker batch 413 (2026-08-26): the demand-asymmetry bank dissolved — every composed const
+; shape folds under a FORCED (const ...) demand and surfaces the taken trap: list-REST-pattern
+; recursion, indexed walk with a NON-const index param, self-recursive explicit-stack walk,
+; Ast.module reflection count, and a corpus-style linear collect with List.prepend. The unforced
+; twins grade todo by INTENDED demand semantics (dc05/cn02: trap-in-main without a demand = runtime
+; trap), not by any fold gap. Companion to batch 412's sweep-4 dissolution.
+
+(case "cgf01 leaf count via list-REST-pattern recursion folds (CDZ0304 detector) under FORCED (const ...) demand"
+  (input  (do
+            (def (leaves (const (: a Ast)))
+              (match a ((Ast.List xs) (leaves-list xs)) (_ 1)))
+            (def (leaves-list (const (: xs (List Ast))))
+              (match xs
+                ((list) 0)
+                ((list h .. t) (+ (leaves h) (leaves-list t)))))
+            (def (main)
+              (const (if (= (leaves (quote (f 1 2))) 3)
+                  (trap "cgf01 folded three")
+                  (trap "cgf01 WRONG"))))
+            (export main)))
+  (error  CDZ0304 (message "cgf01 folded three")))
+
+(case "cgf02 leaf count via indexed walk with NON-const index folds (CDZ0304 detector) under FORCED (const ...) demand"
+  (input  (do
+            (def (leaves (const (: a Ast)))
+              (match a ((Ast.List xs) (leaves-of xs 0)) (_ 1)))
+            (def (leaves-of (const (: xs (List Ast))) (: i Int64))
+              (match (List.at xs i)
+                ((Option.Some c) (+ (leaves c) (leaves-of xs (+ i 1))))
+                ((Option.None) 0)))
+            (def (main)
+              (const (if (= (leaves (quote (f 1 2))) 3)
+                  (trap "cgf02 folded three")
+                  (trap "cgf02 WRONG"))))
+            (export main)))
+  (error  CDZ0304 (message "cgf02 folded three")))
+
+(case "cgf05 leaf count via SELF-recursive explicit-stack walk folds (CDZ0304 detector) under FORCED (const ...) demand"
+  (input  (do
+            (def (count (const (: stack (List Ast))))
+              (match stack
+                ((list) 0)
+                ((list h .. t)
+                  (match h
+                    ((Ast.List es) (count (List.concat es t)))
+                    (_ (+ 1 (count t)))))))
+            (def (main)
+              (const (if (= (count (list (quote (f 1 2)))) 3)
+                  (trap "cgf05 folded three")
+                  (trap "cgf05 WRONG"))))
+            (export main)))
+  (error  CDZ0304 (message "cgf05 folded three")))
+
+(case "cgf04t leaf count over Ast.module — trap detector distinguishes fold from runtime walk under FORCED (const ...) demand"
+  (input  (do
+            (def (leaves-list (const (: xs (List Ast))))
+              (match xs
+                ((list) 0)
+                ((list h .. t)
+                  (match h
+                    ((Ast.List es) (+ (leaves-list es) (leaves-list t)))
+                    (_ (+ 1 (leaves-list t)))))))
+            (def (forms-of (const (: mm Ast)))
+              (match mm ((Ast.List fs) fs) (_ (: (list) (List Ast)))))
+            (def (main)
+              (const (if (> (leaves-list (forms-of Ast.module)) 0)
+                  (trap "cgf04t folded positive")
+                  (trap "cgf04t WRONG"))))
+            (export main)))
+  (error  CDZ0304 (message "cgf04t folded positive")))
+
+(case "cgf06 corpus-style linear collect under TRAP demand (H2 test) under FORCED (const ...) demand"
+  (input  (do
+            (def (child (const (: form Ast)) (: i Int64))
+              (match form
+                ((Ast.List es) (match (List.at es i) ((Option.Some v) v) ((Option.None) (Ast.Name "?"))))
+                (_ (Ast.Name "?"))))
+            (def (name-of (const (: form Ast))) (match form ((Ast.Name n) n) (_ "")))
+            (def (head-name (const (: form Ast))) (name-of (child form 0)))
+            (def (keep-f (const (: xs (List Ast))))
+              (match xs
+                ((list) (: (list) (List Ast)))
+                ((list h .. t)
+                  (if (= (head-name h) "f") (List.prepend (keep-f t) h) (keep-f t)))))
+            (def (main)
+              (const (if (= (List.len (keep-f (list (quote (f 1)) (quote (g 2))))) 1)
+                  (trap "cgf06 folded one")
+                  (trap "cgf06 WRONG"))))
+            (export main)))
+  (error  CDZ0304 (message "cgf06 folded one")))
