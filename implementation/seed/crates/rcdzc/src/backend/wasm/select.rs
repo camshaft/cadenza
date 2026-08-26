@@ -5017,6 +5017,10 @@ fn collect_used_ops_into_seen(
         // emitted (its ops must be collected too).
         Core::MatchList { scrutinee, arms } => {
             out.insert(OP_VEC_LEN);
+            // `drop` may be emitted to reclaim an owned-temporary list shell after the arms (the
+            // `list_shell_reclaim_slot` path); import it unconditionally (a declared-but-unused import is
+            // benign, and the reclaim gate is emit-time TailPos-dependent, not knowable here).
+            out.insert(OP_DROP);
             collect_used_ops_into_seen(db, scrutinee, out, visited);
             for arm in &arms {
                 if let Some(g) = arm.guard {
@@ -7647,9 +7651,16 @@ fn emit_tail(
                     }
                 },
             };
-            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+            let (arm_slots, len_slot, arm_base, owned_stash) = materialize_list_match_scrutinee(
                 db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
+            let reclaim = list_shell_reclaim_slot(
+                db,
+                scrutinee,
+                owned_stash,
+                TailPos::Tail(tl),
+                never_diverges,
+            );
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -7668,6 +7679,12 @@ fn emit_tail(
                 out,
                 TailPos::Tail(tl),
             )?;
+            // Reclaim the owned-temporary list shell after the arms (value-returning tail; the arms left
+            // the result on the stack) — the list twin of the `MatchSum` owned-shell drop above.
+            if let Some(slot) = reclaim {
+                out.push(Lir::LocalGet(slot)); // [result, shell]
+                out.push(Lir::CallImport(OP_DROP)); // → [result]
+            }
             if never_diverges {
                 out.push(Lir::Unreachable);
             }
@@ -13418,9 +13435,16 @@ fn emit(
                     }
                 },
             };
-            let (arm_slots, len_slot, arm_base) = materialize_list_match_scrutinee(
+            let (arm_slots, len_slot, arm_base, owned_stash) = materialize_list_match_scrutinee(
                 db, scrutinee, slots, high, scratch_ty, layout, out,
             )?;
+            let reclaim = list_shell_reclaim_slot(
+                db,
+                scrutinee,
+                owned_stash,
+                TailPos::NonTail,
+                never_diverges,
+            );
             let result_it = match type_of(db, id) {
                 Ty::Int(rit) => Some(rit),
                 _ => None,
@@ -13439,6 +13463,11 @@ fn emit(
                 out,
                 TailPos::NonTail,
             )?;
+            // Reclaim the owned-temporary list shell after the arms (the match's value is on the stack).
+            if let Some(slot) = reclaim {
+                out.push(Lir::LocalGet(slot)); // [result, shell]
+                out.push(Lir::CallImport(OP_DROP)); // → [result]
+            }
             if never_diverges {
                 out.push(Lir::Unreachable);
             }
@@ -15615,11 +15644,14 @@ fn materialize_list_match_scrutinee(
     scratch_ty: &mut HashMap<u32, ValType>,
     layout: &Layout,
     out: &mut Emit,
-) -> Result<(HashMap<StructId, u32>, u32, u32), Reject> {
-    let (arm_slots, handle_slot) = match reusable_handle_slot(db, scrutinee, slots) {
+) -> Result<(HashMap<StructId, u32>, u32, u32, Option<u32>), Reject> {
+    // `owned_stash` = the fresh slot holding a COMPUTED (non-resident) scrutinee handle — the shell-reclaim
+    // (below, at the emit sites) drops it after the arms when it is an owned temporary, mirroring the
+    // `MatchSum` owned-shell reclaim. `None` for a resident `Param`/`LocalRef` (its owner drops it).
+    let (arm_slots, handle_slot, owned_stash) = match reusable_handle_slot(db, scrutinee, slots) {
         // Resident handle: the arms read the owner slot directly; `slots` already maps the binder there,
         // so `emit(scrutinee)` (a `Param`/`LocalRef`) resolves to it. No copy, no fresh handle scratch.
-        Some(owner) => (slots.clone(), owner),
+        Some(owner) => (slots.clone(), owner, None),
         None => {
             let handle_slot = *high;
             *high = handle_slot + 1;
@@ -15637,7 +15669,7 @@ fn materialize_list_match_scrutinee(
             out.push(Lir::LocalSet(handle_slot));
             let mut m = slots.clone();
             m.insert(scrutinee, handle_slot);
-            (m, handle_slot)
+            (m, handle_slot, Some(handle_slot))
         }
     };
     // The list length is a derived SCALAR read once into its own slot regardless (the length dispatch reads
@@ -15649,7 +15681,39 @@ fn materialize_list_match_scrutinee(
     out.push(Lir::CallImport(OP_VEC_LEN)); // [len:i32]
     out.push(Lir::LocalSet(len_slot));
     let arm_base = *high;
-    Ok((arm_slots, len_slot, arm_base))
+    Ok((arm_slots, len_slot, arm_base, owned_stash))
+}
+
+/// Whether a `MatchList`'s owned-temporary scrutinee shell can be reclaimed (dropped) after its arms — the
+/// list twin of the `MatchSum` owned-shell reclaim. Sound ONLY when: a fresh owned temporary was stashed
+/// (`owned_stash`), the scrutinee is an OWNED handle (not a borrowed param/binding its owner drops), the
+/// element type is SCALAR (a `vec-get` copies the scalar out — a heap element would be BORROWED by
+/// `vec-get`, aliasing into the shell, so a deep drop would free a still-read value: the sread-UAF floor,
+/// same restriction `sum_has_only_scalar_payloads` enforces for sums), and we are NOT in a self-loop tail
+/// position (a `return_call`/`br` arm never reaches the post-match drop — leak, harmless — and the stash
+/// slot is reused next iteration; conservative skip mirrors `MatchSum`'s `arms_tail_call` guard).
+fn list_shell_reclaim_slot(
+    db: &mut Db,
+    scrutinee: StructId,
+    owned_stash: Option<u32>,
+    tail: TailPos,
+    never_diverges: bool,
+) -> Option<u32> {
+    let slot = owned_stash?;
+    if never_diverges || matches!(tail, TailPos::Tail(Some(_))) {
+        return None;
+    }
+    let Ty::List(elem) = type_of(db, scrutinee) else {
+        return None;
+    };
+    if is_heap_type(&elem) {
+        return None; // heap element: `vec-get` borrows/aliases into the shell — dropping it would UAF.
+    }
+    matches!(
+        heap_operand_ownership(db, scrutinee),
+        Ok(HandleOwnership::Owned)
+    )
+    .then_some(slot)
 }
 
 /// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
