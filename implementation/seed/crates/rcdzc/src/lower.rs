@@ -389,12 +389,34 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // rational (`(: 5 Rational)` = 5/1, `(: 0.5 Rational)` = 1/2), so it must fold to a
         // `Core::ConstRational` here rather than pass through as the inner `ConstInt`/`ConstFloat` (which
         // would carry the wrong value type). Inference already grants the grounding (no CDZ0203).
-        // `(const e)` — the FORCE-EVAL block. Front-end (v-inference) lowers it SEE-THROUGH to its inner
-        // expression's core, so it is behavior-identical to `e` until the force lands. v-compiler-primitives
-        // UPGRADES this arm to const-EVALUATE `expr` and REJECT if it does not fully fold, and to set the
-        // const-DEMAND CONTEXT flag the recursive-const-fold unroll reads (the general-transform demand
-        // marker). Until then it is a transparent wrapper.
-        Resolved::ConstBlock { expr } => core_of(db, expr),
+        // `(const e)` — the FORCE-EVAL / const-DEMAND block (operator-requested). It REQUIRES `e` to reduce
+        // to a compile-time constant. Run the general const-evaluator on `e` DIRECTLY — the block IS the
+        // demand signal, so this bypasses the recursive-call activation gate (`has_const_foldable_param`):
+        // any total computation over compile-time-known data folds, WITHOUT threading `const` params through
+        // its callees (which is exactly the clunk the operator wanted to drop — `const(contract-id(Ast.
+        // module))` folds even though the helper fns declare no const params). If it fully folds, the block
+        // IS that constant (a taken `trap` surfaces its CDZ0304 message via `CVal::Trap`). If it does NOT
+        // fully fold, REJECT (CDZ0201): the block ASSERTS compile-time evaluability, so a residual runtime
+        // value is an authoring error, not a silent pass-through to a runtime computation.
+        Resolved::ConstBlock { expr } => {
+            let mut budget: u64 = 1_000_000;
+            if let Some(cv) = const_eval(db, expr, &CEnv::default(), &mut budget)
+                && let Some(core) = cval_to_core(db, &cv)
+                && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
+            {
+                core
+            } else {
+                Core::Poison(
+                    Reject::coded(
+                        Code::Malformed,
+                        "`const` block requires a compile-time constant: this expression does not \
+                         fully fold at compile time (it depends on runtime data or the evaluator \
+                         cannot yet reduce it)",
+                    )
+                    .at(id),
+                )
+            }
+        }
         Resolved::Annot { expr, ty_expr } => {
             if matches!(
                 crate::eval::typeval_of(db, ty_expr),

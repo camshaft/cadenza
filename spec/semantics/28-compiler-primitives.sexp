@@ -247,3 +247,29 @@
                  (Ast.encode (Ast.Int (BigInt.of 99)))))
             (export run)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — the `(const <expr>)` FORCE-EVAL / const-DEMAND block ----------------
+; `(const e)` (operator-requested) forces `e` to reduce to a compile-time constant and REJECTS if it cannot.
+; It is the explicit const-DEMAND marker: the evaluator runs on `e` DIRECTLY, so a total computation over
+; compile-time-known data folds WITHOUT threading `const` params through its callees (dropping that clunk).
+; A residual runtime value is an authoring error (CDZ0201), not a silent pass-through to a runtime compute.
+
+(case "a `(const …)` force-eval block folds a helper call over constant data (no const params needed)"
+  (doc    "`sq` declares NO `const` parameter, yet `(const (sq 5))` folds to 25 at compile time: the `(const
+           …)` block is the demand signal, so the evaluator interprets `sq 5` directly. This is the construct
+           the operator wanted — force a computation to const-fold at the use site instead of threading
+           `const` params through every helper. The folded value is the ordinary scalar 25.")
+  (input  (do
+            (def (sq (: x Int64)) (* x x))
+            (def (main) (const (sq 5)))
+            (export main)))
+  (output (: 25 Int64)))
+
+(case "a `(const …)` block whose expression depends on runtime data is rejected (CDZ0201)"
+  (doc    "`(const (+ k 1))` over a runtime entry parameter `k` cannot reduce to a compile-time constant, so
+           the force-eval block REJECTS with CDZ0201 — the block ASSERTS compile-time evaluability, so a
+           residual runtime value is a fail-loud authoring error, not a silent pass-through to a runtime add.")
+  (input  (do
+            (def (main (: k Int64)) (const (+ k 1)))
+            (export main)))
+  (error  CDZ0201 (message "const` block requires a compile-time constant")))
