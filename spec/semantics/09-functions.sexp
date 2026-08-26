@@ -7496,19 +7496,19 @@
 (case "a record field key coinciding with a parameter name survives the call, projected"
   (doc    "A field key `(record (x 5))` and projection key `(. r x)` are LABELS, immune to beta-substitution
            of the param `x`; the record is not corrupted -> projecting x reads 5.")
-  (input  (do (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= x 5)) x)) (def (main) (f 7)) (export main)))
   (call   main) (output (: 5 Int64)))
 
 (case "a param-colliding record key does not corrupt a non-colliding field"
   (doc    "Multi-field: the colliding key `x` (= param name) does not corrupt the record; project the
            non-colliding field y -> 2.")
-  (input  (do (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= x 1) (= y 2)) y)) (def (main) (f 7)) (export main)))
   (call   main) (output (: 2 Int64)))
 
 (case "a record field VALUE referencing the parameter still substitutes"
   (doc    "The complement of key-immunity: a field VALUE that references the param STILL beta-substitutes
            (immunity is key-only). `(record (y x))` with x=7, projected y -> 7.")
-  (input  (do (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main)))
+  (input  (do (def (f (: x Int64)) (. (record (= y x)) y)) (def (main) (f 7)) (export main)))
   (call   main) (output (: 7 Int64)))
 
 (case "each parameter of a wide six-param signature resolves to its own binder"
