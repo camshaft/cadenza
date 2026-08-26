@@ -3318,6 +3318,32 @@
             (def (main) (f 41)) (export main)))
   (output (: 42 Int64)))
 
+(case "a name pattern binds a RUNTIME scrutinee read from an exported parameter"
+  (doc    "The binder cases above pass the scrutinee as a compile-time-known argument `(f 41)`; this reads it
+           from an EXPORTED annotated parameter so the scrutinee is a genuine runtime value (not const-folded
+           away). `(match n (0 100) (k (+ k 1)))` over `(: n Int64)`: n=7 → the name arm binds k=7, body → 8.
+           Pins that the bare-name arm reads the parameter's slot at run time.")
+  (input  (do (def (f (: n Int64)) (match n (0 100) (k (+ k 1)))) (export f)))
+  (call   f (: 7 Int64)) (output (: 8 Int64))
+  (call   f (: 0 Int64)) (output (: 100 Int64)))
+
+(case "a name pattern over a NARROW-width scrutinee normalizes the literal arm to the match's width"
+  (doc    "A bare-name arm beside a bare-LITERAL arm over a NARROW (UInt8) scrutinee. Every arm produces the
+           match's result type, so the literal arm (default Int64 on its own) must take the UInt8 result
+           width — else a default-i64 arm beside the narrow-i32 binder arm is a mismatched block that wasm
+           rejects. This was a MISCOMPILE (invalid component). `(match x (0 100) (n n))`: x=5 → the binder arm
+           yields 5, x=0 → the literal arm yields 100.")
+  (input  (do (def (main (: x UInt8)) (match x (0 100) (n n))) (export main)))
+  (call   main (: 5 UInt8)) (output (: 5 UInt8))
+  (call   main (: 0 UInt8)) (output (: 100 UInt8)))
+
+(case "a narrow-width name binder is usable in a downstream op at its width"
+  (doc    "The bound NARROW value feeds a downstream arithmetic op at the same width: `(match x (0 0) (n (+ n
+           x)))` over `(: x UInt8)`. x=50 → the binder `n` = 50, `(+ n x)` = 100 at UInt8. Pins that the
+           width-normalized binder is a usable value, not merely a passthrough.")
+  (input  (do (def (main (: x UInt8)) (match x (0 0) (n (+ n x)))) (export main)))
+  (call   main (: 50 UInt8)) (output (: 100 UInt8)))
+
 ; A `_`-PREFIXED match-arm binder (`_x`) is a real, USABLE binding — the `_` prefix only SILENCES the
 ; unused-binding warning (CDZ0306), it does NOT turn the name into a bare `_` wildcard that drops the value.
 ; So a `(Some _x)` arm whose body REFERENCES `_x` binds the payload and reads it normally. This is the
@@ -3649,6 +3675,35 @@
   (call   main (: 4 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
 
+(case "a five-arm match consumed in non-tail position yields into the enclosing expression"
+  (doc    "The non-tail escape hit ANY ≥4-arm (jump-table) match, not exactly four: a FIVE-arm `(match a (0
+           10) (1 20) (2 30) (3 50) (_ 40))` consumed by `(+ … 100)` must also yield into the addition —
+           a=3 → 150 (arm value 50 plus 100), not 50 (the escaped arm value). Extends the four-arm non-tail
+           case above to a wider jump table.")
+  (input  (do
+            (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (3 50) (_ 40)) 100))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 150 Int64)))
+
+(case "a dense many-arm match dispatches by value to a covered arm and to the default"
+  (doc    "The runtime value parity of a DENSE ≥4-int-arm match (the jump-table fast path): `(match k (0 10)
+           (1 20) (2 30) (3 40) (_ 99))` selects arm 2 at k=2 → 30 and the wildcard default at an uncovered
+           k=7 → 99. The density choice (jump table vs probe chain) is an emit detail; the dispatched value
+           is invariant.")
+  (input  (do (def (f (: k Int64)) (match k (0 10) (1 20) (2 30) (3 40) (_ 99))) (export f)))
+  (call   f (: 2 Int64)) (output (: 30 Int64))
+  (call   f (: 7 Int64)) (output (: 99 Int64)))
+
+(case "a sparse many-arm match dispatches identically to its dense sibling"
+  (doc    "The SAME arm count and shape as the dense case but with the literals spread (`0,1000,2000,3000`),
+           so a jump table would be mostly-empty slots and the compiler falls back to the linear probe
+           chain. The dispatched value is identical to the dense form: k=2000 → 30 (a covered arm), k=7 → 99
+           (the default, not a covered slot). Pins that the density fallback is a pure emit choice with no
+           value effect.")
+  (input  (do (def (f (: k Int64)) (match k (0 10) (1000 20) (2000 30) (3000 40) (_ 99))) (export f)))
+  (call   f (: 2000 Int64)) (output (: 30 Int64))
+  (call   f (: 7 Int64)) (output (: 99 Int64)))
+
 (case "a Bool match with its arms in either order is exhaustive"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
            property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true
@@ -3662,6 +3717,17 @@
   (output (: 1 Int64))
   (call   main (: false Bool))
   (output (: 2 Int64)))
+
+(case "a wildcard-less Bool match returning Bool negates its scrutinee"
+  (doc    "The Bool-RESULT companion of the reversed-order case above: `(match b (true false) (false true))`
+           is exhaustive without a wildcard (both Bool literals present) and its arm bodies are Bool, so the
+           match computes `!b`. The wildcard-less match emits its LAST arm as the unconditional else, so the
+           `false → true` arm is genuinely reached, not a dangling fallthrough. b=true → false, b=false →
+           true.")
+  (input  (do (def (negate (: b Bool)) (match b (true false) (false true)))
+              (def (main (: b Bool)) (negate b)) (export main)))
+  (call   main (: true Bool))  (output (: false Bool))
+  (call   main (: false Bool)) (output (: true Bool)))
 
 (case "a Bool match with only the true arm is non-exhaustive"
   (doc    "The negative control that pins the Bool-exhaustiveness relaxation does NOT over-accept:
