@@ -926,27 +926,69 @@
   (input (const (match (Map.lookup (Map.insert Map.empty (Option.Some 5) 42) (Option.Some 5)) ((Option.Some v) v) ((Option.None) 0))))
   (output (: 42 Int64)))
 
-; --- Primitive 2: const execution — the CHAMP-ORDER SOUNDNESS negative (never materialize a const Map/Set) --
-; A const Map/Set is QUERY-ONLY: `cval_to_core` DECLINES a `CVal::Map`/`CVal::Set`, so an ORDER-EXPOSING use —
-; materializing it to a list via `Map.to-list`/`Set.to-list` — does NOT fold. The runtime collection is a CHAMP
-; whose iteration order the compiler must not presume, so folding a to-list would bake a PRESUMED order (a
-; miscompile if it differs from the runtime's). The query ops (lookup/contains/len/algebra) fold because their
-; results are order-INDEPENDENT; a to-list is not. These pin the soundness NEGATIVE (previously only a comment):
-; a `(const …)` over a Map/Set to-list REJECTS. A future change that materialized a const Map in some order
-; would make these FOLD — and fail the pin, catching the order-presumption regression.
+; --- Primitive 2: const execution — a const Set.to-list FOLDS in CANONICAL VALUE ORDER (Map still declines) --
+; A to-list is ORDER-EXPOSING, so folding it is sound ONLY if the compiler bakes the SAME order the runtime op
+; produces. That order is NOT a presumed CHAMP layout: `collections-and-text.md` §Set/Map Iteration Is
+; Deterministic pins it MUST-level as the canonical VALUE total order (the visit order MUST agree with the
+; canonical byte form), and the runtime `set-to-list`/`map-to-list` ops explicitly re-sort by that order
+; (`value_cmp_shaped`), which the compiler's `const_key_order` is the same order (v-runtime confirmed it a
+; CONTRACT, not an implementation detail; runtime witnesses pinned in 19-sets by breaker #3749). So a NON-empty
+; CONSTANT `Set.to-list` now FOLDS to a canonically-sorted `(list …)` — byte-matching the runtime op — turning a
+; `(const … Set.to-list …)` DEMAND from a REJECT into a fold. An element the canonical order cannot rank as a
+; constant (float / bytes / nested-collection / a runtime element) keeps the runtime op (`const_key_order`
+; declines EXACTLY those, matching the runtime op's own non-orderable decline). `Map.to-list` still declines under
+; a const demand for now (its entry PAIR-shape fold is a separate increment; the same contract applies).
 
-(case "a const Map materialized to a list declines — CHAMP iteration order is not presumed (soundness)"
-  (doc    "`Map.to-list` over a constant map is order-EXPOSING; const_eval never materializes a `CVal::Map`
-           (`cval_to_core` declines it), so `(const (List.len (Map.to-list …)))` REJECTS rather than baking a
-           presumed insertion order. The query ops fold; a to-list does not.")
+(case "a const Map materialized to a list declines — Map.to-list fold is a later increment"
+  (doc    "`Map.to-list` over a constant map does not yet const-fold (the entry key-value PAIR materialization is
+           a separate increment), so `(const (List.len (Map.to-list …)))` still REJECTS. The query ops fold; the
+           Map to-list fold — same canonical-value-order contract as Set.to-list below — is deferred.")
   (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert (Map.empty) 1 10) 2 20))))) (export main)))
   (error  CDZ0201 (message "compile-time constant")))
 
-(case "a const Set materialized to a list declines — CHAMP iteration order is not presumed (soundness)"
-  (doc    "The Set twin: `Set.to-list` over a constant set is order-EXPOSING; const_eval never materializes a
-           `CVal::Set`, so `(const (List.len (Set.to-list …)))` REJECTS. Only order-independent Set results
-           (contains/len/algebra) fold.")
+(case "a const Set.to-list folds to a canonically-sorted list under a const demand"
+  (doc    "`Set.to-list` over a CONSTANT set folds to its elements in canonical VALUE order (spec-pinned, ==
+           the runtime `set-to-list` op's order), so `(const (List.len (Set.to-list (Set.of (list 1 2 3)))))`
+           folds to 3 — no longer a REJECT. Was the CHAMP-order soundness negative; now a fold, sound because
+           `const_key_order` byte-matches the runtime op (v-runtime contract + breaker #3749 witnesses).")
   (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list 1 2 3)))))) (export main)))
+  (output (: 3 Int64)))
+
+(case "a const Set.to-list sorts ints in canonical (numeric-ascending) value order, dedup'd"
+  (doc    "`(Set.of (list 3 1 2 3))` folds to the 3-member set `{1,2,3}`; `Set.to-list` materializes them in
+           canonical value order `(1 2 3)` — insertion order and the duplicate `3` are both erased. Pins that
+           the const fold's element ORDER is the canonical numeric-ascending order.")
+  (input  (const (= (Set.to-list (Set.of (list 3 1 2 3))) (list 1 2 3))))
+  (output (: true Bool)))
+
+(case "a const Set.to-list orders negative ints numerically, not by encoding"
+  (doc    "Negatives sort by NUMERIC value (`-3 < 0 < 2 < 5`), not a two's-complement byte order — the canonical
+           value order is numeric. `(Set.to-list (Set.of (list 5 -3 0 -3 2)))` folds to `(-3 0 2 5)`.")
+  (input  (const (= (Set.to-list (Set.of (list 5 -3 0 -3 2))) (list -3 0 2 5))))
+  (output (: true Bool)))
+
+(case "a const Set.to-list orders strings lexicographically"
+  (doc    "String elements sort lexicographically (the canonical String value order). `(Set.to-list (Set.of
+           (list \"banana\" \"apple\" \"cherry\")))` folds to `(\"apple\" \"banana\" \"cherry\")`.")
+  (input  (const (= (Set.to-list (Set.of (list "banana" "apple" "cherry"))) (list "apple" "banana" "cherry"))))
+  (output (: true Bool)))
+
+(case "a const Set.to-list order byte-matches the RUNTIME set-to-list op (cross-check)"
+  (doc    "The belt-and-suspenders soundness cross-check: a RUNTIME `Set.to-list` (the set built through a
+           runtime `Set.insert n`, forcing the heap `set-to-list` op) yields the SAME order as the COMPILE-TIME
+           fold of `{1,2,3}` — both `(1 2 3)`. Pins that `const_key_order` (compile) and `value_cmp_shaped`
+           (runtime) agree, catching any implementation drift between the two impls of the one spec'd order.")
+  (input  (do (def (run (: n Int64))
+                (= (Set.to-list (Set.insert (Set.of (list 3 1)) n)) (Set.to-list (Set.of (list 1 2 3)))))
+              (export run)))
+  (call   run 2)
+  (output (: true Bool)))
+
+(case "a const Set.to-list of a NON-orderable element (nested tuple) still declines"
+  (doc    "An element the canonical order cannot rank as a constant — a nested tuple — keeps the runtime op, so
+           `(const … Set.to-list …)` over it still REJECTS (matching the runtime op's own non-orderable decline).
+           Pins that the fold is scoped to canonically-orderable scalar elements (int/string/bool), not compounds.")
+  (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))))) (export main)))
   (error  CDZ0201 (message "compile-time constant")))
 
 ;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --

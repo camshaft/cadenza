@@ -8485,9 +8485,26 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     }
     // The fold also fires through an inlined nullary call whose body is the empty-set literal — the
     // element type is undetermined at the call site too, so the descriptor-free fold is what saves it.
-    match fold("(Set.to-list (Set.of (list 1 2)))") {
-        Core::SetToList { .. } => {} // a NON-empty constant set still emits the runtime op (canonical order)
-        other => panic!("a non-empty Set.to-list must emit the runtime op, got {other:?}"),
+    // A NON-empty CONSTANT set now FOLDS to a canonically-sorted `Core::ListNew` (the runtime `set-to-list`
+    // op sorts by the SAME spec-pinned canonical value order — `const_key_order` == the runtime's
+    // `value_cmp_shaped`, confirmed a contract by v-runtime — so materializing here byte-matches the op).
+    match fold("(Set.to-list (Set.of (list 3 1 2)))") {
+        Core::ListNew { elems } => assert_eq!(
+            elems.len(),
+            3,
+            "a non-empty constant Set.to-list folds to a 3-element sorted ListNew, got {} elems",
+            elems.len()
+        ),
+        other => {
+            panic!("a non-empty constant Set.to-list must fold to a sorted ListNew, got {other:?}")
+        }
+    }
+    // A set with a NON-orderable element (a nested tuple — `const_key_order` declines) keeps the runtime op.
+    match fold("(Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))") {
+        Core::SetToList { .. } => {}
+        other => {
+            panic!("a non-orderable-element Set.to-list must emit the runtime op, got {other:?}")
+        }
     }
 }
 

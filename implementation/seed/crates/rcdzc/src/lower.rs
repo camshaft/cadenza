@@ -24055,7 +24055,7 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
         return Core::Poison(r.clone());
     }
     // A compile-time-visible EMPTY constant set enumerates to the empty list — no descriptor, no element
-    // type needed. (A non-empty `SetOf` must still run the runtime op to observe canonical order.)
+    // type needed.
     if let Core::SetOf { elems, .. } = &set_core
         && elems.is_empty()
     {
@@ -24063,6 +24063,33 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
         return Core::ListNew {
             elems: std::rc::Rc::from([]),
         };
+    }
+    // A NON-EMPTY CONSTANT set folds to a baked list of its elements in CANONICAL VALUE ORDER — the SAME
+    // order the runtime `set-to-list` op produces. This is SOUND (not a presumed CHAMP layout): the runtime
+    // op EXPLICITLY re-sorts by the canonical value total order (`value_cmp_shaped`), which the spec pins as
+    // MUST-level (`collections-and-text.md` §Set Iteration Is Deterministic — the visit order MUST agree with
+    // the canonical byte form), and the compiler's `const_key_order` is the SAME order (confirmed by v-runtime
+    // as a contract, not an implementation detail; witnessed by the runtime `set-to-list` corpus vectors). So
+    // materializing the elements sorted by `const_key_order` byte-matches the runtime op. This turns a
+    // `(const (… Set.to-list …))` DEMAND (which forced the runtime op → declined) into a fold. Elements the
+    // canonical order cannot rank as compile-time constants (float / bytes / nested-collection / a runtime
+    // element — `const_key_order` returns `None`, EXACTLY the non-orderable classes the runtime op declines
+    // too) keep the runtime op. The set already dedups by value (`Set.of`/insert folds), so this only reorders.
+    if let Core::SetOf { elems, .. } = &set_core {
+        let mut sorted: Vec<StructId> = elems.to_vec();
+        let mut orderable = true;
+        sorted.sort_by(|&x, &y| {
+            const_key_order(db, x, y).unwrap_or_else(|| {
+                orderable = false;
+                std::cmp::Ordering::Equal
+            })
+        });
+        if orderable {
+            trace!(target: "rcdzc::fold", node = set.0, n = sorted.len(), "Set.to-list folds a constant set to a canonically-sorted list");
+            return Core::ListNew {
+                elems: sorted.into(),
+            };
+        }
     }
     let Some(elem_ty) = set_elem_type(db, set) else {
         return Core::Poison(Reject::decline(
