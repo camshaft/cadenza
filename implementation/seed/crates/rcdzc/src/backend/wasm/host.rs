@@ -74,6 +74,12 @@ pub enum HostParam {
     /// stays [`Bytes`](HostParam::Bytes) (its own `(ptr,len)` shape), not this. The arg-side analogue of the
     /// spilled result-list LIFT.
     List(Box<RecordFieldAbi>),
+    /// A bare scalar-payload VARIANT param (the top-level position, not nested in a record/list) — crosses as
+    /// a component `variant` DEFINED type, flattening (canonical variant flatten) to `(disc:i32, join(case
+    /// payloads))`. Carries the cases (name, optional scalar payload valtype) in DECLARATION order (= the
+    /// component discriminant order). The guest marshals it via `select::emit_variant_reg_flatten` (the same
+    /// helper a `RecordFieldAbi::Variant` field uses); a mixed int/float payload is excluded by the detector.
+    Variant(Vec<(String, Option<AbiValType>)>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -299,9 +305,17 @@ pub fn variant_scalar_payload_cases(
             0 => cases.push((name, None)),
             1 => {
                 let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
-                let pv = abi_val_type(&pty)?; // a scalar payload only this increment
-                if join.is_some_and(|prev| prev != pv) {
-                    return None; // MIXED payload widths → the flatten join is a later increment
+                let pv = abi_val_type(&pty)?; // a scalar payload only
+                // Admit MIXED payload widths as long as they JOIN cleanly: all-integer (incl bool/char, which
+                // share the i32 slot) join to the widest int slot, and a uniform float is fine. REJECT mixing
+                // int with float, or f32 with f64 — those need the canonical reinterpret join lattice (a later
+                // increment). The marshal computes the register join valtype + the memory max-natural width.
+                let is_float = |a: AbiValType| matches!(a, AbiValType::F32 | AbiValType::F64);
+                if let Some(prev) = join
+                    && prev != pv
+                    && (is_float(prev) || is_float(pv))
+                {
+                    return None;
                 }
                 join = Some(pv);
                 any_payload = true;
@@ -660,7 +674,13 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
         // An option-shaped sum (`option<T>`) whose payload `T` is itself liftable — general over the payload
         // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
         // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
-        _ => option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)),
+        _ if option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)) => true,
+        // A general scalar-payload VARIANT (N cases, each nullary or a scalar payload; NOT option/result-
+        // shaped — those took their own arms above and `variant_scalar_payload_cases` excludes them). The lift
+        // (`select::emit_variant_sum_lift`) reads the disc + the selected case's scalar payload from the spilled
+        // retptr'd region and rebuilds the guest Sum; its component `variant` DEFINED type comes from
+        // `spilled_result_wit_type` → `add_wit_type_deduped`. The RESULT-side twin of the bare-variant ARG.
+        _ => variant_scalar_payload_cases(db, ty).is_some(),
     }
 }
 
@@ -694,6 +714,23 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
             ok: Some(Box::new(WitType::List(Box::new(WitType::U8)))),
             err: Some(Box::new(WitType::Enum(err_cases))),
         });
+    }
+    // A general scalar-payload VARIANT result → a `variant` WIT type: each case is `(name, Some(scalar-wit))`
+    // for a payload case or `(name, None)` for a nullary case, in declaration order (= the component disc
+    // order). The scalar payload's WIT comes from its own `ty_natural_wit`. The result-side twin of the
+    // bare-variant ARG's component type (`build_host_group`'s CDef::Variant).
+    if let Some(cases) = variant_scalar_payload_cases(db, ty) {
+        let mut wit_cases: Vec<(String, Option<WitType>)> = Vec::with_capacity(cases.len());
+        for (i, (name, payload)) in cases.iter().enumerate() {
+            let pw = if payload.is_some() {
+                let pt = crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)?;
+                Some(crate::wit_world::ty_natural_wit(&pt)?)
+            } else {
+                None
+            };
+            wit_cases.push((name.clone(), pw));
+        }
+        return Some(WitType::Variant(wit_cases));
     }
     crate::wit_world::ty_natural_wit(ty)
 }
@@ -1104,6 +1141,16 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     // leave `params` short and decline).
                     _ if !peer_bound && enum_cases(db, &at).is_some() => {
                         params.push(HostParam::Enum(enum_cases(db, &at).unwrap()));
+                    }
+                    // A scalar-payload VARIANT arg (a Cadenza sum with scalar/nullary payload cases) crosses as
+                    // a component `variant` DEFINED type — the canonical flatten join (disc + max-width
+                    // payload). Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`, so `_` would
+                    // leave `params` short and decline). The composite-nested variant rides
+                    // `RecordFieldAbi::Variant` / the list marshal; this is the top-level bare-variant param.
+                    _ if !peer_bound && variant_scalar_payload_cases(db, &at).is_some() => {
+                        params.push(HostParam::Variant(
+                            variant_scalar_payload_cases(db, &at).unwrap(),
+                        ));
                     }
                     _ => {
                         let v = if peer_bound {
@@ -1586,12 +1633,20 @@ pub fn first_unrepresentable_host_op(
                 false
             };
             let arg_is_boundary_list = allow_option_bytes && !peer_bound && list_elem_ok;
+            // A scalar-payload VARIANT arg passed BARE (the top-level param position, not nested in a record/
+            // list) crosses NATIVELY as a component `variant` DEFINED type — the canonical flatten join (disc +
+            // max-width payload), the same marshal a record-field/list-element variant uses, now at the param
+            // position. Same reducer/host-fused gating; a mixed int/float payload is excluded by the detector.
+            let arg_is_boundary_variant = allow_option_bytes
+                && !peer_bound
+                && variant_scalar_payload_cases(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
                 && !arg_is_boundary_record
                 && !arg_is_boundary_enum
                 && !arg_is_boundary_list
+                && !arg_is_boundary_variant
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

@@ -628,3 +628,204 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)"
+  (doc "SHAPE 49 - the runtime checked conversion `Int64.of` over a HOST-LIFTED u64 result. The emit composes `if operand > i64::MAX then trap else wrap(operand)`, which NAMES the operand in the compare AND the else; a host-call operand must be materialized ONCE (a self-keyed let) or its effect FIRES PER USE - breaker adv-tof-host-u64 saw an in-range 1000 spuriously TRAP because the second host invocation drained its lone queued response. The `(host-calls ...)` clause asserts EXACTLY ONE call to hosti.base, so a regression to per-reference re-invocation fails here (host-response exhaustion), not just a wrong value. Runtime coverage for the operand-materialize fix over the merged #3537 .of compose.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (effect hosti (op base (-> Unit UInt64))) (def (f (: m (Record (: x Int64)))) (host (hosti) (Int64.of (hosti.base unit)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1000 Int64)))
+
+(case "Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)"
+  (doc "SHAPE 50 - the runtime checked arithmetic `Int64.checked-add` over a HOST-LIFTED u64 result (narrowed by Int64.of). The overflow-check compose names the operand in the wrapping result AND the two's-complement formula, so a host-call operand is materialized ONCE (else the effect fires per reference). `(host-calls ...)` asserts EXACTLY ONE call to hosti.base. main = match (checked-add (Int64.of (hosti.base)) 1) Some v -> v, None -> -1; with the host stubbed 1000 the sum 1001 fits -> Some 1001. Runtime coverage for the operand-materialize fix over the merged #3569 checked-arith compose.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (effect hosti (op base (-> Unit UInt64))) (def (f (: m (Record (: x Int64)))) (host (hosti) (match (Int64.checked-add (Int64.of (hosti.base unit)) 1) ((Some v) v) ((None _) -1)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1001 Int64)))
+
+;; -- host-u64 checked-conversion end-to-end: intact-compare control, T.of over a host response, handler x host x conversion, record-arg x value-result x conversion (breaker batch 382; the #3537->#3572 wrong-trap arc witnesses) --
+(case "u64h1 the u64 host response compared WITHOUT T.of arrives intact"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (if (= (hosti.base unit) (UInt64.wrap 1000)) 7 8)))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 7 Int64)))
+
+(case "u64h2 T.of over the u64 host response (isolated, in-range 1000)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (Int64.of (hosti.base unit))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1000 Int64)))
+
+(case "cr03 an export combining an IN-GUEST handler AND a host import"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (+ (Int64.of (hosti.base unit))
+           (handle Cnt (. m x)
+             ((tick () s (resume (* s 10) (+ s 1))))
+             (+ (Cnt.tick) (Cnt.tick))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1070 Int64)))
+
+(case "cq04 host IMPORT: RECORD param + scalar result (reverse direction)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member put (func (param v ("record" (a (s64)) (b (s64)))) (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op put (-> (Record (: a Int64) (: b Int64)) UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (Int64.of (hosti.put (record (= a (. m x)) (= b 9))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.put (: 42 UInt64)))
+  (host-calls (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))
+
+(case "a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 51 - a record host-op ARG whose variant field has MIXED-WIDTH scalar payloads (sink.push(record{v: variant{a, b(s64), c(u8)}, n: s64})). The canonical flatten JOIN of a b(s64)/c(u8) variant is the widest register type (i64) - a payload case stores its own value, narrower than the join, at the field's flattened slot; the guest sum-disc IS the component discriminant. Pushing V.b(-5000000000) drives a NEGATIVE s64 payload through the mixed join (a naive i32 join would truncate it). Runtime coverage for v-rust-backend's mixed-width variant marshal (the register-flatten face v-platform-itest's arg-probe value-gate verified byte-correct); this case pins that it EMITS + INSTANTIATES + RUNS (a wrong join type fails wasm-tools validate / instantiation).")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param r ("record" (v ("variant" (a) (b (s64)) (c (u8)))) (n (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C UInt8)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B -5000000000)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 52 - a list<variant{a(u8), b(u16), c}> host-op ARG (sink.push): each element written in place at the canonical variant layout, whose payload area is the MAX-NATURAL width of the mixed u8/u16 cases (the memory face of the flatten join, distinct from SHAPE 51's register face). Pushing (V.A 200), (V.B 60000), V.C exercises a u8 payload, a u16 payload, and a nullary case - the u8 reads from the right bits and the u16 stays intact per element. Runtime coverage for the mixed-width variant marshal's memory path (v-platform-itest's arg-probe value-gate verified the list items byte-correct); pins EMIT + INSTANTIATE + RUN.")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param items ("list" ("variant" (a (u8)) (b (u16)) (c)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A UInt8) (B UInt16) (C)) (effect sink (op push (-> (List V) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (V.A 200) (V.B 60000) V.C)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 53 - a scalar-payload variant{tiny(u8), big(s64), mark} passed BARE as the TOP-LEVEL host-op param (hosti.put(v: variant), NOT nested in a record/list). The param crosses as a component `variant` DEFINED type; the guest decomposes the value-heap variant handle into the canonical `(disc, payload)` register-flatten (join = i64 for the mixed u8/s64 cases) via emit_variant_reg_flatten - the SAME helper a record-field/list-element variant uses, now at the param position (HostParam::Variant). Three calls exercise a u8 payload case, an s64 payload case, and the nullary `mark` (payload-width zero). Runtime coverage for v-rust-backend's bare-variant host-arg param (breaker mwv1); a wrong join/flatten fails wasm-tools validate / instantiation.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member put (func (param v ("variant" (tiny (u8)) (big (s64)) (mark))) (result ("unit")))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type V (Tiny UInt8) (Big Int64) (Mark)) (effect hosti (op put (-> V Unit))) (def (f (: m (Record (: x Int64)))) (host (hosti) (do (hosti.put (V.Tiny (UInt8.wrap 7))) (hosti.put (V.Big 900000000000)) (hosti.put V.Mark) (. m x)))) (export f)))
+  (call f (: (record (= x 42)) (Record (: x Int64))))
+  (host-calls (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))
+
+;; -- bare + record-wrapped MIXED-WIDTH variant host args: u8/s64/nullary arms each dispatched (breaker batch 385; the #3579->#3588 HostParam::Variant arc) --
+(case "mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member put (func (param v ("variant" (tiny (u8)) (big (s64)) (mark))) (result ("unit")))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type V (Tiny UInt8) (Big Int64) (Mark))
+    (effect hosti (op put (-> V Unit)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (do (hosti.put (V.Tiny (UInt8.wrap 7)))
+            (hosti.put (V.Big 900000000000))
+            (hosti.put V.Mark)
+            (. m x))))
+    (export f)))
+  (call f (: (record (= x 42)) (Record (: x Int64))))
+  (host-calls (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))
+(case "mwv2 the SAME mixed-width variant wrapped in a RECORD host arg"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member put (func (param r ("record" (v ("variant" (tiny (u8)) (big (s64)) (mark))) (n (s64)))) (result ("unit")))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type V (Tiny UInt8) (Big Int64) (Mark))
+    (effect hosti (op put (-> (Record (: v V) (: n Int64)) Unit)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (do (hosti.put (record (= v (V.Big 900000000000)) (= n 1)))
+            (. m x))))
+    (export f)))
+  (call f (: (record (= x 42)) (Record (: x Int64))))
+  (host-calls (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))
+
+(case "a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)"
+  (doc "SHAPE 54 - a host op returning a scalar-payload variant{a(u8), b(s64), mark} (hosti.get). The result is SPILLED (flattens to disc+payload > 1 core value → retptr); the guest LIFTS the (disc, payload) from the retptr'd region into a value-heap Sum via emit_variant_sum_lift - the N-case generalization of the option-result lift, the RESULT-side twin of the bare-variant ARG marshal. Stubbing get -> (b 900000000000) and matching selects the B arm (k). Runtime coverage for v-rust-backend's variant-payload host-result lift (breaker w10c); a wrong disc/payload-offset read would mis-select the arm. (The cdz-run driver's coerce_one gained a Type::Variant arm to encode the variant response.)")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member get (func (result ("variant" (a (u8)) (b (s64)) (mark))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type V (A UInt8) (B Int64) (Mark)) (effect hosti (op get (-> Unit V))) (def (f (: m (Record (: x Int64)))) (host (hosti) (match (hosti.get unit) ((A n) (Int64.of n)) ((B k) k) ((Mark) -1)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (b 900000000000) V)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: 900000000000 Int64)))
+
+;; -- variant-with-payload host RESULTS: payload arm, mixed-width per-arm across three dispatches, negative-s64 join (breaker batch 387; the pre-delivered #3592 acceptance ladder) --
+(case "vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member pick (func (result ("variant" (small (s64)) (big))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type Pick (Small Int64) (Big))
+    (effect hosti (op pick (-> Unit Pick)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (match (hosti.pick unit) ((Pick.Small k) k) ((Pick.Big) 999))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.pick (: (small 5) pick)))
+  (host-calls (call cadenza:demo/hosti.pick))
+  (output (: 5 Int64)))
+
+(case "vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member next (func (result ("variant" (tiny (u8)) (big (s64)) (mark))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type V (Tiny UInt8) (Big Int64) (Mark))
+    (effect hosti (op next (-> Unit V)))
+    (def (rd (: v V))
+      (match v ((V.Tiny t) (Int64.of t)) ((V.Big b) b) ((V.Mark) -1)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (+ (rd (hosti.next unit)) (+ (rd (hosti.next unit)) (rd (hosti.next unit))))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.next (: (tiny 7) v)) (respond hosti.next (: (big 900000000000) v)) (respond hosti.next (: (mark unit) v)))
+  (host-calls (call cadenza:demo/hosti.next) (call cadenza:demo/hosti.next) (call cadenza:demo/hosti.next))
+  (output (: 900000000006 Int64)))
+
+(case "vres3 a NEGATIVE s64 payload through the variant host-result join"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member get (func (result ("variant" (val (s64)) (none))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type R (Val Int64) (NoneArm))
+    (effect hosti (op get (-> Unit R)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (match (hosti.get unit) ((R.Val v) v) ((R.NoneArm) 0))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (val -5000000000) r)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: -5000000000 Int64)))

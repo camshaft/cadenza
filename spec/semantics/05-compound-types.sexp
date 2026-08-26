@@ -16981,6 +16981,60 @@
   (call   main (: 500 Int64)) (output (: 49500 Int64))
   (live-objects 0))
 
+(case "Record.project over a runtime record leaves no live heap objects"
+  (doc    "`(Record.project (mk 0) (a c))` keeps fields a,c of a runtime source record; reading `.a` (1),
+           looped 500× -> 500. The owned-temporary source (borrowed by the projections) and the fresh
+           projected result must both be reclaimed after the scalar read — live-objects 0.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.project (mk 0) (a c)) a))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.without over a runtime record leaves no live heap objects"
+  (doc    "`(Record.without (mk 0) (b))` drops field b of a runtime source; reading `.a` (1), looped 500× ->
+           500. Source + fresh result both reclaimed — live-objects 0.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.without (mk 0) (b)) a))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.pop over a runtime record (value, rest) leaves no live heap objects"
+  (doc    "`(Record.pop (mk 0) a)` returns a `(a-value, rest-record)` tuple; reading element 0 (1), looped
+           500× -> 500. The owned source, the fresh rest-record, and the tuple result must all be reclaimed
+           after the scalar read — live-objects 0. Exercises the (value, rest) tuple-result shape.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.pop (mk 0) a) 0))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.merge of two runtime records leaves no live heap objects"
+  (doc    "`(Record.merge (mkA j) (mkB j))` unions {a,b} with {c,d}; reading `.c` (3, from the second source),
+           looped 500× -> 1500. The sources are built from the runtime loop index `j` (so they are genuine
+           owned temporaries, not const-folded — the record value is the same at every `j`). BOTH
+           owned-temporary source records (each borrowed by its projections) and the fresh union result must
+           all be reclaimed — live-objects 0. Exercises the two-source shape.")
+  (input  (do
+            (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.merge (mkA j) (mkB j)) c))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects 0))
+
 (case "a record pattern over a Map-STORED record reads live heap fields after retrieval"
   (doc    "The storage-round-trip face of record matching: a record with a HEAP field (`(xs (list n 2))`,
            plus a `tag` string) is stored as a CHAMP map VALUE, retrieved by `Map.lookup`, and only then
@@ -18968,3 +19022,57 @@
     (export main)))
   (call main (: 1 Int64))
   (output (: 43 Int64)))
+
+;; -- leak-freedom over the adversarial shared-heap faces: divergent aliases, closure capture, handler-arm update, Map/Set operands all balance to zero live objects (breaker batch 381; live-objects cases are wasm-baselined per the migration convention) --
+(case "lk1 divergent update aliases leave no live heap objects after the run"
+  (input (do
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((a (List.update xs 0 100)))
+          (let ((b (List.update xs 1 200)))
+            (+ (rd a 1) (+ (rd b 0) (* 100 (rd xs 0))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 709 Int64))
+  (live-objects 0))
+
+(case "lk2b a closure capturing a BRANCH-SELECTED list across an interleaved update leaves no live heap objects"
+  (input (do
+    (def (rd (: xs (List Int64)))
+      (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n 2 3) (list 9))))
+        (let ((g (fn (u) (rd xs))))
+          (let ((first (g 0)))
+            (let ((ys (List.update xs 0 99)))
+              (+ (* 100 first) (+ (rd ys) (g 0))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 806 Int64))
+  (live-objects 0))
+
+(case "lk3 a persistent update inside a handler ARM plus continuation read leaves no live heap objects"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (handle E 0
+          ((tick () s (resume (rd (List.update xs 0 500) 0) s)))
+          (+ (E.tick) (rd xs 0)))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 503 Int64))
+  (live-objects 0))
+
+(case "lk4 shared Map and Set operands across inserts leave no live heap objects"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (map) n 10)))
+        (let ((m2 (Map.insert m (+ n 1) 20)))
+          (let ((s (Set.of (list n))))
+            (let ((s2 (Set.insert s (+ n 1))))
+              (+ (Map.len m) (+ (* 10 (Map.len m2)) (+ (* 100 (Set.len s)) (* 1000 (Set.len s2))))))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 2121 Int64))
+  (live-objects 0))

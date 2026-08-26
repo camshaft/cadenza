@@ -1,0 +1,14 @@
+// The §7 SUPERVISION WATCHER (design/cadenza-platform.md §7). This reducer is a parent that watches its
+// child's exit: the paired run spawns it, then spawns a child under it with a `parent_watches_child` link, so
+// the runtime delivers the child's lifecycle event (an `Exited` carrying the child's typed close reason) into
+// THIS reducer's mailbox as a control-plane notification. The watcher itself does nothing — it never emits and
+// never ends — it exists only to receive its child's exit, which the observation log records as a Delivered
+// notification. on-message is inert (it is never messaged; a watcher only ever folds its peer's lifecycle
+// through on_notification); on-response/on-notification are the inert re-exports from reducer-lib. That the
+// exit reaches it at all is the §7 property this run asserts: a subscription delivers a peer's exit to its
+// watcher.
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) = { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

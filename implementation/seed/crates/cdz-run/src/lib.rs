@@ -3463,6 +3463,40 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
             }
             Val::Enum(case)
         }
+        // A VARIANT argument/response (a sum with scalar-payload cases): the corpus writes the `render_val`
+        // form `(<case> <payload>)` for a payload case, or `(<case> unit)` / bare `<case>` for a nullary case.
+        // Extract the case name (kebab, the component spelling), validate it, and coerce the payload against
+        // the case's declared type. The read side of a variant-with-payload host RESULT response (the twin of
+        // the `Type::Enum` arm, with a payload).
+        Type::Variant(vt) => {
+            let parts = parse_tuple_fields(s).unwrap_or_else(|| vec![s.trim().to_string()]);
+            let case = parts
+                .first()
+                .cloned()
+                .unwrap_or_else(|| s.trim().to_string());
+            let cd = vt.cases().find(|c| c.name == case).ok_or_else(|| {
+                anyhow!(
+                    "argument `{s}`: `{case}` is not a case of the variant (declared cases: {})",
+                    vt.cases()
+                        .map(|c| c.name.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            let payload = match cd.ty {
+                Some(pty) => {
+                    let pv = parts
+                        .get(1)
+                        .filter(|v| v.as_str() != "unit")
+                        .ok_or_else(|| {
+                            anyhow!("argument `{s}`: variant case `{case}` needs a payload value")
+                        })?;
+                    Some(Box::new(coerce_one(pv, &pty)?))
+                }
+                None => None,
+            };
+            Val::Variant(case, payload)
+        }
         other => {
             return Err(anyhow!(
                 "argument `{s}`: compound parameter type {other:?} is not supported by cdz-run yet"

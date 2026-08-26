@@ -1787,6 +1787,11 @@ fn host_op_comp_functype(
                     .unwrap_or(crate::backend::wasm::wit_ctype::CRef::Idx(list_type_idx));
                 crate::backend::wasm::wit_ctype::encode_cref(&cref, &mut param_items);
             }
+            // A bare VARIANT param references its EXPORTED `variant` DEFINED type (a nominal type an import
+            // func uses must be exported, like a record/enum) by the SAME `nominal_type_idx` — an op carries
+            // at most one nominal param type this slice. Its `(disc, payload)` crosses as the flattened core
+            // slots (serialize.rs); the defined type is built by `build_host_group` (the variant_params branch).
+            HostParam::Variant(_) => encode::uleb128(nominal_type_idx as u64, &mut param_items),
         }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
@@ -2039,17 +2044,51 @@ fn build_host_group(
             _ => None,
         })
         .collect();
-    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs. `base` is
-    // the first nominal type's instance-type index. `record_defs` accumulates EVERY record's defined types
-    // (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is op `i`'s
-    // nominal EXPORTED type index (`0` = no nominal param — unused by `host_op_comp_functype` for that op).
-    let base = needs_list as u32 + result_defs.len() as u32;
+    let variant_params: Vec<
+        &Vec<(
+            String,
+            Option<crate::backend::wasm::runtime_abi::AbiValType>,
+        )>,
+    > = group
+        .iter()
+        .flat_map(|h| &h.params)
+        .filter_map(|p| match p {
+            host::HostParam::Variant(cases) => Some(cases),
+            _ => None,
+        })
+        .collect();
+    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result / list-arg defs.
+    // `base` is the first record-param type's instance-type index. `record_defs` accumulates EVERY record's
+    // defined types (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is
+    // op `i`'s nominal EXPORTED type index (`0` = no nominal param — unused by `host_op_comp_functype`).
+    // COUNT INSTANCE-TYPE SLOTS, not entries: `host_effect_instance_type` lays a NOMINAL result/list-arg def
+    // as define+export (TWO slots) and a STRUCTURAL one as define-only (ONE slot). Using `result_defs.len()`
+    // (an entry count) undercounts by one per nominal result-def, so the record-param path's `base + 2*i`
+    // indices land one short — the record's field then references a nominal child's DEFINE index instead of
+    // its EXPORT index (e.g. a `record{ v: variant }` param whose interface ALSO has a list<variant> arg:
+    // the variant's export slot is uncounted → the field refs the raw variant, "instance not valid as import").
+    let base = needs_list as u32
+        + result_defs
+            .iter()
+            .map(|(_, is_nominal)| if *is_nominal { 2u32 } else { 1 })
+            .sum::<u32>();
     let mut record_defs: Vec<Vec<u8>> = Vec::new();
     let mut op_nominal: Vec<u32> = vec![0; group.len()];
-    if !record_params.is_empty() && !enum_params.is_empty() {
+    // At most ONE nominal-param KIND per interface this slice (record OR enum OR bare-variant) — the shared
+    // `op_nominal`/`nominal_type_idx` path carries a single nominal param type per op, and their defined types
+    // would otherwise contend for the same `base` slots. Mixing declines rather than mis-laying the group.
+    let nominal_kinds = [
+        !record_params.is_empty(),
+        !enum_params.is_empty(),
+        !variant_params.is_empty(),
+    ]
+    .iter()
+    .filter(|x| **x)
+    .count();
+    if nominal_kinds > 1 {
         return Err(Reject::decline(
-            "a host interface mixing a record parameter and an enum parameter is not yet emitted (record OR \
-             enum per interface — this slice)",
+            "a host interface mixing more than one nominal parameter kind (record / enum / bare-variant) is \
+             not yet emitted (one kind per interface — this slice)",
         ));
     } else if !record_params.is_empty() {
         let has_str_param = group
@@ -2098,6 +2137,40 @@ fn build_host_group(
                 .any(|p| matches!(p, host::HostParam::Enum(_)))
             {
                 op_nominal[i] = enum_export;
+            }
+        }
+    } else if !variant_params.is_empty() {
+        let distinct = variant_params.iter().all(|c| *c == variant_params[0]);
+        if !distinct {
+            return Err(Reject::decline(
+                "a host interface with more than one DISTINCT bare-variant parameter type is not yet emitted \
+                 (a single variant type per interface this slice)",
+            ));
+        }
+        // A SINGLE shared `variant` DEFINE (at `base`) + EXPORT (at `base+1`); every variant-param op refs it.
+        // Each case is a nullary or a scalar-payload inline primitive CRef — the same `CDef::Variant` a
+        // record-field variant lays (`record_field_cref`'s Variant arm), now at the top-level param position.
+        let vcases: Vec<(String, Option<crate::backend::wasm::wit_ctype::CRef>)> = variant_params
+            [0]
+        .iter()
+        .map(|(name, p)| {
+            (
+                name.clone(),
+                p.map(|v| crate::backend::wasm::wit_ctype::CRef::Prim(v.comp_byte())),
+            )
+        })
+        .collect();
+        record_defs.push(crate::backend::wasm::wit_ctype::emit_cdef(
+            &crate::backend::wasm::wit_ctype::CDef::Variant(vcases),
+        ));
+        let variant_export = base + 1;
+        for (i, hi) in group.iter().enumerate() {
+            if hi
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Variant(_)))
+            {
+                op_nominal[i] = variant_export;
             }
         }
     }
@@ -2191,10 +2264,26 @@ fn declare_result_lift_ops(
         }
         // An option-shaped sum (`option<T>`): `sum-new` for the Some/None construction + the Some arm's
         // payload lift ops, recursively (general over the payload, not pinned to `Bytes`).
-        _ => {
+        _ if host::option_payload_ty(db, ty).is_some() => {
             if let Some(payload) = host::option_payload_ty(db, ty) {
                 used.insert("sum-new");
                 declare_result_lift_ops(db, &payload, used);
+            }
+        }
+        // A general scalar-payload VARIANT result (`emit_variant_sum_lift`): `sum-new` builds every case's
+        // arm; each payload case's scalar is boxed by its own leaf op (recursed). Mirrors the lift so the
+        // marshal's `CallImport`s resolve (else u32::MAX → an invalid module — the arg-side trap's twin).
+        _ => {
+            if let Some(cases) = host::variant_scalar_payload_cases(db, ty) {
+                used.insert("sum-new");
+                for (i, (_, p)) in cases.iter().enumerate() {
+                    if p.is_some()
+                        && let Some(pt) =
+                            crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)
+                    {
+                        declare_result_lift_ops(db, &pt, used);
+                    }
+                }
             }
         }
     }
@@ -2221,7 +2310,8 @@ fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
         | host::HostParam::Bytes
         | host::HostParam::Record(_)
         | host::HostParam::Enum(_)
-        | host::HostParam::List(_) => None,
+        | host::HostParam::List(_)
+        | host::HostParam::Variant(_) => None,
     }
 }
 

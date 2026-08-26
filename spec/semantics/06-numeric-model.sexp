@@ -3553,31 +3553,35 @@
   (call   main (: -1 Int8))
   (output (: -1 Int64)))
 
-(case "a possibly-out-of-range runtime integer conversion still declines (checked emit pending)"
-  (doc    "`(Int8.of x)` with `x` a runtime `UInt8` is NOT total — a UInt8 value like 255 overflows Int8's
-           -128..127, so `of` must TRAP-check at run time. The range-check-then-trap emit is a later
-           increment, so this soundly DECLINES rather than emitting a truncating `wrap` (which would
-           silently keep the low bits where `of` must trap — a miscompile). Grades the non-total boundary
-           as tracked; contrast the TOTAL widenings above, which emit.")
+(case "a runtime UInt8->Int8 .of range-checks: an in-range value passes, an out-of-range value traps"
+  (doc    "`(Int8.of x)` with `x` a runtime `UInt8` is NOT total — a UInt8 value like 200 overflows Int8's
+           -128..127, so `of` RANGE-CHECKS at run time: an in-range value (100) crosses unchanged, an
+           out-of-range value (200) TRAPS. Emitted as `if x > 127 then trap else wrap x` (the bound typed
+           as the operand's type so the compare is unsigned). Never a silent low-bits truncation where `of`
+           must trap. The runtime companion of the constant checked-narrow folds; contrast the TOTAL
+           widenings above (which emit an unconditional widen).")
   (input  (do (def (main (: x UInt8)) (Int8.of x)) (export main)))
-  (declines))
+  (call   main (: 100 UInt8)) (output (: 100 Int8))
+  (call   main (: 200 UInt8)) (trap "unreachable"))
 
-; The widen decline above is one face of a family: the runtime `.of` fixed-width integer CONVERT does not
-; yet emit in ANY direction. These pin the other two faces so the whole boundary is tracked, not just the
-; Int64-widen: NARROWING a runtime Int64 to a fixed width (`UInt8.of n`, range-checked) and CROSS-WIDTH
-; widening one narrow type to another (`UInt16.of x:UInt8`) both DECLINE too. As with the widen, the
-; CONSTANT forms fold (checked-narrow / exact-widen at compile time) and the `wrap`/`wrapping-*` truncation
-; ops emit fine on runtime narrow values — it is specifically the runtime `.of` CONVERT emit that is the
-; later increment. Sound declines, reject-don't-miscompile; a future runtime `.of` that silently emitted a
-; wrong (unchecked-narrow / sign-extended) result would flip these `(declines)`.
-(case "narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)"
+; The widen above is one face of a family: the runtime `.of` fixed-width integer CONVERT now emits in every
+; direction — a TOTAL direction (a widen, or a value provably in range) as an unconditional reinterpret, and
+; a NON-TOTAL direction (a genuine narrowing) as a RANGE-CHECK-then-trap (`if operand out of [tmin,tmax]
+; then trap else wrap`). These pin the other faces: NARROWING a runtime Int64 to a fixed width
+; (`UInt8.of n`, range-checked) and the CROSS-WIDTH widen (`UInt16.of x:UInt8`, total). The CONSTANT forms
+; fold (checked-narrow / exact-widen at compile time); `wrap`/`wrapping-*` still truncate. A future runtime
+; `.of` that silently emitted a wrong (unchecked-narrow / sign-extended) result — or FAILED to trap an
+; out-of-range value — would flip these.
+(case "narrowing a runtime Int64 to a fixed width with .of range-checks (in range passes, out of range traps)"
   (doc    "`(Int64.of (UInt8.of n))` with `n` a runtime Int64: the inner `(UInt8.of n)` range-checks-narrows
-           the runtime Int64 to a UInt8 — a runtime `.of` CONVERT the seed does not yet emit, so it soundly
-           DECLINES (rather than emitting an unchecked truncation). Contrast the CONSTANT `(UInt8.of
-           (BigInt.of 300))` narrow cases (which fold + range-check at compile time). Grades the runtime
-           narrow-direction `.of` decline, the companion of the widen above.")
+           the runtime Int64 to a UInt8 (0..255) — an in-range `n` (100) passes, an out-of-range `n` (300 or
+           -1) TRAPS; the outer `Int64.of` then widens totally. Grades the runtime narrow-direction checked
+           `.of`, the companion of the widen above. Contrast the CONSTANT `(UInt8.of (BigInt.of 300))` narrow
+           cases (which fold + range-check at compile time).")
   (input  (do (def (main (: n Int64)) (Int64.of (UInt8.of n))) (export main)))
-  (declines))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (call   main (: 300 Int64)) (trap "unreachable")
+  (call   main (: -1 Int64)) (trap "unreachable"))
 
 (case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)"
   (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type.
@@ -3605,14 +3609,35 @@
   (input  (do (def (main (: x UInt8)) (UInt64.of x)) (export main)))
   (call   main (: 255 UInt8)) (output (: 255 UInt64)))
 
-(case "narrowing a runtime UInt64 to UInt8 with .of declines (checked-narrow emit pending)"
-  (doc    "`(UInt8.of x)` with `x` a runtime UInt64 is a genuine NARROWING — most UInt64 values overflow
-           UInt8 (0..255), so `of` must range-check-then-trap, an emit the seed does not yet do, so it
-           soundly DECLINES rather than emitting an unchecked truncation (which would silently keep the low
-           bits where `of` must trap). The unsigned-wide-source companion of the Int64->UInt8 narrow decline
-           above.")
+(case "narrowing a runtime UInt64 to UInt8 with .of range-checks (in range passes, out of range traps)"
+  (doc    "`(UInt8.of x)` with `x` a runtime UInt64 is a genuine NARROWING — a value that fits UInt8 (0..255)
+           passes (200), one that overflows (300) TRAPS via the range-check (`if x > 255 then trap else
+           wrap x`, unsigned compare), never a silent low-bits truncation where `of` must trap. The
+           unsigned-wide-source companion of the Int64->UInt8 checked narrow above.")
   (input  (do (def (main (: x UInt64)) (UInt8.of x)) (export main)))
-  (declines))
+  (call   main (: 200 UInt64)) (output (: 200 UInt8))
+  (call   main (: 300 UInt64)) (trap "unreachable"))
+
+; The FULL-WIDTH u64<->i64 checked conversions — the HIGH-TRAFFIC platform case: a guest converts a runtime
+; `UInt64` host result to `Int64` (`Int64.of`, trap iff `> i64::MAX`, an UNSIGNED upper compare), or an
+; `Int64` to `UInt64` (`UInt64.of`, trap iff `< 0`, a SIGNED lower compare). Only ONE bound is checked (the
+; other is unreachable for the operand's sign), so the emit is a single `if <bound> then trap else wrap`.
+(case "a runtime UInt64->Int64 .of range-checks the upper bound (fits passes, > i64::MAX traps)"
+  (doc    "`(Int64.of k)` with `k` a runtime `UInt64` — the platform u64-host-result -> Int64 conversion. A
+           value that fits Int64 (5, and i64::MAX = 9223372036854775807) passes; a value above i64::MAX
+           (9223372036854775808 = 2^63) TRAPS (unsigned `k > i64::MAX` check). No lower check — a UInt64 is
+           never negative.")
+  (input  (do (def (main (: k UInt64)) (Int64.of k)) (export main)))
+  (call   main (: 5 UInt64)) (output (: 5 Int64))
+  (call   main (: 9223372036854775807 UInt64)) (output (: 9223372036854775807 Int64))
+  (call   main (: 9223372036854775808 UInt64)) (trap "unreachable"))
+
+(case "a runtime Int64->UInt64 .of range-checks the lower bound (nonneg passes, negative traps)"
+  (doc    "`(UInt64.of k)` with `k` a runtime `Int64`. A non-negative value (7, i64::MAX) passes; a negative
+           value (-1) TRAPS (signed `k < 0` check). No upper check — every non-negative Int64 fits UInt64.")
+  (input  (do (def (main (: k Int64)) (UInt64.of k)) (export main)))
+  (call   main (: 7 Int64)) (output (: 7 UInt64))
+  (call   main (: -1 Int64)) (trap "unreachable"))
 
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
@@ -5640,25 +5665,139 @@
 
 ; The checked-arith cases above all fold at COMPILE TIME — every operand is a constant (or an inlined
 ; constant through a called def), so `lower_checked_arith` evaluates the overflow check and builds the
-; `Some`/`None` Option directly. A checked op over a genuinely RUNTIME operand (a value not known until
-; run time — a def PARAMETER supplied by `(call …)`) has no constant to fold, so it currently DECLINES:
-; the seed does not yet emit the runtime overflow check + Option box (that is the `Core::CheckedArith`
-; node — a runtime-emit feature spanning core.rs + both backends + the Perceus retain of the Option
-; payload, deferred as a coordinated cross-vertical build; concierge ruling B, 2026-07-16). The decline is
-; a SOUND todo, NOT a miscompile: the constant path is correct and the runtime path refuses rather than
-; emitting a wrong result. This case GRADES that decline explicitly, so the boundary is tracked/tested —
-; a future change that made a runtime checked op silently MISCOMPILE (emit a wrapping add, or drop the
-; overflow branch) instead of declining would flip this `(declines)` and be caught. When Core::CheckedArith
-; lands, this case is upgraded to an executing `(call … (output …))` witness.
-(case "a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit"
+; `Some`/`None` Option directly. A checked ADD/SUB over a genuinely RUNTIME operand (a value not known
+; until run time — a def PARAMETER supplied by `(call …)`) has no constant to fold, so `lower_checked_arith`
+; now EMITS the overflow test directly: `if <overflow-predicate> then None else Some(wrapping-result)`,
+; composed from existing Core (the wrapping add/sub, the two's-complement overflow formula, and the Option
+; sum-new) with NO new runtime node. At the 64-bit width the register IS the value, so the sign-bit test at
+; bit 63 (signed) and the wrap-below compare (unsigned) are exact:
+;   signed  ADD overflow: ((a ^ s) & (b ^ s)) < 0   ; both operands shared a sign the sum does not
+;   signed  SUB overflow: ((a ^ b) & (a ^ s)) < 0   ; operands differed and the result took the wrong sign
+;   unsigned ADD overflow: s <u a                   ; the sum wrapped below an addend
+;   unsigned SUB underflow: a <u b                  ; the minuend is smaller
+; The Option payload here is a SCALAR Int64/UInt64 (no heap), so `Some(s)` needs no Perceus retain — which
+; is why the pure-Core compose suffices where a heap payload would want more. A runtime checked-MUL (whose
+; overflow needs a wide multiply or a division-check) and a runtime NARROW checked op (whose masked
+; representation makes the sign bit width-relative) still DECLINE — pinned below so the boundary stays
+; tracked and a silent miscompile there is caught.
+(case "a checked-add over a RUNTIME operand emits the overflow check: Some when it fits, None on overflow"
   (doc    "`(Int64.checked-add a 1)` with `a` a runtime Int64 PARAMETER (supplied by `(call main …)`, so not
-           constant-folded) has no compile-time operand for `lower_checked_arith` to fold, and the seed does
-           not yet emit the runtime overflow-check + Option construction (the `Core::CheckedArith` node,
-           deferred). So it soundly DECLINES rather than emitting a wrong (e.g. wrapping, unchecked) result —
-           the reject-don't-miscompile discipline. Contrast the folding cases above where every operand is a
-           constant. Grades the runtime-checked-arith decline as an intentional, tracked boundary (pending
-           the feature), so a regression to a silent runtime miscompile is caught here.")
+           constant-folded) emits `if (overflow) then None else Some(wrapping-sum)`, consumed by the match.
+           `main(41)` = 42 (fits → Some, unwrapped); `main(Int64.max)` overflows → None → the -1 default.
+           Witnesses the runtime checked-add emit (the executing upgrade of the former decline), matching the
+           folded constant cases above. A regression to a silent miscompile (a bare wrapping add, or a dropped
+           overflow branch) would change 41→42/max→-1 and be caught.")
   (input  (do (def (main (: a Int64)) (match (Int64.checked-add a 1) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 41 Int64)) (output (: 42 Int64))
+  (call   main (: 9223372036854775807 Int64)) (output (: -1 Int64)))
+
+(case "a checked-sub over RUNTIME operands emits the underflow check: Some when it fits, None on underflow"
+  (doc    "The signed subtraction face: `(Int64.checked-sub a b)` over runtime operands emits `if ((a ^ b) &
+           (a ^ s)) < 0 then None else Some(a - b)`. `main(50, 8)` = 42 (fits); `main(Int64.min, 1)`
+           underflows → None → the -1 default. Pins runtime checked-sub's overflow verdict agrees with the
+           folded `(Int64.checked-sub Int64.min 1)` = None above.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (match (Int64.checked-sub a b) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 50 Int64) (: 8 Int64)) (output (: 42 Int64))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: -1 Int64)))
+
+(case "a checked-add over RUNTIME UInt64 operands emits the unsigned wrap-below check"
+  (doc    "The UNSIGNED face: `(UInt64.checked-add a b)` over runtime UInt64 operands emits `if (s <u a) then
+           None else Some(s)` — the sum wrapped below an addend signals overflow. `main(41, 1)` = 42 (fits);
+           `main(UInt64.max, 1)` overflows → None → the 0 default. Pins the unsigned overflow predicate is the
+           wrap-below compare, distinct from the signed sign-bit test (a signed check here would mis-verdict a
+           high-bit-set UInt64).")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-add a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 41 UInt64) (: 1 UInt64)) (output (: 42 UInt64))
+  (call   main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 0 UInt64)))
+
+(case "a checked-sub over RUNTIME UInt64 operands emits the unsigned underflow check"
+  (doc    "The unsigned subtraction face: `(UInt64.checked-sub a b)` over runtime UInt64 operands emits `if (a
+           <u b) then None else Some(a - b)`. `main(43, 1)` = 42 (fits); `main(0, 1)` underflows (0 < 1) →
+           None → the 0 default. Pins unsigned checked-sub's underflow predicate is the direct `a <u b`
+           compare.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-sub a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 43 UInt64) (: 1 UInt64)) (output (: 42 UInt64))
+  (call   main (: 0 UInt64) (: 1 UInt64)) (output (: 0 UInt64)))
+
+; A runtime checked-MUL emits an overflow-detecting Some/None via a DIVISION round-trip (no 128-bit
+; multiply): `p = a *w b` fits iff, for `a != 0`, `p / a == b`. The signed `div` traps on its two edges
+; (÷0, `Int64.min / -1`), so both are guarded BEFORE the division runs — `a==0` -> Some(0), `a==-1` ->
+; overflow iff `b==Int64.min`, else the `p/a==b` round-trip. The `p/a` recovering `b` is what makes the
+; EXACT `-2^31 * 2^32 = Int64.min` fit (a naive magnitude / widening-off-by-one check wrongly rejects it).
+(case "a checked-mul over a RUNTIME operand emits the division round-trip: Some when it fits, None on overflow"
+  (doc    "`(Int64.checked-mul a b)` with `a`,`b` runtime Int64 emits `if a==0 then Some(0) elif a==-1 then
+           (b==Int64.min ? None : Some(-b)) else (p/a==b ? Some(p) : None)`, consumed by the match.
+           `main(6,7)`=42 (fits); `main(2^31, 2^32)` overflows just past Int64.max -> None -> -1. Witnesses
+           the runtime checked-mul emit (the executing upgrade of the former decline). A regression to a
+           wrong (unchecked / mis-guarded) product would change these and be caught.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (match (Int64.checked-mul a b) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 6 Int64) (: 7 Int64)) (output (: 42 Int64))
+  (call   main (: 2147483648 Int64) (: 4294967296 Int64)) (output (: -1 Int64)))
+
+(case "a runtime checked-mul hitting Int64.min EXACTLY fits (the naive-magnitude-check killer)"
+  (doc    "`(Int64.checked-mul -2^31 2^32)` = -2^63 = Int64.min, which FITS exactly, so checked-mul returns
+           `Some(Int64.min)` — NOT None. The division round-trip gets this right: `p = Int64.min`, `p / a =
+           Int64.min / -2^31 = 2^32 = b`, so no overflow. A naive `|a|*|b| <= max` or a widening-off-by-one
+           check wrongly returns None here. The key edge the breaker's ladder targets.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call   main (: -2147483648 Int64) (: 4294967296 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+
+(case "a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)"
+  (doc    "`(Int64.checked-mul Int64.min -1)` = +2^63, one past Int64.max, so checked-mul reports None. The
+           division round-trip: `p = Int64.min *w -1 = Int64.min`, `p / Int64.min = 1 != -1 = b` -> overflow.
+           (No div_s trap: the divisor is Int64.min, not -1.) The complement `(Int64.checked-mul Int64.min
+           1)` = Some(Int64.min) confirms the a==-1 / b==Int64.min guards do not over-report — the identity
+           multiply fits.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: -1 Int64)) (output (: (None unit) (Option Int64)))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+
+(case "a runtime checked-mul over UInt64 operands emits the unsigned division round-trip"
+  (doc    "The UNSIGNED face: `(UInt64.checked-mul a b)` emits `if a==0 then Some(0) else (p/a==b ? Some(p) :
+           None)` — no a==-1 guard (unsigned div_u traps only on ÷0, which a==0 covers). `main(6,7)`=42;
+           `main(2^32, 2^32)` overflows (2^64) -> None -> 0; `main(0, 12345)` = Some 0 (the a==0 guard, which
+           a naive p/a would divide-by-zero-trap on).")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-mul a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 6 UInt64) (: 7 UInt64)) (output (: 42 UInt64))
+  (call   main (: 4294967296 UInt64) (: 4294967296 UInt64)) (output (: 0 UInt64))
+  (call   main (: 0 UInt64) (: 12345 UInt64)) (output (: 0 UInt64)))
+
+; A NARROW-width (8/16/32) runtime checked ADD/SUB emits by WIDENING both operands to Int64 (value-
+; preserving), doing the exact op in the wide accumulator (a narrow add/sub cannot overflow i64), then
+; RANGE-CHECKING the exact result against the NARROW `[tmin,tmax]` — the same interval a `.of` narrowing
+; checks. This sidesteps the width-relative sign-bit problem by computing exactly + checking the narrow
+; bounds. Narrow checked-MUL still declines (a u32×u32 product exceeds the i64 accumulator).
+(case "a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow"
+  (doc    "`(UInt8.checked-add a (UInt8.wrap 1))` with `a` a runtime UInt8: widen to Int64, add exactly, and
+           range-check `[0,255]` — `main(100)` = 101 (fits → Some, `Int64.of`'d out); `main(255)` overflows
+           255+1=256 > 255 → None → -1. The executing upgrade of the former narrow decline (the 64-bit checked-
+           add is above); a regression to a wrong narrow overflow verdict would change these.")
+  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-add a (UInt8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
+  (call   main (: 100 UInt8)) (output (: 101 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "a NARROW-width signed checked-add/sub range-checks BOTH bounds (Int8 over/underflow)"
+  (doc    "`(Int8.checked-add a (Int8.wrap 1))` with a runtime Int8: `main(10)` = 11; `main(127)` overflows
+           (128 > 127) → None → -99. The signed narrow face — the range-check tests the UPPER bound against the
+           exact wide sum. Pins that a signed narrow overflow is caught against the narrow range, not bit 63.")
+  (input  (do (def (main (: a Int8)) (match (Int8.checked-add a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99))) (export main)))
+  (call   main (: 10 Int8)) (output (: 11 Int64))
+  (call   main (: 127 Int8)) (output (: -99 Int64)))
+
+(case "a NARROW-width checked-sub over a RUNTIME operand range-checks the LOWER bound (Int8 underflow)"
+  (doc    "`(Int8.checked-sub a (Int8.wrap 1))` with a runtime Int8: `main(0)` = -1 (fits); `main(-128)`
+           underflows (-129 < -128) → None → -99. Pins the lower-bound check of the narrow range-check.")
+  (input  (do (def (main (: a Int8)) (match (Int8.checked-sub a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99))) (export main)))
+  (call   main (: 0 Int8)) (output (: -1 Int64))
+  (call   main (: -128 Int8)) (output (: -99 Int64)))
+
+(case "a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)"
+  (doc    "`(UInt8.checked-mul a (UInt8.wrap 2))` with a runtime UInt8 declines: the narrow add/sub widen-and-
+           range-check trick does NOT extend uniformly to MUL (a u32×u32 product exceeds the i64 accumulator,
+           so a single wide-accumulator range-check cannot cover every narrow width). Soundly declines rather
+           than mis-verdicting; the 64-bit checked-mul (division round-trip) is above. Pins the narrow-mul
+           boundary — the sole remaining runtime-checked-integer decline.")
+  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-mul a (UInt8.wrap 2)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
   (declines))
 
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
@@ -9011,3 +9150,111 @@
   (call main (: 1 Int64)) (output (: 4611686018427387904 Int64))
   (call main (: 2 Int64)) (trap "overflow")
   (call main (: 3 Int64)) (trap "overflow"))
+
+;; -- runtime checked-mul boundary ladder: in-range, past-max, the Int64.min EXACT-FIT edge, sign-flip, identity (breaker batch 383; the pre-delivered acceptance ladder for #3581) --
+(case "cmul1 runtime checked-mul in range yields Some"
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call main (: 6 Int64) (: 7 Int64))
+  (output (: (Some 42) (Option Int64))))
+
+(case "cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)"
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call main (: 2147483648 Int64) (: 4294967296 Int64))
+  (output (: (None unit) (Option Int64))))
+
+(case "cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer"
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call main (: -2147483648 Int64) (: 4294967296 Int64))
+  (output (: (Some -9223372036854775808) (Option Int64))))
+
+(case "cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)"
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call main (: -9223372036854775808 Int64) (: -1 Int64))
+  (output (: (None unit) (Option Int64))))
+
+(case "cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)"
+  (input (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call main (: -9223372036854775808 Int64) (: 1 Int64))
+  (output (: (Some -9223372036854775808) (Option Int64))))
+
+;; -- runtime UInt64 checked-arith twin ladder: the u64 exact-fit top (2^32-1 x 2^32+1), past-top, add-wrap boundary, sub-underflow/exact-zero (breaker batch 384) --
+(case "cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) (if (= v (UInt64.wrap -1)) 1 0))
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: 4294967295 Int64) (: 4294967297 Int64))
+  (output (: 1 Int64)))
+
+(case "cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-mul (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) 0)
+        ((Option.None) 1)))
+    (export main)))
+  (call main (: 4294967296 Int64) (: 4294967296 Int64))
+  (output (: 1 Int64)))
+
+(case "cmu3 runtime UInt64 checked-add wraps None at max, Some just below"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt64.checked-add (UInt64.wrap a) (UInt64.wrap k))
+        ((Option.Some v) 1)
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: -1 Int64) (: 1 Int64)) (output (: 0 Int64))
+  (call main (: -2 Int64) (: 1 Int64)) (output (: 1 Int64)))
+
+(case "cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero"
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (match (UInt64.checked-sub (UInt64.wrap a) (UInt64.wrap b))
+        ((Option.Some v) (if (= v (UInt64.wrap 0)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 5 Int64) (: 7 Int64)) (output (: 0 Int64))
+  (call main (: 7 Int64) (: 7 Int64)) (output (: 2 Int64)))
+
+;; -- NARROW-width runtime checked-add/sub boundaries: UInt8@255, Int8@127/-128, UInt16@65535 — width-relative range checks exact at each edge (breaker batch 388; the #3594 increment) --
+(case "cnw1 runtime UInt8 checked-add at the 255 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt8.checked-add (UInt8.wrap a) (UInt8.wrap k))
+        ((Option.Some v) (if (= v (UInt8.wrap 255)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 250 Int64) (: 5 Int64)) (output (: 2 Int64))
+  (call main (: 250 Int64) (: 10 Int64)) (output (: 0 Int64)))
+
+(case "cnw3 runtime Int8 checked-add at the signed 127 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (Int8.checked-add (Int8.wrap a) (Int8.wrap k))
+        ((Option.Some v) (if (= v (Int8.wrap 127)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 120 Int64) (: 7 Int64)) (output (: 2 Int64))
+  (call main (: 120 Int64) (: 8 Int64)) (output (: 0 Int64)))
+
+(case "cnw4 runtime Int8 checked-sub at the signed -128 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (Int8.checked-sub (Int8.wrap a) (Int8.wrap k))
+        ((Option.Some v) (if (= v (Int8.wrap -128)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: -120 Int64) (: 8 Int64)) (output (: 2 Int64))
+  (call main (: -120 Int64) (: 9 Int64)) (output (: 0 Int64)))
+
+(case "cnw5 runtime UInt16 checked-add at the 65535 top"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt16.checked-add (UInt16.wrap a) (UInt16.wrap k))
+        ((Option.Some v) (if (= v (UInt16.wrap 65535)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 65530 Int64) (: 5 Int64)) (output (: 2 Int64))
+  (call main (: 65530 Int64) (: 6 Int64)) (output (: 0 Int64)))

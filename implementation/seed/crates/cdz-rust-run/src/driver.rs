@@ -56,6 +56,187 @@ pub fn ordinary_call_expr(module: &str, export: &str, args: &[String], async_mod
     format!("{name}({})", marshaled.join(", "))
 }
 
+/// The call expression for an export, FACTORY-aware. A host-closure FACTORY (its return type names a
+/// closure — rcdzc emits `pub fn f(caps…) -> Rc<dyn Fn(x)->r>`) is applied in TWO groups: the first
+/// `K` = factory-capture-count marshaled args build the handle, the rest apply the returned closure —
+/// `f(caps)(applied)` — the native equivalent of the wasm make/call resource ABI. A non-factory export is
+/// the ordinary single call `f(args)`. Mirrors xtask `run_program_rust`'s factory-split. (The closure-
+/// PARAMETER consumer application — a `build_closure_consumer_call` — and the async `block_on` harness stay
+/// deferred; the corpus's factory cases need only this split.)
+pub fn call_expr(module: &str, export: &str, args: &[String], async_mode: bool) -> String {
+    use crate::sig::rust_factory_param_count;
+    let name = cdz_rust_render::rust_ident(export);
+    let marshaled = marshal_call_args(module, export, args, async_mode);
+    match rust_factory_param_count(module, &name, async_mode) {
+        Some(k) if k <= marshaled.len() => {
+            let (caps, applied) = marshaled.split_at(k);
+            format!("{name}({})({})", caps.join(", "), applied.join(", "))
+        }
+        _ => format!("{name}({})", marshaled.join(", ")),
+    }
+}
+
+/// Build the call for a CLOSURE-PARAMETER CONSUMER export — one that takes a `Rc<dyn Fn(…)>` param supplied
+/// by a companion PRODUCER export (rcdzc splits `(fn …)`-consuming defs across sibling exports; a host has
+/// no closure literal, so the harness synthesizes it). Returns `None` when `export` is not a consumer (no
+/// closure param) — the caller falls back to the factory/ordinary call. SYNC only: an async consumer needs
+/// the deferred `block_on` harness, so this returns `None` in async mode.
+///
+/// Each source param is threaded LEFT-TO-RIGHT onto the flat call `args`: a CLOSURE param pairs to a producer
+/// (a sibling whose emitted closure type matches — a FACTORY `fn mk(caps) -> Rc<dyn Fn…>` supplying
+/// `prog::mk(<caps>)`, or a PEELED nullary `fn mk(x)->r` supplying `Rc::new(prog::mk as fn(x)->r)`) and
+/// consumes that producer's capture args; a non-closure param consumes one verbatim arg. When a Tuple-arg vs
+/// Record-arg producer's ERASED `Rc<dyn Fn>` type collides, the pre-erasure Cadenza shapes
+/// (`cdz-param-shapes` / `cdz-produces-closure`) disambiguate. Ported from xtask `build_closure_consumer_call`
+/// (sync path).
+pub fn build_closure_consumer_call(
+    module: &str,
+    name: &str,
+    args: &[String],
+    async_mode: bool,
+) -> Option<String> {
+    use crate::sig::{
+        closure_param_type, closure_ret_type, is_closure_param, is_env_param, names_closure_value,
+        param_type_of, parse_emitted_sig,
+    };
+    use cdz_rust_render::{cdz_param_shapes, cdz_produces_closure, cdz_return_type};
+
+    if async_mode {
+        return None; // async consumer needs the deferred block_on harness
+    }
+    let sig = parse_emitted_sig(module, name, async_mode)?;
+    let source_params: Vec<&&str> = sig.params.iter().filter(|p| !is_env_param(p)).collect();
+    if !source_params.iter().any(|p| is_closure_param(p)) {
+        return None; // not a consumer — let the factory/ordinary path handle it
+    }
+
+    // Enumerate PRODUCER exports (module order): a FACTORY (result is a closure) or a PEELED nullary fn whose
+    // fn-item coerces to the closure. Each carries its erased closure type + pre-erasure `shape` for pairing.
+    enum Producer {
+        Factory {
+            ident: String,
+            closure_ty: String,
+            cap: usize,
+            shape: Option<String>,
+        },
+        Peeled {
+            ident: String,
+            closure_ty: String,
+            fn_ty: String,
+            shape: Option<String>,
+        },
+    }
+    let mut producers: Vec<Producer> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, _) in module.match_indices("pub fn ") {
+        let after_kw = module[i..].strip_prefix("pub fn ")?;
+        let ident: String = after_kw
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if ident.is_empty() || ident == name || !seen.insert(ident.clone()) {
+            continue;
+        }
+        let Some(psig) = parse_emitted_sig(module, &ident, async_mode) else {
+            continue;
+        };
+        let src_params: Vec<&&str> = psig.params.iter().filter(|p| !is_env_param(p)).collect();
+        if names_closure_value(&psig.ret_head) {
+            let Some(cty) = closure_ret_type(&psig.ret_head) else {
+                continue;
+            };
+            producers.push(Producer::Factory {
+                ident: ident.clone(),
+                closure_ty: cty,
+                cap: src_params.len(),
+                shape: cdz_return_type(module, &ident),
+            });
+        } else {
+            let param_types: Vec<String> = src_params.iter().map(|p| param_type_of(p)).collect();
+            let ret = psig
+                .ret_head
+                .trim()
+                .trim_start_matches("->")
+                .trim()
+                .to_string();
+            producers.push(Producer::Peeled {
+                closure_ty: format!("std::rc::Rc<dyn Fn({}) -> {}>", param_types.join(", "), ret),
+                fn_ty: format!("fn({}) -> {}", param_types.join(", "), ret),
+                shape: cdz_produces_closure(module, &ident),
+                ident: ident.clone(),
+            });
+        }
+    }
+
+    let consumer_shapes = cdz_param_shapes(module, name);
+    let mut used = vec![false; producers.len()];
+    let mut arg_i = 0usize;
+    let mut call_args: Vec<String> = Vec::with_capacity(source_params.len());
+    let mut closure_param_idx = 0usize;
+    // A producer matches when its ERASED closure type equals the consumer param's AND (when both shapes are
+    // known) the pre-erasure shapes agree — the shape guard only NARROWS, never admits an erased mismatch.
+    let ty_matches = |prod: &Producer, cty: &str, want_shape: Option<&str>| {
+        let (closure_ty, prod_shape) = match prod {
+            Producer::Factory {
+                closure_ty, shape, ..
+            }
+            | Producer::Peeled {
+                closure_ty, shape, ..
+            } => (closure_ty, shape.as_deref()),
+        };
+        closure_ty.as_str() == cty
+            && match (want_shape, prod_shape) {
+                (Some(w), Some(p)) => w == p,
+                _ => true,
+            }
+    };
+    for p in &source_params {
+        if let Some(cty) = closure_param_type(p) {
+            let want_shape = consumer_shapes.get(closure_param_idx).map(|s| s.as_str());
+            closure_param_idx += 1;
+            // First UNUSED matching producer (deterministic), else REUSE a matching one (the host mints a
+            // fresh handle per param, so one producer can supply several closure params).
+            let pi = producers
+                .iter()
+                .enumerate()
+                .position(|(pi, prod)| !used[pi] && ty_matches(prod, cty, want_shape))
+                .or_else(|| {
+                    producers
+                        .iter()
+                        .position(|prod| ty_matches(prod, cty, want_shape))
+                })?;
+            used[pi] = true;
+            match &producers[pi] {
+                Producer::Factory { ident, cap, .. } => {
+                    if arg_i + cap > args.len() {
+                        return None;
+                    }
+                    let caps = &args[arg_i..arg_i + cap];
+                    arg_i += cap;
+                    call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                }
+                Producer::Peeled {
+                    ident,
+                    fn_ty,
+                    closure_ty,
+                    ..
+                } => {
+                    call_args.push(format!(
+                        "(std::rc::Rc::new(prog::{ident} as {fn_ty}) as {closure_ty})"
+                    ));
+                }
+            }
+        } else {
+            if arg_i >= args.len() {
+                return None;
+            }
+            call_args.push(args[arg_i].clone());
+            arg_i += 1;
+        }
+    }
+    Some(format!("{name}({})", call_args.join(", ")))
+}
+
 /// Assemble the full RUST driver source for a SYNC, ORDINARY-call corpus case — the common path (the
 /// host-closure factory/consumer application + async `block_on` harness are later increments). It wraps the
 /// emitted `module` in `mod prog { … }` (so its `pub fn main` becomes `prog::main`, not a duplicate crate
@@ -77,8 +258,38 @@ pub fn build_driver_source(
         cdz_sum_descriptors, cdz_sum_params, cdz_sum_qualified_heads, cdz_unit_form,
     };
 
-    let call_or_await = format!("prog::{}", ordinary_call_expr(module, export, args, false));
-    let ret_ty = cdz_return_type(module, export);
+    // A CLOSURE-PARAMETER CONSUMER export (takes a `Rc<dyn Fn>` param) synthesizes the closure from a sibling
+    // producer — checked FIRST (a consumer's own return is not a closure, so the factory path would miss it).
+    // Else the factory-aware/ordinary call. The consumer-call returns a bare `name(prog::producer(caps), …)`
+    // whose producers are already `prog::`-qualified, so the outer `prog::` applies to the consumer name.
+    let call = build_closure_consumer_call(module, export, args, false)
+        .unwrap_or_else(|| call_expr(module, export, args, false));
+    let call_or_await = format!("prog::{call}");
+
+    // Is this a host-closure FACTORY (return type names a closure) or a CONSUMER (takes a closure param)?
+    // Both cross a String/Bytes RESULT through the wasm boundary's serialized `list<u8>` form, so their
+    // result is rendered specially (below); a plain export keeps `cdz_render_expr`.
+    let ident = cdz_rust_render::rust_ident(export);
+    let is_factory = crate::sig::rust_factory_param_count(module, &ident, false).is_some();
+    let is_consumer = !is_factory
+        && crate::sig::parse_emitted_sig(module, &ident, false).is_some_and(|s| {
+            s.params
+                .iter()
+                .filter(|p| !crate::sig::is_env_param(p))
+                .any(|p| crate::sig::is_closure_param(p))
+        });
+
+    // A host-closure FACTORY export's `cdz-return` note is the returned closure's CURRIED arrow
+    // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
+    // closure's FINAL result — peel the arrow to that type so `cdz_render_expr` renders it structurally
+    // (a bare arrow would render as a closure and not compile). A non-factory export keeps its note.
+    let ret_ty = cdz_return_type(module, export).map(|t| {
+        if is_factory {
+            crate::sig::peel_arrow_result(&t)
+        } else {
+            t
+        }
+    });
 
     // A diverging result type (`-> !`) — its `cdz-return` note is `Any` / `!` / a bare `?N` result var.
     let diverging = ret_ty.as_deref().is_some_and(|t| {
@@ -89,6 +300,17 @@ pub fn build_driver_source(
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref() {
+            // A host-closure String/Bytes RESULT is serialized across the wasm boundary as `list<u8>`, so the
+            // corpus records it as the bare byte-int list `(104 105)` (`()` empty), NOT the `"hi"`/`b"…"` form
+            // a PLAIN String/Bytes export uses. rcdzc's rust target mirrors that observable form for a
+            // factory/consumer, so render `__r` (a `String`/`Vec<u8>`) as the byte list directly (also avoids
+            // the E0277 `Vec<u8>: Display` a `{}` render of a Bytes result would hit). Mirrors xtask.
+            Some(ty) if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") => {
+                let render = cdz_render_bytes_list(ty);
+                format!(
+                    "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
+                )
+            }
             Some(ty) => {
                 let sums = cdz_sum_descriptors(module);
                 let newtypes = cdz_newtype_descriptors(module);
@@ -118,6 +340,22 @@ pub fn build_driver_source(
 
     let host_shims = build_rust_host_shims(module, host_responses, host_calls);
     format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+}
+
+/// Render `__r` (a host-closure String/Bytes RESULT) as the boundary byte-int list `(104 105)` / `()`.
+/// `__r` is a `String` (String result — iterate its UTF-8 bytes) or `Vec<u8>` (Bytes result). Returns a
+/// Rust block expression usable as the `println!("{}", …)` arg. Mirrors xtask's `cdz_render_bytes_list`.
+fn cdz_render_bytes_list(ty: &str) -> String {
+    let iter = if ty == "String" {
+        "(__r).bytes()"
+    } else {
+        "(__r).iter().copied()"
+    };
+    format!(
+        "{{ let mut __s = String::from(\"(\"); let mut __first = true; for __b in {iter} {{ \
+         if !__first {{ __s.push(' '); }} __first = false; __s.push_str(&__b.to_string()); }} \
+         __s.push(')'); __s }}"
+    )
 }
 
 /// Kebab-normalize an EFFECT name (matching the backend's `canonical_host_op_key`): CamelCase / `_` / `-`
@@ -452,6 +690,76 @@ mod tests {
             "BigInt marshal: {got:?}"
         );
         assert_eq!(got[1], "7", "the i64 arg passes through verbatim");
+    }
+
+    #[test]
+    fn consumer_call_synthesizes_the_producer_closure() {
+        // Consumer apply_it(g: Rc<dyn Fn(i64)->i64>, x) + factory producer make_adder(k) -> Rc<dyn Fn…>.
+        // Flat call args [100, 7]: g pairs make_adder (1 cap → 100), x = 7 → apply_it(prog::make_adder(100), 7).
+        let m = "// cdz-return[make_adder]: (-> Int64 Int64)\n\
+                 pub fn make_adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }\n\
+                 // cdz-return[apply_it]: Int64\n\
+                 pub fn apply_it(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { g(x) }";
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], false)
+                .as_deref(),
+            Some("apply_it(prog::make_adder(100), 7)")
+        );
+        // A non-consumer (no closure param) → None (factory/ordinary path handles it).
+        assert_eq!(
+            build_closure_consumer_call("pub fn f(a: i64) -> i64 { a }", "f", &["1".into()], false),
+            None
+        );
+        // async → None (deferred).
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true),
+            None
+        );
+    }
+
+    #[test]
+    fn bytes_list_render_iterates_bytes() {
+        assert!(cdz_render_bytes_list("String").contains("(__r).bytes()"));
+        assert!(cdz_render_bytes_list("Bytes").contains("(__r).iter().copied()"));
+    }
+
+    #[test]
+    fn factory_string_result_renders_as_a_byte_list() {
+        let m = "// cdz-return[mk]: (-> Int64 String)\n\
+                 pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> String> { std::rc::Rc::new(|_| String::from(\"hi\")) }";
+        let d = build_driver_source(m, "mk", &["0".into()], &[], &[]);
+        assert!(
+            d.contains("(__r).bytes()"),
+            "String factory result → byte list: {d}"
+        );
+    }
+
+    #[test]
+    fn call_expr_factory_splits_caps_from_applied() {
+        // A factory `adder(k) -> Rc<dyn Fn(i64)->i64>` with call args [k=3, x=5]: K=1 capture → adder(3)(5).
+        let m = "pub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }";
+        assert_eq!(
+            call_expr(m, "adder", &["3".into(), "5".into()], false),
+            "adder(3)(5)"
+        );
+        // A non-factory export is the ordinary single call.
+        assert_eq!(
+            call_expr(
+                "pub fn f(a: i64, b: i64) -> i64 { a }",
+                "f",
+                &["1".into(), "2".into()],
+                false
+            ),
+            "f(1, 2)"
+        );
+    }
+
+    #[test]
+    fn driver_factory_export_calls_split_and_renders_the_peeled_result() {
+        let m = "// cdz-return[adder]: (-> Int64 Int64)\npub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }";
+        let d = build_driver_source(m, "adder", &["3".into(), "5".into()], &[], &[]);
+        assert!(d.contains("prog::adder(3)(5)"), "factory-split call: {d}");
+        assert!(d.contains("println!"), "renders the peeled Int64 result");
     }
 
     #[test]

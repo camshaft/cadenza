@@ -778,6 +778,14 @@ fn emit_result_lift(
         Ty::Sum { decl, .. } => {
             if crate::backend::wasm::host::result_bytes_enum(db, ty).is_some() {
                 emit_result_sum_lift(db, ty, decl, wit, ptr_slot, offset, high, scratch_ty, out)
+            } else if crate::backend::wasm::host::option_payload_ty(db, ty).is_some() {
+                emit_option_sum_lift(db, ty, decl, wit, ptr_slot, offset, high, scratch_ty, out)
+            } else if crate::backend::wasm::host::variant_scalar_payload_cases(db, ty).is_some() {
+                // A general scalar-payload VARIANT result (N cases): read the disc + the selected case's
+                // scalar payload from the spilled region and rebuild the guest Sum — the N-case generalization
+                // of the option lift, the result-side twin of the bare-variant ARG marshal.
+                let _ = decl;
+                emit_variant_sum_lift(db, ty, ptr_slot, offset, high, scratch_ty, out)
             } else {
                 emit_option_sum_lift(db, ty, decl, wit, ptr_slot, offset, high, scratch_ty, out)
             }
@@ -1026,6 +1034,87 @@ fn emit_option_sum_lift(
         out.push(Lir::CallImport(OP_SUM_NEW));
     }
     out.push(Lir::End);
+    Ok(())
+}
+
+/// The general scalar-payload VARIANT arm of [`emit_result_lift`]: an N-case sum where each case is nullary or
+/// carries ONE scalar payload (NOT option/result-shaped — those took their own arms). Reads the `ds`-byte
+/// discriminant from the spilled retptr'd region, then a per-case chain rebuilds the guest Sum: on a payload
+/// case, lift the scalar at the canonical payload offset (`align_up(ds, max-payload-align)`) and `sum-new(i,
+/// payload)`; on a nullary case, `sum-new(i, IMM_UNIT)`. The case index `i` IS both the component discriminant
+/// (declaration order) and the guest variant's own discriminant, so no remap is needed. The result-side twin of
+/// the bare-variant ARG marshal (`emit_variant_reg_flatten`); the N-case generalization of `emit_option_sum_lift`.
+#[allow(clippy::too_many_arguments)]
+fn emit_variant_sum_lift(
+    db: &mut Db,
+    ty: &Ty,
+    ptr_slot: u32,
+    offset: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, ty)
+        .ok_or_else(|| Reject::decline("a variant result is not a scalar-payload variant"))?;
+    let ncases = cases.len();
+    // The payload region begins after the discriminant, aligned to the widest payload case's alignment (the
+    // canonical variant memory layout — all payload cases share this one offset).
+    let mut max_align = 1u32;
+    for (i, (_, p)) in cases.iter().enumerate() {
+        if p.is_some() {
+            let pt = variant_payload_ty_at(db, ty, i as u32).ok_or_else(|| {
+                Reject::decline("a variant result payload type could not be resolved")
+            })?;
+            max_align = max_align.max(canonical_layout(db, &pt).1);
+        }
+    }
+    let ds = disc_size_for(ncases);
+    let payload_off = offset + align_up_u32(ds, max_align);
+    // disc = mem[ptr_slot + offset], read zero-extended at the discriminant's byte width.
+    let disc = *high;
+    *high = (*high).max(disc + 1);
+    scratch_ty.insert(disc, ValType::I32);
+    out.push(Lir::LocalGet(ptr_slot));
+    match ds {
+        1 => out.push(Lir::I32Load8U { offset }),
+        2 => out.push(Lir::I32Load16U { offset }),
+        _ => out.push(Lir::I32Load { offset }),
+    }
+    out.push(Lir::LocalSet(disc));
+    // A per-case chain `if disc==0 { build 0 } else if disc==1 { … } else { build last }`; each arm leaves the
+    // rebuilt sum handle (an `If(Val I32)`), so the whole chain is one value on the stack.
+    for (i, case) in cases.iter().enumerate() {
+        let is_last = i == ncases - 1;
+        if !is_last {
+            out.push(Lir::LocalGet(disc));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::I32Eq);
+            out.push(Lir::If(BlockType::Val(ValType::I32)));
+        }
+        if case.1.is_some() {
+            let pt = variant_payload_ty_at(db, ty, i as u32).ok_or_else(|| {
+                Reject::decline("a variant result payload type could not be resolved")
+            })?;
+            emit_scalar_leaf_lift(db, &pt, ptr_slot, payload_off, out)?; // leaves the boxed payload handle
+            let ph = *high;
+            *high = (*high).max(ph + 1);
+            scratch_ty.insert(ph, ValType::I32);
+            out.push(Lir::LocalSet(ph));
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::LocalGet(ph));
+            out.push(Lir::CallImport(OP_SUM_NEW));
+        } else {
+            out.push(Lir::ConstI32(i as i32));
+            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32));
+            out.push(Lir::CallImport(OP_SUM_NEW));
+        }
+        if !is_last {
+            out.push(Lir::Else);
+        }
+    }
+    for _ in 0..ncases.saturating_sub(1) {
+        out.push(Lir::End);
+    }
     Ok(())
 }
 
@@ -4726,6 +4815,27 @@ fn collect_used_ops_into_seen(
                         out.insert(OP_VEC_LEN);
                         out.insert(OP_VEC_GET);
                         collect_list_elem_ops(db, &elem, out);
+                        collect_used_ops_into_seen(db, arg, out, visited);
+                    }
+                    // A bare scalar-payload VARIANT arg (top-level) is decomposed by `emit_variant_reg_flatten`:
+                    // `sum-disc`, and on a payload case `sum-payload` + the payload scalar's unbox op. Declare
+                    // them (else the marshal's `CallImport` resolves to u32::MAX → an invalid module), then
+                    // descend to collect the ops that BUILD the variant value. Mirrors the variant-field /
+                    // variant-list-element collection arms.
+                    at if !peer_bound
+                        && crate::backend::wasm::host::variant_scalar_payload_cases(db, &at)
+                            .is_some() =>
+                    {
+                        out.insert(OP_SUM_DISC);
+                        out.insert(OP_SUM_PAYLOAD);
+                        if let Some(cases) =
+                            crate::backend::wasm::host::variant_scalar_payload_cases(db, &at)
+                            && let Some(pd) = cases.iter().position(|(_, p)| p.is_some())
+                            && let Some(pty) = variant_payload_ty_at(db, &at, pd as u32)
+                            && let Ok(Some(read)) = get_op_ty(db, &pty)
+                        {
+                            out.insert(read);
+                        }
                         collect_used_ops_into_seen(db, arg, out, visited);
                     }
                     _ => collect_used_ops_into_seen(db, arg, out, visited),
@@ -9050,6 +9160,40 @@ fn emit_option_to_mem(
 /// [`emit_option_to_mem`], scoped (like the record-field variant arm, #3368) to a uniform single scalar
 /// payload — a mixed-width / `Bytes` / compound payload join is a later increment.
 #[allow(clippy::too_many_arguments)]
+/// The core JOIN valtype of a scalar-payload variant's flattened payload slot (canonical ABI `flatten_variant`
+/// join, the REGISTER path): `I64` if any payload case is a 64-bit int, else `I32` for all int/bool/char
+/// payloads; the single float valtype for a uniform-float variant. `None` if the payload set mixes int and
+/// float (the reinterpret join lattice — a later increment; the detector already excludes it). Mirrors
+/// `wit_ctype::flatten_variant`'s join so the guest push matches the import's core param slot. DIVERGES from
+/// the MEMORY max-natural width (`emit_variant_to_mem`): e.g. `variant{u8, u16}` joins to `I32` (register)
+/// but its memory payload area is 2 bytes.
+fn variant_register_join_vt(
+    db: &mut Db,
+    variant_ty: &Ty,
+    payload_discs: &[i32],
+) -> Result<ValType, Reject> {
+    let mut join: Option<ValType> = None;
+    for &pd in payload_discs {
+        let pty = variant_payload_ty_at(db, variant_ty, pd as u32)
+            .ok_or_else(|| Reject::decline("a variant payload type could not be resolved"))?;
+        let vt =
+            valtype_of(&pty).ok_or_else(|| Reject::decline("a variant payload has no valtype"))?;
+        join = Some(match join {
+            None => vt,
+            Some(prev) if prev == vt => vt,
+            Some(ValType::I32) if vt == ValType::I64 => ValType::I64,
+            Some(ValType::I64) if vt == ValType::I32 => ValType::I64,
+            _ => {
+                return Err(Reject::decline(
+                    "a variant mixes int and float payloads (the reinterpret join is a later increment)",
+                ));
+            }
+        });
+    }
+    join.ok_or_else(|| Reject::decline("a variant has no payload case to join"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_variant_to_mem(
     db: &mut Db,
     var_slot: u32,
@@ -9071,23 +9215,39 @@ fn emit_variant_to_mem(
     let first_pd = *payload_discs
         .first()
         .ok_or_else(|| Reject::decline("a variant element has no payload case"))?;
+    // The MEMORY payload area = the MAX natural (size, align) over the payload cases (canonical variant
+    // layout): each case stores at its natural width into this max-sized slot, and little-endian + the host
+    // reading the SELECTED case's width from the low bytes makes ONE max-width store correct. This DIVERGES
+    // from the register-flatten join valtype for a mixed-width variant (e.g. variant{u8, u16}: the register
+    // join is i32 = 4 bytes, but the memory max-natural is 2 bytes). Integer cases all read via `get-int`
+    // (i64); a uniform-float variant reads `get-float` (a mixed int/float payload is declined by the detector).
+    let mut psize = 0u32;
+    let mut palign = 1u32;
+    for &pd in &payload_discs {
+        let pty = variant_payload_ty_at(db, variant_ty, pd as u32).ok_or_else(|| {
+            Reject::decline("a variant element payload type could not be resolved")
+        })?;
+        let (s, a) = canonical_layout(db, &pty);
+        psize = psize.max(s);
+        palign = palign.max(a);
+    }
     let payload_ty = variant_payload_ty_at(db, variant_ty, first_pd as u32)
         .ok_or_else(|| Reject::decline("a variant element payload type could not be resolved"))?;
-    let (psize, palign) = canonical_layout(db, &payload_ty);
     let disc_size = disc_size_for(ncases);
     let payload_off = align_up_u32(disc_size, palign);
     let pv = valtype_of(&payload_ty)
         .ok_or_else(|| Reject::decline("a variant element scalar payload has no valtype"))?;
+    let is_float = matches!(pv, ValType::F32 | ValType::F64);
     let read = get_op_ty(db, &payload_ty)?
         .ok_or_else(|| Reject::decline("a variant element payload has no unbox op"))?;
     let width_store = |offset: u32| -> Result<Lir, Reject> {
-        Ok(match (pv, psize) {
-            (ValType::I64, _) => Lir::I64Store { offset },
-            (ValType::F64, _) => Lir::F64Store { offset },
-            (ValType::F32, _) => Lir::F32Store { offset },
-            (ValType::I32, 4) => Lir::I32Store { offset },
-            (ValType::I32, 2) => Lir::I32Store16 { offset },
-            (ValType::I32, 1) => Lir::I32Store8 { offset },
+        Ok(match (is_float, psize) {
+            (true, 8) => Lir::F64Store { offset },
+            (true, 4) => Lir::F32Store { offset },
+            (false, 8) => Lir::I64Store { offset },
+            (false, 4) => Lir::I32Store { offset },
+            (false, 2) => Lir::I32Store16 { offset },
+            (false, 1) => Lir::I32Store8 { offset },
             _ => {
                 return Err(Reject::decline(
                     "a variant element payload has no width store",
@@ -9102,10 +9262,10 @@ fn emit_variant_to_mem(
             _ => Lir::I32Store { offset },
         }
     };
-    let zero = match pv {
-        ValType::I64 => Lir::ConstI64(0),
-        ValType::F64 => Lir::F64ConstBits(0),
-        ValType::F32 => Lir::F32ConstBits(0),
+    let zero = match (is_float, psize) {
+        (true, 8) => Lir::F64ConstBits(0),
+        (true, 4) => Lir::F32ConstBits(0),
+        (false, 8) => Lir::ConstI64(0),
         _ => Lir::ConstI32(0),
     };
     let disc = work_base;
@@ -9136,8 +9296,8 @@ fn emit_variant_to_mem(
     out.push(Lir::LocalGet(var_slot));
     out.push(Lir::CallImport(OP_SUM_PAYLOAD));
     out.push(Lir::CallImport(read));
-    if read == OP_GET_INT && matches!(pv, ValType::I32) {
-        out.push(Lir::I32WrapI64);
+    if read == OP_GET_INT && psize <= 4 {
+        out.push(Lir::I32WrapI64); // narrow the i64 heap cell to the i32 store slot (<=4-byte payload area)
     }
     out.push(width_store(payload_off)?);
     out.push(Lir::Else); // a nullary case → dest[payload_off] = 0
@@ -9145,6 +9305,82 @@ fn emit_variant_to_mem(
     out.push(zero);
     out.push(width_store(payload_off)?);
     out.push(Lir::End);
+    Ok(())
+}
+
+/// Push the canonical register-flatten `(disc: i32, payload: join)` of a scalar-payload VARIANT whose
+/// value-heap handle is in `var_slot`, onto the operand stack — the guest side of a component `variant`
+/// param/field. The guest `sum-disc` IS the component discriminant (declaration order, like an enum); the
+/// payload slot is the canonical JOIN valtype (`variant_register_join_vt`) so a MIXED-width variant reads back
+/// correctly — a payload case unboxes its value (narrowing to the join slot's low bits when the join is i32), a
+/// nullary case pushes the payload-width zero. Uses `work_base..work_base+3` as scratch. Shared by the
+/// record-FIELD variant marshal and the bare-VARIANT-param marshal (the top-level param position).
+#[allow(clippy::too_many_arguments)]
+fn emit_variant_reg_flatten(
+    db: &mut Db,
+    var_slot: u32,
+    fty: &Ty,
+    work_base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, fty)
+        .ok_or_else(|| Reject::decline("a variant element is not a scalar-payload variant"))?;
+    let payload_discs: Vec<i32> = cases
+        .iter()
+        .enumerate()
+        .filter_map(|(d, (_, p))| p.map(|_| d as i32))
+        .collect();
+    let first_pd = *payload_discs
+        .first()
+        .expect("the detector guarantees ≥1 payload case");
+    let payload_ty = variant_payload_ty_at(db, fty, first_pd as u32)
+        .ok_or_else(|| Reject::decline("a variant payload type could not be resolved"))?;
+    let pv = variant_register_join_vt(db, fty, &payload_discs)?;
+    let read = get_op_ty(db, &payload_ty)?
+        .ok_or_else(|| Reject::decline("a variant payload has no unbox op"))?;
+    let disc_out = work_base;
+    let is_payload = work_base + 1;
+    let pval = work_base + 2;
+    scratch_ty.insert(disc_out, ValType::I32);
+    scratch_ty.insert(is_payload, ValType::I32);
+    scratch_ty.insert(pval, pv);
+    *high = (*high).max(work_base + 3);
+    let zero = match pv {
+        ValType::I64 => Lir::ConstI64(0),
+        ValType::F64 => Lir::F64ConstBits(0),
+        ValType::F32 => Lir::F32ConstBits(0),
+        _ => Lir::ConstI32(0),
+    };
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component disc, decl order)
+    out.push(Lir::LocalSet(disc_out));
+    // is_payload = OR over the payload-case discs of (disc == pd).
+    for (k, pd) in payload_discs.iter().enumerate() {
+        out.push(Lir::LocalGet(disc_out));
+        out.push(Lir::ConstI32(*pd));
+        out.push(Lir::I32Eq);
+        if k > 0 {
+            out.push(Lir::I32Or);
+        }
+    }
+    out.push(Lir::LocalSet(is_payload));
+    out.push(Lir::LocalGet(is_payload));
+    out.push(Lir::If(BlockType::Empty)); // a payload case → unbox the payload
+    out.push(Lir::LocalGet(var_slot));
+    out.push(Lir::CallImport(OP_SUM_PAYLOAD));
+    out.push(Lir::CallImport(read));
+    if read == OP_GET_INT && matches!(pv, ValType::I32) {
+        out.push(Lir::I32WrapI64); // a narrow int / char payload narrows to its i32 slot
+    }
+    out.push(Lir::LocalSet(pval));
+    out.push(Lir::Else); // a nullary case → the payload-width zero
+    out.push(zero);
+    out.push(Lir::LocalSet(pval));
+    out.push(Lir::End);
+    out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
+    out.push(Lir::LocalGet(pval));
     Ok(())
 }
 
@@ -9621,73 +9857,19 @@ fn emit_record_arg_marshal(
             // declaration order, like an enum). The payload slot: if `disc` is a PAYLOAD case → unbox(
             // sum-payload); else the payload-width zero. Side-effect scratch in the `if`, push `(disc,
             // payload)` after — the option-field shape generalized to N cases (payload-case-set membership).
+            // A general `variant { c0, c1(scalar), … }` field flattens (canonical variant flatten) to
+            // `(disc:i32, payload)` via the shared `emit_variant_reg_flatten`. Read the field's variant handle
+            // (arr-get, borrows the record) into a slot, then decompose it — the SAME helper the bare-variant
+            // PARAM position uses, so the field and top-level variant marshals stay in lockstep.
             None if crate::backend::wasm::host::variant_scalar_payload_cases(db, fty).is_some() => {
-                let cases = crate::backend::wasm::host::variant_scalar_payload_cases(db, fty)
-                    .expect("variant-shaped by the guard");
-                let payload_discs: Vec<i32> = cases
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(d, (_, p))| p.map(|_| d as i32))
-                    .collect();
-                let first_pd = *payload_discs
-                    .first()
-                    .expect("the detector guarantees ≥1 payload case");
-                let payload_ty =
-                    variant_payload_ty_at(db, fty, first_pd as u32).ok_or_else(|| {
-                        Reject::decline("a variant field payload type could not be resolved")
-                    })?;
-                let pv = valtype_of(&payload_ty).ok_or_else(|| {
-                    Reject::decline("a variant field scalar payload has no valtype")
-                })?;
-                let read = get_op_ty(db, &payload_ty)?
-                    .ok_or_else(|| Reject::decline("a variant field payload has no unbox op"))?;
                 let ans = work_base + 4;
-                let disc_out = work_base + 5;
-                let is_payload = work_base + 6;
-                let pval = work_base + 7;
                 scratch_ty.insert(ans, ValType::I32);
-                scratch_ty.insert(disc_out, ValType::I32);
-                scratch_ty.insert(is_payload, ValType::I32);
-                scratch_ty.insert(pval, pv);
-                *high = (*high).max(work_base + 8);
-                let zero = match pv {
-                    ValType::I64 => Lir::ConstI64(0),
-                    ValType::F64 => Lir::F64ConstBits(0),
-                    ValType::F32 => Lir::F32ConstBits(0),
-                    _ => Lir::ConstI32(0),
-                };
+                *high = (*high).max(work_base + 5);
                 out.push(Lir::LocalGet(rec_slot));
                 out.push(Lir::ConstI32(i as i32));
                 out.push(Lir::CallImport(OP_ARR_GET)); // [variant handle] (borrows rec)
                 out.push(Lir::LocalSet(ans));
-                out.push(Lir::LocalGet(ans));
-                out.push(Lir::CallImport(OP_SUM_DISC)); // [disc] (= component disc, decl order)
-                out.push(Lir::LocalSet(disc_out));
-                // is_payload = OR over the payload-case discs of (disc == pd).
-                for (k, pd) in payload_discs.iter().enumerate() {
-                    out.push(Lir::LocalGet(disc_out));
-                    out.push(Lir::ConstI32(*pd));
-                    out.push(Lir::I32Eq);
-                    if k > 0 {
-                        out.push(Lir::I32Or);
-                    }
-                }
-                out.push(Lir::LocalSet(is_payload));
-                out.push(Lir::LocalGet(is_payload));
-                out.push(Lir::If(BlockType::Empty)); // a payload case → unbox the payload
-                out.push(Lir::LocalGet(ans));
-                out.push(Lir::CallImport(OP_SUM_PAYLOAD));
-                out.push(Lir::CallImport(read));
-                if read == OP_GET_INT && matches!(pv, ValType::I32) {
-                    out.push(Lir::I32WrapI64);
-                }
-                out.push(Lir::LocalSet(pval));
-                out.push(Lir::Else); // a nullary case → the payload-width zero
-                out.push(zero);
-                out.push(Lir::LocalSet(pval));
-                out.push(Lir::End);
-                out.push(Lir::LocalGet(disc_out)); // push (disc, payload)
-                out.push(Lir::LocalGet(pval));
+                emit_variant_reg_flatten(db, ans, fty, work_base + 5, high, scratch_ty, out)?;
             }
             None => {
                 return Err(Reject::decline(
@@ -14549,6 +14731,24 @@ fn emit(
                         emit_list_arg_marshal(
                             db, &elem, elem_wit, list_slot, cursor, work_base, high, scratch_ty,
                             out,
+                        )?;
+                    }
+                    // A bare scalar-payload VARIANT argument (the top-level param position): the guest emits
+                    // the value-heap variant HANDLE into a slot, then decomposes it into the canonical
+                    // `(disc, payload)` register-flatten via the SAME `emit_variant_reg_flatten` the record-
+                    // field variant uses. Checked before the scalar `_` arm (a Sum's `emit` yields a HANDLE,
+                    // not the flattened slots the component `variant` param expects).
+                    _ if crate::backend::wasm::host::variant_scalar_payload_cases(db, &at)
+                        .is_some() =>
+                    {
+                        let var_slot = arg_base.max(*high);
+                        scratch_ty.insert(var_slot, ValType::I32);
+                        *high = (*high).max(var_slot + 1);
+                        emit(db, arg, slots, var_slot + 1, high, scratch_ty, layout, out)?; // [handle]
+                        out.push(Lir::LocalSet(var_slot));
+                        let work_base = *high;
+                        emit_variant_reg_flatten(
+                            db, var_slot, &at, work_base, high, scratch_ty, out,
                         )?;
                     }
                     // A scalar argument emits its value directly.

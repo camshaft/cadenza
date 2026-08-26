@@ -1400,7 +1400,18 @@ pass	a checked conversion of a negative CONSTANT into an unsigned type is reject
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
-pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
+pass	a checked-add over a RUNTIME operand emits the overflow check: Some when it fits, None on overflow
+pass	a checked-sub over RUNTIME operands emits the underflow check: Some when it fits, None on underflow
+pass	a checked-add over RUNTIME UInt64 operands emits the unsigned wrap-below check
+pass	a checked-sub over RUNTIME UInt64 operands emits the unsigned underflow check
+pass	a checked-mul over a RUNTIME operand emits the division round-trip: Some when it fits, None on overflow
+pass	a runtime checked-mul hitting Int64.min EXACTLY fits (the naive-magnitude-check killer)
+pass	a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)
+pass	a runtime checked-mul over UInt64 operands emits the unsigned division round-trip
+pass	a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow
+pass	a NARROW-width signed checked-add/sub range-checks BOTH bounds (Int8 over/underflow)
+pass	a NARROW-width checked-sub over a RUNTIME operand range-checks the LOWER bound (Int8 underflow)
+pass	a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)
 pass	a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)
 pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after
@@ -6117,6 +6128,9 @@ pass	pyth2 a NON-dispatching nested handle in the post-resume toll position FOLD
 pass	pytn1 a nested CLOSED HANDLE in the NEXT-STATE hole of a TAIL-resumptive arm folds via the thread path — the inner handle self-discharges its own E to a constant (42) that becomes the threaded next-state; because a tail arm threads its next-state through the distinct tail lowering (not the two-hole refold) it reduces the closed handle to its value correctly, so the whole nest folds to the same value as substituting the literal. CONTRAST pyre3 (the SAME dispatching-handle-in-next-state under a TWO-HOLE arm) which miscompiled and now DECLINES — the value-position decline set is two-hole-arm-specific; tail arms fold nested handles in both the answer hole (pyre7) and the next-state hole (this)
 pass	pyts1 a nested CLOSED HANDLE in the outer handle's SEED under a TAIL-resumptive arm folds via the thread path — the inner handle self-discharges its own E to a constant (42) that is added into the seed; a tail arm's fold reduces the closed handle in the seed to its value, so the whole nest folds to the same value as substituting the literal. Completes the tail triple with the answer hole (pyre7) and the next-state hole (pytn1); CONTRAST the TWO-HOLE seed (pyse1) which declines — the value-position decline set is two-hole-arm-specific, tail arms fold a nested handle in ALL positions
 pass	pyts2 probe: a TUPLE-STATE FIELD SWAP — the state is a pair, each tick answers a digit-packed function of both fields (a*10+b) and threads the SWAPPED pair (b, a) as the next-state, so the two dispatches read the fields in opposite roles and an order-insensitive swap or a wrong thread flips the packed value
+pass	pyu8W16 a checked-narrowing UInt16.of of the state in the resume answer folds — width-16 twin of pyu8a1
+pass	pyu8W32 an Int32.wrap of the state in the resume answer folds — signed width-32 twin of pyu8r1
+pass	pyu8a1 a checked-narrowing UInt8.of of the state in the resume answer folds — three widened reads pack after the .of range-check emits
 pass	pyu8r1 a narrow UInt8 resume answer over an Int64 handler state folds — UInt8.wrap of the growing state (256 wraps to 0) feeds each answer while the state threads +1
 pass	pyu8t1 a UInt8 handler state threaded across three dispatches with a WIDENED Int64 resume answer folds — the narrow state advances via wrapping-add (255+5 wraps to 4) while each answer widens with Int64.of
 pass	pyu8w1 a UInt8 handler state near the 255 boundary threaded by UInt8.wrapping-add wraps past 255 through zero — each tick answers the widened state (Int64.of) and the three packed reads fold to the wrapped walk
@@ -7209,7 +7223,8 @@ pass	zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
-todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
+pass	runtime Set.of at THREE different element types in one program all build via per-site monomorphic folds
+pass	runtime Set.of at two different element types in one program each build via a per-site monomorphic fold
 todo	Type is a first-class value
 todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
@@ -7281,3 +7296,32 @@ pass	abd3 an abort VALUE computed by delegating to the outer handler threads the
 pass	xme1 an effect declared in a LIBRARY module is handled by the importing entry
 pass	xme3 TWO library modules share ONE effect — both performers route to the entry's single handler
 pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the entry only calls it
+pass	fse1 NaN handler state survives the seam — canonical equality says nan = nan across dispatches
+pass	fse2 negative-zero handler state stays distinct from +0.0 across the seam (canonical bits)
+pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
+todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
+todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
+todo	cr03 an export combining an IN-GUEST handler AND a host import
+todo	cq04 host IMPORT: RECORD param + scalar result (reverse direction)
+pass	cmul1 runtime checked-mul in range yields Some
+pass	cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)
+pass	cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer
+pass	cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)
+pass	cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)
+pass	cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits
+pass	cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None
+pass	cmu3 runtime UInt64 checked-add wraps None at max, Some just below
+pass	cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero
+todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
+todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
+pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
+pass	chk2 a closed handle with STRING state folds under (const ...)
+pass	cms1 closed handle with TUPLE state under (const ...)
+pass	cms2 closed handle with RECORD state under (const ...)
+todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
+todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
+todo	vres3 a NEGATIVE s64 payload through the variant host-result join
+pass	cnw1 runtime UInt8 checked-add at the 255 boundary
+pass	cnw3 runtime Int8 checked-add at the signed 127 boundary
+pass	cnw4 runtime Int8 checked-sub at the signed -128 boundary
+pass	cnw5 runtime UInt16 checked-add at the 65535 top

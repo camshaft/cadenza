@@ -1980,21 +1980,18 @@
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 2 Int64)))
 
-; KNOWN LIMITATION (a defined DECLINE, not a miscompile): building a runtime set at TWO different element
-; types in ONE program declines. The synthesized runtime-`Set.of` fold is a single generic recursive def;
-; instantiating it at two element types (a `Set Int64` AND a `Set Bool`) hits the recursive-generic Set-op
-; element-grounding tie (a plain generic recursive def at two types works, so it is the `Set.insert`/empty-
-; seed grounding specifically — v-inference's parked recursive-generic territory). This is a clean DECLINE
-; (before this feature ALL runtime `Set.of` declined, so single-type is a strict gain); when the inference
-; tie is fixed this becomes fully general and this case flips to pass. Pinned as `todo` to guard the boundary.
-(case "Set.of over runtime lists at two different element types declines pending the recursive-generic tie"
+; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
+; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
+; at exactly one element type — and no single generic def is instantiated at two types. This sidesteps the
+; recursive-generic `Set.insert`/empty-seed element-var grounding tie that a single shared generic fold hit
+; (formerly a CDZ0201 decline pinned here as `todo`). Both a `Set Int64` and a `Set Bool` build and dedup.
+(case "runtime Set.of at two different element types in one program each build via a per-site monomorphic fold"
   (doc    "Two runtime-`Set.of` constructions at DIFFERENT element types in one program: a `Set Int64` from
            `(List.concat (list a b) (list a))` and a `Set Bool` from `(List.concat (list (> a b)) (list (<
-           a b)))`. The synthesized runtime-set fold is one generic recursive def; instantiating it at both
-           Int64 and Bool declines (CDZ0201 — the recursive-generic `Set.insert`/empty-seed element grounding
-           tie, v-inference's lane). A DEFINED decline, not a wrong answer: a single-element-type program
-           compiles + runs (the round-trip/concat cases above). The value WOULD be 22 if the tie were
-           resolved (Int set {a,b} = 2, Bool set {true,false} = 2 → 2 + 10·2); kept `todo` until then.")
+           a b)))`. Each site is rewritten to call its OWN synthesized fold def, so each fold is monomorphic
+           (one element type) and both compile — no cross-type instantiation of a shared generic def, so the
+           recursive-generic element-grounding tie never arises. Int set {a,b} = 2, Bool set {true,false} = 2
+           → 2 + 10·2 = 22. A single-element-type program is byte-identical to the earlier one-def synthesis.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
               (+ (Set.len (Set.of (List.concat (list a b) (list a))))
@@ -2002,6 +1999,29 @@
             (export main)))
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 22 Int64)))
+
+; The N-site generalization of the per-site monomorphic fold: THREE runtime-`Set.of` sites at THREE distinct
+; element types in one program — a `Set Int64`, a `Set Bool`, AND a `Set String`. Each site gets its own
+; monomorphic fold def, so no synthesized def is instantiated at more than one element type and the
+; recursive-generic tie never arises regardless of how many distinct types coexist. Int set {a,b} = 2; Bool
+; set {a>b, a<b} = {false, true} = 2; String set {(if a>b "hi" "lo"), "lo"} — with a<b the branch selects
+; "lo", so the set is {"lo"} = 1. 2 + 10·2 + 100·1 = 122. Guards that per-site synthesis scales past the
+; pairwise case and that a String (heap-rope element) set participates.
+(case "runtime Set.of at THREE different element types in one program all build via per-site monomorphic folds"
+  (doc    "Three runtime-`Set.of` constructions at DIFFERENT element types — `Set Int64` from `(list a b a)`,
+           `Set Bool` from `(list (> a b) (< a b))`, and `Set String` from `(list (if (> a b) \"hi\" \"lo\")
+           \"lo\")` — coexist in one program. Each site is rewritten to its OWN synthesized monomorphic fold,
+           so N distinct element types coexist with no cross-type instantiation. With a=5, b=7: Int {5,7}=2,
+           Bool {false,true}=2, String {\"lo\"}=1 (the `a>b` branch is false → \"lo\", deduped with the literal
+           \"lo\"). 2 + 10·2 + 100·1 = 122. The N-site generalization of the two-type case above.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (+ (Set.len (Set.of (list a b a)))
+                 (+ (* 10 (Set.len (Set.of (list (> a b) (< a b)))))
+                    (* 100 (Set.len (Set.of (list (if (> a b) "hi" "lo") "lo")))))))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 122 Int64)))
 
 (case "a runtime-keyed map entry enumerates as its key-value tuple"
   (doc    "`(Map.to-list (Map.insert Map.empty k 42))` with k a parameter — the single entry
