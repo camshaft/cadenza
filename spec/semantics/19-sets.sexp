@@ -3725,3 +3725,47 @@
     (export main)))
   (call main (: 1.0 Float64))
   (output (: 42 Int64)))
+
+; -- breaker batch 419 (2026-08-26): CHAR and SYMBOL as CHAMP members/keys — dedup, membership
+; hit+miss, Char-keyed Map discrimination+lookup, Symbol dedup-by-content+membership. Both
+; backends. Filed adjacent: Set.to-list/(Map.to-list) with CHAR elements/keys DECLINES even for a
+; length-only read (the materialization's element-type admission lacks Char; int/string/bytes
+; covered) — the Map/Set-values decline class, routed.
+
+(case "ck1 a Char set dedups repeated members"
+  (input (do
+    (def (main (: n Int64))
+      (Set.len (Set.of (list #\a #\b (if (> n 0) #\a #\c)))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 2 Int64)))
+
+(case "ck2 Char set membership hits and misses"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (Set.of (list #\a (if (> n 0) #\b #\z)))))
+        (+ (if (Set.contains s #\b) 10 0) (if (Set.contains s #\c) 1 0))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 10 Int64)))
+
+(case "ck4 a Map keyed by Char discriminates and looks up"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (Map.insert (map) #\x 10) (if (> n 0) #\y #\x) 20)))
+        (match (Map.lookup m #\x)
+          ((Option.Some v) (match (Map.lookup m #\y) ((Option.Some w) (+ v w)) ((Option.None) -2)))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 30 Int64)))
+
+(case "ck5b Symbol set dedup+membership, in-program strings"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (if (> n 0) "hot" "warm")))
+        (let ((st (Set.of (list (Symbol.of "hot") (Symbol.of s) (Symbol.of "cold")))))
+          (+ (Set.len st) (if (Set.contains st (Symbol.of "cold")) 100 0)))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 102 Int64)))
