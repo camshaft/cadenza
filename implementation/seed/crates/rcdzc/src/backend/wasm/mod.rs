@@ -2264,10 +2264,26 @@ fn declare_result_lift_ops(
         }
         // An option-shaped sum (`option<T>`): `sum-new` for the Some/None construction + the Some arm's
         // payload lift ops, recursively (general over the payload, not pinned to `Bytes`).
-        _ => {
+        _ if host::option_payload_ty(db, ty).is_some() => {
             if let Some(payload) = host::option_payload_ty(db, ty) {
                 used.insert("sum-new");
                 declare_result_lift_ops(db, &payload, used);
+            }
+        }
+        // A general scalar-payload VARIANT result (`emit_variant_sum_lift`): `sum-new` builds every case's
+        // arm; each payload case's scalar is boxed by its own leaf op (recursed). Mirrors the lift so the
+        // marshal's `CallImport`s resolve (else u32::MAX → an invalid module — the arg-side trap's twin).
+        _ => {
+            if let Some(cases) = host::variant_scalar_payload_cases(db, ty) {
+                used.insert("sum-new");
+                for (i, (_, p)) in cases.iter().enumerate() {
+                    if p.is_some()
+                        && let Some(pt) =
+                            crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)
+                    {
+                        declare_result_lift_ops(db, &pt, used);
+                    }
+                }
             }
         }
     }

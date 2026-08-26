@@ -771,3 +771,13 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64)))
+
+(case "a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)"
+  (doc "SHAPE 54 - a host op returning a scalar-payload variant{a(u8), b(s64), mark} (hosti.get). The result is SPILLED (flattens to disc+payload > 1 core value → retptr); the guest LIFTS the (disc, payload) from the retptr'd region into a value-heap Sum via emit_variant_sum_lift - the N-case generalization of the option-result lift, the RESULT-side twin of the bare-variant ARG marshal. Stubbing get -> (b 900000000000) and matching selects the B arm (k). Runtime coverage for v-rust-backend's variant-payload host-result lift (breaker w10c); a wrong disc/payload-offset read would mis-select the arm. (The cdz-run driver's coerce_one gained a Type::Variant arm to encode the variant response.)")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member get (func (result ("variant" (a (u8)) (b (s64)) (mark))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type V (A UInt8) (B Int64) (Mark)) (effect hosti (op get (-> Unit V))) (def (f (: m (Record (: x Int64)))) (host (hosti) (match (hosti.get unit) ((A n) (Int64.of n)) ((B k) k) ((Mark) -1)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (b 900000000000) V)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: 900000000000 Int64)))

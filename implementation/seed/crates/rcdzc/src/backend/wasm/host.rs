@@ -674,7 +674,13 @@ pub fn result_is_liftable(db: &mut Db, ty: &Ty) -> bool {
         // An option-shaped sum (`option<T>`) whose payload `T` is itself liftable — general over the payload
         // (not pinned to `Bytes`); the lift (`emit_option_sum_lift`) recurses the payload, the WIT type is
         // `option<wit(T)>`. So `option<list<u8>>`, `option<list<list<u8>>>`, `option<tuple<…>>` all lift.
-        _ => option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)),
+        _ if option_payload_ty(db, ty).is_some_and(|p| leaf_liftable(db, &p)) => true,
+        // A general scalar-payload VARIANT (N cases, each nullary or a scalar payload; NOT option/result-
+        // shaped — those took their own arms above and `variant_scalar_payload_cases` excludes them). The lift
+        // (`select::emit_variant_sum_lift`) reads the disc + the selected case's scalar payload from the spilled
+        // retptr'd region and rebuilds the guest Sum; its component `variant` DEFINED type comes from
+        // `spilled_result_wit_type` → `add_wit_type_deduped`. The RESULT-side twin of the bare-variant ARG.
+        _ => variant_scalar_payload_cases(db, ty).is_some(),
     }
 }
 
@@ -708,6 +714,23 @@ pub fn spilled_result_wit_type(db: &mut Db, ty: &Ty) -> Option<crate::wit_world:
             ok: Some(Box::new(WitType::List(Box::new(WitType::U8)))),
             err: Some(Box::new(WitType::Enum(err_cases))),
         });
+    }
+    // A general scalar-payload VARIANT result → a `variant` WIT type: each case is `(name, Some(scalar-wit))`
+    // for a payload case or `(name, None)` for a nullary case, in declaration order (= the component disc
+    // order). The scalar payload's WIT comes from its own `ty_natural_wit`. The result-side twin of the
+    // bare-variant ARG's component type (`build_host_group`'s CDef::Variant).
+    if let Some(cases) = variant_scalar_payload_cases(db, ty) {
+        let mut wit_cases: Vec<(String, Option<WitType>)> = Vec::with_capacity(cases.len());
+        for (i, (name, payload)) in cases.iter().enumerate() {
+            let pw = if payload.is_some() {
+                let pt = crate::backend::wasm::select::variant_payload_ty_at(db, ty, i as u32)?;
+                Some(crate::wit_world::ty_natural_wit(&pt)?)
+            } else {
+                None
+            };
+            wit_cases.push((name.clone(), pw));
+        }
+        return Some(WitType::Variant(wit_cases));
     }
     crate::wit_world::ty_natural_wit(ty)
 }

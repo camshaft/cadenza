@@ -4106,6 +4106,7 @@ pass	a typed reducer performing a record-with-a-variant-scalar-field host arg em
 pass	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)
 pass	a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)
+pass	a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-an-option-scalar-field host arg emits, loads, and runs (via an imposed WIT world)
