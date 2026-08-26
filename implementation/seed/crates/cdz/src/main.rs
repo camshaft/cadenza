@@ -2190,20 +2190,38 @@ fn compile_project_component_bytes_named(
     if let Some(iface) = component_name {
         inputs.push(compiler_cli::component_name_artifact(iface));
     }
-    // Compile on the compiler-stack worker (deep-recursion guard), same as `check_one`/`run_prepared`.
-    let out = rcdzc::run_with_compiler_stack(|| {
-        rcdzc::compile_with_opt(&inputs, &[rcdzc::Target::Wasm], opt_level)
-    });
-    if out.has_error() {
-        report_errors(&out);
-        return Err(());
+    dispatch_project_to_bytes(inputs, opt_level)
+}
+
+/// Compile prepared project `inputs` to the wasm COMPONENT BYTES in-memory: spawn `cdz-compile` under
+/// `!standalone` (capturing its `-o -` stdout), else run the compiler in-process. One seam so the quiet
+/// build (`cdz run`/`test`) stays behavior-identical across the two builds. `Ok(Some(bytes))` = a
+/// component was produced; `Ok(None)` = compiled but none; `Err(())` = a reported compile failure.
+fn dispatch_project_to_bytes(
+    inputs: Vec<rcdzc::Artifact>,
+    opt_level: rcdzc::OptLevel,
+) -> Result<Option<Vec<u8>>, ()> {
+    #[cfg(not(feature = "standalone"))]
+    {
+        delegate::delegate_project_to_bytes(&inputs, opt_level, PROG)
     }
-    // The produced WebAssembly component is the artifact of `kind == "component"`.
-    Ok(out
-        .artifacts
-        .into_iter()
-        .find(|a| a.kind == "component")
-        .map(|a| a.bytes))
+    #[cfg(feature = "standalone")]
+    {
+        // Compile on the compiler-stack worker (deep-recursion guard), same as `check_one`/`run_prepared`.
+        let out = rcdzc::run_with_compiler_stack(|| {
+            rcdzc::compile_with_opt(&inputs, &[rcdzc::Target::Wasm], opt_level)
+        });
+        if out.has_error() {
+            report_errors(&out);
+            return Err(());
+        }
+        // The produced WebAssembly component is the artifact of `kind == "component"`.
+        Ok(out
+            .artifacts
+            .into_iter()
+            .find(|a| a.kind == "component")
+            .map(|a| a.bytes))
+    }
 }
 
 /// Is `cdz run`'s `component` argument a PROJECT (rather than a pre-built component)? True when it is
