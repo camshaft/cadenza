@@ -1084,23 +1084,27 @@
   (input  (if))
   (error  CDZ0201))
 
-(case "equality applied to one operand is rejected, not a crash"
-  (doc    "`(= 5)` supplies one operand to a two-operand equality. The compiler rejects it (CDZ0201),
-           never panicking reaching for the missing second operand.")
-  (input  (= 5))
-  (error  CDZ0201))
+(case "equality curries — applied to one operand it is a first-class predicate"
+  (doc    "Operators CURRY (operator ruling: \"operators should curry\"). `(= 5)` supplies the first of
+           `=`'s two operands and yields the first-class function `\\b. 5 = b`. Bound then applied — `(let
+           ((eq5 (= 5))) (eq5 5))` — it completes the equality: 5 = 5 → true → 1. The `let` binding forces
+           `(= 5)` to be a VALUE (the resolver would otherwise flatten `((= 5) 5)` to the plain `(= 5 5)`).
+           (A ZERO-operand `(=)` is still malformed — the bare-keyword case below.)")
+  (input  (do (def (main) (let ((eq5 (= 5))) (if (eq5 5) 1 0))) (export main)))
+  (output (: 1 Int64)))
 
 (case "a bare equality keyword is rejected, not a crash"
   (doc    "`(=)` with no operands is ill-formed. Rejected (CDZ0201), never a crash.")
   (input  (=))
   (error  CDZ0201))
 
-(case "an arithmetic operator with a single operand is rejected, not a crash"
-  (doc    "`(+ 5)` supplies one operand to the two-operand `+`. The compiler rejects it (CDZ0201), never
-           panicking reaching for the missing second operand — the arithmetic-operator companion of the
-           `(= 5)` equality-arity case above.")
-  (input  (+ 5))
-  (error  CDZ0201))
+(case "an arithmetic operator with a single operand curries into a partial-application closure"
+  (doc    "`(+ 5)` supplies the first of `+`'s two operands and CURRIES to `\\b. 5 + b` (operator ruling:
+           operators curry) — the arithmetic companion of the `(= 5)` case above. Bound then applied —
+           `(let ((add5 (+ 5))) (add5 3))` — completes the addition: 5 + 3 → 8. (A ZERO-operand `(+)` is
+           still malformed — the bare-keyword case below.)")
+  (input  (do (def (main) (let ((add5 (+ 5))) (add5 3))) (export main)))
+  (output (: 8 Int64)))
 
 (case "a bare arithmetic keyword is rejected, not a crash"
   (doc    "`(+)` with no operands is ill-formed. Rejected (CDZ0201), never a crash — the `+` companion
@@ -1108,11 +1112,13 @@
   (input  (+))
   (error  CDZ0201))
 
-(case "an ordering operator with a single operand is rejected, not a crash"
-  (doc    "`(< 5)` supplies one operand to the two-operand `<`. Rejected (CDZ0201), never a crash. Pins
-           that the arity check covers the ordering operators too, not only `=`/`+`.")
-  (input  (< 5))
-  (error  CDZ0201))
+(case "an ordering operator with a single operand curries into a partial-application closure"
+  (doc    "`(< 5)` supplies the first of `<`'s two operands and CURRIES to `\\b. 5 < b` (operators curry),
+           covering the ordering operators too, not only `=`/`+`. Bound then applied — `(let ((lt5 (< 5)))
+           (lt5 3))` — completes the comparison: 5 < 3 → false → 0. (A ZERO-operand `(<)` is still
+           malformed.)")
+  (input  (do (def (main) (let ((lt5 (< 5))) (if (lt5 3) 1 0))) (export main)))
+  (output (: 0 Int64)))
 
 (case "a conditional with too many operands is rejected, not a crash"
   (doc    "`(if true 1 2 3)` supplies a fourth operand to `if`, which takes exactly three (condition,

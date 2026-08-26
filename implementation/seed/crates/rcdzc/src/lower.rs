@@ -1795,6 +1795,23 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "apply: unary negation (- e) → 0 - e at the operand's type");
                     lower_negate(db, id, args[0])
                 }
+                // A PARTIALLY-applied binary OPERATOR — `(+ 1)`, `(< 3)`, `(* 2)` — CURRIES to a first-class
+                // function of the remaining operand (operator ruling: "operators should curry"). Synthesize
+                // the equivalent lambda `(fn (b) (op supplied b))` and lower it as a value — the same shape
+                // the user could write by hand. `(- e)` is UNARY NEGATION (the arm above), not a curried
+                // subtraction, so Sub with one operand never reaches here. A non-numeric/undetermined
+                // operand makes `partial_binop_eta` return `None` → falls through to the arity fault below,
+                // so a genuine malformed `(+ x)` (x unfixed) still reports rather than synthesizing a
+                // broken closure.
+                Some(prim)
+                    if args.len() == 1
+                        && prim != Prim::Sub
+                        && (prim.is_binop() || prim.is_float_arith())
+                        && let Some(c) = partial_binop_eta(db, head, args[0]) =>
+                {
+                    trace!(target: "rcdzc::lower", node = id.0, ?prim, "apply: partial binary operator → curried closure (fn (b) (op supplied b))");
+                    c
+                }
                 // MIXED-UNIT COMBINE: `+`/`-`/comparison on two quantities of the SAME dimension but
                 // DIFFERENT scale (`1 km + 500 m`, `1 KiB + 1 kB`). Each operand converts to the
                 // dimension's REFERENCE unit by its exact scale (`value * num / den` in the inner type T),
@@ -12964,6 +12981,48 @@ fn synth_operator_eta(db: &mut Db, op_occ: StructId, arrow: &crate::ty::Ty) -> O
             .or_insert_with(|| param_tys[k].clone());
     }
     Some(lambda)
+}
+
+/// A PARTIALLY-applied binary OPERATOR `(+ 1)` / `(< 3)` as a first-class curried value: synthesize the
+/// equivalent explicit lambda over the REMAINING operand, splicing the already-supplied operand into the
+/// body so it is CAPTURED — `(fn (__eta0) (<op> <supplied> __eta0))`. This is exactly the shape a source
+/// `(fn (b) (+ 1 b))` takes, which lowers+runs today (the binop twin of [`partial_ctor_eta_closure`]).
+/// Operators curry (operator ruling), so `(+ 1)` is `\b. 1 + b`: the supplied operand is the FIRST, the
+/// eta binds the SECOND. `head`/`supplied` are the caller's own occurrences, spliced verbatim (the original
+/// `(op supplied)` apply this replaces is discarded, so the single-parent invariant holds — as in
+/// `partial_ctor_eta_closure`). The eta param types as the SUPPLIED operand's type (a binop's two operands
+/// share one type), with an unground Int width defaulted, so `lower_lambda_value` types it without needing
+/// the operator's own polymorphic scheme (whose params are quantified vars). `(- e)` is UNARY NEGATION, a
+/// distinct construct handled before this — Sub never reaches here.
+fn partial_binop_eta(db: &mut Db, head: StructId, supplied: StructId) -> Option<Core> {
+    // The eta param's machine type = the supplied operand's type (both operands of a binop share it), with
+    // an unground Int literal grounded to its default width — so `(+ 1)` binds an `Int64` second operand.
+    let param_ty = match crate::infer::type_of(db, supplied) {
+        crate::ty::Ty::Int(it) => crate::ty::Ty::Int(crate::ty::IntTy::fixed(
+            it.ground_signed(),
+            it.ground_width(),
+        )),
+        other => other,
+    };
+    let eta_binder = db.push_name("__eta0");
+    let eta_ref = db.push_name("__eta0");
+    // `(head supplied __eta0)` — reuse the caller's operator head + supplied operand verbatim (spliced,
+    // like `partial_ctor_eta_closure`), the eta the fresh second operand.
+    let body = db.push_list(vec![head, supplied, eta_ref]);
+    let params_list = db.push_list(vec![eta_binder]);
+    let fn_head = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_head, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    let params = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, .. } => params,
+        _ => return None, // synthesis did not classify as a lambda — bail
+    };
+    let occ = crate::eval::param_name_occ(db, params[0]);
+    db.param_types.entry(occ).or_insert(param_ty);
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
 }
 
 fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[StructId]) -> Core {

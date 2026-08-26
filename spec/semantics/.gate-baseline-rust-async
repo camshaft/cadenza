@@ -4367,7 +4367,7 @@ pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
 pass	an argument swap weaves with perform results through a recursive handler body
-pass	an arithmetic operator with a single operand is rejected, not a crash
+pass	an arithmetic operator with a single operand curries into a partial-application closure
 pass	an arm CONDITIONS its shot count — the multi-shot branch
 pass	an arm REPLACES the trie state wholesale and the next op reads the replacement
 pass	an arm SUMS one resumption with a constant (the 1.5-shot shape)
@@ -4635,7 +4635,7 @@ pass	an ordering < of two same-bits Float32 literals const-folds false
 pass	an ordering <= of two same-bits Float32 literals const-folds true
 pass	an ordering > of two same-bits Float32 literals const-folds false
 pass	an ordering >= of two same-bits Float32 literals const-folds true
-pass	an ordering operator with a single operand is rejected, not a crash
+pass	an ordering operator with a single operand curries into a partial-application closure
 pass	an out-of-range Map.insert value via a sibling-inferred width is CDZ0302
 pass	an out-of-range Set.of element via a sibling-inferred width is CDZ0302
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
@@ -5245,7 +5245,7 @@ pass	eq1 structural EQUALITY of records built from two draws — a parity-depend
 pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality against zero answers by value in both operand orders
-pass	equality applied to one operand is rejected, not a crash
+pass	equality curries — applied to one operand it is a first-class predicate
 pass	equality of ABSTRACT-type values is rejected — opacity covers comparability
 pass	equality of a record with a subset of another's fields is a type error
 pass	equality of a runtime boolean against the false literal negates it

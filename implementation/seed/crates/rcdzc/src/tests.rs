@@ -53190,13 +53190,17 @@ mod diagnostics {
             Some(crate::abi::FixKind::Delete),
             "the surviving CDZ0201 carries the delete fix"
         );
-        // TOO-FEW `(+ 1)` has no surplus to delete → the arity reject carries NO fix (honest).
-        let few = first_error("(module m (def (f) (+ 1)) (export f))");
-        assert_eq!(few.code.as_deref(), Some("CDZ0201"), "got: {}", few.message);
+        // A ONE-of-two `(+ 1)` now CURRIES (operator ruling: "operators should curry") into `\b. 1 + b` — it
+        // is no longer an arity error, so it reports NO CDZ0201 "takes exactly 2 operands". (The former
+        // too-few reject is retired for the 1-of-2 case; the ZERO-operand `(+)` and the over-applications
+        // still fault.)
+        let few = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f) (+ 1)) (export f))",
+        )));
         assert!(
-            few.fix.is_none(),
-            "nothing to delete for too-few: {:?}",
-            few.fix
+            few.iter().all(|d| !(d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("takes exactly 2 operands"))),
+            "a 1-of-2 partial operator curries into a closure, no arity reject: {few:?}"
         );
         // The COMPARISON `(< 1 2 3)` and float arithmetic `(+ 1.0 2.0 3.0)` (the ONE `+` over float
         // operands) share the exact shape — they route through `lower_comparison`/`lower_float_arith`,
@@ -54271,8 +54275,10 @@ mod diagnostics {
         let fix = d[0].fix.as_ref().expect("carries the delete-surplus fix");
         assert_eq!(fix.kind, crate::abi::FixKind::Delete);
 
-        // UNDER-application `(+ n)` on a parameter: the same operator CDZ0201 (previously check was SILENT
-        // while compile rejected it — no unary operator form exists, so this is a genuine arity error).
+        // ONE-of-two `(+ n)` on a parameter now CURRIES (operator ruling: "operators should curry") — it is
+        // the first-class partial `\b. n + b`, NOT an arity error, so `check` reports NO CDZ0201 arity fault
+        // for it. (The former "takes exactly 2 operands" under-application report is retired for the 1-of-2
+        // case; a ZERO-operand `(+)` and an OVER-application still fault — covered above/below.)
         let under = "(module m (def (g (: n Int64)) (+ n)) (export g))";
         let du: Vec<_> = crate::diagnostics(&mut Db::load(parse(under)))
             .into_iter()
@@ -54280,15 +54286,9 @@ mod diagnostics {
                 d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
             })
             .collect();
-        assert_eq!(
-            du.len(),
-            1,
-            "under-application reports the operator fault once: {du:?}"
-        );
         assert!(
-            du[0].message.contains("takes exactly 2 operands"),
-            "{}",
-            du[0].message
+            du.is_empty(),
+            "a 1-of-2 partial operator curries into a closure, so no arity fault: {du:?}"
         );
 
         // A comparison and the arithmetic operator over FLOAT operands take the same path (the message

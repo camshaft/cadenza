@@ -8685,6 +8685,19 @@ fn is_builtin_partial_application(
     if crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::Sub) && args.len() == 1 {
         return false;
     }
+    // A binary OPERATOR applied to ONE of its two operands CURRIES (operator ruling: "operators should
+    // curry") — `(+ 1)`, `(< 3)`, `(* 2)` — to a first-class function `(fn (b) (op supplied b))` that
+    // `lower` synthesizes (`partial_binop_eta`). So a 1-of-2 partial of a curryable binop (arith /
+    // comparison / float-arith; `Sub`-as-negation already excluded above) is NOT the unbuilt-partial hole —
+    // exclude it, exactly as a curryable/eta-lifting CONSTRUCTOR partial is excluded below. A well-formed
+    // curry lowers to a closure; an ill-formed one (an unfixed-type operand) still declines at lower, and
+    // zero-arg `(+)` / over-application are separate faults untouched by this arity-1 gate.
+    if args.len() == 1
+        && let Some(p) = crate::eval::meta_apply_of(db, head)
+        && (p.is_arith() || p.is_comparison() || p.is_float_arith())
+    {
+        return false;
+    }
     // (b) A CONSTRUCTOR that COMPLETES its payload arity via the curried spine is a real construction, not a
     // partial — exclude. (`ctor_spine` gathers the whole spine's payloads; equal to the variant's arity ⇒
     // built.) A bare partial ctor that ETA-LIFTS is a legitimate first-class value — exclude.
