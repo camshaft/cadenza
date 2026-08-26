@@ -474,6 +474,85 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 17 Int64)))
 
+; ── Handler-state threading through helper calls, if-conditions, cross-fn folds, and successive folds ──
+; These pin that the tail-resumptive fold threads its advancing state across the places a naive lowering
+; dropped it: a handle held in a HELPER seeded by the caller's runtime param; a performing connective in an
+; if-CONDITION whose advance must reach the taken branch; that condition composed with a cross-fn fold and a
+; trailing perform; a trap-init let short-circuiting one branch while the sibling threads; and two successive
+; self-recursive folds where the second threads against the first's advanced state (not the seed).
+(case "a handle held in a helper seeded by the caller's runtime param resumes the seed"
+  (doc    "The handle lives in a helper `run` seeded by the caller's runtime argument `k`; the identity arm
+           `(get (u) s (resume s s))` resumes the seed unchanged, so `run(k)` = k. run(9) -> 9. A regression
+           against a bogus CDZ0101 'unbound k' when the helper-held handle's reduced body lost its chain to
+           the caller's binder.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (run (: s0 Int64)) (handle St s0 ((get (u) s (resume s s))) (St.get)))
+            (def (main (: k Int64)) (run k))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
+(case "a resuming perform in an if-condition threads its state advance to the taken branch"
+  (doc    "`(if (and b (> (St.tick) 0)) (St.tick) -99)` seeded 0, arm `(tick (u) s (resume (+ s 1) (+ s 1)))`.
+           With b=true the condition's tick advances state 0->1, so the then-branch `(St.tick)` reads 1 and
+           resumes 2 — the condition's advance must reach the branch (a naive lowering dropped it, so the
+           branch re-read the pre-condition seed and returned 1). b=false short-circuits: the condition's tick
+           never runs, so the else -99. The resuming companion of the abortive connective-in-condition cases
+           above.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main (: b Bool))
+              (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1))))
+                (if (and b (> (St.tick) 0)) (St.tick) -99)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 2 Int64))
+  (call   main (: false Bool)) (output (: -99 Int64)))
+
+(case "a performing if-condition composes with a cross-fn fold and a trailing perform"
+  (doc    "Composition: the condition `(and true (> (St.tick) 0))` performs tick #1 (state 0->1); the
+           then-branch `(do (run-ops (list 1 2 3)) (St.tick))` runs a cross-fn recursive fold doing 3 ticks
+           (state 1->4) then a trailing tick #5 reads state 4 and resumes 5. Pins that the condition's
+           advance, the cross-fn fold's out-state, and the trailing perform all thread in one composition ->
+           5.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (run-ops (: ops (List Int64))) (match ops ((list h .. rest) (do (St.tick) (run-ops rest))) (_ 0)))
+            (def (main)
+              (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1))))
+                (if (and true (> (St.tick) 0)) (do (run-ops (list 1 2 3)) (St.tick)) -99)))
+            (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a trap-init let in one handler branch short-circuits while the sibling threads state"
+  (doc    "`(if b (let ((it (trap \"dead\"))) (+ it (St.tick))) (St.tick))` seeded 0, arm `(tick (u) s (resume
+           (+ s 1) (+ s 1)))`. b=false threads the tick normally -> 1. b=true binds a trap in the let-init, so
+           the whole let folds to the trap (the `(+ it (St.tick))` and its perform never run) -> traps. Pins
+           that the trap-init short-circuit does not perturb the sibling branch's state threading nor force
+           the dead branch's perform.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main (: b Bool))
+              (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1))))
+                (if b (let ((it (trap "dead"))) (+ it (St.tick))) (St.tick))))
+            (export main)))
+  (call   main (: false Bool)) (output (: 1 Int64))
+  (call   main (: true Bool)) (trap "dead"))
+
+(case "two successive self-recursive folds thread state between them"
+  (doc    "Two successive `(dn 2)` folds under one Counter handler: `dn n = if n==0 then 0 else dn(n-1) +
+           Counter.bump()` bumps state s->s+1 resuming the current s. The first `(dn 2)` bumps at s=0,1 -> 1
+           (state now 2); the second `(dn 2)` bumps at s=2,3 -> 5. `(+ (* 1000 (dn 2)) (dn 2))` = 1000*1 + 5 =
+           1005. Pins that the caller-observed out-state threads the FIRST fold's advance into the SECOND (a
+           state reset would give 1001).")
+  (input  (do
+            (effect Counter (op bump (-> Int64)))
+            (def (dn (: n Int64)) (if (= n 0) 0 (+ (dn (- n 1)) (Counter.bump))))
+            (def (main)
+              (handle Counter 0 ((bump () s (resume s (+ s 1))))
+                (+ (* 1000 (dn 2)) (dn 2))))
+            (export main)))
+  (call   main) (output (: 1005 Int64)))
+
 (case "an `or` short-circuit SKIPS a resuming perform, and the skip is observable through the state"
   (doc    "The skip-observability pin: `(or (> (St.get) 3) (> (St.get) 0))` — the first operand reads 5
            (true), so the second perform MUST NOT run. The proof is the trailing observer: it reads 6 (one

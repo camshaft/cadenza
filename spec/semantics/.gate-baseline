@@ -2032,6 +2032,7 @@ pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
 pass	a handle body reads an enclosing function parameter
 pass	a handle body reads an enclosing function parameter beside a resuming perform
+pass	a handle held in a helper seeded by the caller's runtime param resumes the seed
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose body NEVER performs is exactly its body (zero dispatches)
 pass	a handle whose head names a value rather than an effect is rejected
@@ -2863,6 +2864,7 @@ pass	a performing guard on a refutable pattern whose guard FAILS falls to the ca
 pass	a performing guard with a WILDCARD fallback is ALSO a COMPILE ERROR (finding #9 sibling, CDZ0407)
 pass	a performing helper called from TWO sites — each call site is its own dispatch
 pass	a performing helper whose body BINDS the result and BRANCHES on it, called from two sites, folds
+pass	a performing if-condition composes with a cross-fn fold and a trailing perform
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a performing match-arm guard on a REFUTABLE pattern folds (keeps the match, hoists the guard)
@@ -3203,6 +3205,7 @@ pass	a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok 
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
+pass	a resuming perform in an if-condition threads its state advance to the taken branch
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned capturing closure bound with let and applied twice folds each application independently
@@ -3929,6 +3932,7 @@ pass	a transitive re-export reaches the base module's function through the middl
 pass	a trap message that is not a String is rejected
 pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a trap raised on a consumed closure's result surfaces through the consumer as a trap
+pass	a trap-init let in one handler branch short-circuits while the sibling threads state
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
@@ -7190,6 +7194,7 @@ pass	two slices of one parent both read after the parent is dead
 pass	two specializations of one driver on different closures do not collide in the spec memo
 pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
+pass	two successive self-recursive folds thread state between them
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types
 pass	two two-site ops INTERLEAVED A-B-A fold (order does not matter when all arms are multi-site)
