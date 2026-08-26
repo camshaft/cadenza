@@ -54799,46 +54799,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_br_table_match_in_non_tail_position_yields_into_the_enclosing_expression() {
-        use wasmtime::component::Val;
-        // WARNING: REGRESSION (silent WRONG VALUE, valid wasm): a ≥4-arm scalar match (a `br_table` jump-table
-        // lowering) consumed in NON-TAIL position escaped to the FUNCTION result — each arm branched ONE
-        // BLOCK PAST the match's `$join` (depth `n_arms - k + 1` instead of `n_arms - k`), so the arm value
-        // became the whole result and the consuming code never ran. `(+ (match a …4…) 100)`: a=0 must be
-        // 110 (was 10 — the escape). The default arm falls through to $join with no branch, so it was
-        // unaffected (a=9 → 140 was already right) — which is why it validated and only the covered arms
-        // were wrong. Fixed: each arm branches to the match's own `$join` block.
-        let operand = component(
-            "(module m (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (_ 40)) 100)) (export main))",
-        );
-        let run = |bytes: &[u8], a: i64| run_returns_with::<i64>(bytes, "main", &[Val::S64(a)]);
-        assert_eq!(run(&operand, 0), 110);
-        assert_eq!(run(&operand, 2), 130);
-        assert_eq!(run(&operand, 9), 140); // default arm
-        // A FIVE-arm match — the escape hit any ≥4-arm (jump-table) match, not exactly 4.
-        let five = component(
-            "(module m (def (main (: a Int64)) (+ (match a (0 10) (1 20) (2 30) (3 50) (_ 40)) 100)) (export main))",
-        );
-        assert_eq!(run(&five, 3), 150);
-        // A LET-bound then consumed match — not operand-specific.
-        let bound = component(
-            "(module m (def (main (: a Int64)) (let ((m (match a (0 10) (1 20) (2 30) (_ 40)))) (+ m 100))) (export main))",
-        );
-        assert_eq!(run(&bound, 1), 120);
-        // CONTROL — a 4-arm match in TAIL position (nothing after it) was always correct: the escape to the
-        // function result IS the intended return there. Must stay correct.
-        let tail = component(
-            "(module m (def (main (: a Int64)) (match a (0 10) (1 20) (2 30) (_ 40))) (export main))",
-        );
-        assert_eq!(run(&tail, 1), 20);
-        assert_eq!(run(&tail, 9), 40);
-        // The HEAP-operand face of this escape — a ≥4-arm String match consumed by `String.concat` beside a
-        // RECURSIVE-CALL sibling — needs the value-heap runtime to execute (String.concat allocates), so it
-        // is pinned in the corpus instead: 02-binding-and-control.sexp "a many-arm string match consumed by
-        // concat beside a recursive call keeps both operands" (go(4)=concat("b","b")→byte-len 2, not 1).
-    }
-
-    #[test]
     fn a_scalar_match_uses_a_br_table_only_when_dense_else_the_probe_chain() {
         // The scalar `br_table` fast path (`try_emit_scalar_br_table`) fires ONLY for a DENSE ≥3-int-arm
         // match (+ wildcard default): `span <= 2 * count` AND `span <= 256`. A SPARSE match (values spread
@@ -54891,19 +54851,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             !has_br_table(&sparse),
             "a sparse 4-arm match (span 3001) must fall back to the probe chain, not a br_table, got: {sparse:?}"
         );
-        // VALUE PARITY both ways: dense + sparse dispatch identically to their arms (the density choice is
-        // an emit detail, never an observable-value change).
-        use wasmtime::component::Val;
-        let bd = component(
-            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (2 30) (3 40) (_ 99))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&bd, "f", &[Val::S64(2)]), 30);
-        assert_eq!(run_returns_with::<i64>(&bd, "f", &[Val::S64(7)]), 99); // default
-        let bs = component(
-            "(module m (def (f (: k Int64)) (match k (0 10) (1000 20) (2000 30) (3000 40) (_ 99))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(2000)]), 30);
-        assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(7)]), 99); // default (not a covered slot)
+        // VALUE PARITY both ways (dense + sparse dispatch identically to their arms — the density choice is
+        // an emit detail, never an observable-value change) migrated to the corpus (run via cdz-run): cases
+        // "a dense many-arm match dispatches by value to a covered arm and to the default" and "a sparse
+        // many-arm match dispatches identically to its dense sibling" in spec/semantics/02-binding-and-control.sexp.
 
         // DUPLICATE-LITERAL fallback: a repeated probe literal disqualifies the table even when the match
         // is otherwise DENSE. `(match k (0 …) (1 …) (1 …) (2 …) (_ …))` has span 3 / 4 int-arms (dense by
@@ -54918,62 +54869,11 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             !has_br_table(&dup),
             "a duplicate-literal match falls back to the probe chain (no br_table), got: {dup:?}"
         );
-        // VALUE PARITY + FIRST-WINS: the chain fallback preserves source order, so the FIRST `1` arm (20)
-        // wins over the shadowed second (30) — the redundant arm never fires.
-        let bdup = component(
-            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (1 30) (2 40) (_ 99))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(1)]), 20); // first `1` wins, not 30
-        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(2)]), 40);
-        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(7)]), 99); // default
-    }
-
-    #[test]
-    fn a_binder_pattern_binds_the_scrutinee() {
-        // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
-        // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds
-        // 41, body computes 42). Pins that the name arm and literal arm select consistently, and the
-        // binder carries the scrutinee's value into its body.
-        let m = "(module m (def (f n) (match n (0 100) (k (+ k 1)))) (def (main) (f {})) (export main))";
-        assert_eq!(
-            run_returns::<i64>(&component(&m.replace("{}", "41")), "main"),
-            42
-        );
-        assert_eq!(
-            run_returns::<i64>(&component(&m.replace("{}", "0")), "main"),
-            100
-        );
-    }
-
-    #[test]
-    fn a_binder_over_a_runtime_scrutinee_binds_correctly() {
-        // The binder over a RUNTIME scrutinee (an exported annotated param, not inlined) — `k` reads the
-        // parameter's slot in the arm body. f(7) → k=7 → 8.
-        let bytes = component(
-            "(module m (def (f (: n Int64)) (match n (0 100) (k (+ k 1)))) (def (main) (f 7)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
-    }
-
-    #[test]
-    fn a_binder_over_a_narrow_scrutinee_normalizes_to_its_width() {
-        use wasmtime::component::Val;
-        // A binder over a NARROW-width scrutinee, beside a bare-LITERAL arm. Every arm produces the
-        // match's result type, so the literal arm (default Int64 on its own) must take the UInt8 result
-        // width — else a default-i64 arm beside the narrow-i32 binder arm is a mismatched block and wasm
-        // rejects the function. Regression for the narrow-match-binder MISCOMPILE (invalid component).
-        let uint8 = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (main (: x UInt8)) (match x (0 100) (n n))) (export main))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<u8>(&uint8, "main", &[Val::U8(5)]), 5); // binder arm
-        assert_eq!(run_returns_with::<u8>(&uint8, "main", &[Val::U8(0)]), 100); // literal arm
-        // The bound narrow value is usable in a downstream op: 50 → (+ 50 50) = 100.
-        let arith = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (main (: x UInt8)) (match x (0 0) (n (+ n x)))) (export main))",
-        )))
-        .expect("compile");
-        assert_eq!(run_returns_with::<u8>(&arith, "main", &[Val::U8(50)]), 100);
+        // VALUE PARITY + FIRST-WINS (the chain fallback preserves source order, so the FIRST `1` arm wins
+        // over the shadowed second) migrated to the corpus (run via cdz-run): the duplicate-literal
+        // first-wins value is pinned by "a match arm an earlier arm already fully covers compiles but earns
+        // a CDZ0213 unreachable-arm warning" (`(match n (0 1) (0 2) (_ 3))`, f(0) = 1) in
+        // spec/semantics/02-binding-and-control.sexp.
     }
 
     #[test]
@@ -55006,38 +54906,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             reject_code("(module m (def (f (: n Int64)) (match n (0 1) (1 2))) (export f))")
                 .as_deref(),
             Some("CDZ0210")
-        );
-    }
-
-    #[test]
-    fn a_bool_match_covering_both_literals_is_exhaustive_without_a_wildcard() {
-        use wasmtime::component::Val;
-        // A Bool scrutinee is EXHAUSTED by its two literals: `(match b (true …) (false …))` needs no
-        // wildcard (the finite Bool type has only two values). Both selections must produce the right
-        // value — the wildcard-less match emits its LAST arm as the unconditional else, so the second
-        // arm's body is reached, not a dangling fallthrough.
-        let negate = component(
-            "(module m (def (negate (: b Bool)) (match b (true false) (false true))) \
-               (def (main (: b Bool)) (negate b)) (export main))",
-        );
-        assert!(!run_returns_with::<bool>(
-            &negate,
-            "main",
-            &[Val::Bool(true)]
-        )); // true → false
-        assert!(run_returns_with::<bool>(
-            &negate,
-            "main",
-            &[Val::Bool(false)]
-        )); // false → true
-        // Order-independent: the arms reversed still cover both values.
-        let rev = component(
-            "(module m (def (main (: b Bool)) (match b (false 2) (true 1))) (export main))",
-        );
-        assert_eq!(run_returns_with::<i64>(&rev, "main", &[Val::Bool(true)]), 1);
-        assert_eq!(
-            run_returns_with::<i64>(&rev, "main", &[Val::Bool(false)]),
-            2
         );
     }
 

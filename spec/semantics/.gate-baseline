@@ -1720,6 +1720,7 @@ pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
 pass	a dense if-equality chain dispatches every value including the default
 pass	a dense if-equality chain dispatches on a let-bound value
+pass	a dense many-arm match dispatches by value to a covered arm and to the default
 pass	a dense zero-based jump-table match hits a covered arm
 pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the default
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
@@ -1839,6 +1840,7 @@ pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
+pass	a five-arm match consumed in non-tail position yields into the enclosing expression
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
@@ -2534,7 +2536,9 @@ pass	a mutually-recursive parser projects a return tuple and rebuilds one with a
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
 pass	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
 pass	a name bound to a string keys a map by its value, not the literal name
+pass	a name pattern binds a RUNTIME scrutinee read from an exported parameter
 pass	a name pattern binds the runtime scrutinee when no literal arm matches
+pass	a name pattern over a NARROW-width scrutinee normalizes the literal arm to the match's width
 pass	a name resolves to the nearest enclosing binding
 pass	a named arm still dispatches directly rather than forwarding through the open tail
 pass	a named capturing closure applied directly folds through its capture
@@ -2565,6 +2569,7 @@ pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width Int quantity stored as a map value round-trips through Map.lookup
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width name binder is usable in a downstream op at its width
 pass	a narrow-width newtype boxed as a list element matches by its literal payload
 pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
 pass	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
@@ -3720,6 +3725,7 @@ pass	a slice whose start equals its end is Some of the empty string
 pass	a slice window spanning MANY seams of a built rope reads the logical bytes
 pass	a slice with a negative start yields None
 pass	a slice-view SET element dedups against its flat twin in a Set.of batch build
+pass	a sparse many-arm match dispatches identically to its dense sibling
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the default
 pass	a sparse three-arm match's terminal pair dispatches branchlessly — the middle probe
 pass	a specific constructor export exposes one variant and keeps the rest private
@@ -4129,6 +4135,7 @@ pass	a wide multi-column match over a bound tuple PARAMETER returns the matched 
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
+pass	a wildcard-less Bool match returning Bool negates its scrutinee
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
 pass	a wrapped byte's zero equality tests the masked value, not the wide slot
