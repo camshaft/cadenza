@@ -610,3 +610,21 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 47 — variant<u32> record-field host arg: pins the i32-width payload store branch of the variant marshal (prior variant SHAPEs use s64/i64). Runtime coverage for v-rust-backend uniform-scalar variant, non-i64 width.")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param r ("record" (v ("variant" (a) (b (u32)))) (n (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B UInt32)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B 4000000000)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a typed reducer performing a record-with-a-variant-f64-field host arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 48 — variant<f64> record-field host arg: pins the f64-width payload store branch of the variant marshal.")
+  (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/sink (member push (func (param r ("record" (v ("variant" (a) (b (f64)))) (n (s64)))) (result ("unit")))))))
+  (component-name "cadenza:platform/guest")
+  (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Float64)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B 3.5)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
+  (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
+  (host-calls (call cadenza:platform/sink.push))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
