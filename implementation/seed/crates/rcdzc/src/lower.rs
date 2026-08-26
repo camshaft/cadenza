@@ -24393,6 +24393,10 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
             for step in steps.iter() {
                 v = match (step, &v) {
                     (crate::core::PathStep::Elem(i), CVal::List(xs)) => xs.get(*i)?.clone(),
+                    // An `Elem(i)` on a TUPLE reads slot `i` — a tuple pattern binder `(tuple a b)` reads each
+                    // binder out through an `Elem` step (and a MULTI-payload variant's `(Ctor a b)` reaches
+                    // its payload tuple via `[Payload, Elem(i)]`). Without this a tuple destructure declined.
+                    (crate::core::PathStep::Elem(i), CVal::Tuple(vs)) => vs.get(*i)?.clone(),
                     (crate::core::PathStep::RestFrom(k), CVal::List(xs)) => {
                         CVal::List(xs.get(*k..).map(<[CVal]>::to_vec).unwrap_or_default())
                     }
@@ -24809,6 +24813,20 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
                 all_match(db, &items, xs)
             }
         };
+    }
+    // A TUPLE pattern `(tuple p0 … p_{n-1})` — destructures a `CVal::Tuple` positionally: it matches a tuple
+    // of the SAME arity, each element matching its sub-pattern. (A tuple's arity is fixed by its type, so a
+    // well-typed scrutinee always has the pattern's arity, but guard anyway.) Handled BEFORE the variant/ctor
+    // dispatch because `tuple` is the tuple constructor, not a `(meta variant)`, so it would otherwise fall
+    // through to the undecidable tail and decline — the gap that blocked a `(const (: t (Tuple …)))` recursion.
+    if let Some(items) = db.ast.as_form(pat, "tuple").map(<[StructId]>::to_vec) {
+        let CVal::Tuple(vs) = v else {
+            return Some(false);
+        };
+        if vs.len() != items.len() {
+            return Some(false);
+        }
+        return all_match(db, &items, vs);
     }
     // A VARIANT pattern — a constructor with a `(meta variant)` discriminant. An APPLIED pattern
     // `(Ctor sp0 …)` is a list whose HEAD is the constructor (the discriminant is read off the HEAD, not the

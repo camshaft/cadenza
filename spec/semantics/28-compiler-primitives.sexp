@@ -298,3 +298,31 @@
                  (Ast.encode (Ast.Int (BigInt.of 3)))))
             (export run)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — TUPLE destructuring in the recursive evaluator --------------------
+; The const-evaluator now DESTRUCTURES a tuple pattern `(tuple a b)` in a `match` (the matcher recognizes
+; the tuple pattern; a binder reads its slot via an `Elem` step over the `CVal::Tuple`). This lets a `(const
+; …)`-demanded computation over a tuple const value fold — a `(Tuple …)` const param is otherwise excluded
+; from the bare recursive-fold activation gate (it is a product/dictionary shape a counter-driven consumer
+; passes unchanged), so `(const …)` is the demand marker that forces such a fold.
+
+(case "a `(const …)` block destructures a tuple in a match and folds"
+  (doc    "`(const (match (tuple 3 5) ((tuple a b) (+ a b))))` folds to 8: the evaluator matches the tuple
+           pattern and reads binders `a`/`b` out of the `CVal::Tuple` (an `Elem`-step projection), which
+           previously declined. The `(const …)` block forces the fold (a `(Tuple …)` shape is not activated
+           by the bare gate).")
+  (input  (do
+            (def (main) (const (match (tuple 3 5) ((tuple a b) (+ a b)))))
+            (export main)))
+  (output (: 8 Int64)))
+
+(case "a `(const …)` block folds a recursion over a tuple const value"
+  (doc    "`f` counts the first tuple slot down to 0 while accumulating into the second, threading a fresh
+           `(tuple …)` each step. `(const (f (tuple 3 0)))` folds to 3 — the tuple pattern destructure, the
+           tuple construction, and the recursion all compose in one const-fold under the force-eval block.")
+  (input  (do
+            (def (f (const (: t (Tuple Int64 Int64))))
+              (match t ((tuple a b) (if (= a 0) b (f (tuple (- a 1) (+ b 1)))))))
+            (def (main) (const (f (tuple 3 0))))
+            (export main)))
+  (output (: 3 Int64)))
