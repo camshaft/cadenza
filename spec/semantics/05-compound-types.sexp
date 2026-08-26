@@ -19447,3 +19447,65 @@
   (input  (do (def (f (: n Int64)) (match (tuple n 2) ((tuple 1 2) 100) (_ 0))) (export f)))
   (call   f 1)
   (output (: 100 Int64)))
+
+; -- breaker batch 415 (2026-08-26): owned-temporary match-scrutinee reclaim across the OTHER heap
+; kinds (#3726 covered lists, MatchSum covered sums): branch-selected String literal-dispatch, Bytes
+; literal-dispatch, runtime-built Ast navigation, tuple-with-heap-element, and a nested list+record
+; double-shell all leave live-objects 0. (A flat record-of-scalars scrutinee fully scalarizes even
+; branch-selected — its reclaim face is witnessed via the records-inside-a-list case.) wasm-only rows.
+
+(case "msr1 a branch-selected owned STRING scrutinee dispatched by literal arms reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (String.concat "ad" "d") "sub")
+        ("add" 1)
+        ("sub" 2)
+        (_ 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case "msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Bytes.of (list 1 2)) (Bytes.of (list 9)))
+        (b"\x01\x02" 1)
+        (_ 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case "msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))) (Ast.Name "g"))
+        ((Ast.List xs) (List.len xs))
+        (_ 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (tuple n (list n (+ n 1))) (tuple 0 (list 9)))
+        ((tuple a xs) (+ a (List.len xs)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case "msr6 a NESTED match — outer list arm rebinds an inner record — reclaims both shells"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list (record (= v n)) (record (= v (* n 2)))) (list (record (= v 0))))
+        ((list r1 r2)
+          (match r1 ((record (= v a)) (match r2 ((record (= v b)) (+ a b))))))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects 0))
