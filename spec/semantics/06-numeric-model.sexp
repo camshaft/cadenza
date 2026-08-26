@@ -3900,6 +3900,17 @@
             (export main)))
   (call   main (: 127 Int8)) (output (: 1 Int64))
   (call   main (: 10 Int8)) (output (: 0 Int64)))
+(case "a re-masked UInt8 wrapping-add result compares EQUAL to its modular value at the narrow width"
+  (doc    "The unsigned `=`-compare face of the runtime re-mask: `(= (UInt8.wrapping-add x (UInt8.wrap 10))
+           (UInt8.wrap 4))` at x=250 — 250+10 wraps to 4 at the UInt8 width, so the equality is TRUE → 1.
+           Proves the re-mask lives in the wrapping OP (the compared value is the narrow 4), not the widening
+           read: the pre-fix un-masked 260 would compare unequal. Control x=5: 5+10=15 != 4 → 0. The unsigned
+           `=` companion of the signed `<` comparison face above.")
+  (input  (do
+            (def (main (: x UInt8)) (if (= (UInt8.wrapping-add x (UInt8.wrap 10)) (UInt8.wrap 4)) 1 0))
+            (export main)))
+  (call   main (: 250 UInt8)) (output (: 1 Int64))
+  (call   main (: 5 UInt8)) (output (: 0 Int64)))
 
 ; The CONST-FOLD twin of the runtime sign-extend wraps above: a `Prim::Wrap` over a COMPILE-TIME-CONSTANT
 ; operand folds at the Core tier (both backends inherit `IntValue::wrap_to(signed, width)` — the value
@@ -5784,6 +5795,28 @@
            signed narrow wrap. Pins the const-fold's signed masking at the ±128 boundary.")
   (input  (do (def (main) ((. Int8 wrapping-add) 100 100)) (export main)))
   (output (: -56 Int8)))
+
+(case "a narrow-width unsigned wrapping-add constant folds by wrapping to the masked outcome"
+  (doc    "The wrapping-ADD unsigned companion of the wrapping-mul const-fold above. `(UInt8.wrapping-add
+           200 100)` = 300, which exceeds UInt8; the wrapping outcome is 300 mod 256 = 44, so the const-fold
+           MASKS to 8 bits rather than routing through the checked width-fit gate and rejecting CDZ0302.
+           Const and runtime must agree (the runtime UInt8 wrapping-add wraps identically above).")
+  (input  (do (def (main) ((. UInt8 wrapping-add) 200 100)) (export main)))
+  (output (: 44 UInt8)))
+
+(case "an in-range narrow-width wrapping-add constant folds unchanged"
+  (doc    "The no-over-mask control: `(UInt8.wrapping-add 100 100)` = 200 fits UInt8, so the wrapping fold
+           leaves it unchanged (200) — the mask is a MODULAR outcome, not a blanket reduction. Pairs with
+           the over-width add above so the two together exclude a fold that always masks.")
+  (input  (do (def (main) ((. UInt8 wrapping-add) 100 100)) (export main)))
+  (output (: 200 UInt8)))
+
+(case "a wider narrow-width wrapping-mul constant folds by wrapping to the type width"
+  (doc    "The width-parametric face of the wrapping const-fold (not hard-coded to 8 bits): `(UInt16.wrapping-mul
+           300 300)` = 90000, which wraps mod 2^16 = 24464 in a UInt16. Pins that the const-fold masks to the
+           TYPE's width (16 here) exactly as the UInt8 cases mask to 8, matching the runtime narrow wrap.")
+  (input  (do (def (main) ((. UInt16 wrapping-mul) 300 300)) (export main)))
+  (output (: 24464 UInt16)))
 
 ; ── The width-TRUNCATION conversion `(UInt N).wrap` / `(Int N).wrap` on a RUNTIME value ──────────────
 ; `.wrap` is the TOTAL width conversion (distinct from the `wrapping-add`/`-mul` ARITHMETIC above): it

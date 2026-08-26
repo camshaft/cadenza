@@ -2586,6 +2586,7 @@ pass	a narrow-width parameter plus a bare literal computes at the parameter widt
 pass	a narrow-width parameter plus a bare literal computes inside a helper function
 pass	a narrow-width quantity whose reference-scaled magnitude overflows its inner type is rejected
 pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
+pass	a narrow-width unsigned wrapping-add constant folds by wrapping to the masked outcome
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
@@ -2965,6 +2966,7 @@ pass	a rational's numerator and denominator are read as BigInt from the normaliz
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
+pass	a re-masked UInt8 wrapping-add result compares EQUAL to its modular value at the narrow width
 pass	a read result destructures through nested Ast patterns — the analyze path computes
 pass	a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged
 pass	a reader literal carries a qualified name with a dot
@@ -4132,6 +4134,7 @@ pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)
 pass	a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)
+pass	a wider narrow-width wrapping-mul constant folds by wrapping to the type width
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
@@ -4609,6 +4612,7 @@ pass	an in-program two-site handler runs INSIDE a host block beside a host call
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
 pass	an in-range left shift on an unusual signed width computes at the declared width
 pass	an in-range literal to a narrow effect-op parameter crosses and the arm observes it
+pass	an in-range narrow-width wrapping-add constant folds unchanged
 pass	an in-range unusual-width division computes at the declared width
 pass	an indexed list walk performing per element — element × advancing draw, summed
 pass	an indexed read is not shared across a shadowing rebinding
