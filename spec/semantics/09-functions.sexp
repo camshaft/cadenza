@@ -7744,3 +7744,53 @@
     (export main)))
   (call main (: #"hot" Symbol))
   (output (: 42 Int64)))
+
+; -- breaker batch 436 (2026-08-26): CLOSURE-ENVIRONMENT reclaim — heap values captured by
+; closures: invoked once, SHARED across two closures, built-but-NEVER-invoked (the discarded-env
+; face), and RETURNED from a helper (the escaping-env face). All live-objects 0; wasm-only rows.
+
+(case "cle1 a closure capturing a branch-selected list reclaims after invocation"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n (+ n 1)) (list 9))))
+        (let ((f (fn (k) (+ k (List.len xs)))))
+          (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
+
+(case "cle2 TWO closures sharing one captured list both invoke and everything reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n) (list 9 9))))
+        (let ((f (fn (k) (+ k (List.len xs)))))
+          (let ((g (fn (k) (* k (List.len xs)))))
+            (+ (f 10) (g 10))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
+
+(case "cle3 a heap-capturing closure built but NEVER invoked still reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n (+ n 1) (+ n 2)) (list 9))))
+        (let ((f (fn (k) (+ k (List.len xs)))))
+          (if (> n 100) (f 1) 7))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case "cle4 a closure RETURNED from a helper (escaping env) reclaims after invocation"
+  (input (do
+    (def (mk (: n Int64))
+      (let ((xs (if (> n 0) (list n (+ n 1)) (list 9))))
+        (fn (k) (+ k (List.len xs)))))
+    (def (main (: n Int64))
+      ((mk n) 10))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
