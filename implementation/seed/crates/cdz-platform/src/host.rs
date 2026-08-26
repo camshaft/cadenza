@@ -1611,6 +1611,48 @@ mod tests {
         Hash::of(HashTag::SystemProperty, tag).as_bytes().to_vec()
     }
 
+    /// The arg-probe Host impl encodes the received args to the canonical Value form the itest checker
+    /// asserts against — locking the byte-for-byte contract (§9): the CADENZA constructor casing
+    /// (`Absent`/`Small`/`Big`, `Absent`/`A`/`B`), the record field names + order (`v`, `tag`), and the
+    /// integer payloads. A pure-fn invariant of the encoder (no guest drive) — the non-vacuous marshal gate
+    /// is the itest conformance run; this guards the encoding a wrong ctor name/field/int would silently break.
+    #[test]
+    fn arg_probe_encodes_the_canonical_value_form() {
+        use super::ap;
+        use crate::contract_value::{as_ascribed, as_bare_ctor, read_uint, record_field};
+        use cadenza_ast::codec;
+
+        // probe-record { v: Big(5), tag: 42 } -> (: (record (= v (Big 5)) (= tag 42)) ProbeRecord)
+        let bytes = super::encode_probe_record(&ap::ProbeRecord {
+            v: ap::Mixed::Big(5),
+            tag: 42,
+        });
+        let arenas = codec::decode(&bytes).expect("probe-record decodes");
+        let rec = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+        let v = record_field(&arenas, rec, "v").expect("field v");
+        let big = as_bare_ctor(&arenas, v, "Big").expect("v is (Big _)");
+        assert_eq!(read_uint(&arenas, big[0]), Some(5), "Big payload");
+        let tag = record_field(&arenas, rec, "tag").expect("field tag");
+        assert_eq!(read_uint(&arenas, tag), Some(42), "tag");
+
+        // list<narrow> [A(7), Absent, B(300)] -> (: (list (A 7) (Absent) (B 300)) List)
+        let bytes =
+            super::encode_narrow_list(&[ap::Narrow::A(7), ap::Narrow::Absent, ap::Narrow::B(300)]);
+        let arenas = codec::decode(&bytes).expect("list decodes");
+        let list = as_ascribed(&arenas, arenas.root).unwrap_or(arenas.root);
+        let elems = as_bare_ctor(&arenas, list, "list").expect("name-headed (list …)");
+        assert_eq!(elems.len(), 3, "three narrow elements");
+        let a = as_bare_ctor(&arenas, elems[0], "A").expect("(A _)");
+        assert_eq!(read_uint(&arenas, a[0]), Some(7), "A payload");
+        assert_eq!(
+            as_bare_ctor(&arenas, elems[1], "Absent").map(<[_]>::len),
+            Some(0),
+            "(Absent) is nullary — no `None` (would shadow Option.None in the Cadenza checker)"
+        );
+        let b_case = as_bare_ctor(&arenas, elems[2], "B").expect("(B _)");
+        assert_eq!(read_uint(&arenas, b_case[0]), Some(300), "B payload");
+    }
+
     #[tokio::test]
     async fn identity_returns_the_reducers_own_id() {
         // The `identity` host import hands the guest its own reducer-id, as the id's raw hash bytes.
