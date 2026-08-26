@@ -26625,10 +26625,156 @@ fn lower_checked_arith(
                 }
             }
         }
-        // A runtime operand — the overflow-detecting Some/None build is a later increment.
-        _ => Core::Poison(Reject::decline(
-            "checked arithmetic on a runtime operand is not yet computed (constant operands only)",
-        )),
+        // A runtime operand: compose the overflow-detecting Some/None from existing Core — the wrapping
+        // result plus the two's-complement overflow predicate — no new Core variant. Restricted to ADD/SUB
+        // at the full 64-bit width (Int64/UInt64): there the i64 register IS the value, so the sign-bit
+        // overflow test at bit 63 is exact and the unsigned wrap-below test needs no narrow mask. A NARROW
+        // width (whose stored representation makes the sign bit width-relative) and checked-MUL (which needs
+        // a wide multiply or a division-check) are a later increment — they decline cleanly rather than risk
+        // a wrong overflow verdict (a checked op that mis-reported overflow would be a silent miscompile).
+        _ => {
+            let crate::ty::Ty::Int(it) = crate::infer::type_of(db, lhs) else {
+                return Core::Poison(Reject::decline(
+                    "checked arithmetic on a runtime non-integer operand has no meaning",
+                ));
+            };
+            if it.ground_width() != 64 || matches!(prim, Prim::CheckedMul) {
+                return Core::Poison(Reject::decline(
+                    "a runtime checked add/sub is emitted only at the 64-bit width; a narrow width or a \
+                     runtime checked-mul is not yet emitted (fold constants, or use wrapping arithmetic)",
+                ));
+            }
+            let signed = it.ground_signed();
+            let int_ty = crate::ty::Ty::Int(it);
+            let result_ty = crate::infer::type_of(db, id);
+            // `s` = the two's-complement wraparound result — the value the checked op returns when it does
+            // NOT overflow (and the value it discards when it does). `Core::Arith` with a WRAPPING prim
+            // selects the raw machine add/sub (no trap); at 64 bits the width-mask is a no-op.
+            let wrap_prim = if matches!(prim, Prim::CheckedAdd) {
+                Prim::WrappingAdd
+            } else {
+                Prim::WrappingSub
+            };
+            let s = synth_core(
+                db,
+                Core::Arith {
+                    op: wrap_prim,
+                    lhs,
+                    rhs,
+                },
+                int_ty.clone(),
+            );
+            // The overflow predicate (`Bool`).
+            let ovf = if signed {
+                // SIGNED two's-complement overflow — a sign-bit test on a bitwise combination:
+                //   ADD: `((a ^ s) & (b ^ s)) < 0` — both operands shared a sign the result does not.
+                //   SUB: `((a ^ b) & (a ^ s)) < 0` — the operands disagreed in sign AND the result took the
+                //        wrong one (`a - b` overflows exactly when `a` and `b` differ in sign and `s`
+                //        differs in sign from `a`).
+                let (p, q) = if matches!(prim, Prim::CheckedAdd) {
+                    let axs = synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::BitXor,
+                            lhs,
+                            rhs: s,
+                        },
+                        int_ty.clone(),
+                    );
+                    let bxs = synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::BitXor,
+                            lhs: rhs,
+                            rhs: s,
+                        },
+                        int_ty.clone(),
+                    );
+                    (axs, bxs)
+                } else {
+                    let axb = synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::BitXor,
+                            lhs,
+                            rhs,
+                        },
+                        int_ty.clone(),
+                    );
+                    let axs = synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::BitXor,
+                            lhs,
+                            rhs: s,
+                        },
+                        int_ty.clone(),
+                    );
+                    (axb, axs)
+                };
+                let both = synth_core(
+                    db,
+                    Core::Arith {
+                        op: Prim::BitAnd,
+                        lhs: p,
+                        rhs: q,
+                    },
+                    int_ty.clone(),
+                );
+                let zero = synth_core(db, Core::ConstInt(IntValue::from_i64(0)), int_ty.clone());
+                synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Lt,
+                        lhs: both,
+                        rhs: zero,
+                    },
+                    crate::ty::Ty::Bool,
+                )
+            } else {
+                // UNSIGNED overflow — a wrap-below test (the `Compare` is unsigned, derived from the
+                // UInt64 operand type):
+                //   ADD: `s <u a` — the sum wrapped below an addend.
+                //   SUB: `a <u b` — the minuend is smaller, so `a - b` underflows.
+                let (lo, hi) = if matches!(prim, Prim::CheckedAdd) {
+                    (s, lhs)
+                } else {
+                    (lhs, rhs)
+                };
+                synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Lt,
+                        lhs: lo,
+                        rhs: hi,
+                    },
+                    crate::ty::Ty::Bool,
+                )
+            };
+            // `if <overflow> then None else Some(s)`.
+            trace!(target: "rcdzc::lower", node = id.0, ?prim, signed, "runtime checked add/sub → if <overflow-predicate> then None else Some(wrap result)");
+            let none = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc_none,
+                    payloads: Vec::new(),
+                },
+                result_ty.clone(),
+            );
+            let some = synth_core(
+                db,
+                Core::SumNew {
+                    disc: disc_some,
+                    payloads: vec![s],
+                },
+                result_ty,
+            );
+            Core::If {
+                cond: ovf,
+                then_: none,
+                else_: some,
+            }
+        }
     }
 }
 
