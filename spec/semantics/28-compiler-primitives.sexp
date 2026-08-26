@@ -936,3 +936,32 @@
            `print_ast_value` — the same text the runtime op produces, witnessing runtime==compile-time.")
   (input  (do (def (main) (Ast.print (Ast.Int (BigInt.of 42)))) (export main)))
   (output (: "42" String)))
+
+; --- Primitive 2: const execution — a (const …) HANDLE with growing collection state folds (cm02) --------
+; A closed finite `handle` with a const init, under `(const …)`, folds its answer: const_eval's Handle arm
+; DELEGATES to `reduce_handle` (the effect reducer — threads continuations/resumes/state) and const-evaluates
+; the resulting PURE AST. `reduce_handle` keeps a GROWING collection state as a re-read `let` binding, which
+; `core_of` alone leaves as a `Core::Let` this stage cannot fold; const-evaluating the reduced AST folds the
+; query answers via the List/Set/Map arms. Reuses the one reducer (no duplication). (Diagnosis: v-effects.)
+
+(case "a const handle threading a growing List state folds its query answers"
+  (doc    "`E.tick` resumes `List.len s` and threads `(List.prepend s 0)` (state GROWS by one each perform).
+           `(const (handle E (list 7) … (+ (* 10 (E.tick)) (E.tick))))`: first tick reads len 1 → resumes 1,
+           state → `(0 7)`; second reads len 2 → resumes 2; `(+ (* 10 1) 2)` = 12. Before, the growing-list
+           state kept a `Core::Let` the const block could not fold (CDZ0201); now the Handle arm reduces +
+           const-evaluates it.")
+  (input  (do
+            (effect E (op tick (-> Unit Int64)))
+            (def (main) (const (handle E (list 7) ((tick (u) s (resume (List.len s) (List.prepend s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "a const handle threading a growing Set state folds its query answers"
+  (doc    "The Set-state companion: `E.tick` resumes `Set.len s` and threads `(Set.insert s 0)`. Seeded
+           `{7}`: len 1 → 1, then `{7,0}` len 2 → 2; `(+ (* 10 1) 2)` = 12. Same Handle-arm reduce+fold path;
+           the query answer (a size) is order-independent so it folds soundly.")
+  (input  (do
+            (effect E (op tick (-> Unit Int64)))
+            (def (main) (const (handle E (Set.of (list 7)) ((tick (u) s (resume (Set.len s) (Set.insert s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
+            (export main)))
+  (output (: 12 Int64)))
