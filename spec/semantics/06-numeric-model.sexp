@@ -9615,3 +9615,62 @@
            127 traps with reason integer overflow.")
   (input  (do (def (f (: a Int8) (: b Int8)) (+ a b)) (export f)))
   (call   f (: 100 Int8) (: 100 Int8)) (trap "integer overflow"))
+
+
+(case "a UInt48 wrap-multiply traps on a storage-slot wrap, not just a type-overflow"
+  (doc    "Wrap two Int64 params into UInt48, multiply, project back with Int64.of (UInt48 has no boundary
+           rep so cannot be a param/return directly). A small product fits UInt48 and computes exactly.
+           2^32 * 2^32 = 2^64 wraps the i64 storage slot to 0 and MUST trap, not silently yield 0. And
+           2^24 * 2^25 = 2^49 fits the i64 slot but exceeds 2^48, so the range-check traps.")
+  (input  (do
+            (def (f (: a Int64) (: b Int64))
+              (Int64.of (* ((. (UInt 48) wrap) a) ((. (UInt 48) wrap) b))))
+            (export f)))
+  (call   f (: 3 Int64) (: 4 Int64)) (output (: 12 Int64))
+  (call   f (: 4294967296 Int64) (: 4294967296 Int64)) (trap "integer overflow")
+  (call   f (: 16777216 Int64) (: 33554432 Int64)) (trap "integer overflow"))
+
+(case "a full-width const-multiplier bound check traps at the exact boundary"
+  (doc    "`(* a 3)` guards overflow with a compile-time bound check (a > MAX/3 or a < MIN/3 traps) instead
+           of a div_s round-trip, but must trap at exactly the same points. a = MAX/3 fits; a = MAX/3 + 1
+           overflows up; a = MIN/3 fits; a = MIN/3 - 1 overflows down; 0 and small values compute.")
+  (input  (do (def (f (: a Int64)) (* a 3)) (export f)))
+  (call   f (: 3074457345618258602 Int64)) (output (: 9223372036854775806 Int64))
+  (call   f (: -3074457345618258602 Int64)) (output (: -9223372036854775806 Int64))
+  (call   f (: 0 Int64)) (output (: 0 Int64))
+  (call   f (: -5 Int64)) (output (: -15 Int64))
+  (call   f (: 3074457345618258603 Int64)) (trap "integer overflow")
+  (call   f (: -3074457345618258603 Int64)) (trap "integer overflow"))
+
+(case "a narrow const-multiplier bound check keeps both bounds (Int8 a*3)"
+  (doc    "A narrow const multiply keeps BOTH range bounds (a product can leave either side). Int8 42*3 =
+           126 fits; 50*3 = 150 > 127 must trap; -50*3 = -150 < -128 must trap.")
+  (input  (do (def (f (: a Int8)) (* a 3)) (export f)))
+  (call   f (: 42 Int8)) (output (: 126 Int8))
+  (call   f (: 50 Int8)) (trap "integer overflow")
+  (call   f (: -50 Int8)) (trap "integer overflow"))
+
+(case "a negative const-multiplier bound check traps at the exact boundary"
+  (doc    "For a negative constant C <= -2, `a*C` shrinks as a grows, so it fits iff MAX/C <= a <= MIN/C.
+           `(* a -3)`: a = MIN/-3 (positive) fits, +1 overflows; a = MAX/-3 (negative) fits, -1 overflows.
+           A small value negates normally.")
+  (input  (do (def (f (: a Int64)) (* a -3)) (export f)))
+  (call   f (: 3074457345618258602 Int64)) (output (: -9223372036854775806 Int64))
+  (call   f (: -3074457345618258602 Int64)) (output (: 9223372036854775806 Int64))
+  (call   f (: 5 Int64)) (output (: -15 Int64))
+  (call   f (: 3074457345618258603 Int64)) (trap "integer overflow")
+  (call   f (: -3074457345618258603 Int64)) (trap "integer overflow"))
+
+(case "the excluded C=-1 multiplier keeps the div_s guard and MIN*-1 still traps"
+  (doc    "`* -1` is excluded from the bound-check path (MIN/-1 = 2^63 is not i64-representable), so it
+           keeps the div_s guard. A small value negates; MIN * -1 overflows and must still trap.")
+  (input  (do (def (f (: a Int64)) (* a -1)) (export f)))
+  (call   f (: 5 Int64)) (output (: -5 Int64))
+  (call   f (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "a nested runtime checked multiply composes and traps in the inner add"
+  (doc    "`(* (+ a b) c)` computes in range and the shared scratch pool does not corrupt across the
+           nesting: (2+3)*6 = 30. The inner add overflows (MAX+1) and traps before the mul.")
+  (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
+  (call   f (: 2 Int64) (: 3 Int64) (: 6 Int64)) (output (: 30 Int64))
+  (call   f (: 9223372036854775807 Int64) (: 1 Int64) (: 1 Int64)) (trap "integer overflow"))
