@@ -3049,3 +3049,22 @@
     (export f)))
   (call f (: 7 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 414 (2026-08-26): RUNTIME-built collection equality pins — two runtime Maps,
+; two runtime Sets, and runtime lists of records all compare by value (contrast: BARE runtime
+; Bytes = remains the filed flat-operands-only decline).
+
+(case "ce08 equality of two RUNTIME-built Maps"
+  (input  (do (def (f (: n Int64)) (= (Map.insert (map) n 1) (Map.insert (map) n 1))) (export f)))
+  (call   f 3)
+  (output (: true Bool)))
+
+(case "ce09 equality of two RUNTIME-built Sets"
+  (input  (do (def (f (: n Int64)) (= (Set.of (list n 2)) (Set.of (list 2 n)))) (export f)))
+  (call   f 1)
+  (output (: true Bool)))
+
+(case "ce10 equality of RUNTIME lists of records"
+  (input  (do (def (f (: n Int64)) (= (list (record (= a n))) (list (record (= a n))))) (export f)))
+  (call   f 4)
+  (output (: true Bool)))

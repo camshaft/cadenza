@@ -7755,3 +7755,15 @@ todo	expect traps on the absent case of a runtime optional
 todo	iso-b a let-bound escaped-closure helper-call answer inside the handle body declines cleanly — must NOT mis-reject CDZ0101 (recovery falls back to the honest todo when its rewrite would drop the let binder)
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	ce01 checked addition over a RUNTIME operand yields Some when it fits
+pass	ce02 checked addition over a RUNTIME operand yields None on overflow
+pass	ce11 wrapping addition over a RUNTIME operand wraps
+pass	ce12 checked multiplication over a RUNTIME operand yields Some when it fits
+pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
+pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
+pass	ce07 literal-tuple pattern matches a RUNTIME tuple
+pass	ce08 equality of two RUNTIME-built Maps
+pass	ce09 equality of two RUNTIME-built Sets
+pass	ce10 equality of RUNTIME lists of records
+pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
+pass	cj03 Ast.print of a RUNTIME AST value renders

@@ -19428,3 +19428,22 @@
   (call main (: 5 Int64))
   (output (: 9 Int64))
   (live-objects 0))
+
+; -- breaker batch 414 (2026-08-26): RUNTIME compound-op lowering pins — Record.merge of two
+; runtime records, Tuple.concat destructured, and a literal-tuple pattern matching a runtime tuple.
+; (Tuple.remove over a runtime tuple, ce05, remains the lone decline in this family — filed.)
+
+(case "ce03 Record.merge of two RUNTIME-built records projects the merged field"
+  (input  (do (def (f (: n Int64)) (. (Record.merge (record (= a n)) (record (= b (* n 2)))) b)) (export f)))
+  (call   f 5)
+  (output (: 10 Int64)))
+
+(case "ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields"
+  (input  (do (def (f (: n Int64)) (match (Tuple.concat (tuple n 2) (tuple 3)) ((tuple a b c) (+ a (+ b c))))) (export f)))
+  (call   f 5)
+  (output (: 10 Int64)))
+
+(case "ce07 literal-tuple pattern matches a RUNTIME tuple"
+  (input  (do (def (f (: n Int64)) (match (tuple n 2) ((tuple 1 2) 100) (_ 0))) (export f)))
+  (call   f 1)
+  (output (: 100 Int64)))

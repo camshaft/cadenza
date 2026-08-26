@@ -9743,3 +9743,27 @@
     (export main)))
   (call main (: 42 Int64))
   (output (: 42 Int64)))
+
+; -- breaker batch 414 (2026-08-26): RUNTIME-operand arithmetic lowering pins — checked add
+; Some/None, wrapping add, checked mul Some (formerly filed as runtime-lowering declines; all
+; lower and run on both backends now).
+
+(case "ce01 checked addition over a RUNTIME operand yields Some when it fits"
+  (input  (do (def (f (: k Int64)) (Int64.checked-add k 22)) (export f)))
+  (call   f 20)
+  (output (: (Some 42) (Option Int64))))
+
+(case "ce02 checked addition over a RUNTIME operand yields None on overflow"
+  (input  (do (def (f (: k Int64)) (Int64.checked-add k 1)) (export f)))
+  (call   f 9223372036854775807)
+  (output (: (None unit) (Option Int64))))
+
+(case "ce11 wrapping addition over a RUNTIME operand wraps"
+  (input  (do (def (f (: k Int64)) (Int64.wrapping-add k 1)) (export f)))
+  (call   f 9223372036854775807)
+  (output (: -9223372036854775808 Int64)))
+
+(case "ce12 checked multiplication over a RUNTIME operand yields Some when it fits"
+  (input  (do (def (f (: k Int64)) (Int64.checked-mul k 3)) (export f)))
+  (call   f 14)
+  (output (: (Some 42) (Option Int64))))

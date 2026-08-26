@@ -2179,3 +2179,10 @@
   (input  (do (def (main (: n Int64)) (Bytes.len (bin (bits (UInt8.wrap n) 8) (bits (UInt8.wrap (+ n 1)) 8)))) (export main)))
   (call   main (: 1 Int64)) (output (: 2 Int64))
   (live-objects 0))
+
+; -- breaker batch 414 (2026-08-26): Bytes.of over a NON-literal (branch-selected) list lowers.
+
+(case "ce06 Bytes.of of a NON-literal (branch-selected) list lowers"
+  (input  (do (def (f (: k Int64)) (Bytes.len (Bytes.of (if (> k 0) (list (UInt8.wrap 65) (UInt8.wrap 66)) (list (UInt8.wrap 67)))))) (export f)))
+  (call   f 1)
+  (output (: 2 Int64)))
