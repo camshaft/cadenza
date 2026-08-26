@@ -7227,3 +7227,8 @@ pass	ctt2 BIGINT handler state doubles past i64 across dispatches
 pass	ctt3 CHAR handler state advances by code point across dispatches
 pass	ctt4 BYTES-ROPE handler state grows by concat across dispatches
 pass	ctt5 SYMBOL handler state swaps between interned symbols
+pass	rak1 an op RESULT of type Rational resumes an exact fraction
+pass	rak2 an op RESULT of type BigInt resumes a multi-limb value
+pass	rak3 an op RESULT of type Symbol resumes an interned symbol by state
+pass	rak4 an op RESULT of type Bytes resumes a built rope
+pass	rak5 an op RESULT of type Map resumes a built map the body queries
