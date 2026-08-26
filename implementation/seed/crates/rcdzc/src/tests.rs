@@ -7851,47 +7851,6 @@ fn a_heap_binder_in_a_fused_match_arm_is_reclaim_neutral_and_uaf_free() {
     );
 }
 
-/// H2d ACCEPTANCE: after a heap round-trip, the runtime's live-cell count is 0 — the dup/drop discipline
-/// balanced (no leak). Composes a `debug-counters` runtime in ONE store, runs `pair-sum(20,22)` (builds
-/// a 2-tuple, boxes 2 elements, projects both, drops the tuple — which cascades to the 2 boxes), then
-/// reads `live-objects`.
-#[test]
-#[ignore]
-fn perceus_balance_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[H2d] debug-counters runtime not in the store (run `cargo xtask build`); skipping balance probe"
-        );
-        return;
-    };
-    // WARNING: The tuple must hold a RUNTIME HEAP value (a recursively-built list), else the whole tuple
-    // scalarizes/const-folds away with NO heap alloc and the program no longer imports the runtime — the
-    // probe then can't run (this staleness broke the earlier bare-scalar-tuple form). `pair-sum(3, 22)`
-    // builds `[0,1,2]`, wraps it in `(tuple list 22)`, projects `List.len list` (3) + `22` = 25, then drops
-    // the tuple — which cascades to the list and its boxed elements. A balanced dup/drop nets live-cells 0.
-    let src = "(module m \
-                 (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
-                     (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-                 (def (pair-sum (: a Int64) (: b Int64)) \
-                     (let ((t (tuple (build 0 a (list)) b))) (+ ((. List len) (. t 0)) (. t 1)))) \
-                 (export pair-sum))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("pair-sum", &[Val::S64(3), Val::S64(22)]),
-        Val::S64(25),
-        "the round-trip still computes len([0,1,2]) + 22 = 25"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "Perceus leak: heap cells still live after the round-trip (expected 0)"
-    );
-}
-
 /// rc-BALANCE witness for the recursive-match-binder scrutinee-materialization fix (`26e3471ac`, the S2
 /// twin): a match binder used twice over a recursive-call scrutinee carrying a HEAP payload. The fix keeps
 /// the `Core::MatchSum` wrapper (scrutinee materialized into ONE slot); v-memory-safety flagged that the

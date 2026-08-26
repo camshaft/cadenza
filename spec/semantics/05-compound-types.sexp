@@ -19076,3 +19076,17 @@
     (export main)))
   (call main (: 1 Int64)) (output (: 2121 Int64))
   (live-objects 0))
+
+(case "a tuple wrapping a runtime list projects both fields and reclaims to no live heap objects"
+  (doc    "H2d Perceus balance: `pair-sum` builds `[0,1,2]` (a recursive List.push loop so it can't
+           const-fold), wraps it in `(tuple list 22)`, projects `List.len` of field 0 (3) + field 1 (22)
+           = 25, then drops the tuple -- which cascades to the list and its boxed elements. A balanced
+           dup/drop discipline nets 0 live heap cells after the round-trip. > 0 = a Perceus leak.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (pair-sum (: a Int64) (: b Int64))
+              (let ((t (tuple (build 0 a (list)) b))) (+ (List.len (. t 0)) (. t 1))))
+            (export pair-sum)))
+  (call   pair-sum (: 3 Int64) (: 22 Int64)) (output (: 25 Int64))
+  (live-objects 0))
