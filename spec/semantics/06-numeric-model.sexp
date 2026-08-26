@@ -8981,3 +8981,33 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 1 Int64))
   (call   main (: 7 Int64)) (output (: 1 Int64)))
+
+;; -- guard-elision trap-preservation boundaries: masks and remainders never license dropping overflow guards (breaker batch 372, from the 2026-07-17 banked candidate) --
+(case "geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX"
+  (input (do
+    (def (main (: x Int64)) (+ (& x -1) 1))
+    (export main)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (call main (: 9223372036854775807 Int64)) (trap "overflow"))
+
+(case "geb2 signed-rem range keeps the add guard — MAX + (% x 10) traps only when the remainder pushes over"
+  (input (do
+    (def (main (: x Int64)) (+ (% x 10) 9223372036854775807))
+    (export main)))
+  (call main (: 0 Int64)) (output (: 9223372036854775807 Int64))
+  (call main (: -1 Int64)) (output (: 9223372036854775806 Int64))
+  (call main (: 1 Int64)) (trap "overflow"))
+
+(case "geb3 a small-mask range does not license subtracting Int64.min — always overflows, guard stays"
+  (input (do
+    (def (main (: x Int64)) (- (& x 15) -9223372036854775808))
+    (export main)))
+  (call main (: 5 Int64)) (trap "overflow"))
+
+(case "geb4 a 2-bit mask times 2^62 keeps the multiply guard — traps at 2 and 3, fits at 1"
+  (input (do
+    (def (main (: x Int64)) (* (& x 3) 4611686018427387904))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 4611686018427387904 Int64))
+  (call main (: 2 Int64)) (trap "overflow")
+  (call main (: 3 Int64)) (trap "overflow"))

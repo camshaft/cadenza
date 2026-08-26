@@ -7433,3 +7433,7 @@ pass	rrow2 Record.project over RUNTIME leaves keeps the named fields readable
 pass	rrow3 a Record.merge result with a COMPUTED runtime leaf VALUE-EQUALS the directly-written literal across field order
 pass	a Bool-returning comparison operator passed to an inline HOF
 pass	a comparison operator passed to a recursive HOF (emit-call)
+pass	geb1 a mask by -1 is NOT narrowing — the add guard stays and traps at MAX
+pass	geb2 signed-rem range keeps the add guard — MAX + (% x 10) traps only when the remainder pushes over
+pass	geb3 a small-mask range does not license subtracting Int64.min — always overflows, guard stays
+pass	geb4 a 2-bit mask times 2^62 keeps the multiply guard — traps at 2 and 3, fits at 1
