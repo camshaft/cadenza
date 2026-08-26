@@ -7657,6 +7657,7 @@ fn emit_tail(
             let reclaim = list_shell_reclaim_slot(
                 db,
                 scrutinee,
+                &arms,
                 owned_stash,
                 TailPos::Tail(tl),
                 never_diverges,
@@ -13441,6 +13442,7 @@ fn emit(
             let reclaim = list_shell_reclaim_slot(
                 db,
                 scrutinee,
+                &arms,
                 owned_stash,
                 TailPos::NonTail,
                 never_diverges,
@@ -15692,15 +15694,27 @@ fn materialize_list_match_scrutinee(
 
 /// Whether a `MatchList`'s owned-temporary scrutinee shell can be reclaimed (dropped) after its arms — the
 /// list twin of the `MatchSum` owned-shell reclaim. Sound ONLY when: a fresh owned temporary was stashed
-/// (`owned_stash`), the scrutinee is an OWNED handle (not a borrowed param/binding its owner drops), the
-/// element type is SCALAR (a `vec-get` copies the scalar out — a heap element would be BORROWED by
-/// `vec-get`, aliasing into the shell, so a deep drop would free a still-read value: the sread-UAF floor,
-/// same restriction `sum_has_only_scalar_payloads` enforces for sums), and we are NOT in a self-loop tail
-/// position (a `return_call`/`br` arm never reaches the post-match drop — leak, harmless — and the stash
-/// slot is reused next iteration; conservative skip mirrors `MatchSum`'s `arms_tail_call` guard).
+/// (`owned_stash`), the scrutinee is an OWNED handle (not a borrowed param/binding its owner drops), we are
+/// NOT in a self-loop tail position (a `return_call`/`br` arm never reaches the post-match drop — leak,
+/// harmless — and the stash slot is reused next iteration; conservative skip mirrors `MatchSum`'s
+/// `arms_tail_call` guard), and NO arm BORROWS a heap sub-value OUT of the shell that could alias into it.
+///
+/// The reclaim is a single DEEP `drop` emitted AFTER the selected arm's body has fully run, so every borrow
+/// USED DURING arm evaluation is already dead — the only unsafe reference is one that a heap sub-value read
+/// materialized and that OUTLIVES the drop (returned as the result, or an inner-match scrutinee handle). A
+/// SCALAR element (a `vec-get`+`get-int` COPIES the scalar out) never materializes such a handle; a heap
+/// element DESTRUCTURED all the way down to scalars (`(list (tuple a _) …)` → nested `arr-get` bottoming in
+/// `get-int`) likewise materializes no live heap handle, so the shell + its (transitively unreferenced) heap
+/// sub-structure deep-drops with no live alias. But an arm that reads a heap element/field handle AS A VALUE
+/// (`(list r1 r2)` binding whole records, or returning an element) BORROWS into the shell — dropping it would
+/// free a still-referenced value (the sread-UAF floor, same restriction `sum_has_only_scalar_payloads`
+/// enforces for sums). `arm_borrows_heap_subvalue` detects exactly those borrowing reads; a `RestFrom` tail
+/// (`(list _ .. r)`) is EXCLUDED — its `dup`+`vec-drop` yields a FRESH owned sublist that does not alias the
+/// shell's ownership, so a heap-element rest binder does not block the shell reclaim.
 fn list_shell_reclaim_slot(
     db: &mut Db,
     scrutinee: StructId,
+    arms: &[crate::core::ListArm],
     owned_stash: Option<u32>,
     tail: TailPos,
     never_diverges: bool,
@@ -15709,17 +15723,60 @@ fn list_shell_reclaim_slot(
     if never_diverges || matches!(tail, TailPos::Tail(Some(_))) {
         return None;
     }
-    let Ty::List(elem) = type_of(db, scrutinee) else {
+    if !matches!(type_of(db, scrutinee), Ty::List(_)) {
         return None;
-    };
-    if is_heap_type(&elem) {
-        return None; // heap element: `vec-get` borrows/aliases into the shell — dropping it would UAF.
+    }
+    // A borrowing heap sub-value read in ANY arm aliases into the shell → a deep drop would UAF. (A scalar
+    // element, or a heap element fully destructured to scalars, reads no live handle.)
+    if arms.iter().any(|a| {
+        arm_borrows_heap_subvalue(db, a.body)
+            || a.guard.is_some_and(|g| arm_borrows_heap_subvalue(db, g))
+    }) {
+        return None;
     }
     matches!(
         heap_operand_ownership(db, scrutinee),
         Ok(HandleOwnership::Owned)
     )
     .then_some(slot)
+}
+
+/// Whether the expression at `id` READS a heap sub-value OUT of a compound AS A LIVE HANDLE — a borrowing
+/// projection (`arr-get`/`vec-get`/`sum-payload`) whose result is itself a heap handle, which for a
+/// `MatchList` arm may alias into the owned scrutinee shell and thus outlive it (see `list_shell_reclaim_slot`).
+/// Conservative over-approximation: ANY heap-typed borrowing read anywhere in the subtree returns `true`
+/// (declining the shell reclaim — a leak, never a double-free), even one off an unrelated fresh value. A
+/// `RestFrom` tail is EXCLUDED: `vec-drop` mints a FRESH owned sublist (net-zero on the scrutinee), not a
+/// borrow into it. A read bottoming in a SCALAR (`get-int`/`get-bool`, so the node's own type is scalar)
+/// copies out and holds no handle → not counted. Sharing-aware node-id `seen` set (idempotent — presence
+/// only), same rationale as `collect_shell_reclaim_child_dups`.
+fn arm_borrows_heap_subvalue(db: &mut Db, id: StructId) -> bool {
+    let mut seen = HashSet::new();
+    arm_borrows_heap_subvalue_seen(db, id, &mut seen)
+}
+
+fn arm_borrows_heap_subvalue_seen(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    let is_heap_borrow = match core_of(db, id) {
+        // A tuple/record field read, or an `Option.expect` payload read — a borrowing `arr-get`/`sum-payload`.
+        // If THIS node's own result is a heap handle, it materializes a live borrow (of a field / payload).
+        Core::Proj { .. } | Core::SumExpect { .. } => is_heap_type(&type_of(db, id)),
+        // A pattern payload/element read. A `RestFrom` tail is a fresh OWNED sublist (not a borrow) → exclude;
+        // any other final step (`Elem`/`Payload`) is a borrowing read. Heap result ⇒ a live handle borrow.
+        Core::SumPayload { ref path, .. } => {
+            !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
+                && is_heap_type(&type_of(db, id))
+        }
+        _ => false,
+    };
+    if is_heap_borrow {
+        return true;
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| arm_borrows_heap_subvalue_seen(db, c, seen))
 }
 
 /// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
