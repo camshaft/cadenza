@@ -7341,3 +7341,5 @@ pass	cn02d the SAME shape under a (const ...) demand DOES surface CDZ0304 (the e
 pass	cx8 an effect-performing closure RETURNED from a helper then invoked
 todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
+pass	ch01 a bare prim passed as a function value applies
+pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
