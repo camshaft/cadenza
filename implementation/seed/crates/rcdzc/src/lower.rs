@@ -26564,13 +26564,51 @@ fn lower_sum_expect(db: &mut Db, id: StructId, sum: StructId) -> Core {
 
 /// Lower `(Int64.checked-add a b)` / `(Int64.checked-mul a b)` — the FALLIBLE arithmetic companions of
 /// the trapping `+`/`*`, returning `(Option T)`: `Some result` when it fits the width / `None` on
+/// Materialize each of `operands` that REACHES A HOST CALL as a SINGLE evaluation before `body_core`
+/// names it more than once — a self-keyed `Core::Let { (op, op) }` per such operand, marking it a kept
+/// binding so every reference in the body lowers to a shared `Core::LocalRef` (one `local.get`), computing
+/// the operand exactly once. Without this, a compose that names an operand in several positions (a
+/// range-check's `operand > tmax` compare AND its `wrap(operand)` else; a checked-arith's overflow formula
+/// AND its `Some` result) re-emits the operand PER REFERENCE — and for an EFFECTFUL operand (a host-call-
+/// lifted value like `(hosti.base unit)`) the effect FIRES PER USE: the host op is invoked N times, draining
+/// N queued responses / trapping when the responses run out (breaker adv-tof-host-u64: `Int64.of (host-u64
+/// 1000)` spuriously trapped because the range-check re-invoked the host call). Mirrors
+/// [`materialize_row_op_operand`] and the adv-62b `let` force-keep ([`core_reaches_host_call`]). A PURE
+/// operand (no host call) is left as-is: duplicating a scalar recompute is sound (idempotent, no effect, no
+/// heap), so it needs no Let-wrapping. Deduplicates a repeated operand id (e.g. `checked-add a a`).
+fn materialize_host_operands_once(
+    db: &mut Db,
+    id: StructId,
+    operands: &[StructId],
+    body_core: Core,
+) -> Core {
+    let mut bindings: Vec<(StructId, StructId)> = Vec::new();
+    for &op in operands {
+        let mut seen = std::collections::HashSet::new();
+        if core_reaches_host_call(db, op, &mut seen) && !bindings.iter().any(|(b, _)| *b == op) {
+            db.kept_bindings.insert(op);
+            bindings.push((op, op));
+        }
+    }
+    if bindings.is_empty() {
+        return body_core;
+    }
+    let ty = crate::infer::type_of(db, id);
+    let body = synth_core(db, body_core, ty);
+    Core::Let {
+        bindings: bindings.into(),
+        body,
+    }
+}
+
 /// overflow (numeric-model.md §Overflow Is Defined). FOLD a constant operand pair via `i64` checked
 /// arithmetic (the SAME `checked_add`/`checked_mul` `fold_arith` uses to prove the trapping op's overflow
 /// — but here overflow yields `None`, not a build error): in range → `Core::SumNew{disc_some, [result]}`
 /// (the result a fresh `Core::ConstInt` synthesized into the arena, the `Some` payload — the shape
 /// `List.at`/`String.at` use); overflow → `Core::SumNew{disc_none, []}`. Both fold to the ordinary Option
-/// construction, riding the sum fold/escape/match. A runtime operand is a later increment (declines
-/// cleanly); a poison operand propagates.
+/// construction, riding the sum fold/escape/match. A runtime operand composes an overflow-check
+/// (`materialize_host_operands_once` guards a host-lifted operand from double-firing); a poison operand
+/// propagates.
 fn lower_checked_arith(
     db: &mut Db,
     id: StructId,
@@ -26769,11 +26807,14 @@ fn lower_checked_arith(
                 },
                 result_ty,
             );
-            Core::If {
+            let if_core = Core::If {
                 cond: ovf,
                 then_: none,
                 else_: some,
-            }
+            };
+            // The compose names `lhs`/`rhs` in several positions (the wrapping result, the overflow
+            // formula) — materialize a HOST-LIFTED operand ONCE so its effect does not fire per reference.
+            materialize_host_operands_once(db, id, &[lhs, rhs], if_core)
         }
     }
 }
@@ -29019,11 +29060,16 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                         }
                         let last = *conds.last().expect("non-empty");
                         let trap = synth_core(db, Core::Trap, target_ty.clone());
-                        return Core::If {
+                        let if_core = Core::If {
                             cond: last,
                             then_: trap,
                             else_: else_id,
                         };
+                        // The compose names `operand` in each range-check compare AND the `Wrap` else — so
+                        // materialize a HOST-LIFTED operand ONCE (else the host effect fires per reference:
+                        // breaker adv-tof-host-u64 saw `Int64.of (host-u64 1000)` spuriously trap on the
+                        // range-check re-invoking the host call and draining its lone queued response).
+                        return materialize_host_operands_once(db, id, &[operand], if_core);
                     }
                 }
                 // A non-int source or unresolved target bounds can't be range-checked here — decline honestly.

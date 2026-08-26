@@ -4097,6 +4097,8 @@ pass	a typed reducer performing a record-with-a-direct-bytes-field host arg emit
 pass	a typed reducer performing a record-with-a-list-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-tuple-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-variant-f64-field host arg emits, loads, and runs (via an imposed WIT world)
+pass	Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)
+pass	Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)
 pass	a typed reducer performing a record-with-a-variant-scalar-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)
