@@ -23276,6 +23276,22 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
     }
 }
 
+/// Canonical VALUE total order over `CVal`s — the const-EVALUATOR twin of [`const_key_order`] (which orders
+/// `Core` nodes). Orders the SAME classes it does — `Int` numerically (≤64-bit; a wider value declines), `Str`
+/// lexicographically, `Bool`, `Unit` — and declines (`None`) every other class (Char / Bytes / Float / a
+/// nested collection / …). Keeping the orderable set IDENTICAL to `const_key_order` (and to the runtime
+/// `set-to-list` op's own non-orderable decline) is what makes the const_eval `Set.to-list` materialization
+/// byte-match the `core_of` fold (#3765) AND the runtime op — same spec-pinned canonical order, three impls.
+fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (CVal::Int(x), CVal::Int(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
+        (CVal::Str(x), CVal::Str(y)) => Some(x.cmp(y)),
+        (CVal::Bool(x), CVal::Bool(y)) => Some(x.cmp(y)),
+        (CVal::Unit, CVal::Unit) => Some(std::cmp::Ordering::Equal),
+        _ => None,
+    }
+}
+
 /// Whether the operand at `id` has a type the runtime `value-eq` heap walk (`champ_eq`) compares
 /// CORRECTLY — a compound whose leaves are all SCALAR (Int/Bool/Unit), reached through tuples, records,
 /// and sum variants. Such a value is CANONICAL BY CONSTRUCTION: it holds no embedded RRB vector, CHAMP
@@ -25292,6 +25308,31 @@ fn const_eval_apply(
             && let [CVal::Set(s)] = &vs[..]
         {
             return Some(CVal::Int(crate::ast::IntValue::from_i64(s.len() as i64)));
+        }
+        // `Set.to-list s` → the set's elements as a list in CANONICAL VALUE ORDER — the const_eval twin of
+        // `lower_set_to_list`'s fold (#3765), so a set built through the RECURSIVE engine (a `CVal::Set` this
+        // stage never reduced to a `Core::SetOf`) or consumed by a const-param helper materializes too, not
+        // just a syntactic `Set.of`. Byte-matches the runtime `set-to-list` op: the enumeration order is the
+        // spec-pinned canonical value total order (`collections-and-text.md` §Set Iteration Is Deterministic),
+        // which `cval_key_order` computes — the SAME order `const_key_order`/`value_cmp_shaped` use (v-runtime
+        // contract). An element the canonical order cannot rank (Char/Bytes/Float/nested — `cval_key_order`
+        // declines, EXACTLY the classes the runtime op declines too) declines the whole materialization. The
+        // set is already dedup'd by value (`Set.of`/insert folds), so this only reorders.
+        if prim == Prim::SetToList
+            && let [CVal::Set(s)] = &vs[..]
+        {
+            let mut sorted = s.clone();
+            let mut orderable = true;
+            sorted.sort_by(|x, y| {
+                cval_key_order(x, y).unwrap_or_else(|| {
+                    orderable = false;
+                    std::cmp::Ordering::Equal
+                })
+            });
+            if !orderable {
+                return None;
+            }
+            return Some(CVal::List(sorted));
         }
         // `Set.remove (s, e)` → `s` without `e` (a no-op if absent). Order-independent, never materialized.
         if prim == Prim::SetRemove
