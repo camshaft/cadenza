@@ -1543,6 +1543,32 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
+    /// A MIXED name-list — v-syntax's canonical example `import { descriptor as foo, other } from "path"`
+    /// — where ONE import binds a RENAMED element (`descriptor as foo`) AND a PLAIN element (`helper`) in
+    /// the same list. The per-element loop must bind each by its own kind (rename → local=foo/exported=
+    /// descriptor; plain → local==exported==helper) without one element's handling disturbing the next.
+    /// This is the realistic authoring form (rename the colliding name, import the rest plainly); the
+    /// earlier pins used all-rename or all-plain lists, so the heterogeneous case was uncovered.
+    #[test]
+    fn ml_surface_a_mixed_rename_and_plain_import_list_binds_both() {
+        let out = compile_package_ml_app(
+            &[(
+                "lib",
+                "(do (def (descriptor) 30) (def (helper) 12) (export descriptor) (export helper))",
+            )],
+            "import { descriptor as foo, helper } from \"lib\"\n\
+             def from-renamed() = foo\n\
+             def from-plain() = helper\n\
+             export { from-renamed, from-plain }",
+        );
+        assert!(
+            !out.has_error(),
+            "a mixed rename+plain import list must bind both the renamed and the plain name; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
     /// β-COPY HYGIENE (`DESIGN-package-linking.md` §4 note): `app` imports `pub-helper` from `lib`;
     /// `pub-helper`'s body calls a PRIVATE sibling `priv-helper` (also in `lib`, NOT imported by
     /// `app`). When `pub-helper` inlines into `app`'s `main`, its copied body's reference to
