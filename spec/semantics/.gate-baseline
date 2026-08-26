@@ -7873,3 +7873,6 @@ pass	rha1 a resumed op with a LIST argument — the arm reads it, everything rec
 pass	rha2 a resumed op with an in-program STRING argument reclaims
 pass	rha3 heap ARG and heap STATE together in one dispatch — both reclaim
 pass	rha4 an op ARGUMENT becomes the next STATE — the replaced state reclaims
+pass	nh1 nested handlers with LIST state at BOTH levels — both reclaim
+pass	nh2 the inner arm DELEGATES to the outer with heap state at both levels
+pass	nh3 the inner handle RESULT is a heap value consumed by the outer body
