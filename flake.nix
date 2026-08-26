@@ -620,7 +620,9 @@
               # cdz-run gained a `cdz-contract` dep in the base62 flip (#3090: content_address delegates
               # to cdz_contract::Hash::of), so cdz-contract enters both the rcdzc closure (via its cdz-run
               # dev-dep) and the xtask closure (direct dep). cadenza-ast was already present via cdz-contract.
-              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-contract" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
+              # cdz-run then gained a `cdz-corpus-grade` dep (#3470: the shared corpus grade compare), which
+              # only path-deps cadenza-syntax (already present) — so it enters rcdzc's closure via cdz-run.
+              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-contract" "cdz-corpus-grade" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
               cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
               cdz-num = [ "cdz-num" ];
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
