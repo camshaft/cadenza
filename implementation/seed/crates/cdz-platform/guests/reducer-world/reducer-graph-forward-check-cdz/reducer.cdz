@@ -1,0 +1,87 @@
+// The §4 GRAPH-ROUTING checker (FORWARD arm), as a Cadenza reducer guest (design/cadenza-platform.md §4/§9).
+// The complement of the REJECT arm (reducer-graph-check-cdz): the paired run installs the contract-agnostic
+// default event handler (reducer-default-handler-cdz) as the registry default, SEEDS a transform chain for the
+// emitting reducer on a contract (an `edges` entry: emitter -> contract -> [transform]), and has the emitter
+// perform an effect on that contract. The default handler reads the emitter's chain for the contract from the
+// graph — NON-EMPTY — and FORWARDS the effect to the first transform via `deliver-message` (the full envelope
+// intact, no rejection). This checker asserts that forward act happened, LOG-ONLY and guest-agnostic.
+//
+// Same three schemas as the reject checker: the check Envelope (log-in), the verdict Verdict (pass/fail-out),
+// and log-schema LogRecord/Entry (the decoded log, carrying both `GraphNeighbors` — the graph read — and
+// `Routed` — the deliver act). The `libs` manifest beside this file lists their repo-relative paths.
+//
+// JUDGEMENT: pass iff some `Routed(contract = C, error = None)` — the default handler FORWARDED a message (a
+// deliver-message carries no answer, so no error, unlike the reject arm's rejection `response` whose
+// `answer = Err`) — is matched by a `GraphNeighbors(kind = C, result = non-empty)` — the transform chain it
+// read for that same contract. Both are load-bearing: the non-empty chain is WHY it forwarded (rather than
+// rejecting), and the errorless route is the forward ACT. RELATIONAL on the run-controlled contract-id C (no
+// hardcoded id). NON-VACUOUS — a guest that fails to instantiate performs no route (no `Routed` recorded); a
+// default handler that read an empty chain would reject (error = Some) and yield no matching errorless route.
+// Reuses the settled Bytes-equality + explicit INDEX RECURSION idiom (List.at returns Option, terminating the
+// walk). `Entry`/`LogRecord` are IMPORTED sums (variant count invisible), so each match has a catch-all arm.
+import { Envelope } from "check"
+import { Verdict } from "verdict"
+import { LogRecord, Entry } from "log-schema"
+
+type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
+type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+
+// Is the chain non-empty? (a configured transform chain — at least one target.) Mirrors the at-None idiom.
+def chain-is-nonempty(targets: List(Bytes)) =
+  match List.at(targets, 0) with
+  | Option.None(_) => false
+  | Option.Some(_) => true
+
+// Was the route a FORWARD (a message, carrying no answer/error), as opposed to a rejection response?
+def is-forward(answer: Option(String)) =
+  match answer with
+  | Option.Some(_) => false
+  | Option.None(_) => true
+
+// Does some GraphNeighbors at index >= i read a NON-EMPTY chain for kind == c? (the default handler found a
+// configured transform for contract c.)
+def has-nonempty-chain(records: List(LogRecord), i: Int64, c: Bytes) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.GraphNeighbors(n) if (n.kind == c and chain-is-nonempty(n.result)) => true
+        | _ => has-nonempty-chain(records, i + 1, c))
+
+// Is some Routed(contract = C, error = None) matched by a GraphNeighbors(kind = C, non-empty)? Scans routed
+// records; for each errorless (message) route, checks the whole log for the non-empty chain it was read
+// against — proving the default handler FORWARDED an effect on a configured contract.
+def forward-holds(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => false
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.Routed(rt) if (is-forward(rt.error) and has-nonempty-chain(records, 0, rt.contract)) => true
+        | _ => forward-holds(records, i + 1))
+
+def verdict-payload(records: List(LogRecord)) =
+  if forward-holds(records, 0)
+  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
+  else Value.encode(Verdict.Verdict({ pass = false,
+                                      messages = ["no Routed(no-error) matched a GraphNeighbors(non-empty) of the same contract: the default handler did not forward an effect along its configured transform chain"] }))
+
+def verdict-req(verdict-contract: Bytes, payload: Bytes) =
+  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Envelope)) with
+  | Some(Envelope.Check(c)) =>
+      (match (Value.decode(c.log) : Option(List(LogRecord))) with
+       | Some(records) =>
+           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
+       | None =>
+           { requests = [verdict-req(c.verdict,
+                                     Value.encode(Verdict.Verdict({ pass = false,
+                                                                    messages = ["observation log did not decode"] })))],
+             outcome = Outcome.Continue })
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
+
+def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
+def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+export { on-message, on-response, on-notification }
