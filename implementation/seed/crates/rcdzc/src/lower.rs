@@ -28800,11 +28800,87 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                     };
                 }
             }
-            // A NON-total `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not
-            // yet built, so decline rather than emit a truncating `Convert` (that would be `wrap`'s
-            // semantics — a MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). The
-            // checked-narrowing emit (the `Core::CheckedArith` companion) is a task follow-up.
+            // A NON-total `T.of` on a RUNTIME operand: emit a RANGE-CHECK-then-TRAP, composed from existing
+            // Core (no new variant). The provably-total fast-paths above already emitted `Wrap` (an in-range
+            // value is unchanged by the target-width reinterpret), so reaching here the operand CAN be out of
+            // range and MUST trap on it (a bare `Wrap` here would be a miscompile — `wrap`'s truncate where
+            // `of` must trap). Compose: nested `if <operand out of [tmin,tmax]> then trap else wrap(operand)`.
+            // The bound consts are typed as the OPERAND's type so `Core::Compare` derives the right
+            // signedness (`operand_int_ty`); an UNSIGNED operand (min 0) needs only the upper check (it can
+            // never underflow a `tmin <= 0` target), a SIGNED operand needs lower + upper. High-traffic:
+            // `Int64.of` of a `u64` host result (trap iff `>u i64::MAX`), `UInt64.of` of an `Int64` (trap iff
+            // `<s 0`); also the narrower cross-width narrowings.
             if matches!(op, Prim::CheckedOf) {
+                let operand = args[0];
+                let src_ty = crate::infer::type_of(db, operand);
+                let target_it = crate::ty::IntTy::fixed(signed, width);
+                let target_ty = crate::ty::Ty::Int(target_it);
+                let src_signed = matches!(&src_ty, crate::ty::Ty::Int(it) if it.ground_signed());
+                if matches!(&src_ty, crate::ty::Ty::Int(_))
+                    && let Some((tmin, tmax)) = resolved_int_bounds(target_it)
+                {
+                    // The out-of-range checks (`Bool` occurrences): upper (`operand > tmax`) for any operand;
+                    // lower (`operand < tmin`) only for a signed operand (an unsigned one is `>= 0 >= tmin`).
+                    let mut conds: Vec<StructId> = Vec::new();
+                    if let Some(thi) = tmax {
+                        let bound =
+                            synth_core(db, Core::ConstInt(IntValue::from_i64(thi)), src_ty.clone());
+                        conds.push(synth_core(
+                            db,
+                            Core::Compare {
+                                op: Prim::Gt,
+                                lhs: operand,
+                                rhs: bound,
+                            },
+                            crate::ty::Ty::Bool,
+                        ));
+                    }
+                    if src_signed && let Some(tlo) = tmin {
+                        let bound =
+                            synth_core(db, Core::ConstInt(IntValue::from_i64(tlo)), src_ty.clone());
+                        conds.push(synth_core(
+                            db,
+                            Core::Compare {
+                                op: Prim::Lt,
+                                lhs: operand,
+                                rhs: bound,
+                            },
+                            crate::ty::Ty::Bool,
+                        ));
+                    }
+                    if !conds.is_empty() {
+                        // else (in range) = the target-width reinterpret (`Wrap`), identity for an in-range value.
+                        let mut else_id = synth_core(
+                            db,
+                            Core::Convert {
+                                op: Prim::Wrap,
+                                operand,
+                            },
+                            target_ty.clone(),
+                        );
+                        // Nest one `if <check> then trap else …` per check; the last becomes THIS node's Core.
+                        for &cond in &conds[..conds.len() - 1] {
+                            let trap = synth_core(db, Core::Trap, target_ty.clone());
+                            else_id = synth_core(
+                                db,
+                                Core::If {
+                                    cond,
+                                    then_: trap,
+                                    else_: else_id,
+                                },
+                                target_ty.clone(),
+                            );
+                        }
+                        let last = *conds.last().expect("non-empty");
+                        let trap = synth_core(db, Core::Trap, target_ty.clone());
+                        return Core::If {
+                            cond: last,
+                            then_: trap,
+                            else_: else_id,
+                        };
+                    }
+                }
+                // A non-int source or unresolved target bounds can't be range-checked here — decline honestly.
                 return Core::Poison(Reject::decline(
                     "a runtime checked integer conversion (T.of) that could be out of range is not yet emitted (convert a constant, widen instead of narrow, or use T.wrap)",
                 ));
