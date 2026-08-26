@@ -101,6 +101,115 @@ pub fn is_env_param(param: &str) -> bool {
     param.trim_start().starts_with("__cdz_env") || param.contains("&mut __CdzE")
 }
 
+/// Whether a type string names a runtime closure VALUE — either the SYNC `Rc<dyn Fn(…)>` or the ASYNC
+/// (Option A) `Rc<dyn cdz_rt::EnvClosure<A, R>>` (a lifted async closure crosses as an `EnvClosure` trait
+/// object, not a `dyn Fn`, since its `call` future borrows the `&mut env`). Both closure-detection sites
+/// (a PARAM type, a factory RESULT type) key off this so the async host-closure cases are recognized as
+/// factories/consumers/producers exactly like the sync ones.
+pub fn names_closure_value(ty: &str) -> bool {
+    ty.contains("Rc<dyn Fn(")
+        || ty.contains("Rc<dyn cdz_rt::EnvClosure<")
+        || ty.contains("Rc<dyn EnvClosure<")
+}
+
+/// Whether a parameter slice (`<name>: <type>`) is a closure — sync `Rc<dyn Fn(…)>` or async `Rc<dyn
+/// EnvClosure<…>>`.
+pub fn is_closure_param(param: &str) -> bool {
+    names_closure_value(param)
+}
+
+/// The closure TYPE of a parameter slice (`g: std::rc::Rc<dyn Fn(i64) -> i64>`) → the `Rc<dyn Fn…>` text,
+/// or `None` if the param is not a closure. Extracts the BALANCED `Rc<…>` (stops at the angle bracket that
+/// matches the opening `<` of `Rc<`), so a param that is NOT last in the list (`g: Rc<dyn Fn(i64)->i64>,
+/// x: i64`) yields ONLY the closure type. This matters for a HIGHER-ORDER producer: a substring-tolerant
+/// match would false-pair a first-order consumer param `Rc<dyn Fn(i64)->i64>` to a higher-order producer
+/// `Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->i64>` (the former is a substring of the latter), so the pairing must
+/// compare EXACT balanced closure types.
+pub fn closure_param_type(param: &str) -> Option<&str> {
+    let start = param
+        .find("std::rc::Rc<dyn Fn(")
+        .or_else(|| param.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| param.find("Rc<dyn Fn("))
+        .or_else(|| param.find("Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| param.find("Rc<dyn EnvClosure<"))?;
+    let rest = &param[start..];
+    // Find the `<` that opens `Rc<` and walk to its MATCHING `>` (depth-balanced over `<`/`>`), so a nested
+    // `Rc<dyn Fn(Rc<…>)…>` returns its whole self and a trailing `, x: i64` is excluded. CRITICAL: the
+    // return arrow `->` contains a `>` that must NOT be counted as a closing angle bracket — skip a `>`
+    // immediately preceded by `-` (matching Rust's `->` in the emitted `Rc<dyn Fn(A) -> R>`).
+    let open = rest.find('<')?;
+    let bytes = rest.as_bytes();
+    let mut depth = 0i32;
+    for (i, c) in rest.char_indices().skip(open) {
+        match c {
+            '<' => depth += 1,
+            '>' if i > 0 && bytes[i - 1] == b'-' => {} // the `>` of a `->` return arrow — not a bracket
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[..=i].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(rest.trim())
+}
+
+/// The TYPE of a parameter slice `<name>: <type>` → the `<type>` text (everything after the first `:`).
+pub fn param_type_of(param: &str) -> String {
+    match param.split_once(':') {
+        Some((_, ty)) => ty.trim().to_string(),
+        None => param.trim().to_string(),
+    }
+}
+
+/// The closure type out of a return-head — sync `-> …Rc<dyn Fn(i64) -> i64>` or async `-> …Rc<dyn
+/// cdz_rt::EnvClosure<i64, i64>>`. `None` if the return is not a closure.
+pub fn closure_ret_type(ret_head: &str) -> Option<String> {
+    let start = ret_head
+        .find("std::rc::Rc<dyn Fn(")
+        .or_else(|| ret_head.find("std::rc::Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| ret_head.find("Rc<dyn Fn("))
+        .or_else(|| ret_head.find("Rc<dyn cdz_rt::EnvClosure<"))
+        .or_else(|| ret_head.find("Rc<dyn EnvClosure<"))?;
+    Some(ret_head[start..].trim().to_string())
+}
+
+/// A FACTORY (producer) export's CAPTURE-param count — its source params minus the async env param — or
+/// `None` if `name` is not a factory (its return type is not a closure). Detecting the env param by NAME
+/// (not a blind `-1`) keeps a hand-authored env-less async fixture correct.
+pub fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
+    let sig = parse_emitted_sig(module, name, async_mode)?;
+    if !names_closure_value(&sig.ret_head) {
+        return None;
+    }
+    Some(sig.params.iter().filter(|p| !is_env_param(p)).count())
+}
+
+/// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
+/// boundary between the factory's own arg group and the returned-closure application. `None` when there is
+/// no top-level application group (a non-factory `export(args…)`, or a factory whose closure is not
+/// applied). The split is the FIRST `)` at paren-depth 0 immediately followed by `(` — a nested `)(` inside
+/// a compound argument sits at depth > 0 and is skipped, so only the real factory/application seam matches.
+pub fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
+    let bytes = call_expr.as_bytes();
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 && call_expr[i + 1..].starts_with('(') {
+                    return Some((call_expr[..=i].to_string(), call_expr[i + 1..].to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +268,74 @@ mod tests {
         assert!(is_env_param("__cdz_env: &mut E"));
         assert!(is_env_param("e: &mut __CdzE"));
         assert!(!is_env_param("x: i64"));
+    }
+
+    #[test]
+    fn closure_value_detection_sync_and_async() {
+        assert!(names_closure_value("std::rc::Rc<dyn Fn(i64) -> i64>"));
+        assert!(names_closure_value("Rc<dyn cdz_rt::EnvClosure<i64, i64>>"));
+        assert!(!names_closure_value("i64"));
+        assert!(is_closure_param("g: Rc<dyn Fn(i64) -> i64>"));
+        assert!(!is_closure_param("x: i64"));
+    }
+
+    #[test]
+    fn closure_param_type_is_balanced_not_substring() {
+        // A trailing `, x: i64` is excluded; the `->` inside is not miscounted as a close.
+        let p = "g: std::rc::Rc<dyn Fn(i64) -> i64>";
+        assert_eq!(
+            closure_param_type(p),
+            Some("std::rc::Rc<dyn Fn(i64) -> i64>")
+        );
+        // Higher-order: the whole nested Rc<…> is returned, not the inner one.
+        let ho = "g: Rc<dyn Fn(Rc<dyn Fn(i64) -> i64>) -> i64>";
+        assert_eq!(
+            closure_param_type(ho),
+            Some("Rc<dyn Fn(Rc<dyn Fn(i64) -> i64>) -> i64>")
+        );
+        assert_eq!(closure_param_type("x: i64"), None);
+    }
+
+    #[test]
+    fn param_type_and_closure_ret() {
+        assert_eq!(
+            param_type_of("g: Rc<dyn Fn(i64)->i64>"),
+            "Rc<dyn Fn(i64)->i64>"
+        );
+        assert_eq!(
+            closure_ret_type("-> std::rc::Rc<dyn Fn(i64) -> i64>").as_deref(),
+            Some("std::rc::Rc<dyn Fn(i64) -> i64>")
+        );
+        assert_eq!(closure_ret_type("-> i64"), None);
+    }
+
+    #[test]
+    fn factory_param_count_counts_captures_minus_env() {
+        // A factory: return type is a closure; two capture params (a, b), env excluded.
+        let m = "pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { todo!() }";
+        assert_eq!(rust_factory_param_count(m, "both", false), Some(2));
+        // Async: the env param is not a capture.
+        let am = "pub async fn f<E>(__cdz_env: &mut E, a: i64) -> Rc<dyn cdz_rt::EnvClosure<i64,i64>> { todo!() }";
+        assert_eq!(rust_factory_param_count(am, "f", true), Some(1));
+        // A non-factory (scalar return) is None.
+        assert_eq!(
+            rust_factory_param_count("pub fn g(a: i64) -> i64 { a }", "g", false),
+            None
+        );
+    }
+
+    #[test]
+    fn factory_application_seam_split() {
+        assert_eq!(
+            split_factory_application("both(10, 20)(5)"),
+            Some(("both(10, 20)".to_string(), "(5)".to_string()))
+        );
+        // A nested `)(` inside a compound arg is at depth > 0 → not the seam.
+        assert_eq!(
+            split_factory_application("f((tuple 1 2), (record x))"),
+            None
+        );
+        // A plain non-factory call has no application group.
+        assert_eq!(split_factory_application("f(1, 2)"), None);
     }
 }
