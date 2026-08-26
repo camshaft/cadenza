@@ -9777,3 +9777,24 @@
   (input  (do (def (f (: k Int64)) (Int64.checked-mul k 3)) (export f)))
   (call   f 14)
   (output (: (Some 42) (Option Int64))))
+
+; -- breaker batch 418 (2026-08-26): signed-zero equality faces — bare = distinguishes +0.0 from a
+; TRUE runtime -0.0 (made via (* x -1.0); note (- 0.0 x) at x=+0.0 yields +0.0 per IEEE), and the
+; zeros that compare unequal also BEHAVE differently under division (1/-0.0 = -inf, 1/+0.0 = +inf).
+
+(case "nz1 bare = distinguishes +0.0 from a TRUE runtime -0.0"
+  (input (do
+    (def (main (: x Float64))
+      (if (= x (* x -1.0)) 1 0))
+    (export main)))
+  (call main (: 0.0 Float64))
+  (output (: 0 Int64)))
+
+(case "nz5 the zeros compare = only to themselves yet BEHAVE differently under division"
+  (input (do
+    (def (main (: x Float64))
+      (let ((neg (* x -1.0)))
+        (if (< (/ 1.0 neg) 0.0) (if (> (/ 1.0 x) 0.0) 1 -2) -1)))
+    (export main)))
+  (call main (: 0.0 Float64))
+  (output (: 1 Int64)))
