@@ -829,3 +829,13 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (val -5000000000) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: -5000000000 Int64)))
+
+(case "a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)"
+  (doc "SHAPE 55 - a host op returning a variant one of whose cases carries a NON-scalar (compound) payload: variant{raw(list<u8>), empty}. The result spills; the guest lifts the disc + the selected case's payload from the retptr'd region via emit_variant_sum_lift, which RECURSES emit_result_lift for a compound payload (a list<u8> = copy-out of the bytes) rather than the scalar leaf-box. Stubbing get -> (raw (list 1 2 3 4 5)) selects the Raw arm and reads Bytes.len = 5; the (empty) arm returns -1. Generalizes the scalar variant-result lift (SHAPE 54) to a liftable-compound payload (list/bytes/tuple/record via the shared recursion) - the variant_liftable_payload_cases admission, RESULT-side only (the ARG marshal stays scalar-only). Consumer-relevant: the deliver-response dispatch returns variant-payload results.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member get (func (result ("variant" (raw ("list" (u8))) (empty))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type V (Raw Bytes) (VEmpty)) (effect hosti (op get (-> Unit V))) (def (f (: m (Record (: x Int64)))) (host (hosti) (match (hosti.get unit) ((Raw b) (Int64.of (Bytes.len b))) ((VEmpty) -1)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (raw (list 1 2 3 4 5)) V)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: 5 Int64)))
