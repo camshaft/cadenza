@@ -1892,21 +1892,23 @@
 ; that panicked on unbalanced input, or that silently took the first node and dropped a trailing token,
 ; would break these. All → `(declines)`.
 
-(case "read of text that is not a well-formed s-expression declines"
+(case "read of text that is not a well-formed s-expression rejects with CDZ0201"
   (doc    "`(Ast.read \"(((\")` — unbalanced open parens are not a well-formed s-expression over the Ast
-           subset, so `read` DECLINES (`lower_read`'s parse-failure arm) rather than trapping or fabricating
-           a partial AST. Pins that the reader is total on malformed input — the `read` companion of the
-           adversarial-bytes `Ast.decode` totality cases, and of the parser/lexer never-panic invariant.")
+           subset, so `read` REJECTS with CDZ0201 (`lower_read`'s coded parse-failure arm) rather than
+           trapping or fabricating a partial AST. Malformedness is a permanent fact, so it is a coded
+           rejection of ill-formed input, NOT a codeless decline. Pins that the reader is total on
+           malformed input — the `read` companion of the adversarial-bytes `Ast.decode` totality cases,
+           and of the parser/lexer never-panic invariant.")
   (input  (Ast.read "((("))
-  (declines))
+  (error CDZ0201))
 
-(case "read of text with trailing content after the first s-expression declines"
+(case "read of text with trailing content after the first s-expression rejects with CDZ0201"
   (doc    "`(Ast.read \"1 2\")` — a valid first node (`1`) FOLLOWED by more input (`2`). `read` must consume the
-           WHOLE string (the `r.at_end()` check in `lower_read`), so trailing content declines rather than
-           silently reading `1` and dropping `2`. The `read` parallel of the decode case where canonical
-           bytes plus a trailing byte yield `Err`: a valid prefix is not a valid whole.")
+           WHOLE string (the `r.at_end()` check in `lower_read`), so trailing content is rejected with
+           CDZ0201 rather than silently reading `1` and dropping `2`. The `read` parallel of the decode case
+           where canonical bytes plus a trailing byte yield `Err`: a valid prefix is not a valid whole.")
   (input  (Ast.read "1 2"))
-  (declines))
+  (error CDZ0201))
 
 (case "read of the empty string declines"
   (doc    "`(Ast.read \"\")` — no s-expression at all. The empty string parses to no node, so `read` declines
