@@ -10407,43 +10407,6 @@ fn a_negated_repeated_condition_in_a_nested_if_collapses() {
     );
 }
 
-/// STRENGTH REDUCTION `x * 2^k → x << k`: a multiply by a constant power of two runs to the SAME value
-/// AND traps on the SAME overflowing inputs as the multiply would (a left shift is exact multiplication
-/// by a power of two — `numeric-model.md`). Exercised over signed/unsigned/narrow widths and both
-/// operand orders; the trap parity is the load-bearing check (a wrong overflow guard would silently
-/// wrap instead of trapping).
-#[test]
-fn multiply_by_power_of_two_runs_and_traps_like_the_multiply() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // Int64 * 8: value + overflow trap.
-    let m8 = "(module m (def (f (: n Int64)) (* n 8)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(m8))).expect("compile");
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(5)]), 40);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(-5)]), -40);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(0)]), 0);
-    // 2^60 * 8 = 2^63 exceeds Int64 max → trap (exactly as `*` would).
-    assert!(
-        call_traps(&b, "f", &[Val::S64(1i64 << 60)]),
-        "x * 8 must trap on overflow like the multiply"
-    );
-    // Const on the LEFT: 32 * n.
-    let l = "(module m (def (f (: n Int64)) (* 32 n)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(l))).expect("compile");
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(3)]), 96);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(-3)]), -96);
-    // Narrow UInt8 * 2: the range-check (result may fit the i32 slot but exceed the 8-bit type) fires.
-    // The UInt8 result crosses as `u8`, so read it back as `u8`.
-    let u8p = "(module m (def (f (: n UInt8)) (* n 2)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(u8p))).expect("compile");
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(100)]), 200);
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(127)]), 254);
-    assert!(
-        call_traps(&b, "f", &[Val::U8(128)]),
-        "UInt8 128 * 2 = 256 exceeds the 8-bit type → trap"
-    );
-}
-
 /// STRENGTH REDUCTION reaches a NESTED `* 2^k`: `(* (* x 2) 4)` — the inner `(* x 2)`, an OPERAND of the
 /// outer multiply, must strength-reduce to `x << 1` exactly as a top-level `* 2^k` does. Before, the
 /// nested-operand emit path (`emit_operand_into`) routed a `Mul` straight to the checked-multiply recipe,

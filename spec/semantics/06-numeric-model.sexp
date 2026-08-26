@@ -9559,3 +9559,26 @@
   (call   dbl (: 4611686018427387904 Int64)) (trap "integer overflow")
   (call   dbl (: 9223372036854775807 Int64)) (trap "integer overflow")
   (call   dbl (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "a multiply by a constant power of two strength-reduces and traps like the multiply"
+  (doc    "`(* n 8)` strength-reduces to x<<3 but keeps the multiply's value + overflow trap: f(5)=40,
+           f(-5)=-40, f(0)=0, and 2^60 * 8 = 2^63 overflows Int64 -> trap.")
+  (input  (do (def (f (: n Int64)) (* n 8)) (export f)))
+  (call   f (: 5 Int64)) (output (: 40 Int64))
+  (call   f (: -5 Int64)) (output (: -40 Int64))
+  (call   f (: 0 Int64)) (output (: 0 Int64))
+  (call   f (: 1152921504606846976 Int64)) (trap "integer overflow"))
+
+(case "a multiply by a constant power of two on the left strength-reduces"
+  (doc    "Const-on-the-left `(* 32 n)` also strength-reduces: f(3)=96, f(-3)=-96.")
+  (input  (do (def (f (: n Int64)) (* 32 n)) (export f)))
+  (call   f (: 3 Int64)) (output (: 96 Int64))
+  (call   f (: -3 Int64)) (output (: -96 Int64)))
+
+(case "a narrow UInt8 multiply by two strength-reduces and traps on width overflow"
+  (doc    "`(* n 2)` over UInt8: the range-check (result may fit the i32 slot but exceed the 8-bit type)
+           fires. f(100)=200, f(127)=254, f(128) -> 256 exceeds the 8-bit type -> trap.")
+  (input  (do (def (f (: n UInt8)) (* n 2)) (export f)))
+  (call   f (: 100 UInt8)) (output (: 200 UInt8))
+  (call   f (: 127 UInt8)) (output (: 254 UInt8))
+  (call   f (: 128 UInt8)) (trap "integer overflow"))
