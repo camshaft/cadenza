@@ -1255,6 +1255,18 @@
   (call   main (: true Bool) (: false Bool))
   (output (: 1 Int64)))
 
+(case "a both-diverge MATCH nested in a value position yields the outer value or traps"
+  (doc    "The match twin of the nested both-diverge `if` above: `(if (> n 0) 1 (match n (0 (trap …)) (_
+           (trap …))))` — the all-diverge match is Never, and as the outer `if`'s Int64 else-arm its
+           empty-block + trailing unreachable supplies the slot the outer arm's type expects (Never unifies
+           with any type). n>0 selects the concrete 1 (the diverging match is never entered) -> 1; n<=0
+           forces the all-diverge match, which traps (a raw `unreachable`, so the trap message is
+           'unreachable', not the source arm string). Pins that an all-diverge match nested as a value
+           subexpression does not spoil the enclosing typed conditional.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 1 (match n (0 (trap "z")) (_ (trap "o"))))) (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
+
 (case "a trap message that is not a String is rejected"
   (doc    "`trap` aborts with a TEXT message, so its argument must be a String; `(trap 42)` supplies an
            Int64, which is rejected (CDZ0203). The diagnostic names the requirement — a trap message is
