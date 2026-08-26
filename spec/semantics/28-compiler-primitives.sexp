@@ -358,3 +358,30 @@
                  (Ast.encode (Ast.Int (BigInt.of 7)))))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — MAP query folds (lookup / replace) under `(const …)` --------------
+; A `(const …)`-demanded MAP QUERY const-folds: `Map.empty`/`Map.insert`/`Map.lookup` evaluate over a
+; `CVal::Map` (an assoc list, latest-write-per-key wins). Only order-INDEPENDENT results fold (a looked-up
+; value); a const map is NEVER materialized to a `Core` — its runtime CHAMP iteration order is not presumed
+; (soundness), so an order-exposing use (encode / to-list) still declines rather than risk a wrong order.
+
+(case "a `(const …)` map lookup folds to the associated value"
+  (doc    "`Map.lookup (Map.insert (Map.empty) 2 20) 2` folds to `Option.Some 20`; the match extracts 20.")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.empty) 2 20) 2)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 20 Int64)))
+
+(case "a `(const …)` map insert replaces a key in place (latest write wins)"
+  (doc    "Inserting key 1 twice keeps the LATEST value; `Map.lookup … 1` folds to 99, not 10 — the const
+           map's `insert` replaces the association in place, matching the runtime persistent-map semantics.")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.insert (Map.empty) 1 10) 1 99) 1)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 99 Int64)))
