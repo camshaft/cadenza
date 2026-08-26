@@ -3155,7 +3155,8 @@ impl<'a> Parser<'a> {
     /// Used by `import`. Each element is a bare (or backtick-escaped) name; a non-name element records
     /// an error and is skipped, so a malformed list still terminates.
     fn brace_name_list(&mut self) -> Vec<StructId> {
-        self.brace_list_of(false)
+        // Import allows per-name renames (`{ orig as alias }`) but not `.member` postfixes.
+        self.brace_list_of(false, true)
     }
 
     /// The `export { … }` list — a name list where each element MAY carry a member-access postfix
@@ -3163,13 +3164,14 @@ impl<'a> Parser<'a> {
     /// publishes a value/handle name OR a type's constructor(s). Import stays name-only (a member has
     /// no meaning there).
     fn brace_export_list(&mut self) -> Vec<StructId> {
-        self.brace_list_of(true)
+        // Export allows `.member` postfixes (`{ Color.* }`) but not per-name renames.
+        self.brace_list_of(true, false)
     }
 
     /// The shared brace-list machinery. `members` = whether an element may carry a `.member` postfix
     /// (`export` yes, `import` no) — when set, each binder runs through `postfix` so `Color.*` /
     /// `Color.Red` parse to the `(. Color …)` member form.
-    fn brace_list_of(&mut self, members: bool) -> Vec<StructId> {
+    fn brace_list_of(&mut self, members: bool, renames: bool) -> Vec<StructId> {
         self.expect(Kind::LBrace, "`{`");
         let mut names = Vec::new();
         if !self.at(Kind::RBrace) {
@@ -3179,6 +3181,16 @@ impl<'a> Parser<'a> {
                 let mut elem = self.binder();
                 if members && self.at(Kind::Dot) && self.dot_is_member() {
                     elem = self.postfix(elem, elem_span);
+                }
+                // Per-name RENAME `orig as alias` (import only) -> `(as orig alias)`: bind the module's
+                // export `orig` under the local name `alias`. Marker-headed (`as`) so the linker tells a
+                // renamed element from a bare-name plain import (atom = plain, `as`-list = rename).
+                if renames && self.at_keyword(Keyword::As) {
+                    self.bump(); // `as`
+                    let as_kw = self.name("as", elem_span);
+                    let alias = self.binder();
+                    let span = elem_span.merge(self.prev_span());
+                    elem = self.list(vec![as_kw, elem, alias], span);
                 }
                 names.push(elem);
                 if !self.sep_continue(Kind::RBrace) {

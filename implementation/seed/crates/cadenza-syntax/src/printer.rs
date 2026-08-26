@@ -3132,7 +3132,17 @@ impl<'a> Printer<'a> {
     /// A brace-delimited comma-separated name group `{ a, b, … }`, all-or-nothing breaking — the
     /// surface shared by `export` and `import`. Each element prints as a bare (or escaped) name.
     fn print_name_group(&mut self, names: &[StructId]) {
-        self.bracketed("{", "}", true, names, |p, name| p.expr(name, 0));
+        self.bracketed("{", "}", true, names, |p, name| {
+            // A per-name import rename `(as orig alias)` prints `orig as alias`; a plain name (or an
+            // export member `T.A`) prints via `expr`.
+            if let Some([orig, alias]) = p.import_rename_parts(name) {
+                p.expr(orig, 0);
+                p.doc.word(" as ");
+                p.expr(alias, 0);
+            } else {
+                p.expr(name, 0);
+            }
+        });
     }
 
     /// An `(export name…)` the `export { … }` surface handles: at least one arg, every arg either a
@@ -3166,7 +3176,26 @@ impl<'a> Printer<'a> {
         args.len() == 2
             && self.is_string(args[0])
             && matches!(self.a.get(args[1]), Struct::List(names)
-                if !names.is_empty() && names.iter().all(|&n| self.a.as_name(n).is_some()))
+                if !names.is_empty()
+                    && names.iter().all(|&n| self.a.as_name(n).is_some()
+                        || self.import_rename_parts(n).is_some()))
+    }
+
+    /// A per-name import RENAME element `(as orig alias)` — a 3-list headed by the Name `as` with two
+    /// name children — the `import { orig as alias, … }` surface. Returns `[orig, alias]` (the tail
+    /// after the `as` head) for the shape check and the printer. `None` for a plain-name element.
+    fn import_rename_parts(&self, id: StructId) -> Option<[StructId; 2]> {
+        match self.a.get(id) {
+            Struct::List(items)
+                if items.len() == 3
+                    && self.head_name(items[0]).as_deref() == Some("as")
+                    && self.a.as_name(items[1]).is_some()
+                    && self.a.as_name(items[2]).is_some() =>
+            {
+                Some([items[1], items[2]])
+            }
+            _ => None,
+        }
     }
 
     /// The whole-module ALIAS import `(import "path" alias)` -> `import alias from "path"`: a string path
@@ -4934,6 +4963,18 @@ mod tests {
         assert_roundtrip("import kv-put from \"kv-put\"", 80);
         assert_roundtrip("import bput from \"blob-put\"", 80);
         assert_roundtrip("import { get, put } from \"kv\"", 80);
+        // Per-name RENAME `import { orig as alias, … }` -> `(import "path" ((as orig alias) …))`: bind a
+        // single export under a distinct local name (a reducer imports each contract's `descriptor`
+        // under a unique name), mixed with plain names.
+        assert_roundtrip("import { descriptor as foo, other } from \"path\"", 80);
+        assert_roundtrip("import { descriptor as bput-desc } from \"blob-put\"", 80);
+        let rename = parser::read_ml("import { descriptor as foo, other } from \"m\"");
+        assert!(rename.ok(), "parse rename import: {:?}", rename.errors);
+        assert!(
+            sexpr::print(&rename.arenas).contains("(import \"m\" ((as descriptor foo) other))"),
+            "per-name rename lowers to an (as orig alias) element, got: {}",
+            sexpr::print(&rename.arenas)
+        );
         let full = "import bput from \"blob-put\"\n\nimport bget from \"blob-get\"\n\n\
                     def main() = bput.descriptor().id == bget.descriptor().id\n\nexport { main }";
         assert_roundtrip(full, 80);
