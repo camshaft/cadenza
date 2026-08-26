@@ -1528,17 +1528,49 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                                         // `(Option Int64)` recursion — closing the breaker
                                                         // wasm-hang; it is NOT a fully-open gate.)
                                                         let head_ok = |xs: &[StructId]| {
-                                                            xs.first()
+                                                            let Some(n) = xs
+                                                                .first()
                                                                 .and_then(|&h| g.ast.as_name(h))
-                                                                .is_some_and(|n| {
-                                                                    !matches!(
-                                                                        n,
-                                                                        "Record"
-                                                                            | "Map"
-                                                                            | "Set"
-                                                                            | "->"
-                                                                    )
-                                                                })
+                                                            else {
+                                                                return false;
+                                                            };
+                                                            match n {
+                                                                // A pure-DATA `(Record …)` const param is
+                                                                // admitted: it can SHRINK (a counter rebuilt
+                                                                // each step) and the interpreter folds
+                                                                // records. A record with a FUNCTION field
+                                                                // `(-> …)` is EXCLUDED — that is the ad-hoc-
+                                                                // polymorphism DICTIONARY a recursive consumer
+                                                                // passes UNCHANGED and inlines+erases at
+                                                                // runtime; folding it would preempt that
+                                                                // erasure. Distinguish CHEAPLY by the field
+                                                                // TYPES: a dict has an arrow-typed field, a
+                                                                // data record does not. A field is written
+                                                                // `(name type)` OR `(: name type)` — the TYPE
+                                                                // is the LAST child in BOTH spellings, so read
+                                                                // `last()` (reading index 1 picks the NAME of
+                                                                // the colon form and misses its arrow — the
+                                                                // dict-consumer shape uses `(: op (-> …))`).
+                                                                "Record" => xs[1..].iter().all(|&field| {
+                                                                    match g.ast.get(field) {
+                                                                        crate::ast::Struct::List(f) => f
+                                                                            .last()
+                                                                            .map(|&ty| {
+                                                                                g.ast.head_name(ty)
+                                                                                    != Some("->")
+                                                                            })
+                                                                            .unwrap_or(true),
+                                                                        _ => true,
+                                                                    }
+                                                                }),
+                                                                // `(Map …)`/`(Set …)` const params stay
+                                                                // excluded (CHAMP-iteration-order-sensitive
+                                                                // collections). A bare `(-> …)` is a higher-
+                                                                // order closure param, folded via the
+                                                                // closure-arg binding, not this data gate.
+                                                                "Map" | "Set" | "->" => false,
+                                                                _ => true,
+                                                            }
                                                         };
                                                         g.ast.as_name(ty).is_some()
                                                             || matches!(g.ast.get(ty),
