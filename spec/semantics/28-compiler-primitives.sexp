@@ -273,3 +273,28 @@
             (def (main (: k Int64)) (const (+ k 1)))
             (export main)))
   (error  CDZ0201 (message "const` block requires a compile-time constant")))
+
+; --- Primitive 2: const execution — MUTUAL recursion over a compound (Ast) value folds -----------------
+; The general const-evaluator reaches a MUTUALLY-recursive pair of `const` functions over an `Ast` value:
+; `leaves` (per-node) ↔ `leaves-list` (per-child-list) count the leaves of a quoted form. Pins that mutual
+; recursion + a `(List Ast)` const param + a per-element sum all compose in one const-fold (the P4 self-
+; reflection transform shape). Regression guard for the recursive engine's reach over compound compositions.
+
+(case "mutual recursion over an Ast value const-folds a leaf count (under Ast.encode demand)"
+  (doc    "`leaves (quote (f 1 2))` = 3 (three leaf nodes: `f`, `1`, `2`) via a mutually-recursive
+           `leaves`/`leaves-list` pair, both `const`. `Ast.encode` demands a compile-time constant, so the
+           whole mutual recursion must const-fold for the encode to succeed; its bytes equal the encoding of
+           the literal count 3 — witnessing the fold reached across the mutual recursion + the `(List Ast)`
+           param + the per-element `+`.")
+  (input  (do
+            (def (leaves (const (: a Ast)))
+              (match a ((Ast.List xs) (leaves-list xs)) (_ 1)))
+            (def (leaves-list (const (: xs (List Ast))))
+              (match xs
+                ((list) 0)
+                ((list h .. t) (+ (leaves h) (leaves-list t)))))
+            (def (run)
+              (= (Ast.encode (Ast.Int (BigInt.of (leaves (quote (f 1 2))))))
+                 (Ast.encode (Ast.Int (BigInt.of 3)))))
+            (export run)))
+  (output (: true Bool)))
