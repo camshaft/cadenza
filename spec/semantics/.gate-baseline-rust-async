@@ -7372,3 +7372,9 @@ todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
+pass	if1 Float64.Infinity minus itself is NaN (canonical-byte equal to nan)
+pass	if2 one divided by Float64.Infinity is exactly zero
+pass	if3 negated Infinity is below every finite float
+pass	if4 Infinity plus a finite float saturates to Infinity
+pass	if5 runtime division by zero produces Infinity and crosses the boundary
+pass	if6 named Infinity constant as effect handler seed threads and compares
