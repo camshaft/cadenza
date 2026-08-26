@@ -17316,3 +17316,41 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 7.5 Float64))
   (call   main (: 0 Int64)) (output (: 6.0 Float64)))
+
+;; -- pyarg1 op-arg feeds both resume holes + pyt3 three-field tuple state cross-field + pymap1 Map/CHAMP handler state (breaker batch 367) --
+(case "pyarg1 probe: the op takes an ARGUMENT that feeds BOTH the resume answer AND the next-state — add(x) answers (+ (* s 100) x) and threads (+ s x); three dispatches pass different args (5, 2, 7) so the per-call argument enters both the answer and the state advance, and the state thread depends on the arguments (not a fixed increment)"
+  (input (do
+  (effect E (op add (-> Int64 Int64)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((add (x) s (resume (+ (* s 100) x) (+ s x))))
+      (+ (* 1000 (E.add (: 5 Int64))) (+ (* 100 (E.add (: 2 Int64))) (E.add (: 7 Int64))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 166007 Int64))
+  (call   main (: 0 Int64)) (output (: 55907 Int64)))
+
+(case "pyt3 probe: a THREE-FIELD tuple state where one op reads and advances all fields — state (a b c) seed (n%3, 10, 100); tick answers a cross-field weighted sum (a + 2b + 3c) and threads (a+1, b+10, c+100), so all three fields advance independently per dispatch and the answer mixes them; three dispatches exercise a wide compound state through the tail fold"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (tuple (% n 3) (: 10 Int64) (: 100 Int64))
+      ((tick () s (match s ((tuple a b c)
+                    (resume (+ (+ (* a 1) (* b 2)) (* c 3))
+                            (tuple (+ a 1) (+ b 10) (+ c 100)))))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 386163 Int64))
+  (call   main (: 0 Int64)) (output (: 385062 Int64)))
+
+(case "pymap1 probe: a MAP (CHAMP) handler state threaded with insert + lookup + len — seed {0: n%3}; each tick answers (lookup key 0) + 100*(current size) and threads a Map with a new key=size val=size inserted, so the map GROWS per dispatch and the answer reads both a stable key and the live size; three dispatches exercise a heap Map value threaded and rebuilt across the resume seam"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (Map.insert Map.empty (: 0 Int64) (% n 3))
+      ((tick () s (resume (+ (match (Map.lookup s (: 0 Int64)) ((Some v) v) ((None) (: -1 Int64)))
+                             (* (Map.len s) (: 100 Int64)))
+                          (Map.insert s (Map.len s) (Map.len s)))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 121401 Int64))
+  (call   main (: 0 Int64)) (output (: 120300 Int64)))
