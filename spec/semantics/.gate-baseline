@@ -7791,3 +7791,11 @@ pass	ecl1 a let-bound hop answer used TWICE folds
 pass	ecl2 a let CHAIN through the hop answer folds
 pass	ecl3 TWO let-bound hop answers fold
 pass	ecl5 a let INSIDE the performing closure body folds
+pass	nz2 {+0.0, -0.0} are TWO set members
+pass	nz3 -0.0 is NOT a member of {+0.0}
+pass	nz4 a Map discriminates +0.0 and -0.0 keys
+pass	nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)
+pass	nk2 +inf, -inf, and NaN are THREE distinct set members
+pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
+pass	nz1 bare = distinguishes +0.0 from a TRUE runtime -0.0
+pass	nz5 the zeros compare = only to themselves yet BEHAVE differently under division

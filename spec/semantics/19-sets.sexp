@@ -3666,3 +3666,62 @@
     (export main)))
   (call main (: 0 Int64))
   (output (: "ab|b|bb" String)))
+
+; -- breaker batch 418 (2026-08-26): NON-FINITE and SIGNED-ZERO floats as CHAMP keys — hash and
+; equality agree everywhere: {+0.0,-0.0} are TWO members / -0.0 is not a member of {+0.0} / a Map
+; discriminates the zero keys; two runtime NaNs dedup to one member and a NaN Map key is findable
+; by another NaN (canonical NaN); +inf/-inf/NaN are three distinct members. Both backends.
+; (Construction trap: (- 0.0 x) at x=+0.0 is +0.0 per IEEE — use (* x -1.0) to make a true -0.0.)
+
+(case "nz2 {+0.0, -0.0} are TWO set members"
+  (input (do
+    (def (main (: x Float64))
+      (Set.len (Set.of (list x (* x -1.0)))))
+    (export main)))
+  (call main (: 0.0 Float64))
+  (output (: 2 Int64)))
+
+(case "nz3 -0.0 is NOT a member of {+0.0}"
+  (input (do
+    (def (main (: x Float64))
+      (if (Set.contains (Set.of (list x)) (* x -1.0)) 1 0))
+    (export main)))
+  (call main (: 0.0 Float64))
+  (output (: 0 Int64)))
+
+(case "nz4 a Map discriminates +0.0 and -0.0 keys"
+  (input (do
+    (def (main (: x Float64))
+      (let ((m (Map.insert (Map.insert (map) x 10) (* x -1.0) 20)))
+        (match (Map.lookup m (* x -1.0))
+          ((Option.Some v) (match (Map.lookup m x) ((Option.Some w) (+ v (* 100 w))) ((Option.None) -2)))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 0.0 Float64))
+  (output (: 1020 Int64)))
+
+(case "nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)"
+  (input (do
+    (def (main (: x Float64))
+      (Set.len (Set.of (list (- (/ x 0.0) (/ x 0.0)) (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)) 1.0))))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: 2 Int64)))
+
+(case "nk2 +inf, -inf, and NaN are THREE distinct set members"
+  (input (do
+    (def (main (: x Float64))
+      (Set.len (Set.of (list (/ x 0.0) (/ (- 0.0 x) 0.0) (- (/ x 0.0) (/ x 0.0))))))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: 3 Int64)))
+
+(case "nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)"
+  (input (do
+    (def (main (: x Float64))
+      (match (Map.lookup (Map.insert (map) (- (/ x 0.0) (/ x 0.0)) 42) (- (/ (* x 3.0) 0.0) (/ (* x 3.0) 0.0)))
+        ((Option.Some v) v)
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: 42 Int64)))
