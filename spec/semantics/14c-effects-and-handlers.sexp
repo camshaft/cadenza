@@ -18086,3 +18086,62 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 5 Int64)))
+
+; -- breaker batch 417 (2026-08-26): #3754 structural-resolution EDGE pins — let shapes around the
+; escaped-closure recovery all fold: the hop answer used twice, a let chain, TWO let-bound hop
+; answers, and a let INSIDE the performing closure body. Filed adjacent (same class as iso-b, one
+; scope over): a closure through the helper CAPTURING an outer LET binder mis-rejects CDZ0101
+; (scalar let + performing closure = minimal; pure twin and fn-PARAM capture both pass).
+
+(case "ecl1 a let-bound hop answer used TWICE folds"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 2))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((a (ap (fn (x) (+ x (E.tick))))))
+          (+ a a))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64)))
+
+(case "ecl2 a let CHAIN through the hop answer folds"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 2))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((a (ap (fn (x) (+ x (E.tick))))))
+          (let ((b (+ a 1)))
+            (+ a b)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 5 Int64)))
+
+(case "ecl3 TWO let-bound hop answers fold"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 2))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((a (ap (fn (x) (+ x (E.tick))))))
+          (let ((b (ap (fn (y) (* y (E.tick))))))
+            (+ a b)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 22 Int64)))
+
+(case "ecl5 a let INSIDE the performing closure body folds"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 2))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (ap (fn (x) (let ((t (E.tick))) (+ x t))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 2 Int64)))

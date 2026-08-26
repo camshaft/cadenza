@@ -7786,3 +7786,7 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	ecl1 a let-bound hop answer used TWICE folds
+pass	ecl2 a let CHAIN through the hop answer folds
+pass	ecl3 TWO let-bound hop answers fold
+pass	ecl5 a let INSIDE the performing closure body folds
