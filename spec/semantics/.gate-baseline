@@ -1627,6 +1627,10 @@ pass	a const list whose elements are BYTES LITERALS recursively folds — a Byte
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const-folded RECORD descriptor holds a recursive-transform result, projected at compile time
 pass	a const-key entry is found beside a distinct runtime-keyed entry
+pass	a constant +(-1) add (negative constant) traps only at Int64.min
+pass	a constant +1 add traps only at Int64.max, never spuriously near min
+pass	a constant -(-1) subtract (= a+1) traps only at Int64.max
+pass	a constant -1 subtract traps only at Int64.min
 pass	a constant BigInt crosses the host boundary as its value form
 pass	a constant BigInt operand of a runtime BigInt op materializes as a heap value
 pass	a constant MUL over a high UInt64 operand that overflows still rejects
@@ -1666,6 +1670,7 @@ pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init wh
 pass	a constant-folded u64 bin binding with the top bit set compares unsigned
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+pass	a constant-on-the-left +1 add is commutative and traps only at Int64.max
 pass	a constant-returning closure threads through a recursive-generic HOF
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a constant-try helper folds and its result feeds a handler arm's resume
