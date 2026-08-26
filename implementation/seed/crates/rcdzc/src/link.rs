@@ -1496,6 +1496,53 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
+    /// END-TO-END through the ML SURFACE: the PER-NAME rename `import { orig as alias } from "path"`
+    /// (v-syntax #3716) binds the module export `orig` under the local `alias` through the #3719
+    /// resolve/link rebind. `read_ml` parses it to `(import "lib" ((as descriptor foo)))`; the entry uses
+    /// the bare local `foo` (a flat import, no module handle) and it resolves to `lib`'s `descriptor` (→
+    /// 30). Complements the arena-level pins (`a_per_name_import_rename_*`) with the full ML front-end →
+    /// codec → rcdzc decode → link path the parser landed.
+    #[test]
+    fn the_ml_surface_per_name_rename_binds_the_export_under_the_alias() {
+        let out = compile_package_ml_app(
+            &[("lib", "(do (def (descriptor) 30) (export descriptor))")],
+            "import { descriptor as foo } from \"lib\"\ndef main() = foo\nexport { main }",
+        );
+        assert!(
+            !out.has_error(),
+            "the ML-surface per-name rename must bind the export under the alias; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// The §8 dispatcher's ACTUAL shape through the ML SURFACE: two modules each export `descriptor`, and
+    /// the entry imports each under a DISTINCT local name via per-name rename — the flat-import alternative
+    /// to the whole-module alias for the descriptor-collision case. `import { descriptor as a-desc } from
+    /// "liba"` + `import { descriptor as b-desc } from "libb"` bind two distinct locals, both resolving to
+    /// their own module's `descriptor` (no CDZ0201). This is the form v-platform-itest will switch its
+    /// §8/§7 descriptor imports to.
+    #[test]
+    fn ml_surface_per_name_renames_disambiguate_same_name_from_two_modules() {
+        let out = compile_package_ml_app(
+            &[
+                ("liba", "(do (def (descriptor) 30) (export descriptor))"),
+                ("libb", "(do (def (descriptor) 12) (export descriptor))"),
+            ],
+            "import { descriptor as a-desc } from \"liba\"\n\
+             import { descriptor as b-desc } from \"libb\"\n\
+             def from-a() = a-desc\n\
+             def from-b() = b-desc\n\
+             export { from-a, from-b }",
+        );
+        assert!(
+            !out.has_error(),
+            "per-name renames of the same export name from two modules must resolve distinctly (no CDZ0201); got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
     /// β-COPY HYGIENE (`DESIGN-package-linking.md` §4 note): `app` imports `pub-helper` from `lib`;
     /// `pub-helper`'s body calls a PRIVATE sibling `priv-helper` (also in `lib`, NOT imported by
     /// `app`). When `pub-helper` inlines into `app`'s `main`, its copied body's reference to
