@@ -19140,3 +19140,37 @@
     (export main)))
   (call main (: 3 Int64)) (output (: 1307 Int64))
   (live-objects 0))
+
+(case "a dup-aware let binding whose consuming use is a captured-then-inlined push reclaims its surviving ref (no live objects)"
+  (doc    "`mk-adder xs` inlines to `List.push xs` beside `List.len xs` -> xs is dup'd for the push, so the
+           surviving slot ref must drop at scope end. main(5) = List.len([0..5]+[9]) (6) + List.len xs (5) =
+           11; net 0 live cells (was 2 -- the dup'd consuming binding's surviving ref leaked).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (mk-adder (: base (List Int64))) (fn ((: x Int64)) (List.len (List.push base x))))
+            (def (main (: n Int64)) (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (live-objects 0))
+
+(case "a dup-aware let binding consumed twice does not double-free the last-consumed slot ref (no live objects)"
+  (doc    "xs is pushed into TWO fresh lists (both consume) and the lengths summed. The LAST consume is not a
+           dup_site, so the slot ref is consumed there and must NOT be dropped again (no double-free/UAF).
+           main(3) = (3+1) + (3+1) = 8; net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (main (: n Int64)) (let ((xs (build 0 n (list)))) (+ (List.len (List.push xs 9)) (List.len (List.push xs 8)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 8 Int64))
+  (live-objects 0))
+
+(case "a dup-aware let binding consumed in a nested-if then borrowed in the sibling arm reclaims correctly (no live objects)"
+  (doc    "xs is consumed in the inner-then (List.push), borrowed in the inner-else (List.len), all inside an
+           outer-then with an unused outer-else -- a dup-propagation stress. The innermost consume's dup
+           decision must be right. main(3,true,true) = List.len([0..3]+[9]) = 4; net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (main (: n Int64) (: a Bool) (: b Bool)) (let ((xs (build 0 n (list)))) (if a (if b (List.len (List.push xs 9)) (List.len xs)) 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: true Bool) (: true Bool)) (output (: 4 Int64))
+  (live-objects 0))
