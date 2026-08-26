@@ -667,6 +667,7 @@ pass	a CLOSURE handler state captures the enclosing function's parameter and app
 pass	a CLOSURE state whose body performs an OUTER effect when the arm applies it
 pass	a COMPOUND generated value is reproducible from its seed (a tuple draws identically twice)
 pass	a COMPOUND map key with a Rational leaf hashes+matches by the leaf's normalized form
+pass	a COMPOUND-inner single-variant newtype takes the heap escape and its inner is read back
 pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
 pass	a CONDITIONALLY-recursive helper reaching a performer in one branch folds where no outer recursion needs the boundary guard
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
@@ -754,6 +755,7 @@ pass	a Float64 handler state advances fractionally through a two-site arm
 pass	a Float64 op RESULT crosses resume and float state arithmetic is observed by comparison
 pass	a Float64-inner Qty host result crosses as its float magnitude
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
+pass	a GENERIC scalar newtype instantiated at Int64 escapes a param'd export as a valid module
 pass	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiated payload cross resume
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
@@ -869,6 +871,7 @@ pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint
 pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
 pass	a NARROW UInt32 checked-mul fits the UInt64 accumulator exactly (the widest narrow product)
+pass	a NARROW-inner scalar newtype escaping a param'd export emits a valid module (i32-slot box)
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
 pass	a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow
 pass	a NARROW-width checked-mul over a RUNTIME operand range-checks the narrow bounds (unsigned, UInt64 accumulator)
@@ -3735,10 +3738,13 @@ pass	a scalar element is projected directly from a function's runtime tuple resu
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar export crosses the WIT boundary and returns its argument
 pass	a scalar match beyond the jump-table cap falls back to a probe cascade and still dispatches
+pass	a scalar newtype matched back in place round-trips the erased inner
+pass	a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
 pass	a scalar-erased newtype returned directly from a parameterized def renders its nominal type
+pass	a scalar-erased single-variant newtype escaping a param'd export emits a valid module and renders the nominal name
 pass	a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
 pass	a scalar-result match over an owned compound-payload sum reclaims the shell AFTER its borrowed reads
