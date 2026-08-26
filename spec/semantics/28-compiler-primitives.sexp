@@ -489,3 +489,37 @@
               (= (Ast.encode (label 9)) (Ast.encode (Ast.Int (BigInt.of 9)))))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — a compound BUILT IN A RECURSION folds -----------------------------
+; The value-interpreter reduces an applied compound constructor (`RecordNew`/`TupleNew`/`ListNew`) in the
+; CURRENT env (#3516), so a recursion that constructs a FRESH compound each step — the record analogue of
+; the tuple-threading case above — const-folds. These pin that generalization in a recursive setting (the
+; #3516 cases were non-recursive): a record built from a recursively-computed field, and Bytes assembled by
+; repeated `Bytes.concat`. Regression guard for compound construction composing with the recursive engine.
+
+(case "a recursion that builds a fresh RECORD each step const-folds a field read"
+  (doc    "`walk n` returns `(record (v k))` where `k` counts the recursion depth; `(const (. (walk 4) v))`
+           folds to 4. Each step builds a fresh `(record (v …))` — an applied `RecordNew` whose field is the
+           recursively-computed value — which the interpreter evaluates in the current env, then the outer
+           `(. … v)` projects. Before #3516 the record construction declined (`apply_const_prim` had no
+           `RecordNew` arm), so the whole recursion did.")
+  (input  (do
+            (def (walk (const (: n Int64)))
+              (if (= n 0) (record (v 0)) (record (v (+ 1 (. (walk (- n 1)) v))))))
+            (def (main) (const (. (walk 4) v)))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "a recursion that builds Bytes via Bytes.concat const-folds byte-exact"
+  (doc    "`bcat n` concatenates `n` copies of the one-byte `A` (0x41); `(const (bcat 3))` folds to the 3-byte
+           sequence `AAA`, witnessed byte-exact through `Ast.encode` against `Bytes.of (list 65 65 65)`. Pins
+           `Bytes.concat` + an empty-`Bytes` base composing across the recursive engine under a force-eval
+           block.")
+  (input  (do
+            (def (bcat (const (: n Int64)))
+              (if (= n 0) (Bytes.of (list)) (Bytes.concat (Bytes.of (list 65)) (bcat (- n 1)))))
+            (def (main)
+              (= (Ast.encode (Ast.Bytes (const (bcat 3))))
+                 (Ast.encode (Ast.Bytes (Bytes.of (list 65 65 65))))))
+            (export main)))
+  (output (: true Bool)))
