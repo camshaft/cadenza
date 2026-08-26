@@ -7676,3 +7676,9 @@ pass	cn-c3 BigInt beyond-i64 multiply under (const ...)
 pass	cn-c4 Rational exact division under (const ...)
 pass	cn-c5 Qty unit algebra under (const ...)
 pass	cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand
+pass	ch02 a closure stored in a record field projects and applies
+pass	ch03 a closure stored in a LIST is fetched and applied
+pass	ch04 a runtime-branch-selected closure applies
+pass	ch08 String.from-bytes of RUNTIME-built bytes validates
+pass	ch01b eta-expanded closure control for prim-as-value
+pass	ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)
