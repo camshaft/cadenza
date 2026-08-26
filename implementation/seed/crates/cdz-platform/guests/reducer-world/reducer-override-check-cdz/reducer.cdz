@@ -1,0 +1,32 @@
+// The §4 REGISTRY-OVERRIDE checker (design/cadenza-platform.md §4/§9). The paired run installs a PER-CONTRACT
+// override handler (reducer-override-handler-cdz) in the registry alongside the default handler, and has an
+// ordinary emitter perform an effect on the overridden contract. The platform's event registry resolves that
+// contract to its OVERRIDE handler (not the default), which emits a distinct marker. This checker asserts,
+// LOG-ONLY and guest-agnostic, that the override handler governed the contract: some Emitted carries the
+// override marker b"override-handled".
+//
+// NON-VACUOUS: if the override did NOT route (the effect fell through to the DEFAULT handler,
+// reducer-default-handler-cdz), the default reads an empty transform chain and REJECTS (a rejection response,
+// no marker) — so no Emitted carries the marker and the check fails. A guest that fails to instantiate emits
+// nothing, likewise failing.
+//
+// Round-3 checker-lib form: one field predicate + any-record; respond() owns the decode + verdict emit, and
+// the inert on-response/on-notification come from checker-lib.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+// Does this record's entry CLOSE with the override marker reason? (the override handler's tell that IT — not
+// the default — received the effect; it closes rather than emits, to avoid re-routing to itself.) A named
+// predicate (no captured state; the marker is a literal), so any-record scans it.
+def closed-override-marker(rec) =
+  match rec.entry with
+  | Entry.Closed(c) => c.reason == b"override-handled"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if any-record(records, closed-override-marker)
+  then pass()
+  else fail("no Closed carried the override marker reason: the per-contract override handler did not govern the contract (the effect was not routed to the override)")
+
+def on-message(msg) = respond(msg, verdict-payload)
+export { on-message, on-response, on-notification }
