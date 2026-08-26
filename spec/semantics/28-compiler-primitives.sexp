@@ -572,6 +572,47 @@
             (export main)))
   (output (: true Bool)))
 
+; --- Primitive 2: const execution — a Map/Set COLLECTION STATE built in a RECURSION folds a query -------
+; The record/Bytes cases above build a fresh COMPOUND per step; a Map/Set is different — the interpreter
+; carries it as a QUERY-ONLY `CVal::Map`/`CVal::Set` (never re-materialized; `cval_to_core` declines it), and
+; the growing-state ops fold through `apply_const_prim`'s `cval_eq`-gated arms. These pin that the recursive
+; engine composes with that query-only collection model: a `Map.insert`/`Set.insert` chain ACCUMULATED across
+; recursion depth, then a size/lookup query folding to a scalar the block can materialize. (`Map.len` is the
+; current spelling — `Map.size` was renamed; the bare `Map.empty` base folds since #3670.)
+
+(case "a recursion that builds a Map collection state const-folds its length"
+  (doc    "`build n` inserts `n ↦ n*10` onto `(build (n-1))`, bottoming at `Map.empty`; `(const (Map.len (build
+           3)))` folds to 3. Pins a Map collection state ACCUMULATED across the recursive const engine — each
+           step is a `Map.insert` onto the recursively-built `CVal::Map`, then `Map.len` counts the entries.")
+  (input  (do
+            (def (build (const (: n Int64)))
+              (if (= n 0) (Map.empty) (Map.insert (build (- n 1)) n (* n 10))))
+            (def (main) (const (Map.len (build 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a recursion that builds a Map collection state const-folds a key lookup"
+  (doc    "The query companion: after building the same recursive map, `(const (Map.lookup (build 3) 2))` folds
+           the `Some 20` payload (`cval_eq` finds key 2 ↦ 20). Pins that a `Map.lookup` over a recursively-
+           accumulated `CVal::Map` folds its found value, not just a count.")
+  (input  (do
+            (def (build (const (: n Int64)))
+              (if (= n 0) (Map.empty) (Map.insert (build (- n 1)) n (* n 10))))
+            (def (main) (const (match (Map.lookup (build 3) 2) ((Option.Some v) v) ((Option.None) 0))))
+            (export main)))
+  (output (: 20 Int64)))
+
+(case "a recursion that builds a Set collection state const-folds its length"
+  (doc    "The Set twin: `acc n` inserts `n` onto `(acc (n-1))`, bottoming at `(Set.of (list))`; `(const (Set.len
+           (acc 4)))` folds to 4 — a Set collection state accumulated across recursion, deduped by `cval_eq`,
+           then counted. (Set has no `.empty`; the empty base is `Set.of (list)`.)")
+  (input  (do
+            (def (acc (const (: n Int64)))
+              (if (= n 0) (Set.of (list)) (Set.insert (acc (- n 1)) n)))
+            (def (main) (const (Set.len (acc 4))))
+            (export main)))
+  (output (: 4 Int64)))
+
 ; --- Primitive 2: const execution — a CHAR value threads through the recursive engine -----------------
 ; The value-interpreter carries a `CVal::Char` (materializes to `Core::ConstChar`), so a `Char` const param
 ; folds through a RECURSION. A NON-recursive Char op already folds via `core_of` (`Char.to-int`/`from-int`);
