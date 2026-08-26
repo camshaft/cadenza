@@ -1,2 +1,3 @@
 implementation/seed/crates/cdz-platform/contracts/timer.cdz
 implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/guests/contract-id.cdz
