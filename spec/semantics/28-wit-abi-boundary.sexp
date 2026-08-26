@@ -839,3 +839,34 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (raw (list 1 2 3 4 5)) V)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 5 Int64)))
+
+;; -- variant host RESULTS with COMPOUND payloads: list payload measured, record payload projected (breaker batch 397a; the #3655 flip) --
+(case "cvp1 a variant host RESULT with a LIST payload lifts and is measured"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member get (func (result ("variant" (items ("list" (s64))) (none))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type R (Items (List Int64)) (NoneArm))
+    (effect hosti (op get (-> Unit R)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (match (hosti.get unit) ((R.Items xs) (List.len xs)) ((R.NoneArm) -1))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (items (list 5 6 7)) r)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: 3 Int64)))
+
+(case "cvp2 a variant host RESULT with a RECORD payload lifts and projects"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member get (func (result ("variant" (tag ("record" (a (s64)) (b (s64)))) (none))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (type R (Tag (Record (: a Int64) (: b Int64))) (NoneArm))
+    (effect hosti (op get (-> Unit R)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (match (hosti.get unit) ((R.Tag t) (+ (. t a) (. t b))) ((R.NoneArm) -1))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.get (: (tag (record (= a 40) (= b 2))) r)))
+  (host-calls (call cadenza:demo/hosti.get))
+  (output (: 42 Int64)))
