@@ -95195,3 +95195,71 @@ fn is_constant_bytes_flags_all_constant_byte_literals_only() {
         "a scalar constant `42` is not a `Core::BytesOf`, so not a constant-bytes candidate"
     );
 }
+
+/// §2d STATIC bytes (`DESIGN-static-data.md` increment 2 support — the value extractor, byte-neutral).
+/// Pins [`crate::lower::constant_bytes_value`]: it returns the exact byte content of an all-constant
+/// `Bytes` literal (the interning key + `(data …)` payload the build-once global materializes from),
+/// and `None` for any node that is not an all-constant `BytesOf`. Two literals with identical content
+/// must extract equal byte vectors (so interning collapses them to one global); a runtime/mixed literal
+/// or a non-bytes node yields `None` (it must build per call, never share a static global).
+#[test]
+fn constant_bytes_value_extracts_the_byte_content_of_constant_literals_only() {
+    use crate::db::Db;
+    use crate::lower::constant_bytes_value;
+    let extract = |src: &str, def: &str| -> Option<Vec<u8>> {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let body = db.defs[d].body.expect("body");
+        constant_bytes_value(&mut db, body)
+    };
+    // A fully-constant literal → its exact bytes, in order.
+    assert_eq!(
+        extract(
+            "(module m (def (main) (Bytes.of (list 0 1 255))) (export main))",
+            "main"
+        ),
+        Some(vec![0u8, 1, 255]),
+        "an all-constant `(Bytes.of (list 0 1 255))` must extract to exactly those bytes"
+    );
+    // The empty bytes literal → an empty vector (a distinct, internable value).
+    assert_eq!(
+        extract(
+            "(module m (def (main) (Bytes.of (list))) (export main))",
+            "main"
+        ),
+        Some(vec![]),
+        "the empty bytes literal must extract to the empty byte vector"
+    );
+    // Two literals with IDENTICAL content extract equal vectors — the interning key that collapses
+    // them to one build-once global.
+    assert_eq!(
+        extract(
+            "(module m (def (a) (Bytes.of (list 7 8 9))) (def (b) (Bytes.of (list 7 8 9))) \
+             (def (main) 0) (export main))",
+            "a"
+        ),
+        extract(
+            "(module m (def (a) (Bytes.of (list 7 8 9))) (def (b) (Bytes.of (list 7 8 9))) \
+             (def (main) 0) (export main))",
+            "b"
+        ),
+        "identical constant bytes literals must extract to equal vectors (the interning key)"
+    );
+    // A runtime element disqualifies extraction — such a literal must build per call, never share a
+    // static global.
+    assert_eq!(
+        extract(
+            "(module m (def (f (: n Int64)) (Bytes.of (list (UInt8.wrap n)))) \
+             (def (main) 0) (export main))",
+            "f"
+        ),
+        None,
+        "a `Bytes.of` with a runtime element must not extract (no shared static global)"
+    );
+    // A non-`BytesOf` node (a bare scalar) never extracts.
+    assert_eq!(
+        extract("(module m (def (main) 42) (export main))", "main"),
+        None,
+        "a scalar constant is not a `Core::BytesOf`, so it never extracts to bytes"
+    );
+}
