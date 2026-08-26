@@ -4819,6 +4819,8 @@ pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from th
 pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
 pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
 pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame
+pass	bfl1 bare equality over flat Bytes.of runtime twins
+pass	bfl2 bare equality across Bytes.concat vs Bytes.of flat twins
 pass	bg1 a BOOL op result is the recursion CONDITION itself — the walk continues while draws stay true
 pass	bg2 the recursion guard is an AND of a bool draw and a pure bound check — short-circuit must not skip the draw's state advance observation
 pass	bg3 a BIGINT handler state — tripling per dispatch crosses the i64 boundary mid-thread, the exact multi-limb value survives
@@ -4915,7 +4917,13 @@ pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same len
 pass	cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities
 pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
 pass	ch01 a bare prim passed as a function value applies
+pass	ch01b eta-expanded closure control for prim-as-value
+pass	ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)
 pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
+pass	ch02 a closure stored in a record field projects and applies
+pass	ch03 a closure stored in a LIST is fetched and applied
+pass	ch04 a runtime-branch-selected closure applies
+pass	ch08 String.from-bytes of RUNTIME-built bytes validates
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
 pass	ch21 CHAINED computed keys — the second perform's key is computed FROM the first's answer, both dispatches walk the two-lookup-match arm
@@ -4949,7 +4957,10 @@ pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
 pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
+pass	cm01 (const ...) in a resume ANSWER position folds
 pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
+pass	cm02c (const ...) closed handle with STRING state
+pass	cm03 (const ...) as a handler SEED folds
 pass	cmh-list a const closed handle threading a growing LIST state folds its len query answers to 12
 pass	cmh-map a const closed handle threading a growing MAP state folds its len query answers to 12
 pass	cmh-set a const closed handle threading a growing SET state folds its len query answers to 12
@@ -4968,6 +4979,11 @@ pass	cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)
 pass	cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer
 pass	cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)
 pass	cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)
+pass	cn-c1 Symbol equality under (const ...)
+pass	cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand
+pass	cn-c3 BigInt beyond-i64 multiply under (const ...)
+pass	cn-c4 Rational exact division under (const ...)
+pass	cn-c5 Qty unit algebra under (const ...)
 pass	cn02a a NON-recursive const fn taken trap is a RUNTIME trap on the bare call (by-design: it may sit under a runtime branch)
 pass	cn02b the Option twin — bare-call taken trap stays a runtime trap (by-design)
 pass	cn02c the tuple twin — bare-call taken trap stays a runtime trap (by-design)
@@ -5084,6 +5100,7 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
+pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
 pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
@@ -5095,19 +5112,26 @@ pass	cross-unit Qty host results reject at the guest-side add
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
+pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
 pass	ctt1 RATIONAL handler state threads exact arithmetic across dispatches
 pass	ctt2 BIGINT handler state doubles past i64 across dispatches
 pass	ctt3 CHAR handler state advances by code point across dispatches
 pass	ctt4 BYTES-ROPE handler state grows by concat across dispatches
 pass	ctt5 SYMBOL handler state swaps between interned symbols
+pass	cu01 runtime NON-FINAL dependent-size utf8 segment decodes with a trailing field
+pass	cu02 runtime FINAL dependent-size utf8 segment decodes
+pass	cu03 CONTROL runtime non-final dependent-size BYTES segment
 pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
 pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
 pass	cwl1 a CIPHER WHEEL that slips every third letter — encoding adds the offset mod twenty-six and every THIRD encode advances the wheel one notch (a nine-tagged row counting the slip), other rows carry the stroke's residue tag, the read packs offset strokes and slips, and the seed's starting offset wraps one alphabet where the other doesn't so the ciphertext rows share nothing
 pass	cx1 a COUNTDOWN arm exhausts mid-sequence — positive states pass through, the floor returns a sentinel-free constant
+pass	cx5b CONTROL: pure closure through the same recursive HOF
+pass	cx5c LET-BOUND effectful closure invoked directly (no HOF)
 pass	cx5d an effect-performing closure through a non-recursive one-shot helper fn-arg folds via the escaped-closure recovery
 pass	cx5d effectful closure through a NON-recursive helper that calls it once
+pass	cx6 an effect-performing closure through TWO nested one-shot helper hops folds via the escaped-closure recovery
 pass	cx7 a closure performing TWO different effects passed as a fn argument
 pass	cx8 an effect-performing closure RETURNED from a helper then invoked
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
@@ -5128,6 +5152,11 @@ pass	dbr4 CONDITIONAL DOUBLE REPLAY — a positive state replays the tail twice 
 pass	dbr5 TRIPLE SEQUENTIAL REPLAY — three resumes in one do with the first two outcomes discarded, the LAST replay's value wins extending the second-wins law to n-th-wins, each replay shifting the answer by ten so a lowering that stops at two replays or returns any earlier replay's value is off by a fixed decade
 pass	dbr6 the two replays thread DIFFERENT STATES — the discarded first replay advances the state additively while the surviving second replay DOUBLES it, the next dispatch answers from whichever state its replay actually threaded, and a lowering that reuses the first replay's state thread for the second shifts the later dispatch's whole answer
 pass	dbt1 a DEBT AMORTIZATION schedule — pay accrues truncating interest at the seed-shaped rate first and the remainder reduces principal, answering the interest slice; left reads the balance; the higher rate leaks interest on every payment so the principals drift apart payment by payment
+pass	dc01 Float64 const-param countdown trap surfaces CDZ0304
+pass	dc02 tuple const-param countdown trap surfaces CDZ0304
+pass	dc03 record const-param countdown trap surfaces CDZ0304
+pass	dc04 (Option Int64) const-param recursion on the VALUE path folds to 99 under Ast.encode
+pass	dc06 Map insert+lookup inside a const fn folds under Ast.encode
 pass	dc1 a DEEP left-leaning concat chain — ten single-element concats build an 11-deep rope, random-access reads stay exact
 pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
 pass	dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned
@@ -5434,6 +5463,9 @@ pass	fs2 two SEQUENTIAL handles where the second's SEED is computed from the fir
 pass	fs3 THREE value-chained regions — each seed is the previous region's result, arms +1 / x2 / -5
 pass	fse1 NaN handler state survives the seam — canonical equality says nan = nan across dispatches
 pass	fse2 negative-zero handler state stays distinct from +0.0 across the seam (canonical bits)
+pass	fse3c single grow op, literal float seed, float-mul next-state
+pass	fse3e cancel arm alone — (- s s) self-subtraction in the answer
+pass	fse3f FINITE computed seed (+ 1.0 0.5)
 pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
@@ -5581,6 +5613,13 @@ pass	im2min5 a performing self-recursive walk then a TRAILING draw — the calle
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
+pass	imr1 a per-name import rename binds the export under the alias and runs
+pass	imr2 per-name renames disambiguate a uniform export name from two modules
+pass	imr3 one export imported under TWO aliases — both bind to the same def
+pass	imr4 a MIXED list — plain import and rename side by side
+pass	imr5 the ORIGINAL name is NOT bound after a rename (unbound reject)
+pass	imr6 an alias colliding with another import is a colliding-import reject
+pass	imr7 a renamed FUNCTION import applies through the alias
 pass	indexed reads at different indices of one list are not shared
 pass	indexing a byte sequence out of bounds yields None
 pass	indexing a byte sequence returns Some of the byte at that position
@@ -6335,6 +6374,9 @@ pass	rlyB single-use arm-perform control (answer only, state untouched) — B's 
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
+pass	rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)
+pass	rop2 recursive const (Option Int64) param recursion on the value path folds to 99
+pass	rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)
 pass	rot1 a ROTATION-CIPHER state — enc shifts a letter index with the double-mod negative-normalization idiom in the arm, tune drives the shift NEGATIVE and the normalization recovers the canonical class
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
 pass	round-trip byte-rope consumer alongside a plain export — the plain
@@ -6448,6 +6490,10 @@ pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing 
 pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
 pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
 pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
+pass	s2a Char const-param equality in const recursion trap surfaces CDZ0304
+pass	s2b INLINE record projection in the recursive argument trap surfaces CDZ0304
+pass	s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304
+pass	s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304
 pass	s6a wrapper binding shadows an outer binding the BODY reads
 pass	s6d the floated wrapper init can trap — division by the argument stays ORDERED before the conditional
 pass	sa1 STRING op arguments measured into a scalar state — the empty string is a real zero-length argument
@@ -7351,12 +7397,28 @@ todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b l
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
+todo	bo1 bare order over two runtime encode results compares content-lexicographically
+todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
+todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
+todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
+todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
+todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
+todo	cq02c host IMPORT: NULLARY + LIST result, called once
+todo	cq02d NULLARY + RECORD result called TWICE with TWO respond clauses
+todo	cq03 host IMPORT: scalar param + LIST result — guest measures it
 todo	cq04 host IMPORT: RECORD param + scalar result (reverse direction)
+todo	cq04b host IMPORT: RECORD arg + UNIT result (SHAPE-13 control in my namespace)
+todo	cq04c record host-ARG with s64 result (no Int64.of)
+todo	cr01 TWO exported members in one interface — both callable
+todo	cr02 an export whose body runs an IN-GUEST handled effect
 todo	cr03 an export combining an IN-GUEST handler AND a host import
+todo	cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)
+todo	cr03c host call INSIDE the handled body
+todo	cr03d combination with s64 host result (no Int64.of) — nested
 todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
@@ -7365,6 +7427,10 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
+todo	nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)
+todo	nfe2 +inf and -inf runtime encodes have EQUAL byte length (sibling tags 18/19)
+todo	nfe3 tuple-walk equality says +inf and -inf encodes DIFFER (distinct tags)
+todo	nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonical NaN form)
 todo	read of malformed text is a coded reject, not a wrong value
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
 todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
@@ -7373,70 +7439,6 @@ todo	round-trip: a higher-order closure whose inner closure CAPTURES and is appl
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
-todo	two adapter records with different state types drive a take-while fold in one program
-todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
-todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
-todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
-todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
-todo	vres3 a NEGATIVE s64 payload through the variant host-result join
-pass	rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)
-pass	rop2 recursive const (Option Int64) param recursion on the value path folds to 99
-pass	rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)
-pass	dc01 Float64 const-param countdown trap surfaces CDZ0304
-pass	dc02 tuple const-param countdown trap surfaces CDZ0304
-pass	dc03 record const-param countdown trap surfaces CDZ0304
-pass	dc04 (Option Int64) const-param recursion on the VALUE path folds to 99 under Ast.encode
-pass	dc06 Map insert+lookup inside a const fn folds under Ast.encode
-pass	s2a Char const-param equality in const recursion trap surfaces CDZ0304
-pass	s2b INLINE record projection in the recursive argument trap surfaces CDZ0304
-pass	s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304
-pass	s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304
-pass	cm01 (const ...) in a resume ANSWER position folds
-pass	cm03 (const ...) as a handler SEED folds
-pass	cm02c (const ...) closed handle with STRING state
-pass	cn-c1 Symbol equality under (const ...)
-pass	cn-c3 BigInt beyond-i64 multiply under (const ...)
-pass	cn-c4 Rational exact division under (const ...)
-pass	cn-c5 Qty unit algebra under (const ...)
-pass	cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand
-pass	ch02 a closure stored in a record field projects and applies
-pass	ch03 a closure stored in a LIST is fetched and applied
-pass	ch04 a runtime-branch-selected closure applies
-pass	ch08 String.from-bytes of RUNTIME-built bytes validates
-pass	ch01b eta-expanded closure control for prim-as-value
-pass	ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)
-todo	cr01 TWO exported members in one interface — both callable
-todo	cr02 an export whose body runs an IN-GUEST handled effect
-todo	cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)
-todo	cr03c host call INSIDE the handled body
-todo	cr03d combination with s64 host result (no Int64.of) — nested
-todo	cq04c record host-ARG with s64 result (no Int64.of)
-pass	fse3c single grow op, literal float seed, float-mul next-state
-pass	fse3e cancel arm alone — (- s s) self-subtraction in the answer
-pass	fse3f FINITE computed seed (+ 1.0 0.5)
-pass	cx5b CONTROL: pure closure through the same recursive HOF
-pass	cx5c LET-BOUND effectful closure invoked directly (no HOF)
-pass	cu01 runtime NON-FINAL dependent-size utf8 segment decodes with a trailing field
-pass	cu02 runtime FINAL dependent-size utf8 segment decodes
-pass	cu03 CONTROL runtime non-final dependent-size BYTES segment
-pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
-todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
-todo	cq03 host IMPORT: scalar param + LIST result — guest measures it
-todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
-todo	cq02c host IMPORT: NULLARY + LIST result, called once
-todo	cq04b host IMPORT: RECORD arg + UNIT result (SHAPE-13 control in my namespace)
-todo	cq02d NULLARY + RECORD result called TWICE with TWO respond clauses
-todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
-todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
-todo	wen1 an enum host-import RESULT lifts and selects the guest arm
-todo	nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)
-todo	nfe2 +inf and -inf runtime encodes have EQUAL byte length (sibling tags 18/19)
-todo	nfe3 tuple-walk equality says +inf and -inf encodes DIFFER (distinct tags)
-todo	nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonical NaN form)
-pass	bfl1 bare equality over flat Bytes.of runtime twins
-pass	bfl2 bare equality across Bytes.concat vs Bytes.of flat twins
-todo	bo1 bare order over two runtime encode results compares content-lexicographically
-todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)
 todo	sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)
 todo	sp3 SCALAR param + record result with an Option field (Some side)
@@ -7445,11 +7447,10 @@ todo	sp4 SCALAR param + bare option result
 todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
-pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
-pass	imr1 a per-name import rename binds the export under the alias and runs
-pass	imr2 per-name renames disambiguate a uniform export name from two modules
-pass	imr3 one export imported under TWO aliases — both bind to the same def
-pass	imr4 a MIXED list — plain import and rename side by side
-pass	imr5 the ORIGINAL name is NOT bound after a rename (unbound reject)
-pass	imr6 an alias colliding with another import is a colliding-import reject
-pass	imr7 a renamed FUNCTION import applies through the alias
+todo	two adapter records with different state types drive a take-while fold in one program
+todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
+todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
+todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
+todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
+todo	vres3 a NEGATIVE s64 payload through the variant host-result join
+todo	wen1 an enum host-import RESULT lifts and selects the guest arm
