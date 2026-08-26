@@ -1489,6 +1489,10 @@ pass	a collection-carrying recursion whose base arm does a fallible indexed read
 pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
 pass	a combined left shift that overflows Int64 traps like the single shift it folds to
 pass	a common constructor composes through a hoisted tuple field to build once
+pass	a common float equality hoisted out of both if arms compares once over the selected operand
+pass	a common float ordering hoist reproduces the IEEE partial order including NaN
+pass	a common integer comparison hoisted out of both if arms compares once over the selected operand
+pass	a common operator hoisted out of both if arms selects the operand and computes once
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
 pass	a comparison pair split across a nested connective reassociates and folds to the interval
 pass	a comparison walls the FLOAT width from a literal above it
@@ -3173,6 +3177,7 @@ pass	a rename pass DERIVES each new Name from the old payload (concat suffix), q
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated conjunct absorbs to the plain conjunction
 pass	a repeated disjunct absorbs to the plain disjunction
+pass	a repeated float comparison is computed once and reused (value-transparent CSE)
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator

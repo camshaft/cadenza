@@ -2232,40 +2232,9 @@ fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
         adds, 1,
         "the common-operator hoist applies the add once over the selected operand, got {adds} adds"
     );
-    use wasmtime::component::Val;
-    // Value parity, both directions.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "main", &[Val::Bool(true), Val::S64(5), Val::S64(9)]),
-        6,
-        "c=true → (+ a 1) = 6"
-    );
-    assert_eq!(
-        run_returns_with::<i64>(
-            &bytes,
-            "main",
-            &[Val::Bool(false), Val::S64(5), Val::S64(9)]
-        ),
-        10,
-        "c=false → (+ b 1) = 10"
-    );
-    // Trap parity: the TAKEN arm's overflow traps; the UNTAKEN arm's does not (operand selection, not
-    // eager evaluation of both). a = Int64.max.
-    assert!(
-        call_traps(
-            &bytes,
-            "main",
-            &[Val::Bool(true), Val::S64(i64::MAX), Val::S64(9)]
-        ),
-        "c=true with a=Int64.max: the taken (+ a 1) overflows → must trap"
-    );
-    assert!(
-        !call_traps(
-            &bytes,
-            "main",
-            &[Val::Bool(false), Val::S64(i64::MAX), Val::S64(9)]
-        ),
-        "c=false with a=Int64.max: the untaken arm's overflow must NOT be evaluated (selects b) → no trap"
-    );
+    // Value + trap parity (both directions, and the untaken arm's overflow is NOT evaluated) migrated to
+    // the corpus (run via cdz-run): case "a common operator hoisted out of both if arms selects the operand
+    // and computes once" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The common-operator hoist also covers a COMPARISON: `(if c (< a k) (< b k))` → `(< (if c a b) k)` —
@@ -2287,29 +2256,8 @@ fn a_common_comparison_hoists_out_of_both_if_arms() {
         lts, 1,
         "the common-comparison hoist compares once over the selected operand, got {lts} compares"
     );
-    use wasmtime::component::Val;
-    let run = |c: bool, a: i64, b: i64, k: i64| -> i64 {
-        run_returns_with::<i64>(
-            &bytes,
-            "main",
-            &[Val::Bool(c), Val::S64(a), Val::S64(b), Val::S64(k)],
-        )
-    };
-    assert_eq!(
-        run(true, 3, 9, 5),
-        1,
-        "c=true → (< a k) = (< 3 5) = true → 1"
-    );
-    assert_eq!(
-        run(false, 3, 9, 5),
-        0,
-        "c=false → (< b k) = (< 9 5) = false → 0"
-    );
-    assert_eq!(
-        run(true, 9, 3, 5),
-        0,
-        "c=true → (< a k) = (< 9 5) = false → 0"
-    );
+    // Value parity migrated to the corpus (run via cdz-run): case "a common integer comparison hoisted out
+    // of both if arms compares once over the selected operand" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The common-operator hoist also covers a FLOAT equality (`Core::FloatCompare`): `(if c (= a k) (= b k))`
@@ -2333,39 +2281,8 @@ fn a_common_float_equality_hoists_out_of_both_if_arms() {
         eqs, 1,
         "the common-float-equality hoist compares once over the selected operand, got {eqs} compares"
     );
-    use wasmtime::component::Val;
-    let run = |c: bool, a: f64, b: f64, k: f64| -> i64 {
-        run_returns_with::<i64>(
-            &bytes,
-            "main",
-            &[
-                Val::Bool(c),
-                Val::Float64(a),
-                Val::Float64(b),
-                Val::Float64(k),
-            ],
-        )
-    };
-    assert_eq!(
-        run(true, 1.0, 9.0, 1.0),
-        1,
-        "c=true → (= a k) = (= 1.0 1.0) = true → 1"
-    );
-    assert_eq!(
-        run(false, 1.0, 9.0, 1.0),
-        0,
-        "c=false → (= b k) = (= 9.0 1.0) = false → 0"
-    );
-    assert_eq!(
-        run(false, 1.0, 2.0, 2.0),
-        1,
-        "c=false → (= b k) = (= 2.0 2.0) = true → 1"
-    );
-    assert_eq!(
-        run(true, 9.0, 2.0, 2.0),
-        0,
-        "c=true → (= a k) = (= 9.0 2.0) = false → 0"
-    );
+    // Value parity migrated to the corpus (run via cdz-run): case "a common float equality hoisted out of
+    // both if arms compares once over the selected operand" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The common-operator hoist AND the value-numbering CSE also cover a FLOAT ORDERING compare — the same
@@ -2380,7 +2297,6 @@ fn a_common_float_equality_hoists_out_of_both_if_arms() {
 #[test]
 fn a_common_float_ordering_hoists_and_cses_like_equality() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     // HOIST: `(if c (< a k) (< b k))` → one `f64.lt` (the differing operand becomes a select).
     let hsrc = "(module m \
                   (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) \
@@ -2392,39 +2308,9 @@ fn a_common_float_ordering_hoists_and_cses_like_equality() {
         lts, 1,
         "the common-float-ORDERING hoist compares once over the selected operand, got {lts} f64.lt"
     );
-    let hrun = |c: bool, a: f64, b: f64, k: f64| -> i64 {
-        run_returns_with::<i64>(
-            &hbytes,
-            "main",
-            &[
-                Val::Bool(c),
-                Val::Float64(a),
-                Val::Float64(b),
-                Val::Float64(k),
-            ],
-        )
-    };
-    assert_eq!(
-        hrun(true, 1.0, 9.0, 5.0),
-        1,
-        "c=true → (< a k) = (< 1 5) = true → 1"
-    );
-    assert_eq!(
-        hrun(false, 1.0, 9.0, 5.0),
-        0,
-        "c=false → (< b k) = (< 9 5) = false → 0"
-    );
-    // NaN value-parity: `(< NaN k)` is false (IEEE), and the hoist must reproduce that on the SELECTED arm.
-    assert_eq!(
-        hrun(true, f64::NAN, 1.0, 5.0),
-        0,
-        "c=true selects a=NaN → (< NaN 5) = false → 0 (total IEEE compare, no trap, hoist-identical)"
-    );
-    assert_eq!(
-        hrun(false, 1.0, f64::NAN, 5.0),
-        0,
-        "c=false selects b=NaN → (< NaN 5) = false → 0"
-    );
+    // Value parity (incl. the NaN IEEE partial-order face) migrated to the corpus (run via cdz-run): case
+    // "a common float ordering hoist reproduces the IEEE partial order including NaN" in
+    // spec/semantics/02-binding-and-control.sexp.
     // CSE: a repeated `(< a b)` computes one `f64.lt` (value-numbering via the `core_eq` FloatCompare arm).
     let csrc = "(module m \
                   (def (main (: a Float64) (: b Float64)) (+ (if (< a b) 10 0) (if (< a b) 20 0))) \
@@ -2435,15 +2321,8 @@ fn a_common_float_ordering_hoists_and_cses_like_equality() {
         clts, 1,
         "the repeated float-ordering compare is CSE'd to one f64.lt, got {clts}"
     );
-    let crun = |a: f64, b: f64| -> i64 {
-        run_returns_with::<i64>(&cbytes, "main", &[Val::Float64(a), Val::Float64(b)])
-    };
-    assert_eq!(
-        crun(1.0, 2.0),
-        30,
-        "1<2 true → 10+20 = 30 (one compare, two uses)"
-    );
-    assert_eq!(crun(2.0, 1.0), 0, "2<1 false → 0+0 = 0");
+    // Value parity migrated to the corpus (run via cdz-run): case "a repeated float comparison is computed
+    // once and reused (value-transparent CSE)" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The common-constructor hoist also fires for a RECORD: `(if c (record (a x) (b 1)) (record (a y) (b
