@@ -55,6 +55,13 @@ mod arg_probe_world {
         path: ["wit/world.wit", "wit/test/arg-probe.wit"],
         imports: { default: async },
         exports: { default: async },
+        // Reuse the platform world's generated types for the shared `cadenza:platform` interfaces (reducer
+        // envelope + value types) instead of regenerating distinct copies — so this world's `guest` export
+        // returns the SAME `Step`/`Message`/… the reducer path uses, and both drive through one code path.
+        with: {
+            "cadenza:platform/reducer": crate::host::cadenza::platform::reducer,
+            "cadenza:platform/types": crate::host::cadenza::platform::types,
+        },
     });
 }
 
@@ -826,6 +833,11 @@ struct ReducerHost {
     /// may compose other pure programs but any effect, state, or world access it attempts cannot even resolve
     /// (§3 otherwise-empty capability set).
     pure_linker: Linker<HostState>,
+    /// The linker a TEST-ONLY arg-probe-world guest (§9) instantiates against: only the `arg-probe` import
+    /// (the guest exports the reducer `guest` but takes no platform capabilities). Its content-addressed deps
+    /// (the value-heap runtime) compose per-spawn like any guest. Built like the others but never wired for a
+    /// real reducer — reached only when a component imports `arg-probe`.
+    arg_probe_linker: Linker<HostState>,
     /// The node's per-reducer resource limits (compute budget + memory ceiling + epoch tick) this host arms
     /// every reducer store with (`arm_store_safety`). Set once at assembly from the node's config — never a
     /// hard-coded cap.
@@ -843,11 +855,17 @@ impl ReducerHost {
         add_host_imports(&mut event_linker, ReducerKind::Event)?;
         let mut pure_linker = Linker::new(&engine);
         add_host_imports(&mut pure_linker, ReducerKind::Pure)?; // wires only `run` — otherwise empty (§3)
+        let mut arg_probe_linker = Linker::new(&engine);
+        arg_probe_world::cadenza::test_arg_probe::arg_probe::add_to_linker::<_, HostData>(
+            &mut arg_probe_linker,
+            |s| s,
+        )?;
         Ok(Self {
             engine,
             ordinary_linker,
             event_linker,
             pure_linker,
+            arg_probe_linker,
             limits,
         })
     }
@@ -885,7 +903,7 @@ impl ReducerHost {
         let mut store = Store::new(&self.engine, host);
         arm_store_safety(&mut store);
         let world = pre.instantiate_async(&mut store).await?;
-        Ok(WasmReducer { store, world })
+        Ok(WasmReducer::Reducer { store, world })
     }
 }
 
@@ -894,9 +912,18 @@ impl ReducerHost {
 /// guest export, and decodes the returned step. It is `Send` but not `Sync` (a `Store` is not `Sync`) — which
 /// is exactly what [`Reducer`](crate::Reducer) requires, since the runtime moves a reducer into its own task
 /// and drives it only through `&mut` from there. Built by [`ReducerHost::instantiate`].
-struct WasmReducer {
-    store: Store<HostState>,
-    world: EventReducerWorld,
+enum WasmReducer {
+    /// A reducer-world guest — the ordinary/event/pure worlds (the production path).
+    Reducer {
+        store: Store<HostState>,
+        world: EventReducerWorld,
+    },
+    /// A TEST-ONLY arg-probe-world guest (§9 arg-value capture): exports the same reducer `guest` (so the
+    /// harness drives it identically) but imports `arg-probe` instead of the platform capabilities.
+    ArgProbe {
+        store: Store<HostState>,
+        world: arg_probe_world::ArgProbeWorld,
+    },
 }
 
 // The three entry points share the same shape: encode the event, call the guest, decode the step. A wasm
@@ -906,34 +933,62 @@ struct WasmReducer {
 impl Reducer for WasmReducer {
     async fn on_message(&mut self, message: Message) -> (Vec<Request>, Outcome) {
         let event = message_to_wit(&message);
-        let step = self
-            .world
-            .cadenza_platform_guest()
-            .call_on_message(&mut self.store, &event)
-            .await
-            .expect("reducer on_message trapped");
+        // Both worlds export the same `cadenza:platform/guest`, so the call is identical bar the world type.
+        let step = match self {
+            WasmReducer::Reducer { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_message(store, &event)
+                    .await
+            }
+            WasmReducer::ArgProbe { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_message(store, &event)
+                    .await
+            }
+        }
+        .expect("reducer on_message trapped");
         step_from_wit(step).expect("reducer returned a malformed step")
     }
 
     async fn on_response(&mut self, response: Response) -> (Vec<Request>, Outcome) {
         let event = response_to_wit(&response);
-        let step = self
-            .world
-            .cadenza_platform_guest()
-            .call_on_response(&mut self.store, &event)
-            .await
-            .expect("reducer on_response trapped");
+        let step = match self {
+            WasmReducer::Reducer { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_response(store, &event)
+                    .await
+            }
+            WasmReducer::ArgProbe { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_response(store, &event)
+                    .await
+            }
+        }
+        .expect("reducer on_response trapped");
         step_from_wit(step).expect("reducer returned a malformed step")
     }
 
     async fn on_notification(&mut self, notification: Notification) -> (Vec<Request>, Outcome) {
         let event = notification_to_wit(&notification);
-        let step = self
-            .world
-            .cadenza_platform_guest()
-            .call_on_notification(&mut self.store, &event)
-            .await
-            .expect("reducer on_notification trapped");
+        let step = match self {
+            WasmReducer::Reducer { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_notification(store, &event)
+                    .await
+            }
+            WasmReducer::ArgProbe { store, world } => {
+                world
+                    .cadenza_platform_guest()
+                    .call_on_notification(store, &event)
+                    .await
+            }
+        }
+        .expect("reducer on_notification trapped");
         step_from_wit(step).expect("reducer returned a malformed step")
     }
 }
@@ -999,6 +1054,16 @@ fn component_dependencies(engine: &Engine, component: &Component) -> Vec<Compone
             })
         })
         .collect()
+}
+
+/// Whether `component` imports the TEST-ONLY `arg-probe` interface (§9) — i.e. it is an arg-probe-world guest,
+/// which must instantiate against the arg-probe linker + world, not a reducer linker (which does not provide
+/// `arg-probe`, so instantiation would fail). A real reducer never imports it.
+fn imports_arg_probe(engine: &Engine, component: &Component) -> bool {
+    component
+        .component_type()
+        .imports(engine)
+        .any(|(name, _)| name.starts_with("cadenza:test-arg-probe/arg-probe"))
 }
 
 /// The per-host instantiation core: the reducer-independent machinery for turning a program's content-
@@ -1111,7 +1176,40 @@ impl Instantiator {
         host_state: HostState,
     ) -> Option<Box<dyn Reducer>> {
         let component = self.component(program.hash()).await?;
-        let reducer = if component_dependencies(&self.host.engine, &component).is_empty() {
+        let has_deps = !component_dependencies(&self.host.engine, &component).is_empty();
+        let reducer = if imports_arg_probe(&self.host.engine, &component) {
+            // TEST-ONLY arg-probe-world guest (§9): it imports `arg-probe` (not the platform capabilities) and
+            // exports the same reducer `guest`, so it instantiates against the arg-probe linker + world.
+            let mut store = Store::new(&self.host.engine, host_state);
+            arm_store_safety(&mut store);
+            let world = if has_deps {
+                // Compose path: a fresh linker with `arg-probe` + the store-resolved deps (the value-heap
+                // runtime a Cadenza guest imports).
+                let mut linker = Linker::new(&self.host.engine);
+                arg_probe_world::cadenza::test_arg_probe::arg_probe::add_to_linker::<_, HostData>(
+                    &mut linker,
+                    |s| s,
+                )
+                .ok()?;
+                self.bind_dependencies(&mut store, &mut linker, &component)
+                    .await
+                    .ok()?;
+                arg_probe_world::ArgProbeWorld::instantiate_async(&mut store, &component, &linker)
+                    .await
+                    .ok()?
+            } else {
+                // Fast path: reuse the shared, pre-wired arg-probe linker.
+                let pre = arg_probe_world::ArgProbeWorldPre::new(
+                    self.host
+                        .arg_probe_linker
+                        .instantiate_pre(&component)
+                        .ok()?,
+                )
+                .ok()?;
+                pre.instantiate_async(&mut store).await.ok()?
+            };
+            WasmReducer::ArgProbe { store, world }
+        } else if !has_deps {
             // Fast path: no content-addressed component dependencies, so reuse the cached, pre-instantiated
             // per-kind linker (the engine, linker, and pre are all shared).
             let pre = self.host.preinstantiate(&component, kind).ok()?;
@@ -1131,7 +1229,7 @@ impl Instantiator {
             let world = EventReducerWorld::instantiate_async(&mut store, &component, &linker)
                 .await
                 .ok()?;
-            WasmReducer { store, world }
+            WasmReducer::Reducer { store, world }
         };
         Some(Box::new(reducer))
     }
