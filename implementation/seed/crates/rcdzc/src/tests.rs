@@ -13175,39 +13175,6 @@ fn an_unannotated_exported_parameter_declines() {
 
 // ── runtime overflow TRAPS, never wraps (numeric-model §Overflow Is Defined) ─────────────────────
 
-/// A runtime integer-overflow trap surfaces the DISTINGUISHABLE "integer overflow" reason, not a
-/// reasonless "unreachable". The arithmetic overflow guards + narrow range-checks emit
-/// `Lir::IfIntegerOverflowEnd` (an `i32.div_s` of `i32::MIN / -1` — the one wasm op that traps as
-/// "integer overflow"), so a debugger / the trap-reason gate can tell an overflow from any other trap.
-/// Covers a full-width add's machine guard AND a narrow width's range-check.
-#[test]
-fn a_runtime_overflow_trap_names_integer_overflow() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // Full-width add — the machine overflow guard.
-    let add = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))",
-    )))
-    .expect("compile");
-    let add_reason = call_trap_reason(&add, "add", &[Val::S64(i64::MAX), Val::S64(1)])
-        .expect("the overflowing add must trap");
-    assert!(
-        add_reason.contains("integer overflow"),
-        "a full-width add overflow must name integer overflow, not unreachable; got {add_reason:?}"
-    );
-    // Narrow width (Int8) — the range-check on the exact result. `100 + 100 = 200 > 127`.
-    let narrow = compile_component(&crate::codec::encode(&parse(
-        "(module m (def (f (: a Int8) (: b Int8)) (+ a b)) (export f))",
-    )))
-    .expect("compile");
-    let narrow_reason = call_trap_reason(&narrow, "f", &[Val::S8(100), Val::S8(100)])
-        .expect("the overflowing narrow add must trap");
-    assert!(
-        narrow_reason.contains("integer overflow"),
-        "a narrow-width overflow must name integer overflow; got {narrow_reason:?}"
-    );
-}
-
 /// An UNUSUAL-WIDTH multiply (`(UInt 48)`, storage slot `i64`) TRAPS when the product exceeds the width —
 /// including the STORAGE-WRAP case a product past the i64 SLOT (not just past 2^48). The rust backend once
 /// had a gap here (`wrapping_mul` on the storage prim, then range-check vs 2^N — `2^32 * 2^32 = 2^64` wraps

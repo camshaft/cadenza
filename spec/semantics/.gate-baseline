@@ -1962,6 +1962,7 @@ pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
+pass	a full-width add overflow names the integer overflow trap reason
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -2670,6 +2671,7 @@ pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width Int quantity stored as a map value round-trips through Map.lookup
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width add overflow names the integer overflow trap reason
 pass	a narrow-width name binder is usable in a downstream op at its width
 pass	a narrow-width newtype boxed as a list element matches by its literal payload
 pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
