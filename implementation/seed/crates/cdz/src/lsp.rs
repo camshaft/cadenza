@@ -1202,7 +1202,8 @@ fn package_diagnostics_for(
         rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
     ));
     inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    // Single-result package query — delegated to `cdz-compile` under `!standalone`, in-process otherwise.
+    let compiled = crate::dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS);
     let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) else {
         // The `Diagnostics` query produced NO artifact — the package failed to LINK before the query
         // could run (e.g. a CYCLIC import: `link()` rejects the import graph up front). The compile still
@@ -1376,7 +1377,8 @@ fn diagnostics_for(text: &str, is_ml: bool) -> Vec<Diagnostic> {
         rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
         rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
     ];
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    // Single-result Diagnostics query — delegated to `cdz-compile` under `!standalone`, in-process otherwise.
+    let compiled = crate::dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS);
     if let Some(bytes) = compiled.artifact(rcdzc::sidecar::KIND_DIAGNOSTICS) {
         let diag_text = String::from_utf8_lossy(bytes);
         for line in diag_text.lines() {
