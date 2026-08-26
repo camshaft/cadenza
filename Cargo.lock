@@ -369,6 +369,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "notify",
+ "num-bigint",
  "rand_core 0.9.5",
  "rand_xoshiro 0.7.0",
  "rcdzc",

@@ -9113,6 +9113,17 @@ fn run_sidecar_many(
     arenas: &cadenza_syntax::Arenas,
     requests: &[rcdzc::Request],
 ) -> rcdzc::CompileOutput {
+    // Under `!standalone` (the nix delegating build), a SINGLE query spawns `cdz-compile` instead of
+    // running the compiler in-process — the request is built as a binary-AST tree via cadenza-syntax and
+    // the single result artifact is captured off `cdz-compile`'s `-o -` stdout. A batch (`--where`, N
+    // requests) or a non-query returns `None` and falls through to the in-process path below (rcdzc is
+    // still linked; delegating the batch reader is a later slice, gated on positional result naming).
+    #[cfg(not(feature = "standalone"))]
+    {
+        if let Some(out) = delegate::run_sidecar_delegated(arenas, requests, PROG) {
+            return out;
+        }
+    }
     let ast = cadenza_syntax::codec::encode(arenas);
     let sidecar = rcdzc::sidecar::encode(requests);
     let inputs = vec![

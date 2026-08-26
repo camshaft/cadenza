@@ -21,6 +21,11 @@ path = "src/main.rs"
 
 [dependencies]
 cadenza-syntax = { path = "../cadenza-syntax" }
+# Arbitrary-precision integer for building `cadenza-syntax` `Leaf::Int` nodes — used by the
+# `delegate-compile` path to construct the sidecar QUERY request as a binary-AST value (a `(query
+# type-at <node>)` tree) via the front-end's Builder, byte-identical to `rcdzc::sidecar::encode`. Same
+# `num-bigint` version cadenza-syntax's `Leaf::Int { value: BigInt }` uses (already in the workspace lock).
+num-bigint = "0.4"
 rcdzc = { path = "../rcdzc" }
 # The Rust-backend boundary-value render (shared with the corpus gate) — `cdz run-rust` compiles a
 # program `--target rust`, runs it, and renders the result to the SAME canonical s-expr the wasm oracle
