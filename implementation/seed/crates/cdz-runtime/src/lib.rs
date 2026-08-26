@@ -5813,6 +5813,148 @@ fn op_ast_print(handle: Handle, discs: Handle) -> Handle {
     op_str_new(out)
 }
 
+/// The NINE Ast-variant discriminants `ast-encode`/`ast-decode` need — the print descriptor's seven plus
+/// `char` + `symbol` (encode/decode must round-trip EVERY variant, whereas print renders seven). A distinct
+/// descriptor from `AstDiscs`: the shipped `ast-print` op bakes seven in its own order, so its reader stays
+/// as-is. Field order mirrors the compiler's `AstDiscs` struct (`lower.rs`) — `[int, float, bool, str, name,
+/// list, bytes, char, symbol]` — the order the compiler bakes the descriptor in.
+struct AstEncDiscs {
+    int: u32,
+    float: u32,
+    boolv: u32,
+    strv: u32,
+    name: u32,
+    list: u32,
+    bytes: u32,
+    chr: u32,
+    symbol: u32,
+}
+
+/// Decode the baked 9-disc descriptor: 9 LEB128 varints in `[int,float,bool,str,name,list,bytes,char,symbol]`
+/// order. `None` on a truncated descriptor (the compiler always bakes a well-formed one).
+fn read_ast_enc_discs(discs: Handle) -> Option<AstEncDiscs> {
+    let n = op_bytes_len(discs);
+    let mut buf = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        buf.push(op_bytes_get(discs, i) as u8);
+    }
+    let mut pos = 0usize;
+    let mut next = || -> Option<u32> {
+        let mut val: u32 = 0;
+        let mut shift = 0u32;
+        loop {
+            let b = *buf.get(pos)?;
+            pos += 1;
+            val |= ((b & 0x7f) as u32) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        Some(val)
+    };
+    Some(AstEncDiscs {
+        int: next()?,
+        float: next()?,
+        boolv: next()?,
+        strv: next()?,
+        name: next()?,
+        list: next()?,
+        bytes: next()?,
+        chr: next()?,
+        symbol: next()?,
+    })
+}
+
+/// Bridge a runtime heap integer (`bigint::Big`) to the codec's `ast::IntValue{negative, magnitude:BE}`. The
+/// heap leaf's sign-magnitude bytes are `[sign][LITTLE-endian magnitude, trailing-zeros-stripped]`; the codec
+/// wants a BIG-endian magnitude with no leading zeros, so reverse the magnitude bytes (LE→BE; the LE form has
+/// no trailing zeros, so the reversed BE form has no leading zeros — already canonical). Zero → `[0]` → empty
+/// magnitude = `IntValue::zero`.
+fn big_to_intvalue(b: &bigint::Big) -> crate::ast::IntValue {
+    let sm = b.to_sign_magnitude_bytes();
+    let negative = sm.first().copied() == Some(1);
+    let mut magnitude: Vec<u8> = sm[1..].to_vec();
+    magnitude.reverse();
+    crate::ast::IntValue {
+        negative,
+        magnitude,
+    }
+}
+
+/// Walk a runtime heap `Ast` value into the shared cadenza-ast `Builder` `b`, returning the built node's
+/// `StructId` — the runtime twin of the compiler's `encode_ast_value` (rcdzc `lower.rs`), building the SAME
+/// leaves/structs so `codec::encode` of the finished arena is BYTE-IDENTICAL to the compile-time fold. `None`
+/// on an unknown disc (not reached for a well-typed Ast). A non-finite float has no finite `Decimal` and no
+/// leaf yet (awaits the `KIND_FLOAT_{NAN,POS_INF,NEG_INF}` tags) — it declines here for now.
+fn encode_ast_to_arenas(
+    h: Handle,
+    d: &AstEncDiscs,
+    b: &mut crate::ast::Builder,
+) -> Option<crate::ast::StructId> {
+    let disc = op_sum_disc(h);
+    let payload = op_sum_payload(h);
+    if disc == d.int {
+        Some(b.atom_leaf(crate::ast::Leaf::Int {
+            value: big_to_intvalue(&unbox_bigint(payload)),
+            radix: crate::ast::Radix::Dec,
+        }))
+    } else if disc == d.float {
+        let dec = crate::ast::Decimal::from_f64(op_get_float(payload))?;
+        Some(b.atom_leaf(crate::ast::Leaf::Float(dec)))
+    } else if disc == d.boolv {
+        Some(b.atom_leaf(crate::ast::Leaf::Bool(op_get_bool(payload))))
+    } else if disc == d.strv {
+        Some(b.atom_leaf(crate::ast::Leaf::Str(op_str_get(payload).into())))
+    } else if disc == d.name {
+        Some(b.atom_leaf(crate::ast::Leaf::Name(op_str_get(payload).into())))
+    } else if disc == d.symbol {
+        Some(b.atom_leaf(crate::ast::Leaf::Sym(op_str_get(payload).into())))
+    } else if disc == d.chr {
+        // A `Char` payload is a boxed i32 scalar code point (never a heap handle); a valid `Ast.Char` always
+        // holds a real Unicode scalar, so `from_u32` succeeds.
+        let c = char::from_u32(op_get_int(payload) as u32)?;
+        Some(b.atom_leaf(crate::ast::Leaf::Char(c)))
+    } else if disc == d.bytes {
+        let n = op_bytes_len(payload);
+        let mut raw = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            raw.push(op_bytes_get(payload, i) as u8);
+        }
+        Some(b.atom_leaf(crate::ast::Leaf::Bytes(raw)))
+    } else if disc == d.list {
+        // A list payload is a persistent RRB vector (`vec-*`, NOT `arr-*`); each element is itself an Ast.
+        let n = op_vec_len(payload);
+        let mut children = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            children.push(encode_ast_to_arenas(op_vec_get(payload, i), d, b)?);
+        }
+        Some(b.list(children))
+    } else {
+        None
+    }
+}
+
+/// `ast-encode(handle, discs)` (heap op 93) — the runtime half of the compiler's `Ast.encode`: serialize a
+/// RUNTIME `Ast` heap value to its canonical `cdzast` binary form (a fresh owned Bytes leaf), BYTE-IDENTICAL
+/// to the compile-time `Ast.encode` fold (both run the shared `crate::codec::encode` over the same `Arenas`).
+/// BORROWS `handle` + `discs`. An Ast that cannot be built (an unknown disc / a non-finite float pending its
+/// tag) yields empty Bytes — not reached for a well-typed finite Ast.
+fn op_ast_encode(handle: Handle, discs: Handle) -> Handle {
+    let bytes = read_ast_enc_discs(discs)
+        .and_then(|d| {
+            let mut b = crate::ast::Builder::new();
+            let root = encode_ast_to_arenas(handle, &d, &mut b)?;
+            Some(crate::codec::encode(&b.finish(root)))
+        })
+        .unwrap_or_default();
+    let buf = op_bytes_alloc(bytes.len() as u32);
+    for (i, &v) in bytes.iter().enumerate() {
+        op_bytes_set(buf, i as u32, v as u32);
+    }
+    buf
+}
+
 #[cfg(target_arch = "wasm32")]
 struct Component;
 
@@ -19643,6 +19785,69 @@ mod tests {
         op_drop(st);
         op_drop(o);
 
+        op_drop(discs);
+    }
+
+    /// `ast-encode` self-consistency: a heap `Ast` walked by `op_ast_encode` produces the SAME canonical
+    /// `cdzast` bytes as building the equivalent `Arenas` directly through the shared `Builder` +
+    /// `codec::encode`. This validates the heap-walk's disc dispatch + type bridges (Big→IntValue, char,
+    /// float→Decimal, RRB vec elements) — the byte-identity contract with the compile-time `Ast.encode` fold,
+    /// which runs that same `Builder`/`codec` path. Every input is built with the constructors the compiler
+    /// emits (bigint leaf, RRB `vec-push` for lists, boxed scalar for char) per the #3621 test-fidelity rule.
+    #[test]
+    fn ast_encode_matches_builder_codec_bytes() {
+        reset();
+        // 9-disc descriptor [int,float,bool,str,name,list,bytes,char,symbol] = discs 0..=8.
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // Heap Ast: (List [Name "f", Int 300, Int -3, Bool true, Str "hi", Bytes b"\x00\xff", Char 'λ',
+        // Sym "m", Float 1.5, List [Int 7]]) — covers every variant incl. multi-byte + negative Int + nesting.
+        let mut v = op_vec_empty();
+        v = op_vec_push(v, op_sum_new(4, op_str_new("f".to_string())));
+        v = op_vec_push(v, op_sum_new(0, op_bigint_of_i64(300)));
+        v = op_vec_push(v, op_sum_new(0, op_bigint_of_i64(-3)));
+        v = op_vec_push(v, op_sum_new(2, op_box_bool(true)));
+        v = op_vec_push(v, op_sum_new(3, op_str_new("hi".to_string())));
+        v = op_vec_push(v, op_sum_new(6, bytes_leaf(&[0, 255])));
+        v = op_vec_push(v, op_sum_new(7, op_box_int('λ' as i64)));
+        v = op_vec_push(v, op_sum_new(8, op_str_new("m".to_string())));
+        v = op_vec_push(v, op_sum_new(1, op_box_float(1.5)));
+        let inner = op_vec_push(op_vec_empty(), op_sum_new(0, op_bigint_of_i64(7)));
+        v = op_vec_push(v, op_sum_new(5, inner));
+        let root = op_sum_new(5, v);
+        let got = op_ast_encode(root, discs);
+        let got_bytes = bytes_to_vec(got);
+
+        // Same Ast built directly through the shared Builder + codec (the compile-fold path).
+        let idec = |n: i64| crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_i64(n),
+            radix: crate::ast::Radix::Dec,
+        };
+        let mut b = crate::ast::Builder::new();
+        let e_name = b.atom_leaf(crate::ast::Leaf::Name("f".into()));
+        let e_300 = b.atom_leaf(idec(300));
+        let e_neg3 = b.atom_leaf(idec(-3));
+        let e_bool = b.atom_leaf(crate::ast::Leaf::Bool(true));
+        let e_str = b.atom_leaf(crate::ast::Leaf::Str("hi".into()));
+        let e_bytes = b.atom_leaf(crate::ast::Leaf::Bytes(alloc::vec![0, 255]));
+        let e_char = b.atom_leaf(crate::ast::Leaf::Char('λ'));
+        let e_sym = b.atom_leaf(crate::ast::Leaf::Sym("m".into()));
+        let e_float = b.atom_leaf(crate::ast::Leaf::Float(
+            crate::ast::Decimal::from_f64(1.5).unwrap(),
+        ));
+        let e_inner_7 = b.atom_leaf(idec(7));
+        let e_inner = b.list(alloc::vec![e_inner_7]);
+        let root_b = b.list(alloc::vec![
+            e_name, e_300, e_neg3, e_bool, e_str, e_bytes, e_char, e_sym, e_float, e_inner
+        ]);
+        let want_bytes = crate::codec::encode(&b.finish(root_b));
+
+        assert_eq!(
+            got_bytes, want_bytes,
+            "runtime ast-encode bytes must equal the Builder+codec::encode of the same Ast"
+        );
+        op_drop(root);
+        op_drop(got);
         op_drop(discs);
     }
 
