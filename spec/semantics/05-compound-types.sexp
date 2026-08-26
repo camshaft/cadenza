@@ -19425,7 +19425,7 @@
   (call main (: 5 Int64))
   (output (: 11 Int64)))
 
-(case "lm5 a rest-binder match computes (KNOWN LEAK: 2 cells on the debug runtime, derived-tail vec-drop — v-runtime fixing; live-objects clause returns with the fix)"
+(case "lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail (#3756)"
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0) (list n (+ n 1) (+ n 2) (+ n 3)) (list 9))
@@ -19433,7 +19433,8 @@
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects 0))
 
 (case "lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list"
   (input (do
