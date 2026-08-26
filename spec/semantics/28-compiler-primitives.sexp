@@ -1627,3 +1627,24 @@
                   (trap "cgf06 WRONG"))))
             (export main)))
   (error  CDZ0304 (message "cgf06 folded one")))
+
+; -- breaker batch 421 (2026-08-26): the #3774 <=1-element orderability edges — a single-element
+; and an EMPTY (typed) const Set.to-list fold, and a single-entry const Map.to-list reads its lone
+; (k v). Same-hour pins of the bonus fix that rode the Map.to-list fold.
+
+(case "le1 a SINGLE-element const Set.to-list folds"
+  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list 42)))))) (export main)))
+  (output (: 1 Int64)))
+
+(case "le2 an EMPTY const Set.to-list folds to the empty list"
+  (input (do (def (main) (const (List.len (Set.to-list (: (Set.of (list)) (Set Int64)))))) (export main)))
+  (output (: 0 Int64)))
+
+(case "le3 a single-entry const Map.to-list reads its lone (k v)"
+  (input (do
+    (def (main)
+      (const (match (List.at (Map.to-list (Map.insert (map) 7 70)) 0)
+               ((Option.Some (tuple k v)) (+ k v))
+               ((Option.None) -1))))
+    (export main)))
+  (output (: 77 Int64)))
