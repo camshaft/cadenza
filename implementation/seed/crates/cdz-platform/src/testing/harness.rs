@@ -228,6 +228,13 @@ pub struct Harness {
     /// route through. Task names resolve to reducer ids at run time; empty seeds an empty graph (every
     /// emitter has an empty chain, so the default handler answers with `missing-handler`).
     graph_edges: Vec<(String, ContractId, Vec<String>)>,
+    /// The ONE reducer graph the run routes over, if the caller supplied it with [`graph`](Harness::graph).
+    /// `None` means the run creates its own fresh graph. A caller supplies a graph to SHARE it with the store
+    /// it builds: the store's `make_graph` must hand out THIS graph as each reducer's `graph` host-import, so
+    /// the guest's graph capability and the system's routing graph (spawn/link/seed, and the seeded transform
+    /// chains) are ONE instance — else a guest reads an empty graph while the system routes over a populated
+    /// one, and §4 forward routing (a default handler reading a seeded chain) silently finds nothing.
+    shared_graph: Option<Arc<dyn ReducerGraph>>,
 }
 
 impl Harness {
@@ -246,6 +253,7 @@ impl Harness {
             log: None,
             overrides: Vec::new(),
             graph_edges: Vec::new(),
+            shared_graph: None,
         }
     }
 
@@ -268,6 +276,20 @@ impl Harness {
     #[must_use]
     pub fn edges(mut self, edges: Vec<(String, ContractId, Vec<String>)>) -> Self {
         self.graph_edges = edges;
+        self
+    }
+
+    /// Route the run over `graph` — the ONE reducer graph the system spawns/links/seeds into AND that the
+    /// store must hand out as each reducer's `graph` host-import. Supply it so the guest's graph capability
+    /// and the system's routing graph are a single instance: the caller creates the graph, gives it here (so
+    /// the harness seeds the transform chains + hands it to the system), and wires the SAME graph into the
+    /// store it builds in [`run`](Harness::run)'s factory (e.g. `make_graph = move |_| graph.clone()`).
+    /// Without this the run creates its own graph for the system and the store's is separate — fine for a run
+    /// that never reads a seeded chain (the reject arm reads an empty graph either way), but a forward run
+    /// that seeds a chain and expects the default handler to read it back needs the one shared instance.
+    #[must_use]
+    pub fn graph(mut self, graph: Arc<dyn ReducerGraph>) -> Self {
+        self.shared_graph = Some(graph);
         self
     }
 
@@ -357,6 +379,7 @@ impl Harness {
             log: external_log,
             overrides,
             graph_edges,
+            shared_graph,
         } = self;
 
         // Resolve names to hashes/ids (pure, deterministic — done before the sim). A blob name resolves to
@@ -490,14 +513,24 @@ impl Harness {
                 );
                 // Seed the reducer graph's transform chains before the system runs (§4): each resolved edge
                 // installs the emitter's chain for a contract, so the default handler routes an effect on it
-                // to the first transform (forward) instead of finding an empty chain (reject).
-                let graph = InMemoryReducerGraph::new();
+                // to the first transform (forward) instead of finding an empty chain (reject). This is the ONE
+                // graph the run routes over — the caller's shared graph if it supplied one (so the store hands
+                // the SAME graph to each reducer's `graph` host-import), else a fresh one for this run. The
+                // graph holds only the ACTIVE SET (a node exists once it spawns, §3/§7) and `set-edges`
+                // requires both endpoints present, so insert them before seeding; `insert` is a no-op on an
+                // already-present node, so each reducer's later spawn-insert does not clear the seeded chain.
+                let graph: Arc<dyn ReducerGraph> =
+                    shared_graph.unwrap_or_else(|| Arc::new(InMemoryReducerGraph::new()));
                 for (from, contract, chain) in resolved_edges {
+                    graph.insert(from).await;
+                    for &target in &chain {
+                        graph.insert(target).await;
+                    }
                     graph.set_chain(from, contract, chain).await;
                 }
                 let system = TaskSystem::<BachRuntime>::new(
                     Arc::new(recording),
-                    Arc::new(graph),
+                    graph,
                     Arc::new(registry),
                     host,
                 );

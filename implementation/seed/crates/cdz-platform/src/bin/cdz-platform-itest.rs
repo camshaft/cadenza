@@ -267,7 +267,12 @@ fn load_blob(path: &str) -> Result<Bytes, RunError> {
 /// A [`WasmProgramStore`] over `cas` whose per-reducer key-value and blob stores record into `log` (attributed
 /// to each reducer's [`Origin`] on this `host`), so a reducer's store calls join its events in the one log
 /// (§7/§8/§9). Built the same way for the main run and the checker run.
-fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> WasmProgramStore {
+fn wasm_store(
+    cas: Arc<dyn BlobStore>,
+    graph: Arc<dyn ReducerGraph>,
+    log: ObservationLog,
+    host: HostId,
+) -> WasmProgramStore {
     let kv_log = log.clone();
     let make_kv: Arc<dyn Fn(ReducerId) -> Box<dyn KvStore> + Send + Sync> = Arc::new(move |id| {
         Box::new(RecordingKvStore::new(
@@ -292,7 +297,6 @@ fn wasm_store(cas: Arc<dyn BlobStore>, log: ObservationLog, host: HostId) -> Was
     // run asserts how a reducer inspected/changed the graph (e.g. an event reducer's neighbors read for a
     // contract is how it routes). The base graph is genuinely shared (all reducers see one graph); the
     // decorator only observes, attributed per reducer.
-    let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
     let graph_log = log.clone();
     let make_graph: Arc<dyn Fn(ReducerId) -> Arc<dyn ReducerGraph> + Send + Sync> =
         Arc::new(move |id| {
@@ -405,14 +409,20 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
     // instantiate. Resolved before `build` consumes the spec, so the checker/pure-run phases can seed them too.
     let deps = resolve_deps(&spec.deps)?;
 
-    // The main run: drive the described scenario to quiescence, recording into one shared log.
+    // The main run: drive the described scenario to quiescence, recording into one shared log. The reducer
+    // graph is created ONCE here and wired to BOTH sides — the harness (which seeds the transform chains +
+    // hands it to the system's spawn/link/route) and the store's `make_graph` (each reducer's `graph`
+    // host-import) — so the guest's graph capability and the system's routing graph are one instance (§4).
     let main_harness = with_deps(spec.build(load_blob)?, &deps);
     let main_log = observation_log();
     let store_log = main_log.clone();
+    let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+    let store_graph = graph.clone();
     let main_run = main_harness
         .host(host)
         .log(main_log)
-        .run(move |cas| wasm_store(cas, store_log, host));
+        .graph(graph)
+        .run(move |cas| wasm_store(cas, store_graph.clone(), store_log, host));
 
     // The checker run: if a checker was named, spawn it, deliver it the whole main log, and read its verdict.
     // A named checker that emits no verdict is a failed check — the run declared a check that did not report —
@@ -427,12 +437,15 @@ fn run(spec: HarnessSpec) -> Result<Report, RunError> {
                 Bytes::from_static(b"cdz-platform-itest:checker-no-system"),
             )
             .blob(name.clone(), bytes);
+        // The checker never routes an effect (it reads the log + emits one verdict), so it needs no shared
+        // graph — a fresh one for its store suffices.
+        let checker_graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
         let checker_run = with_deps(checker_base, &deps)
             .spawn(SpawnSpec::new("checker", name))
             .deliver("checker", check_message(&main_run.records))
             .host(host)
             .log(checker_log)
-            .run(move |cas| wasm_store(cas, store_log, host));
+            .run(move |cas| wasm_store(cas, checker_graph.clone(), store_log, host));
         verdict_in(&checker_run.records)
             .unwrap_or_else(|| CheckOutcome::fail(no_verdict_reason(&checker_run.records)))
     });
@@ -491,7 +504,10 @@ fn pure_run_phase(
                 cas.put(component.clone()).await;
             }
             cas.put(bytes).await;
-            let store = wasm_store(Arc::new(cas), log, host);
+            // A pure run instantiates one program with an empty capability set — no routing — so a fresh
+            // graph for the store suffices.
+            let graph: Arc<dyn ReducerGraph> = Arc::new(InMemoryReducerGraph::new());
+            let store = wasm_store(Arc::new(cas), graph, log, host);
             let runner = Runner::new(Arc::new(store));
             let out = runner
                 .run(program, contract, input)
