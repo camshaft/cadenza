@@ -1835,7 +1835,6 @@ fn find_nfc_wasm() -> Option<Vec<u8>> {
 #[test]
 fn a_projection_only_runtime_tuple_folds_without_the_heap() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     // Runtime params, but `t` is only projected → folds; the program touches the value heap not at all.
     let src = "(module m (def (pair-sum (: a Int64) (: b Int64)) \
                  (let ((t (tuple a b))) (+ (. t 0) (. t 1)))) (export pair-sum))";
@@ -1844,9 +1843,8 @@ fn a_projection_only_runtime_tuple_folds_without_the_heap() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a projection-only tuple must fold, importing no runtime op (no per-call arr-alloc)"
     );
-    // It runs as a plain scalar function (no runtime composed in) — 20 + 22 = 42.
-    let got: i64 = run_returns_with(&bytes, "pair-sum", &[Val::S64(20), Val::S64(22)]);
-    assert_eq!(got, 42, "folds to (+ a b)");
+    // Value parity (pair-sum(20,22)=42) migrated to the corpus (run via cdz-run): case "a projection-only
+    // runtime tuple folds to the sum of its elements" in spec/semantics/02-binding-and-control.sexp.
 }
 
 #[test]
@@ -1894,7 +1892,6 @@ fn a_multiuse_param_bound_to_a_pure_recursive_helper_call_inlines_and_runs() {
 #[test]
 fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     // `.0` of `(if p (tuple a b) (tuple b a))` → `(if p a b)`: p true selects a, p false selects b.
     let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
                  (. (if p (tuple a b) (tuple b a)) 0)) (export pick))";
@@ -1903,18 +1900,8 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a single projection of an if-of-tuples must fold (no per-call arr-alloc, no runtime import)"
     );
-    let t: i64 = run_returns_with(
-        &bytes,
-        "pick",
-        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
-    );
-    assert_eq!(t, 10, "p true → .0 = a");
-    let f: i64 = run_returns_with(
-        &bytes,
-        "pick",
-        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
-    );
-    assert_eq!(f, 20, "p false → .0 = b (the else branch's element 0)");
+    // Value parity (p true → a, p false → b) migrated to the corpus (run via cdz-run): case "a projection
+    // of an if-selected tuple selects the branch's element" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The RECORD analogue of the tuple `PROJECTION-INTO-IF` fold: a SINGLE field read of a record built
@@ -1930,7 +1917,6 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
 #[test]
 fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
     let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
                  (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
@@ -1939,18 +1925,9 @@ fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a single member read of an if-of-records must fold (no per-call arr-alloc, no runtime import)"
     );
-    let t: i64 = run_returns_with(
-        &bytes,
-        "pick",
-        &[Val::Bool(true), Val::S64(10), Val::S64(20)],
-    );
-    assert_eq!(t, 10, "p true → .x = a");
-    let f: i64 = run_returns_with(
-        &bytes,
-        "pick",
-        &[Val::Bool(false), Val::S64(10), Val::S64(20)],
-    );
-    assert_eq!(f, 20, "p false → .x = b (the else branch's x field)");
+    // Value parity (p true → a, p false → b; fold is by field NAME, fields out of order) migrated to the
+    // corpus (run via cdz-run): case "a member read of an if-selected record selects the branch's field by
+    // name" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The MATCH analogue of the tuple/record `*-INTO-IF` folds: a `match` over a SUM built through an `if`
@@ -1963,7 +1940,6 @@ fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
 #[test]
 fn a_match_over_an_if_selected_sum_pushes_into_the_branches() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     // `(match (if (> x 0) (Some x) (None)) ((Some v) v) ((None) 0))` → `(if (> x 0) x 0)`.
     let src = "(module m (type Option (Some Int64) None) \
                  (def (f (: x Int64)) \
@@ -1974,10 +1950,9 @@ fn a_match_over_an_if_selected_sum_pushes_into_the_branches() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a match over an if-of-constructors must fold (no throwaway sum build, no runtime import)"
     );
-    let t: i64 = run_returns_with(&bytes, "f", &[Val::S64(5)]);
-    assert_eq!(t, 5, "x > 0 → Some x → v = 5");
-    let e: i64 = run_returns_with(&bytes, "f", &[Val::S64(-3)]);
-    assert_eq!(e, 0, "x <= 0 → None → 0");
+    // Value parity (x>0 → 5, x<=0 → 0) migrated to the corpus (run via cdz-run): case "a match over an
+    // if-selected sum folds each branch's constructor to its arm body" in
+    // spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The CASE-OF-MATCH twin of the above (`fuse_match_into_match`): a `match` over a SUM built through an
@@ -1990,7 +1965,6 @@ fn a_match_over_an_if_selected_sum_pushes_into_the_branches() {
 #[test]
 fn a_match_over_a_match_selected_sum_pushes_into_the_arms() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     let src = "(module m (type Option (Some Int64) None) \
                  (def (f (: n Int64)) \
                    (match (match (> n 0) (true (Option.Some n)) (false Option.None)) \
@@ -2000,10 +1974,8 @@ fn a_match_over_a_match_selected_sum_pushes_into_the_arms() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a match over a match-of-constructors must fold (no throwaway sum build, no runtime import)"
     );
-    let t: i64 = run_returns_with(&bytes, "f", &[Val::S64(5)]);
-    assert_eq!(t, 5, "n > 0 → Some n → v = 5");
-    let e: i64 = run_returns_with(&bytes, "f", &[Val::S64(-3)]);
-    assert_eq!(e, 0, "n <= 0 → None → 0");
+    // Value parity (n>0 → 5, n<=0 → 0) migrated to the corpus (run via cdz-run): case "a match over a
+    // match-selected sum folds into the inner arms" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// A `let`-BOUND tuple/record produced by an `if`, read at TWO positions, compiles to VALID wasm. Reading
