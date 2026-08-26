@@ -2420,6 +2420,7 @@ pass	a match arm an earlier arm already fully covers compiles but earns a CDZ021
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
 pass	a match arm mixes a payload LITERAL, a wildcard, and a nested-Option pattern
+pass	a match arm ordering a compound sum-shell child via a borrowing compare computes correctly
 pass	a match arm reading two elements of a boxed payload tuple shares the sum-payload prefix
 pass	a match arm whose list length an earlier arm already covers is unreachable and earns a CDZ0213 warning
 pass	a match arm's DESTRUCTURED payload is the argument to a perform in that arm's body
@@ -2461,6 +2462,7 @@ pass	a match over an if-selected sum folds each branch's constructor to its arm 
 pass	a match over an owned None shell from an out-of-range List.at reclaims it across a loop (no live objects)
 pass	a match over an owned all-scalar-payload Some shell from List.at reclaims it across a loop (no live objects)
 pass	a match over an owned all-scalar-payload Some shell from Map.lookup reclaims it across a loop (no live objects)
+pass	a match over an owned compound-payload sum shell whose arm only borrows the child computes correctly
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection
