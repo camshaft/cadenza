@@ -19291,3 +19291,31 @@
             (export f)))
   (call   f (: 500 Int64)) (output (: 5000 Int64))
   (live-objects 0))
+
+(case "a match over an owned compound-payload sum shell whose arm only borrows the child computes correctly"
+  (doc    "`probe` builds a fresh owned `Mk(List)`, matches binding `xs`, and reads ONLY `List.len xs` (a
+           borrow, retaining nothing); `main` loops 4x each adding List.len 3 -> 12. Value-correct + no-UAF:
+           the borrowed child is not freed-then-read (a UAF would trap before returning 12). (The compound
+           shell's per-iter reclaim is a tracked residual leak, not asserted here.)")
+  (input  (do
+            (type Box (Mk (List Int64)))
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (probe (: n Int64)) (match (Mk (build 0 n (list))) ((Mk xs) (List.len xs))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (probe 3))) tot))
+            (def (main) (loop 0 4 0))
+            (export main)))
+  (call   main) (output (: 12 Int64)))
+
+(case "a match arm ordering a compound sum-shell child via a borrowing compare computes correctly"
+  (doc    "A 2-variant sum `Box=(Mk(List))(Nil)`; `probe` matches a fresh owned `Mk(list)` and in the arm
+           ORDERS the child list via `<` (a borrowing ValueCmp) against a literal list. `main` loops 4x;
+           [0,1,2] < [9] is true each time -> 4. Value-correct + no-UAF: the borrowed child ordered via `<`
+           is not freed-then-read (a UAF would trap before returning 4).")
+  (input  (do
+            (type Box (Mk (List Int64)) (Nil))
+            (def (bl (: i Int64) (: n Int64) (: a (List Int64))) (if (< i n) (bl (+ i 1) n (List.push a i)) a))
+            (def (probe (: z Int64)) (match (Mk (bl 0 3 (list))) ((Mk xs) (if (< xs (list 9)) 1 0)) ((Nil) 0)))
+            (def (loop (: j Int64) (: n Int64) (: acc Int64)) (if (< j n) (loop (+ j 1) n (+ acc (probe 0))) acc))
+            (def (main (: z Int64)) (loop 0 4 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 4 Int64)))
