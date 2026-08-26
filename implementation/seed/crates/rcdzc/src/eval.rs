@@ -569,6 +569,25 @@ pub fn beta_reduce(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
     // its LABEL; substituting the argument for such a name (`(. (record (x 5)) x)` under a param `x`)
     // would corrupt the label into a non-name and reject a valid program (CDZ0201).
     if is_binder_occurrence(db, body) || is_member_key_occurrence(db, body) {
+        // A PINNED BARE binder-occurrence — a nested closure's own bare param that a BROAD `resolve_subtree`
+        // pinned (e.g. the effects discharge pinning a whole continuation containing `(fn (x) …)`) — must be
+        // SHARED, not freshened. Its body-REFERENCES are pinned too (same `resolve_subtree`), so they take
+        // the capture-share path below and stay pointing at THIS occurrence; freshening the head alone would
+        // fragment the head from its body-refs — `apply_lambda` then keys the substitution on the fresh head
+        // while the body still resolves to the shared original, so `count_refs_to == 0`, the argument is
+        // never spliced, and the parameter reaches emit as a slot-less `Core::Param` ("parameter reference
+        // has no local slot"). Sharing keeps the head and its body-refs on the SAME occurrence — exactly how
+        // an ANNOTATED `(: x T)` binder already behaves: its inner name is NOT a binder-occurrence, so it and
+        // the body-refs both take the capture-share path and stay consistent (which is why the annotated twin
+        // folds where the bare one declines). Scoped to PINNED binders only: an ordinary partial-application
+        // / monomorphization copy does not pin a lambda's own param head (`pin_free_vars` excludes own
+        // params), so that path still freshens as before — this changes ONLY the broad-pin anomaly.
+        if is_binder_occurrence(db, body)
+            && db.ast.as_name(body).is_some()
+            && db.resolved_subtrees.contains(&body)
+        {
+            return body;
+        }
         let leaf = match db.ast.get(body) {
             crate::ast::Struct::Atom(lid) => db.ast.leaf(*lid).clone(),
             // A non-atom binder (an annotated `(: name T)` binder) copies structurally below.
