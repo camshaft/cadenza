@@ -145,13 +145,18 @@ def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output
 // `descriptor().id` to route (or `.name`/`.input`/`.output`/`.ast` to inspect). All fields fold at compile
 // time (the operands derive from the const `Ast.module`), so the record is a constant — no runtime `Ast.encode`.
 def contract-descriptor(const m: Ast) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  match m with
-  | Ast.List(forms) =>
-      { id = contract-id(m),
-        name = contract-name(forms),
-        input = Ast.encode(find-pragma(forms, "input")),
-        output = Ast.encode(find-pragma(forms, "output")),
-        ast = Ast.encode(m) }
-  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
+  // The const block wraps the WHOLE `match m` (not just the record it produces), so calling
+  // `contract-descriptor` directly returns the record with ZERO runtime computation — the match DISPATCH and
+  // every field both fold at compile time (all derive from the const `m` = a contract's `Ast.module`). Any
+  // future non-const step becomes a compile error rather than a silent runtime build. Wrapped ONCE here in the
+  // library, not per consumer.
+  const(match m with
+        | Ast.List(forms) =>
+            { id = contract-id(m),
+              name = contract-name(forms),
+              input = Ast.encode(find-pragma(forms, "input")),
+              output = Ast.encode(find-pragma(forms, "output")),
+              ast = Ast.encode(m) }
+        | _ => trap("contract-id: not a contract module — expected a (do …) module AST"))
 
 export { contract-id, contract, contract-declaration , contract-descriptor }
