@@ -5,25 +5,25 @@
 //   - cdz-platform.blob.get -> decode GetRequest, read by hash (host blobs.get), emit Found bytes / Missing.
 //   - any other contract -> Close(unknown-contract) (the id guard is real).
 // Dispatch is on the CONTRACT-ID via the uniform descriptor: each contract module exports `descriptor`, imported
-// under a WHOLE-MODULE ALIAS (bput/bget) so the two same-named `descriptor` exports do not collide; the distinct-
-// named request types come via named-list imports. This is the well-formed multi-contract shape (operate on the
-// contract-id + decode by that contract's schema). on-response/on-notification inert (reducer-lib).
-import bput from "blob-put"
-import bget from "blob-get"
-import { PutRequest } from "blob-put"
-import { GetRequest } from "blob-get"
+// under a PER-NAME ALIAS (`import { descriptor as bput_desc } from "blob-put"`; v-syntax #3716 + v-inference #3719)
+// so the two same-named `descriptor` exports bind to distinct local names without collision — no whole-module
+// projection needed. The distinct-named request types ride the same per-name import line. This is the well-formed
+// multi-contract shape (operate on the contract-id + decode by that contract's schema). on-response/on-notification
+// inert (reducer-lib).
+import { descriptor as bput_desc, PutRequest } from "blob-put"
+import { descriptor as bget_desc, GetRequest } from "blob-get"
 import { Outcome, on-response, on-notification } from "reducer-lib"
 
 def on-message(msg) =
   host blobs in
-    (if msg.contract == bput.descriptor().id then
+    (if msg.contract == bput_desc().id then
        (match (Value.decode(msg.payload) : Option(PutRequest)) with
         | Some(PutRequest.Put(bytes)) =>
             (let h = blobs.put(bytes) in
               { requests = [{ contract = msg.contract, payload = b"put-dispatched", token = b"", deadlineNanos = None }],
                 outcome = Outcome.Continue })
         | None => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"put-decode-failed" }) })
-     else if msg.contract == bget.descriptor().id then
+     else if msg.contract == bget_desc().id then
        (match (Value.decode(msg.payload) : Option(GetRequest)) with
         | Some(GetRequest.Get(hash)) =>
             (match blobs.get(hash) with
