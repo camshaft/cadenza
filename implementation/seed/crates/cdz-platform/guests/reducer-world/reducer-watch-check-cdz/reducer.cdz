@@ -1,0 +1,41 @@
+// The §7 SUPERVISION checker (design/cadenza-platform.md §7/§9). The paired run spawns a watcher, then a
+// child under it with a parent_watches_child link; the child ends itself with a typed reason (b"child-done"),
+// and the runtime delivers that exit to the watcher as an `Exited` lifecycle notification. This checker
+// asserts, LOG-ONLY and guest-agnostic, that the exit reached the watcher: the child's Closed exit is followed
+// by a Delivered notification — the lifecycle event landing in the watcher's mailbox.
+//
+// It correlates by ORDER, not by a hardcoded contract id: a birth `Spawned` notification is also a Delivered
+// notification, but every birth is delivered at spawn — BEFORE any Closed — so `ordered` (some Closed index
+// precedes some Delivered-notification index) is satisfied ONLY by a notification delivered AFTER the exit,
+// which in this run is the lifecycle event alone. NON-VACUOUS: if the subscription did not deliver (no watch
+// link, or lifecycle delivery broken), the only notifications are the births, all preceding the Closed, so no
+// notification follows the exit and the check fails. The child's reason b"child-done" makes the Closed match
+// specific rather than any close.
+//
+// Round-3 checker-lib form: two field predicates + the `ordered` combinator; respond() owns the log decode and
+// verdict emit, and the inert on-response/on-notification come from checker-lib.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, ordered } from "checker-lib"
+
+// The child's self-exit: a Closed entry carrying the typed reason the child broke with.
+def child-exited(rec) =
+  match rec.entry with
+  | Entry.Closed(c) => c.reason == b"child-done"
+  | _ => false
+
+// A control-plane notification delivered to a reducer. Paired with `ordered` against `child-exited`, this
+// matches only the lifecycle event the watcher receives after its child ends (a birth notification precedes
+// every Closed, so it cannot satisfy the ordering).
+def lifecycle-delivered(rec) =
+  match rec.entry with
+  | Entry.Delivered(d) => d.eventKind == "notification"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if ordered(records, child-exited, lifecycle-delivered)
+  then pass()
+  else fail("no lifecycle notification was delivered after the child's Closed exit: the watcher did not receive its child's exit")
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
