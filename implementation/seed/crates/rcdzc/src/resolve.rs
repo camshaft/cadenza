@@ -6412,6 +6412,20 @@ fn resolve_member(db: &Db, id: StructId) -> Resolved {
             ));
         }
     };
+    // WHOLE-MODULE ALIAS PROJECTION: `(. alias member)` where `alias` was bound by `(import "path" alias)`
+    // resolves to the aliased module's EXPORTED def `member` — the collision-free path for a uniformly-
+    // named export (`descriptor`) imported from 2+ modules (v-platform-itest's multi-contract dispatch).
+    // Resolved against the ALIASED file's own export surface (`export_def_in_file`), file-scoped so it
+    // reaches exactly that module's def (not a same-named def elsewhere). Only DEFS project today; a type/
+    // constructor via `(. alias T)`/`(. alias T.C)` is a separate, larger gap (module records do not
+    // project types/ctors at all yet), so a non-def member falls through to the ordinary `Member` path.
+    if let Some(alias) = db.ast.as_name(operand)
+        && let Some(from_file) = db.module_alias_target(id, alias)
+        && let Some(d) = db.export_def_in_file(from_file, &key.name)
+    {
+        trace!(target: "rcdzc::resolve", node = id.0, alias, member = %key.name, from_file, "member → module-alias export projection");
+        return def_as_resolved(db, d, &key.name);
+    }
     // WITHHELD-CONSTRUCTOR ACCESS: `(. T A)` where `T`'s handle is visible in this file but constructor
     // `A` is NOT (an abstract import — no ctors — or a partially-concrete import that did not name `A`)
     // is a CDZ0214. The constructor is hidden on purpose, so it is unreachable even through the qualified
