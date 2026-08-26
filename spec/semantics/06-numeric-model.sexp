@@ -9536,3 +9536,12 @@
   (input  (do (def (g (: a Int64)) (+ 1 a)) (export g)))
   (call   g (: 41 Int64)) (output (: 42 Int64))
   (call   g (: 9223372036854775807 Int64)) (trap "integer overflow"))
+
+(case "runtime multiplication computes in range and traps on overflow"
+  (doc    "Runtime `(* a b)` computes in range (6*7=42, 0*999=0) and its mul overflow guard (a!=0 && r/a!=b,
+           with div_s catching MIN/-1) traps: Int64.max*2 and Int64.min*-1 both overflow.")
+  (input  (do (def (mul (: a Int64) (: b Int64)) (* a b)) (export mul)))
+  (call   mul (: 6 Int64) (: 7 Int64)) (output (: 42 Int64))
+  (call   mul (: 0 Int64) (: 999 Int64)) (output (: 0 Int64))
+  (call   mul (: 9223372036854775807 Int64) (: 2 Int64)) (trap "integer overflow")
+  (call   mul (: -9223372036854775808 Int64) (: -1 Int64)) (trap "integer overflow"))

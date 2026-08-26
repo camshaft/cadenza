@@ -6663,6 +6663,7 @@ pass	runtime float multiplication overflows to infinity, not a trap or a wrap
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder
+pass	runtime multiplication computes in range and traps on overflow
 pass	runtime shaped equality of two owned List-Float64 operands reclaims both (no live objects)
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
