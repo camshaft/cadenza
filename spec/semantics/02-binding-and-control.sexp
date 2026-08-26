@@ -6907,7 +6907,7 @@
   (doc    "The lexical-scope skip index hops over the non-binding spine (record / if / application) to the
            binding let. `k` (=5) sits under three non-binding ifs and a record projection above the let that
            binds it; each `(< k N)` is true so the innermost `k` runs, projected back = 5.")
-  (input  (do (def (main) (let ((k 5)) (if (< k 30) (if (< k 20) (if (< k 10) (. (record (a k)) a) 1) 2) 3))) (export main)))
+  (input  (do (def (main) (let ((k 5)) (if (< k 30) (if (< k 20) (if (< k 10) (. (record (= a k)) a) 1) 2) 3))) (export main)))
   (call   main) (output (: 5 Int64)))
 
 (case "shadowing resolves nearest-wins through the scope-skip index"
