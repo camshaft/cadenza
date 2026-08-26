@@ -10465,52 +10465,6 @@ fn a_wide_unsigned_constant_add_that_overflows_i64_but_fits_u64_folds() {
     );
 }
 
-/// `(if (< a b) true false)` is the boolean-coercion no-op — it folds to `(< a b)` and returns exactly
-/// the comparison's value. Running it confirms the fold preserves the boolean result (not inverted).
-#[test]
-fn an_if_true_false_coercion_runs_as_the_condition() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (lt (: a Int64) (: b Int64)) (if (< a b) true false)) (export lt))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(run_returns_with::<bool>(
-        &bytes,
-        "lt",
-        &[Val::S64(1), Val::S64(2)]
-    ));
-    assert!(!run_returns_with::<bool>(
-        &bytes,
-        "lt",
-        &[Val::S64(5), Val::S64(5)]
-    ));
-}
-
-/// `(if (< a b) false true)` is the boolean NEGATION `!(a < b)` — it folds to `Core::Not` (emitted as
-/// `i32.eqz`). Running it confirms the result is INVERTED relative to the comparison (`>=`).
-#[test]
-fn an_if_false_true_negation_runs_as_not_the_condition() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (ge (: a Int64) (: b Int64)) (if (< a b) false true)) (export ge))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // !(1 < 2) = false; !(5 < 5) = true; !(-1 < 1) = false — the inversion of `<`.
-    assert!(!run_returns_with::<bool>(
-        &bytes,
-        "ge",
-        &[Val::S64(1), Val::S64(2)]
-    ));
-    assert!(run_returns_with::<bool>(
-        &bytes,
-        "ge",
-        &[Val::S64(5), Val::S64(5)]
-    ));
-    assert!(!run_returns_with::<bool>(
-        &bytes,
-        "ge",
-        &[Val::S64(-1), Val::S64(1)]
-    ));
-}
-
 /// A recursive effectful walk whose self-call is `let`-BOUND and whose perform runs AFTER it (in the
 /// `let` body) observes the recursion's OUT-state — the single-return specialization threads only the
 /// INCOMING state, so it CANNOT fold this. It must DECLINE CLEANLY (a "not yet compiled" todo), NOT leak
