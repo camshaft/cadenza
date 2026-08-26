@@ -733,6 +733,7 @@ pass	a Float32 add with a bare LEFT literal grounds it to f32 (position-independ
 pass	a Float32 add with a bare right literal grounds the literal to f32
 pass	a Float32 divide with a bare right literal grounds the literal to f32
 pass	a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer
+pass	a Float32 if-branch literal rounds through binary32, not binary64
 pass	a Float32 match arm with a bare literal body grounds it to f32 (runtime arm, no fold)
 pass	a Float32 multiply with a bare right literal grounds the literal to f32
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
