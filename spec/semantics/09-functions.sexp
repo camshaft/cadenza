@@ -1567,6 +1567,32 @@
             (def (main) (ap * 6 7)) (export main)))
   (output (: 42 Int64)))
 
+; The operator-as-value support is not arithmetic-specific: a Bool-returning COMPARISON operator
+; (`<`/`>`/`=`) passed to a HOF works the same, through both the inline fold and the emitted-call eta. The
+; HOF's function parameter is annotated with the comparison arrow `(-> Int64 Int64 Bool)`, which grounds the
+; operator; the result type is Bool, not the operand type.
+
+(case "a Bool-returning comparison operator passed to an inline HOF"
+  (doc    "`(ap < 3 4)` passes the bare comparison operator `<` to a non-recursive HOF `ap` whose parameter
+           is annotated `(-> Int64 Int64 Bool)`. The call INLINES, substituting `<` for the annotated param;
+           the reduced `(< 3 4)` dispatches as the comparison and folds to `true`. Pins that operator-value
+           support covers a Bool-returning comparison, not only same-type arithmetic (`+`/`*`).")
+  (input  (do
+            (def (ap (: g (-> Int64 Int64 Bool)) (: x Int64) (: y Int64)) (g x y))
+            (def (main) (ap < 3 4)) (export main)))
+  (output (: true Bool)))
+
+(case "a comparison operator passed to a recursive HOF (emit-call)"
+  (doc    "The emitted-call twin: `ap2` is RECURSIVE, so it emits a real call and the bare `>` is
+           eta-expanded to a runtime closure at the call. `(ap2 > 7 3 n)` with runtime `n` recurses then
+           applies `g`; `n=0` yields `(> 7 3)` = `true`. Pins the comparison operator through the eta path.")
+  (input  (do
+            (def (ap2 (: g (-> Int64 Int64 Bool)) (: x Int64) (: y Int64) (: n Int64))
+              (if (< n 1) (g x y) (ap2 g x y (- n 1))))
+            (def (main (: n Int64)) (ap2 > 7 3 n)) (export main)))
+  (call   main 0)
+  (output (: true Bool)))
+
 (case "a function is returned as a result"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: adder returns a closure over
            its parameter n; the returned function is then applied.")
