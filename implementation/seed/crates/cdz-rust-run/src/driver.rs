@@ -76,6 +76,167 @@ pub fn call_expr(module: &str, export: &str, args: &[String], async_mode: bool) 
     }
 }
 
+/// Build the call for a CLOSURE-PARAMETER CONSUMER export — one that takes a `Rc<dyn Fn(…)>` param supplied
+/// by a companion PRODUCER export (rcdzc splits `(fn …)`-consuming defs across sibling exports; a host has
+/// no closure literal, so the harness synthesizes it). Returns `None` when `export` is not a consumer (no
+/// closure param) — the caller falls back to the factory/ordinary call. SYNC only: an async consumer needs
+/// the deferred `block_on` harness, so this returns `None` in async mode.
+///
+/// Each source param is threaded LEFT-TO-RIGHT onto the flat call `args`: a CLOSURE param pairs to a producer
+/// (a sibling whose emitted closure type matches — a FACTORY `fn mk(caps) -> Rc<dyn Fn…>` supplying
+/// `prog::mk(<caps>)`, or a PEELED nullary `fn mk(x)->r` supplying `Rc::new(prog::mk as fn(x)->r)`) and
+/// consumes that producer's capture args; a non-closure param consumes one verbatim arg. When a Tuple-arg vs
+/// Record-arg producer's ERASED `Rc<dyn Fn>` type collides, the pre-erasure Cadenza shapes
+/// (`cdz-param-shapes` / `cdz-produces-closure`) disambiguate. Ported from xtask `build_closure_consumer_call`
+/// (sync path).
+pub fn build_closure_consumer_call(
+    module: &str,
+    name: &str,
+    args: &[String],
+    async_mode: bool,
+) -> Option<String> {
+    use crate::sig::{
+        closure_param_type, closure_ret_type, is_closure_param, is_env_param, names_closure_value,
+        param_type_of, parse_emitted_sig,
+    };
+    use cdz_rust_render::{cdz_param_shapes, cdz_produces_closure, cdz_return_type};
+
+    if async_mode {
+        return None; // async consumer needs the deferred block_on harness
+    }
+    let sig = parse_emitted_sig(module, name, async_mode)?;
+    let source_params: Vec<&&str> = sig.params.iter().filter(|p| !is_env_param(p)).collect();
+    if !source_params.iter().any(|p| is_closure_param(p)) {
+        return None; // not a consumer — let the factory/ordinary path handle it
+    }
+
+    // Enumerate PRODUCER exports (module order): a FACTORY (result is a closure) or a PEELED nullary fn whose
+    // fn-item coerces to the closure. Each carries its erased closure type + pre-erasure `shape` for pairing.
+    enum Producer {
+        Factory {
+            ident: String,
+            closure_ty: String,
+            cap: usize,
+            shape: Option<String>,
+        },
+        Peeled {
+            ident: String,
+            closure_ty: String,
+            fn_ty: String,
+            shape: Option<String>,
+        },
+    }
+    let mut producers: Vec<Producer> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, _) in module.match_indices("pub fn ") {
+        let after_kw = module[i..].strip_prefix("pub fn ")?;
+        let ident: String = after_kw
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if ident.is_empty() || ident == name || !seen.insert(ident.clone()) {
+            continue;
+        }
+        let Some(psig) = parse_emitted_sig(module, &ident, async_mode) else {
+            continue;
+        };
+        let src_params: Vec<&&str> = psig.params.iter().filter(|p| !is_env_param(p)).collect();
+        if names_closure_value(&psig.ret_head) {
+            let Some(cty) = closure_ret_type(&psig.ret_head) else {
+                continue;
+            };
+            producers.push(Producer::Factory {
+                ident: ident.clone(),
+                closure_ty: cty,
+                cap: src_params.len(),
+                shape: cdz_return_type(module, &ident),
+            });
+        } else {
+            let param_types: Vec<String> = src_params.iter().map(|p| param_type_of(p)).collect();
+            let ret = psig
+                .ret_head
+                .trim()
+                .trim_start_matches("->")
+                .trim()
+                .to_string();
+            producers.push(Producer::Peeled {
+                closure_ty: format!("std::rc::Rc<dyn Fn({}) -> {}>", param_types.join(", "), ret),
+                fn_ty: format!("fn({}) -> {}", param_types.join(", "), ret),
+                shape: cdz_produces_closure(module, &ident),
+                ident: ident.clone(),
+            });
+        }
+    }
+
+    let consumer_shapes = cdz_param_shapes(module, name);
+    let mut used = vec![false; producers.len()];
+    let mut arg_i = 0usize;
+    let mut call_args: Vec<String> = Vec::with_capacity(source_params.len());
+    let mut closure_param_idx = 0usize;
+    // A producer matches when its ERASED closure type equals the consumer param's AND (when both shapes are
+    // known) the pre-erasure shapes agree — the shape guard only NARROWS, never admits an erased mismatch.
+    let ty_matches = |prod: &Producer, cty: &str, want_shape: Option<&str>| {
+        let (closure_ty, prod_shape) = match prod {
+            Producer::Factory {
+                closure_ty, shape, ..
+            }
+            | Producer::Peeled {
+                closure_ty, shape, ..
+            } => (closure_ty, shape.as_deref()),
+        };
+        closure_ty.as_str() == cty
+            && match (want_shape, prod_shape) {
+                (Some(w), Some(p)) => w == p,
+                _ => true,
+            }
+    };
+    for p in &source_params {
+        if let Some(cty) = closure_param_type(p) {
+            let want_shape = consumer_shapes.get(closure_param_idx).map(|s| s.as_str());
+            closure_param_idx += 1;
+            // First UNUSED matching producer (deterministic), else REUSE a matching one (the host mints a
+            // fresh handle per param, so one producer can supply several closure params).
+            let pi = producers
+                .iter()
+                .enumerate()
+                .position(|(pi, prod)| !used[pi] && ty_matches(prod, cty, want_shape))
+                .or_else(|| {
+                    producers
+                        .iter()
+                        .position(|prod| ty_matches(prod, cty, want_shape))
+                })?;
+            used[pi] = true;
+            match &producers[pi] {
+                Producer::Factory { ident, cap, .. } => {
+                    if arg_i + cap > args.len() {
+                        return None;
+                    }
+                    let caps = &args[arg_i..arg_i + cap];
+                    arg_i += cap;
+                    call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                }
+                Producer::Peeled {
+                    ident,
+                    fn_ty,
+                    closure_ty,
+                    ..
+                } => {
+                    call_args.push(format!(
+                        "(std::rc::Rc::new(prog::{ident} as {fn_ty}) as {closure_ty})"
+                    ));
+                }
+            }
+        } else {
+            if arg_i >= args.len() {
+                return None;
+            }
+            call_args.push(args[arg_i].clone());
+            arg_i += 1;
+        }
+    }
+    Some(format!("{name}({})", call_args.join(", ")))
+}
+
 /// Assemble the full RUST driver source for a SYNC, ORDINARY-call corpus case — the common path (the
 /// host-closure factory/consumer application + async `block_on` harness are later increments). It wraps the
 /// emitted `module` in `mod prog { … }` (so its `pub fn main` becomes `prog::main`, not a duplicate crate
@@ -97,7 +258,13 @@ pub fn build_driver_source(
         cdz_sum_descriptors, cdz_sum_params, cdz_sum_qualified_heads, cdz_unit_form,
     };
 
-    let call_or_await = format!("prog::{}", call_expr(module, export, args, false));
+    // A CLOSURE-PARAMETER CONSUMER export (takes a `Rc<dyn Fn>` param) synthesizes the closure from a sibling
+    // producer — checked FIRST (a consumer's own return is not a closure, so the factory path would miss it).
+    // Else the factory-aware/ordinary call. The consumer-call returns a bare `name(prog::producer(caps), …)`
+    // whose producers are already `prog::`-qualified, so the outer `prog::` applies to the consumer name.
+    let call = build_closure_consumer_call(module, export, args, false)
+        .unwrap_or_else(|| call_expr(module, export, args, false));
+    let call_or_await = format!("prog::{call}");
     // A host-closure FACTORY export's `cdz-return` note is the returned closure's CURRIED arrow
     // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
     // closure's FINAL result — peel the arrow to that type so `cdz_render_expr` renders it structurally
@@ -484,6 +651,31 @@ mod tests {
             "BigInt marshal: {got:?}"
         );
         assert_eq!(got[1], "7", "the i64 arg passes through verbatim");
+    }
+
+    #[test]
+    fn consumer_call_synthesizes_the_producer_closure() {
+        // Consumer apply_it(g: Rc<dyn Fn(i64)->i64>, x) + factory producer make_adder(k) -> Rc<dyn Fn…>.
+        // Flat call args [100, 7]: g pairs make_adder (1 cap → 100), x = 7 → apply_it(prog::make_adder(100), 7).
+        let m = "// cdz-return[make_adder]: (-> Int64 Int64)\n\
+                 pub fn make_adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }\n\
+                 // cdz-return[apply_it]: Int64\n\
+                 pub fn apply_it(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { g(x) }";
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], false)
+                .as_deref(),
+            Some("apply_it(prog::make_adder(100), 7)")
+        );
+        // A non-consumer (no closure param) → None (factory/ordinary path handles it).
+        assert_eq!(
+            build_closure_consumer_call("pub fn f(a: i64) -> i64 { a }", "f", &["1".into()], false),
+            None
+        );
+        // async → None (deferred).
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true),
+            None
+        );
     }
 
     #[test]
