@@ -66,7 +66,7 @@ mod arg_probe_world {
 }
 
 // --- the TEST-ONLY arg-probe host import (§9 arg-value capture) ---
-use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf};
+use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf, unit};
 use arg_probe_world::cadenza::test_arg_probe::arg_probe as ap;
 use cadenza_ast::ast::{Builder, Leaf, Radix, StructId};
 use cadenza_ast::codec;
@@ -82,10 +82,15 @@ fn int_leaf(b: &mut Builder, value: i64) -> StructId {
 }
 
 /// A `mixed` variant as its canonical bare-constructor Value form, using the CADENZA constructor names
-/// (CamelCase = the bindgen variant names): `(Absent)` / `(Small <u8>)` / `(Big <s64>)`.
+/// (CamelCase = the bindgen variant names): `(Absent unit)` / `(Small <u8>)` / `(Big <s64>)`. A NULLARY
+/// variant renders as the constructor applied to the `unit` atom — `(Absent unit)`, not `(Absent)` — matching
+/// the compiler's `Value.encode` (a multi-constructor nullary variant is `(Ctor unit)`, see `codec.rs`).
 fn mixed_value(b: &mut Builder, m: &ap::Mixed) -> StructId {
     match m {
-        ap::Mixed::Absent => bare_ctor(b, "Absent", vec![]),
+        ap::Mixed::Absent => {
+            let u = unit(b);
+            bare_ctor(b, "Absent", vec![u])
+        }
         ap::Mixed::Small(x) => {
             let p = uint_leaf(b, u64::from(*x));
             bare_ctor(b, "Small", vec![p])
@@ -97,10 +102,14 @@ fn mixed_value(b: &mut Builder, m: &ap::Mixed) -> StructId {
     }
 }
 
-/// A `narrow` variant: `(Absent)` / `(A <u8>)` / `(B <u16>)`.
+/// A `narrow` variant: `(Absent unit)` / `(A <u8>)` / `(B <u16>)` — the nullary `Absent` carries the `unit`
+/// atom, matching the compiler's `Value.encode` of a nullary multi-constructor variant.
 fn narrow_value(b: &mut Builder, n: &ap::Narrow) -> StructId {
     match n {
-        ap::Narrow::Absent => bare_ctor(b, "Absent", vec![]),
+        ap::Narrow::Absent => {
+            let u = unit(b);
+            bare_ctor(b, "Absent", vec![u])
+        }
         ap::Narrow::A(x) => {
             let p = uint_leaf(b, u64::from(*x));
             bare_ctor(b, "A", vec![p])
@@ -124,13 +133,22 @@ fn encode_probe_record(r: &ap::ProbeRecord) -> Vec<u8> {
 }
 
 /// Encode the received `list<narrow>` to canonical Value bytes: the name-headed `(list <narrow>…)` ascribed
-/// `List` — the canonical Cadenza list form a guest `Value.decode`s.
+/// with the PARAMETERIZED type `(List Narrow)` — byte-for-byte what a Cadenza checker's `Value.encode` of the
+/// same `List(Narrow)` produces. The root ascription of a generic value carries the type CONSTRUCTOR APPLIED
+/// to its argument (`(List Narrow)`, mirroring `(: (Some 5) (Option Int64))` in the codec), not the bare
+/// constructor name — a bare `List` decodes fine (the decoder is type-directed and ignores the token) but does
+/// not byte-match the checker.
 fn encode_narrow_list(items: &[ap::Narrow]) -> Vec<u8> {
     let mut b = Builder::new();
     let vals: Vec<StructId> = items.iter().map(|n| narrow_value(&mut b, n)).collect();
     let head = b.name("list");
     let list = b.list(std::iter::once(head).chain(vals).collect());
-    let root = ascribe(&mut b, list, "List");
+    // The `(List Narrow)` type node — the list type constructor applied to its element type.
+    let list_ty = b.name("List");
+    let elem_ty = b.name("Narrow");
+    let ty = b.list(vec![list_ty, elem_ty]);
+    let colon = b.name(":");
+    let root = b.list(vec![colon, list, ty]);
     codec::encode(&b.finish(root))
 }
 
@@ -1642,7 +1660,7 @@ mod tests {
         let tag = record_field(&arenas, rec, "tag").expect("field tag");
         assert_eq!(read_uint(&arenas, tag), Some(42), "tag");
 
-        // list<narrow> [A(7), Absent, B(300)] -> (: (list (A 7) (Absent) (B 300)) List)
+        // list<narrow> [A(7), Absent, B(300)] -> (: (list (A 7) (Absent unit) (B 300)) (List Narrow))
         let bytes =
             super::encode_narrow_list(&[ap::Narrow::A(7), ap::Narrow::Absent, ap::Narrow::B(300)]);
         let arenas = codec::decode(&bytes).expect("list decodes");
@@ -1651,10 +1669,14 @@ mod tests {
         assert_eq!(elems.len(), 3, "three narrow elements");
         let a = as_bare_ctor(&arenas, elems[0], "A").expect("(A _)");
         assert_eq!(read_uint(&arenas, a[0]), Some(7), "A payload");
-        assert_eq!(
-            as_bare_ctor(&arenas, elems[1], "Absent").map(<[_]>::len),
-            Some(0),
-            "(Absent) is nullary — no `None` (would shadow Option.None in the Cadenza checker)"
+        // A NULLARY multi-constructor variant is `(Absent unit)` — the constructor applied to the `unit` atom,
+        // exactly what a Cadenza checker's `Value.encode` of the same value produces (`codec.rs`). It is
+        // `Absent`, not `None` (a `None` ctor would shadow Option.None in the Cadenza checker).
+        let absent = as_bare_ctor(&arenas, elems[1], "Absent").expect("(Absent unit)");
+        assert_eq!(absent.len(), 1, "the nullary variant carries the unit atom");
+        assert!(
+            crate::contract_value::is_unit(&arenas, absent[0]),
+            "the Absent payload is the unit atom"
         );
         let b_case = as_bare_ctor(&arenas, elems[2], "B").expect("(B _)");
         assert_eq!(read_uint(&arenas, b_case[0]), Some(300), "B payload");
