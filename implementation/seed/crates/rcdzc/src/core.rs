@@ -588,6 +588,17 @@ pub enum Core {
         operand: StructId,
         discs: std::rc::Rc<[u8]>,
     },
+    /// `Ast.encode t` on a RUNTIME `Ast` — serialize the heap `Ast` value to its canonical `cdzast` `Bytes`
+    /// (a fresh owned `Bytes` leaf) via the value-heap runtime op `ast-encode` (heap index 93). A CONSTANT
+    /// `Ast` folds to a `Core::ConstBytes` in `lower_ast_encode` (the fold half) and never reaches here; this
+    /// is the RUNTIME path. The op BORROWS the `operand` handle + `discs` and returns a fresh owned `Bytes`.
+    /// `discs` is a compile-time-baked descriptor of the NINE `Ast` variant discs (LEB, slot order `[int,
+    /// float,bool,str,name,list,bytes,char,symbol]`) — two more than `ast-print` (encode round-trips every
+    /// variant incl. char + symbol). Byte-identical to the compile-time `codec::encode` fold (shared codec).
+    AstEncode {
+        operand: StructId,
+        discs: std::rc::Rc<[u8]>,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

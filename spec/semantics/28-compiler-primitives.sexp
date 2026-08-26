@@ -937,6 +937,39 @@
   (input  (do (def (main) (Ast.print (Ast.Int (BigInt.of 42)))) (export main)))
   (output (: "42" String)))
 
+; --- Primitive: RUNTIME Ast.encode (heap op 93) — serialize a runtime Ast to canonical cdzast bytes --------
+; A COMPILE-TIME-visible Ast folds to a `Core::ConstBytes` (`lower_ast_encode`); a RUNTIME Ast (built from a
+; runtime input) lowers to `Core::AstEncode {operand, discs}` -> the value-heap `ast-encode` op (heap index
+; 93), which walks the heap Ast into `ast::Arenas` and serializes it via the SAME shared `cadenza-ast` codec
+; the compile-time fold uses -> BYTE-IDENTICAL output. `discs` is a baked 9-disc descriptor (LEB
+; [int,float,bool,str,name,list,bytes,char,symbol]) the op reads to classify variants by name. The runtime op
+; produces the same canonical document as the compile-time fold; witnessed here by `Bytes.len` (the file's
+; established Ast.encode idiom, e.g. the `Blake3.of (Ast.encode …)` cases above), value-sensitive to `n`.
+; (Was a decline "Ast.encode of a runtime AST value is not yet computed"; v-runtime landed op 93 in #3634.)
+
+(case "runtime Ast.encode of an Ast.Int serializes via the ast-encode heap op, canonical length"
+  (doc    "`n` is a runtime entry param, so `(Ast.Int (BigInt.of n))` is a RUNTIME Ast -> `Ast.encode` lowers
+           to the `ast-encode` heap op (op 93), returning a fresh Bytes leaf serialized by the shared codec.
+           `(run 7)` -> a 16-byte canonical document (identical LENGTH to the compile-time fold, pinned by the
+           control case below); `(run 100000000000)` -> 20 bytes (the larger BigInt widens the varint payload,
+           proving the runtime value actually flows through the op rather than a baked constant).")
+  (input  (do (def (run (: n Int64)) (Bytes.len (Ast.encode (Ast.Int (BigInt.of n))))) (export run)))
+  (call   run 7) (output (: 16 Int64))
+  (call   run (: 100000000000 Int64)) (output (: 20 Int64)))
+
+(case "compile-time Ast.encode of the same Ast.Int folds to the identical length"
+  (doc    "The compile-time control: a CONSTANT `Ast.Int` folds to a `Core::ConstBytes` whose length is 16 —
+           the SAME length the runtime op produces above, witnessing runtime==compile-time for the Int leaf.")
+  (input  (do (def (main) (Bytes.len (Ast.encode (Ast.Int (BigInt.of 7))))) (export main)))
+  (output (: 16 Int64)))
+
+(case "runtime Ast.encode of a nested Ast.List serializes via the recursive walk"
+  (doc    "The nested case: `(Ast.List (list (Ast.Name \"f\") (Ast.Int (BigInt.of n))))` at runtime serializes
+           via the op's recursive walk (vec-get over the list, each element encoded by variant) into a 25-byte
+           canonical document — pinning the recursive encode path end-to-end through the heap op.")
+  (input  (do (def (run (: n Int64)) (Bytes.len (Ast.encode (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n))))))) (export run)))
+  (call   run 2) (output (: 25 Int64)))
+
 ; --- Primitive 2: const execution — a (const …) HANDLE with growing collection state folds (cm02) --------
 ; A closed finite `handle` with a const init, under `(const …)`, folds its answer: const_eval's Handle arm
 ; DELEGATES to `reduce_handle` (the effect reducer — threads continuations/resumes/state) and const-evaluates

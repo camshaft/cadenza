@@ -1354,6 +1354,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         Core::BytesCompact { operand }
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
+        | Core::AstEncode { operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::NfcNormalize { string: operand }

@@ -280,6 +280,11 @@ const OP_HASH_BLAKE3: &str = "hash-blake3";
 /// The value-heap `ast-print` op (heap index 92, appended after `hash-blake3`): renders a heap `Ast` handle
 /// to canonical s-expr text (a fresh `String` leaf), guided by a baked disc descriptor. Backs `Core::AstPrint`.
 const OP_AST_PRINT: &str = "ast-print";
+/// The value-heap `ast-encode` op (heap index 93, appended after `ast-print`): serializes a heap `Ast` handle
+/// to its canonical `cdzast` binary form (a fresh OWNED `Bytes` leaf) via the shared `cadenza-ast` codec,
+/// guided by a baked 9-disc descriptor. Byte-identical to the compile-time `codec::encode` fold. Backs
+/// `Core::AstEncode`.
+const OP_AST_ENCODE: &str = "ast-encode";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -1318,6 +1323,10 @@ fn binding_escapes_dup_aware(
         Core::AstPrint { operand, .. } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
+        // `Ast.encode` (runtime) BORROWS its Ast operand (serializes to a fresh Bytes — operand not retained).
+        Core::AstEncode { operand, .. } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             binding_escapes_dup_aware(db, operand, binder, scalar_element, dup_sites)
@@ -2179,6 +2188,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BytesCompact { operand }
         | Core::Blake3Of { operand }
         | Core::AstPrint { operand, .. }
+        | Core::AstEncode { operand, .. }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
         | Core::SetToList { set: operand, .. }
@@ -2701,6 +2711,8 @@ fn mark_binder_dups_inner(
         Core::Blake3Of { operand } => borrow(db, operand, live_after, sites),
         // `Ast.print` (runtime) BORROWS its Ast operand (an inspector; the baked `discs` is not a node).
         Core::AstPrint { operand, .. } => borrow(db, operand, live_after, sites),
+        // `Ast.encode` (runtime) BORROWS its Ast operand (an inspector; the baked `discs` is not a node).
+        Core::AstEncode { operand, .. } => borrow(db, operand, live_after, sites),
         // `Bytes.compact` (adv-66) is NOT a borrow — it lowers to the SAME runtime `bytes-compact` op as
         // `StrToBytes` (op_bytes_compact: flattens the rope IN PLACE and returns the SAME handle), so it
         // CONSUMES its operand and hands the handle back as the result. `binding_escapes_dup_aware` already
@@ -4604,6 +4616,15 @@ fn collect_used_ops_into_seen(
         // those ops must be imported too (mirrors `ValueEncode`'s desc bake).
         Core::AstPrint { operand, .. } => {
             out.insert(OP_AST_PRINT);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
+            collect_used_ops_into_seen(db, operand, out, visited);
+        }
+        // `Ast.encode` (runtime) calls the `ast-encode` heap op (op 93) over its Ast operand. Like
+        // `AstPrint`, it also bakes the disc descriptor into a fresh `Bytes` buffer (`bytes-alloc` +
+        // per-byte `bytes-set`), so those ops must be imported too.
+        Core::AstEncode { operand, .. } => {
+            out.insert(OP_AST_ENCODE);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
             collect_used_ops_into_seen(db, operand, out, visited);
@@ -12361,6 +12382,25 @@ fn emit(
                 out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
             }
             out.push(Lir::CallImport(OP_AST_PRINT)); // → [string] (borrows ast + discs)
+            Ok(())
+        }
+        // `Ast.encode` (runtime) — serialize the heap `Ast` to its canonical `cdzast` BYTES. Identical shape
+        // to `AstPrint`: emit the `Ast` operand (leaves its handle), bake the 9-disc descriptor into a FRESH
+        // `Bytes` buffer on top (the operand emit ran on a clean stack, so per-byte `bytes-set` touches only
+        // the top three and leaves the `Ast` handle beneath), then the `ast-encode` heap op (op 93): it
+        // BORROWS the `Ast` handle + `discs` and returns a FRESH OWNED `Bytes` leaf. `ast-encode(handle,
+        // discs)` — stack `[ast, discs-buf]` feeds param0=ast, param1=discs. Byte-identical to the
+        // compile-time `codec::encode` fold (the op runs the SAME shared codec).
+        Core::AstEncode { operand, discs } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [ast]
+            out.push(Lir::ConstI32(discs.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [ast, discs-buf]
+            for (j, &byte) in discs.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
+            }
+            out.push(Lir::CallImport(OP_AST_ENCODE)); // → [bytes] (borrows ast + discs)
             Ok(())
         }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
