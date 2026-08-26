@@ -300,17 +300,6 @@ pub fn build_driver_source(
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref() {
-            // A host-closure String/Bytes RESULT is serialized across the wasm boundary as `list<u8>`, so the
-            // corpus records it as the bare byte-int list `(104 105)` (`()` empty), NOT the `"hi"`/`b"…"` form
-            // a PLAIN String/Bytes export uses. rcdzc's rust target mirrors that observable form for a
-            // factory/consumer, so render `__r` (a `String`/`Vec<u8>`) as the byte list directly (also avoids
-            // the E0277 `Vec<u8>: Display` a `{}` render of a Bytes result would hit). Mirrors xtask.
-            Some(ty) if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") => {
-                let render = cdz_render_bytes_list(ty);
-                format!(
-                    "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
-                )
-            }
             Some(ty) => {
                 let sums = cdz_sum_descriptors(module);
                 let newtypes = cdz_newtype_descriptors(module);
@@ -319,16 +308,40 @@ pub fn build_driver_source(
                 let unit_form = cdz_unit_form(module, export);
                 let unit_scale = cdz_scale(module, export);
                 let qty_at = cdz_qty_at(module, export);
-                let render = cdz_render_expr(
-                    ty,
-                    &sums,
-                    &newtypes,
-                    &sum_params,
-                    unit_form.as_deref(),
-                    unit_scale,
-                    &qty_at,
-                    &qualified_heads,
-                );
+                let general = || {
+                    cdz_render_expr(
+                        ty,
+                        &sums,
+                        &newtypes,
+                        &sum_params,
+                        unit_form.as_deref(),
+                        unit_scale,
+                        &qty_at,
+                        &qualified_heads,
+                    )
+                };
+                let render = if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
+                    // A host-closure String/Bytes RESULT crosses the wasm boundary as `list<u8>` → the corpus
+                    // records the bare byte-int list `(104 105)`/`()`, NOT `"hi"`/`b"…"`. Render `__r` (a
+                    // `String`/`Vec<u8>`) as the byte list (also avoids the E0277 `Vec<u8>: Display`). Mirrors xtask.
+                    cdz_render_bytes_list(ty)
+                } else if is_factory && factory_result_is_value_form_sum(ty, &sums) {
+                    // A host-closure FACTORY SUM RESULT (Option/Result/user-sum) crosses value-ENCODED → the
+                    // corpus records the TYPE-ANNOTATED value form `(: (Some 5) (Option Int64))` (the wasm
+                    // `call`-method value-encode shape), nested in the case's own `output (: <that> <type>)`.
+                    // A plain sum export renders the bare `(Some 5)` (the grader unwraps one annotation level),
+                    // but a factory sum result needs the INNER annotation too — wrap the bare value in
+                    // `(: <value> <type-surface>)`. Mirrors xtask's factory-sum branch.
+                    let inner = general();
+                    let ty_surface = if ty.contains(' ') && !ty.starts_with('(') {
+                        format!("({ty})")
+                    } else {
+                        ty.to_string()
+                    };
+                    format!("format!(\"(: {{}} {ty_surface})\", {inner})")
+                } else {
+                    general()
+                };
                 format!(
                     "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
                 )
@@ -340,6 +353,27 @@ pub fn build_driver_source(
 
     let host_shims = build_rust_host_shims(module, host_responses, host_calls);
     format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+}
+
+/// Whether a factory's (arrow-peeled) RESULT type is a SUM that crosses the host boundary value-ENCODED —
+/// an `Option`/`Result`, or a USER sum whose head token is a `cdz-sum` descriptor key. Such a result is
+/// recorded type-annotated (`(: (Some 5) (Option Int64))`), so the driver wraps the rendered value. Mirrors
+/// xtask's `factory_result_is_value_form_sum`.
+fn factory_result_is_value_form_sum(
+    ty: &str,
+    sums: &std::collections::HashMap<String, Vec<(String, Vec<String>)>>,
+) -> bool {
+    let head = ty.trim().trim_start_matches('(');
+    if head.starts_with("Option ")
+        || head.starts_with("Result ")
+        || head == "Option"
+        || head == "Result"
+    {
+        return true;
+    }
+    // A USER sum: the head token (bare `Dir`, or the applied head of `(Box Int64)`) is a descriptor key.
+    let head_token = head.split_whitespace().next().unwrap_or(head);
+    sums.contains_key(head_token)
 }
 
 /// Render `__r` (a host-closure String/Bytes RESULT) as the boundary byte-int list `(104 105)` / `()`.
@@ -721,6 +755,26 @@ mod tests {
     fn bytes_list_render_iterates_bytes() {
         assert!(cdz_render_bytes_list("String").contains("(__r).bytes()"));
         assert!(cdz_render_bytes_list("Bytes").contains("(__r).iter().copied()"));
+    }
+
+    #[test]
+    fn factory_sum_result_is_value_form_wrapped() {
+        let empty = std::collections::HashMap::new();
+        assert!(factory_result_is_value_form_sum("(Option Int64)", &empty));
+        assert!(factory_result_is_value_form_sum("Option", &empty));
+        assert!(factory_result_is_value_form_sum(
+            "(Result Int64 String)",
+            &empty
+        ));
+        assert!(!factory_result_is_value_form_sum("Int64", &empty));
+        // A factory returning (Option (Tuple Int64 Int64)) → the driver wraps the value in (: v type).
+        let m = "// cdz-return[mk]: (-> Int64 (Option (Tuple Int64 Int64)))\n\
+                 pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> Option<(i64, i64)>> { std::rc::Rc::new(|_| Some((100, 101))) }";
+        let d = build_driver_source(m, "mk", &["0".into()], &[], &[]);
+        assert!(
+            d.contains("(: {} (Option (Tuple Int64 Int64)))"),
+            "factory sum result wrapped in the typed value form: {d}"
+        );
     }
 
     #[test]
