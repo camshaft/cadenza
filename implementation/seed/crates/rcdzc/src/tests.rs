@@ -7376,68 +7376,6 @@ fn option_expect_over_a_dead_after_borrowed_compound_payload_is_value_correct_bu
     );
 }
 
-/// FIXED-LEAK witness (v-memory-safety), pinning the FIX of a leak triaged from the corpus-bugfix queue
-/// (author: v-wasm-opt drift-guard 2026-07-24, was live on trunk `0fbab6d7f`; repro
-/// `adv-recursive-heap-payload-sum-scrutinee-borrowed-param-leaks-one-cell.sexp`): a SELF-RECURSIVE fn
-/// taking a sum with a HEAP payload (BigInt OR String) as a BORROWED param USED TO LEAK exactly ONE live
-/// cell as the recursion unwound — the heap-payload sum `w` is a borrowed self-recursion param, and across
-/// the loop the sum shell was retained-but-not-dropped once (nothing reclaimed the frame-owned param; the
-/// base `match w` only BORROWS it). FIXED by the owned-heap-param drop epilogue in `select_body`
-/// (`param_escapes_non_backedge` + `invalidate_varying_params` gate → `LocalGet; drop` at the loop exit for
-/// a dead-at-exit, identity-carried heap param). Isolation from the finding: HEAP-payload-specific (an Int64
-/// SCALAR payload always netted 0), RECURSIVE/LOOP-specific (a non-recursive call nets 0). NOW nets 0 for
-/// the heap faces too, value still correct (no double-free — the drop fires only for a param proven dead +
-/// invariant). Same ownership class as the `option_expect_…`/`from-bytes_…` compound-Some-shell siblings
-/// above (those remain the deeper node-keyed payload-escape backlog — a different shape: an owned SHELL
-/// borrowed-out-of, not a frame-owned param).
-///
-/// Asserts VALUE-CORRECT (3, no UAF/trap) + ZERO live cells: a regression that REINTRODUCED the leak (drop
-/// epilogue stopped firing → 1) or a NEW leak (>1) fails, and a drop that OVER-fired (double-free) fails the
-/// value assert. `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore = "needs the debug-counters store (cargo xtask build)"]
-fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known_gap() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "debug-counters runtime not in the store (run `cargo xtask build`); skipping borrowed-heap-sum-recursion-param leak witness"
-        );
-        return;
-    };
-    // The finding's minimal repro (bind-only, no probe machinery): `walk` recurses on scalar `n`, holding a
-    // BigInt-payload sum `w` as a BORROWED param, and only at the base matches `(Mk x)` to read it. With
-    // guard `(>= n 0)`, `main (walk 1 …)` recurses TWICE — `walk 1 → walk 0 → walk -1` — then the base
-    // `match` fires at `n < 0`. VALUE = `Int64.of 3` = 3.
-    let src = "(module m \
-                 (type W (Mk BigInt)) \
-                 (def (mk (: k Int64)) (Mk (BigInt.of k))) \
-                 (def (walk (: n Int64) (: w W)) \
-                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) (Int64.of x))))) \
-                 (def (main (: n Int64)) (walk n (mk 3))) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // VALUE-CORRECT: the borrowed heap-payload sum is read AFTER the recursion → 3. A UAF would trap/corrupt
-    // before returning; this proves the leak is NON-OOB and value-safe.
-    assert_eq!(
-        rt.call("main", &[Val::S64(1)]),
-        Val::S64(3),
-        "Int64.of the BigInt payload of a borrowed heap-sum recursion param = 3 (value-correct + NO UAF)"
-    );
-    // FIXED (owned-heap-param drop epilogue, `select_body`): the borrowed heap-payload sum is now RECLAIMED
-    // at the loop exit — under callee-owns-args this frame owns `w`, and a looped body's dead-at-exit
-    // invariant heap param is dropped in the epilogue (it used to leak 1 cell, only the base-case `match`
-    // borrowing it, nothing dropping the owned shell). NOW ZERO live cells: value still correct (3, no
-    // double-free — the drop fires only for a param proven dead-at-exit + identity-carried across the loop).
-    let live = rt.live_objects();
-    assert_eq!(
-        live, 0,
-        "borrowed-heap-sum-recursion-param leak FIXED: the owned heap param is reclaimed at the loop exit \
-         → 0 live cells — got {live}. If 1, the drop epilogue regressed (stopped firing); if above 1, a \
-         NEW leak; if a UAF/wrong value, the drop over-fired (double-free)."
-    );
-}
-
 /// MUST-NOT-REGRESS boundary witness for the owned-heap-param drop epilogue's EXCLUSION side (`3a638625f`
 /// `param_only_borrowed_or_backedge`). The drop is gated NARROWLY — it fires ONLY for a heap param whose
 /// every occurrence is a borrow or the tail-identity back-edge. The sibling witnesses above pin that it

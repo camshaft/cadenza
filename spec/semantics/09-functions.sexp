@@ -8108,3 +8108,23 @@
   (call main (: (list 9 1 2 7) Bytes))
   (output (: 2 Int64))
   (live-objects 0))
+
+; ── Reclaim: a borrowed heap-payload sum param in a self-recursive fn is dropped at the loop exit (migrated from rcdzc) ──
+(case "a borrowed heap-payload sum param in a self-recursive fn is reclaimed at the loop exit (no leak)"
+  (doc    "A self-recursive `walk` holds a sum with a HEAP (BigInt) payload as a BORROWED param, threading
+           it down the recursion and matching it only at the base case. The owned-heap-param drop epilogue
+           reclaims the frame-owned param at the loop exit (a looped body's dead-at-exit, identity-carried
+           heap param), so it nets ZERO live cells — it used to leak one cell (nothing reclaimed the shell;
+           the base `match` only borrows it). walk 1 (mk 3): (>= n 0) recurses n=1->0->-1 then the base
+           `(match w ((Mk x) (Int64.of x)))` reads 3. Value-correct (3, no UAF/double-free). Pins the
+           drop-epilogue reclaim: a regression reintroducing the leak reds on live-objects (1), a NEW leak
+           (>1) reds, and an over-firing drop (double-free) reds the value.")
+  (input  (do
+            (type W (Mk BigInt))
+            (def (mk (: k Int64)) (Mk (BigInt.of k)))
+            (def (walk (: n Int64) (: w W))
+              (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) (Int64.of x)))))
+            (def (main (: n Int64)) (walk n (mk 3)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (live-objects 0))
