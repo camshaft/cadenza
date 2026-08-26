@@ -235,6 +235,35 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 17 Int64)))
 
+(case "cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds"
+  (doc    "The #10 sound-capture control: the draw is bound in a PLAIN let OUTSIDE the closure's init-let,
+           so the closure captures a pure already-read value (no perform in its init) and folds. `a` reads
+           the seed once; the closure `(fn (x) (* a x))` closes over it; `(+ (f (St.next)) (f 10))` advances
+           the draw for the first arg. With seed n=5: a captured once = 5, f(6)=30 + f(10)=50 = 80. Pins that
+           binding the draw OUTSIDE the closure init-let keeps the capture foldable (the performing-init
+           decline is narrow — it does not over-decline this working shape).")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((a (St.next))) (let ((f (fn ((: x Int64)) (* a x)))) (+ (f (St.next)) (f 10))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 80 Int64)))
+
+(case "cc11 a closure over a nested-let-init with a PURE init folds"
+  (doc    "The #10 sound-capture control's nested-let face: the SAME nested-let-init closure shape as the
+           performing-capture decline, but with a PURE init `(* n 3)` — no perform, so the decline detector
+           never fires and it folds. a = n*3; the closure `(fn (x) (* a x))` is applied around advancing
+           draws `(+ (f (St.next)) (f 10))`. With seed n=5: a = 15, and the sum folds to 225. Pins that a
+           pure nested-let init is foldable — the decline is specific to a PERFORMING init.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((f (let ((a (* n 3))) (fn ((: x Int64)) (* a x))))) (+ (f (St.next)) (f 10)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 225 Int64)))
+
 (case "dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state"
   (input  (do
             (effect St (op next (-> Int64)))
