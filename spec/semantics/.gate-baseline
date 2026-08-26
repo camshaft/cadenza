@@ -7373,3 +7373,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	pycl1 probe: the handler arm CLOSES OVER a free variable from the enclosing lexical scope — base = (* n 7) is let-bound OUTSIDE the handle, and the arm's resume answer reads it (+ (* s 100) base); base is constant across dispatches while the state threads, so the fold must capture the outer binding into the arm's closure correctly (not lose it or recompute)
+pass	pydv1 probe: NEGATIVE integer division threaded through the handler — seed is -(n%3), tick answers (/ (* s 7) 2) and threads (- s 3), so the state goes negative and each dispatch divides a negative product by 2 (truncate-toward-zero: -49/2 = -24, -21/2 = -10); the three dispatches exercise signed division/sign semantics under state threading, and wasm vs rust must agree on truncation direction
+pass	pysh8 probe: a variable LEFT-SHIFT by the threaded handler state — tick answers (<< 1 s) threading (+ s 1), seed (n%3)+1, so three dispatches compute 1<<s0, 1<<(s0+1), 1<<(s0+2); the shift amount is data (the live state), exercising variable-shift semantics under state threading and wasm/rust agreement on the shift
