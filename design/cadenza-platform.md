@@ -990,8 +990,8 @@ fetching a program or one of its dependencies is the same get-by-hash as fetchin
 payload.
 
 A hash is **self-describing**: a one-byte tag naming what it identifies — a contract, a
-reducer, a program, a host, a raw blob, or a platform-internal property — followed by the
-content digest. The tag lets a bare hash be classified at runtime — a contract-id told
+reducer, a program, a host, a raw blob, a platform-internal property, or a reducer's state
+root (section 7) — followed by the content digest. The tag lets a bare hash be classified at runtime — a contract-id told
 apart from a reducer-id, a handler-chain edge from a structural one — without a side table,
 the same distinction the typed identifiers carry in code. It is a self-description, not a
 commitment: the digest is what binds the content, so a hash cannot be forged to name

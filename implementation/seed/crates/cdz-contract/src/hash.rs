@@ -50,6 +50,11 @@ pub enum HashTag {
     Blob = 5,
     /// A platform-internal well-known hash — e.g. a structural edge kind of the reducer graph.
     SystemProperty = 6,
+    /// A state root — the content hash of a reducer's durable key-value state at a point (section 7). A
+    /// distinct kind from [`Blob`](Self::Blob) (an arbitrary stored payload) and
+    /// [`SystemProperty`](Self::SystemProperty) (a well-known structural constant): a state root is a
+    /// *dynamic* digest of live state, so it carries its own tag and stays distinguishable at runtime.
+    StateRoot = 7,
 }
 
 impl HashTag {
@@ -64,6 +69,7 @@ impl HashTag {
             4 => Some(Self::Host),
             5 => Some(Self::Blob),
             6 => Some(Self::SystemProperty),
+            7 => Some(Self::StateRoot),
             _ => None,
         }
     }
@@ -526,7 +532,10 @@ mod tests {
         raw[0] = 0xFF;
         assert_eq!(Hash::from_bytes(raw).tag(), None);
         assert_eq!(HashTag::from_byte(2), Some(HashTag::Reducer));
+        assert_eq!(HashTag::from_byte(7), Some(HashTag::StateRoot));
         assert_eq!(HashTag::from_byte(0), None);
+        // A byte past the last known tag is still an unknown (forward-compatible), not a panic.
+        assert_eq!(HashTag::from_byte(8), None);
     }
 
     #[test]
