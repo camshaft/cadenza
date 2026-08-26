@@ -5762,14 +5762,42 @@
   (call   main (: 4294967296 UInt64) (: 4294967296 UInt64)) (output (: 0 UInt64))
   (call   main (: 0 UInt64) (: 12345 UInt64)) (output (: 0 UInt64)))
 
-(case "a NARROW-width checked-add over a RUNTIME operand still declines (the width-relative overflow emit is pending)"
-  (doc    "`(UInt8.checked-add a (UInt8.wrap 1))` with `a` a runtime UInt8 has no constant to fold, and the
-           runtime checked emit is built only at the 64-bit width — a narrow width's masked representation
-           makes the sign bit width-relative (the overflow test must be against the narrow range, not bit 63),
-           an increment not yet done. So it soundly DECLINES rather than reusing the 64-bit formula (which
-           would mis-verdict a narrow overflow). Contrast the 64-bit runtime checked-add above. Pins the
-           narrow-width runtime checked boundary.")
+; A NARROW-width (8/16/32) runtime checked ADD/SUB emits by WIDENING both operands to Int64 (value-
+; preserving), doing the exact op in the wide accumulator (a narrow add/sub cannot overflow i64), then
+; RANGE-CHECKING the exact result against the NARROW `[tmin,tmax]` — the same interval a `.of` narrowing
+; checks. This sidesteps the width-relative sign-bit problem by computing exactly + checking the narrow
+; bounds. Narrow checked-MUL still declines (a u32×u32 product exceeds the i64 accumulator).
+(case "a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow"
+  (doc    "`(UInt8.checked-add a (UInt8.wrap 1))` with `a` a runtime UInt8: widen to Int64, add exactly, and
+           range-check `[0,255]` — `main(100)` = 101 (fits → Some, `Int64.of`'d out); `main(255)` overflows
+           255+1=256 > 255 → None → -1. The executing upgrade of the former narrow decline (the 64-bit checked-
+           add is above); a regression to a wrong narrow overflow verdict would change these.")
   (input  (do (def (main (: a UInt8)) (match (UInt8.checked-add a (UInt8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
+  (call   main (: 100 UInt8)) (output (: 101 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "a NARROW-width signed checked-add/sub range-checks BOTH bounds (Int8 over/underflow)"
+  (doc    "`(Int8.checked-add a (Int8.wrap 1))` with a runtime Int8: `main(10)` = 11; `main(127)` overflows
+           (128 > 127) → None → -99. The signed narrow face — the range-check tests the UPPER bound against the
+           exact wide sum. Pins that a signed narrow overflow is caught against the narrow range, not bit 63.")
+  (input  (do (def (main (: a Int8)) (match (Int8.checked-add a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99))) (export main)))
+  (call   main (: 10 Int8)) (output (: 11 Int64))
+  (call   main (: 127 Int8)) (output (: -99 Int64)))
+
+(case "a NARROW-width checked-sub over a RUNTIME operand range-checks the LOWER bound (Int8 underflow)"
+  (doc    "`(Int8.checked-sub a (Int8.wrap 1))` with a runtime Int8: `main(0)` = -1 (fits); `main(-128)`
+           underflows (-129 < -128) → None → -99. Pins the lower-bound check of the narrow range-check.")
+  (input  (do (def (main (: a Int8)) (match (Int8.checked-sub a (Int8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -99))) (export main)))
+  (call   main (: 0 Int8)) (output (: -1 Int64))
+  (call   main (: -128 Int8)) (output (: -99 Int64)))
+
+(case "a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)"
+  (doc    "`(UInt8.checked-mul a (UInt8.wrap 2))` with a runtime UInt8 declines: the narrow add/sub widen-and-
+           range-check trick does NOT extend uniformly to MUL (a u32×u32 product exceeds the i64 accumulator,
+           so a single wide-accumulator range-check cannot cover every narrow width). Soundly declines rather
+           than mis-verdicting; the 64-bit checked-mul (division round-trip) is above. Pins the narrow-mul
+           boundary — the sole remaining runtime-checked-integer decline.")
+  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-mul a (UInt8.wrap 2)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
   (declines))
 
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
