@@ -7616,3 +7616,53 @@
             (export main)))
   (call   main (: 40 Int64))
   (output (: 42 Int64)))
+
+; -- breaker batch 432 (2026-08-26): the ENTRY-PARAM Slice-1 EDGE ladder (v-rb's String/Bytes
+; param-lift, ~4-slice plan behind one admission gate). The pinned 14-row family covers the base
+; faces; these pin the edges: TWO String params in order, a String BETWEEN scalars (positional
+; correctness), one param used twice (len + content compare), the EMPTY string (ptr,0), Bytes+String
+; in one signature, and pass-through to a helper. Rows wasm-todo / rust-pass — oracles are
+; machine-verified against the rust reference; every row auto-flips when Slice 1 lands.
+
+(case "ep1 TWO String entry params concat in declaration order"
+  (input (do
+    (def (main (: a String) (: b String)) (String.byte-len (String.concat a b)))
+    (export main)))
+  (call main (: "abc" String) (: "de" String))
+  (output (: 5 Int64)))
+
+(case "ep2 a String param BETWEEN two scalars keeps positional correctness"
+  (input (do
+    (def (main (: x Int64) (: s String) (: y Int64)) (+ (* x 100) (+ (String.byte-len s) y)))
+    (export main)))
+  (call main (: 3 Int64) (: "abcd" String) (: 7 Int64))
+  (output (: 311 Int64)))
+
+(case "ep3 one String param used TWICE (byte-len and content compare)"
+  (input (do
+    (def (main (: s String)) (+ (String.byte-len s) (if (= s "hi") 100 0)))
+    (export main)))
+  (call main (: "hi" String))
+  (output (: 102 Int64)))
+
+(case "ep4 an EMPTY String entry arg has byte-len zero (the ptr,0 edge)"
+  (input (do
+    (def (main (: s String)) (String.byte-len s))
+    (export main)))
+  (call main (: "" String))
+  (output (: 0 Int64)))
+
+(case "ep5 a Bytes and a String param in ONE signature"
+  (input (do
+    (def (main (: b Bytes) (: s String)) (+ (* 10 (Bytes.len b)) (String.byte-len s)))
+    (export main)))
+  (call main (: (list 1 2 3) Bytes) (: "ab" String))
+  (output (: 32 Int64)))
+
+(case "ep6 a String entry param passed THROUGH to a helper"
+  (input (do
+    (def (measure (: t String)) (String.byte-len t))
+    (def (main (: s String)) (+ 1 (measure s)))
+    (export main)))
+  (call main (: "xyz" String))
+  (output (: 4 Int64)))
