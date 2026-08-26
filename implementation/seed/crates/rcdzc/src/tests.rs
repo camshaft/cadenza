@@ -72696,6 +72696,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_pure_data_record_const_param_folds_through_a_bare_recursive_call() {
+        // ca07: a `const (: r (Record …))` param of PURE DATA (no `(-> …)` function field) folds across a
+        // BARE recursive call (no `(const …)` block) — the record counter `a` shrinks each step. The
+        // activation gate now admits a data record (symmetric with the Tuple gate, ca06); a record OF
+        // FUNCTIONS stays the runtime-inlined dictionary the sibling test above pins, so the two are
+        // distinguished by the field types. `f (record (a 3) (b 0))` counts `a` to 0 accumulating `b` → 3.
+        // (This is a Rust test, not a corpus case, because a `(Record …)` param annotation does not yet
+        // round-trip through the ML surface — the pending record-type-syntax gap; the fold itself is what's
+        // pinned here.) The fold to a scalar imports NO value-heap runtime — the record never materializes.
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (def (f (const (: r (Record (a Int64) (b Int64))))) \
+                 (if (= (. r a) 0) (. r b) (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
+               (def (main) (f (record (a 3) (b 0)))) (export main))",
+        )))
+        .expect("a pure-data record const-param recursion compiles");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "the record const param folds to a scalar — no value-heap runtime import (record eliminated)"
+        );
+        assert_eq!(
+            run_returns::<i64>(&bytes, "main"),
+            3,
+            "f counts a=3 down to 0 while accumulating into b → 3"
+        );
+    }
+
+    #[test]
+    fn a_taken_trap_over_a_record_const_param_surfaces_its_message() {
+        // The bare recursive-call fold over a record const param EXECUTES a taken `trap` and surfaces its
+        // message as a compile error (a const-trap), rather than the "function return type has no machine
+        // representation" emit failure the gate exclusion used to cause. Symmetric with the Int/Char/Float/
+        // Tuple const-param trap shapes. (Rust test: the `(Record …)` annotation does not round-trip the ML
+        // surface yet — the record-type-syntax gap — so the corpus route is unavailable.)
+        let mut db = crate::db::Db::load(parse(
+            "(module m \
+               (def (f (const (: r (Record (a Int64) (b Int64))))) \
+                 (if (= (. r a) 0) (trap \"record base reached\") \
+                     (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
+               (def (main) (f (record (a 2) (b 0)))) (export main))",
+        ));
+        let diags = crate::compile::diagnostics(&mut db);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("record base reached")),
+            "a taken trap over a record const param surfaces its message, not a machine-repr emit error: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_known_closure_stored_in_a_variant_is_called_directly_not_via_call_indirect() {
         // KNOWN-CLOSURE DEVIRTUALIZATION (S1): a closure stored in a variant field, matched out, and
         // applied — the ad-hoc-poly dispatch shape. The closure captures `k` so it CANNOT β-reduce (it is a
