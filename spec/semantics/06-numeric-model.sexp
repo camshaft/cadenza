@@ -9457,3 +9457,22 @@
         as `(Ast.Float Float64.nan)` does — a non-canonical float has no canonical AST value form.")
   (input (do (def (main) (Ast.Float Float64.Infinity)) (export main)))
   (output (reject)))
+
+(case "Float64.of-int converts a runtime integer, rounding a large Int64 to the nearest f64"
+  (doc    "`(Float64.of-int n)` over a runtime integer emits f64.convert_i64_s (a constant folds instead):
+           of-int 42 = 42.0; of-int Int64.max rounds to the nearest f64 = 9223372036854775808.0 (total,
+           never traps).")
+  (input  (do (def (f (: n Int64)) (Float64.of-int n)) (export f)))
+  (call   f (: 42 Int64)) (output (: 42.0 Float64))
+  (call   f (: 9223372036854775807 Int64)) (output (: 9223372036854775808.0 Float64)))
+
+(case "Float32.of demotes a runtime Float64 to the nearest binary32"
+  (doc    "`(Float32.of x)` DEMOTES via f32.demote_f64 (rounds): 0.1 : Float64 -> the nearest binary32,
+           which reads back as 0.10000000149011612.")
+  (input  (do (def (f (: x Float64)) (Float32.of x)) (export f)))
+  (call   f (: 0.1 Float64)) (output (: 0.10000000149011612 Float32)))
+
+(case "Float64.of promotes a runtime Float32 exactly"
+  (doc    "`(Float64.of x)` PROMOTES via f64.promote_f32 (exact): 1.5 : Float32 -> 1.5.")
+  (input  (do (def (f (: x Float32)) (Float64.of x)) (export f)))
+  (call   f (: 1.5 Float32)) (output (: 1.5 Float64)))

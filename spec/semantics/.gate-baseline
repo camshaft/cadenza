@@ -145,11 +145,14 @@ pass	Float32 division const-folds at f32 (0.3f32 / 3.0f32 = 0.1f32)
 pass	Float32 subtraction const-folds at f32 (0.4f32 - 0.1f32 = 0.3f32)
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float32.Infinity is greater than a finite Float32
+pass	Float32.of demotes a runtime Float64 to the nearest binary32
 pass	Float64.Infinity equals itself under the canonical byte form
 pass	Float64.Infinity is greater than any finite float
 pass	Float64.Infinity is not equal to a finite float
 pass	Float64.Infinity is not less than a finite float
+pass	Float64.of promotes a runtime Float32 exactly
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
+pass	Float64.of-int converts a runtime integer, rounding a large Int64 to the nearest f64
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
