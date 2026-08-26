@@ -5,6 +5,7 @@
 
 pub mod check;
 pub mod deliver;
+pub mod effect;
 pub mod lifecycle;
 pub mod run;
 pub mod spawned;
