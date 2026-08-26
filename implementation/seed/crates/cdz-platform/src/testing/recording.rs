@@ -751,4 +751,10 @@ impl<P: ProgramStore> ProgramStore for RecordingProgramStore<P> {
     async fn contains(&self, program: ProgramHash) -> bool {
         self.inner.contains(program).await
     }
+
+    fn set_node_delivery(&self, delivery: Arc<dyn Delivery>) {
+        // Forward to the wrapped store so a `TaskSystem` running THROUGH this decorator still wires the
+        // `deliver` host import to the live node (the recording layer observes deliveries, it does not back them).
+        self.inner.set_node_delivery(delivery);
+    }
 }

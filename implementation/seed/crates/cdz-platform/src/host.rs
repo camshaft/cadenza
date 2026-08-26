@@ -1381,6 +1381,12 @@ pub struct WasmProgramStore {
     /// until set with [`with_arg_probe`](WasmProgramStore::with_arg_probe), so it is wired only for the
     /// arg-capture conformance world (each reducer's `arg_probe` is `None` otherwise). Mirrors `make_run_sink`.
     make_arg_probe: Option<ArgProbeSinkFactory>,
+    /// The node-side delivery slot the running [`TaskSystem`](crate::TaskSystem) fills once it exists (§4) —
+    /// empty until then (the store is built first). A `make_delivery` factory that wants the `deliver` host
+    /// import to reach the live node wraps [`node_delivery_slot`](WasmProgramStore::node_delivery_slot) as its
+    /// backend; [`set_node_delivery`](ProgramStore::set_node_delivery) fills THIS slot, so a forward lands in
+    /// the target's mailbox rather than being dropped. Empty (a no-op) unless a system fills it.
+    node_delivery: Arc<crate::NodeDeliverySlot>,
 }
 
 impl WasmProgramStore {
@@ -1437,7 +1443,17 @@ impl WasmProgramStore {
             make_rejected: None,
             make_run_sink: None,
             make_arg_probe: None,
+            node_delivery: Arc::new(crate::NodeDeliverySlot::new()),
         })
+    }
+
+    /// The node-side delivery slot a `make_delivery` factory wraps so the `deliver` host import reaches the
+    /// live system (§4). Build the store, then pass this slot as the backend of `with_delivery`'s factory (a
+    /// recording decorator over it, say); [`TaskSystem::new`](crate::TaskSystem) fills it once it runs the
+    /// store, so a forwarded deliver lands in the target's mailbox instead of being dropped. Empty until then.
+    #[must_use]
+    pub fn node_delivery_slot(&self) -> Arc<crate::NodeDeliverySlot> {
+        Arc::clone(&self.node_delivery)
     }
 
     /// Wire each reducer's view of the node-side provenance its `program-of` import reads (§4) — the system,
@@ -1593,6 +1609,12 @@ impl ProgramStore for WasmProgramStore {
         let engine = self.inst.host.engine.clone();
         let tick = self.inst.host.limits.epoch_tick;
         Some((tick, Arc::new(move || engine.increment_epoch())))
+    }
+
+    fn set_node_delivery(&self, delivery: Arc<dyn Delivery>) {
+        // Fill the slot a `make_delivery` factory wrapped via `node_delivery_slot`, so from now the `deliver`
+        // host import reaches the live system. Called once by `TaskSystem::new` after the system is built.
+        self.node_delivery.set(delivery);
     }
 }
 
