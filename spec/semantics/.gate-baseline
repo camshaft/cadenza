@@ -1487,6 +1487,7 @@ pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one has
 pass	a combined left shift that overflows Int64 traps like the single shift it folds to
 pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
+pass	a comparison pair split across a nested connective reassociates and folds to the interval
 pass	a comparison walls the FLOAT width from a literal above it
 pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-driven MERGE of two sorted lists interleaves and drains the remainder
@@ -1496,6 +1497,7 @@ pass	a compile-time Char comparison folds beside performs (the runtime-Char boun
 pass	a compile-time expansion residual combines with a runtime param per call
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a complementary comparison pair nested past a third operand still folds via reassociation
+pass	a complementary comparison split across a nested connective folds to false
 pass	a complete handler inside a CLOSURE body — each application instantiates fresh
 pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a compose combinator captures TWO function values and applies them in declared order
@@ -3152,6 +3154,8 @@ pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm sh
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
 pass	a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep
 pass	a repeated condition inside a branch propagates the known truth value
+pass	a repeated conjunct absorbs to the plain conjunction
+pass	a repeated disjunct absorbs to the plain disjunction
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
@@ -6656,6 +6660,7 @@ pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | 
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the bitwise-AND-with-zero annihilator folds to zero when the discarded constant operand is total
+pass	the boolean absorption laws absorb with swapped operand order too
 pass	the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a
 pass	the boolean complement-law fold keeps a trapping operand's trap
 pass	the boolean less-than operator agrees with compare over Bool
@@ -6693,6 +6698,7 @@ pass	the difference of a set with itself is empty
 pass	the difference of a set with the empty set is the set (identity)
 pass	the difference of sets of TUPLES removes elements by their whole-tuple content
 pass	the display truncation does not lose the stored magnitude (Qty.value reads it back)
+pass	the dual-absorption fold keeps a trapping absorbed operand's short-circuit form
 pass	the element list of an Ast.List escapes as a (List Ast) value and renders its structure
 pass	the element tie survives producer self-composition
 pass	the else-branch of an if threads a performed state to the continuation
@@ -6828,6 +6834,7 @@ pass	the record-perform workaround — `let`-bind then read by `(. r field)` pro
 pass	the recursion DEPTH itself is a draw — the walk runs mod-4-of-state iterations, including the zero-depth face
 pass	the remainder takes the sign of the dividend for a negative dividend
 pass	the remainder takes the sign of the dividend for a negative divisor
+pass	the repeated-conjunct absorb keeps a trapping nested operand's trap
 pass	the rest binder carries the unmatched runtime-keyed remainder
 pass	the retired Tuple.cat name is rejected with the Tuple.concat rename fix-it (CDZ0603)
 pass	the retired Tuple.pop name is rejected with the Tuple.remove rename fix-it (CDZ0603)
@@ -6867,6 +6874,7 @@ pass	the shrinking search terminates via its fuel bound rather than searching un
 pass	the sign of ZERO propagates through multiply and add per IEEE at runtime
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
+pass	the split-comparison reassociation declines a trapping leaf and keeps its trap
 pass	the stacked contract's PRE fires through the @ensures layer BEFORE the perform (abortive observer)
 pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns
 pass	the swap and take value-yielding forms agree with insert and remove on the resulting map

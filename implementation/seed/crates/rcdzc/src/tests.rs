@@ -48222,37 +48222,10 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             2,
             "distinct c kept"
         );
-
-        // VALUE PARITY over all truth combinations.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        let andn = f("(and (and a b) a)");
-        let orn = f("(or (or a b) b)");
-        for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(
-                run_returns_with::<bool>(&andn, "f", &[Val::Bool(a), Val::Bool(b)]),
-                a && b,
-                "and @{a},{b}"
-            );
-            assert_eq!(
-                run_returns_with::<bool>(&orn, "f", &[Val::Bool(a), Val::Bool(b)]),
-                a || b,
-                "or @{a},{b}"
-            );
-        }
-        // TRAP SAFETY: the nested node is retained, so a trapping operand in it still traps.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: n Int64) (: b Bool)) (if (and (and (> (/ 10 n) 0) b) (> (/ 10 n) 0)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0), Val::Bool(true)]),
-            "a trapping nested operand keeps its trap"
-        );
+        // Value + trap parity (`(and (and a b) a)` = a&&b, `(or (or a b) b)` = a||b, trapping nested
+        // operand keeps its trap) is the corpus family "a repeated conjunct/disjunct absorbs …" + "the
+        // repeated-conjunct absorb keeps a trapping nested operand's trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
@@ -48317,49 +48290,11 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             2,
             "distinct inner kept"
         );
-
-        // VALUE PARITY: each absorption form equals `a` over all truth combinations.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: a Bool) (: b Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        for body in [
-            "(or (and a b) a)",
-            "(or a (and a b))",
-            "(and (or a b) a)",
-            "(and a (or a b))",
-            "(or (and b a) a)",
-        ] {
-            let comp = f(body);
-            for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
-                assert_eq!(
-                    run_returns_with::<bool>(&comp, "f", &[Val::Bool(a), Val::Bool(b)]),
-                    a,
-                    "{body} @{a},{b} must equal a"
-                );
-            }
-        }
-        // TRAP SAFETY: when `b` carries a trap, the gate keeps the runtime form rather than dropping `b`, so
-        // no trap is added or dropped. `(and (or a b) a)` evaluates `b` only when `a` is false; the fold's
-        // `is_trap_free(b)` guard declines here (b is a trapping `/`), leaving the real short-circuit form.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: a Bool) (: n Int64)) (if (and (or a (> (/ 10 n) 0)) a) 1 0)) (export f))"
-        ))).expect("compile");
-        // a=false forces evaluation of `(or a (> (/ 10 n) 0))` → the trapping `/` fires at n=0.
-        assert!(
-            call_traps(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
-            "a trapping inner operand keeps its trap (fold declined)"
-        );
-        // a=true short-circuits before the trap → runs to 1 (the outer `and` needs `a`, which is true, and
-        // `(or a …)` short-circuits true without touching the `/`).
-        assert_eq!(
-            run_returns_with::<i64>(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
-            1,
-            "a=true short-circuits the trap"
-        );
+        // Value + trap parity (each absorption form — canonical and swapped-order — equals `a`, and a
+        // trapping absorbed operand keeps its short-circuit form) is the corpus family "the boolean
+        // absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a" + "… absorb with swapped operand
+        // order too" + "the dual-absorption fold keeps a trapping absorbed operand's short-circuit form"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
@@ -48810,42 +48745,12 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             3,
             "unrelated comparison kept"
         );
-
-        // VALUE PARITY: the nested-subsumption form equals `5 < x < 100`.
-        use wasmtime::component::Val;
-        let f = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (if (and (and (> x 0) (< x 100)) (> x 5)) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        for (x, want) in [(-5, 0), (0, 0), (5, 0), (6, 1), (99, 1), (100, 0), (150, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&f, "f", &[Val::S64(x)]),
-                want,
-                "nested subsumption value @{x}"
-            );
-        }
-        // The nested-complement form is always false.
-        let cf = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64) (: y Int64)) (if (and (and (< x y) (> x 0)) (>= x y)) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        for (x, y) in [(3, 5), (5, 3), (0, 0), (10, 2)] {
-            assert_eq!(
-                run_returns_with::<i64>(&cf, "f", &[Val::S64(x), Val::S64(y)]),
-                0,
-                "nested complement @{x},{y}"
-            );
-        }
-        // TRAP SAFETY: a trapping leaf DECLINES the reassociation (it needs all leaves trap-free), so the
-        // runtime form is kept and the trap fires. `(/ 10 n)` traps at n=0.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: n Int64) (: x Int64)) (if (and (and (> (/ 10 n) 0) (< x 100)) (> (/ 10 n) 5)) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0), Val::S64(50)]),
-            "a trapping leaf keeps the runtime form and traps"
-        );
+        // Value + trap parity (the nested-subsumption form = 5 < x < 100, the nested-complement form is
+        // always false, and a trapping leaf declines the reassociation and keeps its trap) is the corpus
+        // family "a comparison pair split across a nested connective reassociates and folds …", "a
+        // complementary comparison split across a nested connective folds to false", and "the
+        // split-comparison reassociation declines a trapping leaf and keeps its trap"
+        // (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
