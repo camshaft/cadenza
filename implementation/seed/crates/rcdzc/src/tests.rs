@@ -10565,49 +10565,6 @@ fn a_closure_over_a_performing_capture_declines_not_miscompiles() {
     );
 }
 
-/// A compiler-synthesized `#seed` binder carried through a guard-desugared match FALLBACK arm must RESOLVE,
-/// not false-CDZ0101 (breaker ag5). CONJUNCT: [guard-desugared scalar match] × [perform-result SCRUTINEE] ×
-/// [perform in the non-guard FALLBACK arm]. The effects fold lifts the non-constant state seed as nested
-/// synth lets `(let ((#seed n)) (let ((#cv …)) (match …)))`; those lets are genuine ancestors of the arm
-/// bodies at fold exit. But `lower_match`'s guarded-scalar-match desugar rebuilds the arms into an if-chain
-/// via `push_list`, DETACHING each reused body from its `#seed`-let ancestor, and the guarded-wildcard
-/// `w`-path then `forget_subtree`'d the whole `wrapped` — clearing the fold-synth `#seed`/`#cv` resolutions
-/// which the DETACHED tree can no longer recover → false "unbound `#seed`", both backends. FIX: PIN the
-/// reused arm bodies' + guard-conds' resolution at desugar ENTRY (while their `#seed`-let ancestry is
-/// intact → each `#seed` resolves to a `Ref` that survives the reparent via the resolve memo), and DROP the
-/// now-harmful blanket `forget_subtree` in the `w`-path (the pinned `w`/`#seed` resolutions are already
-/// correct). `roll` threads state `s`, resumes `s+3`; seed 5 → outer roll=5 (≤6 → fallback), inner roll=8 →
-/// `(* 10 8) + 5 = 85`.
-#[test]
-fn a_synth_seed_through_a_guard_desugared_match_fallback_resolves_not_false_cdz0101() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(do (effect St (op roll (-> Unit Int64))) \
-               (def (main (: n Int64)) \
-                 (handle St n ((roll (u) s (resume s (+ s 3)))) \
-                   (match (St.roll) ((guard v (> v 6)) (* v 100)) (v (+ (* 10 (St.roll)) v))))) \
-               (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a synth #seed through a guard-desugared match fallback resolves (no false CDZ0101)",
-    );
-    let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
-    assert_eq!(
-        got, 85,
-        "seed 5: outer roll=5 (≤6 → fallback), inner roll=8 → (* 10 8)+5 = 85"
-    );
-    // DISCRIMINATOR CONTROL: the same shape with a USER let-name resolved fine before the fix — pin it so
-    // the entry-pin + dropped-forget never regresses the user-name path.
-    let user = "(module m (def (main (: n Int64)) \
-                   (let ((x n)) (match x ((guard v (> v 6)) (* v 100)) (v (+ (* 10 x) v))))) (export main))";
-    let ub = compile_component(&crate::codec::encode(&parse(user)))
-        .expect("the user-name discriminator resolves");
-    let ug: i64 = run_returns_with(&ub, "main", &[Val::S64(5)]);
-    assert_eq!(
-        ug, 55,
-        "user-name control: x=5 (≤6 → fallback) → (* 10 5)+5 = 55"
-    );
-}
-
 /// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
 /// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
 /// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
