@@ -9997,14 +9997,19 @@ fn run_query_where(args: &syntax_cli::QueryArgs) -> ExitCode {
         .map(|&n| rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt { node: n }))
         .collect();
     let out = run_sidecar_many(&arenas, &requests);
-    // node id → rendered type, read from the `type-at` artifacts (each names its node id).
+    // node id → rendered type. The `type-at` result artifacts come back in REQUEST ORDER (the compiler
+    // materializes one result per request, in order — `compile.rs`), so pair them POSITIONALLY with
+    // `typed_nodes` rather than parsing a per-artifact node-id NAME. This keeps the reader agnostic to the
+    // result-artifact NAMING, so the delegated batch path (which names results positionally, not by the
+    // queried node) reads the same — and a naming change on the compiler side is transparent here.
+    let type_at: Vec<&rcdzc::Artifact> = out
+        .artifacts
+        .iter()
+        .filter(|a| a.kind == rcdzc::sidecar::KIND_TYPE_AT)
+        .collect();
     let mut node_ty: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-    for art in &out.artifacts {
-        if art.kind == rcdzc::sidecar::KIND_TYPE_AT
-            && let Ok(n) = art.name.parse::<u32>()
-        {
-            node_ty.insert(n, String::from_utf8_lossy(&art.bytes).into_owned());
-        }
+    for (&n, art) in typed_nodes.iter().zip(&type_at) {
+        node_ty.insert(n, String::from_utf8_lossy(&art.bytes).into_owned());
     }
 
     // Keep matches whose binding's type relates to `pred.ty` by the operator.
