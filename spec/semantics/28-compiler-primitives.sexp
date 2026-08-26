@@ -1736,3 +1736,51 @@
       (const (suml (Set.to-list (Set.of (list 5 1 3))) 0)))
     (export main)))
     (output (: 9 Int64)))
+
+; -- breaker batch 426 (2026-08-26): RUNTIME Blake3 digests as compare operands and CHAMP keys —
+; freshly admitted by the #3786 Owned classification: bare = twins/sensitivity, set-member dedup by
+; content, Map key findable by a fresh recompute, and the Blake3-of-encode composition. OUTPUT-ONLY
+; pins (the borrowing-op owned-operand reclaim is v-runtime's Blake3Of-class follow-up; live-objects
+; clauses arrive with it). wasm pass / rust todo (the runtime Blake3/encode paths pend on rust).
+
+(case "bk1 two runtime Blake3 digests of the same bytes bare-compare equal"
+  (input (do
+    (def (main (: n Int64))
+      (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n) 2))) (Blake3.of (Bytes.of (list (UInt8.wrap n) 2)))) 1 0))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "bk2 one-byte-different inputs bare-compare unequal digests"
+  (input (do
+    (def (main (: n Int64))
+      (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap (+ n 1)))))) 1 0))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 0 Int64)))
+
+(case "bk3 runtime digests dedup as set members by content"
+  (input (do
+    (def (main (: n Int64))
+      (Set.len (Set.of (list (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list 9)))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "bk4 a Map keyed by a runtime digest is findable by a fresh recompute"
+  (input (do
+    (def (main (: n Int64))
+      (match (Map.lookup (Map.insert (map) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) 42) (Blake3.of (Bytes.of (list (UInt8.wrap n)))))
+        ((Option.Some v) v)
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 42 Int64)))
+
+(case "bk5 Blake3-of-encode runtime composition compares equal across recomputation"
+  (input (do
+    (def (main (: n Int64))
+      (if (= (Blake3.of (Ast.encode (Ast.Int (BigInt.of n)))) (Blake3.of (Ast.encode (Ast.Int (BigInt.of n))))) 1 0))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
