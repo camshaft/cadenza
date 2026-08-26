@@ -17224,6 +17224,32 @@
   (export main)))
   (call   main (: 100 Int64)) (output (: 100101 Int64)))
 
+;; cmh: a CLOSED handle with a GROWING-COLLECTION state, wrapped in (const …), folds its query answers at
+;; compile time — the effects-semantics lens of the const-execution fix (#3636: const_eval's Handle arm
+;; DELEGATES to reduce_handle then const-evaluates the reduced AST). reduce_handle keeps a growing collection
+;; state as a re-read let binding (correct — the state is read twice per dispatch); const_eval folds the
+;; List.len / Set.len query answers over it. Before #3636 both were CDZ0201. (Map-state twin still declines on
+;; a separate const_eval Map.insert/len gap — v-cp's lane; pin when it lands.) Regression-locks the fold in
+;; the effects gate so a future reduce_handle / const_eval change can't silently re-break it.
+(case "cmh-list a const closed handle threading a growing LIST state folds its len query answers to 12"
+  (input (do
+  (effect E (op tick (-> Unit Int64)))
+  (def (main)
+    (const (handle E (list 7)
+      ((tick (u) s (resume (List.len s) (List.prepend s 0))))
+      (+ (* 10 (E.tick)) (E.tick)))))
+  (export main)))
+  (output (: 12 Int64)))
+(case "cmh-set a const closed handle threading a growing SET state folds its len query answers to 12"
+  (input (do
+  (effect E (op tick (-> Unit Int64)))
+  (def (main)
+    (const (handle E (Set.of (list 7))
+      ((tick (u) s (resume (Set.len s) (Set.insert s 0))))
+      (+ (* 10 (E.tick)) (E.tick)))))
+  (export main)))
+  (output (: 12 Int64)))
+
 ;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
 (case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
   (input (do
