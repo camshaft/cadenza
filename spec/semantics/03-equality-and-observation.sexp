@@ -2911,3 +2911,26 @@
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
+
+(case "a runtime String rope compares equal to its flat twin and leaves no live heap objects"
+  (doc    "`rep` appends \"x\" 3x via String.concat -> an OWNED rope whose content is \"hixxx\"; `(= rope
+           \"hixxx\")` is true (value-eq compacts the rope operand first so rope-bytes match the flat leaf --
+           a champ_eq physical-byte miscompile without it) -> 1. The owned rope operand + its compacted flat
+           leaf net to 0 live cells after the borrowing compare.")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (rep "hi" 3) "hixxx") 1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "a runtime Bytes rope compares equal to its flat twin and leaves no live heap objects"
+  (doc    "`rep` appends byte 120 ('x') once via Bytes.concat -> an OWNED rope whose content is [104,105,120];
+           `(= rope (Bytes.of (list 104 105 120)))` is true (the direct-Bytes value-eq compaction) -> 1. The
+           owned rope operand + its compacted flat leaf net to 0 live cells after the borrowing compare.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main) (if (= (rep (Bytes.of (list 104 105)) 1) (Bytes.of (list 104 105 120))) 1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
