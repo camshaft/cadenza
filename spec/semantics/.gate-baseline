@@ -344,8 +344,10 @@ pass	Set.contains finds a separately-built equal quantity but not a non-member
 pass	Set.contains on a Map-looked-up Set with a perform-threaded element
 pass	Set.contains over nan finds nan
 pass	Set.contains over negative zero does not find positive zero
+pass	Set.difference over two owned-temporary runtime sets reclaims both operands and the result (no live objects)
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.intersection and Set.difference match a view against a flat element across operands
+pass	Set.intersection over two owned-temporary runtime sets reclaims both operands and the result (no live objects)
 pass	Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin
 pass	Set.of of a Set.to-list result reconstructs the same set (the enumeration round-trips)
 pass	Set.of of a computed (concatenated) runtime list dedups by value
@@ -383,6 +385,7 @@ pass	Set.to-list places a NaN element after the positives but before the negativ
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
 pass	Set.to-list sorts runtime ROPE string elements smallest-first by content byte order
 pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
+pass	Set.union over two owned-temporary runtime sets reclaims both operands and the result (no live objects)
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
 pass	String ordering drives an insort over runtime ROPES, verified by content
 pass	String.at addresses scalars across the seam of a runtime multibyte rope
@@ -2241,6 +2244,7 @@ pass	a let-bound record's projected capturing closure applied twice folds each a
 pass	a let-bound returned closure applied twice folds each application independently
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound runtime-if map is looked up with valid wasm
+pass	a let-bound set shared across a consuming Set.union and a later read is dup'd and reclaimed once (no live objects)
 pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
 pass	a let-bound value in a handle body flows into a perform's argument (the always-worked twin)
