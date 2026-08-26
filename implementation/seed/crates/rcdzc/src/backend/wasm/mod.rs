@@ -2039,11 +2039,21 @@ fn build_host_group(
             _ => None,
         })
         .collect();
-    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result defs. `base` is
-    // the first nominal type's instance-type index. `record_defs` accumulates EVERY record's defined types
-    // (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is op `i`'s
-    // nominal EXPORTED type index (`0` = no nominal param — unused by `host_op_comp_functype` for that op).
-    let base = needs_list as u32 + result_defs.len() as u32;
+    // NOMINAL param types laid AFTER `(list u8)` (index 0 if present) and the spilled-result / list-arg defs.
+    // `base` is the first record-param type's instance-type index. `record_defs` accumulates EVERY record's
+    // defined types (children-first, laid as define+export by `host_effect_instance_type`); `op_nominal[i]` is
+    // op `i`'s nominal EXPORTED type index (`0` = no nominal param — unused by `host_op_comp_functype`).
+    // COUNT INSTANCE-TYPE SLOTS, not entries: `host_effect_instance_type` lays a NOMINAL result/list-arg def
+    // as define+export (TWO slots) and a STRUCTURAL one as define-only (ONE slot). Using `result_defs.len()`
+    // (an entry count) undercounts by one per nominal result-def, so the record-param path's `base + 2*i`
+    // indices land one short — the record's field then references a nominal child's DEFINE index instead of
+    // its EXPORT index (e.g. a `record{ v: variant }` param whose interface ALSO has a list<variant> arg:
+    // the variant's export slot is uncounted → the field refs the raw variant, "instance not valid as import").
+    let base = needs_list as u32
+        + result_defs
+            .iter()
+            .map(|(_, is_nominal)| if *is_nominal { 2u32 } else { 1 })
+            .sum::<u32>();
     let mut record_defs: Vec<Vec<u8>> = Vec::new();
     let mut op_nominal: Vec<u32> = vec![0; group.len()];
     if !record_params.is_empty() && !enum_params.is_empty() {
