@@ -17249,6 +17249,15 @@
       (+ (* 10 (E.tick)) (E.tick)))))
   (export main)))
   (output (: 12 Int64)))
+(case "cmh-map a const closed handle threading a growing MAP state folds its len query answers to 12"
+  (input (do
+  (effect E (op tick (-> Unit Int64)))
+  (def (main)
+    (const (handle E (Map.insert Map.empty (: 7 Int64) (: 100 Int64))
+      ((tick (u) s (resume (Map.len s) (Map.insert s (: 0 Int64) (: 5 Int64)))))
+      (+ (* 10 (E.tick)) (E.tick)))))
+  (export main)))
+  (output (: 12 Int64)))
 
 ;; cx5d: an EFFECT-PERFORMING closure passed as a fn ARGUMENT to a non-recursive one-shot helper that APPLIES
 ;; it. The general tail fold threads the closure arg as a pure lambda value (a closure performs only when
