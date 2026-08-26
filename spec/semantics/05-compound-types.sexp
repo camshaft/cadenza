@@ -19231,3 +19231,27 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64))
   (live-objects 0))
+
+(case "Option.expect over an owned Some shell from List.at reclaims the shell across a loop (no live objects)"
+  (doc    "Each iteration builds a fresh runtime list, reads element 1 via `List.at` (a fresh sum-new Some
+           shell), `Option.expect`s it, and accumulates -- 500 iters x element 1 = 500. SumExpect must drop
+           the owned Some shell after the payload read; a leaked shell would scale to ~N live -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (List.at (build 0 3 (list)) 1) "v"))) tot))
+            (def (f (: n Int64)) (loop 0 n 0))
+            (export f)))
+  (call   f (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Option.expect over an owned Some shell from Map.lookup reclaims the shell across a loop (no live objects)"
+  (doc    "Each iteration builds a fresh runtime map, looks up key 1 via `Map.lookup` (a fresh sum-new Some
+           shell), `Option.expect`s it, and accumulates -- 500 iters x value 10 = 5000. SumExpect must drop
+           the owned Some shell after the payload read; a leaked shell would scale to ~N live -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (Option.expect (Map.lookup (build 0 3 (map)) 1) "v"))) tot))
+            (def (f (: n Int64)) (loop 0 n 0))
+            (export f)))
+  (call   f (: 500 Int64)) (output (: 5000 Int64))
+  (live-objects 0))
