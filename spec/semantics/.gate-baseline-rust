@@ -4904,12 +4904,15 @@ pass	capture-avoiding substitution renames a Forall binder to avoid capture (log
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
+pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
+pass	cc11 a closure over a nested-let-init with a PURE init folds
 pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
 pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
 pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
 pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
+pass	cc9 a closure capturing a value computed UNDER a handler escapes and applies after the handle
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
 pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thirds of the hopper as juice (integer) with the REMAINDER going to pomace and the hopper emptying (a dry press answers nine-hundred with the pomace's low digit touching nothing), loading adds apples, the read packs juice hopper and pomace, and the seed's first pressing yields four-to-one on the full hopper against one-to-one on the meagre one with the split ratios diverging every round
