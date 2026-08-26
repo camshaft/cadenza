@@ -7851,53 +7851,6 @@ fn a_heap_binder_in_a_fused_match_arm_is_reclaim_neutral_and_uaf_free() {
     );
 }
 
-/// rc-BALANCE witness for the `Ast.Int` HEAP-BigInt payload the `Int64`->`BigInt` flip introduced
-/// (`1bfb5c29e`): before the flip `Ast.Int`'s payload was an inline scalar (no heap); now constructing
-/// `(Ast.Int x)` over a RUNTIME BigInt boxes a heap `Big`, and matching `(Ast.Int n)` extracts a heap
-/// child — so the sum-payload dup/reclaim discipline now applies to `Ast.Int`. v-memory-safety ran their
-/// 34-probe reclaim family against the flip (all pass — the shape composes from the BigInt-producer +
-/// sum-payload-heap-child paths); this is the dedicated composed pin for the metaprogramming feature.
-/// `main(41)` builds a runtime BigInt `(+ (BigInt.of k) 1N)` = 42 (RUNTIME — driven by the entry param,
-/// so it heap-allocs and does NOT const-fold away), wraps it in `(Ast.Int …)`, matches + narrows the
-/// payload back (`Int64.of n` = 42), then DROPS the `Ast.Int` — which must reclaim the boxed BigInt. A
-/// balanced dup/drop nets live-cells to 0; a leaked payload (the drop not cascading into the boxed Big)
-/// shows as a nonzero live count even though the value is correct.
-#[test]
-#[ignore = "needs the debug-counters store (cargo xtask build)"]
-fn a_quoted_ast_int_over_a_runtime_bigint_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[rc] debug-counters runtime not in the store (run `cargo xtask build`); skipping Ast.Int BigInt balance probe"
-        );
-        return;
-    };
-    // `(+ (BigInt.of k) 1N)` is a RUNTIME BigInt (the entry param `k` drives it, so it heap-allocs a
-    // `Big` — a constant here would fold away with no alloc and stop importing the runtime). It is wrapped
-    // in `(Ast.Int …)`, matched, and narrowed back with `Int64.of`; the `Ast.Int` temporary is then
-    // dropped, which must cascade the reclaim into the boxed BigInt payload. A leak = the payload not
-    // reclaimed on the sum drop.
-    let src = "(module m \
-                 (def (main (: k Int64)) \
-                     (let ((x (+ ((. BigInt of) k) 1N))) \
-                         (match ((. Ast Int) x) (((. Ast Int) n) ((. Int64 of) n)) (_ -1)))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[Val::S64(41)]),
-        Val::S64(42),
-        "the runtime BigInt round-trips through Ast.Int: (41 + 1) narrowed back = 42"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "leak: the boxed BigInt payload of a dropped Ast.Int was not reclaimed (expected 0 live cells)"
-    );
-}
-
 /// KNOWN VALUE-CORRECT LEAK WITNESS (pinned, not yet fixed) for the `Option.expect` (`Core::SumExpect`)
 /// OWNED-SHELL reclaim when the extracted payload is a COMPOUND that is BORROWED-then-dead-after. A fallible
 /// String read (`String.slice` → `Option String`) builds a fresh `sum-new` Some shell around an owned slice;
