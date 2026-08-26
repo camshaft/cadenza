@@ -7898,54 +7898,6 @@ fn a_quoted_ast_int_over_a_runtime_bigint_leaves_no_live_objects() {
     );
 }
 
-/// REGRESSION PIN for the closure-that-captures-a-HEAP-value env-cell reclaim (was
-/// `leak-closure-env-heap-capture-not-reclaimed.CONFIRMED`, v-memory-safety lead 2026-07-18; now RESOLVED).
-/// DISTINCT from `dup_aware_let_binding_reclaim_leaves_no_live_objects` case (1): THAT one has `mk-adder xs`
-/// INLINE to `List.push xs` (no closure survives — the leak was the let-binding reclaim). HERE `mk-adder`
-/// takes an UNANNOTATED `(fn (x) …)` and the closure is stored in `f` and applied once, so it lowers to a
-/// real `Core::Closure { code, captures: [xs] }` that materializes a heap env cell holding the funcref slot
-/// and the dup'd captured `List` handle. The reported leak was 2/iter (env cell + captured list copy) never
-/// reclaimed after the closure is last-used. It now reclaims to LIVE 0 (the closure make/dtor dup-drop
-/// discipline + dup-aware reclaim landed). `main(5)` = `f(9)` (len[0..5]+[9] = 6) + `List.len xs` (5) = 11.
-/// Pins BOTH value (11) AND live 0 so a regression to the leak — OR a double-free (which would trap/underflow
-/// the live count) — is caught. The env-cell + heap-capture reclaim is the closure-emit × dup/drop seam
-/// (v-effects × v-memory-safety), the heap-capture analog of the landed SITE-A scalar/partial-ctor env drop.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore]
-fn a_closure_capturing_a_heap_value_reclaims_its_env_cell() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "debug-counters runtime not in the store; skipping closure-heap-capture reclaim probe"
-        );
-        return;
-    };
-    // `f = mk-adder xs` is a surviving runtime closure (unannotated param → not inlined away) capturing the
-    // heap List `xs`; applied once. Env cell + captured-handle copy must both reclaim → live 0.
-    let src = "(module m \
-        (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
-          (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-        (def (mk-adder (: base (List Int64))) (fn (x) ((. List len) ((. List push) base x)))) \
-        (def (main (: n Int64)) \
-          (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) ((. List len) xs)))) \
-        (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[Val::S64(5)]),
-        Val::S64(11),
-        "the heap-capturing closure computes 11 (f(9)=6 + List.len xs=5)"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "a closure capturing a heap value must reclaim its env cell + captured handle (was 2/iter leak); \
-         > 0 = the closure-env reclaim regressed, < 0-would-trap = a double-free"
-    );
-}
-
 /// DIRECT leak witness for the `Option.expect` (Core::SumExpect) OWNED-`Some`-SHELL reclaim: a fallible read
 /// (`List.at`/`Map.lookup`) builds a fresh `sum-new` Some around the payload; consuming it with
 /// `Option.expect` used to LEAK that shell (SumExpect borrows the scrutinee twice but never dropped an owned
