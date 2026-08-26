@@ -1643,13 +1643,11 @@ fn run_query_text(
     query: rcdzc::sidecar::Query,
     kind: &str,
 ) -> Option<String> {
-    let ast_bytes = cadenza_syntax::codec::encode(arenas);
-    let sidecar_bytes = rcdzc::sidecar::encode(&[rcdzc::Request::Query(query)]);
-    let inputs = vec![
-        rcdzc::Artifact::new(rcdzc::Artifact::KIND_AST, "main", ast_bytes),
-        rcdzc::Artifact::new(rcdzc::sidecar::KIND_SIDECAR, "drive", sidecar_bytes),
-    ];
-    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    // Route through the shared `run_sidecar` chokepoint (which builds the same `[ast "main", sidecar
+    // "drive"]` inputs) so a `!standalone` build DELEGATES this single query to `cdz-compile` — this one
+    // refactor delegates every LSP single-query handler (~14 call sites) that funnels through here. Under
+    // `standalone` it is the in-process compile, byte-for-byte as before.
+    let compiled = crate::run_sidecar(arenas, rcdzc::Request::Query(query));
     compiled
         .artifact(kind)
         .map(|b| String::from_utf8_lossy(b).into_owned())
