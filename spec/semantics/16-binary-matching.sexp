@@ -1957,6 +1957,28 @@
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64)))
 
+(case "a dependent-size utf8 whose length prefix OVERRUNS the frame is a non-match, not a trap"
+  (doc    "Trap-safety of the dependent-size utf8 read (the totality companion of the ill-formed-bytes
+           pins): a `(bin (u8 n) (utf8 s n))` over `(Bytes.of (list x 104))` where the length prefix `x`
+           feeds `n`. The frame is exactly 2 bytes (prefix + one body byte), so the arm matches ONLY when
+           `bytes-len == 1 + n`, i.e. n=1: x=1 -> s decodes the single body byte [104] = \"h\" (1 scalar).
+           An OVERRUNNING prefix x=5 (n=5 wants five body bytes but one is present) and a SHORT prefix x=0
+           (n=0 leaves the body byte unconsumed) each FALL THROUGH to the `_` arm -> -1. Pins that the
+           runtime utf8 `BinSizedRead` never reads out of bounds — the length floor short-circuits the
+           decode, so an overrunning frame is a NON-MATCH, never a trap (the dependent-`bytes` reviewer
+           finding 2026-07-18, now exercised for the utf8 decode path).")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list x 104)))
+            (match b
+              ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
+              (_ -1))))
+        (export main)))
+  (call   main (: 1 UInt8)) (output (: 1 Int64))
+  (call   main (: 5 UInt8)) (output (: -1 Int64))
+  (call   main (: 0 UInt8)) (output (: -1 Int64)))
+
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
   (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets
            over [0,1,2,3,4,254,255]: `(u32 n le)` at k=1 assembles [1,2,3,4] least-significant-first ->
