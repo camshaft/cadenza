@@ -24093,7 +24093,11 @@ fn lower_set_to_list(db: &mut Db, set: StructId) -> Core {
     // too) keep the runtime op. The set already dedups by value (`Set.of`/insert folds), so this only reorders.
     if let Core::SetOf { elems, .. } = &set_core {
         let mut sorted: Vec<StructId> = elems.to_vec();
-        let mut orderable = true;
+        // EVERY element must be individually canonically-orderable (a `sort_by` over 0/1 elements never calls
+        // the comparator, so the flag alone would miss a lone non-orderable element and materialize it — a
+        // divergence from the runtime op, which declines a non-orderable element regardless of count). Probe
+        // each element against itself; the sort's flag then catches any residual pairwise `None`.
+        let mut orderable = sorted.iter().all(|&e| const_key_order(db, e, e).is_some());
         sorted.sort_by(|&x, &y| {
             const_key_order(db, x, y).unwrap_or_else(|| {
                 orderable = false;
@@ -24134,7 +24138,7 @@ fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
         return Core::Poison(r.clone());
     }
     // A compile-time-visible EMPTY constant map enumerates to the empty list — no descriptor, no key/value
-    // type needed. (A non-empty `MapNew` must still run the runtime op to observe canonical key order.)
+    // type needed.
     if let Core::MapNew { entries, .. } = &map_core
         && entries.is_empty()
     {
@@ -24148,6 +24152,49 @@ fn lower_map_to_list(db: &mut Db, map: StructId) -> Core {
             "Map.to-list operand is not a solved map type",
         ));
     };
+    // A NON-EMPTY CONSTANT map folds to a baked list of `(key value)` TUPLES in canonical KEY order — the SAME
+    // order the runtime `map-to-list` op produces (spec-pinned canonical value order == `const_key_order`, a
+    // v-runtime contract; the Map twin of the Set.to-list fold #3765). Sort the entries by KEY via
+    // `const_key_order`; an entry whose key the canonical order cannot rank as a constant (float / bytes /
+    // nested-collection / a runtime key — `const_key_order` returns `None`, EXACTLY the classes the runtime op
+    // declines too) keeps the runtime op. The map already holds each key at most once (the `Map.insert` fold
+    // replaced-by-key), so this only reorders. Each entry materializes as a `Core::Tuple { [key, value] }`
+    // typed `(Tuple key_ty val_ty)` — the runtime op's `(List (Tuple K V))` element shape.
+    if let Core::MapNew { entries, .. } = &map_core {
+        let mut sorted: Vec<(StructId, StructId)> = entries.to_vec();
+        // Every KEY must be individually canonically-orderable — a `sort_by` over a 0/1-entry map never calls
+        // the comparator, so probe each key against itself (else a lone non-orderable key would materialize,
+        // diverging from the runtime op which declines it).
+        let mut orderable = sorted
+            .iter()
+            .all(|&(k, _)| const_key_order(db, k, k).is_some());
+        sorted.sort_by(|a, b| {
+            const_key_order(db, a.0, b.0).unwrap_or_else(|| {
+                orderable = false;
+                std::cmp::Ordering::Equal
+            })
+        });
+        if orderable {
+            let tuple_ty =
+                crate::ty::Ty::Tuple(std::rc::Rc::from([key_ty.clone(), val_ty.clone()]));
+            let elems: Vec<StructId> = sorted
+                .into_iter()
+                .map(|(k, v)| {
+                    synth_core(
+                        db,
+                        Core::Tuple {
+                            elems: std::rc::Rc::from([k, v]),
+                        },
+                        tuple_ty.clone(),
+                    )
+                })
+                .collect();
+            trace!(target: "rcdzc::fold", node = map.0, n = elems.len(), "Map.to-list folds a constant map to a key-sorted list of (k v) tuples");
+            return Core::ListNew {
+                elems: elems.into(),
+            };
+        }
+    }
     Core::MapToList {
         map,
         key_ty,
@@ -25242,6 +25289,34 @@ fn const_eval_apply(
         {
             return Some(CVal::Int(crate::ast::IntValue::from_i64(m.len() as i64)));
         }
+        // `Map.to-list m` → the entries as a list of `(key value)` tuples in canonical KEY order — the
+        // const_eval twin of `lower_map_to_list`'s fold (the Map analogue of the `SetToList` arm above), so a
+        // map built through the RECURSIVE engine or consumed by a const-param helper materializes too. Sort by
+        // KEY via `cval_key_order` (the SAME order `const_key_order`/the runtime `map-to-list` op use); a key
+        // the canonical order cannot rank (Char/Bytes/Float/nested — declines, matching the op) declines the
+        // whole materialization. Each entry → `CVal::Tuple([key, value])`, the op's `(List (Tuple K V))` shape.
+        if prim == Prim::MapToList
+            && let [CVal::Map(m)] = &vs[..]
+        {
+            let mut sorted = m.clone();
+            // Every KEY must be individually orderable (a 0/1-entry sort never calls the comparator).
+            let mut orderable = sorted.iter().all(|(k, _)| cval_key_order(k, k).is_some());
+            sorted.sort_by(|a, b| {
+                cval_key_order(&a.0, &b.0).unwrap_or_else(|| {
+                    orderable = false;
+                    std::cmp::Ordering::Equal
+                })
+            });
+            if !orderable {
+                return None;
+            }
+            return Some(CVal::List(
+                sorted
+                    .into_iter()
+                    .map(|(k, v)| CVal::Tuple(vec![k, v]))
+                    .collect(),
+            ));
+        }
         // SET ops (queried, never materialized — `CVal::Set`, same soundness as `CVal::Map`). `Set.of` builds
         // a set from a LIST (deduped); `Set.insert (s, e)` adds `e` if absent; `Set.contains (s, e)` → Bool;
         // `Set.size s` → the count. A membership comparison the stage cannot decide (`cval_eq` = None)
@@ -25322,7 +25397,8 @@ fn const_eval_apply(
             && let [CVal::Set(s)] = &vs[..]
         {
             let mut sorted = s.clone();
-            let mut orderable = true;
+            // Every element must be individually orderable (a 0/1-element sort never calls the comparator).
+            let mut orderable = sorted.iter().all(|e| cval_key_order(e, e).is_some());
             sorted.sort_by(|x, y| {
                 cval_key_order(x, y).unwrap_or_else(|| {
                     orderable = false;
