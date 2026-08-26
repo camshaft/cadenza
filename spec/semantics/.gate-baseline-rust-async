@@ -7309,3 +7309,5 @@ pass	cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^6
 pass	cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None
 pass	cmu3 runtime UInt64 checked-add wraps None at max, Some just below
 pass	cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero
+todo	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
+todo	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
