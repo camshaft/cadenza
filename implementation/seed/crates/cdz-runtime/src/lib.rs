@@ -5987,6 +5987,19 @@ fn decode_arenas_to_ast(
                 crate::ast::Leaf::Float(dec) => {
                     op_sum_new(d.float, op_box_float(f64::from_bits(dec.to_f64_bits())))
                 }
+                // The non-finite float VALUES (codec tags 17/18/19) rebuild as an `Ast.Float` holding
+                // the non-finite `f64` — the heap `Ast.Float` box carries any `f64`, so NaN / ±∞ are
+                // ordinary boxed values (the inverse of `ast-encode` emitting the non-finite tag for a
+                // non-finite `Ast.Float`).
+                crate::ast::Leaf::FloatNan => op_sum_new(d.float, op_box_float(f64::NAN)),
+                crate::ast::Leaf::FloatInf { negative } => op_sum_new(
+                    d.float,
+                    op_box_float(if *negative {
+                        f64::NEG_INFINITY
+                    } else {
+                        f64::INFINITY
+                    }),
+                ),
                 crate::ast::Leaf::Bool(b) => op_sum_new(d.boolv, op_box_bool(*b)),
                 crate::ast::Leaf::Str(s) => op_sum_new(d.strv, op_str_new(s.to_string())),
                 crate::ast::Leaf::Name(s) => op_sum_new(d.name, op_str_new(s.to_string())),
