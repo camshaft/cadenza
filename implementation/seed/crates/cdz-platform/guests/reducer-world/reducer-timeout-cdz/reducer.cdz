@@ -1,0 +1,26 @@
+// The §4/§6 TIMEOUT-response fold path (design/cadenza-platform.md §4/§6). When a request a reducer is
+// waiting on goes unanswered past its deadline, the runtime cancels the dispatch and wakes the reducer with
+// `Err(Timeout)` as the response — a hung answer becomes an ordinary result the reducer folds, not a stuck
+// session (the opt-in anti-stuck contract). This reducer exercises that fold side: its on-response matches
+// `Err(Error.Timeout)` and emits a marker b"timed-out" (the observable that it woke to the timeout and can
+// recover); on any other answer it is inert.
+//
+// (The AUTOMATIC enforcement — the event reducer arming a fire-after from the request's deadline, retiring the
+// obligation, and bubbling Err(Timeout) — is an event-reducer policy not yet wired in the kernel, §4/§6. This
+// run drives the reducer's fold of the timeout by INJECTING the Err(Timeout) response the harness supports, so
+// the recover-on-timeout behavior is covered end-to-end independent of the enforcement slice.)
+//
+// Keeps its OWN on-response (it reacts); on-message / on-notification are the inert reducer-lib re-exports.
+// `Error` (the runtime message-fold error sum, with the Timeout variant) comes from reducer-lib.
+import { Outcome, Error, on-notification } from "reducer-lib"
+
+def on-message(_msg) = { requests = [], outcome = Outcome.Continue }
+
+def on-response(resp) =
+  match resp.answer with
+  | Err(Error.Timeout) =>
+      { requests = [{ contract = resp.contract, payload = b"timed-out", token = resp.token, deadlineNanos = None }],
+        outcome = Outcome.Continue }
+  | _ => { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }

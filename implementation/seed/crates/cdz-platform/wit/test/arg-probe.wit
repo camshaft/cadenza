@@ -19,6 +19,9 @@ interface arg-probe {
   // A variant with MIXED-WIDTH scalar payloads — exercises the register-flatten path: the canonical join
   // valtype is i64 here (a case is 64-bit). A sign-mangled `big` or a `small` read from the wrong bits is
   // caught by asserting the received value.
+  // The nullary case is `absent`, not `none`: its value-form head is the Cadenza constructor name (`Absent`),
+  // and a Cadenza checker cannot name a constructor `None` (it shadows the builtin `Option.None` any checker-lib
+  // guest uses), so `none` here would make the received-value un-assertable. `absent` -> `Absent` is clean.
   variant mixed {
     absent,
     small(u8),

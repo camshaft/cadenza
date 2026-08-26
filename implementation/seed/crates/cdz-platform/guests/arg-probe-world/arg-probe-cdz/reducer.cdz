@@ -1,0 +1,31 @@
+// The arg-value-capture GUEST (design/cadenza-platform.md §9) — a reducer targeting the test-only
+// arg-probe-world. On a delivered message it calls the test host `arg-probe.probe(r, items)` with KNOWN
+// mixed-width variant values, exercising the two arg-marshalling paths the gate targets: a variant in a
+// RECORD FIELD (register-flatten) and a variant as a LIST ELEMENT (memory). The host records the values it
+// RECEIVED (Entry::ArgProbe); the paired checker asserts them byte-for-byte, so a wrong mixed-width coercion
+// is observable.
+//
+// The WIT-imported variants are constructed from LOCAL Cadenza sums whose case names (kebab-matched) and
+// ORDER match the arg-probe interface's `mixed`/`narrow` variants exactly — the guest sum discriminant IS the
+// component discriminant, in declaration order (Small->small, Big->big, A->a, B->b; a reordered case is a
+// disc mismatch the compiler declines, so a wrong order fails to compile, never silently).
+//
+// J1 (record field, register flatten — the join valtype is i64 since `big` is 64-bit): three probe calls with
+// r = { v: big(-5000000000), tag: 1 } / { v: small(200), tag: 2 } / { v: absent, tag: 3 }, so the checker sees a
+// negative s64 survive, a u8 read from the right bits, and a nullary case. J2 (list element, memory — the
+// canonical payload area is MAX-NATURAL 2 bytes, where the register join would be 4): items =
+// [a(200), b(60000), absent], so the checker sees each element intact (a wrong 4-byte store would overrun the
+// next element). Delegates only the arg-probe test host; on-response/on-notification are inert (reducer-lib).
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+type Mixed = | Absent | Small(UInt8) | Big(Int64)
+type Narrow = | Absent | A(UInt8) | B(UInt16)
+
+def on-message(_msg) =
+  host arg-probe in
+    ( arg-probe.probe({ v = Mixed.Big(-5000000000), tag = 1 }, [Narrow.A(200), Narrow.B(60000), Narrow.Absent]) ;
+      arg-probe.probe({ v = Mixed.Small(200), tag = 2 }, [Narrow.A(200), Narrow.B(60000), Narrow.Absent]) ;
+      arg-probe.probe({ v = Mixed.Absent, tag = 3 }, [Narrow.A(200), Narrow.B(60000), Narrow.Absent]) ;
+      { requests = [], outcome = Outcome.Continue } )
+
+export { on-message, on-response, on-notification }

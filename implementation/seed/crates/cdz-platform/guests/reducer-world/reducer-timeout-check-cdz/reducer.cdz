@@ -1,0 +1,26 @@
+// The §4/§6 TIMEOUT-response checker (design/cadenza-platform.md §4/§6/§9). The paired run injects an
+// `Err(Timeout)` response to the reducer-under-test; its on-response is expected to wake to the timeout and
+// emit a recovery marker b"timed-out". This checker asserts, log-only and guest-agnostic, that the marker was
+// emitted — proving the reducer folded the Err(Timeout) answer (not merely that a response arrived).
+//
+// NON-VACUOUS: if the reducer did not distinguish the timeout (or never folded the response), no Emitted
+// carries b"timed-out" and the check fails. The marker is guest-controlled and distinct from the injected
+// response's payload (there is none — the answer is an Err tag), so it cannot be echoed vacuously.
+//
+// Round-3 checker-lib form: one field predicate + any-record; respond() owns the decode + verdict emit.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def emitted-timeout-marker(rec) =
+  match rec.entry with
+  | Entry.Emitted(e) => e.payload == b"timed-out"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if any-record(records, emitted-timeout-marker)
+  then pass()
+  else fail("no Emitted carried the b\"timed-out\" marker: the reducer did not fold the Err(Timeout) response into a recover-on-timeout reaction")
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
