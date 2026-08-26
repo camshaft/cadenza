@@ -17137,3 +17137,33 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 1910 Int64))
   (call   main (: 0 Int64)) (output (: 910 Int64)))
+
+;; F1 width-guard: the tail-resumptive fold must not over-decline a NARROW-int handler state whose
+;; resume answer's EMITTED width already matches the op result. pyu8t1 threads a UInt8 state under a
+;; WIDENED Int64 answer (the state wraps 255+5 -> 4 while each answer widens with Int64.of); pyu8r1
+;; threads an Int64 state under a NARROW UInt8 answer (UInt8.wrap of the growing state, 256 -> 0).
+;; Both used to decline "not yet reducible" because F1 compared STATE width to op-result width; the
+;; fix compares the resume value's EMITTED width instead, so a bare narrow-state read still declines
+;; (invalid-wasm hazard) but these width-matched threads fold. (breaker pyu8w1 / pyu8a1.)
+
+(case "pyu8t1 a UInt8 handler state threaded across three dispatches with a WIDENED Int64 resume answer folds — the narrow state advances via wrapping-add (255+5 wraps to 4) while each answer widens with Int64.of"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (UInt8.wrap n)
+                ((tick () s (resume (Int64.of s) (UInt8.wrapping-add s (UInt8.wrap 5)))))
+                (+ (* 100 (E.tick)) (+ (* 10 (E.tick)) (E.tick)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1170 Int64))
+  (call   main (: 250 Int64)) (output (: 27554 Int64)))
+
+(case "pyu8r1 a narrow UInt8 resume answer over an Int64 handler state folds — UInt8.wrap of the growing state (256 wraps to 0) feeds each answer while the state threads +1"
+  (input  (do
+            (effect E (op get (-> UInt8)))
+            (def (main (: n Int64))
+              (handle E n
+                ((get () s (resume (UInt8.wrap s) (+ s 1))))
+                (+ (* 1000 (Int64.of (E.get))) (Int64.of (E.get)))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 100101 Int64))
+  (call   main (: 255 Int64)) (output (: 255000 Int64)))
