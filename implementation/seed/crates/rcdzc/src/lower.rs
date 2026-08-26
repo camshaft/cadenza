@@ -23285,6 +23285,12 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
         (Core::ConstInt(x), Core::ConstInt(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x.cmp(&y)),
         (Core::ConstBool(x), Core::ConstBool(y)) => Some(x.cmp(&y)),
+        // Char orders by Unicode SCALAR value (`char: Ord`) — the runtime to-list Char order (rust targets
+        // sort `{#\c,#\a,#\b}` to head `#\a`, 19-sets ckr1). The RUNTIME wasm to-list op declines a Char
+        // element (a wasm-EMIT gap, v-rb's lane), but a const-fold BAKES the sorted list and never calls that
+        // op, so folding here is sound + backend-uniform (matches the rust runtime; the wasm-emit gap is
+        // orthogonal). `Char.from-int` builds one fallibly, so a const Char element is a `Core::ConstChar`.
+        (Core::ConstChar(x), Core::ConstChar(y)) => Some(x.cmp(&y)),
         // Bytes order is UNSIGNED byte-lexicographic — the raw canonical bytes compared element-wise, shorter
         // prefix less (Rust `[u8]: Ord`). This is EXACTLY the runtime `set-to-list`/`map-to-list` Bytes order
         // (0x80 sorts as 128, not signed −128) pinned in `19-sets` (the Set-element + Map-key Bytes-order
@@ -23315,6 +23321,8 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
         (CVal::Int(x), CVal::Int(y)) => Some(x.to_i64()?.cmp(&y.to_i64()?)),
         (CVal::Str(x), CVal::Str(y)) => Some(x.cmp(y)),
         (CVal::Bool(x), CVal::Bool(y)) => Some(x.cmp(y)),
+        // Char: Unicode SCALAR order (`char: Ord`) = the runtime to-list Char order (19-sets ckr1, rust).
+        (CVal::Char(x), CVal::Char(y)) => Some(x.cmp(y)),
         // Bytes: UNSIGNED byte-lexicographic (Rust `[u8]: Ord`) = the runtime to-list Bytes order (19-sets).
         (CVal::Bytes(x), CVal::Bytes(y)) => Some(x.cmp(y)),
         (CVal::Unit, CVal::Unit) => Some(std::cmp::Ordering::Equal),
