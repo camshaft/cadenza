@@ -7573,3 +7573,4 @@ pass	eo3 an Option param BETWEEN scalars keeps positions
 pass	eb1 a BigInt entry param in beyond-i64 arithmetic
 pass	er1 a Rational entry param in exact arithmetic
 pass	ey1 a Symbol entry param keys a Map
+pass	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
