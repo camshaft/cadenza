@@ -389,6 +389,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // rational (`(: 5 Rational)` = 5/1, `(: 0.5 Rational)` = 1/2), so it must fold to a
         // `Core::ConstRational` here rather than pass through as the inner `ConstInt`/`ConstFloat` (which
         // would carry the wrong value type). Inference already grants the grounding (no CDZ0203).
+        // `(const e)` — the FORCE-EVAL block. Front-end (v-inference) lowers it SEE-THROUGH to its inner
+        // expression's core, so it is behavior-identical to `e` until the force lands. v-compiler-primitives
+        // UPGRADES this arm to const-EVALUATE `expr` and REJECT if it does not fully fold, and to set the
+        // const-DEMAND CONTEXT flag the recursive-const-fold unroll reads (the general-transform demand
+        // marker). Until then it is a transparent wrapper.
+        Resolved::ConstBlock { expr } => core_of(db, expr),
         Resolved::Annot { expr, ty_expr } => {
             if matches!(
                 crate::eval::typeval_of(db, ty_expr),
@@ -11951,7 +11957,7 @@ pub(crate) fn peel_ref_annot(db: &mut Db, id: StructId) -> StructId {
     for _ in 0..64 {
         match resolved_of(db, cur) {
             Resolved::Ref { value } => cur = value,
-            Resolved::Annot { expr, .. } => cur = expr,
+            Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => cur = expr,
             // A tuple PROJECTION `(. c i)` whose operand `c` reduces to a compile-time-visible tuple
             // follows to that element's occurrence — so a partial ctor stashed in a COMPOUND LITERAL and
             // then projected + applied (`((. (tuple (T.Mk 10) 0) 0) 5)`, or the `let`-bound
@@ -13775,7 +13781,9 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
                 }
             }
         }
-        Resolved::Annot { expr, .. } => collect_binding_uses(db, expr, false, out),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            collect_binding_uses(db, expr, false, out)
+        }
         Resolved::Apply { head, args } => {
             // A bare-name application HEAD `(f1 …)` is a CALL of the binding `f1`, not a whole-value
             // escape of it: record it as `called_direct` (and count the use) but do NOT flag
@@ -24342,7 +24350,9 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         }
         // A type ascription `(: value T)` — its value is the inner expression's value (the type is a
         // compile-time-only annotation, erased at runtime). Notably the `([] : List T)` empty-list base arm.
-        Resolved::Annot { expr, .. } => const_eval(db, expr, env, budget),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            const_eval(db, expr, env, budget)
+        }
         Resolved::Apply { head, args } => const_eval_apply(db, node, head, &args, env, budget),
         // A `fn`/lambda LITERAL as a value — capture it as a `Closure` over the current env so it can be
         // passed to a `const` function parameter and APPLIED per element in a higher-order fold (map/filter/
@@ -27300,9 +27310,9 @@ fn head_reached_through_projection(db: &mut Db, head: StructId) -> bool {
             crate::eval::meta_apply_of(db, head).is_none()
                 && crate::eval::variant_disc_of(db, head).is_none()
         }
-        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => {
-            head_reached_through_projection(db, value)
-        }
+        Resolved::Ref { value }
+        | Resolved::Annot { expr: value, .. }
+        | Resolved::ConstBlock { expr: value } => head_reached_through_projection(db, value),
         _ => false,
     }
 }
@@ -27314,7 +27324,9 @@ fn head_reached_through_projection(db: &mut Db, head: StructId) -> bool {
 fn syntactic_head(db: &mut Db, head: StructId) -> StructId {
     match resolved_of(db, head) {
         Resolved::Apply { head: inner, .. } => syntactic_head(db, inner),
-        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => syntactic_head(db, value),
+        Resolved::Ref { value }
+        | Resolved::Annot { expr: value, .. }
+        | Resolved::ConstBlock { expr: value } => syntactic_head(db, value),
         _ => head,
     }
 }
@@ -27330,9 +27342,9 @@ fn syntactic_spine_args(db: &mut Db, id: StructId) -> Vec<StructId> {
             acc.extend_from_slice(&args);
             acc
         }
-        Resolved::Ref { value } | Resolved::Annot { expr: value, .. } => {
-            syntactic_spine_args(db, value)
-        }
+        Resolved::Ref { value }
+        | Resolved::Annot { expr: value, .. }
+        | Resolved::ConstBlock { expr: value } => syntactic_spine_args(db, value),
         _ => Vec::new(),
     }
 }

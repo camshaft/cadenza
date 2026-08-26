@@ -5477,7 +5477,9 @@ fn walk_for_dead_traps(
         Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
             walk_for_dead_traps(db, operand, out, seen);
         }
-        Resolved::Annot { expr, .. } => walk_for_dead_traps(db, expr, out, seen),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            walk_for_dead_traps(db, expr, out, seen)
+        }
         Resolved::Ref { value } => walk_for_dead_traps(db, value, out, seen),
         // CONTROL FLOW — a branch/arm is sanctioned laziness; do not descend into the guarded parts.
         // The condition/scrutinee IS unconditionally evaluated, so a drop there is worth finding.

@@ -439,6 +439,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(".") => resolve_member(db, id),
                 Some("fn") => resolve_lambda(db, id),
                 Some(":") => resolve_annot(db, id),
+                Some("const") => resolve_const_block(db, id),
                 // A `(@ …)` annotation node that SURVIVED `strip_annotations` and reached resolve. A
                 // well-formed def-wrapping annotation `(@ NAME (def …))` is unwrapped IN PLACE by
                 // `strip_annotations` wherever it appears; a TOP-LEVEL survivor (wraps no def) is already
@@ -6523,6 +6524,26 @@ fn resolve_annot(db: &Db, id: StructId) -> Resolved {
         expr: tail[0],
         ty_expr: tail[1],
     }
+}
+
+/// Resolve `(const <expr>)` — the FORCE-EVAL block (operator's const-demand construct). An EXPRESSION
+/// form with exactly ONE operand, distinct from the `(const (: d T))` PARAM modifier (`strip_const_params`
+/// unwraps that at load and never touches a body, so a `(const …)` reaching here is the block). SEE-THROUGH
+/// like `resolve_annot` — carries the inner `expr` so typing/lowering follow it; the fold-or-reject
+/// force-eval is downstream in lowering (v-compiler-primitives). A wrong operand count is a coded reject.
+fn resolve_const_block(db: &Db, id: StructId) -> Resolved {
+    let tail = db.ast.as_form(id, "const").unwrap_or(&[]);
+    if tail.len() != 1 {
+        return Resolved::Poison(Reject::coded(
+            Code::Malformed,
+            format!(
+                "a `const` block is written `(const <expression>)` — it needs exactly one expression, \
+                 but {} parts are here",
+                tail.len()
+            ),
+        ));
+    }
+    Resolved::ConstBlock { expr: tail[0] }
 }
 
 #[cfg(test)]

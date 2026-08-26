@@ -1596,7 +1596,9 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         }
         Resolved::Proj { operand, .. } => collect_callees(db, operand, out),
         // An annotation is transparent — a call inside `(: (f x) T)` is a real edge of this body.
-        Resolved::Annot { expr, .. } => collect_callees(db, expr, out),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            collect_callees(db, expr, out)
+        }
         // A handler's init, each arm body, and the handled body all run when this body runs — a self-call
         // inside any is a real recursion edge, so descend into each. (The arm's op projection and its
         // param/state binders are not executed code — they contribute no callee.)
@@ -1686,7 +1688,7 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
         Resolved::Lambda { params, body } => Some((params, body)),
         Resolved::Ref { value } => lambda_of(db, value),
         // A type annotation is transparent to the value — `(: (fn …) (-> A B))` is the lambda.
-        Resolved::Annot { expr, .. } => lambda_of(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => lambda_of(db, expr),
         Resolved::Apply { head, args } => {
             // Reduce the application to a value, then see if THAT is a lambda. Each reduction is a
             // β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call `(def (f) (f))`
@@ -2230,7 +2232,9 @@ pub fn reduce_to_tuple_elems(db: &mut Db, id: StructId) -> Option<std::rc::Rc<[S
             let elem = *elems.get(index)?;
             reduce_to_tuple_elems(db, elem)
         }
-        Resolved::Annot { expr, .. } => reduce_to_tuple_elems(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            reduce_to_tuple_elems(db, expr)
+        }
         // A `(tuple a b)` written with the shadowable alias name — reduce the application to the
         // symbol-headed primitive (`reduce_ctor` pins the arg scopes, then builds `((,) a b)`) and read
         // its elements, so a constant tuple built via the alias folds exactly as one written `((,) a b)`
@@ -2292,7 +2296,7 @@ pub fn reduce_to_match(db: &mut Db, id: StructId) -> Option<StructId> {
                 reduce_to_match(db, value)
             }
         }
-        Resolved::Annot { expr, .. } => reduce_to_match(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => reduce_to_match(db, expr),
         Resolved::Apply { head, args } => {
             let mut guard = db.enter_reduction()?;
             let g = guard.db();
@@ -2319,7 +2323,9 @@ pub fn reduce_to_match_direct(db: &mut Db, id: StructId) -> Option<StructId> {
                 reduce_to_match_direct(db, value)
             }
         }
-        Resolved::Annot { expr, .. } => reduce_to_match_direct(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            reduce_to_match_direct(db, expr)
+        }
         _ => None,
     }
 }
@@ -2356,7 +2362,9 @@ fn reduce_to_visible_ctor(db: &mut Db, id: StructId) -> Option<(u32, StructId, V
                 reduce_to_visible_ctor(db, value)
             }
         }
-        Resolved::Annot { expr, .. } => reduce_to_visible_ctor(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            reduce_to_visible_ctor(db, expr)
+        }
         _ => None,
     }
 }
@@ -2571,7 +2579,7 @@ pub fn reduce_to_if(db: &mut Db, id: StructId) -> Option<(StructId, StructId, St
                 reduce_to_if(db, value)
             }
         }
-        Resolved::Annot { expr, .. } => reduce_to_if(db, expr),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => reduce_to_if(db, expr),
         // An application whose (non-recursive) callee returns an `if` — `(choose b)` where `choose`'s
         // body is `(if b (fn …) (fn …))`. β-reduce the call to its `if` result, then reduce THAT. This
         // is what lets a runtime-branch-selected function `((choose b) 5)` reach the case-of-case

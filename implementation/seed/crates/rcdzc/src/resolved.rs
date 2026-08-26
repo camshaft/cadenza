@@ -1335,6 +1335,17 @@ pub enum Resolved {
     /// the evaluator downstream (`typeval_of`), NOT here, since resolve is a pure per-node classify and
     /// reducing a type constructor like `(Int 8)` needs the evaluator.
     Annot { expr: StructId, ty_expr: StructId },
+    /// A `(const <expr>)` FORCE-EVAL block — the operator's explicit const-demand construct (an
+    /// EXPRESSION form, distinct from the `(const (: d T))` PARAM modifier that `strip_const_params`
+    /// unwraps at load; that pass never touches a body, so a `(const …)` reaching resolve in expression
+    /// position is this block). It is SEE-THROUGH for resolution + typing — `type_of((const e)) ==
+    /// type_of(e)` — like [`Annot`], carrying the inner `expr` occurrence so every pass follows `.expr`.
+    /// Its FORCE-EVAL semantics live in lowering (v-compiler-primitives): `core_of` const-EVALUATES the
+    /// inner expr and REJECTS if it does not fully fold, and it is the const-DEMAND CONTEXT signal the
+    /// recursive-const-fold unroll reads (the general-transform demand marker, replacing threading const
+    /// PARAMS through args). This front-end arm only classifies + types-through; the fold-or-reject is
+    /// downstream.
+    ConstBlock { expr: StructId },
     /// A first-class TYPE value. A type is an ordinary value (mixable, returnable) — using `Bool` in
     /// type position projects a record's `(meta t)` field, which holds one of these; a type
     /// constructor applied (`(Int a)`, `(-> A B)`) reduces through the one evaluator to one of these.
