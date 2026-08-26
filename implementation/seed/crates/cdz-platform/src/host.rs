@@ -43,6 +43,102 @@ wasmtime::component::bindgen!({
     additional_derives: [PartialEq, Eq],
 });
 
+// TEST-ONLY host bindings for the arg-value-capture conformance world (`wit/test/arg-probe.wit`, §9). Its
+// own package (`cadenza:test-arg-probe`), physically separate from the platform world, so it can never leak
+// into a real reducer's vocabulary. In its own module so its regenerated `cadenza::platform::guest` export
+// bindings don't collide with the platform world's above; the host only implements the `arg-probe` import.
+// The world imports `arg-probe` and re-exports `cadenza:platform/guest`, resolved cross-package from
+// `wit/world.wit` (the same `--dep` the world-artifact uses), so both WIT files are on the path.
+mod arg_probe_world {
+    wasmtime::component::bindgen!({
+        world: "cadenza:test-arg-probe/arg-probe-world",
+        path: ["wit/world.wit", "wit/test/arg-probe.wit"],
+        imports: { default: async },
+        exports: { default: async },
+    });
+}
+
+// --- the TEST-ONLY arg-probe host import (§9 arg-value capture) ---
+use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf};
+use arg_probe_world::cadenza::test_arg_probe::arg_probe as ap;
+use cadenza_ast::ast::{Builder, Leaf, Radix, StructId};
+use cadenza_ast::codec;
+use num_bigint::BigInt;
+
+/// A signed-integer value leaf. The value model's integer is arbitrary-precision (`Leaf::Int`); the target
+/// type fixes width/signedness. Used for `mixed.big` (s64) and `probe-record.tag` (s64).
+fn int_leaf(b: &mut Builder, value: i64) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: BigInt::from(value),
+        radix: Radix::Dec,
+    })
+}
+
+/// A `mixed` variant as its canonical bare-constructor Value form, using the CADENZA constructor names
+/// (CamelCase = the bindgen variant names): `(None)` / `(Small <u8>)` / `(Big <s64>)`.
+fn mixed_value(b: &mut Builder, m: &ap::Mixed) -> StructId {
+    match m {
+        ap::Mixed::None => bare_ctor(b, "None", vec![]),
+        ap::Mixed::Small(x) => {
+            let p = uint_leaf(b, u64::from(*x));
+            bare_ctor(b, "Small", vec![p])
+        }
+        ap::Mixed::Big(x) => {
+            let p = int_leaf(b, *x);
+            bare_ctor(b, "Big", vec![p])
+        }
+    }
+}
+
+/// A `narrow` variant: `(None)` / `(A <u8>)` / `(B <u16>)`.
+fn narrow_value(b: &mut Builder, n: &ap::Narrow) -> StructId {
+    match n {
+        ap::Narrow::None => bare_ctor(b, "None", vec![]),
+        ap::Narrow::A(x) => {
+            let p = uint_leaf(b, u64::from(*x));
+            bare_ctor(b, "A", vec![p])
+        }
+        ap::Narrow::B(x) => {
+            let p = uint_leaf(b, u64::from(*x));
+            bare_ctor(b, "B", vec![p])
+        }
+    }
+}
+
+/// Encode a received `probe-record` to canonical Value bytes: `(record (= v <mixed>) (= tag <s64>))`
+/// ascribed `ProbeRecord` — byte-for-byte what a Cadenza checker's `Value.encode` of the same value produces.
+fn encode_probe_record(r: &ap::ProbeRecord) -> Vec<u8> {
+    let mut b = Builder::new();
+    let v = mixed_value(&mut b, &r.v);
+    let tag = int_leaf(&mut b, r.tag);
+    let rec = record(&mut b, vec![("v", v), ("tag", tag)]);
+    let root = ascribe(&mut b, rec, "ProbeRecord");
+    codec::encode(&b.finish(root))
+}
+
+/// Encode the received `list<narrow>` to canonical Value bytes: the name-headed `(list <narrow>…)` ascribed
+/// `List` — the canonical Cadenza list form a guest `Value.decode`s.
+fn encode_narrow_list(items: &[ap::Narrow]) -> Vec<u8> {
+    let mut b = Builder::new();
+    let vals: Vec<StructId> = items.iter().map(|n| narrow_value(&mut b, n)).collect();
+    let head = b.name("list");
+    let list = b.list(std::iter::once(head).chain(vals).collect());
+    let root = ascribe(&mut b, list, "List");
+    codec::encode(&b.finish(root))
+}
+
+impl ap::Host for HostState {
+    /// The TEST-ONLY `arg-probe.probe` host import (§9): encode the received `r` + `items` to canonical Value
+    /// bytes and forward to the [`ArgProbeSink`], so a conformance checker asserts the marshalled ARG VALUES
+    /// byte-for-byte — making a mixed-width variant-payload miscompile observable. `None` sink (the common
+    /// case) → skip entirely, zero cost.
+    async fn probe(&mut self, r: ap::ProbeRecord, items: Vec<ap::Narrow>) {
+        if let Some(sink) = &self.arg_probe {
+            sink.record(&encode_probe_record(&r), &encode_narrow_list(&items));
+        }
+    }
+}
+
 use crate::{
     ArgProbeSink, BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId,
     KvStore, Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, RejectedSink,
