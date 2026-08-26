@@ -1510,29 +1510,29 @@
   (output (: 14 Int64)))
 
 ; An OPERATOR is a first-class value too — a HOF can receive `+`/`<`/… and apply it. Wrapped in an
-; explicit lambda `(fn (a b) (+ a b))` it works today (the operator is applied inside an ordinary closure,
-; grounded by the HOF's annotated function parameter). A BARE operator `+` in the same position is
-; equivalent — it should eta-expand to that lambda — but currently declines (a bare operator resolves to
-; its operator record, which has no runtime closure form). The bare case is pinned `todo` below to guard
-; the boundary and mark the pending eta-expansion; it flips to pass when the eta lands.
+; explicit lambda `(fn (a b) (+ a b))` it applies inside an ordinary closure grounded by the HOF's
+; annotated function parameter; a BARE operator in the same position is equivalent and also works. When the
+; HOF INLINES, the β-reduction substitutes the operator for the annotated parameter, wrapping it as
+; `(: + (-> …))`, and the meta-apply dispatch sees THROUGH that annotation so the reduced `(+ x y)` folds at
+; compile time — no runtime closure.
 
 (case "an operator applied inside a lambda passed to an annotated named HOF"
   (doc    "A named higher-order function whose function parameter is ANNOTATED `(-> Int64 Int64 Int64)`
            receives `(fn (a b) (+ a b))` — a closure that APPLIES the `+` operator — and applies it:
            `(apply2 (fn (a b) (+ a b)) 3 4)` = 7. The annotation grounds `g` as a function (unlike the
-           bare-param named HOF above), so the operator-applying closure lowers and runs. This is the
-           shape a bare operator value must eta-expand TO (the pending case below).")
+           bare-param named HOF above), so the operator-applying closure lowers and runs.")
   (input  (do
             (def (apply2 (: g (-> Int64 Int64 Int64)) (: x Int64) (: y Int64)) (g x y))
             (def (main) (apply2 (fn (a b) (+ a b)) 3 4)) (export main)))
   (output (: 7 Int64)))
 
-(case "a bare primitive operator passed as a first-class function value (pending eta-expansion)"
-  (doc    "Passing a bare operator `+` where a function VALUE is expected — `(apply2 + 3 4)` — should be
-           equivalent to passing `(fn (a b) (+ a b))` (the case above), i.e. 7. It currently DECLINES: a
-           bare operator resolves to its operator record, which has no runtime closure form, and the
-           eta-expansion that would turn it into the equivalent lambda is not yet done. A defined DECLINE,
-           not a wrong answer; pinned `todo` to guard the boundary and flip to pass when the eta lands.")
+(case "a bare primitive operator passed as a first-class function value folds via the annotation see-through"
+  (doc    "Passing a bare operator `+` where a function VALUE is expected — `(apply2 + 3 4)` — is equivalent
+           to passing `(fn (a b) (+ a b))` (the case above), i.e. 7. The non-recursive HOF INLINES, and the
+           β-reduction wraps the operator for the annotated parameter as `(: + (-> Int64 Int64 Int64))`; the
+           meta-apply dispatch peels that annotation so the reduced `(+ 3 4)` dispatches as the operator and
+           folds to 7. (Previously declined 'value is not applyable' — the annotated operator head had no
+           reachable `(meta apply)`.)")
   (input  (do
             (def (apply2 (: g (-> Int64 Int64 Int64)) (: x Int64) (: y Int64)) (g x y))
             (def (main) (apply2 + 3 4)) (export main)))
@@ -1557,6 +1557,15 @@
             (export main)))
   (call   main 0)
   (output (: 7 Int64)))
+
+(case "an inline HOF applies a bare operator passed as its function argument"
+  (doc    "A second operator witness: `ap` is a non-recursive named HOF, so `(ap * 6 7)` INLINES,
+           substituting `*` for the annotated parameter `g` — wrapped as `(: * (-> Int64 Int64 Int64))` —
+           and the meta-apply see-through lets the reduced `(* 6 7)` fold to 42.")
+  (input  (do
+            (def (ap (: g (-> Int64 Int64 Int64)) (: x Int64) (: y Int64)) (g x y))
+            (def (main) (ap * 6 7)) (export main)))
+  (output (: 42 Int64)))
 
 (case "a function is returned as a result"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: adder returns a closure over
