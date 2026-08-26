@@ -3642,7 +3642,9 @@ pass	a shared trapping operand traps under a trap-free condition
 pass	a shared trapping second operand does not preempt a trapping condition
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a shift of a non-numeric operand names the integer requirement
+pass	a short-circuit and with identical operands folds idempotently to the operand
 pass	a short-circuit connective threads a branch perform to the continuation
+pass	a short-circuit or with identical operands folds idempotently to the operand
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
@@ -6721,6 +6723,7 @@ pass	the guarded-let conditional takes its else-branch when the conjunction is f
 pass	the handler STATE is a CLOSURE the arm replaces with one capturing the perform-time op argument
 pass	the heap list a handle BUILDS escapes the handle and is consumed outside it
 pass	the hygiene rename recurses into a NESTED compound match pattern
+pass	the idempotence fold keeps a repeated trapping operand's trap
 pass	the idempotent bitwise collapse holds on a repeated RUNTIME operand
 pass	the identity function applied to a boolean returns the boolean
 pass	the identity function applied to an integer returns the integer

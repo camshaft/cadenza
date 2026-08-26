@@ -5674,6 +5674,27 @@
   (call   main (: -1 Int64))
   (output (: 1 Int64)))
 
+(case "a short-circuit and with identical operands folds idempotently to the operand"
+  (doc    "IDEMPOTENCE: `(and a a)` → `a` (the redundant re-evaluation is dropped; `a` is the
+           short-circuit condition, evaluated once). The value is just `a`: true → 1, false → 0.")
+  (input  (do (def (main (: a Bool)) (if (and a a) 1 0)) (export main)))
+  (call   main (: true Bool))  (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "a short-circuit or with identical operands folds idempotently to the operand"
+  (doc    "The `or` companion: `(or a a)` → `a`. true → 1, false → 0.")
+  (input  (do (def (main (: a Bool)) (if (or a a) 1 0)) (export main)))
+  (call   main (: true Bool))  (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "the idempotence fold keeps a repeated trapping operand's trap"
+  (doc    "The idempotent fold drops the redundant re-evaluation but KEEPS the operand's effects/traps —
+           `a` is still evaluated once as the short-circuit condition. `(and (> (/ 10 n) 0) (> (/ 10 n)
+           0))` at n = 0 traps on the div-by-zero (the fold must not eliminate `a` entirely); n = 2 → 1.")
+  (input  (do (def (main (: n Int64)) (if (and (> (/ 10 n) 0) (> (/ 10 n) 0)) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero")
+  (call   main (: 2 Int64)) (output (: 1 Int64)))
+
 (case "an absorbed conjunction composes as a live disjunction's operand"
   (doc    "`(or (and (> n 0) false) (> m 0))` — the inner conjunction folds to constant false, which
            is the DISJUNCTION's neutral element, so the whole expression folds to `(> m 0)`: m decides
