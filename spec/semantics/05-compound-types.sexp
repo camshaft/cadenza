@@ -19174,3 +19174,46 @@
             (export main)))
   (call   main (: 3 Int64) (: true Bool) (: true Bool)) (output (: 4 Int64))
   (live-objects 0))
+
+(case "List.len over an owned-temporary List.concat result reclaims it (no live objects)"
+  (doc    "`build` makes a fresh n-element runtime list (recursive so it can't fold); `List.concat` of two
+           such is an owned temporary fed to `List.len` -> 2n = 6 at n=3, and the fresh concat result must be
+           reclaimed after the borrowing len -- net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (f (: n Int64)) (List.len (List.concat (build 0 n (list)) (build 0 n (list)))))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 6 Int64))
+  (live-objects 0))
+
+(case "List.len over an owned-temporary List.push result reclaims it (no live objects)"
+  (doc    "`List.push` onto a fresh runtime list is an owned temporary fed to `List.len` -> n+1 = 4 at n=3;
+           the pushed result must be reclaimed after the borrowing len -- net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (f (: n Int64)) (List.len (List.push (build 0 n (list)) 99)))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 4 Int64))
+  (live-objects 0))
+
+(case "List.len over an owned-temporary List.update result reclaims it (no live objects)"
+  (doc    "`List.update` of a fresh runtime list is an owned temporary fed to `List.len` -> n = 5 at n=5;
+           the updated result must be reclaimed after the borrowing len -- net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (f (: n Int64)) (List.len (List.update (build 0 n (list)) 0 99)))
+            (export f)))
+  (call   f (: 5 Int64)) (output (: 5 Int64))
+  (live-objects 0))
+
+(case "List.len over a NESTED owned-producer chain (concat of two pushes) reclaims every temporary (no live objects)"
+  (doc    "NESTED owned producers: `List.concat` of two `List.push` results, each over a fresh `build`. Every
+           push result AND the concat result are owned temporaries; the reclaim must COMPOSE (each push list
+           consumed once by concat, the concat result dropped after len). f(n) = (n+1)+(n+1) = 2n+2 = 8 at
+           n=3; a missed/double drop anywhere leaves a live cell -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (f (: n Int64)) (List.len (List.concat (List.push (build 0 n (list)) 99) (List.push (build 0 n (list)) 88))))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 8 Int64))
+  (live-objects 0))
