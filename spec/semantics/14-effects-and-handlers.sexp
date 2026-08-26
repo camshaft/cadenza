@@ -8027,3 +8027,82 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 123 Int64)))
 
+
+; -- breaker batch 427 (2026-08-26): ABORT-PATH reclaim + mixed-arm faces (the first live-objects
+; clauses in an effects file). abr1: an abortive arm drops the LIST handler state (live 0); abr3: a
+; heap-valued abort ARGUMENT is consumed by the arm and dropped (live 0) — wasm-only rows. abx1/2:
+; two-op handlers, both-resuming and mixed resume+abortive with scalar state; abx4: an abortive
+; arm's value REPLACES the whole body computation (list state ignored by the arm); abx5: a
+; single-op abortive arm READS its list state. Filed adjacent: mixed arms + HEAP state + the abort
+; arm READING the state mis-rejects CDZ0101 (abx3/ab4; scalar-state and single-op controls pass).
+
+(case "abr1 an abortive arm drops the LIST handler state (no live objects)"
+  (input (do
+    (effect Bail (op bail (-> Int64 Int64)))
+    (def (main (: n Int64))
+      (handle Bail (if (> n 0) (list n (+ n 1)) (list 9))
+        ((bail (k) s (+ k (List.len s))))
+        (+ 100 (Bail.bail 7))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
+
+(case "abr3 a heap-valued abort ARGUMENT is consumed by the arm and dropped"
+  (input (do
+    (effect Bail (op bail (-> (List Int64) Int64)))
+    (def (main (: n Int64))
+      (handle Bail 0
+        ((bail (xs) s (List.len xs)))
+        (+ 100 (Bail.bail (if (> n 0) (list n (+ n 1)) (list 9))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "abx1 two-op effect, BOTH arms resuming (control)"
+  (input (do
+    (effect E (op step (-> Int64)) (op bump (-> Int64)))
+    (def (main (: n Int64))
+      (handle E n
+        ((step () s (resume s (+ s 1)))
+         (bump () s (resume (* s 10) s)))
+        (+ (E.step) (E.bump))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 65 Int64)))
+
+(case "abx2 two-op effect, one resuming one ABORTIVE (scalar state)"
+  (input (do
+    (effect E (op step (-> Int64)) (op bail (-> Int64 Int64)))
+    (def (main (: n Int64))
+      (handle E n
+        ((step () s (resume s (+ s 1)))
+         (bail (k) s (+ k s)))
+        (+ (E.step) (E.bail 100))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 106 Int64)))
+
+(case "abx4 mixed arms, list state, abort arm IGNORES the state"
+  (input (do
+    (effect E (op step (-> Int64)) (op bail (-> Int64 Int64)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n) (list 9 9))
+        ((step () s (resume (List.len s) (List.prepend s 0)))
+         (bail (k) s k))
+        (+ (E.step) (E.bail 100))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 100 Int64)))
+
+(case "abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)"
+  (input (do
+    (effect E (op bail (-> Int64 Int64)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n) (list 9 9))
+        ((bail (k) s (+ k (List.len s))))
+        (+ (E.bail 100) 1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 101 Int64)))
