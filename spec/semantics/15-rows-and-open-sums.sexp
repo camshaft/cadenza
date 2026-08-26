@@ -1519,3 +1519,31 @@
                    (. g0 a))))
             (export main)))
   (call   main (: 9 Int64)) (output (: 79 Int64)))
+
+;; -- runtime-leaf row ops: without/project/merge over computed leaves + canonical-order value equality (breaker batch 371, from the 2026-07-17 banked candidate) --
+(case "rrow1 Record.without over RUNTIME leaves drops the field and the rest projects"
+  (input (do
+    (def (main (: n Int64))
+      (. (Record.without (record (= a n) (= b (* n 2)) (= c 7)) (b)) a))
+    (export main)))
+  (call main (: 21 Int64))
+  (output (: 21 Int64)))
+
+(case "rrow2 Record.project over RUNTIME leaves keeps the named fields readable"
+  (input (do
+    (def (main (: n Int64))
+      (+ (. (Record.project (record (= a n) (= b (* n 2)) (= c 7)) (a c)) a)
+         (. (Record.project (record (= a n) (= b (* n 2)) (= c 7)) (a c)) c)))
+    (export main)))
+  (call main (: 30 Int64))
+  (output (: 37 Int64)))
+
+(case "rrow3 a Record.merge result with a COMPUTED runtime leaf VALUE-EQUALS the directly-written literal across field order"
+  (input (do
+    (def (main (: n Int64))
+      (if (= (Record.merge (record (= b (* n 2))) (record (= a 1)))
+             (record (= a 1) (= b 42)))
+          1 0))
+    (export main)))
+  (call main (: 21 Int64))
+  (output (: 1 Int64)))

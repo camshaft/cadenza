@@ -7249,3 +7249,6 @@ todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	rrow1 Record.without over RUNTIME leaves drops the field and the rest projects
+pass	rrow2 Record.project over RUNTIME leaves keeps the named fields readable
+pass	rrow3 a Record.merge result with a COMPUTED runtime leaf VALUE-EQUALS the directly-written literal across field order
