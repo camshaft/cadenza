@@ -1116,7 +1116,16 @@ fn emit_variant_sum_lift(
                 }
                 _ => None,
             };
-            emit_result_lift(db, &pt, payload_wit, ptr_slot, payload_off, high, scratch_ty, out)?;
+            emit_result_lift(
+                db,
+                &pt,
+                payload_wit,
+                ptr_slot,
+                payload_off,
+                high,
+                scratch_ty,
+                out,
+            )?;
             let ph = *high;
             *high = (*high).max(ph + 1);
             scratch_ty.insert(ph, ValType::I32);
