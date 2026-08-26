@@ -3553,31 +3553,35 @@
   (call   main (: -1 Int8))
   (output (: -1 Int64)))
 
-(case "a possibly-out-of-range runtime integer conversion still declines (checked emit pending)"
-  (doc    "`(Int8.of x)` with `x` a runtime `UInt8` is NOT total — a UInt8 value like 255 overflows Int8's
-           -128..127, so `of` must TRAP-check at run time. The range-check-then-trap emit is a later
-           increment, so this soundly DECLINES rather than emitting a truncating `wrap` (which would
-           silently keep the low bits where `of` must trap — a miscompile). Grades the non-total boundary
-           as tracked; contrast the TOTAL widenings above, which emit.")
+(case "a runtime UInt8->Int8 .of range-checks: an in-range value passes, an out-of-range value traps"
+  (doc    "`(Int8.of x)` with `x` a runtime `UInt8` is NOT total — a UInt8 value like 200 overflows Int8's
+           -128..127, so `of` RANGE-CHECKS at run time: an in-range value (100) crosses unchanged, an
+           out-of-range value (200) TRAPS. Emitted as `if x > 127 then trap else wrap x` (the bound typed
+           as the operand's type so the compare is unsigned). Never a silent low-bits truncation where `of`
+           must trap. The runtime companion of the constant checked-narrow folds; contrast the TOTAL
+           widenings above (which emit an unconditional widen).")
   (input  (do (def (main (: x UInt8)) (Int8.of x)) (export main)))
-  (declines))
+  (call   main (: 100 UInt8)) (output (: 100 Int8))
+  (call   main (: 200 UInt8)) (trap "unreachable"))
 
-; The widen decline above is one face of a family: the runtime `.of` fixed-width integer CONVERT does not
-; yet emit in ANY direction. These pin the other two faces so the whole boundary is tracked, not just the
-; Int64-widen: NARROWING a runtime Int64 to a fixed width (`UInt8.of n`, range-checked) and CROSS-WIDTH
-; widening one narrow type to another (`UInt16.of x:UInt8`) both DECLINE too. As with the widen, the
-; CONSTANT forms fold (checked-narrow / exact-widen at compile time) and the `wrap`/`wrapping-*` truncation
-; ops emit fine on runtime narrow values — it is specifically the runtime `.of` CONVERT emit that is the
-; later increment. Sound declines, reject-don't-miscompile; a future runtime `.of` that silently emitted a
-; wrong (unchecked-narrow / sign-extended) result would flip these `(declines)`.
-(case "narrowing a runtime Int64 to a fixed width with .of declines (the checked-narrow emit is pending)"
+; The widen above is one face of a family: the runtime `.of` fixed-width integer CONVERT now emits in every
+; direction — a TOTAL direction (a widen, or a value provably in range) as an unconditional reinterpret, and
+; a NON-TOTAL direction (a genuine narrowing) as a RANGE-CHECK-then-trap (`if operand out of [tmin,tmax]
+; then trap else wrap`). These pin the other faces: NARROWING a runtime Int64 to a fixed width
+; (`UInt8.of n`, range-checked) and the CROSS-WIDTH widen (`UInt16.of x:UInt8`, total). The CONSTANT forms
+; fold (checked-narrow / exact-widen at compile time); `wrap`/`wrapping-*` still truncate. A future runtime
+; `.of` that silently emitted a wrong (unchecked-narrow / sign-extended) result — or FAILED to trap an
+; out-of-range value — would flip these.
+(case "narrowing a runtime Int64 to a fixed width with .of range-checks (in range passes, out of range traps)"
   (doc    "`(Int64.of (UInt8.of n))` with `n` a runtime Int64: the inner `(UInt8.of n)` range-checks-narrows
-           the runtime Int64 to a UInt8 — a runtime `.of` CONVERT the seed does not yet emit, so it soundly
-           DECLINES (rather than emitting an unchecked truncation). Contrast the CONSTANT `(UInt8.of
-           (BigInt.of 300))` narrow cases (which fold + range-check at compile time). Grades the runtime
-           narrow-direction `.of` decline, the companion of the widen above.")
+           the runtime Int64 to a UInt8 (0..255) — an in-range `n` (100) passes, an out-of-range `n` (300 or
+           -1) TRAPS; the outer `Int64.of` then widens totally. Grades the runtime narrow-direction checked
+           `.of`, the companion of the widen above. Contrast the CONSTANT `(UInt8.of (BigInt.of 300))` narrow
+           cases (which fold + range-check at compile time).")
   (input  (do (def (main (: n Int64)) (Int64.of (UInt8.of n))) (export main)))
-  (declines))
+  (call   main (: 100 Int64)) (output (: 100 Int64))
+  (call   main (: 300 Int64)) (trap "unreachable")
+  (call   main (: -1 Int64)) (trap "unreachable"))
 
 (case "cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)"
   (doc    "`(UInt16.of x)` with `x` a runtime `UInt8` widens one fixed-narrow type to a wider fixed type.
@@ -3605,14 +3609,35 @@
   (input  (do (def (main (: x UInt8)) (UInt64.of x)) (export main)))
   (call   main (: 255 UInt8)) (output (: 255 UInt64)))
 
-(case "narrowing a runtime UInt64 to UInt8 with .of declines (checked-narrow emit pending)"
-  (doc    "`(UInt8.of x)` with `x` a runtime UInt64 is a genuine NARROWING — most UInt64 values overflow
-           UInt8 (0..255), so `of` must range-check-then-trap, an emit the seed does not yet do, so it
-           soundly DECLINES rather than emitting an unchecked truncation (which would silently keep the low
-           bits where `of` must trap). The unsigned-wide-source companion of the Int64->UInt8 narrow decline
-           above.")
+(case "narrowing a runtime UInt64 to UInt8 with .of range-checks (in range passes, out of range traps)"
+  (doc    "`(UInt8.of x)` with `x` a runtime UInt64 is a genuine NARROWING — a value that fits UInt8 (0..255)
+           passes (200), one that overflows (300) TRAPS via the range-check (`if x > 255 then trap else
+           wrap x`, unsigned compare), never a silent low-bits truncation where `of` must trap. The
+           unsigned-wide-source companion of the Int64->UInt8 checked narrow above.")
   (input  (do (def (main (: x UInt64)) (UInt8.of x)) (export main)))
-  (declines))
+  (call   main (: 200 UInt64)) (output (: 200 UInt8))
+  (call   main (: 300 UInt64)) (trap "unreachable"))
+
+; The FULL-WIDTH u64<->i64 checked conversions — the HIGH-TRAFFIC platform case: a guest converts a runtime
+; `UInt64` host result to `Int64` (`Int64.of`, trap iff `> i64::MAX`, an UNSIGNED upper compare), or an
+; `Int64` to `UInt64` (`UInt64.of`, trap iff `< 0`, a SIGNED lower compare). Only ONE bound is checked (the
+; other is unreachable for the operand's sign), so the emit is a single `if <bound> then trap else wrap`.
+(case "a runtime UInt64->Int64 .of range-checks the upper bound (fits passes, > i64::MAX traps)"
+  (doc    "`(Int64.of k)` with `k` a runtime `UInt64` — the platform u64-host-result -> Int64 conversion. A
+           value that fits Int64 (5, and i64::MAX = 9223372036854775807) passes; a value above i64::MAX
+           (9223372036854775808 = 2^63) TRAPS (unsigned `k > i64::MAX` check). No lower check — a UInt64 is
+           never negative.")
+  (input  (do (def (main (: k UInt64)) (Int64.of k)) (export main)))
+  (call   main (: 5 UInt64)) (output (: 5 Int64))
+  (call   main (: 9223372036854775807 UInt64)) (output (: 9223372036854775807 Int64))
+  (call   main (: 9223372036854775808 UInt64)) (trap "unreachable"))
+
+(case "a runtime Int64->UInt64 .of range-checks the lower bound (nonneg passes, negative traps)"
+  (doc    "`(UInt64.of k)` with `k` a runtime `Int64`. A non-negative value (7, i64::MAX) passes; a negative
+           value (-1) TRAPS (signed `k < 0` check). No upper check — every non-negative Int64 fits UInt64.")
+  (input  (do (def (main (: k Int64)) (UInt64.of k)) (export main)))
+  (call   main (: 7 Int64)) (output (: 7 UInt64))
+  (call   main (: -1 Int64)) (trap "unreachable"))
 
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
