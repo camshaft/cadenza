@@ -71119,22 +71119,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_runtime_conditioned_if_branch_perform_distributes_per_branch() {
-        // The distribution handles a RUNTIME condition (a genuine PHI, not const-folded): a handle body
-        // conditioned on main's PARAMETER `x`. `(if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` distributes
-        // to `(if (< x 5) (handle … (+ 1 (Amb.flip))) (handle … (* 2 (Amb.flip))))`; each sub-handle folds.
-        // x=3 → then `C=(+ 1 □)`, arm `(+ 1 (+ 1 10))` = 12; x=9 → else `C=(* 2 □)`, arm `(+ 1 (* 2 10))` =
-        // 21. Pins that the condition is evaluated once at runtime and only the taken branch's fold runs.
-        use wasmtime::component::Val;
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main))";
-        let c = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a runtime-conditioned branch perform distributes");
-        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(3)]), 12);
-        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(9)]), 21);
-    }
-
-    #[test]
     fn a_perform_in_the_condition_and_a_branch_folds_via_the_one_shot_refold() {
         // E5 TWO-HOLE with the leading hole in an if-CONDITION composing with distribution: `(if (< (Amb.flip)
         // 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and the then-branch. The one-shot refold

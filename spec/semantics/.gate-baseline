@@ -3497,6 +3497,7 @@ pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
 pass	a runtime-conditioned abortive branch and its fall-through both read an enclosing parameter
+pass	a runtime-conditioned if-branch perform distributes the handler per branch
 pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
