@@ -7666,3 +7666,81 @@
     (export main)))
   (call main (: "xyz" String))
   (output (: 4 Int64)))
+
+; -- breaker batch 433 (2026-08-26): the entry-param Slice 2-4 EDGE ladders (companion to the
+; slice-1 batch 432). Slice 2 (List): indexed-walk sum, TWO list params, the EMPTY list. Slice 3
+; (Option): Some payload, the None arm, Option BETWEEN scalars. Slice 4: BigInt beyond-i64
+; arithmetic on the param, Rational exact arithmetic (n/d call spelling), Symbol keying a Map.
+; Rows wasm-todo / rust-pass, oracles machine-verified on the rust reference — each slice's landing
+; auto-flips its rung set.
+
+(case "el1 a List entry param summed by an indexed walk"
+  (input (do
+    (def (suml (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) (+ v (suml xs (+ i 1)))) ((Option.None) 0)))
+    (def (main (: xs (List Int64))) (suml xs 0))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 6 Int64)))
+
+(case "el2 TWO List entry params measure independently"
+  (input (do
+    (def (main (: a (List Int64)) (: b (List Int64))) (+ (* 10 (List.len a)) (List.len b)))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)) (: (list 9) (List Int64)))
+  (output (: 31 Int64)))
+
+(case "el3 an EMPTY List entry param has length zero"
+  (input (do
+    (def (main (: xs (List Int64))) (List.len xs))
+    (export main)))
+  (call main (: (list) (List Int64)))
+  (output (: 0 Int64)))
+
+(case "eo1 an Option entry param delivers its Some payload"
+  (input (do
+    (def (main (: o (Option Int64)))
+      (match o ((Option.Some v) v) ((Option.None) -1)))
+    (export main)))
+  (call main (: (Some 42) (Option Int64)))
+  (output (: 42 Int64)))
+
+(case "eo2 an Option entry param takes the None arm"
+  (input (do
+    (def (main (: o (Option Int64)))
+      (match o ((Option.Some v) v) ((Option.None) -1)))
+    (export main)))
+  (call main (: (None unit) (Option Int64)))
+  (output (: -1 Int64)))
+
+(case "eo3 an Option param BETWEEN scalars keeps positions"
+  (input (do
+    (def (main (: x Int64) (: o (Option Int64)) (: y Int64))
+      (+ (* x 100) (+ (match o ((Option.Some v) v) ((Option.None) 0)) y)))
+    (export main)))
+  (call main (: 3 Int64) (: (Some 20) (Option Int64)) (: 7 Int64))
+  (output (: 327 Int64)))
+
+(case "eb1 a BigInt entry param in beyond-i64 arithmetic"
+  (input (do
+    (def (main (: b BigInt)) (= (* b 2N) 24691357024641975308642N))
+    (export main)))
+  (call main (: 12345678512320987654321N BigInt))
+  (output (: true Bool)))
+
+(case "er1 a Rational entry param in exact arithmetic"
+  (input (do
+    (def (main (: r Rational)) (= (+ r (Rational.of 1 6)) (Rational.of 1 2)))
+    (export main)))
+  (call main (: 1/3 Rational))
+  (output (: true Bool)))
+
+(case "ey1 a Symbol entry param keys a Map"
+  (input (do
+    (def (main (: s Symbol))
+      (match (Map.lookup (Map.insert (map) (Symbol.of "hot") 42) s)
+        ((Option.Some v) v)
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: #"hot" Symbol))
+  (output (: 42 Int64)))
