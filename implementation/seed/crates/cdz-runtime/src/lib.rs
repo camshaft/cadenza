@@ -5902,8 +5902,20 @@ fn encode_ast_to_arenas(
             radix: crate::ast::Radix::Dec,
         }))
     } else if disc == d.float {
-        let dec = crate::ast::Decimal::from_f64(op_get_float(payload))?;
-        Some(b.atom_leaf(crate::ast::Leaf::Float(dec)))
+        // A finite float encodes as the exact-decimal `Leaf::Float`; a NON-FINITE float has no finite
+        // Decimal, so it rides its own payload-less leaf tag (17/18/19): NaN → FloatNan, +inf →
+        // FloatInf{false}, -inf → FloatInf{true}. Byte-identical to the compiler's `encode_ast_value`
+        // fold (both write the same shared codec tag), so `Ast.encode` of a non-finite Ast.Float agrees
+        // compile-time and at runtime (the decode inverse is in `decode_arenas_to_ast`).
+        let f = op_get_float(payload);
+        let leaf = if f.is_nan() {
+            crate::ast::Leaf::FloatNan
+        } else if f.is_infinite() {
+            crate::ast::Leaf::FloatInf { negative: f < 0.0 }
+        } else {
+            crate::ast::Leaf::Float(crate::ast::Decimal::from_f64(f)?)
+        };
+        Some(b.atom_leaf(leaf))
     } else if disc == d.boolv {
         Some(b.atom_leaf(crate::ast::Leaf::Bool(op_get_bool(payload))))
     } else if disc == d.strv {
@@ -20001,6 +20013,42 @@ mod tests {
         op_drop(decoded);
         op_drop(enc2);
         op_drop(junk);
+        op_drop(discs);
+    }
+
+    /// Non-finite `Ast.Float` (NaN / ±inf) round-trips through op93 encode + op94 decode via the codec's
+    /// payload-less leaf tags (17/18/19), and the ENCODED bytes are byte-identical to the shared
+    /// Builder+codec of the matching `Leaf::FloatNan`/`FloatInf` (the compile-time `Ast.encode` fold's
+    /// form). Guards the compile/runtime agreement v-cp's encode-flip relies on.
+    #[test]
+    fn ast_encode_decode_non_finite_floats_round_trip() {
+        reset();
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let check = |f: f64, leaf: crate::ast::Leaf| {
+            // heap Ast.Float(f) → op93 encode
+            let node = op_sum_new(1, op_box_float(f)); // disc 1 = float, per the descriptor above
+            let enc = op_ast_encode(node, discs);
+            // byte-identity with the shared Builder+codec of `leaf` (the compile-fold form)
+            let mut b = crate::ast::Builder::new();
+            let root = b.atom_leaf(leaf);
+            let want = crate::codec::encode(&b.finish(root));
+            assert_eq!(bytes_to_vec(enc), want, "op93 non-finite encode == compile-fold codec bytes");
+            // decode back → Ast.Float with the SAME non-finite value
+            let dec = op_ast_decode(enc, discs);
+            assert_ne!(dec, Handle::NULL);
+            let got = op_get_float(op_sum_payload(dec));
+            if f.is_nan() {
+                assert!(got.is_nan(), "NaN round-trips");
+            } else {
+                assert_eq!(got, f, "±inf round-trips");
+            }
+            op_drop(node);
+            op_drop(enc);
+            op_drop(dec);
+        };
+        check(f64::NAN, crate::ast::Leaf::FloatNan);
+        check(f64::INFINITY, crate::ast::Leaf::FloatInf { negative: false });
+        check(f64::NEG_INFINITY, crate::ast::Leaf::FloatInf { negative: true });
         op_drop(discs);
     }
 
