@@ -5665,25 +5665,78 @@
 
 ; The checked-arith cases above all fold at COMPILE TIME — every operand is a constant (or an inlined
 ; constant through a called def), so `lower_checked_arith` evaluates the overflow check and builds the
-; `Some`/`None` Option directly. A checked op over a genuinely RUNTIME operand (a value not known until
-; run time — a def PARAMETER supplied by `(call …)`) has no constant to fold, so it currently DECLINES:
-; the seed does not yet emit the runtime overflow check + Option box (that is the `Core::CheckedArith`
-; node — a runtime-emit feature spanning core.rs + both backends + the Perceus retain of the Option
-; payload, deferred as a coordinated cross-vertical build; concierge ruling B, 2026-07-16). The decline is
-; a SOUND todo, NOT a miscompile: the constant path is correct and the runtime path refuses rather than
-; emitting a wrong result. This case GRADES that decline explicitly, so the boundary is tracked/tested —
-; a future change that made a runtime checked op silently MISCOMPILE (emit a wrapping add, or drop the
-; overflow branch) instead of declining would flip this `(declines)` and be caught. When Core::CheckedArith
-; lands, this case is upgraded to an executing `(call … (output …))` witness.
-(case "a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit"
+; `Some`/`None` Option directly. A checked ADD/SUB over a genuinely RUNTIME operand (a value not known
+; until run time — a def PARAMETER supplied by `(call …)`) has no constant to fold, so `lower_checked_arith`
+; now EMITS the overflow test directly: `if <overflow-predicate> then None else Some(wrapping-result)`,
+; composed from existing Core (the wrapping add/sub, the two's-complement overflow formula, and the Option
+; sum-new) with NO new runtime node. At the 64-bit width the register IS the value, so the sign-bit test at
+; bit 63 (signed) and the wrap-below compare (unsigned) are exact:
+;   signed  ADD overflow: ((a ^ s) & (b ^ s)) < 0   ; both operands shared a sign the sum does not
+;   signed  SUB overflow: ((a ^ b) & (a ^ s)) < 0   ; operands differed and the result took the wrong sign
+;   unsigned ADD overflow: s <u a                   ; the sum wrapped below an addend
+;   unsigned SUB underflow: a <u b                  ; the minuend is smaller
+; The Option payload here is a SCALAR Int64/UInt64 (no heap), so `Some(s)` needs no Perceus retain — which
+; is why the pure-Core compose suffices where a heap payload would want more. A runtime checked-MUL (whose
+; overflow needs a wide multiply or a division-check) and a runtime NARROW checked op (whose masked
+; representation makes the sign bit width-relative) still DECLINE — pinned below so the boundary stays
+; tracked and a silent miscompile there is caught.
+(case "a checked-add over a RUNTIME operand emits the overflow check: Some when it fits, None on overflow"
   (doc    "`(Int64.checked-add a 1)` with `a` a runtime Int64 PARAMETER (supplied by `(call main …)`, so not
-           constant-folded) has no compile-time operand for `lower_checked_arith` to fold, and the seed does
-           not yet emit the runtime overflow-check + Option construction (the `Core::CheckedArith` node,
-           deferred). So it soundly DECLINES rather than emitting a wrong (e.g. wrapping, unchecked) result —
-           the reject-don't-miscompile discipline. Contrast the folding cases above where every operand is a
-           constant. Grades the runtime-checked-arith decline as an intentional, tracked boundary (pending
-           the feature), so a regression to a silent runtime miscompile is caught here.")
+           constant-folded) emits `if (overflow) then None else Some(wrapping-sum)`, consumed by the match.
+           `main(41)` = 42 (fits → Some, unwrapped); `main(Int64.max)` overflows → None → the -1 default.
+           Witnesses the runtime checked-add emit (the executing upgrade of the former decline), matching the
+           folded constant cases above. A regression to a silent miscompile (a bare wrapping add, or a dropped
+           overflow branch) would change 41→42/max→-1 and be caught.")
   (input  (do (def (main (: a Int64)) (match (Int64.checked-add a 1) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 41 Int64)) (output (: 42 Int64))
+  (call   main (: 9223372036854775807 Int64)) (output (: -1 Int64)))
+
+(case "a checked-sub over RUNTIME operands emits the underflow check: Some when it fits, None on underflow"
+  (doc    "The signed subtraction face: `(Int64.checked-sub a b)` over runtime operands emits `if ((a ^ b) &
+           (a ^ s)) < 0 then None else Some(a - b)`. `main(50, 8)` = 42 (fits); `main(Int64.min, 1)`
+           underflows → None → the -1 default. Pins runtime checked-sub's overflow verdict agrees with the
+           folded `(Int64.checked-sub Int64.min 1)` = None above.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (match (Int64.checked-sub a b) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 50 Int64) (: 8 Int64)) (output (: 42 Int64))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: -1 Int64)))
+
+(case "a checked-add over RUNTIME UInt64 operands emits the unsigned wrap-below check"
+  (doc    "The UNSIGNED face: `(UInt64.checked-add a b)` over runtime UInt64 operands emits `if (s <u a) then
+           None else Some(s)` — the sum wrapped below an addend signals overflow. `main(41, 1)` = 42 (fits);
+           `main(UInt64.max, 1)` overflows → None → the 0 default. Pins the unsigned overflow predicate is the
+           wrap-below compare, distinct from the signed sign-bit test (a signed check here would mis-verdict a
+           high-bit-set UInt64).")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-add a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 41 UInt64) (: 1 UInt64)) (output (: 42 UInt64))
+  (call   main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 0 UInt64)))
+
+(case "a checked-sub over RUNTIME UInt64 operands emits the unsigned underflow check"
+  (doc    "The unsigned subtraction face: `(UInt64.checked-sub a b)` over runtime UInt64 operands emits `if (a
+           <u b) then None else Some(a - b)`. `main(43, 1)` = 42 (fits); `main(0, 1)` underflows (0 < 1) →
+           None → the 0 default. Pins unsigned checked-sub's underflow predicate is the direct `a <u b`
+           compare.")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-sub a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 43 UInt64) (: 1 UInt64)) (output (: 42 UInt64))
+  (call   main (: 0 UInt64) (: 1 UInt64)) (output (: 0 UInt64)))
+
+(case "a checked-MUL over a RUNTIME operand still declines (the wide-multiply / division-check emit is pending)"
+  (doc    "`(Int64.checked-mul a 2)` with `a` a runtime Int64 has no constant to fold, and the runtime
+           checked-MUL emit — which needs a wide (128-bit) multiply or a division-check `r/a != b` with a
+           zero-guard, distinct from add/sub's single bitwise formula — is not yet built, so it soundly
+           DECLINES rather than emitting a wrong (unchecked) product. Contrast the runtime checked-ADD/SUB
+           above (now emitted) and the folded constant checked-mul cases. Pins the runtime checked-mul
+           boundary so a silent miscompile there is caught.")
+  (input  (do (def (main (: a Int64)) (match (Int64.checked-mul a 2) ((Some v) v) ((None _) -1))) (export main)))
+  (declines))
+
+(case "a NARROW-width checked-add over a RUNTIME operand still declines (the width-relative overflow emit is pending)"
+  (doc    "`(UInt8.checked-add a (UInt8.wrap 1))` with `a` a runtime UInt8 has no constant to fold, and the
+           runtime checked emit is built only at the 64-bit width — a narrow width's masked representation
+           makes the sign bit width-relative (the overflow test must be against the narrow range, not bit 63),
+           an increment not yet done. So it soundly DECLINES rather than reusing the 64-bit formula (which
+           would mis-verdict a narrow overflow). Contrast the 64-bit runtime checked-add above. Pins the
+           narrow-width runtime checked boundary.")
+  (input  (do (def (main (: a UInt8)) (match (UInt8.checked-add a (UInt8.wrap 1)) ((Some v) (Int64.of v)) ((None _) -1))) (export main)))
   (declines))
 
 (case "wrapping addition wraps modulo two to the sixty-fourth on overflow"
