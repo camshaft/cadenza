@@ -48754,45 +48754,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn two_equalities_to_different_constants_do_not_subsume() {
-        // WARNING: MISCOMPILE REGRESSION: the same-direction subsumption fold keyed on "same operator", which
-        // wrongly included `Eq` — so `(and (= x 5) (= x 6))` was "subsumed" to `(= x 6)` (returns 1 at x=6),
-        // but the correct value is ALWAYS FALSE (x cannot equal both 5 and 6). `Eq` does NOT subsume: two
-        // equalities to DIFFERENT constants are a contradiction under `and` and a 2-point set under `or` —
-        // neither keeps just one. The fold now excludes `Eq` (ordering operators only). Pins the VALUE
-        // (runtime, since the standalone export was the miscompiling path) — a constant fold masks it.
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: x Int64)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        // `(and (= x 5) (= x 6))` is always false — including at x=5 and x=6 (the miscompiled points).
-        let andeq = f("(if (and (= x 5) (= x 6)) 1 0)");
-        for x in [5, 6, 7, 0] {
-            assert_eq!(
-                run_returns_with::<i64>(&andeq, "f", &[Val::S64(x)]),
-                0,
-                "and-two-eq @{x} must be 0"
-            );
-        }
-        // `(or (= x 5) (= x 6))` is the 2-point set {5,6}.
-        let oreq = f("(if (or (= x 5) (= x 6)) 1 0)");
-        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(5)]), 1);
-        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(6)]), 1);
-        assert_eq!(run_returns_with::<i64>(&oreq, "f", &[Val::S64(7)]), 0);
-        // Same-CONSTANT equality still folds (idempotence, not subsumption): `(and (= x 5) (= x 5))` = x==5.
-        let sameeq = f("(if (and (= x 5) (= x 5)) 1 0)");
-        assert_eq!(run_returns_with::<i64>(&sameeq, "f", &[Val::S64(5)]), 1);
-        assert_eq!(run_returns_with::<i64>(&sameeq, "f", &[Val::S64(6)]), 0);
-        // Legitimate ORDERING subsumption is unaffected: `(and (>= x 5) (>= x 10))` = `(>= x 10)`.
-        let ge = f("(if (and (>= x 5) (>= x 10)) 1 0)");
-        assert_eq!(run_returns_with::<i64>(&ge, "f", &[Val::S64(7)]), 0);
-        assert_eq!(run_returns_with::<i64>(&ge, "f", &[Val::S64(12)]), 1);
-    }
-
-    #[test]
     fn opposite_direction_comparisons_fold_when_disjoint_or_covering() {
         // DISJOINT/COVERING INTERVAL: two OPPOSITE-direction comparisons on the same operand `v` form an
         // upper half-line `v <= U` and a lower one `v >= L`. `and` (∩ `L <= v <= U`) is EMPTY iff `L > U` →
@@ -49124,28 +49085,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             or_code.contains(&Lir::I32Or) && !or_code.iter().any(|i| matches!(i, Lir::If(_))),
             "(or p q) over leaves is a branchless i32.or, got: {or_code:?}"
         );
-        // Full truth-table value parity under wasmtime.
-        use wasmtime::component::Val;
-        let and_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: p Bool) (: q Bool)) (and p q)) (export f))",
-        )))
-        .expect("compile and");
-        let or_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: p Bool) (: q Bool)) (or p q)) (export f))",
-        )))
-        .expect("compile or");
-        for (p, q) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(
-                run_returns_with::<bool>(&and_b, "f", &[Val::Bool(p), Val::Bool(q)]),
-                p && q,
-                "and({p},{q})"
-            );
-            assert_eq!(
-                run_returns_with::<bool>(&or_b, "f", &[Val::Bool(p), Val::Bool(q)]),
-                p || q,
-                "or({p},{q})"
-            );
-        }
+        // Full truth-table value parity migrated to the corpus (run via cdz-run): cases "a branchless and
+        // over two leaf booleans is the full conjunction truth table" and its or companion in
+        // spec/semantics/02-binding-and-control.sexp.
     }
 
     #[test]
@@ -49157,7 +49099,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         // short-circuit; that's `a_conjunction_short_circuits_shielding_a_trapping_right_operand`.)
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
-        use wasmtime::component::Val;
         let lir = |body: &str| -> Vec<Lir> {
             let ast = crate::testkit::parse(&format!(
                 "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) {body}) (def (main) 0) (export main))"
@@ -49193,22 +49134,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             or_code.contains(&Lir::I32Or) && !or_code.iter().any(|i| matches!(i, Lir::If(_))),
             "(or cmp cmp) is a branchless i32.or, got: {or_code:?}"
         );
-        // Truth-table value parity: (a<b) && (c<d) over the four cases.
-        let and_b = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) (and (< a b) (< c d))) (export f))",
-        )))
-        .expect("compile");
-        let ck = |a: i64, b: i64, c: i64, d: i64| {
-            run_returns_with::<bool>(
-                &and_b,
-                "f",
-                &[Val::S64(a), Val::S64(b), Val::S64(c), Val::S64(d)],
-            )
-        };
-        assert!(ck(1, 2, 3, 4), "T&&T");
-        assert!(!ck(1, 2, 4, 3), "T&&F");
-        assert!(!ck(2, 1, 3, 4), "F&&T");
-        assert!(!ck(2, 1, 4, 3), "F&&F");
+        // Truth-table value parity `(a<b) && (c<d)` migrated to the corpus (run via cdz-run): case "a
+        // branchless and over two comparisons is the conjunction of the two relations" in
+        // spec/semantics/02-binding-and-control.sexp.
     }
 
     #[test]

@@ -6078,6 +6078,78 @@
   (call   main (: 5 Int64) (: 3 Int64) (: -9 Int64))
   (output (: (tuple 0 1) (Tuple Int64 Int64))))
 
+; ── EQUALITY does not subsume: two `=` to different constants are a contradiction / a 2-point set ─────
+; The same-direction subsumption fold (upper/lower half-lines collapse to the tighter/looser bound) is
+; keyed on ORDERING operators only. A miscompile once let `Eq` in, so `(and (= x 5) (= x 6))` "subsumed"
+; to `(= x 6)` (returns 1 at x=6) — but two equalities to DIFFERENT constants are a CONTRADICTION under
+; `and` (x cannot equal both) and a 2-point set under `or` (neither keeps just one). Same-CONSTANT
+; equality still folds idempotently, and legitimate ordering subsumption is unaffected. Regression pins.
+(case "two equalities to different constants are an and-contradiction that does not subsume"
+  (doc    "`(and (= x 5) (= x 6))` is ALWAYS false — x cannot equal both 5 and 6 — including at the two
+           miscompiled points x=5 and x=6. A subsumption fold that wrongly admitted `Eq` collapsed this to
+           `(= x 6)` and returned 1 at x=6. Value is 0 everywhere: x=5,6,7,0 → 0. The Eq-exclusion of the
+           same-direction subsumption fold.")
+  (input  (do (def (f (: x Int64)) (if (and (= x 5) (= x 6)) 1 0)) (export f)))
+  (call   f (: 5 Int64)) (output (: 0 Int64))
+  (call   f (: 6 Int64)) (output (: 0 Int64))
+  (call   f (: 7 Int64)) (output (: 0 Int64))
+  (call   f (: 0 Int64)) (output (: 0 Int64)))
+
+(case "two equalities to different constants under or are the 2-point set neither collapses to"
+  (doc    "`(or (= x 5) (= x 6))` is the 2-point set {5, 6} — x=5 → 1, x=6 → 1, x=7 → 0. A subsumption
+           fold admitting `Eq` would drop one point. Complements the and-contradiction above.")
+  (input  (do (def (f (: x Int64)) (if (or (= x 5) (= x 6)) 1 0)) (export f)))
+  (call   f (: 5 Int64)) (output (: 1 Int64))
+  (call   f (: 6 Int64)) (output (: 1 Int64))
+  (call   f (: 7 Int64)) (output (: 0 Int64)))
+
+(case "a same-constant equality pair still folds idempotently and ordering subsumption is unaffected"
+  (doc    "The Eq-exclusion is precise: same-CONSTANT equality is idempotence, not subsumption, so `(and
+           (= x 5) (= x 5))` still folds to `x == 5` (x=5 → 1, x=6 → 0); and a legitimate ordering
+           subsumption `(and (>= x 5) (>= x 10))` = `(>= x 10)` is unchanged (x=7 → 0, x=12 → 1). `main` =
+           `(tuple (if (and (= x 5) (= x 5)) 1 0) (if (and (>= x 5) (>= x 10)) 1 0))`.")
+  (input  (do
+            (def (main (: x Int64))
+              (tuple (if (and (= x 5) (= x 5)) 1 0)
+                     (if (and (>= x 5) (>= x 10)) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64))  (output (: (tuple 1 0) (Tuple Int64 Int64)))
+  (call   main (: 6 Int64))  (output (: (tuple 0 0) (Tuple Int64 Int64)))
+  (call   main (: 12 Int64)) (output (: (tuple 0 1) (Tuple Int64 Int64))))
+
+; ── BRANCHLESS boolean connectives over trap-free operands (value parity of the no-short-circuit emit) ─
+; `(and p q)` / `(or p q)` over cheap trap-free operands (leaves or comparisons) need no short-circuit
+; branch: booleans are canonical i32 0/1, so they emit a branchless `i32.and`/`i32.or`. Short-circuit only
+; matters to skip an effecting/trapping right operand (that case keeps the `if` — see the trapping-rhs
+; short-circuit cases above). These pin the VALUE parity of the branchless emit over the full truth table.
+(case "a branchless and over two leaf booleans is the full conjunction truth table"
+  (doc    "`(and p q)` over two Bool leaves emits a branchless `i32.and` (no short-circuit `if`); the value
+           is `p && q` over all four rows: (T,T) → true, (T,F) → false, (F,T) → false, (F,F) → false.")
+  (input  (do (def (f (: p Bool) (: q Bool)) (and p q)) (export f)))
+  (call   f (: true Bool)  (: true Bool))  (output (: true Bool))
+  (call   f (: true Bool)  (: false Bool)) (output (: false Bool))
+  (call   f (: false Bool) (: true Bool))  (output (: false Bool))
+  (call   f (: false Bool) (: false Bool)) (output (: false Bool)))
+
+(case "a branchless or over two leaf booleans is the full disjunction truth table"
+  (doc    "`(or p q)` over two Bool leaves emits a branchless `i32.or`; the value is `p || q`: (T,T) → true,
+           (T,F) → true, (F,T) → true, (F,F) → false. The disjunction companion of the branchless and.")
+  (input  (do (def (f (: p Bool) (: q Bool)) (or p q)) (export f)))
+  (call   f (: true Bool)  (: true Bool))  (output (: true Bool))
+  (call   f (: true Bool)  (: false Bool)) (output (: true Bool))
+  (call   f (: false Bool) (: true Bool))  (output (: true Bool))
+  (call   f (: false Bool) (: false Bool)) (output (: false Bool)))
+
+(case "a branchless and over two comparisons is the conjunction of the two relations"
+  (doc    "`(and (< a b) (< c d))` — the operands are COMPARISONS, not bare leaves, but a comparison can
+           neither trap nor effect, so it too emits a branchless `i32.and` (no short-circuit). The value is
+           `(a<b) && (c<d)`: (1,2,3,4) → true, (1,2,4,3) → false, (2,1,3,4) → false, (2,1,4,3) → false.")
+  (input  (do (def (f (: a Int64) (: b Int64) (: c Int64) (: d Int64)) (and (< a b) (< c d))) (export f)))
+  (call   f (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64)) (output (: true Bool))
+  (call   f (: 1 Int64) (: 2 Int64) (: 4 Int64) (: 3 Int64)) (output (: false Bool))
+  (call   f (: 2 Int64) (: 1 Int64) (: 3 Int64) (: 4 Int64)) (output (: false Bool))
+  (call   f (: 2 Int64) (: 1 Int64) (: 4 Int64) (: 3 Int64)) (output (: false Bool)))
+
 ; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
 ; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
 ; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the
