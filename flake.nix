@@ -1467,7 +1467,7 @@
         # is not in their snapshot → those bins CACHE-HIT → so does an exec keyed on them. A shared
         # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
         # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
-        mkPhaseBin = { pname, crate, bin ? pname, closure }:
+        mkPhaseBin = { pname, crate, bin ? pname, closure, injectRuntimeHash ? false }:
           pkgs.stdenvNoCC.mkDerivation {
             inherit pname;
             version = "0.0.0";
@@ -1486,6 +1486,19 @@
               [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
               [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
               ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+              ${pkgs.lib.optionalString injectRuntimeHash ''
+                # Same nix-built-hash injection as `seedCompiler`: this compiler stamps the runtime/nfc content
+                # hash of the components in THIS closure into the wasm it emits, so a program built here imports
+                # the exact runtime the corpus EXEC resolves from `componentStore` — not the committed default,
+                # which is host-specific (the runtime wasm is not byte-reproducible cross-host). Without it an
+                # off-fleet corpus exec fails "no runtime of content address <committed-default> in the store".
+                # rcdzc reads these via `option_env!` in `runtime_abi.rs`; the `cat` reuses the shared `hashOf`
+                # derivations (no re-hash, no IFD). Only the COMPILER phase-bin sets this (the parser/exec bins
+                # have no rcdzc in their closure, so it would be a no-op that needlessly rotates their cache).
+                export CDZ_RUNTIME_HASH="$(cat ${runtimeHash})"
+                export CDZ_DEBUG_RUNTIME_HASH="$(cat ${runtimeDebugHash})"
+                export CDZ_NFC_HASH="$(cat ${nfcHash})"
+              ''}
               cargo build --release --locked -p ${crate} --bin ${bin}
               runHook postBuild
             '';
@@ -1498,7 +1511,7 @@
         # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
         # cdz-run deps wasmtime/cadenza-syntax/cdz-contract/cdz-rt, NO rcdzc, so COMPILER-FREE by construction).
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
-        cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; };
+        cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
         # The RUST exec grader (`cdz-rust-run --grade`) — the rust-target analogue of `cdz-run` for the corpus
         # rust exec layer. COMPILER-FREE by construction (its closure is cdz-rust-run's deps: cdz-rust-render +
