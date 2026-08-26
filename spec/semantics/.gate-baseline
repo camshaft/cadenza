@@ -1871,6 +1871,7 @@ pass	a float-field RECORD as a SET element dedups by content including the float
 pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
+pass	a flow-refined match scrutinee dispatches with the refinement-dead arm elided
 pass	a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold
 pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
@@ -2001,6 +2002,7 @@ pass	a guard-elided signed division by a provably-non-neg-one divisor computes i
 pass	a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
+pass	a guarded arm over a masked scrutinee stays gated by its guard when the probe is in range
 pass	a guarded bin arm with a CONST leading segment reads a binder from a LATER segment
 pass	a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm
 pass	a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm
@@ -2365,6 +2367,7 @@ pass	a map-scrutinee match arm whose head is an unbound name is rejected in a re
 pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
 pass	a map-via-effects walk — each element transformed by a dispatch, output order preserved
 pass	a masked-divisor signed division still traps on a zero divisor (zero guard never elided)
+pass	a match all of whose non-wildcard arms are unreachable collapses to the wildcard body
 pass	a match arm an earlier arm already fully covers compiles but earns a CDZ0213 unreachable-arm warning
 pass	a match arm binds a nested tuple inside a sum payload
 pass	a match arm building a fresh runtime compound infers its shape
@@ -2396,6 +2399,8 @@ pass	a match on an open sum omitting the open-tail arm is rejected
 pass	a match on an open sum with an open-tail arm is exhaustive
 pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
+pass	a match over a masked scrutinee keeps an in-range arm at the range boundary
+pass	a match over a masked scrutinee whose out-of-range arm is unreachable dispatches to the live arms
 pass	a match over a match-selected Option folds through the false arm (None)
 pass	a match over a match-selected Option folds through the true arm (Some)
 pass	a match over a quoted float dispatches the Ast.Float arm past a preceding Ast.Int arm
@@ -4137,6 +4142,7 @@ pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)
 pass	a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)
+pass	a wide-unsigned match probe past i64 is not mistaken for out-of-range and still fires
 pass	a wider narrow-width wrapping-mul constant folds by wrapping to the type width
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
