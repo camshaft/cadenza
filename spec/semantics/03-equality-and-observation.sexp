@@ -3004,3 +3004,25 @@
             (def (main) (match (Map.lookup (Map.insert Map.empty (tuple (rep "hi" 3) 1) 42) (tuple "hixxx" 1)) ((Some v) v) ((None) (- 0 1))))
             (export main)))
   (call   main) (output (: 42 Int64)))
+
+; -- breaker batch 406 (2026-08-26): bare runtime Bytes EQUALITY over provably-FLAT operands
+; (Bytes.of, Bytes.concat) — the = twins of the pinned bare-< total-order case. Controls for the
+; filed decline: bare compare with a VIEW (slice), arena (Ast.encode / String.to-bytes), or
+; laundered-param operand declines while the compound-walk path flattens correctly (finding-#16
+; family, bare-position canonicalization).
+
+(case "bfl1 bare equality over flat Bytes.of runtime twins"
+  (input (do
+    (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 2)))
+    (def (f (: n Int64)) (if (= (mk n) (mk n)) 1 0))
+    (export f)))
+  (call f (: 2 Int64))
+  (output (: 1 Int64)))
+
+(case "bfl2 bare equality across Bytes.concat vs Bytes.of flat twins"
+  (input (do
+    (def (f (: n Int64))
+      (if (= (Bytes.concat (Bytes.of (list (UInt8.wrap n))) (Bytes.of (list 2))) (Bytes.of (list (UInt8.wrap n) 2))) 1 0))
+    (export f)))
+  (call f (: 5 Int64))
+  (output (: 1 Int64)))

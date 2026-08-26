@@ -4083,3 +4083,43 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 406 (2026-08-26): runtime NON-FINITE Ast.Float encode faces (#3711 op93 tags
+; 17/18/19, same-hour probe). A runtime-computed NaN/inf payload now ENCODES: nfe1 non-empty bytes,
+; nfe2 sibling-tag equal lengths, nfe3 +inf/-inf encodes differ (distinct tags, via the tuple-walk
+; compare), nfe4 NaN encodes byte-identical (canonical form). wasm pass / rust todo (rust op93 body
+; not yet updated). Compile-fold flip (encode_ast_value) still pending with v-cp; bare runtime Bytes
+; equality over encode results is a separate filed decline (flat-operands-only gate).
+
+(case "nfe1 runtime +inf Ast.Float encodes to non-empty bytes (op93 non-finite tag path)"
+  (input (do
+    (def (f (: x Float64))
+      (if (> (Bytes.len (Ast.encode (Ast.Float (/ x 0.0)))) 0) 1 0))
+    (export f)))
+  (call f (: 1.0 Float64))
+  (output (: 1 Int64)))
+
+(case "nfe2 +inf and -inf runtime encodes have EQUAL byte length (sibling tags 18/19)"
+  (input (do
+    (def (f (: x Float64))
+      (if (= (Bytes.len (Ast.encode (Ast.Float (/ x 0.0)))) (Bytes.len (Ast.encode (Ast.Float (/ (- 0.0 x) 0.0))))) 1 0))
+    (export f)))
+  (call f (: 1.0 Float64))
+  (output (: 1 Int64)))
+
+(case "nfe3 tuple-walk equality says +inf and -inf encodes DIFFER (distinct tags)"
+  (input (do
+    (def (f (: x Float64))
+      (if (= (tuple 1 (Ast.encode (Ast.Float (/ x 0.0)))) (tuple 1 (Ast.encode (Ast.Float (/ (- 0.0 x) 0.0))))) 0 1))
+    (export f)))
+  (call f (: 1.0 Float64))
+  (output (: 1 Int64)))
+
+(case "nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonical NaN form)"
+  (input (do
+    (def (f (: x Float64))
+      (if (= (tuple 1 (Ast.encode (Ast.Float (- (/ x 0.0) (/ x 0.0)))))
+             (tuple 1 (Ast.encode (Ast.Float (- (/ (* x 2.0) 0.0) (/ (* x 2.0) 0.0)))))) 1 0))
+    (export f)))
+  (call f (: 1.0 Float64))
+  (output (: 1 Int64)))
