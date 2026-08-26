@@ -19090,3 +19090,17 @@
             (export pair-sum)))
   (call   pair-sum (: 3 Int64) (: 22 Int64)) (output (: 25 Int64))
   (live-objects 0))
+
+(case "a recursive match binder used twice over a heap-list sum payload projects a live field"
+  (doc    "`f` recurses to a base `(Mk (list 0) (list 0))` (heap lists); each recursive arm matches
+           `(f (+ n 1))`, binds `a` (a heap List), and USES IT TWICE in `(Mk a a)`. `main (f -4)` projects
+           `List.len` of the first field. The scrutinee is materialized once per level (the MatchSum wrapper
+           slot); the first field is `(list 0)` (length 1) at every depth. Value-correct and free of
+           use-after-free -- a double-freed twice-used binder would trap before returning 1.")
+  (input  (do
+            (type P (Mk (List Int64) (List Int64)))
+            (def (f (: n Int64)) (if (= n 0) (Mk (list 0) (list 0))
+                (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
+            (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
+            (export main)))
+  (call   main (: -4 Int64)) (output (: 1 Int64)))

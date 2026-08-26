@@ -3144,6 +3144,7 @@ pass	a recursive loop performs to TWO handlers per iteration with independent st
 pass	a recursive loop whose CONDITION performs — each iteration RE-dispatches (never hoisted)
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
+pass	a recursive match binder used twice over a heap-list sum payload projects a live field
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
