@@ -2957,3 +2957,27 @@
             (export main)))
   (call   main) (output (: 5 Int64))
   (live-objects 0))
+
+(case "runtime structural equality of two owned cons-lists reclaims both operands (no live objects)"
+  (doc    "Two OWNED cons-list operands (each `(build 3)` recursion-built so neither folds); `=` (value-eq)
+           borrows both and the emit must drop each after the compare -> `(= (build 3) (build 3))` is true so
+           main returns 1, and both whole lists must be reclaimed -- net 0 live cells.")
+  (input  (do
+            (type IntList (Cons (Tuple Int64 IntList)) Nil)
+            (def (build n) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (build (- n 1))))))
+            (def (main) (if (= (build 3) (build 3)) 1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "runtime shaped equality of two owned List-Float64 operands reclaims both (no live objects)"
+  (doc    "Two OWNED runtime `List Float64` operands, each `(build 0 Float64.nan)` built opaquely through a
+           recursive float-param builder (so neither const-folds); `=` routes to the shaped-float walk
+           (value-eq-shaped) which borrows both and drops each owned temporary -> equal -> main returns 1;
+           both built lists must be reclaimed -- net 0 live cells.")
+  (input  (do
+            (def (build (: n Int64) (: x Float64)) (if (< n 0) (build (+ n 1) x) (list x)))
+            (def (main) (if (= (build 0 Float64.nan) (build 0 Float64.nan)) 1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
