@@ -574,6 +574,7 @@ pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for 
 pass	a @test-tier @ensures on a performing def runs and checks
 pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
+pass	a BARE-param escaping closure capturing a handled value FOLDS to 17 (matches the annotated-param twin)
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
@@ -7454,7 +7455,6 @@ pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up t
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
 todo	Type is a first-class value
-todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)
 todo	a BLOCK-wrapped branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3 sub-face)
 todo	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3 sub-face)
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
