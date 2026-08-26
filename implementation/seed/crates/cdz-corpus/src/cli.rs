@@ -151,6 +151,12 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
             }
             write_bytes(&cdir.join("test-run.ast"), &test_run_ast(rec))
                 .map_err(|e| format!("{path} case {i} test-run: {e}"))?;
+            // The case's primary outcome KIND as PLAIN TEXT — the one datum the nix build/exec ROUTER needs
+            // to decide compiler-refusal (error/declines, build-phase) vs a run (output/trap, exec-phase),
+            // so the router reads a bare word instead of decoding the binary `test-run.ast` (keeping the
+            // compiler-free exec derivation from having to link a decoder). Derived from the first trial.
+            std::fs::write(cdir.join("expect-kind"), expect_kind(rec))
+                .map_err(|e| format!("{path} case {i} expect-kind: {e}"))?;
             manifest.push_str(&case);
             manifest.push('\n');
         }
@@ -163,6 +169,20 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
 /// Write a per-case binary-AST artifact (bytes the reader already built, or `test_run_ast` here) to disk.
 fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+/// A case's primary outcome KIND — `output` | `trap` | `error` | `declines` — from its FIRST trial (a
+/// case is one outcome kind; multi-trial cases repeat `output`). This is the build/exec ROUTER's cue:
+/// `output`/`trap` are RUN outcomes (compile must succeed → graded at exec), `error`/`declines` are
+/// COMPILE outcomes (the compiler must refuse → graded at build).
+fn expect_kind(rec: &Record) -> &'static str {
+    match rec.trials.first().map(|t| &t.expect) {
+        Some(Expect::Output(_)) => "output",
+        Some(Expect::Trap(_)) => "trap",
+        Some(Expect::Error(..)) => "error",
+        Some(Expect::Declines(_)) => "declines",
+        None => "output", // a case always has ≥1 trial; default is harmless
+    }
 }
 
 /// The TEST-RUN artifact — a case's run/grade metadata (description, trials, host tape, warns) as BINARY

@@ -138,8 +138,17 @@ pub fn grade(
 
     // Host-call SEQUENCE check (only when every trial so far passed/todo): exact ordered equality against
     // the observed calls of the first value-producing trial — a dropped/extra/reordered call is a Fail.
+    // `run_capturing` returns each observed entry as `<op>` OR `<op>\t<message>` (a call that carried a
+    // STRING argument rides along with its message). The recorded `host-calls` are OPS ONLY, so compare on
+    // the op alone — split on the FIRST tab and take the op, exactly as the `xtask gate`'s
+    // `observed_host_calls` does. (Without this, a mixed-arity op with a string arg — `io.log("tag")` —
+    // observes as `io.log\ttag` and spuriously mismatches the recorded `io.log`.)
     if !matches!(worst, Grade::Fail(_)) && !test_run.host_calls.is_empty() {
-        let observed = first_observed.unwrap_or_default();
+        let observed: Vec<String> = first_observed
+            .unwrap_or_default()
+            .iter()
+            .map(|e| e.split('\t').next().unwrap_or(e).to_string())
+            .collect();
         if observed != test_run.host_calls {
             worst = Grade::Fail(format!(
                 "host-call sequence mismatch: expected {:?}, observed {:?}",

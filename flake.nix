@@ -652,6 +652,13 @@
             inherit pname src;
             version = "0.0.0";
             nativeBuildInputs = [ seedCompiler ];
+            # After v-cdz-delegate's #3397, a `--no-default-features` cdz (which `seedCompiler` is)
+            # DELEGATES compilation to the external `cdz-compile` CLI instead of linking rcdzc — so this
+            # cdz needs `cdz-compile` reachable. Point at the SEPARATE content-addressed `cdzCompile`
+            # derivation (kept independent of cdz — the whole caching point; per the agreed seam). The
+            # delegate resolves `CDZ_COMPILE_BIN` first. Harmless BEFORE #3397 (cdz is still in-process, so
+            # this var sits unused) — landing it here keeps the harness/project builds green when #3397 flips.
+            CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
             buildPhase = ''
               runHook preBuild
               set -o pipefail
@@ -710,6 +717,13 @@
             inherit pname src;
             version = "0.0.0";
             nativeBuildInputs = [ seedCompiler ];
+            # After v-cdz-delegate's #3397, a `--no-default-features` cdz (which `seedCompiler` is)
+            # DELEGATES compilation to the external `cdz-compile` CLI instead of linking rcdzc — so this
+            # cdz needs `cdz-compile` reachable. Point at the SEPARATE content-addressed `cdzCompile`
+            # derivation (kept independent of cdz — the whole caching point; per the agreed seam). The
+            # delegate resolves `CDZ_COMPILE_BIN` first. Harmless BEFORE #3397 (cdz is still in-process, so
+            # this var sits unused) — landing it here keeps the harness/project builds green when #3397 flips.
+            CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
             buildPhase = ''
               runHook preBuild
               # `set -o pipefail` is LOAD-BEARING here: without it, `cdz test | tee` adopts the LAST
@@ -765,6 +779,8 @@
             fileset = dir;
           };
           nativeBuildInputs = [ seedCompiler ];
+          # cdz-compile reachable for post-#3397 delegation (see buildCadenzaProject); harmless before it.
+          CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
           buildPhase = ''
             runHook preBuild
             set -o pipefail
@@ -1146,7 +1162,13 @@
                 );
           in
           pkgs.runCommand pname
-            { nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ]; } ''
+            {
+              nativeBuildInputs = [ seedCompiler pkgs.wasm-tools ];
+              # cdz-compile reachable for post-#3397 delegation (see buildCadenzaProject); harmless before it.
+              # This is the HARNESS guest build — the conformance suite depends on it, so it must not break
+              # the moment #3397 flips cdz to delegating.
+              CDZ_COMPILE_BIN = "${cdzCompile}/bin/cdz-compile";
+            } ''
             set -euo pipefail
             ${compile}
             # Canonicalize (strip the tool-version `producers` sections) so the guest's content address is
@@ -1350,6 +1372,58 @@
           '';
         };
 
+        # The corpus per-case pipeline's PHASE BINARIES (design/DESIGN-corpus-nix-per-case-caching.md),
+        # each built ONCE like `contractHasher` with a MINIMAL closure so its derivation rotates only when
+        # THAT phase's code changes — the caching discipline the design turns on:
+        #   - `cdzCorpus` = the `cdz-corpus` bin (shred): parser closure. `cdz corpus records --out-dir`
+        #     lives here, NOT in `seedCompiler` (built `--no-default-features`, so the corpus subcommand is
+        #     absent there — and deliberately so, keeping corpus edits from rotating the compiler).
+        #   - `cdzCompile` = the `cdz-compile` bin (build): compiler-only closure (rcdzc). A `--no-default`
+        #     `cdz` has no standalone compile bin; this is the small one added for the pipeline's build phase.
+        # (exec = `cdz-run`, already emitted by `seedCompiler`; it carries no compiler, so a compiler change
+        # cannot invalidate the exec layer beyond the artifact input — the build/exec decoupling.)
+        # `mkPhaseBin { pname; crate; bin; closure }` — build one phase bin from a source snapshot SCOPED to
+        # its crate's dep-closure (`crateCompileSrc` per closure member + non-closure `Cargo.toml`s +
+        # synthetic `stubNonClosure` stubs so cargo parses the workspace without the omitted src), exactly
+        # like `seedCompilerSrc`/`seedCompiler`. Closure-scoping is what makes the caching REAL: because
+        # `rcdzc` (the compiler) is NOT in `cdz-run`'s or `cdz-corpus`'s dep-closure, a compiler-source edit
+        # is not in their snapshot → those bins CACHE-HIT → so does an exec keyed on them. A shared
+        # whole-workspace snapshot (the old `platformItestSrc`) would rotate every bin on any edit and defeat
+        # the exec/build decoupling (the emitted-wasm-unchanged ⇒ exec-cache-hit win).
+        mkPhaseBin = { pname, crate, bin ? pname, closure }:
+          pkgs.stdenvNoCC.mkDerivation {
+            inherit pname;
+            version = "0.0.0";
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                (pkgs.lib.concatMap crateCompileSrc closure)
+                ++ nonClosureManifests closure
+                ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
+            };
+            nativeBuildInputs = [ rustToolchain ];
+            buildPhase = ''
+              runHook preBuild
+              chmod -R u+w .
+              ${stubNonClosure closure}
+              [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
+              [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
+              ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+              cargo build --release --locked -p ${crate} --bin ${bin}
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 target/release/${bin} "$out/bin/${bin}"
+              runHook postInstall
+            '';
+          };
+        # shred (parser closure — excludes rcdzc), build (compiler closure = rcdzc), exec (runtime closure —
+        # cdz-run deps wasmtime/cadenza-syntax/cdz-contract/cdz-rt, NO rcdzc, so COMPILER-FREE by construction).
+        cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
+        cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; };
+        cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+
         # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
         # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
         # each with the pinned `cdz` binary, and emits the deterministic (sorted) name→base64url-id JSON.
@@ -1515,7 +1589,20 @@
         # change coordinated with v-runtime + the harness — this increment only PRODUCES the store.)
         # Filenames + runtime.toml use the platform content address (`cdz-contract blob` = base62 Blob hash),
         # matching `content_address` / the store's `put()` so a program resolves the runtime identically here.
-        componentStore = pkgs.runCommand "cdz-component-store" { } ''
+        componentStore = pkgs.runCommand "cdz-component-store"
+          {
+            # CONTENT-ADDRESSED (operator 2026-08-25 "we should be using CAS for sure"): the store's output
+            # PATH is a function of its CONTENTS (the runtime/nfc wasm keyed by hash + runtime.toml), not of
+            # its build inputs. So when a change rebuilds the store's build-tools (`cdz-contract` etc. share
+            # the wide workspace snapshot, so a compiler-source edit rebuilds them) but the wasm bytes are
+            # unchanged, the store re-derives to the SAME path — and every consumer keyed on it (notably the
+            # corpus `exec` derivations, which resolve the runtime from `CDZ_STORE`) CACHE-HITS. This is the
+            # last compiler-taint on the build/exec decoupling: without it a compiler change with identical
+            # emit still rotated the store path and re-ran every exec.
+            __contentAddressed = true;
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
+          } ''
           set -euo pipefail
           mkdir -p "$out"
           # Store every component (both heaps + the NFC dependency) by its content address — a pure CAS.
@@ -1539,6 +1626,182 @@
           runtime = "$rt"
           debug_runtime = "$dbg"
           EOF
+        '';
+
+        # ── The corpus per-case caching graph (design/DESIGN-corpus-nix-per-case-caching.md) ────────────
+        #
+        # Each corpus case flows through THREE separately-cached derivations — shred → build → exec — so an
+        # unrelated change is a cache HIT, and (the headline) a COMPILER change that leaves a case's emitted
+        # wasm byte-identical does NOT rerun that case's exec. The build derivation is CONTENT-ADDRESSED
+        # (`__contentAddressed`): its output path is a function of the emitted BYTES, not its inputs — so a
+        # compiler change reruns the build (its input `cdzCompile` rotated) but, when the wasm is identical,
+        # yields the SAME output path, and the exec keyed on it cache-hits. Input-addressed derivations
+        # could not express this (the build's path would change with the compiler even for identical output).
+        #
+        # Cases are enumerated at EVAL time from the SOURCE `.sexp` (a pure regex count of `(case "…"` forms,
+        # like `harnessProgramsIn`) — the flake avoids IFD entirely, so nix never reads a built manifest.
+        # The shred still emits per-case dirs at build time; the eval-time count gives the `0000..N-1` indices
+        # whose dirs it names, and each per-case derivation globs its own `<idx>-*` dir out of the shred.
+        corpusCaseCount = file:
+          let
+            txt = builtins.readFile file;
+            caps = builtins.filter builtins.isList (builtins.split ''\(case[[:space:]]+"'' txt);
+          in
+          builtins.length caps;
+
+        # SHRED (content-addressed) — parse a whole corpus file into per-case artifact dirs, ONCE. Closure =
+        # the parser (`cdzCorpus`); reruns only when the `.sexp` changes. Clean-name copy first: `cdz-corpus`
+        # names the subdir by the input stem, and a store path is hash-prefixed (`<hash>-01-literals`), so the
+        # copy makes the subdir exactly `${name}/` (the `mkCadenzaGuest` clean-name idiom).
+        mkCorpusShred = { name, file }:
+          pkgs.runCommand "corpus-shred-${name}"
+            {
+              nativeBuildInputs = [ cdzCorpus ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            cp ${file} ${name}.sexp
+            cdz-corpus records --out-dir "$out" ${name}.sexp
+          '';
+
+        # BUILD (content-addressed) — compile ONE case's native artifacts to wasm, capturing the outcome.
+        # Closure = the compiler (`cdzCompile`). Output carries everything the exec needs so exec keys ONLY
+        # on this (content-addressed) output + `cdzRun`: `emit.wasm` (on success), `compile.status`,
+        # `compile.err`, and the run metadata forwarded from the shred (`test-run.ast`, `expect-kind`,
+        # `component-name`). Because it is content-addressed, a compiler change that re-emits identical
+        # bytes + identical metadata produces the SAME output path → the exec cache-hits.
+        mkCorpusBuild = { name, shred, idx }:
+          pkgs.runCommand "corpus-build-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            case=$(echo ${shred}/${name}/${idx}-*)
+            [ -d "$case" ] || { echo "no shred dir for case ${idx} of ${name}"; exit 1; }
+
+            inputs=("ast:main=$case/program.ast")
+            entry=()
+            for m in "$case"/module-*.ast; do
+              if [ -e "$m" ]; then
+                n=$(basename "$m" .ast); n=''${n#module-}
+                inputs+=("ast:$n=$m")
+                entry=(--entry main)
+              fi
+            done
+            cfg=()
+            if [ -e "$case/wit-world.ast" ]; then cfg+=("wit-world:w=$case/wit-world.ast"); fi
+            if [ -e "$case/component-name" ]; then cfg+=(--component-name "$(cat "$case/component-name")"); fi
+
+            # Compile. A refusal (error/declines case) is NOT a derivation failure — capture the outcome; the
+            # exec grades it. `emit.wasm` is present only on success.
+            if cdz-compile "''${inputs[@]}" "''${cfg[@]}" "''${entry[@]}" -t wasm -o "$out/emit.wasm" 2>"$out/compile.err"; then
+              printf '0' > "$out/compile.status"
+            else
+              printf '%s' "$?" > "$out/compile.status"
+            fi
+            # Forward the run metadata so exec depends ONLY on this build output (+ cdzRun) — compiler-free.
+            cp "$case/test-run.ast" "$out/test-run.ast"
+            cp "$case/expect-kind" "$out/expect-kind"
+            if [ -e "$case/component-name" ]; then cp "$case/component-name" "$out/component-name"; fi
+          '';
+
+        # EXEC — grade one case. Closure = the COMPILER-FREE `cdzRun` + the runtime store; NO compiler, so a
+        # compiler change cannot rotate this beyond the (content-addressed) build input. `expect-kind` routes:
+        #   - output/trap → the compile MUST have succeeded, then `cdz-run --grade` runs + grades the wasm.
+        #   - error/declines → the compile MUST have been refused (a compile-dependent outcome; this increment
+        #     asserts the refusal, the exact code/message match is the build-grade follow-on).
+        # A value-case that did not compile, or a refusal-case that did, fails here.
+        mkCorpusExec = { name, build, idx }:
+          pkgs.runCommand "corpus-exec-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRun ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            export CDZ_STORE="${componentStore}"
+            status=$(cat ${build}/compile.status)
+            kind=$(cat ${build}/expect-kind)
+            if [ "$status" = 0 ]; then
+              case "$kind" in
+                output|trap)
+                  gcn=()
+                  if [ -e ${build}/component-name ]; then gcn=(--component-name "$(cat ${build}/component-name)"); fi
+                  cdz-run ${build}/emit.wasm --grade ${build}/test-run.ast "''${gcn[@]}" ;;
+                *)
+                  echo "FAIL ${name} ${idx}: expected $kind but the program COMPILED (a refusal was expected)"; exit 1 ;;
+              esac
+            else
+              case "$kind" in
+                error|declines)
+                  echo "ok (build-graded refusal): ${name} ${idx}" ;;
+                *)
+                  # An output/trap case whose program the compiler DECLINED. The `xtask gate` grades this
+                  # TODO (a not-yet-implemented feature, not a miscompile: `Ran::Declined` vs `Expect::Output`
+                  # → Todo), NOT a Fail — and the wasm baseline has 40 such todos and ZERO fails. So match
+                  # that: Todo (exit 0), never a hard fail here. (Catching a PASS→TODO regression needs the
+                  # gate's baseline-DIFF, which this graph does not yet do — the old gate stays authoritative
+                  # for regression detection until the baseline-diff + rust-backend slices land.)
+                  echo "TODO ${name} ${idx}: expected $kind but the compiler declined (not-yet-implemented; graded todo like the gate)" ;;
+              esac
+            fi
+            echo "ok: corpus ${name} case ${idx} ($kind)" > "$out"
+          '';
+
+        # A corpus file's per-case check MAP `{ "<idx>" = execDrv; … }` — shred once, then one build+exec
+        # chain per case. `pipeline`-style (no barrier): each case is an independent chain.
+        corpusCaseChecks = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          builtins.listToAttrs (map
+            (idx: {
+              name = "${name}-${idx}";
+              value = mkCorpusExec {
+                inherit name idx;
+                build = mkCorpusBuild { inherit name shred idx; };
+              };
+            })
+            idxs);
+
+        # The per-FILE aggregate check: every case's exec must pass. `cat`-ing each exec marker adds the
+        # store dependency (string context) without a buildInput, so `nix build .#checks.<sys>.corpus-<name>`
+        # forces the whole graph; a red case fails here. Non-vacuity guarded by the eval-time count > 0.
+        mkCorpusFileAgg = { name, file }:
+          let cases = corpusCaseChecks { inherit name file; };
+          in
+          assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "corpus-${name}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: corpus ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred→build→exec" > "$out"
+          '';
+
+        # Every compiler-genre corpus file (all of `spec/semantics/*.sexp` — the platform-genre corpus lives
+        # under `spec/platform`, never here). Enumerated at EVAL time from the SOURCE dir (`readDir`, no IFD).
+        corpusFileNames = builtins.filter (pkgs.lib.hasSuffix ".sexp")
+          (builtins.attrNames (builtins.readDir ./spec/semantics));
+        # `corpus-<file>` per-file aggregates, mapped over every corpus file — each shreds its file once and
+        # runs a per-case build→exec chain. The `corpus` TOP-LEVEL aggregate forces them all (so `nix flake
+        # check` covers the whole corpus through the per-case caching graph, and CI can build/cache one file
+        # or one case in isolation).
+        corpusFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-${stem}";
+              value = mkCorpusFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        corpusAll = pkgs.runCommand "corpus-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusFileAggs)}
+          echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
         '';
 
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
@@ -2391,6 +2654,11 @@
             # check` runs them all AND CI can build/cache one run in isolation. `.#packages.cdz-platform-itest`
             # is the shared, built-once integration-test executable. See the mkHarnessRun framework above.
             harness-runs = harnessRunsAll;
+            # The corpus per-case caching pipeline (design/DESIGN-corpus-nix-per-case-caching.md): EVERY
+            # corpus file, each case flowing through three separately-cached derivations — shred → build
+            # (content-addressed `cdz-compile`) → exec (compiler-free `cdz-run --grade`). `corpus` is the
+            # whole-corpus aggregate; the per-file `corpus-<file>` aggregates are spread in below.
+            corpus = corpusAll;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -2503,7 +2771,13 @@
           # individually as `checks.<sys>.harness-<name>` alongside the `harness-runs` aggregate, so a
           # candidate touching ONE run's spec (or one program) rebuilds just the affected run(s) — the
           # binary + untouched programs + other runs all cache-hit. Auto-discovered from the harness-runs dir.
-          // (pkgs.lib.mapAttrs' (n: v: pkgs.lib.nameValuePair "harness-${n}" v) harnessRunChecks);
+          // (pkgs.lib.mapAttrs' (n: v: pkgs.lib.nameValuePair "harness-${n}" v) harnessRunChecks)
+          # PER-FILE corpus aggregates: `corpus-<file>` for every corpus file, so CI can build/cache one
+          # file's whole per-case graph in isolation (the top-level `corpus` forces them all). The per-CASE
+          # derivations (`corpus-build/exec-<file>-<idx>`) are cached transitively through these — a candidate
+          # touching one case rebuilds just that case's chain, and a compiler change that re-emits identical
+          # wasm cache-hits every exec (content-addressed build + store).
+          // corpusFileAggs;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
