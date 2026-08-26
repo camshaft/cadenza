@@ -6335,38 +6335,6 @@ fn a_parameter_inside_a_synthesized_scope_form_resolves() {
     assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
 }
 
-/// A `wrap` whose SOURCE value already fits the TARGET (same signedness, source width <= target width)
-/// is the IDENTITY — the truncation mask/sign-extend is elided — and it must still compute the same
-/// value. A `UInt8.wrap` of a runtime `UInt8` is the identity (no mask); a same-sign WIDENING
-/// `UInt16.wrap` of a `UInt8` is too. A NARROWING (`UInt8.wrap` of a `UInt64`) still masks, and a SIGN
-/// CHANGE (`Int8.wrap` of a `UInt8`) still sign-extends — those genuinely reshape the value. The point
-/// is that eliding the redundant truncation does not change any observed result.
-#[test]
-fn a_wrap_whose_source_fits_the_target_is_the_identity() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // UInt8 → UInt8: identity, value preserved (incl. the top-bit value 200 and the max 255).
-    let same = "(module m (def (f (: a UInt8)) (UInt8.wrap a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(same))).expect("compile");
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(200)]), 200);
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(255)]), 255);
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U8(0)]), 0);
-    // UInt8 → UInt16: same-sign widening is also the identity (a UInt8 already fits UInt16).
-    let widen = "(module m (def (f (: a UInt8)) (UInt16.wrap a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(widen))).expect("compile");
-    assert_eq!(run_returns_with::<u16>(&b, "f", &[Val::U8(200)]), 200);
-    // UInt64 → UInt8: a NARROWING still masks (300 mod 256 = 44).
-    let narrow = "(module m (def (f (: a UInt64)) (UInt8.wrap a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(narrow))).expect("compile");
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U64(300)]), 44);
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::U64(255)]), 255);
-    // UInt8 → Int8: a SIGN CHANGE still sign-extends (200 reinterpreted as -56).
-    let sign = "(module m (def (f (: a UInt8)) (Int8.wrap a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(sign))).expect("compile");
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(200)]), -56);
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::U8(100)]), 100);
-}
-
 /// A runtime CHECKED conversion `T.of x` whose SOURCE type provably fits the target is TOTAL — no value
 /// can be out of range, so it can never trap and is emitted as the widening `wrap` (extend-and-
 /// reinterpret). This is the runtime `Int64.of (x:UInt8)` gap the corpus pinned as a decline; it now
@@ -6419,16 +6387,9 @@ fn a_runtime_integer_of_whose_source_fits_the_target_widens_totally() {
 #[test]
 fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // Int32 → Int16 → Int8 (8 ≤ 16): folds to Int8.wrap x. 70000 & 0xFF = 112 (both paths agree).
-    let src = "(module m (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(70000)]), 112);
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(300)]), 44); // 300 → low 8 bits = 44
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(-1)]), -1);
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(127)]), 127);
-    assert_eq!(run_returns_with::<i8>(&b, "f", &[Val::S32(128)]), -128);
-
+    // Value parity (Int32 → Int16 → Int8 folds to Int8.wrap x; 70000 -> 112, 128 -> -128, etc.) migrated to
+    // the corpus (run via cdz-run): case "a narrowing wrap of a wider wrap elides the inner wrap" in
+    // spec/semantics/06-numeric-model.sexp. The inner-wrap elision itself stays a white-box Lir assertion.
     // Lir: exactly ONE sign-extend sequence (a single pair of shl/shr_s) — the inner wrap is gone.
     {
         use crate::backend::wasm::lir::Lir;
@@ -6475,7 +6436,6 @@ fn a_wrap_of_an_in_range_value_elides_the_truncation() {
     use crate::backend::wasm::lir::Lir;
     use crate::backend::wasm::select::select_function;
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     let code_of = |src: &str| -> Vec<Lir> {
         let full = format!(
             "(module m (def (f {}) {}) (def (main) 0) (export main))",
@@ -6522,18 +6482,10 @@ fn a_wrap_of_an_in_range_value_elides_the_truncation() {
         bare.iter().any(|i| matches!(i, Lir::I32And)),
         "a bare narrowing wrap keeps its i32 truncation mask; got {bare:?}"
     );
-    // VALUE PARITY — the elided-mask wrap computes the same as the full one.
-    let mk = |src: &str| {
-        let full = format!("(module m (def (f (: x Int64)) {src}) (export f))");
-        compile_component(&crate::codec::encode(&parse(&full))).expect("compile")
-    };
-    let b = mk("(: ((. UInt8 wrap) (& x 255)) UInt8)");
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(300)]), 44); // 300 & 255 = 44
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(255)]), 255);
-    assert_eq!(run_returns_with::<u8>(&b, "f", &[Val::S64(-1)]), 255); // -1 & 255 = 255
-    let s = mk("(: ((. Int8 wrap) (& x 7)) Int8)");
-    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(5)]), 5);
-    assert_eq!(run_returns_with::<i8>(&s, "f", &[Val::S64(7)]), 7);
+    // Value parity (the elided-mask/sign-extend wrap computes the same as the full one) migrated to the
+    // corpus (run via cdz-run): cases "an unsigned wrap of a value the range lattice proves in-range elides
+    // its mask" and "a signed wrap of a value the range lattice proves in-range elides its sign-extend" in
+    // spec/semantics/06-numeric-model.sexp.
 }
 
 /// A reference buried under many NON-binding forms still resolves to its outer binder — the
