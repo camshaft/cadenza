@@ -10407,35 +10407,6 @@ fn a_negated_repeated_condition_in_a_nested_if_collapses() {
     );
 }
 
-/// A NESTED checked op `(* (+ a b) c)` runs correctly AND still traps on overflow after the
-/// dest-threading optimization (the inner `(+ a b)` writes its result directly into the outer mul's
-/// operand slot rather than a separate scratch slot + copy). Both the value and the guards must
-/// survive: (2+3)*4 = 20, and an inner add that overflows i64 must still trap through the composed op.
-#[test]
-fn a_nested_checked_op_runs_and_still_traps() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // (2 + 3) * 4 = 20 — the inner add's result (5) feeds the mul directly from its slot.
-    let got: i64 = run_returns_with(&bytes, "f", &[Val::S64(2), Val::S64(3), Val::S64(4)]);
-    assert_eq!(got, 20);
-    // A different triple exercises the same function — genuinely runtime, not folded.
-    let got2: i64 = run_returns_with(&bytes, "f", &[Val::S64(10), Val::S64(-4), Val::S64(-2)]);
-    assert_eq!(got2, -12); // (10 + -4) * -2 = -12
-    // The INNER add overflows i64 (MAX + 1) — the guard, which now reads the shared slot, must still
-    // fire and trap before the mul ever runs.
-    assert!(
-        call_traps(&bytes, "f", &[Val::S64(i64::MAX), Val::S64(1), Val::S64(1)]),
-        "an inner-add overflow must trap even though its result shares the outer op's slot"
-    );
-    // The OUTER mul overflows — the mul guard (reading the same shared slot as its $a) must trap.
-    assert!(
-        call_traps(&bytes, "f", &[Val::S64(i64::MAX), Val::S64(0), Val::S64(2)]),
-        "an outer-mul overflow must trap"
-    );
-}
-
 /// STRENGTH REDUCTION `x * 2^k → x << k`: a multiply by a constant power of two runs to the SAME value
 /// AND traps on the SAME overflowing inputs as the multiply would (a left shift is exact multiplication
 /// by a power of two — `numeric-model.md`). Exercised over signed/unsigned/narrow widths and both

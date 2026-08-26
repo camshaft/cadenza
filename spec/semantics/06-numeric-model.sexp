@@ -9476,3 +9476,22 @@
   (doc    "`(Float64.of x)` PROMOTES via f64.promote_f32 (exact): 1.5 : Float32 -> 1.5.")
   (input  (do (def (f (: x Float32)) (Float64.of x)) (export f)))
   (call   f (: 1.5 Float32)) (output (: 1.5 Float64)))
+
+(case "a nested checked op computes over runtime args after dest-threading"
+  (doc    "`(* (+ a b) c)` — the inner add writes its result directly into the outer mul's operand slot
+           (dest-threading), and both value + guards survive. (2+3)*4 = 20; (10 + -4) * -2 = -12.")
+  (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
+  (call   f (: 2 Int64) (: 3 Int64) (: 4 Int64)) (output (: 20 Int64))
+  (call   f (: 10 Int64) (: -4 Int64) (: -2 Int64)) (output (: -12 Int64)))
+
+(case "a nested checked op traps when the inner add overflows despite the shared slot"
+  (doc    "The inner `(+ a b)` overflow guard, reading the slot it shares with the outer mul, must fire
+           before the mul runs: f(Int64.max, 1, 1) traps.")
+  (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
+  (call   f (: 9223372036854775807 Int64) (: 1 Int64) (: 1 Int64)) (trap "integer overflow"))
+
+(case "a nested checked op traps when the outer multiply overflows"
+  (doc    "The outer mul guard (reading the same shared slot as its first operand) must trap: f(Int64.max,
+           0, 2) traps ((max+0)*2 overflows).")
+  (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
+  (call   f (: 9223372036854775807 Int64) (: 0 Int64) (: 2 Int64)) (trap "integer overflow"))
