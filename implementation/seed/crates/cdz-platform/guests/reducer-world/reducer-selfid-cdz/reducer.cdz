@@ -1,16 +1,18 @@
 // P4 SELF-REFLECTION ROUTING (design/cadenza-platform.md §1/§4). This reducer decides whether to act on a
 // delivered message by comparing the message's contract-id against the id its OWN embedded contract module
-// (temp-celsius) self-reflects via `contract-id(Ast.module)` — NO hardcoded hash literal. `cid()` is a nullary
-// def the compiler const-folds to the temp.celsius routing key (byte-identical to the host contract-id), and
-// it crosses the module import intact. On a match the reducer emits one request BACK on that same contract
-// carrying a marker; on a mismatch it closes. So an observed Emitted on the delivered contract proves the
-// guest's self-reflected id equals the real routing key the harness delivered on — the P4 property, e2e.
+// (temp-celsius) self-reflects — NO hardcoded hash literal. temp-celsius exposes its WHOLE contract as a
+// STRUCTURED descriptor `descriptor()` (Record(id, name, input, output, types) from `contract(Ast.module)`);
+// this reducer imports it and projects `descriptor().id`, which const-folds cross-module to the temp.celsius
+// routing key (byte-identical to the host contract-id; the projection folds the record away so its Ast fields
+// never materialize at runtime — v-cp #3543). On a match the reducer emits one request BACK on that same
+// contract carrying a marker; on a mismatch it closes. So an observed Emitted on the delivered contract proves
+// the guest's self-reflected id equals the real routing key the harness delivered on — the P4 property, e2e.
 // Delegates no host interface; on-response/on-notification are inert (owned by reducer-lib).
 import { Outcome, on-response, on-notification } from "reducer-lib"
-import { cid } from "temp-celsius"
+import { descriptor } from "temp-celsius"
 
 def on-message(msg) =
-  if (msg.contract == cid()) then
+  if (msg.contract == descriptor().id) then
     { requests = [{ contract = msg.contract, payload = b"self-id-match", token = b"", deadlineNanos = None }],
       outcome = Outcome.Continue }
   else
