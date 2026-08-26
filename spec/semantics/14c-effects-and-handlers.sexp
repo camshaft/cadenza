@@ -17369,3 +17369,64 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 121401 Int64))
   (call   main (: 0 Int64)) (output (: 120300 Int64)))
+
+;; -- exotic handler-state kinds: Rational + BigInt + Char + Bytes-rope + Symbol threaded state (breaker batch 368) --
+(case "ctt1 RATIONAL handler state threads exact arithmetic across dispatches"
+  (input (do
+    (effect R (op bump (-> Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle R (Rational.of 1 3)
+        ((bump () s (resume unit (+ s (Rational.of 1 6))))
+         (get () s (resume (= s (Rational.of 2 3)) s)))
+        (do (R.bump) (R.bump) (if (R.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "ctt2 BIGINT handler state doubles past i64 across dispatches"
+  (input (do
+    (effect B (op dbl (-> Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle B 9223372036854775807N
+        ((dbl () s (resume unit (* s 2N)))
+         (get () s (resume (= s 36893488147419103228N) s)))
+        (do (B.dbl) (B.dbl) (if (B.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "ctt3 CHAR handler state advances by code point across dispatches"
+  (input (do
+    (effect C (op nxt (-> Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle C #\a
+        ((nxt () s (resume unit (match (Char.from-int (+ (Char.to-int s) 1)) ((Option.Some c) c) ((Option.None) s))))
+         (get () s (resume (= s #\c) s)))
+        (do (C.nxt) (C.nxt) (if (C.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "ctt4 BYTES-ROPE handler state grows by concat across dispatches"
+  (input (do
+    (effect Y (op app (-> Unit)) (op len (-> Int64)))
+    (def (main (: n Int64))
+      (handle Y b"\x00"
+        ((app () s (resume unit (Bytes.concat s b"\x01\x02")))
+         (len () s (resume (Bytes.len s) s)))
+        (do (Y.app) (Y.app) (Y.len))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "ctt5 SYMBOL handler state swaps between interned symbols"
+  (input (do
+    (effect S (op flip (-> Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle S (Symbol.of "a")
+        ((flip () s (resume unit (if (= s (Symbol.of "a")) (Symbol.of "b") (Symbol.of "a"))))
+         (get () s (resume (= s (Symbol.of "b")) s)))
+        (do (S.flip) (S.flip) (S.flip) (if (S.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))

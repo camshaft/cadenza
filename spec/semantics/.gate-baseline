@@ -7401,3 +7401,8 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	ctt1 RATIONAL handler state threads exact arithmetic across dispatches
+pass	ctt2 BIGINT handler state doubles past i64 across dispatches
+pass	ctt3 CHAR handler state advances by code point across dispatches
+pass	ctt4 BYTES-ROPE handler state grows by concat across dispatches
+pass	ctt5 SYMBOL handler state swaps between interned symbols
