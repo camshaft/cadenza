@@ -16207,6 +16207,16 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // backend cannot yet prove"), blocking a runtime-digest equality (a completeness gap, not a
         // miscompile) even though a `Bytes.of` of the same content compares fine.
         | Core::Blake3Of { .. }
+        // `Ast.encode` (op 93) BORROWS its Ast operand and returns a FRESH owned Bytes document; `Ast.print`
+        // (op 92) likewise returns a FRESH owned String. So such a result used as a BORROWING-op operand — a
+        // bare `(= (Ast.encode a) (Ast.encode b))`, or the PROBE of `Set.contains`/`Map.lookup` keyed by
+        // arena Bytes (`(Set.contains s (Ast.encode …))`) — is an owned temporary the borrow must reclaim.
+        // WITHOUT this both fell to `_ => decline` ("ownership this backend cannot yet prove"): CHAMP
+        // construction dedups arena Bytes fine (the constructor path never consults this), but the query-
+        // entry / bare-compare lowering DECLINED (breaker xf3/xf4 + beq bare-`=`). The Ast twin of `Blake3Of`
+        // / `ValueEncode` above.
+        | Core::AstEncode { .. }
+        | Core::AstPrint { .. }
         // A runtime `(bin …)` construction builds a FRESH owned Bytes on the rope heap (`bytes-alloc` +
         // per-segment range-check-and-write, exactly like `BytesOf`), so as a `value-eq` operand it is
         // Owned and the emit drops it after the borrowing compare. WITHOUT this a runtime `(bin …)` result
