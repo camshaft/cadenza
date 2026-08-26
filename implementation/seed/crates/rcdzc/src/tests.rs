@@ -73200,51 +73200,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_handle_body_reads_an_enclosing_function_parameter() {
-        // The fold's rewritten body must resolve a FREE variable up the ORIGINAL lexical chain — a handle
-        // body is not closed, it may read an enclosing function's parameter. `(+ x (Get.get 0))` under a
-        // handler that resumes 5 is `x + 5`; called with x=10 → 15. `reduce_handle` synthesizes a fresh
-        // body subtree (root parent `None`); lowering re-anchors it UNDER the original `handle` node so `x`
-        // still reaches `main`'s parameter binder instead of a spurious CDZ0101. Regression guard for the
-        // reparent fix — before it, ANY handle body referencing a function parameter failed to compile.
-        use wasmtime::component::Val;
-        let src = "(do (effect Get (op get (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle Get 0 ((get (n) s (resume 5 s))) (+ x (Get.get 0)))) (export main))";
-        assert_eq!(
-            run_returns_with::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a handle body reading a parameter compiles"),
-                "main",
-                &[Val::S64(10)],
-            ),
-            15
-        );
-    }
-
-    #[test]
-    fn a_runtime_condition_selects_an_abortive_branch_reading_a_parameter() {
-        // Composes the branch-tail abortive fold with a RUNTIME condition over an enclosing parameter — the
-        // "validate and bail" shape. `(if (< x 5) (Bail.bail 7) x)`: the true branch aborts (arm value 7),
-        // the false branch reads the parameter `x`. Called with x=3 (< 5) → 7 (abort); x=9 → 9 (fall
-        // through). Exercises the reparent fix (free `x`) together with `thread_branch_local_abort`.
-        use wasmtime::component::Val;
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))) (export main))";
-        let component = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a runtime-conditioned branch-tail abort reading a parameter compiles");
-        assert_eq!(
-            run_returns_with::<i64>(&component, "main", &[Val::S64(3)]),
-            7,
-            "x=3 (< 5) aborts to the arm value 7"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&component, "main", &[Val::S64(9)]),
-            9,
-            "x=9 falls through to the parameter"
-        );
-    }
-
-    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),

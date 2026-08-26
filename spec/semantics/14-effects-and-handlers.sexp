@@ -1085,6 +1085,30 @@
             (def (main) (run 7)) (export main)))
   (output (: 7 Int64)))
 
+(case "a handle body reads an enclosing function parameter beside a resuming perform"
+  (doc    "A handle body is not closed — it may read a free variable up the enclosing lexical chain.
+           `(+ x (Get.get 0))` under a handler that resumes 5 is `x + 5`; with x = 10 → 15. Pins that the
+           fold's rewritten body re-anchors UNDER the original `handle` node so the free `x` still reaches
+           `main`'s parameter binder rather than a spurious CDZ0101 (before the reparent fix, ANY handle
+           body referencing an enclosing function parameter failed to compile).")
+  (input  (do
+            (effect Get (op get (-> Int64 Int64)))
+            (def (main (: x Int64)) (handle Get 0 ((get (n) s (resume 5 s))) (+ x (Get.get 0))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 15 Int64)))
+
+(case "a runtime-conditioned abortive branch and its fall-through both read an enclosing parameter"
+  (doc    "Composes the branch-tail abort with a free-variable read up the enclosing chain: `(if (< x 5)
+           (Bail.bail 7) x)` under an abortive Bail handler — the true branch aborts to the arm value 7,
+           the false branch reads the enclosing parameter `x`. x = 3 (< 5) → 7 (abort); x = 9 → 9 (fall
+           through). Exercises the reparent fix (free `x`) together with the branch-tail abort threading.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
 (case "a nested effectful let inlined into a re-performing body keeps its inner binder"
   (doc    "A cross-function effectful-let inline: `inner` binds an effect result in a local `let` and reads
            it in a match arm; `outer` binds `inner()` then PERFORMS AGAIN in its body. The fold inlines
