@@ -1062,6 +1062,49 @@
             (export main)))
   (output (: 3 Int64)))
 
+; --- Primitive 2: a Set/Map ACCUMULATOR threaded through a const recursion + then QUERIED at the call site ---
+; A recursion that threads a `Set`/`Map` as a `const`-param ACCUMULATOR and RETURNS it (then queried by
+; Set.len/to-list/Map.lookup at the call site) used to REJECT: core_of's piecewise lowering of the recursive
+; call const-evaluates the accumulator to a `CVal::Set`/`CVal::Map` that `cval_to_core` won't MATERIALIZE (the
+; query-only soundness guard), so the recursive call declines — and the `(const …)` block surfaced that decline
+; before trying whole-expression `const_eval`. Now the block tries `const_eval` on a non-trap decline, which
+; folds the whole thing (the collection flows through the query as a `CVal`, never materialized). A provable
+; ConstTrap still surfaces fail-loud (surfaced before the const_eval attempt). (breaker gaps m7/m7b.)
+
+(case "a Set ACCUMULATOR threaded through a const recursion then Set.len folds"
+  (doc    "`grow` threads a `(Set Int64)` accumulator + an Int64 counter; `(const (Set.len (grow (Set.of (list))
+           3)))` folds to 3 — the recursion builds `{7,14,21}` and `Set.len` reads it, via whole-expression
+           const_eval (core_of's piecewise recursive-call fold declines on the un-materializable CVal::Set).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a Set ACCUMULATOR threaded through a const recursion then to-list folds (m7)"
+  (doc    "The to-list face: the same recursion-threaded set, materialized. `(const (List.len (Set.to-list
+           (grow (Set.of (list)) 3))))` folds to 3 — const_eval folds the recursion to a CVal::Set, then
+           Set.to-list (the const_eval arm) sorts+materializes it. Was a REJECT (piecewise decline surfaced).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
+            (def (main) (const (List.len (Set.to-list (grow (Set.of (list)) 3)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a Map ACCUMULATOR threaded through a const recursion then Map.lookup folds"
+  (doc    "The Map twin: `grow` threads a `(Map Int64 Int64)` accumulator; after building `{1↦10,2↦20,3↦30}`,
+           `(const (match (Map.lookup (grow (map) 3) 2) …))` folds the value 20 — the accumulator flows through
+           the lookup query as a CVal::Map, never materialized.")
+  (input  (do
+            (def (grow (const (: m (Map Int64 Int64))) (const (: k Int64)))
+              (if (= k 0) m (grow (Map.insert m k (* k 10)) (- k 1))))
+            (def (main)
+              (const (match (Map.lookup (grow (map) 3) 2) ((Option.Some v) v) ((Option.None) -1))))
+            (export main)))
+  (output (: 20 Int64)))
+
 ;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
 (case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
   (input (do
