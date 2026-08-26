@@ -7564,3 +7564,12 @@ pass	ep3 one String param used TWICE (byte-len and content compare)
 pass	ep4 an EMPTY String entry arg has byte-len zero (the ptr,0 edge)
 pass	ep5 a Bytes and a String param in ONE signature
 pass	ep6 a String entry param passed THROUGH to a helper
+pass	el1 a List entry param summed by an indexed walk
+pass	el2 TWO List entry params measure independently
+pass	el3 an EMPTY List entry param has length zero
+pass	eo1 an Option entry param delivers its Some payload
+pass	eo2 an Option entry param takes the None arm
+pass	eo3 an Option param BETWEEN scalars keeps positions
+pass	eb1 a BigInt entry param in beyond-i64 arithmetic
+pass	er1 a Rational entry param in exact arithmetic
+pass	ey1 a Symbol entry param keys a Map
