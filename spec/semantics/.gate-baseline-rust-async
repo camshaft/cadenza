@@ -7232,3 +7232,6 @@ pass	rak2 an op RESULT of type BigInt resumes a multi-limb value
 pass	rak3 an op RESULT of type Symbol resumes an interned symbol by state
 pass	rak4 an op RESULT of type Bytes resumes a built rope
 pass	rak5 an op RESULT of type Map resumes a built map the body queries
+pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
+pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
+pass	oak3 an op ARGUMENT of type Map is queried by the arm and drives the state

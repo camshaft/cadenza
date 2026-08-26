@@ -17488,3 +17488,40 @@
     (export main)))
   (call main (: 4 Int64))
   (output (: 40 Int64)))
+
+;; -- op-ARGUMENT type kinds: Rational + BigInt + Map arguments into handler arms (breaker batch 370) --
+(case "oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm"
+  (input (do
+    (effect R (op mix (-> Rational Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle R (Rational.of 0 1)
+        ((mix (q) s (resume unit (+ s q)))
+         (get () s (resume (= s (Rational.of 5 6)) s)))
+        (do (R.mix (Rational.of 1 2)) (R.mix (Rational.of 1 3)) (if (R.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state"
+  (input (do
+    (effect B (op add (-> BigInt Unit)) (op get (-> Bool)))
+    (def (main (: n Int64))
+      (handle B 0N
+        ((add (v) s (resume unit (+ s v)))
+         (get () s (resume (= s 18446744073709551614N) s)))
+        (do (B.add 9223372036854775807N) (B.add 9223372036854775807N) (if (B.get) 1 0))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "oak3 an op ARGUMENT of type Map is queried by the arm and drives the state"
+  (input (do
+    (effect M (op feed (-> (Map Int64 Int64) Unit)) (op get (-> Int64)))
+    (def (main (: n Int64))
+      (handle M 0
+        ((feed (m) s (resume unit (+ s (match (Map.lookup m n) ((Option.Some v) v) ((Option.None) -100)))))
+         (get () s (resume s s)))
+        (do (M.feed (Map.insert (map) 4 70)) (M.feed (Map.insert (Map.insert (map) 4 2) 9 900)) (M.get))))
+    (export main)))
+  (call main (: 4 Int64))
+  (output (: 72 Int64)))
