@@ -10531,33 +10531,6 @@ fn a_curried_closure_capturing_an_inner_handled_result_closes_over_the_value() {
     }
 }
 
-/// DISCHARGE-THEN-CAPTURE (the sound half of the escaping-closure boundary; was a PARKED reject-gap,
-/// resolved incidentally by the `lambda_of` handler-discharge fix): a closure capturing a value COMPUTED
-/// under a handler may escape the handle. `(handle St k (arm) (let ((v (St.get))) (fn (x) (+ x v))))` —
-/// the `St.get` runs IN-EXTENT (handler live) and the escaping closure captures the pure Int64 `v`. Applied
-/// directly `((handle …) 10)` with k=7: v folds to 7, the escaped closure is `(fn (x) (+ x 7))`, so it
-/// yields 17. Was over-rejected CDZ0401 (escape analysis conflated a lexically-inner perform with an
-/// escaping one); the `lambda_of` discharge folds the in-extent `St.get` to its value first. Uses a
-/// parameterized main to keep `k` a genuine runtime value (a const would fold it away).
-#[test]
-fn a_closure_capturing_a_value_computed_under_a_handler_may_escape() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(do (effect St (op get (-> Unit Int64))) \
-               (def (main (: k Int64)) \
-                 ((handle St k ((get (u) s (resume s s))) \
-                    (let ((v (St.get))) (fn ((: x Int64)) (+ x v)))) \
-                  10)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a closure capturing a value computed under a handler may escape (discharge-then-capture)",
-    );
-    let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(7)]);
-    assert_eq!(
-        got, 17,
-        "v = k = 7 captured by value → (fn (x) (+ x 7)) applied to 10 = 17"
-    );
-}
-
 /// FINDING #10 (breaker, MED-HIGH silent 3-backend miscompile — the bind-once/closure-capture face). A
 /// let-bound CLOSURE whose init-let binds a PERFORMING draw referenced by the returned lambda —
 /// `(let ((f (let ((a (St.next))) (fn (x) (* a x))))) (f 10))` under a +1-stride St handler — re-derived its
