@@ -9381,3 +9381,25 @@
            literal arm 0.5 must ground to f32 (an f64.const under an f32 block was invalid wasm). f(3)=0.5.")
   (input  (do (def (f (: n Int64)) (: (match n (0 0.5) (_ (f (- n 1)))) Float32)) (export f)))
   (call   f (: 3 Int64)) (output (: 0.5 Float32)))
+
+(case "a 2-arm all-literal Float32 match grounds its arms to f32 via the select path"
+  (doc    "An all-bare-literal match over a runtime scrutinee under a Float32 annotation lowers to a
+           branchless select (2 arms); each arm must ground to f32 (an f64.const under an f32 select was
+           invalid wasm). `(: (match n (0 1.5) (_ 0.25)) Float32)`: n=0 -> 1.5, n=9 -> 0.25.")
+  (input  (do (def (f (: n Int64)) (: (match n (0 1.5) (_ 0.25)) Float32)) (export f)))
+  (call   f (: 0 Int64)) (output (: 1.5 Float32))
+  (call   f (: 9 Int64)) (output (: 0.25 Float32)))
+
+(case "a 3-arm all-literal Float32 match grounds its arms to f32 via the probe-chain path"
+  (doc    "A >=3-arm all-literal match lowers to a probe-chain terminal pair; each arm grounds to f32.
+           `(: (match n (0 1.5) (1 2.5) (_ 0.25)) Float32)`: n=1 -> 2.5, n=9 -> 0.25.")
+  (input  (do (def (f (: n Int64)) (: (match n (0 1.5) (1 2.5) (_ 0.25)) Float32)) (export f)))
+  (call   f (: 1 Int64)) (output (: 2.5 Float32))
+  (call   f (: 9 Int64)) (output (: 0.25 Float32)))
+
+(case "a dense all-literal Float32 match grounds its arms to f32 via the br_table path"
+  (doc    "A dense all-literal match lowers to a br_table; each arm grounds to f32. `(: (match n (0 1.5)
+           (1 2.5) (2 3.5) (3 4.5) (_ 0.25)) Float32)`: n=2 -> 3.5, n=9 -> 0.25.")
+  (input  (do (def (f (: n Int64)) (: (match n (0 1.5) (1 2.5) (2 3.5) (3 4.5) (_ 0.25)) Float32)) (export f)))
+  (call   f (: 2 Int64)) (output (: 3.5 Float32))
+  (call   f (: 9 Int64)) (output (: 0.25 Float32)))
