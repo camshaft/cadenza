@@ -9495,3 +9495,11 @@
            0, 2) traps ((max+0)*2 overflows).")
   (input  (do (def (f (: a Int64) (: b Int64) (: c Int64)) (* (+ a b) c)) (export f)))
   (call   f (: 9223372036854775807 Int64) (: 0 Int64) (: 2 Int64)) (trap "integer overflow"))
+
+(case "runtime subtraction computes in range and traps on overflow at both boundaries"
+  (doc    "Runtime `(- a b)` computes in range (10 - 3 = 7) and its overflow guard traps at both signed
+           boundaries: Int64.min - 1 and Int64.max - (-1) both overflow.")
+  (input  (do (def (sub (: a Int64) (: b Int64)) (- a b)) (export sub)))
+  (call   sub (: 10 Int64) (: 3 Int64)) (output (: 7 Int64))
+  (call   sub (: -9223372036854775808 Int64) (: 1 Int64)) (trap "integer overflow")
+  (call   sub (: 9223372036854775807 Int64) (: -1 Int64)) (trap "integer overflow"))

@@ -13300,29 +13300,6 @@ fn doubling_add_value_and_trap_parity() {
     assert!(call_traps(&bytes, "dbl", &[Val::S64(i64::MIN)]));
 }
 
-/// Runtime `-` traps on overflow (e.g. `Int64.min - 1`), computes in range.
-#[test]
-fn runtime_subtraction_traps_on_overflow() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (sub (: a Int64) (: b Int64)) (- a b)) (export sub))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "sub", &[Val::S64(10), Val::S64(3)]),
-        7
-    );
-    assert!(call_traps(
-        &bytes,
-        "sub",
-        &[Val::S64(i64::MIN), Val::S64(1)]
-    ));
-    assert!(call_traps(
-        &bytes,
-        "sub",
-        &[Val::S64(i64::MAX), Val::S64(-1)]
-    ));
-}
-
 /// A `+`/`-` by a compile-time CONSTANT uses the specialized single-compare overflow guard (`r <ₛ a` /
 /// `r >ₛ a`) instead of the general two-`xor` sign test. The specialization must trap at EXACTLY the
 /// same boundary the general guard would, and never spuriously — so pin every edge for the four
