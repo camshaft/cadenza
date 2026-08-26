@@ -1,0 +1,23 @@
+# cdz-rust-run — the RUST-backend exec runner for the corpus, extracted from xtask.
+#
+# The dedicated home for "compile a Cadenza program's emitted Rust with rustc, run it, grade the outcome"
+# (operator directive 2026-08-26: "make a dedicated crate for the rust runners; the xtask is just getting
+# so bloated"). This is the Rust-target analogue of what `cdz-run` is for wasm — the exec phase of the
+# corpus nix caching pipeline (`design/DESIGN-corpus-nix-per-case-caching.md`, gap #6 toward retiring the
+# `xtask gate`). Built as a small standalone crate + bin the nix per-case rust exec layer shells out to
+# (same pattern as `cdz-world-artifact` / `cdz-component-rewrite`), so a compiler change re-runs only what
+# it must and xtask sheds ~1000 lines when its gate is deleted at cutover.
+#
+# Incremental: this first module is the PURE emitted-Rust SIGNATURE analysis (`sig`) — no process/rlib
+# deps, fully unit-testable. Later increments add the driver generation, the rustc invocation (linking the
+# pre-built cdz_rt/cdz_num/cadenza_ast rlibs), the run, and the grade (reusing the corpus grade logic).
+#
+# A ROOT workspace member (the `crates/*` glob) — MUST be registered in the flake's `rootWorkspaceCrates`
+# for per-crate clippy + workspace-test coverage.
+[package]
+name = "cdz-rust-run"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
