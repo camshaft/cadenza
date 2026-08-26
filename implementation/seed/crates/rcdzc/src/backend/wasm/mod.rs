@@ -9625,12 +9625,17 @@ fn record_interface_export(
             needs_result_wrapper = true;
         }
         let def_abs = layout.abs(e.def)?;
+        // No TOP-LEVEL memory-bearing leaf params on the typed-interface RECORD-param route (a String/Bytes
+        // leaf there rides inside a record via `FieldRebuild::BytesLeaf`); the plain-export bare-wrapper route
+        // (which lifts a top-level String/Bytes param directly) is the producer of `Some(..)` here.
+        let mem_leaf_params = vec![None; params.len()];
         wrappers.push(serialize::WrapperDesc {
             name: member.name.clone(),
             param_vts,
             result_vts,
             params,
             param_slots,
+            mem_leaf_params,
             def_abs,
             result: result_lower,
         });

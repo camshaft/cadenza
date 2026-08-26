@@ -845,11 +845,31 @@ pub struct WrapperDesc {
     /// `Some(slots)` gives each WIT field's target cell SLOT (name-lex position); `None` = identity (a
     /// name-lex-ordered record, or a scalar param). The permute for a declaration-ordered WIT record.
     pub param_slots: Vec<Option<Vec<u32>>>,
+    /// Parallel to `params`: for a TOP-LEVEL memory-bearing leaf param (a `String`/`Bytes` crossing the
+    /// boundary as `string`/`list<u8>`, flattened to `(ptr, len)`), `Some(kind)` says to lift it — copy the
+    /// bytes out of linear memory into a value-heap `Bytes` (like a [`FieldRebuild::BytesLeaf`], but the
+    /// handle is passed DIRECTLY as the def arg, not stored into a record cell), then for a `Str` build a
+    /// `String` from it (`str-from-bytes`). `None` = a scalar or `record` param (handled via `params`). The
+    /// `params` entry for such a param is `None` (its build is here, not a scalar passthrough). Reuses the
+    /// two `list<u8>` scratch locals + the core module's memory 0 (`wrapper_needs_memory`).
+    pub mem_leaf_params: Vec<Option<MemLeafKind>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
     /// or read a returned record HANDLE's fields and spill them to a return area in memory.
     pub result: ResultLower,
+}
+
+/// The kind of a TOP-LEVEL memory-bearing leaf param (see [`WrapperDesc::mem_leaf_params`]): a `Bytes`
+/// value-heap handle lifted straight from the boundary `(ptr, len)`, or a `String` built from those bytes
+/// (`str-from-bytes`). Both copy the bytes out of linear memory 0 (the `bytes-alloc`/`bytes-set` loop the
+/// `list<u8>`-leaf import marshal already uses); a `Str` appends one `str-from-bytes` call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemLeafKind {
+    /// A `Bytes` param: the copied-out `list<u8>` handle IS the def arg.
+    Bytes,
+    /// A `String` param: build a `String` from the copied-out bytes via `str-from-bytes`.
+    Str,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -1229,12 +1249,28 @@ fn core_module_impl(
                 .iter()
                 .flatten()
                 .flatten()
-                .any(FieldRebuild::has_bytes_leaf);
+                .any(FieldRebuild::has_bytes_leaf)
+                // A TOP-LEVEL memory-bearing leaf param copies bytes out of memory too (same two scratch locals).
+                || wrap.mem_leaf_params.iter().any(Option::is_some);
             let scratch = if has_bytes { Some((p, p + 1)) } else { None };
             let mut next_local = p + if has_bytes { 2 } else { 0 };
             let mut inner = Vec::new();
             let mut leaf = 0u32;
             for (pi, pp) in wrap.params.iter().enumerate() {
+                // A TOP-LEVEL memory-bearing leaf param (String/Bytes) takes precedence: lift its `(ptr, len)`
+                // into a value-heap Bytes handle (copy-in loop) — for a String, build a String from it — and
+                // leave that handle on the stack as the def arg directly (NOT wrapped in a record cell).
+                if let Some(kind) = wrap.mem_leaf_params.get(pi).copied().flatten() {
+                    let (buf, ctr) =
+                        scratch.expect("a memory-bearing leaf param needs the scratch locals");
+                    emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
+                    leaf += 2; // the list/string flattened to (ptr, len)
+                    if kind == MemLeafKind::Str {
+                        inner.push(op::CALL);
+                        uleb128(imp("str-from-bytes"), &mut inner); // Bytes handle → String handle
+                    }
+                    continue;
+                }
                 match pp {
                     None => {
                         inner.push(op::LOCAL_GET);
