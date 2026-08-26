@@ -7264,3 +7264,8 @@ pass	pd3 a CLOSURE capturing a list sees the original across an interleaved upda
 pass	pd4 a RECURSIVE per-level List.update chain zeroes a copy while the original survives
 pass	pd5 TWO divergent update aliases from one list each see only their own write
 pass	pd6 a shared update at index 35 of a 40-element list crosses the RRB leaf boundary persistently
+pass	pd7 a List.update inside a HANDLER ARM's resume value leaves the original readable in the continuation
+pass	pd8 a shared MAP operand survives an insert — both views keep their own len
+pass	pd9 a shared SET operand survives an insert — both views keep their own len
+pass	pd10 a shared BYTES operand survives a concat — both views keep their own len
+pass	pd11 a shared STRING operand survives a concat — both views keep their own byte-len
