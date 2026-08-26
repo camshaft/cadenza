@@ -46,14 +46,17 @@
 //! program: an inert list a driver hands in. The branching program that PRODUCES the list is a later
 //! rung (it needs the self-host); the list it returns is what crosses here.
 //!
-//! **The wire form** (hand-rolled leb128, total decode — the same discipline as `codec`, so it ports
-//! to the Cadenza self-host and never panics on untrusted bytes): a `VarU64` request count, then each
-//! request as a one-byte TAG followed by its operands. A malformed request list is a DECLINE (a
+//! **The wire form** is the BINARY AST (operator ruling 2026-08-26: "the sidecar absolutely needs to use
+//! the binary AST" — the one bespoke sidecar format, retired). The request list is a cdzast value — an
+//! `Ast.List` of per-request forms — encoded/decoded through the SAME `crate::codec` a program's AST uses
+//! (rcdzc's copy; a delegating `cdz` builds the byte-identical tree via cadenza-syntax's copy —
+//! copy-don't-depend, no shared crate). Each form: `(emit <target>)` | `(emit-tests…)` |
+//! `(query <selector> <args>…)` — a NAME-arg query carries an `Ast.Str`, a NODE-arg query an `Ast.Int`.
+//! Total decode (the codec's discipline): a malformed tree / unknown head / bad operand is a DECLINE (a
 //! diagnostic), never a panic or a silent drop — reject-don't-miscompile at the tool edge.
 
-use crate::ast::{Struct, StructId};
+use crate::ast::{Arenas, Builder, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Db;
-use crate::leb128::{self, Reader};
 use crate::resolved::Resolved;
 
 /// The kinded input artifact carrying the request list.
@@ -388,206 +391,194 @@ pub enum Query {
     ClosureHash,
 }
 
-/// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
-mod tag {
-    pub const EMIT_WASM: u8 = 0x00;
-    pub const EMIT_RUST: u8 = 0x01;
-    pub const EMIT_RUST_ASYNC: u8 = 0x02;
-    /// Emit a WebAssembly component carrying EMBEDDED debug info (Mode E of
-    /// `DESIGN-debug-info-rcdzc.md`) — a `Target::WasmDebug`. The additive tag that enables debug output
-    /// as a sidecar request, not a `--debug` flag: a driver puts this in the request list (and supplies
-    /// the `spans` input for the DWARF increments) rather than passing a build flag. Its artifact is a
-    /// `component`, decorated and strippable (§5). (Mode S — a separate `dwarf` file — is `EMIT_DWARF`.)
-    ///
-    /// Debug output is thus OPT-IN: absent this request (and `EMIT_DWARF`), a build emits an undecorated
-    /// artifact, so a build includes or excludes the capability by whether it names a debug target.
-    //= spec/capabilities/debug-information.md#this-capability-is-optional
-    //# Debug-information emission MUST be an optional capability a build may include or exclude, in accordance with the build's declared defaults.
-    pub const EMIT_WASM_DEBUG: u8 = 0x03;
-    /// Emit a DETACHED DWARF sidecar (Mode S of `DESIGN-debug-info-rcdzc.md` §9.2) — a `Target::Dwarf`,
-    /// a separate `kind == "dwarf"` artifact carrying only the `.debug_*` sections. The second
-    /// enablement mode; like `EMIT_WASM_DEBUG` it needs the `spans` input. A run can request both (a
-    /// lean component + its detached DWARF) or either alone.
-    pub const EMIT_DWARF: u8 = 0x04;
-    /// Emit a UNIT-TEST wasm component (`Request::EmitTests`) — the same wasm target as `EMIT_WASM` but
-    /// with the boundary laid out from the program's `@test` NULLARY defs (`layout::compute_tests`)
-    /// instead of its `(export …)` clauses. What a `cdz test` build requests.
-    pub const EMIT_TESTS: u8 = 0x05;
-    /// Emit N PER-FILE unit-test components in one compile (`Request::EmitTestsPerFile`) — the shared-arena
-    /// lower-once `cdz test <dir>` path: lower the linked closure once, emit one `component` per file's
-    /// `@test` bucket, each artifact NAMED by its file.
-    pub const EMIT_TESTS_PER_FILE: u8 = 0x06;
-    /// Emit a shared-closure PROVIDER + N per-file CONSUMER components in one compile
-    /// (`Request::EmitTestsComposed`) — the Option-C composed `cdz test <dir>` emit-reuse path: hoist the
-    /// UNION cross-edge closure into one `component-provider` artifact + a `component-name` iface sidecar, and
-    /// emit each file's `@test` bucket as a `component` consumer that imports it.
-    pub const EMIT_TESTS_COMPOSED: u8 = 0x07;
-    /// Emit ONLY the per-file consumer components against a CACHED shared-closure provider
-    /// (`Request::EmitTestsConsumerOnly`) — the single-file provider-cache path: skip the provider emit
-    /// (the caller supplies the cached provider at run time), emit the cheap consumer(s) + the iface sidecar.
-    pub const EMIT_TESTS_CONSUMER_ONLY: u8 = 0x08;
-    pub const QUERY_TYPE_OF: u8 = 0x10;
-    pub const QUERY_USES_OF: u8 = 0x11;
-    pub const QUERY_TYPE_AT: u8 = 0x12;
-    pub const QUERY_DIAGNOSTICS: u8 = 0x13;
-    pub const QUERY_RESOLVE_OF: u8 = 0x14;
-    pub const QUERY_SCOPE_AT: u8 = 0x15;
-    pub const QUERY_EXPORTS: u8 = 0x16;
-    pub const QUERY_HIGHLIGHT: u8 = 0x17;
-    pub const QUERY_DOC_OF: u8 = 0x18;
-    pub const QUERY_DOC_AT: u8 = 0x19;
-    pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
-    pub const QUERY_SYMBOLS: u8 = 0x1b;
-    pub const QUERY_PARAM_MANIFEST: u8 = 0x1c;
-    pub const QUERY_FUNC_LAYOUT: u8 = 0x1d;
-    /// The Option-C shared-closure CONTENT-HASH query (`Query::ClosureHash`) — the provider-cache decision
-    /// key (layout-only, no provider emit).
-    pub const QUERY_CLOSURE_HASH: u8 = 0x1e;
-    /// The cadenza-docs I2 structured export-types fact (`Query::ExportedTypes`) — each exported def's
-    /// resolved type as a cdzast sub-AST, bulk (no args).
-    pub const QUERY_EXPORTED_TYPES: u8 = 0x1f;
-}
-
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
 /// caller turns that into a decline diagnostic), never a panic. Mirrors `codec::decode`'s discipline
 /// exactly so the format ports to the self-host.
 pub fn decode(bytes: &[u8]) -> Option<Vec<Request>> {
-    let mut r = Reader::new(bytes);
-    let count = r.read_var_len()?;
-    let mut requests = Vec::with_capacity(count.min(1024));
-    for _ in 0..count {
-        requests.push(decode_one(&mut r)?);
-    }
-    // A trailing garbage byte is a malformed list — reject rather than silently accept a prefix.
-    if !r.at_end() {
+    // The request list is a BINARY-AST value (operator ruling 2026-08-26: "the sidecar absolutely needs
+    // to use the binary AST" — not a bespoke tag+LEB128 vocabulary). Decode via the SAME `crate::codec`
+    // a program's AST uses — rcdzc's copy; a delegating `cdz` builds the byte-identical tree via
+    // cadenza-syntax's copy (copy-don't-depend, no shared crate). The ROOT is an `Ast.List` of per-request
+    // forms. Total: a malformed tree / unknown head / bad operand yields `None` (the caller declines).
+    let a = crate::codec::decode(bytes)?;
+    let Struct::List(forms) = a.get(a.root).clone() else {
         return None;
-    }
-    Some(requests)
+    };
+    forms.iter().map(|&f| decode_request(&a, f)).collect()
 }
 
-/// Decode one request: a tag byte, then its operands.
-fn decode_one(r: &mut Reader) -> Option<Request> {
-    match r.byte()? {
-        tag::EMIT_WASM => Some(Request::Emit(crate::backend::Target::Wasm)),
-        tag::EMIT_WASM_DEBUG => Some(Request::Emit(crate::backend::Target::WasmDebug)),
-        tag::EMIT_DWARF => Some(Request::Emit(crate::backend::Target::Dwarf)),
-        tag::EMIT_TESTS => Some(Request::EmitTests),
-        tag::EMIT_TESTS_PER_FILE => Some(Request::EmitTestsPerFile),
-        tag::EMIT_TESTS_COMPOSED => Some(Request::EmitTestsComposed),
-        tag::EMIT_TESTS_CONSUMER_ONLY => Some(Request::EmitTestsConsumerOnly),
-        tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
-        tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
-        tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_USES_OF => Some(Request::Query(Query::UsesOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_TYPE_AT => Some(Request::Query(Query::TypeAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_DIAGNOSTICS => Some(Request::Query(Query::Diagnostics)),
-        tag::QUERY_RESOLVE_OF => Some(Request::Query(Query::ResolveOf {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_SCOPE_AT => Some(Request::Query(Query::ScopeAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_EXPORTS => Some(Request::Query(Query::Exports)),
-        tag::QUERY_HIGHLIGHT => Some(Request::Query(Query::Highlight)),
-        tag::QUERY_DOC_OF => Some(Request::Query(Query::DocOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_DOC_AT => Some(Request::Query(Query::DocAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_INSTANTIATIONS => Some(Request::Query(Query::Instantiations {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
-        tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
-        tag::QUERY_FUNC_LAYOUT => Some(Request::Query(Query::FuncLayout)),
-        tag::QUERY_CLOSURE_HASH => Some(Request::Query(Query::ClosureHash)),
-        tag::QUERY_EXPORTED_TYPES => Some(Request::Query(Query::ExportedTypes)),
-        _ => None,
-    }
+/// Decode one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
+fn decode_request(a: &Arenas, form: StructId) -> Option<Request> {
+    let Struct::List(children) = a.get(form) else {
+        return None;
+    };
+    Some(match a.as_name(*children.first()?)? {
+        "emit" => Request::Emit(target_from(a.as_name(*children.get(1)?)?)?),
+        "emit-tests" => Request::EmitTests,
+        "emit-tests-per-file" => Request::EmitTestsPerFile,
+        "emit-tests-composed" => Request::EmitTestsComposed,
+        "emit-tests-consumer-only" => Request::EmitTestsConsumerOnly,
+        "query" => Request::Query(decode_query(
+            a,
+            a.as_name(*children.get(1)?)?,
+            &children[2..],
+        )?),
+        _ => return None,
+    })
+}
+
+/// Map a `(query <selector> <args>…)` selector + operands to a `Query`. A NAME-arg query reads an
+/// `Ast.Str`; a NODE-arg query reads an `Ast.Int` (the `u32` StructId); a nullary query takes none.
+fn decode_query(a: &Arenas, selector: &str, args: &[StructId]) -> Option<Query> {
+    Some(match selector {
+        "type-of" => Query::TypeOf {
+            name: qname(a, args)?,
+        },
+        "uses-of" => Query::UsesOf {
+            name: qname(a, args)?,
+        },
+        "doc-of" => Query::DocOf {
+            name: qname(a, args)?,
+        },
+        "instantiations" => Query::Instantiations {
+            name: qname(a, args)?,
+        },
+        "type-at" => Query::TypeAt {
+            node: qnode(a, args)?,
+        },
+        "resolve-of" => Query::ResolveOf {
+            node: qnode(a, args)?,
+        },
+        "scope-at" => Query::ScopeAt {
+            node: qnode(a, args)?,
+        },
+        "doc-at" => Query::DocAt {
+            node: qnode(a, args)?,
+        },
+        "diagnostics" => Query::Diagnostics,
+        "highlight" => Query::Highlight,
+        "exports" => Query::Exports,
+        "exported-types" => Query::ExportedTypes,
+        "symbols" => Query::Symbols,
+        "param-manifest" => Query::ParamManifest,
+        "func-layout" => Query::FuncLayout,
+        "closure-hash" => Query::ClosureHash,
+        _ => return None,
+    })
+}
+
+/// A `(query <selector> "name")` operand — the first arg as an `Ast.Str`.
+fn qname(a: &Arenas, args: &[StructId]) -> Option<String> {
+    a.as_str(*args.first()?).map(str::to_string)
+}
+
+/// A `(query <selector> <node>)` operand — the first arg as an `Ast.Int` narrowed to a `u32` StructId.
+fn qnode(a: &Arenas, args: &[StructId]) -> Option<u32> {
+    u32::try_from(a.as_int(*args.first()?)?.to_i64()?).ok()
+}
+
+/// The `Target` an `(emit <target>)` selector names.
+fn target_from(name: &str) -> Option<crate::backend::Target> {
+    use crate::backend::Target;
+    Some(match name {
+        "wasm" => Target::Wasm,
+        "wasm-debug" => Target::WasmDebug,
+        "dwarf" => Target::Dwarf,
+        "rust" => Target::Rust,
+        "rust-async" => Target::RustAsync,
+        _ => return None,
+    })
 }
 
 /// Encode a request list to its wire bytes — the counterpart to `decode`, used by a driver (and the
 /// tests) to build a sidecar input. `decode(encode(rs)) == rs`.
 pub fn encode(requests: &[Request]) -> Vec<u8> {
-    let mut out = Vec::new();
-    leb128::write_u64(&mut out, requests.len() as u64);
-    for req in requests {
-        encode_one(&mut out, req);
-    }
-    out
+    // Build the request list as a BINARY-AST value (root = an `Ast.List` of per-request forms) and encode
+    // it with the SAME `crate::codec` a program's AST uses — the counterpart to `decode`, so
+    // `decode(encode(rs)) == rs`, and byte-identical to the tree a delegating `cdz` builds via
+    // cadenza-syntax's codec copy.
+    let mut b = Builder::new();
+    let forms: Vec<StructId> = requests
+        .iter()
+        .map(|req| encode_request(&mut b, req))
+        .collect();
+    let root = b.list(forms);
+    crate::codec::encode(&b.finish(root))
 }
 
-fn encode_one(out: &mut Vec<u8>, req: &Request) {
+/// Build one request FORM: `(emit <target>)` | `(emit-tests…)` | `(query <selector> <args>…)`.
+fn encode_request(b: &mut Builder, req: &Request) -> StructId {
     match req {
-        Request::Emit(crate::backend::Target::Wasm) => out.push(tag::EMIT_WASM),
-        Request::Emit(crate::backend::Target::WasmDebug) => out.push(tag::EMIT_WASM_DEBUG),
-        Request::Emit(crate::backend::Target::Dwarf) => out.push(tag::EMIT_DWARF),
-        Request::EmitTests => out.push(tag::EMIT_TESTS),
-        Request::EmitTestsPerFile => out.push(tag::EMIT_TESTS_PER_FILE),
-        Request::EmitTestsComposed => out.push(tag::EMIT_TESTS_COMPOSED),
-        Request::EmitTestsConsumerOnly => out.push(tag::EMIT_TESTS_CONSUMER_ONLY),
-        Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
-        Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
-        Request::Query(Query::TypeOf { name }) => {
-            out.push(tag::QUERY_TYPE_OF);
-            write_string(out, name);
+        Request::Emit(t) => {
+            let head = b.name("emit");
+            let target = b.name(target_name(*t));
+            b.list(vec![head, target])
         }
-        Request::Query(Query::UsesOf { name }) => {
-            out.push(tag::QUERY_USES_OF);
-            write_string(out, name);
-        }
-        Request::Query(Query::TypeAt { node }) => {
-            out.push(tag::QUERY_TYPE_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Diagnostics) => out.push(tag::QUERY_DIAGNOSTICS),
-        Request::Query(Query::ResolveOf { node }) => {
-            out.push(tag::QUERY_RESOLVE_OF);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::ScopeAt { node }) => {
-            out.push(tag::QUERY_SCOPE_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Exports) => out.push(tag::QUERY_EXPORTS),
-        Request::Query(Query::Highlight) => out.push(tag::QUERY_HIGHLIGHT),
-        Request::Query(Query::DocOf { name }) => {
-            out.push(tag::QUERY_DOC_OF);
-            write_string(out, name);
-        }
-        Request::Query(Query::DocAt { node }) => {
-            out.push(tag::QUERY_DOC_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Instantiations { name }) => {
-            out.push(tag::QUERY_INSTANTIATIONS);
-            write_string(out, name);
-        }
-        Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
-        Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
-        Request::Query(Query::FuncLayout) => out.push(tag::QUERY_FUNC_LAYOUT),
-        Request::Query(Query::ClosureHash) => out.push(tag::QUERY_CLOSURE_HASH),
-        Request::Query(Query::ExportedTypes) => out.push(tag::QUERY_EXPORTED_TYPES),
+        Request::EmitTests => nullary_form(b, "emit-tests"),
+        Request::EmitTestsPerFile => nullary_form(b, "emit-tests-per-file"),
+        Request::EmitTestsComposed => nullary_form(b, "emit-tests-composed"),
+        Request::EmitTestsConsumerOnly => nullary_form(b, "emit-tests-consumer-only"),
+        Request::Query(q) => encode_query(b, q),
     }
 }
 
-/// A length-prefixed UTF-8 string: a `VarU64` byte length, then the bytes. Total decode.
-fn read_string(r: &mut Reader) -> Option<String> {
-    let len = r.read_var_len()?;
-    let bytes = r.take(len)?;
-    String::from_utf8(bytes.to_vec()).ok()
+/// A `(<head>)` form — an emit-tests variant with no operands.
+fn nullary_form(b: &mut Builder, head: &str) -> StructId {
+    let h = b.name(head);
+    b.list(vec![h])
 }
 
-fn write_string(out: &mut Vec<u8>, s: &str) {
-    leb128::write_u64(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
+/// Build a `(query <selector> <arg>…)` form: a NAME-arg query carries an `Ast.Str`, a NODE-arg query an
+/// `Ast.Int`, a nullary query none. Mirror-inverse of `decode_query`.
+fn encode_query(b: &mut Builder, q: &Query) -> StructId {
+    let (selector, arg): (&str, Option<StructId>) = match q {
+        Query::TypeOf { name } => ("type-of", Some(atom_str(b, name))),
+        Query::UsesOf { name } => ("uses-of", Some(atom_str(b, name))),
+        Query::DocOf { name } => ("doc-of", Some(atom_str(b, name))),
+        Query::Instantiations { name } => ("instantiations", Some(atom_str(b, name))),
+        Query::TypeAt { node } => ("type-at", Some(atom_int(b, *node))),
+        Query::ResolveOf { node } => ("resolve-of", Some(atom_int(b, *node))),
+        Query::ScopeAt { node } => ("scope-at", Some(atom_int(b, *node))),
+        Query::DocAt { node } => ("doc-at", Some(atom_int(b, *node))),
+        Query::Diagnostics => ("diagnostics", None),
+        Query::Highlight => ("highlight", None),
+        Query::Exports => ("exports", None),
+        Query::ExportedTypes => ("exported-types", None),
+        Query::Symbols => ("symbols", None),
+        Query::ParamManifest => ("param-manifest", None),
+        Query::FuncLayout => ("func-layout", None),
+        Query::ClosureHash => ("closure-hash", None),
+    };
+    let head = b.name("query");
+    let sel = b.name(selector);
+    let mut children = vec![head, sel];
+    children.extend(arg);
+    b.list(children)
+}
+
+/// The selector name for an `(emit <target>)` form.
+fn target_name(t: crate::backend::Target) -> &'static str {
+    use crate::backend::Target;
+    match t {
+        Target::Wasm => "wasm",
+        Target::WasmDebug => "wasm-debug",
+        Target::Dwarf => "dwarf",
+        Target::Rust => "rust",
+        Target::RustAsync => "rust-async",
+    }
+}
+
+/// An `Ast.Str` leaf atom for a query name operand.
+fn atom_str(b: &mut Builder, s: &str) -> StructId {
+    b.atom_leaf(Leaf::Str(s.into()))
+}
+
+/// An `Ast.Int` leaf atom (decimal) for a query node-id operand.
+fn atom_int(b: &mut Builder, n: u32) -> StructId {
+    b.atom_leaf(Leaf::Int {
+        value: IntValue::from_i64(i64::from(n)),
+        radix: Radix::Dec,
+    })
 }
 
 /// Run one `Query` against the loaded `Db`, producing its answer as UTF-8 text bytes. This is the
@@ -2671,29 +2662,58 @@ mod tests {
 
     #[test]
     fn truncated_is_none_not_panic() {
-        // A count of 2 but only one request present.
+        // A truncated codec artifact (half a valid request tree) declines rather than panicking.
         let mut bytes = encode(&[Request::Emit(Target::Wasm)]);
-        bytes[0] = 2; // claim two requests
+        bytes.truncate(bytes.len() / 2);
         assert_eq!(decode(&bytes), None);
     }
 
     #[test]
-    fn unknown_tag_is_none() {
-        // count=1, tag=0xff (unrecognized) — a decline, not a panic.
-        assert_eq!(decode(&[0x01, 0xff]), None);
+    fn garbage_bytes_are_none() {
+        // Bytes that are not a cdzast codec artifact at all — a decline, not a panic.
+        assert_eq!(decode(&[0xff, 0xff, 0xff, 0xff]), None);
     }
 
     #[test]
     fn trailing_garbage_is_none() {
+        // The cdzast codec consumes the WHOLE input or refuses (no trailing bytes), so an extra byte past
+        // the encoded request tree is a malformed artifact and decode declines.
         let mut bytes = encode(&[Request::Emit(Target::Wasm)]);
-        bytes.push(0x00); // an extra byte past the declared list
+        bytes.push(0x00);
         assert_eq!(decode(&bytes), None);
     }
 
     #[test]
-    fn truncated_string_is_none() {
-        // count=1, QUERY_TYPE_OF, string len=5, but no string bytes.
-        assert_eq!(decode(&[0x01, tag::QUERY_TYPE_OF, 0x05]), None);
+    fn unknown_request_head_is_none() {
+        // A well-formed cdzast tree whose request form has an UNKNOWN head declines (never panics).
+        let mut b = Builder::new();
+        let head = b.name("frobnicate");
+        let form = b.list(vec![head]);
+        let root = b.list(vec![form]);
+        assert_eq!(decode(&crate::codec::encode(&b.finish(root))), None);
+    }
+
+    #[test]
+    fn unknown_query_selector_is_none() {
+        // `(query bogus)` — a known `query` head with an UNKNOWN selector declines.
+        let mut b = Builder::new();
+        let q = b.name("query");
+        let sel = b.name("bogus");
+        let form = b.list(vec![q, sel]);
+        let root = b.list(vec![form]);
+        assert_eq!(decode(&crate::codec::encode(&b.finish(root))), None);
+    }
+
+    #[test]
+    fn wrong_operand_type_is_none() {
+        // `(query type-at "x")` — a node-id operand given as an `Ast.Str` (not an `Ast.Int`) declines.
+        let mut b = Builder::new();
+        let q = b.name("query");
+        let sel = b.name("type-at");
+        let bad = atom_str(&mut b, "x");
+        let form = b.list(vec![q, sel, bad]);
+        let root = b.list(vec![form]);
+        assert_eq!(decode(&crate::codec::encode(&b.finish(root))), None);
     }
 
     #[test]
