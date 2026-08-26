@@ -3109,12 +3109,13 @@ impl<'a> Printer<'a> {
     /// `import { name, … } from "path"` — brings a sibling module's public names into scope. `args`
     /// is `["path" (name…)]` (per `is_import_shape`): the path string then the name-list occurrence.
     fn print_import(&mut self, args: &[StructId]) {
-        // Alias form: `(import "path" alias)` (bare-name third element) -> `import "path" as alias`.
+        // Alias form: `(import "path" alias)` (bare-name third element) -> `import alias from "path"`
+        // (a whole-module bind is a bare name where the named form has a `{ … }` list — both use `from`).
         if self.a.as_name(args[1]).is_some() {
             self.doc.word("import ");
-            self.expr(args[0], 0); // the path string literal
-            self.doc.word(" as ");
             self.expr(args[1], 0); // the alias name
+            self.doc.word(" from ");
+            self.expr(args[0], 0); // the path string literal
             return;
         }
         // Named-list form: `(import "path" (name…))` -> `import { name, … } from "path"`.
@@ -3168,7 +3169,7 @@ impl<'a> Printer<'a> {
                 if !names.is_empty() && names.iter().all(|&n| self.a.as_name(n).is_some()))
     }
 
-    /// The whole-module ALIAS import `(import "path" alias)` -> `import "path" as alias`: a string path
+    /// The whole-module ALIAS import `(import "path" alias)` -> `import alias from "path"`: a string path
     /// then a bare NAME (the local alias the linker binds the module's exports record under). Distinct
     /// from the named-list `is_import_shape` by the third element being a NAME, not a LIST.
     fn is_import_alias_shape(&self, args: &[StructId]) -> bool {
@@ -4924,20 +4925,21 @@ mod tests {
 
     #[test]
     fn import_alias_and_named_list_forms_round_trip() {
-        // The whole-module ALIAS import `import "path" as alias` -> `(import "path" alias)` (bare-name
+        // The whole-module ALIAS import `import alias from "path"` -> `(import "path" alias)` (bare-name
         // third element — the linker's module-alias discriminant), distinct from the named-list
-        // `import { a, b } from "path"` -> `(import "path" (a b))` (list third element). Both round-trip
-        // through the ML surface, and the alias composes with member projection `alias.member` — the
-        // shape a multi-contract guest uses to disambiguate two modules that export the same name.
-        assert_roundtrip("import \"kv-put\" as kv-put", 80);
-        assert_roundtrip("import \"blob-put\" as bput", 80);
+        // `import { a, b } from "path"` -> `(import "path" (a b))` (list third element). Both share the
+        // `from "path"` tail and round-trip through the ML surface; the alias composes with member
+        // projection `alias.member` — the shape a multi-contract guest uses to disambiguate two modules
+        // that export the same name.
+        assert_roundtrip("import kv-put from \"kv-put\"", 80);
+        assert_roundtrip("import bput from \"blob-put\"", 80);
         assert_roundtrip("import { get, put } from \"kv\"", 80);
-        let full = "import \"blob-put\" as bput\n\nimport \"blob-get\" as bget\n\n\
+        let full = "import bput from \"blob-put\"\n\nimport bget from \"blob-get\"\n\n\
                     def main() = bput.descriptor().id == bget.descriptor().id\n\nexport { main }";
         assert_roundtrip(full, 80);
         // The alias lowers to the bare-NAME third element; the named-list to a LIST — the two forms the
         // linker (resolve/link) tells apart.
-        let alias = parser::read_ml("import \"kv-put\" as kv");
+        let alias = parser::read_ml("import kv from \"kv-put\"");
         assert!(alias.ok(), "parse alias import: {:?}", alias.errors);
         assert!(
             sexpr::print(&alias.arenas).contains("(import \"kv-put\" kv)"),
