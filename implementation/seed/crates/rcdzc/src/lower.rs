@@ -1492,8 +1492,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                 // non-terminating fold declines, never hangs) and, on any value it cannot
                                 // evaluate, returns `None` → the runtime-call / decline path runs — so this is a
                                 // COMPLETENESS gain on the accept path, never a miscompile.
+                                // An argument qualifies if it is a const VALUE or a LAMBDA LITERAL — a
+                                // lambda is compile-time-known (a closure over consts) and const_eval binds
+                                // it as a `CVal::Closure` so a HIGHER-ORDER callee (`List.map`-style: a
+                                // `const f` parameter applied per element) const-folds. A lambda is not a
+                                // `is_const_value` (its core is a function, not a constant), so it must be
+                                // admitted explicitly here or the higher-order fold never activates.
                                 if has_const_foldable_param
-                                    && args.iter().all(|&a| is_const_value(g, a))
+                                    && args.iter().all(|&a| {
+                                        is_const_value(g, a)
+                                            || crate::eval::lambda_params_of(g, a).is_some()
+                                    })
                                 {
                                     let mut budget: u64 = 1_000_000;
                                     if let Some(cv) = const_eval_apply(
@@ -24165,6 +24174,17 @@ enum CVal {
     /// the trap's MESSAGE surfaces as the compile error (CDZ0304) — not the generic "runtime AST value"
     /// decline. This makes a const-executed trap a fail-loud, actionable compile-time error.
     Trap(std::rc::Rc<str>),
+    /// A CLOSURE value — a `fn`/lambda captured as a first-class const value so a HIGHER-ORDER fold works: a
+    /// `const f: (T) -> U` parameter bound to a lambda argument, then APPLIED per element (a `List.map`/
+    /// `filter`/`fold`, or a user recursive map that threads a closure). `node` is the lambda literal's
+    /// occurrence (its params + body resolve via `lambda_of`); `env` is the binding environment CAPTURED at
+    /// closure creation, so a closure over an outer `const` binding evaluates correctly. A closure exists
+    /// ONLY transiently during folding — it never materializes to a runtime/emitted value: `cval_to_core`/
+    /// `cval_to_ast` decline it, and `cval_eq` does not compare it (a function is not observable data).
+    Closure {
+        node: StructId,
+        env: std::rc::Rc<CEnv>,
+    },
 }
 
 /// The const-evaluator's binding environment: a CALL parameter's name occurrence → its argument value.
@@ -24324,6 +24344,13 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         // compile-time-only annotation, erased at runtime). Notably the `([] : List T)` empty-list base arm.
         Resolved::Annot { expr, .. } => const_eval(db, expr, env, budget),
         Resolved::Apply { head, args } => const_eval_apply(db, node, head, &args, env, budget),
+        // A `fn`/lambda LITERAL as a value — capture it as a `Closure` over the current env so it can be
+        // passed to a `const` function parameter and APPLIED per element in a higher-order fold (map/filter/
+        // fold). `node` (this lambda's occurrence) resolves its params + body via `lambda_of` when applied.
+        Resolved::Lambda { .. } => Some(CVal::Closure {
+            node,
+            env: std::rc::Rc::new(env.clone()),
+        }),
         // (A NULLARY variant used as a bare value — `Option.None`, a payload-less user variant — is folded
         // to its empty-payload sum by the `variant_disc_of` guard ABOVE the match, before the Member/Ref
         // arms can shadow it.)
@@ -24409,6 +24436,30 @@ fn core_to_cval(db: &mut Db, c: &Core) -> Option<CVal> {
     })
 }
 
+/// Resolve a call HEAD to a CLOSURE value bound in `env` — a `const` function parameter carrying a lambda
+/// argument. Follows `Ref`/`Annot` wrappers to the `Param` binder via a BOUNDED walk (a resolution chain is
+/// short; the 64-step cap makes it total regardless), then reads the env. It does NOT re-evaluate the head
+/// (unlike `const_eval`, whose recursion the fold budget bounds only by STEPS, not native stack depth), so
+/// it is safe to call on every application without risking a stack overflow. Returns the closure's lambda
+/// occurrence + its captured env.
+fn env_closure(db: &mut Db, head: StructId, env: &CEnv) -> Option<(StructId, std::rc::Rc<CEnv>)> {
+    let mut cur = head;
+    for _ in 0..64 {
+        match resolved_of(db, cur) {
+            Resolved::Param { binder } => {
+                return match env.get(&binder) {
+                    Some(CVal::Closure { node, env: e }) => Some((*node, e.clone())),
+                    _ => None,
+                };
+            }
+            Resolved::Ref { value } => cur = value,
+            Resolved::Annot { expr, .. } => cur = expr,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Evaluate a function application to a `CVal`. A primitive (or a prelude wrapper that routes to an
 /// intrinsic in its body) applies its const semantics; a def/lambda binds its parameters to the evaluated
 /// arguments in a fresh env and evaluates its body (recursion permitted — the `budget` bounds it).
@@ -24443,6 +24494,12 @@ fn const_eval_apply(
         };
         return Some(CVal::Trap(msg));
     }
+    // A HIGHER-ORDER application `f(x…)` where the head `f` is a `const` PARAMETER bound to a CLOSURE (a
+    // lambda passed as an argument — the mapper/predicate/folder of a `List.map`/`filter`/`fold` or a user
+    // recursive map that threads a closure): look the closure up in the env and APPLY it — bind its params
+    // to the evaluated args in its CAPTURED (lexical) env, then evaluate its body. `f` has no static lambda
+    // for `lambda_of` to reduce (it is a fold-time value living in the env), so without this a higher-order
+    // fold declines. Arg count must match; a taken `trap` in an arg short-circuits via `ce!`.
     // A VARIANT CONSTRUCTOR applied to its payload(s) — an `Ast.Name`/`Ast.List`/`Option.Some`/user-sum
     // constructor. Its value is the sum with the constructor's discriminant and the evaluated payloads.
     if let Some(disc) = crate::eval::variant_disc_of(db, head) {
@@ -24500,6 +24557,34 @@ fn const_eval_apply(
         let isc = core_is_const_value(db, &c);
         return if isc { core_to_cval(db, &c) } else { None };
     }
+    // A HIGHER-ORDER application `f(x…)` where the head `f` is a `const` FUNCTION PARAMETER bound to a
+    // closure (the mapper/predicate/folder of a user recursive map that threads a closure). Resolve the head
+    // through `Ref`/`Annot` wrappers to its env-bound `Closure` via a BOUNDED walk (`env_closure` — it does
+    // NOT re-evaluate the head, so it cannot recurse unboundedly on the fold hot path), then apply: bind the
+    // closure's params to the evaluated args in its CAPTURED (lexical) env and evaluate its body. Guarded on
+    // `lambda_params_of(head).is_none()` so a STATIC lambda/def head still takes the direct path below.
+    if crate::eval::lambda_params_of(db, head).is_none()
+        && let Some((lam, cenv)) = env_closure(db, head, env)
+    {
+        let cparams = crate::eval::lambda_params_of(db, lam)?;
+        if cparams.len() != args.len() {
+            return None;
+        }
+        let body = crate::eval::lambda_body(db, lam)?;
+        let mut child = (*cenv).clone();
+        for (&p, &a) in cparams.iter().zip(args.iter()) {
+            let av = if crate::eval::lambda_params_of(db, a).is_some() {
+                CVal::Closure {
+                    node: a,
+                    env: std::rc::Rc::new(env.clone()),
+                }
+            } else {
+                ce!(a)
+            };
+            child.insert(p, av);
+        }
+        return const_eval(db, body, &child, budget);
+    }
     let params = crate::eval::lambda_params_of(db, head)?;
     if params.len() != args.len() {
         return None;
@@ -24507,7 +24592,19 @@ fn const_eval_apply(
     let body = crate::eval::lambda_body(db, head)?;
     let mut child = CEnv::default();
     for (&p, &a) in params.iter().zip(args.iter()) {
-        let av = ce!(a);
+        // A FUNCTION-valued argument (a lambda literal / named-fn ref that `lambda_of` reduces) is captured
+        // as a `Closure` over the CALLER's env, so a higher-order callee applies it per element (map/filter/
+        // fold). Evaluating it as an ordinary value would decline (a lambda's `core_of` is not a constant),
+        // aborting the whole fold. A re-passed closure PARAMETER is not a static lambda (it is a `Param`
+        // bound in the env), so it falls to `ce!` and follows its env binding — already a `Closure`.
+        let av = if crate::eval::lambda_params_of(db, a).is_some() {
+            CVal::Closure {
+                node: a,
+                env: std::rc::Rc::new(env.clone()),
+            }
+        } else {
+            ce!(a)
+        };
         child.insert(p, av);
     }
     const_eval(db, body, &child, budget)
@@ -24715,6 +24812,9 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         // const-executed `trap` is a fail-loud, actionable authoring error (e.g. "missing required pragma:
         // input"), not a silent decline to a runtime value.
         CVal::Trap(msg) => Core::Poison(Reject::coded(Code::ConstTrap, msg.to_string())),
+        // A CLOSURE is not materializable data — it exists only transiently as a higher-order fold applies it.
+        // A fold that would YIELD a closure as its result is not a constant value; decline cleanly.
+        CVal::Closure { .. } => return None,
         // A compound (list / sum / record / tuple) materializes to the corresponding `Core` DIRECTLY, its
         // element/payload nodes synthesized via `cval_to_ast` (each a `synth_core` node whose memoized core IS
         // the element's constant). No constructor head, no AST re-parse, no resolution — so a value with no
@@ -24783,6 +24883,8 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         // A trap is not a materializable element — it propagates (via `ce!`) before any compound is built, so
         // this is unreachable in practice; decline defensively rather than synthesize a bogus node.
         CVal::Trap(_) => return None,
+        // A closure is not a materializable element (a function is not data); decline defensively.
+        CVal::Closure { .. } => return None,
     })
 }
 
