@@ -1563,6 +1563,7 @@ pass	a consistent annotation type-checks against the inferred type
 pass	a const Ast-list FILTERED by a nested recursive comment-peeler const-evaluates at compile time
 pass	a const closure re-passed through a recursive driver specializes and computes correctly
 pass	a const collection recursively folded UNROLLS to its result at compile time
+pass	a const collection recursively folded is rejected, not compiled to an infinite loop
 pass	a const list recursively FILTERED (conditional include) folds to a constant
 pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
 pass	a const parameter rejects an argument that depends on runtime data
@@ -1673,6 +1674,7 @@ pass	a decimal token trailing letters is a malformed literal, not an unbound nam
 pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
+pass	a decoded payload feeds ordinary arithmetic
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
 pass	a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
@@ -2892,6 +2894,7 @@ pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a quantity whose reference-scaled magnitude overflows its inner Int is rejected
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quote carrying a symbol literal declines — no Ast.Symbol variant to reify it into
 pass	a quote carrying a symbol literal reifies to an Ast.Symbol value
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
 pass	a quote of a char literal reifies to an Ast.Char value
@@ -3000,6 +3003,7 @@ pass	a recursion-driven host-call sequence consumes one response row per iterati
 pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
+pass	a recursive HOF applies a bare operator passed as its function argument
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
@@ -3467,6 +3471,7 @@ pass	a runtime-built BigInt sum-payload literal probe falls through on a non-mat
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built generic user sum escapes with its parametric type frame
 pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
+pass	a runtime-built open-sum variant decodes through the schema
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
 pass	a runtime-computed Rational crosses the host boundary as its exact value
@@ -3545,6 +3550,8 @@ pass	a scaled cube dimension raises its prefix scale to the power (km³ → ×1e
 pass	a scaled derived quantity displays with BOTH scales folded into the magnitude
 pass	a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)
 pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
+pass	a schema decode's Err result is handled as data on its own branch
+pass	a schema decode's Ok result is matched to recover the decoded payload
 pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee FAILING the pattern reaches the catch-all WITHOUT running the guard's perform
@@ -4215,6 +4222,7 @@ pass	an OPTION handler state TOGGLES its variant per perform
 pass	an OPTION payload quantity renders scaled to its reference in the value form
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
+pass	an Ok and an Err decode compose through one shared handler
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
 pass	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
@@ -4587,9 +4595,11 @@ pass	an odd-width signed division overflow traps at the declared width (Int24 mi
 pass	an odd-width unsigned shift result exceeding the declared width traps (UInt4: 3<<3)
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
+pass	an open sum payload that does not match its schema yields a typed failure, not a trap
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
+pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
@@ -5020,6 +5030,11 @@ pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emit
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
+pass	ctt1 RATIONAL handler state threads exact arithmetic across dispatches
+pass	ctt2 BIGINT handler state doubles past i64 across dispatches
+pass	ctt3 CHAR handler state advances by code point across dispatches
+pass	ctt4 BYTES-ROPE handler state grows by concat across dispatches
+pass	ctt5 SYMBOL handler state swaps between interned symbols
 pass	cv1 an inner arm resumes with a CHAIN of two outer ops — O.b of O.a evaluated inside the arm, probe pins the double advance
 pass	cv2 TWO asks each running the in-arm chain — the second chain starts where the first left the outer thread
 pass	cv3 the in-arm chain routes through a PURE fn mid-hop — O.b of dbl of O.a, the pure call must not detach the thread
@@ -5790,6 +5805,9 @@ pass	nx3 the arm branches on the op arg's SIGN — negation on the negative path
 pass	nx4 an alternating-sign GEOMETRIC stride (*-2) — the sign flips per dispatch and the sum telescopes
 pass	nx5 i64::MIN-adjacent op arguments — the arm's subtraction stays in range and the two dispatches differ by exactly the state stride
 pass	oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out in a match arm homes correctly
+pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
+pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
+pass	oak3 an op ARGUMENT of type Map is queried by the arm and drives the state
 pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
 pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
 pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
@@ -6135,6 +6153,11 @@ pass	raising a BigInt-magnitude quantity to a power runs the unbounded multiply
 pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and dimension
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
+pass	rak1 an op RESULT of type Rational resumes an exact fraction
+pass	rak2 an op RESULT of type BigInt resumes a multi-limb value
+pass	rak3 an op RESULT of type Symbol resumes an interned symbol by state
+pass	rak4 an op RESULT of type Bytes resumes a built rope
+pass	rak5 an op RESULT of type Map resumes a built map the body queries
 pass	rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches
 pass	rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes
 pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch
@@ -6147,6 +6170,8 @@ pass	read normalizes numeric token spellings to canonical float values
 pass	read of a bare b token is an Ast.Name, not a byte-literal
 pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
 pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
+pass	read of text that is not a well-formed s-expression declines
+pass	read of text with trailing content after the first s-expression declines
 pass	read of the empty string declines
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
@@ -6616,6 +6641,7 @@ pass	the composed slice view EQUALS its flat twin and keys a Map by canonical co
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
+pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
 pass	the difference of a set with itself is empty
@@ -7222,16 +7248,3 @@ todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	two adapter records with different state types drive a take-while fold in one program
-pass	ctt1 RATIONAL handler state threads exact arithmetic across dispatches
-pass	ctt2 BIGINT handler state doubles past i64 across dispatches
-pass	ctt3 CHAR handler state advances by code point across dispatches
-pass	ctt4 BYTES-ROPE handler state grows by concat across dispatches
-pass	ctt5 SYMBOL handler state swaps between interned symbols
-pass	rak1 an op RESULT of type Rational resumes an exact fraction
-pass	rak2 an op RESULT of type BigInt resumes a multi-limb value
-pass	rak3 an op RESULT of type Symbol resumes an interned symbol by state
-pass	rak4 an op RESULT of type Bytes resumes a built rope
-pass	rak5 an op RESULT of type Map resumes a built map the body queries
-pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
-pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
-pass	oak3 an op ARGUMENT of type Map is queried by the arm and drives the state

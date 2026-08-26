@@ -1538,6 +1538,26 @@
             (def (main) (apply2 + 3 4)) (export main)))
   (output (: 7 Int64)))
 
+; A bare operator passed to a HOF that emits a REAL call (a recursive HOF, not inlined) is ETA-EXPANDED to
+; the equivalent lambda `(fn (a b) (+ a b))` — grounded by the HOF's annotated function-parameter type —
+; and passed as the runtime closure. (A non-recursive HOF that fully INLINES a bare operator argument is a
+; separate reduce-path case, still pending — the `(apply2 + 3 4)` todo above.)
+
+(case "a recursive HOF applies a bare operator passed as its function argument"
+  (doc    "`ap2` is a RECURSIVE named higher-order function (so it emits a real call rather than inlining):
+           its function parameter `g` is annotated `(-> Int64 Int64 Int64)`, and it is passed the bare
+           operator `+`. `(ap2 + 3 4 n)` with a runtime `n` recurses `n` times then applies `g` — the bare
+           `+` is eta-expanded to `(fn (a b) (+ a b))` and passed as the runtime closure, so `n=0` yields
+           `(+ 3 4)` = 7. A bare operator has no runtime closure form of its own; without the eta this
+           declined 'value is not applyable' when `ap2` applied `g`.")
+  (input  (do
+            (def (ap2 (: g (-> Int64 Int64 Int64)) (: x Int64) (: y Int64) (: n Int64))
+              (if (< n 1) (g x y) (ap2 g x y (- n 1))))
+            (def (main (: n Int64)) (ap2 + 3 4 n))
+            (export main)))
+  (call   main 0)
+  (output (: 7 Int64)))
+
 (case "a function is returned as a result"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value: adder returns a closure over
            its parameter n; the returned function is then applied.")
