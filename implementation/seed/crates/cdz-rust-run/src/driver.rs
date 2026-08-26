@@ -56,6 +56,70 @@ pub fn ordinary_call_expr(module: &str, export: &str, args: &[String], async_mod
     format!("{name}({})", marshaled.join(", "))
 }
 
+/// Assemble the full RUST driver source for a SYNC, ORDINARY-call corpus case — the common path (the
+/// host-closure factory/consumer application + async `block_on` harness are later increments). It wraps the
+/// emitted `module` in `mod prog { … }` (so its `pub fn main` becomes `prog::main`, not a duplicate crate
+/// `main`), splices the host-response shim fns (`build_rust_host_shims`), and emits a `fn main` that calls
+/// `prog::<call>`, renders the result to cdz-run's canonical text via `cdz_render_expr` (driven by the
+/// backend's `// cdz-*` render notes the module carries), and prints it. A DIVERGING export (`-> !` / `Any`
+/// / `?N`) is just CALLED (it traps) — binding + printing a `!` is a build error, and the panic IS the
+/// recorded `(trap …)` outcome; an export with no parsed `cdz-return` note falls back to `Display` (`{}`),
+/// the scalar shape. Pure string generation; the result rendering + note parsing live in `cdz-rust-render`.
+pub fn build_driver_source(
+    module: &str,
+    export: &str,
+    args: &[String],
+    host_responses: &[(String, String)],
+    host_calls: &[String],
+) -> String {
+    use cdz_rust_render::{
+        cdz_newtype_descriptors, cdz_qty_at, cdz_render_expr, cdz_return_type, cdz_scale,
+        cdz_sum_descriptors, cdz_sum_params, cdz_sum_qualified_heads, cdz_unit_form,
+    };
+
+    let call_or_await = format!("prog::{}", ordinary_call_expr(module, export, args, false));
+    let ret_ty = cdz_return_type(module, export);
+
+    // A diverging result type (`-> !`) — its `cdz-return` note is `Any` / `!` / a bare `?N` result var.
+    let diverging = ret_ty.as_deref().is_some_and(|t| {
+        t == "Any" || t == "!" || (t.starts_with('?') && t[1..].chars().all(|c| c.is_ascii_digit()))
+    });
+
+    let body = if diverging {
+        format!("fn main() {{ {call_or_await}; }}\n")
+    } else {
+        match ret_ty.as_deref() {
+            Some(ty) => {
+                let sums = cdz_sum_descriptors(module);
+                let newtypes = cdz_newtype_descriptors(module);
+                let sum_params = cdz_sum_params(module);
+                let qualified_heads = cdz_sum_qualified_heads(module);
+                let unit_form = cdz_unit_form(module, export);
+                let unit_scale = cdz_scale(module, export);
+                let qty_at = cdz_qty_at(module, export);
+                let render = cdz_render_expr(
+                    ty,
+                    &sums,
+                    &newtypes,
+                    &sum_params,
+                    unit_form.as_deref(),
+                    unit_scale,
+                    &qty_at,
+                    &qualified_heads,
+                );
+                format!(
+                    "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
+                )
+            }
+            // Unknown return type (no emitted note) — fall back to `{}` (a scalar via Display).
+            None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
+        }
+    };
+
+    let host_shims = build_rust_host_shims(module, host_responses, host_calls);
+    format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+}
+
 /// Kebab-normalize an EFFECT name (matching the backend's `canonical_host_op_key`): CamelCase / `_` / `-`
 /// runs collapse to single `-`, lowercased, no leading/trailing `-`.
 pub fn kebab_effect(name: &str) -> String {
@@ -396,5 +460,42 @@ mod tests {
             ordinary_call_expr("pub fn main() -> i64 { 42 }", "main", &[], false),
             "main()"
         );
+    }
+
+    #[test]
+    fn driver_wraps_the_module_and_calls_prog_main() {
+        let m = "pub fn main() -> i64 { 42 }";
+        let d = build_driver_source(m, "main", &[], &[], &[]);
+        assert!(d.contains("mod prog {"), "wraps in mod prog: {d}");
+        assert!(d.contains(m), "embeds the module");
+        assert!(
+            d.contains("fn main()") && d.contains("prog::main()"),
+            "calls prog::main: {d}"
+        );
+        assert!(d.contains("println!"), "prints the result");
+    }
+
+    #[test]
+    fn driver_renders_via_cdz_return_note_when_present() {
+        let m = "// cdz-return[f]: Int64\npub fn f() -> i64 { 7 }";
+        let d = build_driver_source(m, "f", &[], &[], &[]);
+        assert!(d.contains("let __r = prog::f()"), "binds the result: {d}");
+        assert!(d.contains("println!"), "prints it");
+    }
+
+    #[test]
+    fn a_diverging_export_is_just_called_no_println() {
+        let m = "// cdz-return[boom]: !\npub fn boom() -> ! { panic!() }";
+        let d = build_driver_source(m, "boom", &[], &[], &[]);
+        assert!(d.contains("prog::boom()"), "calls it: {d}");
+        assert!(!d.contains("println!"), "diverging → no print: {d}");
+        assert!(!d.contains("let __r"), "diverging → no result binding: {d}");
+    }
+
+    #[test]
+    fn driver_splices_host_shims() {
+        let m = "// cdz-return[g]: Int64\npub fn g() -> i64 { crate::__cdz_host_ask_ask() }";
+        let d = build_driver_source(m, "g", &[], &[("ask.ask".into(), "10".into())], &[]);
+        assert!(d.contains("fn __cdz_host_ask_ask"), "shim spliced: {d}");
     }
 }
