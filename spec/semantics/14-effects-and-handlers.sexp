@@ -8302,3 +8302,44 @@
   (call main (: 5 Int64))
   (output (: 3 Int64))
   (live-objects 0))
+
+; -- breaker batch 441 (2026-08-26): multi-heap-arg ops + the arg-becomes-ANSWER flow — an op with
+; TWO heap arguments (list + string) both read and reclaimed; the arm resuming with the op's OWN
+; heap argument as the answer (ownership crosses from the call into the resumed body); and the arm
+; TRANSFORMING the arg (prepend) into the answer. All live-objects 0; wasm-only rows.
+
+(case "mha1 an op with TWO heap arguments — both read by the arm, both reclaim"
+  (input (do
+    (effect E (op put (-> (List Int64) String Int64)))
+    (def (main (: n Int64))
+      (handle E 0
+        ((put (xs t) st (resume (+ (List.len xs) (String.byte-len t)) st)))
+        (E.put (if (> n 0) (list n (+ n 1)) (list 9)) (String.concat "ab" (if (> n 0) "c" "de")))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
+
+(case "mha2 the arm resumes with the op's OWN heap argument as the answer (arg becomes answer)"
+  (input (do
+    (effect E (op echo (-> (List Int64) (List Int64))))
+    (def (main (: n Int64))
+      (handle E 0
+        ((echo (xs) st (resume xs st)))
+        (List.len (E.echo (if (> n 0) (list n (+ n 1) (+ n 2)) (list 9))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case "mha3 the arm TRANSFORMS the heap arg into the answer (prepend then resume)"
+  (input (do
+    (effect E (op grow (-> (List Int64) (List Int64))))
+    (def (main (: n Int64))
+      (handle E 0
+        ((grow (xs) st (resume (List.prepend xs 0) st)))
+        (List.len (E.grow (if (> n 0) (list n (+ n 1)) (list 9))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))

@@ -7894,3 +7894,6 @@ pass	icp3 a lifted String compared and measured through an if-chain (the viachai
 pass	eab1 a lifted String param CAPTURED by a closure is admitted as borrowed and reclaims
 pass	eab2 a lifted String param as an EFFECT-OP argument is admitted and reclaims
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
+pass	mha1 an op with TWO heap arguments — both read by the arm, both reclaim
+pass	mha2 the arm resumes with the op's OWN heap argument as the answer (arg becomes answer)
+pass	mha3 the arm TRANSFORMS the heap arg into the answer (prepend then resume)
