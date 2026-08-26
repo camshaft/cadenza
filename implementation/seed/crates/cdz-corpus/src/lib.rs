@@ -90,7 +90,13 @@ pub struct Record {
     /// compares the reported count to N (the shipped runtime reports 0 unconditionally, so the assertion
     /// has teeth only on the debug-counters runtime). ORTHOGONAL to the value/trap outcome: a case asserts
     /// its `(output …)`/`(trap …)` AND this balance. `None` for a case with no `(live-objects …)`.
+    /// Under the OPT-OUT default a `None` on a HEAP-importing case enforces == 0 (no leak); on a no-heap
+    /// case it is skipped.
     pub live_objects: Option<u32>,
+    /// `true` iff the count came from a `(live-objects known-leak N)` OPT-OUT MARKER — N is a TOLERATED
+    /// current leak grandfathered when the opt-out default landed (graded identically to a plain
+    /// `(live-objects N)`; the flag records the intent so the marker set can be shrunk over time).
+    pub live_objects_known_leak: bool,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -425,9 +431,13 @@ pub fn render(records: &[Record]) -> String {
             out.push('\n');
         }
         // `live-objects\t<N>` — the post-run heap-balance the case asserts on the debug-counters runtime
-        // (orthogonal to the value/trap outcome). Absent for a case with no `(live-objects …)`.
+        // (orthogonal to the value/trap outcome). A `known-leak` marker renders as `live-objects\tknown-leak\t<N>`
+        // so the consumer can carry the opt-out intent. Absent for a case with no `(live-objects …)`.
         if let Some(n) = r.live_objects {
             out.push_str("live-objects\t");
+            if r.live_objects_known_leak {
+                out.push_str("known-leak\t");
+            }
             out.push_str(&n.to_string());
             out.push('\n');
         }
@@ -625,6 +635,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut wit_world_id: Option<StructId> = None;
     let mut component_name: Option<String> = None;
     let mut live_objects: Option<u32> = None;
+    let mut live_objects_known_leak = false;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -821,12 +832,25 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             }
             // `(live-objects N)` — assert the value-heap runtime's live-cell count is N after the run (the
             // heap-balance invariant; N=0 is no leak). Orthogonal to the value/trap outcome; the gate drives
-            // this on the debug-counters runtime.
+            // this on the debug-counters runtime. `(live-objects known-leak N)` is the OPT-OUT MARKER form —
+            // the count is prefixed by the literal `known-leak` (a grandfathered tolerated leak); both assert
+            // == N.
             Some("live-objects") => {
-                live_objects = a
-                    .as_form(clause, "live-objects")
-                    .and_then(|t| t.first().copied())
-                    .and_then(|id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
+                let ids = a.as_form(clause, "live-objects").unwrap_or(&[]);
+                let first = ids
+                    .first()
+                    .map(|&id| sexpr::print_from(a, id).trim().to_string());
+                match first.as_deref() {
+                    Some("known-leak") => {
+                        live_objects_known_leak = true;
+                        live_objects = ids
+                            .get(1)
+                            .and_then(|&id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
+                    }
+                    _ => {
+                        live_objects = first.and_then(|s| s.parse::<u32>().ok());
+                    }
+                }
             }
             // `doc` — not needed to run + compare a case.
             _ => {}
@@ -862,6 +886,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         component_name,
         wit_world_ast,
         live_objects,
+        live_objects_known_leak,
     })
 }
 
@@ -1787,6 +1812,21 @@ mod tests {
         )
         .unwrap();
         assert!(text.contains("live-objects\t0\n"));
+    }
+
+    /// A `(live-objects known-leak N)` opt-out marker parses into the count + the `known_leak` flag and
+    /// renders as a `live-objects\tknown-leak\t<N>` line (distinct from a plain `live-objects\t<N>`).
+    #[test]
+    fn live_objects_known_leak_marker_parses_and_renders() {
+        let src = r#"(case "x"
+                 (input (do (type L (Cons (Tuple Int64 L)) Nil) (def (main) (L.Cons (tuple 1 (L.Nil ())))) (export main)))
+                 (call main) (output (: (L.Cons (tuple 1 (L.Nil ()))) L))
+                 (live-objects known-leak 2))"#;
+        let recs = read(src).unwrap();
+        assert_eq!(recs[0].live_objects, Some(2));
+        assert!(recs[0].live_objects_known_leak);
+        let text = to_records(src).unwrap();
+        assert!(text.contains("live-objects\tknown-leak\t2\n"));
     }
 
     /// A case with NO `(live-objects …)` leaves the field `None` and emits no `live-objects` line.

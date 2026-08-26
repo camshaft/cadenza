@@ -1834,14 +1834,16 @@
                   --baseline ${./spec/semantics/.gate-baseline})
             if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
             if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
-            # A `(live-objects N)` case (its marker is a `(live-objects …)` sub-form in test-run.ast, shred
-            # #3513) must run on the DEBUG-COUNTERS runtime — the shipped one reports 0 vacuously, only the
-            # debug build has the real live-cell export that `cdz-run --grade` asserts (#3518). Detect the
-            # marker in the shredded test-run.ast and OVERRIDE the runtime with `runtimeDebug` (a store-path,
-            # so the exec's identity is a function of the debug-runtime — reruns iff it changes; the static
-            # interpolation means every wasm exec carries the dep, a minor accepted coarsening). Non-marker
-            # cases keep the content-addressed shipped runtime resolved from CDZ_STORE.
-            if grep -qa 'live-objects' ${build}/test-run.ast; then args+=(--runtime ${runtimeDebug}); fi
+            # HEAP-BALANCE (opt-out heap-liveness): under the opt-out default EVERY heap-importing case must
+            # end at its expected live-cell count (0 by default, or the case's explicit / known-leak N), so
+            # every wasm exec runs on the DEBUG-COUNTERS runtime — the shipped one reports 0 vacuously, only
+            # the debug build has the real live-cell export `cdz-run --grade` reads. OVERRIDE the runtime with
+            # `runtimeDebug` unconditionally (cdz-run composes it only when the component imports the heap; a
+            # scalar/const case ignores the override, so this is safe — the grade skips the balance check for
+            # a no-heap case). `runtimeDebug` is a store-path, so every exec's identity is a function of the
+            # debug-runtime and reruns iff it changes (a minor accepted coarsening — formerly only annotated
+            # cases carried this dep).
+            args+=(--runtime ${runtimeDebug})
             cdz-run "''${args[@]}"
             echo "ok: corpus ${name} case ${idx}" > "$out"
           '';

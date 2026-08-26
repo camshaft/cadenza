@@ -1302,6 +1302,44 @@ enum GateTargetArg {
     RustAsync,
 }
 
+/// How the wasm gate checks a case's post-run HEAP BALANCE — the corpus opt-out heap-liveness model. The
+/// live-cell count is read on the debug-counters value-heap runtime (`cdz-run --report-live-objects`) after
+/// the run; the check is applied only to a HEAP-importing case (a scalar/const program has no heap to
+/// balance and is always skipped, never a false fail).
+#[derive(Clone, Copy)]
+enum LiveObjectsCheck {
+    /// Never check the balance — for the opt-sweep (a TIER divergence, not a heap regression) and the ML
+    /// differential (a pure value comparison against the wasm oracle). `--report-live-objects` is not even
+    /// passed, so host-call capture on the normal run path is preserved.
+    Off,
+    /// OPT-OUT DEFAULT (a case with no `(live-objects …)` clause): a heap-importing case must end at 0 live
+    /// cells (no leak / no double-free); a no-heap case is skipped.
+    Default,
+    /// Assert the live-cell count == N — an explicit `(live-objects N)` or a `(live-objects known-leak N)`
+    /// opt-out marker (both grade as == N; the marker's known-leak intent is recorded in the corpus source).
+    Expect(u32),
+}
+
+impl LiveObjectsCheck {
+    /// Map a corpus record's recorded `live_objects` count (`None` = no clause) to the gate check under the
+    /// opt-out model: no clause ⇒ the default (heap ⇒ 0), an explicit count ⇒ assert == N.
+    fn from_record(count: Option<u32>) -> Self {
+        match count {
+            Some(n) => LiveObjectsCheck::Expect(n),
+            None => LiveObjectsCheck::Default,
+        }
+    }
+
+    /// The expected live-cell count for a HEAP-importing case, or `None` to not check the balance at all.
+    fn expected_for_heap(self) -> Option<u32> {
+        match self {
+            LiveObjectsCheck::Off => None,
+            LiveObjectsCheck::Default => Some(0),
+            LiveObjectsCheck::Expect(n) => Some(n),
+        }
+    }
+}
+
 /// Drive one program's s-expression `text` through cdz-syntax → rcdzc → cdz-run, returning the
 /// outcome. Uses a real pipe with the program fed on cdz-syntax's stdin (no temp files). When `call`
 /// is given, the export is invoked with those runtime arguments (`--call <export> --arg <v>…`) — how a
@@ -1318,16 +1356,17 @@ fn run_program(
     host_calls: &[String],
     wit_world: Option<&str>,
     component_name: Option<&str>,
-    live_objects: Option<u32>,
+    live_objects: LiveObjectsCheck,
     target: GateTarget,
 ) -> Ran {
     // A case that imposes an explicit WIT world (general WIT-ABI shape) is driven only through the WASM
     // path (the authoritative WIT-ABI boundary check). The Rust/ML backends have no external-world ingest
     // on this path, so a wit-world case is not-yet-supported there → DECLINE (Todo, coverage-not-yet),
     // never a disagreement. (The wasm path handles it; the others stay byte-identical for non-world cases.)
-    // A `(live-objects …)` case is likewise WASM-only: the heap-balance counter is the debug-counters
-    // value-heap runtime's `live-objects` export, which the Rust/ML backends have no analog for.
-    if (wit_world.is_some() || live_objects.is_some()) && !matches!(target, GateTarget::Wasm) {
+    // The HEAP-BALANCE check is WASM-only (the debug-counters `live-objects` export has no Rust/ML analog),
+    // but under the opt-out model it applies to essentially every heap case — so it does NOT gate whether a
+    // case runs on the other backends: they simply ignore `live_objects` and grade the value/trap outcome.
+    if wit_world.is_some() && !matches!(target, GateTarget::Wasm) {
         return Ran::Declined {
             code: None,
             message: String::new(),
@@ -1535,7 +1574,7 @@ fn run_program_wasm(
     opt_level: Option<&str>,
     wit_world: Option<&str>,
     component_name: Option<&str>,
-    live_objects: Option<u32>,
+    live_objects: LiveObjectsCheck,
 ) -> Ran {
     use std::io::Write;
     use std::process::Stdio;
@@ -1562,50 +1601,50 @@ fn run_program_wasm(
     if let Some(dir) = store {
         run.arg("--store").arg(dir);
     }
-    // A `(live-objects N)` case asserts the post-run heap-balance. Drive on the DEBUG-COUNTERS runtime
-    // (its `live-objects` export reports the real live-cell count; the shipped runtime always reports 0)
-    // via `--runtime <debug-path>` (the store-lookup override), plus `--report-live-objects` so cdz-run
-    // prints a trailing `live-objects\t<N>` line. If the debug runtime is not in the store, the balance
-    // cannot be checked → DECLINE (Todo), matching a missing-store case (never a false pass).
-    if live_objects.is_some() {
+    // HEAP-BALANCE (corpus opt-out heap-liveness): every HEAP-importing wasm case must end at its expected
+    // live-cell count. cdz-run detects the heap import and emits a `live-objects\t<N>` line ONLY for a heap
+    // case (a scalar/const program emits none → the balance check is skipped, never a false fail), so we
+    // pass `--report-live-objects` for every case whose check is not `Off`. The count is meaningful only on
+    // the DEBUG-COUNTERS runtime (its `live-objects` export reports the real count; the shipped runtime
+    // always reports 0), so override the runtime with `--runtime <debug-path>`. If the debug runtime is not
+    // in the store, or it is STALE (not the committed DEBUG_RUNTIME_HASH), the balance check is SKIPPED
+    // (with a loud stderr note) rather than mass-declining every heap case — the value/trap grade still
+    // runs. (A stale/missing debug runtime is separately caught by the DEBUG_RUNTIME_HASH parity check and
+    // the freshness protocol; #3753's stale-runtime detection is kept here to drive the skip.)
+    let mut report_live = false;
+    if !matches!(live_objects, LiveObjectsCheck::Off) {
         match resolve_debug_runtime(store) {
             Some(path) => {
-                // Verify the store's debug runtime is the CANONICAL one (committed DEBUG_RUNTIME_HASH).
-                // A STALE debug runtime reclaims differently, so a live-objects case would silently
-                // pass/fall on the wrong runtime (exactly the mis-baseline class that motivated this).
-                // Decline loudly rather than assert balance on a non-canonical runtime — the release
-                // side gets this for free via the self-describing stamped import; the debug side checks
-                // explicitly here. A `None` committed hash (unparsed) skips the check (can't verify).
-                if let Some(committed) = tools.debug_runtime_hash.as_deref()
-                    && let Some(store_hash) = path.file_stem().and_then(|s| s.to_str())
-                    && store_hash != committed
-                {
-                    return Ran::Declined {
-                        code: None,
-                        message: format!(
-                            "live-objects: STALE debug runtime {store_hash} != committed \
-                             {committed} (run `cargo xtask build`)"
-                        ),
-                    };
+                let stale = tools
+                    .debug_runtime_hash
+                    .as_deref()
+                    .zip(path.file_stem().and_then(|s| s.to_str()))
+                    .map(|(committed, store_hash)| store_hash != committed)
+                    .unwrap_or(false);
+                if stale {
+                    eprintln!(
+                        "xtask gate: SKIPPING heap-balance check — STALE debug runtime in store \
+                         (!= committed DEBUG_RUNTIME_HASH); run `cargo xtask build`"
+                    );
+                } else {
+                    // NFC (the runtime's inline dependency) resolves from the store; if the gate passed no
+                    // `--store`, point it at the debug runtime's own store dir so NFC + the debug runtime
+                    // come from the same build.
+                    if store.is_none()
+                        && let Some(parent) = path.parent()
+                    {
+                        run.arg("--store").arg(parent);
+                    }
+                    run.arg("--runtime").arg(&path);
+                    run.arg("--report-live-objects");
+                    report_live = true;
                 }
-                // NFC (the runtime's inline dependency) resolves from the store; if the gate passed no
-                // `--store`, point it at the debug runtime's own store dir so NFC + the debug runtime come
-                // from the same build.
-                if store.is_none()
-                    && let Some(parent) = path.parent()
-                {
-                    run.arg("--store").arg(parent);
-                }
-                run.arg("--runtime").arg(&path);
-                run.arg("--report-live-objects");
             }
             None => {
-                return Ran::Declined {
-                    code: None,
-                    message:
-                        "live-objects: debug-counters runtime not in store (cargo xtask build)"
-                            .to_string(),
-                };
+                eprintln!(
+                    "xtask gate: SKIPPING heap-balance check — debug-counters runtime not in store \
+                     (run `cargo xtask build`)"
+                );
             }
         }
     }
@@ -1645,40 +1684,45 @@ fn run_program_wasm(
         // parse them so the case's `(host-calls …)` can be verified. Empty for a non-host program.
         let observed = observed_host_calls(&run_out.stderr);
         let stdout = String::from_utf8_lossy(&run_out.stdout);
-        // With `--report-live-objects`, cdz-run appends a `live-objects\t<M>` line after the value. Split
-        // it off, compare the reported count to the case's expected N, and FAIL (a synthesized trap, which
-        // grade_ran surfaces against the expected `(output …)`) on a mismatch — the heap-balance assertion.
-        // The value is everything before that line.
-        if let Some(expected) = live_objects {
-            let mut lo: Option<u32> = None;
-            let mut value_lines: Vec<&str> = Vec::new();
-            for l in stdout.lines() {
-                if let Some(n) = l.strip_prefix("live-objects\t") {
-                    lo = n.trim().parse::<u32>().ok();
-                } else {
-                    value_lines.push(l);
-                }
+        // With `--report-live-objects`, cdz-run appends a `live-objects\t<M>` line after the value FOR A
+        // HEAP-IMPORTING CASE (a no-heap program emits none). Split it off; the value is everything before.
+        let mut lo: Option<u32> = None;
+        let mut value_lines: Vec<&str> = Vec::new();
+        for l in stdout.lines() {
+            if let Some(n) = l.strip_prefix("live-objects\t") {
+                lo = n.trim().parse::<u32>().ok();
+            } else {
+                value_lines.push(l);
             }
-            match lo {
-                Some(m) if m == expected => Ran::Value(
-                    value_lines.join("\n").trim().to_string(),
-                    observed,
-                    warnings,
-                ),
-                Some(m) => Ran::Trap(format!(
+        }
+        let value = value_lines.join("\n").trim().to_string();
+        match lo {
+            // A heap case reported its balance: compare to the expected count (opt-out default 0, or the
+            // case's explicit / known-leak N). A mismatch is a synthesized trap that grade_ran surfaces
+            // against the expected `(output …)` — the heap-balance assertion.
+            Some(m) if report_live => match live_objects.expected_for_heap() {
+                Some(expected) if m == expected => Ran::Value(value, observed, warnings),
+                Some(expected) => Ran::Trap(format!(
                     "live-objects mismatch: expected {expected}, got {m}"
                 )),
-                None => Ran::Trap(
-                    "live-objects: cdz-run printed no `live-objects` line (is the debug-counters \
-                     runtime in the store?)"
-                        .to_string(),
-                ),
-            }
-        } else {
-            Ran::Value(stdout.trim().to_string(), observed, warnings)
+                // `report_live` is only set when the check is not Off, so `expected_for_heap` is Some here.
+                None => Ran::Value(value, observed, warnings),
+            },
+            // No live-objects line (a no-heap case, or the balance check was skipped) → value-only grade.
+            _ => Ran::Value(value, observed, warnings),
         }
     } else {
-        Ran::Trap(first_line(&run_out.stderr))
+        // The trap reason is on cdz-run's `<prog>: trap: <reason>` stderr line. With `--report-live-objects`
+        // an informational `live-objects run on …` diagnostic PRECEDES it, and host-call lines may too — so
+        // scan for the trap line rather than blindly taking the first stderr line (a non-trap run failure —
+        // e.g. an exhausted host-response — has no such line, so fall back to the first line as before).
+        let stderr = String::from_utf8_lossy(&run_out.stderr);
+        let reason = stderr
+            .lines()
+            .find(|l| l.contains(": trap: "))
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| first_line(&run_out.stderr));
+        Ran::Trap(reason)
     }
 }
 
@@ -4056,7 +4100,7 @@ fn sweep_one_case(
                 Some(lvl),
                 rec.wit_world.as_deref(),
                 rec.component_name.as_deref(),
-                None, // the opt sweep looks for a tier divergence, not a heap-balance regression
+                LiveObjectsCheck::Off, // the opt sweep looks for a tier divergence, not a heap-balance regression
             ),
             // A host-delegating case is level-independent in its host protocol (the opt sweep looks for a
             // TIER divergence, not a host-boundary regression), so it declines here and is skipped below —
@@ -4216,7 +4260,14 @@ fn gate_one_case(
             let rans: Vec<Ran> = rec
                 .trials
                 .iter()
-                .map(|t| {
+                .enumerate()
+                .map(|(i, t)| {
+                    // Heap balance is checked on the FIRST trial only (see `grade`).
+                    let live_objects = if i == 0 {
+                        LiveObjectsCheck::from_record(rec.live_objects)
+                    } else {
+                        LiveObjectsCheck::Off
+                    };
                     run_program(
                         tools,
                         store,
@@ -4227,7 +4278,7 @@ fn gate_one_case(
                         &rec.host_calls,
                         rec.wit_world.as_deref(),
                         rec.component_name.as_deref(),
-                        rec.live_objects,
+                        live_objects,
                         target,
                     )
                 })
@@ -4443,9 +4494,14 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 // `--component-name`) and the run (`--call <iface>#<export>`).
                 "wit-world" => wit_world = Some(val.to_string()),
                 "component-name" => component_name = Some(val.to_string()),
-                // `live-objects\t<N>` — the post-run heap-balance the case asserts (on the debug-counters
-                // runtime). Parsed into `live_objects`; the wasm gate driver checks it.
-                "live-objects" => live_objects = val.trim().parse::<u32>().ok(),
+                // `live-objects\t<N>` (or `live-objects\tknown-leak\t<N>` for the opt-out marker) — the
+                // post-run heap-balance the case asserts on the debug-counters runtime. Both forms assert
+                // == N (the known-leak intent is source-only; the gate needs just the count), so strip an
+                // optional `known-leak\t` prefix and parse N.
+                "live-objects" => {
+                    let count = val.strip_prefix("known-leak\t").unwrap_or(val);
+                    live_objects = count.trim().parse::<u32>().ok();
+                }
                 _ => {}
             }
         }
@@ -4462,7 +4518,18 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
     let rans: Vec<Ran> = rec
         .trials
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
+            // The heap-balance check is applied to the FIRST trial only — a single `(live-objects N)`
+            // clause can't express per-trial counts (a multi-trial case re-drives the SAME program with
+            // different args, which leak different amounts), and the authoritative nix grade
+            // (`cdz-run --grade`) already keys the balance off the first runnable trial. Later trials still
+            // grade their value/trap outcome; they just skip the balance (`Off`).
+            let live_objects = if i == 0 {
+                LiveObjectsCheck::from_record(rec.live_objects)
+            } else {
+                LiveObjectsCheck::Off
+            };
             run_program(
                 tools,
                 store,
@@ -4473,7 +4540,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 &rec.host_calls,
                 rec.wit_world.as_deref(),
                 rec.component_name.as_deref(),
-                rec.live_objects,
+                live_objects,
                 target,
             )
         })
@@ -6239,7 +6306,8 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                         &rec.host_calls,
                         rec.wit_world.as_deref(),
                         rec.component_name.as_deref(),
-                        rec.live_objects,
+                        // ML differential is a pure value comparison against the wasm oracle — no heap check.
+                        LiveObjectsCheck::Off,
                         GateTarget::CadenzaMl,
                     );
                     let outcome = match &ml {
@@ -6260,7 +6328,8 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                                 &rec.host_calls,
                                 rec.wit_world.as_deref(),
                                 rec.component_name.as_deref(),
-                                rec.live_objects,
+                                // The wasm oracle for the ML differential is a value comparison — no heap check.
+                                LiveObjectsCheck::Off,
                                 GateTarget::Wasm,
                             );
                             // An oracle-side harness failure is likewise not comparable — not a disagreement.

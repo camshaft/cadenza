@@ -139,7 +139,8 @@
                 (Rational.of (Env.rate-num) (Env.rate-den)))) (export main)))
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
-  (output (: 7/2 Rational)))
+  (output (: 7/2 Rational))
+  (live-objects known-leak 3))
 
 (case "a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)"
   (doc    "#13 B2 — the actual `@param(...) : Length` shape: a Quantity whose MAGNITUDE is an exact Rational.
@@ -160,7 +161,8 @@
                   (Qty.value (+ x x))))) (export main)))
   (host-responses (respond env.rate-num (: 7 Int64)) (respond env.rate-den (: 2 Int64)))
   (host-calls (call env.rate-num) (call env.rate-den))
-  (output (: 7/1 Rational)))
+  (output (: 7/1 Rational))
+  (live-objects known-leak 3))
 
 ; The case above fixes ONE response. On its own it cannot distinguish a run that genuinely CONSUMES the
 ; response value from a compiler that hardcoded 100 — both produce 100. This pair pins that the response
@@ -213,7 +215,8 @@
             (export main)))
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
-  (call   main (: 0 Int64)) (output (: 42 Int64)))
+  (call   main (: 0 Int64)) (output (: 42 Int64))
+  (live-objects known-leak 1))
 
 (case "a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary"
   (doc    "The representation edge: a 50-leaf rope built by recursive Bytes.concat crosses the
@@ -229,7 +232,8 @@
             (export main)))
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
-  (call   main (: 50 Int64)) (output (: 42 Int64)))
+  (call   main (: 50 Int64)) (output (: 42 Int64))
+  (live-objects known-leak 1))
 
 (case "a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)"
   (doc    "The consuming-op discipline at the ARG site: `b` is passed to io.sink AND re-read by
@@ -246,7 +250,8 @@
             (export main)))
   (host-responses (respond io.sink (: 7 Int64)))
   (host-calls (call io.sink))
-  (call   main (: 0 Int64)) (output (: 57 Int64)))
+  (call   main (: 0 Int64)) (output (: 57 Int64))
+  (live-objects known-leak 1))
 
 (case "a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)"
   (doc    "The multi-arg slot-threading edge of the host-ARG marshal: a RUNTIME String/Bytes arg reserves
@@ -269,7 +274,8 @@
             (export main)))
   (host-responses (respond io.send (: 5 Int64)))
   (host-calls (call io.send))
-  (call   main (: 0 Int64)) (output (: 75 Int64)))
+  (call   main (: 0 Int64)) (output (: 75 Int64))
+  (live-objects known-leak 1))
 
 (case "one host effect with TWO ops interleaves its calls in program order"
   (doc    "The per-run response cursor over a MULTI-OP effect: geta, getb, geta consume rows 1,2,3 in
@@ -410,7 +416,8 @@
                 (sum3 (mk (ask.ask))))) (export main)))
   (host-responses (respond ask.ask (: 5 Int64)))
   (host-calls (call ask.ask))
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects known-leak 1))
 
 (case "performs in DISCARDED do positions still run — the effect count is the observable"
   (doc    "The side-effect-only statement face (the evaluate-ONCE pins above bound the count from ABOVE;
@@ -535,7 +542,8 @@
               (handle St 0 ((tick (u) s (resume (+ s 1) (+ s 1))))
                 (if (and true (> (St.tick) 0)) (do (run-ops (list 1 2 3)) (St.tick)) -99)))
             (export main)))
-  (call   main) (output (: 5 Int64)))
+  (call   main) (output (: 5 Int64))
+  (live-objects known-leak 7))
 
 (case "a trap-init let in one handler branch short-circuits while the sibling threads state"
   (doc    "`(if b (let ((it (trap \"dead\"))) (+ it (St.tick))) (St.tick))` seeded 0, arm `(tick (u) s (resume
@@ -665,7 +673,8 @@
                 (+ (* r 10) (if (>= c 0) (+ c 1) 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 2271 Int64))
-  (call main (: 2 Int64)) (output (: 2260 Int64)))
+  (call main (: 2 Int64)) (output (: 2260 Int64))
+  (live-objects known-leak 3))
 
 (case "an abortive handler discards a suspended body holding live rope and map handles"
   (doc    "The ABORT companion of the resume-boundary pin above: the body builds a rope (a do-def —
@@ -698,7 +707,8 @@
                 (+ (* r 100) (if (>= c 0) (+ c 1) 0))))
             (export main)))
   (call main (: 1 Int64)) (output (: 621 Int64))
-  (call main (: 2 Int64)) (output (: 600 Int64)))
+  (call main (: 2 Int64)) (output (: 600 Int64))
+  (live-objects known-leak 1))
 
 (case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
@@ -924,7 +934,8 @@
                 ((next (u) s (resume s (+ s 1))))
                 (+ (Ctr.next unit) (times (fn ((: u Unit)) 5) n 0))))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 15 Int64)))
+  (call   main (: 3 Int64)) (output (: 15 Int64))
+  (live-objects known-leak 1))
 
 (case "a 100k-iteration pure tail loop under a handler runs in constant stack"
   (doc    "The SCALE face of loops-under-handlers (existing loop pins are ≤33 deep): a 100000-iteration
@@ -1019,7 +1030,8 @@
                   ((Ast.Int b) b)
                   (_ -1N))))
             (export main)))
-  (call   main (: 25 Int64)) (output (: 25 BigInt)))
+  (call   main (: 25 Int64)) (output (: 25 BigInt))
+  (live-objects known-leak 1))
 
 (case "an effect op resumed with a whole MAP threads the CHAMP through the continuation"
   (doc    "A collection HANDLE as the resume value: the arm resumes with a 2-entry map, and the body
@@ -1061,7 +1073,8 @@
                 (run (Src.events unit) 0)))
             (export main)))
   (call   main (: 999 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 13))
 
 (case "a handler arm RECURSES through a named helper before resuming"
   (doc    "The arm-calls-a-def face: `tally`'s arm computes `(triangle v 0)` — a RECURSIVE tail loop over
@@ -2369,7 +2382,8 @@
                          (if (Set.contains st (St.next)) 1 0)))
                     ((None _u) -200)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 10 Int64)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 2))
 
 (case "two sequential lookups on the same Map with perform-threaded keys stay independent"
   (doc    "The map/key same-base emit witnessed clean (see the sibling pin above for the fixed
@@ -3260,7 +3274,8 @@
                        ((Some ys) (match (List.at ys 0) ((Some w) w) ((None _u) -1)))
                        ((None _u) -100))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 48 Int64)))
+  (call   main (: 5 Int64)) (output (: 48 Int64))
+  (live-objects known-leak 6))
 
 (case "a record with a LIST field crosses resume — the body projects and folds the collection field"
   (doc    "Record crossings carry all-scalar pins both ways plus a rope-String field on the argument
@@ -3330,7 +3345,8 @@
                 ((total (xs) s (resume (sum-l xs 0 0) s)))
                 (St.total (build 1 (* n 8) (list)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 820 Int64)))
+  (call   main (: 5 Int64)) (output (: 820 Int64))
+  (live-objects known-leak 45))
 
 (case "a 40-element SET op result — a multi-node CHAMP payload crosses resume"
   (doc    "The CHAMP sibling of the multi-leaf RRB pins: a 40-element recursively-built set (spaced
@@ -3384,7 +3400,8 @@
                 ((total (xs) s (resume (Int64.of (sum-b xs 0 (BigInt.of 0))) s)))
                 (St.total (list (BigInt.of n) (BigInt.of 100) (BigInt.of 3000)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 3105 Int64)))
+  (call   main (: 5 Int64)) (output (: 3105 Int64))
+  (live-objects known-leak 12))
 
 (case "a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum"
   (doc    "The exact-arithmetic element face: `(list 1/2 1/3 1/30)` crosses resume and the body folds
@@ -3404,7 +3421,8 @@
                   (+ (* 10 (Int64.of (Rational.numerator r)))
                      (Int64.of (Rational.denominator r))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 145 Int64)))
+  (call   main (: 5 Int64)) (output (: 145 Int64))
+  (live-objects known-leak 24))
 
 (case "a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch"
   (doc    "Every crossing pin carries heap in ONE slot per dispatch (scalar the other way); a
@@ -3716,7 +3734,8 @@
                 (+ (* 100 (loop 1 0))
                    0)))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 495000 Int64)))
+  (call   main (: 5 Int64)) (output (: 495000 Int64))
+  (live-objects known-leak 269))
 
 (case "a Bytes.slice VIEW crosses as op ARGUMENT — the arm reads through the window it was handed"
   (doc    "A body-built slice VIEW (not a copy) crossing INTO a dispatch (the existing view pins put
@@ -3804,7 +3823,8 @@
                   ((guard (tuple a b) (> (+ a b) 10)) (+ (* 100 a) b))
                   ((tuple a b) (+ a b)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 510 Int64)))
+  (call   main (: 5 Int64)) (output (: 510 Int64))
+  (live-objects known-leak 1))
 
 (case "the guard-MISS path re-performs in the fallback arm — dispatch continues past a failed guard"
   (doc    "The miss path of the compound guard: `(> (+ a b) 100)` fails at 15, the fallback arm
@@ -3820,7 +3840,8 @@
                   ((guard (tuple a b) (> (+ a b) 100)) (+ (* 100 a) b))
                   ((tuple a b) (match (St.pair) ((tuple c d) (+ (* 10 (+ a b)) (+ c d))))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 168 Int64)))
+  (call   main (: 5 Int64)) (output (: 168 Int64))
+  (live-objects known-leak 1))
 
 (case "an arm re-performs its OWN effect to a SAME-EFFECT outer handler — the true self-shadow forward"
   (doc    "The existing forwarding pin uses two DISTINCT effects; here the inner handler of `Ctr`
@@ -4279,7 +4300,8 @@
                   (let ((nxs (List.push xs n)))
                     (List.len nxs)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1 Int64)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "an empty SET literal in a match-Option fallback grounds through the join"
   (doc    "The Set sibling of the empty-literal join class: the fallback is `(Set.of (list))` and
@@ -4291,7 +4313,8 @@
                 (let ((xs (match (Map.lookup m "k") ((Some ys) ys) ((None _u) (Set.of (list))))))
                   (Set.len (Set.insert xs n)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1 Int64)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "an IF-join with an unsolved-Var arm and an empty-list sibling grounds like a match join"
   (doc    "The join kind is irrelevant (a concrete-sibling IF always worked — the sibling supplied
@@ -4305,7 +4328,8 @@
                               (list))))
                   (List.len (List.push xs n)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1 Int64)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "a MAP-OF-LISTS handler state accumulates per dispatch — the upsert idiom end to end"
   (doc    "The real-world shape that found the class: a `(Map String (List Int64))` handler state
@@ -4328,7 +4352,8 @@
                       (+ (* 10 (Db.add (tuple "a" 6)))
                          (Db.add (tuple "a" 9)))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1123 Int64)))
+  (call   main (: 5 Int64)) (output (: 1123 Int64))
+  (live-objects known-leak 20))
 
 (case "an empty MAP fallback beside an unsolved-Var arm grounds — the Map-of-Maps face"
   (doc    "The last face of the empty-collection join class (fixed after the sibling pins above):
@@ -4342,7 +4367,8 @@
                 (let ((inner (match (Map.lookup m "k") ((Some ys) ys) ((None _u) Map.empty))))
                   (Map.len (Map.insert inner "x" n)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 1 Int64)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "a handler state SHRINKS per dispatch — Map.remove down to empty across resume cycles"
   (doc    "The shrink direction of heap state (the growth pins push/insert): three evictions read
@@ -4392,7 +4418,8 @@
                 (let ((xs (Db.dump)))
                   (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 235 Int64)))
+  (call   main (: 5 Int64)) (output (: 235 Int64))
+  (live-objects known-leak 9))
 
 (case "Set.to-list of the state crosses resume ORDERED — the body reads elements positionally"
   (doc    "The total-order contract surviving the marshal: the set {30, 5, 9} enumerates sorted
@@ -4444,7 +4471,8 @@
                 (+ (* 10 (St.pair (tuple (list 1 2 3) (build 1 3 (list)))))
                    (St.pair (tuple (list 1 2) (list 1 2 9))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 10 Int64)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 5))
 
 (case "the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8"
   (doc    "Char-indexed slicing over a marshaled rope: \\\"aédc\\\" crosses as the op argument and the
@@ -4461,7 +4489,8 @@
                           s)))
                 (St.cut (String.concat "a" "édc"))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 3 Int64)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 (case "a mid-scalar byte window crosses to the arm and String.from-bytes declines it"
   (doc    "The adversarial byte/char face: slicing é's continuation byte alone (`Bytes.slice b 1 1`
@@ -4768,7 +4797,8 @@
                 ((grow (t) s (resume (Tree.Node (tuple t (Tree.Leaf 10))) s)))
                 (sum-t (St.grow (Tree.Node (tuple (Tree.Leaf n) (Tree.Leaf 7)))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 22 Int64)))
+  (call   main (: 5 Int64)) (output (: 22 Int64))
+  (live-objects known-leak 7))
 
 (case "a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow"
   (doc    "Two marshals back-to-back on one heap value through two DIFFERENT handlers: `(B.use
@@ -4832,7 +4862,8 @@
                   ((guard (tuple a b) (= (+ a 1) b)) (+ (* 100 a) b))
                   ((tuple a b) (- 0 (+ a b))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 506 Int64)))
+  (call   main (: 5 Int64)) (output (: 506 Int64))
+  (live-objects known-leak 1))
 
 (case "recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame"
   (doc    "A DYNAMICALLY-built shadow stack (the shadow pins are lexical 2-deep literals): the
@@ -5078,7 +5109,8 @@
                 ((next (u) s (resume s (+ s 1))))
                 (go (list 1 2 3) 0 0)))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 38 Int64)))
+  (call   main (: 5 Int64)) (output (: 38 Int64))
+  (live-objects known-leak 6))
 
 (case "a map-via-effects walk — each element transformed by a dispatch, output order preserved"
   (doc    "The MAP direction of the element×dispatch pairing (il-fold pins the accumulate
@@ -5099,7 +5131,8 @@
                      (+ (* 10 (match (List.at out 1) ((Some b) b) ((None _u) -1)))
                         (match (List.at out 2) ((Some c) c) ((None _u) -1)))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 3120 Int64)))
+  (call   main (: 5 Int64)) (output (: 3120 Int64))
+  (live-objects known-leak 6))
 
 (case "filter-via-effects — a STATEFUL predicate dispatch decides each element's survival"
   (doc    "The FILTER direction: each element crosses to a predicate arm whose threshold ADVANCES
@@ -5119,7 +5152,8 @@
                   (+ (* 100 (List.len out))
                      (match (List.at out 1) ((Some b) b) ((None _u) -1))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 304 Int64)))
+  (call   main (: 5 Int64)) (output (: 304 Int64))
+  (live-objects known-leak 7))
 
 (case "a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position"
   (doc    "The iteration-triad discipline extended to BYTES walks (the bin-decode pins parse frames
@@ -5136,7 +5170,8 @@
                 ((take (u) s (resume s (+ s 1))))
                 (lex (bin (u8 (UInt8.wrap 1)) (u8 (UInt8.wrap 2)) (u8 (UInt8.wrap 3))) 0 0)))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 135 Int64)))
+  (call   main (: 5 Int64)) (output (: 135 Int64))
+  (live-objects known-leak 5))
 
 (case "an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back"
   (doc    "The empty-seed writer (the wire-accumulator pin seeds non-empty and returns lengths):
@@ -5183,7 +5218,8 @@
                       (+ (* 100 (Bytes.len out))
                          (match (Bytes.at out 2) ((Some x) x) ((None _u) -1))))))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 307 Int64)))
+  (call   main (: 5 Int64)) (output (: 307 Int64))
+  (live-objects known-leak 1))
 
 (case "a BigInt arithmetic tower over one perform draw — cube then divide, narrowed once"
   (doc    "Multi-step exact arithmetic downstream of a single crossing (the argument pins do one op
@@ -5648,7 +5684,8 @@
                         ((None _u) -100)))
                     ((None _u) -200)))))
             (export main)))
-  (call   main (: 1 Int64)) (output (: 1 Int64)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 4))
 
 (case "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"
   (doc    "The let-twin of the do-def perform-arg repro above — the semantically identical shape with the
@@ -6886,7 +6923,8 @@
                 ((bump (u) s (resume s (+ s 1))))
                 (suml (grab 4 (list)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 26 Int64)))
+  (call   main (: 5 Int64)) (output (: 26 Int64))
+  (live-objects known-leak 9))
 
 (case "MUTUALLY recursive helpers BOTH perform against the same handler"
   (doc    "The recursion pins above are all SINGLE functions; here `evens`/`odds` call each other and BOTH
@@ -7528,7 +7566,8 @@
                 (Give.get unit))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (call   main (: 0 Int64)) (output (: 0 Int64)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (live-objects known-leak 4))
 
 (case "a handler STATE that is a recursive sum GROWS one constructor per operation"
   (doc    "The recursive-sum face of heap-valued handler state (list/record/set/string states are pinned;
@@ -7548,7 +7587,8 @@
                  (read (u) s (resume (depth s) s)))
                 (do (Acc.bump unit) (Acc.bump unit) (Acc.read unit))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 2 Int64)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "a LET-bound outer perform under an inner handle threads its state advance"
   (doc    "An OUTER-handled effect performed INSIDE an inner (different-effect) handle, with the perform's
@@ -7917,7 +7957,8 @@
                 ((stop (v) s (S (S (Z)))))
                 (do (Halt.stop n) (Z)))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: 2 Int64)))
+  (call   main (: 5 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 3))
 
 (case "a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both"
   (doc    "The chained-compound-result shape: a perform returning a TUPLE has one of its fields projected
@@ -7960,7 +8001,8 @@
                     (resume (match (Map.lookup m2 k) ((Some x) x) ((None u) 0)) m2))))
                 (S.put (+ n 1) n)))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 3 Int64)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 1))
 
 (case "three list-append dispatches then a two-param range over a computed-index List.at emits valid wasm (ListAt index floated above the high-water)"
   (doc    "regression guard for breaker finding-23 (case pfxmin5): a handler arm that reads the

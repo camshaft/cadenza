@@ -122,7 +122,8 @@
              (if (teq (subst 1 (Term.Var 9) (Term.Abs 1 (Term.Var 1)))
                       (Term.Abs 1 (Term.Var 1))) 1 0))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 (case "breaker holsubst: a free occurrence beside a shadow substitutes selectively"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -144,7 +145,8 @@
              (if (teq (subst 1 (Term.Var 9) (Term.Comb (Term.Var 1) (Term.Abs 1 (Term.Var 1))))
                       (Term.Comb (Term.Var 9) (Term.Abs 1 (Term.Var 1)))) 1 0))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 17))
 
 (case "breaker holsubst: the naive subst's documented capture hazard"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -166,7 +168,8 @@
              (if (teq (subst 1 (Term.Var 2) (Term.Abs 2 (Term.Var 1)))
                       (Term.Abs 2 (Term.Var 2))) 1 0))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 
 ; --- Capture-avoiding subst: the α-rename's structural edges ----------------------------------------
@@ -218,7 +221,8 @@
              (if (teq (subst 0 (Term.Var 1) (Term.Abs 1 (Term.Comb (Term.Var 0) (Term.Var 7))))
                       (Term.Abs 8 (Term.Comb (Term.Var 1) (Term.Var 7)))) 1 0))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 22))
 
 (case "breaker capsubst: a non-capturing substitution takes the plain path"
   (doc    "Promoted breaker probe — see the section comment.")
@@ -263,7 +267,8 @@
              (if (teq (subst 0 (Term.Var 5) (Term.Abs 1 (Term.Var 0)))
                       (Term.Abs 1 (Term.Var 5))) 1 0))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 9))
 
 
 ; --- ∀-elimination with a real substitution (the non-identity SPEC face) ---------------------------
@@ -311,7 +316,8 @@
                                   ((Option.None _) -1)))
                ((Option.None _) -2)))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 19))
 
 (case "TRANS unions the hypotheses of BOTH operands when each carries a distinct assumption"
   (doc "The soundness fix (TRANS/MK_COMB union operand hypotheses) is pinned for the one-operand case; this pins the actual union — both operands carry a distinct assumption and the result must retain BOTH. A TRANS that kept only one operand's hypotheses (or emptied them) would silently discharge a live assumption, letting an unproven equation escape. trans({a=b}|-a=b, {b=c}|-b=c) = {a=b, b=c}|-a=c, so hyps has length 2.")
@@ -338,7 +344,8 @@
                ((Option.Some r) (List.len (hyps r)))
                ((Option.None _) -1)))
            (export main)))
-  (call main (: 0 Int64)) (output (: 2 Int64)))
+  (call main (: 0 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 18))
 
 (case "TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)"
   (doc "The landed pin threads an assumption through TRANS's LEFT operand (refl on the right). This mirrors it: the hypothesis lives on the RIGHT operand and refl (no hypotheses) is on the left. trans(refl a, {a=c}|-a=c) = {a=c}|-a=c, so hyps has length 1. A TRANS reading only the left operand's hypotheses would drop the assumption entirely.")
@@ -366,7 +373,8 @@
                ((Option.Some r) (List.len (hyps r)))
                ((Option.None _) -1)))
            (export main)))
-  (call main (: 0 Int64)) (output (: 1 Int64)))
+  (call main (: 0 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 14))
 
 (case "MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption"
   (doc "Companion to the TRANS two-operand union: MK_COMB combines {f=g} and {x=y} into (Comb f x)=(Comb g y), and the result must retain BOTH assumptions. mk-comb({f=g}|-f=g, {x=y}|-x=y) has hyps of length 2. An MK_COMB emitting an empty hypothesis set (the pre-fix bug) would let a congruence step launder away two live assumptions.")
@@ -416,7 +424,8 @@
                                     ((Option.None _) -1)))
                ((Option.None _) -2)))
            (export main)))
-  (call main (: 0 Int64)) (output (: 3 Int64)))
+  (call main (: 0 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 30))
 
 ; --- Increment 12 slice-2 ∨/∃ NEIGHBORS (breaker): the unforgeability + hyp-preservation faces skipped ---
 ; The slice-2 case tests EXISTS-intro's POSITIVE path (matching witness) and DISJ1. These pin the unpinned
@@ -466,7 +475,8 @@
                    ((Option.Some _) false)
                    ((Option.None) true)))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 12))
 
 (case "breaker exists: DISJ2 preserves the premise's hypothesis"
   (doc    "The slice-2 case exercises DISJ1; this pins DISJ2, the mirror ∨-introduction. From ASSUME(b) : {b}⊢b,
@@ -496,7 +506,8 @@
                  (and (term-eq (concl d) (Term.Disj a b))
                       (match (hyps d) ((list h) (term-eq h b)) (_ false))))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 12))
 
 (case "breaker exists: EXISTS-intro with the witness variable also free in the body substitutes all occurrences"
   (doc    "EXISTS-intro when the witness variable is ALSO free in the body: body = (Var 0)=(Var 0), witness (Var 9).
@@ -538,7 +549,8 @@
                    ((Option.Some e) (term-eq (concl e) (Term.Exists 0 body)))
                    ((Option.None) false)))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 23))
 
 (case "breaker exists: EXISTS-intro preserves multiple hypotheses from the premise"
   (doc    "EXISTS-intro carries ALL of the premise’s hypotheses, not just one. The premise is built through kernel
@@ -592,7 +604,8 @@
                        (match (hyps e) ((list h1 h2) (and (term-eq h1 p) (term-eq h2 q))) (_ false)))
                      ((Option.None) false))))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 16))
 
 ; --- Increment 12 conjunction NEIGHBORS (breaker): the elim/accumulation faces the landed case skips ---
 ; The Inc-12 conjunction case pins CONJ union + CONJUNCT1 preservation over a single conj. These pin the
@@ -636,7 +649,8 @@
                         (match (hyps c2) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
                  ((Option.None) false))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 6))
 
 (case "a nested conjunction accumulates all three operand hypotheses"
   (doc    "Hypotheses must accumulate across nested conjunction structure, not just pairwise. CONJ(CONJ(
@@ -668,7 +682,8 @@
                  (and (term-eq (concl nested) (Term.Conj (Term.Conj a b) c))
                       (match (hyps nested) ((list h1 h2 h3) true) (_ false))))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 19))
 
 (case "conjunction elimination keeps BOTH operand hypotheses, not just the projected conjunct's"
   (doc    "The soundness-critical projection detail: CONJUNCT1 of CONJ(ASSUME a, ASSUME b) yields ⊢ a, and
@@ -706,7 +721,8 @@
                         (match (hyps c1) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 b))) (_ false))))
                  ((Option.None) false))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 6))
 
 (case "conjunction of two theorems sharing a hypothesis concatenates without dedup"
   (doc    "The kernel's hypothesis union is List.concat, which does NOT dedup — a deliberate, sound choice
@@ -738,4 +754,5 @@
                (let ((c (conj (assume a) (assume a))))
                  (match (hyps c) ((list h1 h2) (and (term-eq h1 a) (term-eq h2 a))) (_ false)))))
            (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 4))

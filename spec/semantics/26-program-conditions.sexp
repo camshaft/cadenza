@@ -147,7 +147,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 70))
 
 (case "an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)"
   (doc    "The dual — the soundness-critical negative. For an UNCONSTRAINED `x + 1 : Int64` (no precondition
@@ -194,7 +195,8 @@
                     ; the check must STAY: assert the obligation is NOT what we derived
                     (not (term-eq (concl unrelated) obligation))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 21))
 
 ; ── b2: the MATCH PREDICATE (the compiler's trusted surface, written IN CADENZA) ────────────────────
 ; The oracle's core (design §3): a discharged `Thm` LICENSES the elision of `overflow-check@Id` iff
@@ -305,7 +307,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 80))
 
 (case "the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)"
   (doc    "The soundness-critical b2 negative — the breaker vector the design flags. A proof can have the
@@ -409,7 +412,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 80))
 
 ; ── SOUNDNESS PIN: the arithmetic axiom base cannot forge (breaker 2026-07-17) ──────────────────────
 (case "the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent"
@@ -465,7 +469,8 @@
                   (and (match false-fact ((Option.None) true) ((Option.Some _) false))
                        (match nonground  ((Option.None) true) ((Option.Some _) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 11))
 
 ; ── SOUNDNESS PIN: a ground add that OVERFLOWS during discharge TRAPS, it does not wrap-and-forge ────
 ; (breaker overflow-axis vectors, 2026-07-17 — folded here rather than promoted separately.)
@@ -589,7 +594,8 @@
                 (let ((expected (le (Term.Var 0) (Term.Num 100))))
                   (term-eq (denote pred) expected))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 ; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[ret:=body] ─────────
 ; b4b denotes ONE predicate Ast → Term. b4c(proven) composes the elaboration (§2.1): for
@@ -693,7 +699,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 70))
 
 ; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
 ; The dual of b4c(proven). For `@ensures(<= ret MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
@@ -771,7 +778,8 @@
                     ((Option.Some _) false)
                     ((Option.None) true)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 8))
 
 ; ── b4c(conjunctive): a TWO-hypothesis precondition — both @requires flow to the discharge + hyps-subset ─
 ; b4a records STACKED @requires as a Vec (a conjunction). This pins the multi-hypothesis path the earlier
@@ -885,7 +893,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 98))
 
 ; ── b4c(conjunctive) NEGATIVES: partial precondition coverage → NOT licensed (breaker, all-covered sentinel) ─
 ; The soundness sentinels for the conjunctive hyps-subset: a 2-hyp proof {le x 100, ge x 0} must NOT be
@@ -987,7 +996,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 89))
 
 (case "b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le"
   (doc    "The subtle reverse sentinel (breaker vector). The obligation was DISCHARGED using the `le x 100`
@@ -1082,7 +1092,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 87))
 
 ; ── b(sub): a no-UNDERFLOW discharge — for x >= 0, (x - 1) >= MININT (the lower-bound / `-` direction) ──
 ; The b1 discharge pinned `+`/overflow (upper bound vs MAXINT). Overflow elision (b3) also covers `-`/`*`;
@@ -1189,7 +1200,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 70))
 
 ; ── b(mul): a no-overflow discharge for MULTIPLICATION — for x <= 100, (x * 2) <= MAXINT ──────────────
 ; Completes the arithmetic-op discharge coverage (+, -, now *) that b3's guard elision handles. For a
@@ -1296,7 +1308,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 70))
 
 ; ── t1(div0): the DIVIDE-BY-ZERO trap-source obligation — for b > 0, (b != 0) so `a / b` cannot trap ──
 ; The @trap_free capstone (design §8) proves EVERY trap source unreachable. This pins the DIVIDE-BY-ZERO
@@ -1359,7 +1372,8 @@
                       ((Option.Some proof) (term-eq (concl proof) goal))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 (case "t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS"
   (doc    "The div0 soundness dual. With no `> b 0` (or `b != 0`) precondition, the divisor `b` is unbounded
@@ -1474,7 +1488,8 @@
                       ((Option.Some proof) (term-eq (concl proof) goal))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 38))
 
 (case "t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS"
   (doc    "The OOB soundness dual. The obligation is the CONJUNCTION `(ge i 0) AND (lt i len)`; a precondition
@@ -1521,7 +1536,8 @@
                     ; the lower bound alone is NOT the full obligation → bounds check stays
                     (not (term-eq (concl lower) goal))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 26))
 
 ; ── t1(match): the PARTIAL-MATCH / exhaustiveness trap source — a match with total arm coverage cannot trap ─
 ; The @trap_free capstone (§8): a `match` traps at an `Unreachable` node iff a scrutinee value hits no arm.
@@ -1583,7 +1599,8 @@
                     ((Option.Some proof) (term-eq (concl proof) goal))
                     ((Option.None) false)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 (case "t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap"
   (doc    "The exhaustiveness soundness dual. A Bool scrutinee (2 variants) with only ONE arm covered (tags
@@ -1691,7 +1708,8 @@
                         ((Option.Some proof) (term-eq (concl proof) goal))
                         ((Option.None) false)))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 33))
 
 (case "t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS"
   (doc    "The explicit-trap soundness dual. If the trap guard is NOT contradicted by the precondition — here
@@ -2056,7 +2074,8 @@
           (sum-l (mk mode) 0))
         (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64))
-  (call main (: 2 Int64)) (trap "unreachable"))
+  (call main (: 2 Int64)) (trap "unreachable")
+  (live-objects known-leak 5))
 
 (case "STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition"
   (doc    "Both wrappers on ONE def: entry borrows xs (len>0), exit guards ret>=0, the value flows
@@ -2077,7 +2096,8 @@
           (abs-sum (if (= mode 1) (list 3 -7 5) (list))))
         (export main)))
   (call main (: 1 Int64)) (output (: 15 Int64))
-  (call main (: 2 Int64)) (trap "unreachable"))
+  (call main (: 2 Int64)) (trap "unreachable")
+  (live-objects known-leak 7))
 
 (case "a RELATIONAL @requires over two parameters enforces their order at entry"
   (doc    "The fn-level relational face (the type-level twin is the @invariant ordered-pair): one
@@ -2150,7 +2170,8 @@
             (@ (ensures (> (List.len ret) 0)) (def (f (: x Int64)) (List.push (list) x)))
             (def (main) (List.len (f 7)))
             (export main)))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value"
   (doc    "The trap half of the heap-result postcondition above. `@ensures(> (List.len ret) 0)` on
@@ -2691,7 +2712,8 @@
                   (let ((proof (establish (ge v zero) (le v c100))))
                     (licenses proof obligation precondition)))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 75))
 
 ; ── @ensures-over-@requires × EFFECTFUL body: order-insensitive enforcement (cross-vertical, v-effects fix) ─
 ; Annotation stacking order is presentation, not semantics — `@ensures(Q) @requires(P)` (reversed) must
@@ -2805,7 +2827,8 @@
                       ((Option.Some proof) (licenses proof obligation precondition))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 45))
 
 ; ── @invariant NAME-RESOLUTION: a predicate name outside {it, prelude} is unbound (b4c pattern, data-level) ─
 ; An `@invariant(pred)` predicate references only the value binder `self` (the value of the type) and prelude/
@@ -3010,7 +3033,8 @@
   (call circ (: -3 Int64))          (trap "unreachable")
   (call sq (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
   (call sq (: 3 Int64) (: 0 Int64)) (trap "unreachable")
-  (call sq (: 0 Int64) (: 4 Int64)) (trap "unreachable"))
+  (call sq (: 0 Int64) (: 4 Int64)) (trap "unreachable")
+  (live-objects known-leak 1))
 
 ; ── @invariant ESTABLISH over a SINGLE-VARIANT MULTI-PAYLOAD newtype: the tuple-erase construct path ─────────
 ; The third establish shape. `(type Range (Mk Int64 Int64))` is a single-variant, MULTI-payload newtype — it
@@ -3037,7 +3061,8 @@
             (export mk)))
   (call mk (: 3 Int64) (: 7 Int64)) (output (: 4 Int64))
   (call mk (: 5 Int64) (: 5 Int64)) (output (: 0 Int64))
-  (call mk (: 7 Int64) (: 3 Int64)) (trap "unreachable"))
+  (call mk (: 7 Int64) (: 3 Int64)) (trap "unreachable")
+  (live-objects known-leak 2))
 
 ; ── @invariant ESTABLISH over a NULLARY variant: the unit-construction path (the last establish shape) ───────
 ; A nullary variant carries no payload, but it is still a VALUE of the type, so its construction must satisfy
@@ -3285,7 +3310,8 @@
   (call   main-arg (: 5 Int64))
   (output (: 105 Int64))
   (call   main-arg (: -2 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (live-objects known-leak 1))
 
 (case "@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)"
   (doc    "Regression pin for the exact rewrite `verify_enforce` injects over an effectful body. Enforcement
@@ -3368,7 +3394,8 @@
   (call   main-rel (: 2 Int64))
   (output (: 2 Int64))
   (call   main-rel (: 9 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (live-objects known-leak 1))
 
 (case "@ensures predicate PROJECTS a NESTED component (`(. (. ret 0) 1)` — a tuple inside a tuple), the deepest projection face"
   (doc    "The enforcement-predicate projection face at DEPTH > 1 — the nested companion to the single-level
@@ -3391,7 +3418,8 @@
   (call   main-nest (: 5 Int64))
   (output (: 5 Int64))
   (call   main-nest (: -3 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (live-objects known-leak 2))
 
 (case "@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)"
   (doc    "Two more effects-seam pins hardening the let-over-handle / seed-thread fix beyond the single
@@ -3467,7 +3495,8 @@
   (call   main (: 5 Int64))
   (output (: 6 Int64))
   (call   main (: -3 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (live-objects known-leak 1))
 
 (case "FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs"
   (doc    "The canonical precondition+postcondition contract on a single def, pinning that BOTH arms enforce on
@@ -3605,7 +3634,8 @@
   (call   main (: 42 Int64))
   (output (: true Bool))
   (call   main (: 7 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (live-objects known-leak 1))
 
 ; ── Contracts x first-class function values: enforcement travels WITH the def, not the call site ────
 ; Every enforcement case above calls its guarded def directly by name. These pin that the verify_enforce
@@ -3819,7 +3849,8 @@
               (String.byte-len (shout (if (= k 1) "hi" ""))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
-  (call   main (: 0 Int64)) (trap "unreachable"))
+  (call   main (: 0 Int64)) (trap "unreachable")
+  (live-objects known-leak 1))
 
 (case "@requires over a BYTES parameter reads Bytes.len at body entry — completes the heap-param domain (List/Map/String/Bytes)"
   (doc    "The Bytes face of a heap-param precondition. Bytes is a distinct heap type from String with its own
@@ -3971,7 +4002,8 @@
                           ((Option.None) false)))
                       ((Option.None) false))))))
             (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 70))
 
 ; --- Contract enforcement × ABORTIVE effects: the conditions surface pins effectful PREDICATES
 ; (:2134) and perform-produced ARGUMENTS (:3554), but not the composition with an ABORTIVE
@@ -4067,7 +4099,8 @@
               (zip-sum (list 1 2 3) (if (> n 0) (list 4 5 6) (list 4 5)) 0 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 32 Int64))
-  (call   main (: 0 Int64)) (trap "unreachable"))
+  (call   main (: 0 Int64)) (trap "unreachable")
+  (live-objects known-leak 4))
 
 (case "an @ensures relating the RESULT to a PARAM over heap values enforces growth"
   (doc    "`@ensures (> (List.len ret) (List.len xs))` — the postcondition compares the RESULT's length
@@ -4083,4 +4116,5 @@
               (List.len (grow (list 1 2) n)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
-  (call   main (: 0 Int64)) (trap "unreachable"))
+  (call   main (: 0 Int64)) (trap "unreachable")
+  (live-objects known-leak 2))

@@ -54,7 +54,8 @@
                 ((Exp.Lit n) n)
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
-  (output (: 17 Int64)))
+  (output (: 17 Int64))
+  (live-objects known-leak 7))
 
 ; The BUILT-IN-Ast companion of the user-`Exp` recursive walk above: a recursive function descends the
 ; built-in `Ast` sum by matching `(Ast.List es)` and recursing into its `(List Ast)` payload via a
@@ -76,7 +77,8 @@
               (_ 1)))
             (def (main) (depth (quote (f (g 1)))))
             (export main)))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 12))
 
 (case "a transformation maps a syntax tree to a syntax tree and preserves meaning"
   (doc    "The core of spec/learnings/2026-07-04-program-transformation-is-a-program.md: a refactoring
@@ -110,7 +112,8 @@
                 ((Exp.Lit n) n)
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 17))
 
 ; The simp case above WORKS AROUND a limitation, worth pinning directly: it simplifies children with
 ; `let`-bound `x`/`y` and probes them with the single-scrutinee `is-lit` helper (its doc notes "a
@@ -159,7 +162,8 @@
                 ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
             (def (main)
               (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5)))))))) (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 Int64))
+  (live-objects known-leak 14))
 
 ; The tuple-of-recursive-results constructor match (above) is realized for SELF-recursive calls; the
 ; SIBLING shape — the tuple elements are calls to a DIFFERENT function whose argument is a value of the
@@ -238,7 +242,8 @@
                 ((Exp.Lit n) 1)
                 ((Exp.Add (tuple a b)) (+ 1 (+ (size a) (size b))))
                 ((Exp.Mul (tuple a b)) (+ 1 (+ (size a) (size b)))))) (export main)))
-  (output (: 4 Int64)))
+  (output (: 4 Int64))
+  (live-objects known-leak 17))
 
 (case "the built-in Ast is transformed as an ordinary value"
   (doc    "metaprogramming.md §Quote Produces An AST Value + type-system.md §The Abstract Syntax Tree
@@ -254,7 +259,8 @@
                 (match (match e ((Ast.Int n) (Ast.Int (+ n 100N))) (o o))
                   ((Ast.Int r) r)
                   (_ 0N)))) (export main)))
-  (output (: 105 BigInt)))
+  (output (: 105 BigInt))
+  (live-objects known-leak 1))
 
 ; ============================================================================================
 ; ASPIRATIONAL — the fuller structural-editing surface (a later generation realizes these)
@@ -384,7 +390,8 @@
   (call   main (: 5 Int64))
   (output (: 105 BigInt))
   (call   main (: -100 Int64))
-  (output (: 0 BigInt)))
+  (output (: 0 BigInt))
+  (live-objects known-leak 1))
 
 (case "a recursive walk over a runtime-SHAPED tree dispatches per call"
   (doc    "Stronger than a runtime leaf: the tree's SHAPE is chosen at run time — `build` returns the
@@ -405,7 +412,8 @@
   (call   main (: 5 Int64))
   (output (: 15 Int64))
   (call   main (: -7 Int64))
-  (output (: -7 Int64)))
+  (output (: -7 Int64))
+  (live-objects known-leak 4))
 
 (case "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite"
   (doc    "The full pipeline at run time: `build` assembles `(Add (Lit 0) (Add (Lit a) (Lit 2)))` around
@@ -430,7 +438,8 @@
             (def (main (: a Int64)) (eval-exp (simplify (build a))))
             (export main)))
   (call   main (: 40 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 11))
 
 ; --- The NONZERO recursive-BigInt-literal-probe row (breaker FINDING #22), now closed ---------------
 ; The peephole cases above use only literal-0 patterns; the doc at "OVERLAPPING quote patterns" notes the
@@ -462,7 +471,8 @@
                 ((Ast.Name _n) 40)
                 (_ -1)))
             (export main)))
-  (output (: 40 Int64)))
+  (output (: 40 Int64))
+  (live-objects known-leak 9))
 
 (case "a runtime-built BigInt sum-payload literal probe matches its constructor"
   (doc    "The runtime-scrutinee companion (no quote/Ast): a plain sum `(type W (Mk BigInt))` whose payload
@@ -476,7 +486,8 @@
             (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 40 Int64)))
+  (output (: 40 Int64))
+  (live-objects known-leak 1))
 
 (case "a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload"
   (doc    "The miss companion: the same `(match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1))` at k=2 does NOT
@@ -489,7 +500,8 @@
             (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor"
   (doc    "The CONSTANT-scrutinee companion of the runtime probes above (breaker FINDING #22 FACE-B): a
@@ -548,7 +560,8 @@
         (export main)))
   (call main (: 2 Int64) (: 1 Int64)) (output (: 10 Int64))
   (call main (: 3 Int64) (: 1 Int64)) (output (: 20 Int64))
-  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64)))
+  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 1))
 
 (case "a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time"
   (doc    "#22-fix perimeter: the scrutinee (Mk (BigInt.of k)) is allocated FRESH each recursive
@@ -566,7 +579,8 @@
         (export main)))
   (call main (: 2 Int64) (: 1 Int64)) (output (: 40 Int64))
   (call main (: 0 Int64) (: 1 Int64)) (output (: 40 Int64))
-  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64)))
+  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 3))
 
 (case "a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them"
   (doc    "The alpha-rename pass shape: mutually recursive ren/ren-list REBUILD the tree while
@@ -603,7 +617,8 @@
                        1 0))))))
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
-  (call main (: 2 Int64)) (output (: 1 Int64)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 40))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
@@ -632,7 +647,8 @@
           (match (fold (Ast.List (list (Ast.Int (BigInt.of n)))))
             ((tuple _r k) (+ (* k 100) n))))
         (export main)))
-  (call main (: 2 Int64)) (output (: 102 Int64)))
+  (call main (: 2 Int64)) (output (: 102 Int64))
+  (live-objects known-leak 12))
 
 (case "Record.with on a map-extracted record leaves the stored original untouched"
   (doc    "Structural edit through a collection extraction: the record comes OUT of a map (lookup +
@@ -653,7 +669,8 @@
                   (. r2 y)))))
         (export main)))
   (call   main (: 7 Int64)) (output (: 10090 Int64))
-  (call   main (: 0 Int64)) (output (: 10020 Int64)))
+  (call   main (: 0 Int64)) (output (: 10020 Int64))
+  (live-objects known-leak 8))
 
 ; --- Fixpoint rewriting and payload-derived renames. ---
 
@@ -689,7 +706,8 @@
                    (match slim ((Ex.Lit _v) 1) (_ 0)))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 701 Int64)))
+  (output (: 701 Int64))
+  (live-objects known-leak 33))
 
 (case "a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep"
   (doc    "The :572 rename swaps in a FIXED name; this DERIVES the new name from the OLD payload ((Ast.Name (String.concat n \"_v2\")) — the suffix-refactor idiom: the Name payload String is read AND a fresh derived String re-wrapped at every depth). Deep face quote-verified; non-Name leaf control.")
@@ -707,7 +725,8 @@
               (+ (* 10 (if (= (rename (quote (f x (g y)))) (quote (f_v2 x_v2 (g_v2 y_v2)))) 1 0))
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
-  (output (: 11 Int64)))
+  (output (: 11 Int64))
+  (live-objects known-leak 18))
 
 ; --- Guards over quote patterns (subtree-equality rewrites). ---
 
@@ -767,4 +786,5 @@
                   (+ (* 10 (if (= (simp once) once) 1 0))
                      (if (= once (Lit k)) 1 0)))))
             (export main)))
-  (call   main (: 6 Int64)) (output (: 11 Int64)))
+  (call   main (: 6 Int64)) (output (: 11 Int64))
+  (live-objects known-leak 10))

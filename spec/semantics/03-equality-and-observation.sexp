@@ -100,7 +100,8 @@
             (if (= m 7.0) 1 0)))
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
-  (call main (: 2 Int64)) (output (: 1 Int64)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 10))
 
 (case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
   (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the
@@ -322,7 +323,8 @@
                   (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 1 3)) ((Some v) v) ((None u) -1))
                   (if (Set.contains (Set.insert (Set.of (list)) half) (Rational.of 2 4)) 1 0))))
             (export main)))
-  (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64))))
+  (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a trie of 40 RATIONAL keys with all-different denominators enumerates in numeric order"
   (doc    "The Rational-key rows above run on 1-2 keys; this pins the canonical ORDER over a populated
@@ -342,7 +344,8 @@
             (def (main (: n Int64))
               (inc (Map.to-list (fill n Map.empty)) (Rational.of 0 1) 0))
             (export main)))
-  (call   main (: 40 Int64)) (output (: 40 Int64)))
+  (call   main (: 40 Int64)) (output (: 40 Int64))
+  (live-objects known-leak 285))
 
 (case "a Rational-keyed trie churned with DIFFERENTLY-normalized spellings equals the direct build"
   (doc    "The normalization-identity churn: 29 keys (i = 1..n-1 at n = 30) are INSERTED as `2i/6` and
@@ -510,7 +513,8 @@
   (call   main (: 1 Int64))
   (output (: 111 Int64))
   (call   main (: 0 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 2))
 
 (case "a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent"
   (doc    "The champ-KEY composition of the view-leaf walk: the map key is `(tuple 1 <Bytes>)` and the
@@ -526,7 +530,8 @@
                   ((None u) -2))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
 
 ; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound COMPUTES (blessed lexicographic) --
 ; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
@@ -648,7 +653,8 @@
   (call   main (: 3 Int64))
   (output (: 23 Int64))
   (call   main (: 7 Int64))
-  (output (: 25 Int64)))
+  (output (: 25 Int64))
+  (live-objects known-leak 12))
 
 (case "String ordering drives an insort over runtime ROPES, verified by content"
   (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort
@@ -672,7 +678,8 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 2 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 12))
 
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
@@ -1238,7 +1245,8 @@
                      (if (= (FV.F 2.5) (FV.F 2.5)) 1 0)
                      (if (= (FV.I n) (FV.F 2.5)) 1 0)))
             (export main)))
-  (call   main (: 3 Int64)) (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64))))
+  (call   main (: 3 Int64)) (output (: (tuple 1 1 0) (Tuple Int64 Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend"
   (doc    "The recursive companion of the Ast decline note above, now that the rust emit routes a
@@ -1750,7 +1758,8 @@
                             ((guard (N.I x) (= (mk x) (mk 3))) x)
                             (_ (find (+ n 1)))))
             (def (main) (find 0)) (export main)))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 4))
 
 (case "two constant sums with the same payload but different variants are not equal"
   (doc    "Constant compound equality folds STRUCTURALLY (core-semantics.md #Equality Is Structural), and
@@ -2525,7 +2534,8 @@
                   ((Option.None _u) -1))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 ; --- #43 all-nullary-sum discriminant order + render (v-wasm-opt cf0c05ae8 + v-runtime f9f8717c) ------
 (case "an all-nullary user sum orders by discriminant — Lo below Hi"
@@ -2580,7 +2590,8 @@
                      ((Option.None _u) -1)))))
             (export main)))
   (call   main (: 0 Int64))
-  (output (: 31 Int64)))
+  (output (: 31 Int64))
+  (live-objects known-leak 1))
 
 (case "nullary variants of a payload-carrying sum order by discriminant"
   (input  (do

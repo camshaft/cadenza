@@ -423,7 +423,8 @@
                 (match xs ((list) 0) ((list h .. t) (+ h (sum t)))))
               (def (main) (= (sum (list 1 2 3)) (sum (list 3 1 2))))
               (export main)))
-  (output (: true Bool)))
+  (output (: true Bool))
+  (live-objects known-leak 14))
 
 (case "permutation invariance of a commutative fold holds for generated runtime inputs"
   (doc    "The generator-exercised form: the three inputs are DRAWN from a runtime seed (so nothing
@@ -442,7 +443,8 @@
                       (= (sum (list a b c)) (sum (list c a b)))))))
               (export main)))
   (call   main (: 12345 Int64)) (output (: true Bool))
-  (call   main (: 42 Int64)) (output (: true Bool)))
+  (call   main (: 42 Int64)) (output (: true Bool))
+  (live-objects known-leak 20))
 
 (case "the permutation-invariance property has discriminating power — an order-dependent fold fails it"
   (doc    "The counterpoint that makes the property meaningful: a computation that DEPENDS on order does
@@ -705,7 +707,8 @@
   (call   main (: 12345 Int64))
   (output (: 1 Int64))
   (call   main (: 999 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 21))
 
 (case "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
   (doc    "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
@@ -729,7 +732,8 @@
   (call   main (: 12345 Int64))
   (output (: 0 Int64))
   (call   main (: 999 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
 
 (case "a generated map workload agrees with a linear-scan model at EVERY key of the domain"
   (doc    "The exhaustive-agreement upgrade of the count-model pin above (which checks ONE aggregate):
@@ -758,7 +762,8 @@
   (call   main (: 42 Int64))
   (output (: 16 Int64))
   (call   main (: 777 Int64))
-  (output (: 16 Int64)))
+  (output (: 16 Int64))
+  (live-objects known-leak 259))
 
 (case "the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key"
   (doc    "The vacuity guard for the per-key model oracle above: a model that MISREADS the stored value does
@@ -789,7 +794,8 @@
   (call   main (: 42 Int64))
   (output (: -999 Int64))
   (call   main (: 777 Int64))
-  (output (: -999 Int64)))
+  (output (: -999 Int64))
+  (live-objects known-leak 1))
 
 (case "a generated insert/remove Set workload agrees with a BITMASK model at every step's end"
   (doc    "The model-oracles above drive INSERT-only workloads; this one mixes DELETIONS: the seeded
@@ -817,7 +823,8 @@
         (export main)))
   (call main (: 12345 Int64) (: 40 Int64)) (output (: 41 Int64))
   (call main (: 99 Int64) (: 25 Int64)) (output (: 41 Int64))
-  (call main (: 7 Int64) (: 12 Int64)) (output (: 51 Int64)))
+  (call main (: 7 Int64) (: 12 Int64)) (output (: 51 Int64))
+  (live-objects known-leak 1))
 
 (case "generated small-alphabet strings dedup in a Set by content across per-draw construction"
   (doc    "A STRING generator (seeded picks from a 4-letter alphabet, 1-or-2-char words via a draw
@@ -844,7 +851,8 @@
         (export main)))
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 7 Int64) (: 5 Int64)) (output (: 3 Int64))
-  (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64)))
+  (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 4))
 
 (case "generated string keys OVERWRITE by content and the first word's final value is observable"
   (doc    "The value-side companion: word→draw-index inserted per draw (collided keys OVERWRITE by
@@ -877,7 +885,8 @@
         (export main)))
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 31 Int64))
   (call main (: 99 Int64) (: 4 Int64)) (output (: 41 Int64))
-  (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64)))
+  (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64))
+  (live-objects known-leak 18))
 
 (case "symbols interned from GENERATED strings dedup by content in a symbol set"
   (doc    "The symbol-intern analogue: Symbol.of over generator-produced strings dedups by CONTENT
@@ -899,7 +908,8 @@
         (export main)))
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 6 Int64)) (output (: 4 Int64))
-  (call main (: 5 Int64) (: 2 Int64)) (output (: 2 Int64)))
+  (call main (: 5 Int64) (: 2 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 4))
 
 (case "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
   (doc    "COMPOUND shrinking (the scalar shrink pins above search upward over integers): greedy
@@ -939,7 +949,8 @@
                 -1)))
         (export main)))
   (call main (: 1 Int64)) (output (: 1102 Int64))
-  (call main (: 2 Int64)) (output (: -1 Int64)))
+  (call main (: 2 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 54))
 
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
@@ -958,7 +969,8 @@
                 (if (= (rev (rev xs (list)) (list)) xs) 1 0)))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 34))
 
 (case "a set over a NULLARY-SUM key enumerates canonically — permutation-invariant AND discriminant-ordered"
   (doc    "Witnesses §Permutation Invariance Is A Property on a set whose element is a NULLARY SUM (a bare
@@ -997,7 +1009,8 @@
             (export main)))
   (call   main (: 12345 Int64)) (output (: 1 Int64))
   (call   main (: 777 Int64)) (output (: 1 Int64))
-  (call   main (: -7 Int64)) (output (: 1 Int64)))
+  (call   main (: -7 Int64)) (output (: 1 Int64))
+  (live-objects known-leak 5))
 
 (case "a scalar-aware string shrinker converges to the 1-minimal failing string"
   (doc    "The STRING sibling of the list-shrinker pin (:782) and the original program behind the
@@ -1026,7 +1039,8 @@
             (+ (* 100 (String.scalar-len r)) (String.byte-len r))))
         (export main)))
   (call   main (: 1 Int64)) (output (: 304 Int64))
-  (call   main (: 0 Int64)) (output (: 202 Int64)))
+  (call   main (: 0 Int64)) (output (: 202 Int64))
+  (live-objects known-leak 12))
 
 ; --- The 2-D coordinate-descent pair shrinker. ---
 
@@ -1078,7 +1092,8 @@
                     ((Big n)   (+ (* 10 n) 1))))))
             (export main)))
   (call   main (: true Bool)) (output (: 50 Int64))
-  (call   main (: false Bool)) (output (: 51 Int64)))
+  (call   main (: false Bool)) (output (: 51 Int64))
+  (live-objects known-leak 35))
 
 ; --- In-domain shrinking: the shrink search stays within a refinement's window (Refinements × Shrinking). ---
 
@@ -1140,7 +1155,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
-  (call   main (: 3 Int64)) (output (: 3103 Int64)))
+  (call   main (: 3 Int64)) (output (: 3103 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a STRING element of a compound"
   (doc    "Extends the Int/Int round-trip to a `(Tuple String Int64)` — exercising the R2 value-form STRING leaf
@@ -1157,7 +1173,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
-  (call   main (: 9 Int64)) (output (: 9 Int64)))
+  (call   main (: 9 Int64)) (output (: 9 Int64))
+  (live-objects known-leak 3))
 
 (case "a Value.encode/Value.decode round-trip preserves a runtime-length LIST"
   (doc    "Extends the round-trips to a `(List Int64)` — the R2 value-form `(list ..)` shape, a RUNTIME-length
@@ -1173,7 +1190,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 3007 Int64))
-  (call   main (: 2 Int64)) (output (: 3002 Int64)))
+  (call   main (: 2 Int64)) (output (: 3002 Int64))
+  (live-objects known-leak 3))
 
 (case "a Value.encode/Value.decode round-trip preserves a RECORD's fields"
   (doc    "Extends the round-trips to a `(Record (a Int64) (b Int64))` — the R2 value-form `(record (= k v) ..)`
@@ -1191,7 +1209,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
-  (call   main (: 3 Int64)) (output (: 3103 Int64)))
+  (call   main (: 3 Int64)) (output (: 3103 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a SUM's payload variant (Option Some)"
   (doc    "Extends the round-trips to a `(Option Int64)` SUM — the R2 value-form `(Head payload)` shape, framed
@@ -1208,7 +1227,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
-  (call   main (: 9 Int64)) (output (: 9 Int64)))
+  (call   main (: 9 Int64)) (output (: 9 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a SUM's NULLARY variant (Option None)"
   (doc    "The nullary-variant face of the sum round-trip: `(: None (Option Int64))` renders `(: (None unit)
@@ -1224,7 +1244,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 4 Int64))
-  (call   main (: 8 Int64)) (output (: 8 Int64)))
+  (call   main (: 8 Int64)) (output (: 8 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a MULTI-PAYLOAD sum variant (spread)"
   (doc    "Extends the sum round-trip to a MULTI-payload variant of a user sum `(type Shape (Circle Int64)
@@ -1242,7 +1263,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 5006 Int64))
-  (call   main (: 3 Int64)) (output (: 3004 Int64)))
+  (call   main (: 3 Int64)) (output (: 3004 Int64))
+  (live-objects known-leak 3))
 
 (case "a Value.encode/Value.decode round-trip preserves a MAP's entries"
   (doc    "Extends the round-trips to a `(Map Int64 Int64)` — the R2 value-form `(map (k v) …)` shape, entries
@@ -1260,7 +1282,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 70099 Int64))
-  (call   main (: 3 Int64)) (output (: 30099 Int64)))
+  (call   main (: 3 Int64)) (output (: 30099 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a SET's elements"
   (doc    "Extends the round-trips to a `(Set Int64)` — the R2 value-form `((. Set of) (list e …))` shape,
@@ -1277,7 +1300,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 3007 Int64))
-  (call   main (: 2 Int64)) (output (: 3002 Int64)))
+  (call   main (: 2 Int64)) (output (: 3002 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a FLOAT element of a compound"
   (doc    "Extends the round-trips to a `(Tuple Int64 Float64)` — exercising the R2 value-form FLOAT leaf, an
@@ -1294,7 +1318,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7 Int64))
-  (call   main (: 3 Int64)) (output (: 3 Int64)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 3))
 
 (case "a Value.encode/Value.decode round-trip preserves a BigInt (arbitrary precision, multi-limb)"
   (doc    "Extends the round-trips to a `BigInt` — the R2 value-form KIND_INT leaf, framed `(: <int> BigInt)`.
@@ -1312,7 +1337,8 @@
                   ((None u) (- 0 2)))))
             (export main)))
   (call   main (: 9999999999 Int64)) (output (: 9999999999 Int64))
-  (call   main (: 7 Int64)) (output (: 7 Int64)))
+  (call   main (: 7 Int64)) (output (: 7 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a Rational (normalized num/den name leaf)"
   (doc    "Extends the round-trips to a `Rational` — the R2 value-form is a SINGLE NAME leaf whose text is
@@ -1330,7 +1356,8 @@
                 ((None u) (- 0 2))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 6 Int64))
-  (call   main (: 5 Int64)) (output (: 5 Int64)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 4))
 
 ; --- The round-trip under LET-BINDER grounding: decode's target fixed by the binder annotation, not inline. ---
 
@@ -1356,7 +1383,8 @@
                   ((None u) (- 0 1)))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
-  (call   main (: 4 Int64)) (output (: 4104 Int64)))
+  (call   main (: 4 Int64)) (output (: 4104 Int64))
+  (live-objects known-leak 2))
 
 ; --- The NEGATIVE face: an UNGROUNDED decode has no determined target, so it declines (actionably). ---
 
@@ -1439,7 +1467,8 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
-  (call   main (: 9 Int64)) (output (: 9 Int64)))
+  (call   main (: 9 Int64)) (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 (case "a Value.encode/Value.decode round-trip of a NARROW signed-int single-ctor sign-extends correctly"
   (doc    "Pins the NARROW-INT box path of the single-ctor boxing that the Int64 case above does NOT exercise:
@@ -1497,7 +1526,8 @@
                 ((Some m) (match m ((tuple e k) (match e ((FireAfter d) (+ (* d 1000) k))))))
                 ((None u) (- 0 1))))
             (export main)))
-  (call   main (: 7 Int64)) (output (: 7008 Int64)))
+  (call   main (: 7 Int64)) (output (: 7008 Int64))
+  (live-objects known-leak 2))
 
 (case "a Value.encode/Value.decode round-trip preserves a scalar-erased single-ctor newtype NESTED as a record field"
   (doc    "The record-field companion of the nested tuple-element case: a scalar-erased single-ctor newtype
@@ -1515,7 +1545,8 @@
                 ((Some m) (+ (* 1000 (match (. m at) ((FireAfter d) d))) (. m tag)))
                 ((None u) (- 0 1))))
             (export main)))
-  (call   main (: 7 Int64)) (output (: 7009 Int64)))
+  (call   main (: 7 Int64)) (output (: 7009 Int64))
+  (live-objects known-leak 2))
 
 ; --- Ast IS a runtime value: the R2 codec round-trips it (operator challenge 2026-08-26). ---
 ; Ast is a built-in RECURSIVE SUM (Int(BigInt)/Float/Bool/Str/Name/List((List Ast))/Bytes) with a full
@@ -1538,7 +1569,8 @@
                 ((Some m) 1)
                 ((None u) 0)))
             (export main)))
-  (call   main (: true Bool)) (output (: 1 Int64)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (live-objects known-leak 2))
 
 (case "a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec"
   (doc    "The homoiconic/recursive case: `(Ast.List (list (Ast.Bool b) (Ast.Str \"x\")))` — an Ast whose
@@ -1552,4 +1584,5 @@
                 ((Some m) 1)
                 ((None u) 0)))
             (export main)))
-  (call   main (: true Bool)) (output (: 1 Int64)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (live-objects known-leak 7))

@@ -83,7 +83,8 @@
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (output (: (record (= d (Some 42))) (record (d (Option Int64)))))
   (call f (: (record (= x 0)) (Record (: x Int64))))
-  (output (: (record (= d (None unit))) (record (d (Option Int64))))))
+  (output (: (record (= d (None unit))) (record (d (Option Int64)))))
+  (live-objects known-leak 3))
 
 (case "a named variant-with-payload field in a record result crosses the export boundary on both arms"
   (doc    "SHAPE 2 — the general named-VARIANT RESULT lift (a discriminated union, distinct from a bare
@@ -101,7 +102,8 @@
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (output (: (record (= o (Continue unit))) (record (o Outcome))))
   (call f (: (record (= x 7)) (Record (: x Int64))))
-  (output (: (record (= o (Close 7))) (record (o Outcome)))))
+  (output (: (record (= o (Close 7))) (record (o Outcome))))
+  (live-objects known-leak 3))
 
 (case "a scalar export crosses the WIT boundary and returns its argument"
   (doc    "SHAPE 3 — the simplest WIT export boundary: s64 in, s64 out (identity). Exercises the plain
@@ -120,7 +122,8 @@
              (record (= a (. m x)) (= b (+ (. m x) (. m x)))))
            (export f)))
   (call f (: (record (= x 21)) (Record (: x Int64))))
-  (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64)))))
+  (output (: (record (= a 21) (= b 42)) (Record (: a Int64) (: b Int64))))
+  (live-objects known-leak 2))
 
 (case "a bare list of scalars in a record result crosses the export boundary"
   (doc    "SHAPE 5 — the bare-LIST RESULT: a record field that is a list<s64>, exercising the list
@@ -131,7 +134,8 @@
              (record (= xs (list (. m x) (+ (. m x) (. m x))))))
            (export f)))
   (call f (: (record (= x 5)) (Record (: x Int64))))
-  (output (: (record (= xs (list 5 10))) (record (xs (List Int64))))))
+  (output (: (record (= xs (list 5 10))) (record (xs (List Int64)))))
+  (live-objects known-leak 4))
 
 (case "a list of records in a record result crosses the export boundary"
   (doc    "SHAPE 7 — the list-of-records RESULT (the structural workhorse of every reducer Step's
@@ -145,7 +149,8 @@
              (record (= items (list (record (= a (. m x)) (= b (+ (. m x) (. m x))))))))
            (export f)))
   (call f (: (record (= x 7)) (Record (: x Int64))))
-  (output (: (record (= items (list (record (= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64))))))))
+  (output (: (record (= items (list (record (= a 7) (= b 14))))) (record (items (List (record (a Int64) (b Int64)))))))
+  (live-objects known-leak 5))
 
 (case "a none-only option<s64> record field resolves its element type from an imposed WIT world"
   (doc    "SHAPE 8 — the general WIT-ABI shape where the export boundary is DECLARED by an explicit WIT
@@ -159,7 +164,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: x Int64)))) (record (= d Option.None))) (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
-  (output (: (record (= d (None unit))) (record (d (Option Int64))))))
+  (output (: (record (= d (None unit))) (record (d (Option Int64)))))
+  (live-objects known-leak 3))
 
 (case "a list of records with a bytes leaf crosses the export boundary via an imposed WIT world"
   (doc    "SHAPE 9 — the reducer-echo Step shape (list of records each carrying a Bytes/list<u8> leaf,
@@ -172,7 +178,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: tok Bytes)))) (record (= items (list (record (= echo (. m tok))))))) (export f)))
   (call f (: (record (= tok (list 10 20 30))) (Record (: tok Bytes))))
-  (output (: (record (= items ((record (= echo (10 20 30)))))) (record (items (List (record (echo (List UInt8)))))))))
+  (output (: (record (= items ((record (= echo (10 20 30)))))) (record (items (List (record (echo (List UInt8))))))))
+  (live-objects known-leak 6))
 
 (case "a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)"
   (doc    "SHAPE 10 — a scalar host-import RESULT (clock.now : () -> u64) driven through an imposed WIT world.
@@ -186,7 +193,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond clock.now (: 42 UInt64)))
   (host-calls (call cadenza:platform/clock.now))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)"
   (doc    "SHAPE 11 — a RECORD host-import RESULT (probe.info : (Bytes) -> record{zebra, alpha}) driven through
@@ -201,7 +209,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond probe.info (: (record (= zebra (list 9)) (= alpha (list 7))) (Record (: zebra Bytes) (: alpha Bytes)))))
   (host-calls (call cadenza:platform/probe.info))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (7)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (7)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 11))
 (case "a typed reducer performing a list-of-scalars host arg emits, loads, and runs (via an imposed WIT world)"
   (doc    "SHAPE 12 — a `list<s64>` host-op ARG (sink.push : (list<s64>) -> unit) driven through an imposed
            WIT world. The reducer on-message performs sink.push (list 1 2 3) (a unit-result, observe-only host
@@ -217,7 +226,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List Int64) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list 1 2 3)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 (case "a typed reducer performing an all-scalar record host arg emits, loads, and runs (via an imposed WIT world)"
   (doc    "SHAPE 13 — an all-scalar `record { a: s64, b: s64 }` host-op ARG (deliver.push : (record{a,b}) -> unit)
            driven through an imposed WIT world. The reducer on-message performs deliver.push (record a=1 b=2)
@@ -233,7 +243,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect deliver (op push (-> (Record (: a Int64) (: b Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (deliver) (do (deliver.push (record (= a 1) (= b 2))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/deliver.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 8))
 (case "a typed reducer performing a bytes host arg with a scalar result threads the u64 into the step (via an imposed WIT world)"
   (doc    "SHAPE 14 — a Bytes host-op ARG with a scalar RESULT (hasher.hash : (Bytes) -> u64) driven through an
            imposed WIT world. The reducer on-message performs hasher.hash(m.payload) (a list<u8> ARG, u64 result)
@@ -247,7 +258,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond hasher.hash (: 42 UInt64)))
   (host-calls (call cadenza:platform/hasher.hash))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (Some 42))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 (case "a typed reducer performing a run.run result host op threads the Ok bytes into the step (via an imposed WIT world)"
   (doc    "SHAPE 15 — a COMPOUND result<Bytes, enum> host-import RESULT (run.run : (Bytes,Bytes,Bytes) -> result<list<u8>, variant{timeout,faulted}>)
            driven through an imposed WIT world. The reducer on-message performs run.run(contract,contract,payload) and
@@ -263,7 +275,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond run.run (: (Ok (list 82 65 78)) (Result Bytes Error))))
   (host-calls (call cadenza:platform/run.run))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (82 65 78)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (82 65 78)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 12))
 (case "an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)"
   (doc    "SHAPE 16 — the option<T> PARAM lift (the read side, complement to SHAPE 1's option RESULT): the guest
            f takes a record { d: option<s64> } and matches it (Some(x) -> x, None -> -1). Feeding d=Some(42) -> 42
@@ -277,7 +290,8 @@
   (call f (: (record (= d (Some 42))) (Record (: d (Option Int64)))))
   (output (: 42 Int64))
   (call f (: (record (= d None)) (Record (: d (Option Int64)))))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 (case "a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok and Err arms (via an imposed WIT world)"
   (doc    "SHAPE 17 — the result<Ok, Err> PARAM lift (the read side, complement to SHAPE 15's result RESULT): the
            guest f takes a record { a: result<Bytes, Error> } where Error is a 4-case enum, and matches m.a:
@@ -295,7 +309,8 @@
   (call f (: (record (= a (Err (timeout unit)))) (Record (: a (Result Bytes Error)))))
   (output (: 10 Int64))
   (call f (: (record (= a (Err (faulted unit)))) (Record (: a (Result Bytes Error)))))
-  (output (: 13 Int64)))
+  (output (: 13 Int64))
+  (live-objects known-leak 3))
 (case "a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)"
   (doc    "SHAPE 18 — the named-VARIANT writer keys on the case NAME, not decl position. The guest declares its sum
            in the OPPOSITE order to the WIT variant cases: (type Rev (Close Int64) (Continue)) (Close is guest
@@ -311,7 +326,8 @@
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (output (: (record (= o (continue unit))) (record (o Rev))))
   (call f (: (record (= x 5)) (Record (: x Int64))))
-  (output (: (record (= o (close 5))) (record (o Rev)))))
+  (output (: (record (= o (close 5))) (record (o Rev))))
+  (live-objects known-leak 3))
 (case "a record param field is read by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
   (doc    "SHAPE 19 — a record PARAM whose WIT field order differs from the guest name-lex order is read by NAME, not
            position. The world declares f's param as record { payload: list<u8>, contract: list<u8> } (WIT order
@@ -324,7 +340,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (Bytes.len (. m contract))) (export f)))
   (call f (: (record (= payload (list 9 9)) (= contract (list 1 2 3))) (Record (: contract Bytes) (: payload Bytes))))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
 (case "a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)"
   (doc    "SHAPE 20 — the record RESULT writer places fields by NAME, not by the guest name-lex slot order. The
            world declares f's result as record { second: s64, first: s64 } (WIT order second,first; name-lex is
@@ -337,7 +354,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: x Int64)))) (record (= first (. m x)) (= second (+ (. m x) (. m x))))) (export f)))
   (call f (: (record (= x 10)) (Record (: x Int64))))
-  (output (: (record (= second 20) (= first 10)) (record (second Int64) (first Int64)))))
+  (output (: (record (= second 20) (= first 10)) (record (second Int64) (first Int64))))
+  (live-objects known-leak 2))
 (case "a nested record param with a bytes leaf compiles and runs (via an imposed WIT world)"
   (doc    "SHAPE 21 — a record PARAM with a NESTED record field carrying a list<u8> leaf, the shape of a reducer
            message's sender (a record-within-record with byte leaves). The guest reads both the outer bytes leaf
@@ -349,7 +367,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: a Bytes) (: sub (Record (: b Bytes)))))) (+ (Bytes.len (. m a)) (Bytes.len (. (. m sub) b)))) (export f)))
   (call f (: (record (= a (list 1 2)) (= sub (record (= b (list 1 2 3))))) (Record (: a Bytes) (: sub (Record (: b Bytes))))))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 4))
 (case "a record param carrying a bytes leaf beside a scalar compiles and runs (via an imposed WIT world)"
   (doc    "SHAPE 22 — a record PARAM carrying a list<u8> LEAF beside a scalar (the memory boundary every real
            reducer needs: Message/Step carry list<u8>). The canon lift lowers the incoming `data` list into the
@@ -361,7 +380,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: data Bytes) (: tag Int64)))) (Bytes.len (. m data))) (export f)))
   (call f (: (record (= data (list 1 2 3 4 5)) (= tag 99)) (Record (: data Bytes) (: tag Int64))))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 2))
 (case "a record param interface export builds the record via the boundary wrapper and runs (via an imposed WIT world)"
   (doc    "SHAPE 23 — a RECORD-param interface export handled by the boundary WRAPPER (the on-message(message)->step
            shape, record in). The canon lift hands the def the flattened field; the wrapper builds the value-heap
@@ -372,7 +392,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: a Int64)))) (. m a)) (export f)))
   (call f (: (record (= a 7)) (Record (: a Int64))))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 (case "a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)"
   (doc    "SHAPE 25 — a MULTI-EXPORT record-interface guest: the world's interface iface has TWO record-param
            members f(record{a: s64})->s64 and g(record{b: s64})->s64 (the shape a real reducer needs:
@@ -387,7 +408,8 @@
   (call f (: (record (= a 7)) (Record (: a Int64))))
   (output (: 7 Int64))
   (call g (: (record (= b 9)) (Record (: b Int64))))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 1))
 
 (case "a reducer emitting no effects builds an empty-requests step and runs (via an imposed WIT world)"
   (doc    "SHAPE 26 - a reducer that emits NO effects: an empty requests list with a Continue outcome, a very common
@@ -399,7 +421,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (record (= requests (list)) (= outcome Outcome.Continue))) (export f)))
   (call f (: (record (= contract (list 1)) (= payload (list 2))) (Record (: contract Bytes) (: payload Bytes))))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option Int64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option Int64))))) (outcome outcome))))
+  (live-objects known-leak 6))
 
 (case "a full reducer-step-shaped guest writes every field of the step and runs (via an imposed WIT world)"
   (doc    "SHAPE 27 - the CAPSTONE full reducer-step-shaped guest, the whole result writer end to end. The guest
@@ -412,7 +435,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (def (f (: m (Record (: contract Bytes) (: payload Bytes)))) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m contract)) (= deadline-nanos (Option.Some 5))))) (= outcome Outcome.Continue))) (export f)))
   (call f (: (record (= contract (list 170 187)) (= payload (list 1 2 3))) (Record (: contract Bytes) (: payload Bytes))))
-  (output (: (record (= requests ((record (= contract (170 187)) (= payload (1 2 3)) (= token (170 187)) (= deadline-nanos (Some 5))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option Int64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (170 187)) (= payload (1 2 3)) (= token (170 187)) (= deadline-nanos (Some 5))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option Int64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 
 (case "a typed reducer performing a nested list<list<s64>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc    "SHAPE 24 — a NESTED list<list<s64>> host-op ARG (sink.push : (list<list<s64>>) -> unit) driven through an
@@ -429,7 +453,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (List Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (list 1 2) (list 3))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 13))
 (case "a bytes-param leaf and a spilled record result in one member run through both memory paths (via an imposed WIT world)"
   (doc    "SHAPE 28 — BOTH memory boundaries in ONE member: a list<u8> LEAF param AND a spilled record result,
            the exact combined shape of a reducer's on-message(message) -> step. The wrapper uses both memory
@@ -441,7 +466,8 @@
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: m (Record (: data Bytes)))) (let ((k (Bytes.len (. m data)))) (record (= n k) (= twice (+ k k))))) (export f)))
   (call f (: (record (= data (list 1 2 3 4 5 6 7))) (Record (: data Bytes))))
-  (output (: (record (= n 7) (= twice 14)) (record (n Int64) (twice Int64)))))
+  (output (: (record (= n 7) (= twice 14)) (record (n Int64) (twice Int64))))
+  (live-objects known-leak 3))
 (case "the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)"
   (doc    "SHAPE 29 — the flagship reducer-echo (on-message(message) -> step) round-tripping the REAL
            declaration-ordered message{contract, sender:{reducer, host}, payload, token} (a NESTED sender record
@@ -453,7 +479,8 @@
   (component-name "cadenza:platform/guest")
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (def (onMessage (: m (Record (: contract Bytes) (: sender (Record (: reducer Bytes) (: host Bytes))) (: payload Bytes) (: token Bytes)))) (record (= requests (list (record (= contract (. m contract)) (= payload (. m payload)) (= token (. m token)) (= deadline-nanos Option.None)))) (= outcome Outcome.Continue))) (export onMessage)))
   (call on-message (: (record (= contract (list 170 187)) (= sender (record (= reducer (list 1)) (= host (list 2)))) (= payload (list 3 4 5)) (= token (list 9 9))) (Record (: contract Bytes) (: sender (Record (: reducer Bytes) (: host Bytes))) (: payload Bytes) (: token Bytes))))
-  (output (: (record (= requests ((record (= contract (170 187)) (= payload (3 4 5)) (= token (9 9)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (170 187)) (= payload (3 4 5)) (= token (9 9)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 13))
 
 (case "a typed reducer performing a list<record> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 30 — a list<record{contract: bytes, n: s64}> host-op ARG (sink.push): each record element written in place into the outer array at its canonical layout - the s64 field inline + the Bytes field's rope spilled after the array with its (ptr,len) inline, WIT-declaration-ordered. Exercises emit_record_to_mem e2e. Runtime coverage for v-rust-backend increment 2 (#3334, the list<record> host-arg marshal).")
@@ -462,7 +489,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (Record (: contract Bytes) (: n Int64))) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (record (= contract (. m contract)) (= n 5)))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a record-with-a-list-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 31 — a record host-op ARG whose field is a list<s64> (sink.push(record{ids: list<s64>, n: s64})): the record flattens to core slots, the list field marshalled into mem (backing array) + pushed as (ptr,count). Exercises emit_record_arg_marshal's list-field arm e2e. Runtime coverage for v-rust-backend increment 3 (#3338).")
@@ -471,7 +499,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: ids (List Int64)) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= ids (list 1 2 3)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer branching on a bool host-op result emits a request when true (via an imposed WIT world)"
   (doc "SHAPE 32 - a BOOL host-import RESULT (kv.delete : (Bytes) -> bool) driven through an imposed WIT world. The reducer on-message performs kv.delete(m.token) and branches on the bool: true -> one echo request, false -> no requests. Stubbing kv.delete -> true and asserting the non-empty branch fires (one request) makes the bool result lift load-bearing (a flat scalar disc read). The platform state.delete returns unit (no bool), so this bool host-result lift has no conformance home - it belongs in the typed host-result corpus. Complements the emit+load-only a_host_fused_kv_delete_bool_reducer with the RUNTIME bool-branch coverage.")
@@ -481,7 +510,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond kv.delete (: true Bool)))
   (host-calls (call cadenza:platform/kv.delete))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a list<tuple> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 33 — a list<tuple<s64, bytes>> host-op ARG (sink.push): each tuple element written in place into the outer array at its canonical positional layout - the s64 element inline + the Bytes element's rope spilled after the array with (ptr,len) inline. Exercises emit_tuple_to_mem e2e. Runtime coverage for v-rust-backend increment 4 (#3343).")
@@ -490,7 +520,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (Tuple Int64 Bytes)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (tuple 5 (. m contract)))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 (case "a typed reducer threading a list<tuple<bytes,bytes>> host-op result branches on its length (via an imposed WIT world)"
   (doc "SHAPE 34 - a list<tuple<Bytes,Bytes>> host-import RESULT (kv.prefix-scan : (Bytes) -> list<tuple<Bytes,Bytes>>) driven through an imposed WIT world. The reducer on-message performs kv.prefix-scan(m.token) and branches on List.len(result) > 0: non-empty -> one echo request, empty -> no requests. Stubbing prefix-scan -> two pairs and asserting the non-empty branch fires (one request) makes the list<tuple> RESULT lift load-bearing: the retptr count read + 16-byte element stride + nested byte-list copy. A broken lift reading the retptr'd list as empty would take the empty branch. Covers the general list<tuple<Bytes,Bytes>> host-result lift v-platform-itest's state iface has no scan-returning-pairs op to exercise. Runtime coverage for the kv.prefix-scan result shape (retires the in-crate run_reducer_bytes_with_scan test).")
   (wit-world (world w (export guest (member on-message (func (param m ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))))) (result ("record" (requests ("list" ("record" (contract ("list" (u8))) (payload ("list" (u8))) (token ("list" (u8))) (deadline-nanos ("option" (u64)))))) (outcome ("variant" (continue) (close ("record" (schema ("list" (u8))) (reason ("list" (u8)))))))))))) (import cadenza:platform/kv (member prefix-scan (func (param key ("list" (u8))) (result ("list" ("tuple" ("list" (u8)) ("list" (u8))))))))))
@@ -499,7 +530,8 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-responses (respond kv.prefix-scan (: (list ((list 107) (list 49)) ((list 107) (list 50))) (List (Tuple Bytes Bytes)))))
   (host-calls (call cadenza:platform/kv.prefix-scan))
-  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a record-with-an-option-scalar-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 35 — a record host-op ARG with an option<s64> field (sink.push(record{d: option<s64>, n: s64})): the record flattens, the option field to (disc, payload) - Some(42)->(1,42). Exercises emit_record_arg_marshals option-field arm e2e. Runtime coverage for v-rust-backend increment 5 (#3349).")
@@ -508,7 +540,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: d (Option Int64)) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= d (Option.Some 42)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 
 (case "a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 36 — record{d: option<bytes>, n: s64} host-op ARG; the option field flattens to (disc, ptr, len), Some copies the payload rope. Runtime coverage for v-rust-backend increment 6 (#3354).")
@@ -517,7 +550,8 @@
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: d (Option Bytes)) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= d (Option.Some (. m contract))) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 
 And a direct record-with-bytes-field: same shape but the sink push param is ("record" (c ("list" (u8))) (n (s64))), guest op (-> (Record (: c Bytes) (: n Int64)) Unit), body (sink.push (record (= c (. m contract)) (= n 7))). Ping if you want me to write the second one out fully. Both are new NON-record-result cases (no sibling bytes param)
 
@@ -528,7 +562,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: b Bytes) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= b (. m contract)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 8))
 
 (case "a typed reducer performing a list<option<s64>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 38 — a list<option<s64>> host-op ARG (sink.push): each option element written in place at its canonical layout (disc byte + payload) - Some(5)->(1,5), None->(0,0). Exercises emit_option_to_mem e2e (both arms). Runtime coverage for v-rust-backend increment 7 (#3358).")
@@ -537,7 +572,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (Option Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (Option.Some 5) Option.None)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 11))
 
 (case "a typed reducer performing a list<record-with-option-field> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 39 — a list<record{d: option<s64>, n: s64}> host-op ARG (sink.push): each record element written in place, its option field via emit_option_to_mem - Some(5) and None across two elements. Runtime coverage for v-rust-backend increment 8 (#3360).")
@@ -546,7 +582,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (List (Record (: d (Option Int64)) (: n Int64))) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (record (= d (Option.Some 5)) (= n 7)) (record (= d Option.None) (= n 8)))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 13))
 
 (case "a typed reducer performing a record-with-a-tuple-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 40 — a record host-op ARG with a tuple<s64, bytes> field (sink.push(record{t: tuple<s64, bytes>, n: s64})): the tuple field flattens inline (s64 slot + bytes element rope-copied as (ptr,len)). Runtime coverage for v-rust-backend increment 9 (#3362).")
@@ -555,7 +592,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: t (Tuple Int64 Bytes)) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= t (tuple 5 (. m contract))) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 
 (case "a typed reducer performing a nested-record host arg with an option + bytes leaf emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 41 — composition: record{a: s64, sub: record{d: option<s64>, b: bytes}} host arg — the nested-record arm recurses into the option + bytes field arms. Verifies deep composition of the arg-side marshal (all constituent arms already on main: #3349 option-scalar-field, #3354 bytes/option-bytes; nested-record pre-existing). No new v-rust-backend emit; compositional coverage.")
@@ -564,7 +602,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (effect sink (op push (-> (Record (: a Int64) (: sub (Record (: d (Option Int64)) (: b Bytes)))) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= a 9) (= sub (record (= d (Option.Some 5)) (= b (. m contract)))))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a record-with-a-variant-scalar-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 42 — a record host-op ARG with a variant<scalar> field (sink.push(record{v: variant{a, b(s64), c(s64)}, n: s64})): the variant field flattens (canonical variant flatten) to (disc:i32, payload) — the guest sum-disc IS the component discriminant (decl order, like an enum); a payload case unboxes sum-payload, a nullary case emits the payload-width zero. Pushing V.b(5) -> (disc 1, payload 5). Runtime coverage for v-rust-backend increment 10 (#3368).")
@@ -573,7 +612,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C Int64)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B 5)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 9))
 
 (case "a typed reducer performing a list<variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 43 — a list<variant{a, b(s64), c(s64)}> host-op ARG (sink.push): each variant element written in place at its canonical variant layout (disc + uniform scalar payload) via emit_variant_to_mem; the guest sum-disc IS the component discriminant (decl order). Pushing (V.B 5), V.A, (V.C 9) exercises a payload case, a nullary case, and a second payload case. Runtime coverage for v-rust-backend increment 11 (PR #3379).")
@@ -582,7 +622,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C Int64)) (effect sink (op push (-> (List V) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (V.B 5) V.A (V.C 9))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 12))
 
 (case "a typed reducer performing a list<record-with-a-variant-field> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 44 — variant<scalar> as a record field inside a list element (emit_product_to_mem variant arm). Runtime coverage for v-rust-backend increment 12 (PR #3394).")
@@ -591,7 +632,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C Int64)) (effect sink (op push (-> (List (Record (: v V) (: n Int64))) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (record (= v (V.B 5)) (= n 7)) (record (= v V.A) (= n 8)))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 13))
 
 (case "a typed reducer performing a list<tuple-with-a-variant-element> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 45 — variant<scalar> as a tuple element inside a list element (emit_product_to_mem variant arm, positional). Runtime coverage for v-rust-backend increment 12 (PR #3394).")
@@ -600,7 +642,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C Int64)) (effect sink (op push (-> (List (Tuple V Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (tuple (V.C 9) 1) (tuple V.A 2))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 13))
 
 (case "a typed reducer performing a nested-record host arg with a variant<scalar> leaf emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 46 — composition: record{a: s64, sub: record{v: variant{x, y(s64), z(s64)}, n: s64}} host arg; the nested-record arm recurses into the variant field arm. No new v-rust-backend emit (variant field #3368 + nested-record pre-existing); compositional coverage.")
@@ -609,7 +652,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (X) (Y Int64) (Z Int64)) (effect sink (op push (-> (Record (: a Int64) (: sub (Record (: v V) (: n Int64)))) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= a 9) (= sub (record (= v (V.Y 5)) (= n 7))))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 47 — variant<u32> record-field host arg: pins the i32-width payload store branch of the variant marshal (prior variant SHAPEs use s64/i64). Runtime coverage for v-rust-backend uniform-scalar variant, non-i64 width.")
@@ -618,7 +662,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B UInt32)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B 4000000000)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a typed reducer performing a record-with-a-variant-f64-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 48 — variant<f64> record-field host arg: pins the f64-width payload store branch of the variant marshal.")
@@ -627,7 +672,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Float64)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B 3.5)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)"
   (doc "SHAPE 49 - the runtime checked conversion `Int64.of` over a HOST-LIFTED u64 result. The emit composes `if operand > i64::MAX then trap else wrap(operand)`, which NAMES the operand in the compare AND the else; a host-call operand must be materialized ONCE (a self-keyed let) or its effect FIRES PER USE - breaker adv-tof-host-u64 saw an in-range 1000 spuriously TRAP because the second host invocation drained its lone queued response. The `(host-calls ...)` clause asserts EXACTLY ONE call to hosti.base, so a regression to per-reference re-invocation fails here (host-response exhaustion), not just a wrong value. Runtime coverage for the operand-materialize fix over the merged #3537 .of compose.")
@@ -637,7 +683,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1000 Int64)))
+  (output (: 1000 Int64))
+  (live-objects known-leak 1))
 
 (case "Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)"
   (doc "SHAPE 50 - the runtime checked arithmetic `Int64.checked-add` over a HOST-LIFTED u64 result (narrowed by Int64.of). The overflow-check compose names the operand in the wrapping result AND the two's-complement formula, so a host-call operand is materialized ONCE (else the effect fires per reference). `(host-calls ...)` asserts EXACTLY ONE call to hosti.base. main = match (checked-add (Int64.of (hosti.base)) 1) Some v -> v, None -> -1; with the host stubbed 1000 the sum 1001 fits -> Some 1001. Runtime coverage for the operand-materialize fix over the merged #3569 checked-arith compose.")
@@ -647,7 +694,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1001 Int64)))
+  (output (: 1001 Int64))
+  (live-objects known-leak 1))
 
 ;; -- host-u64 checked-conversion end-to-end: intact-compare control, T.of over a host response, handler x host x conversion, record-arg x value-result x conversion (breaker batch 382; the #3537->#3572 wrong-trap arc witnesses) --
 (case "u64h1 the u64 host response compared WITHOUT T.of arrives intact"
@@ -662,7 +710,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
 
 (case "u64h2 T.of over the u64 host response (isolated, in-range 1000)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -676,7 +725,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1000 Int64)))
+  (output (: 1000 Int64))
+  (live-objects known-leak 1))
 
 (case "cr03 an export combining an IN-GUEST handler AND a host import"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -695,7 +745,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1070 Int64)))
+  (output (: 1070 Int64))
+  (live-objects known-leak 1))
 
 (case "cq04 host IMPORT: RECORD param + scalar result (reverse direction)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -709,7 +760,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.put (: 42 UInt64)))
   (host-calls (call cadenza:demo/hosti.put))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
 
 (case "a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 51 - a record host-op ARG whose variant field has MIXED-WIDTH scalar payloads (sink.push(record{v: variant{a, b(s64), c(u8)}, n: s64})). The canonical flatten JOIN of a b(s64)/c(u8) variant is the widest register type (i64) - a payload case stores its own value, narrower than the join, at the field's flattened slot; the guest sum-disc IS the component discriminant. Pushing V.b(-5000000000) drives a NEGATIVE s64 payload through the mixed join (a naive i32 join would truncate it). Runtime coverage for v-rust-backend's mixed-width variant marshal (the register-flatten face v-platform-itest's arg-probe value-gate verified byte-correct); this case pins that it EMITS + INSTANTIATES + RUNS (a wrong join type fails wasm-tools validate / instantiation).")
@@ -718,7 +770,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A) (B Int64) (C UInt8)) (effect sink (op push (-> (Record (: v V) (: n Int64)) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (record (= v (V.B -5000000000)) (= n 7))) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 10))
 
 (case "a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 52 - a list<variant{a(u8), b(u16), c}> host-op ARG (sink.push): each element written in place at the canonical variant layout, whose payload area is the MAX-NATURAL width of the mixed u8/u16 cases (the memory face of the flatten join, distinct from SHAPE 51's register face). Pushing (V.A 200), (V.B 60000), V.C exercises a u8 payload, a u16 payload, and a nullary case - the u8 reads from the right bits and the u16 stays intact per element. Runtime coverage for the mixed-width variant marshal's memory path (v-platform-itest's arg-probe value-gate verified the list items byte-correct); pins EMIT + INSTANTIATE + RUN.")
@@ -727,7 +780,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type Outcome (Continue) (Close (Record (: schema Bytes) (: reason Bytes)))) (type V (A UInt8) (B UInt16) (C)) (effect sink (op push (-> (List V) Unit))) (def (onMessage (: m (Record (: contract Bytes) (: payload Bytes) (: token Bytes)))) (host (sink) (do (sink.push (list (V.A 200) (V.B 60000) V.C)) (record (= requests (list)) (= outcome Outcome.Continue))))) (export onMessage)))
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
-  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+  (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
+  (live-objects known-leak 12))
 
 (case "a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 53 - a scalar-payload variant{tiny(u8), big(s64), mark} passed BARE as the TOP-LEVEL host-op param (hosti.put(v: variant), NOT nested in a record/list). The param crosses as a component `variant` DEFINED type; the guest decomposes the value-heap variant handle into the canonical `(disc, payload)` register-flatten (join = i64 for the mixed u8/s64 cases) via emit_variant_reg_flatten - the SAME helper a record-field/list-element variant uses, now at the param position (HostParam::Variant). Three calls exercise a u8 payload case, an s64 payload case, and the nullary `mark` (payload-width zero). Runtime coverage for v-rust-backend's bare-variant host-arg param (breaker mwv1); a wrong join/flatten fails wasm-tools validate / instantiation.")
@@ -736,7 +790,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (input (do (type V (Tiny UInt8) (Big Int64) (Mark)) (effect hosti (op put (-> V Unit))) (def (f (: m (Record (: x Int64)))) (host (hosti) (do (hosti.put (V.Tiny (UInt8.wrap 7))) (hosti.put (V.Big 900000000000)) (hosti.put V.Mark) (. m x)))) (export f)))
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 5))
 
 ;; -- bare + record-wrapped MIXED-WIDTH variant host args: u8/s64/nullary arms each dispatched (breaker batch 385; the #3579->#3588 HostParam::Variant arc) --
 (case "mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload"
@@ -755,7 +810,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (export f)))
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 5))
 (case "mwv2 the SAME mixed-width variant wrapped in a RECORD host arg"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
                (import cadenza:demo/hosti (member put (func (param r ("record" (v ("variant" (tiny (u8)) (big (s64)) (mark))) (n (s64)))) (result ("unit")))))))
@@ -770,7 +826,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (export f)))
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 4))
 
 (case "a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)"
   (doc "SHAPE 54 - a host op returning a scalar-payload variant{a(u8), b(s64), mark} (hosti.get). The result is SPILLED (flattens to disc+payload > 1 core value → retptr); the guest LIFTS the (disc, payload) from the retptr'd region into a value-heap Sum via emit_variant_sum_lift - the N-case generalization of the option-result lift, the RESULT-side twin of the bare-variant ARG marshal. Stubbing get -> (b 900000000000) and matching selects the B arm (k). Runtime coverage for v-rust-backend's variant-payload host-result lift (breaker w10c); a wrong disc/payload-offset read would mis-select the arm. (The cdz-run driver's coerce_one gained a Type::Variant arm to encode the variant response.)")
@@ -780,7 +837,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (b 900000000000) V)))
   (host-calls (call cadenza:demo/hosti.get))
-  (output (: 900000000000 Int64)))
+  (output (: 900000000000 Int64))
+  (live-objects known-leak 1))
 
 ;; -- variant-with-payload host RESULTS: payload arm, mixed-width per-arm across three dispatches, negative-s64 join (breaker batch 387; the pre-delivered #3592 acceptance ladder) --
 (case "vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)"
@@ -796,7 +854,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.pick (: (small 5) pick)))
   (host-calls (call cadenza:demo/hosti.pick))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 1))
 
 (case "vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -813,7 +872,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.next (: (tiny 7) v)) (respond hosti.next (: (big 900000000000) v)) (respond hosti.next (: (mark unit) v)))
   (host-calls (call cadenza:demo/hosti.next) (call cadenza:demo/hosti.next) (call cadenza:demo/hosti.next))
-  (output (: 900000000006 Int64)))
+  (output (: 900000000006 Int64))
+  (live-objects known-leak 1))
 
 (case "vres3 a NEGATIVE s64 payload through the variant host-result join"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -828,7 +888,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (val -5000000000) r)))
   (host-calls (call cadenza:demo/hosti.get))
-  (output (: -5000000000 Int64)))
+  (output (: -5000000000 Int64))
+  (live-objects known-leak 1))
 
 (case "a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)"
   (doc "SHAPE 55 - a host op returning a variant one of whose cases carries a NON-scalar (compound) payload: variant{raw(list<u8>), empty}. The result spills; the guest lifts the disc + the selected case's payload from the retptr'd region via emit_variant_sum_lift, which RECURSES emit_result_lift for a compound payload (a list<u8> = copy-out of the bytes) rather than the scalar leaf-box. Stubbing get -> (raw (list 1 2 3 4 5)) selects the Raw arm and reads Bytes.len = 5; the (empty) arm returns -1. Generalizes the scalar variant-result lift (SHAPE 54) to a liftable-compound payload (list/bytes/tuple/record via the shared recursion) - the variant_liftable_payload_cases admission, RESULT-side only (the ARG marshal stays scalar-only). Consumer-relevant: the deliver-response dispatch returns variant-payload results.")
@@ -838,7 +899,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (raw (list 1 2 3 4 5)) V)))
   (host-calls (call cadenza:demo/hosti.get))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 3))
 
 ;; -- variant host RESULTS with COMPOUND payloads: list payload measured, record payload projected (breaker batch 397a; the #3655 flip) --
 (case "cvp1 a variant host RESULT with a LIST payload lifts and is measured"
@@ -854,7 +916,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (items (list 5 6 7)) r)))
   (host-calls (call cadenza:demo/hosti.get))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 4))
 
 (case "cvp2 a variant host RESULT with a RECORD payload lifts and projects"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -869,7 +932,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.get (: (tag (record (= a 40) (= b 2))) r)))
   (host-calls (call cadenza:demo/hosti.get))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 3))
 
 ; -- breaker batch 404 (2026-08-26): in-guest-handler x host-import COMBINATION faces (cr01-cr03d:
 ; two exports in one interface, exported body running a handled effect, handler+host-call in
@@ -885,7 +949,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (export f)
     (export g)))
   (call g (: (record (= x 5)) (Record (: x Int64))))
-  (output (: 105 Int64)))
+  (output (: 105 Int64))
+  (live-objects known-leak 1))
 
 (case "cr02 an export whose body runs an IN-GUEST handled effect"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))))
@@ -898,7 +963,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
         (+ (Cnt.tick) (Cnt.tick))))
     (export f)))
   (call f (: (record (= x 3)) (Record (: x Int64))))
-  (output (: 70 Int64)))
+  (output (: 70 Int64))
+  (live-objects known-leak 1))
 
 (case "cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -917,7 +983,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1070 Int64)))
+  (output (: 1070 Int64))
+  (live-objects known-leak 1))
 
 (case "cr03c host call INSIDE the handled body"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -935,7 +1002,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1030 Int64)))
+  (output (: 1030 Int64))
+  (live-objects known-leak 1))
 
 (case "cr03d combination with s64 host result (no Int64.of) — nested"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -954,7 +1022,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.base (: 1000 Int64)))
   (host-calls (call cadenza:demo/hosti.base))
-  (output (: 1070 Int64)))
+  (output (: 1070 Int64))
+  (live-objects known-leak 1))
 
 (case "cq04c record host-ARG with s64 result (no Int64.of)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -968,7 +1037,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.put (: 42 Int64)))
   (host-calls (call cadenza:demo/hosti.put))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
 
 ; -- breaker batch 405 (2026-08-26): host-IMPORT result-shape coverage + record-param export
 ; controls. cq01/cq03 scalar-param imports with record/list results; cq02b/c/d NULLARY imports with
@@ -990,7 +1060,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.info (: (record (= alpha 7) (= beta 42)) (Record (: alpha Int64) (: beta Int64)))))
   (host-calls (call cadenza:demo/hosti.info))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 1))
 
 (case "cq03 host IMPORT: scalar param + LIST result — guest measures it"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1004,7 +1075,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-responses (respond hosti.fetch (: (list 5 6 7) (List Int64))))
   (host-calls (call cadenza:demo/hosti.fetch))
-  (output (: 3 Int64)))
+  (output (: 3 Int64))
+  (live-objects known-leak 1))
 
 (case "cq02b host IMPORT: NULLARY + RECORD result, called ONCE"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1018,7 +1090,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.peek (: (record (= a 10) (= b 32)) (Record (: a Int64) (: b Int64)))))
   (host-calls (call cadenza:demo/hosti.peek))
-  (output (: 32 Int64)))
+  (output (: 32 Int64))
+  (live-objects known-leak 1))
 
 (case "cq02c host IMPORT: NULLARY + LIST result, called once"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1032,7 +1105,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.all (: (list 4 5) (List Int64))))
   (host-calls (call cadenza:demo/hosti.all))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 1))
 
 (case "cq04b host IMPORT: RECORD arg + UNIT result (SHAPE-13 control in my namespace)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1045,7 +1119,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (export f)))
   (call f (: (record (= x 3)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (live-objects known-leak 2))
 
 (case "cq02d NULLARY + RECORD result called TWICE with TWO respond clauses"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1059,7 +1134,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.peek (: (record (= a 10) (= b 0)) (Record (: a Int64) (: b Int64)))) (respond hosti.peek (: (record (= a 0) (= b 32)) (Record (: a Int64) (: b Int64)))))
   (host-calls (call cadenza:demo/hosti.peek) (call cadenza:demo/hosti.peek))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects known-leak 1))
 
 (case "cord4 IMPOSED world: RECORD param + 2-field scalar record result"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (b1 (s64)) (b2 (s64)))))))))
@@ -1068,7 +1144,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: m (Record (: x Int64)))) (record (= b1 (. m x)) (= b2 2)))
     (export f)))
   (call f (: (record (= x 1)) (Record (: x Int64))))
-  (output (: (record (= b1 1) (= b2 2)) (record (b1 Int64) (b2 Int64)))))
+  (output (: (record (= b1 1) (= b2 2)) (record (b1 Int64) (b2 Int64))))
+  (live-objects known-leak 2))
 
 (case "cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result ("record" (b1 (s64)) (b2 (s64)) (b3 (s64)) (b4 (s64)) (b5 (s64)) (b6 (s64)) (b7 (s64)) (b8 (s64)) (b9 (s64)) (b10 (s64)) (b11 (s64)) (b12 (s64)) (b13 (s64)) (b14 (s64)) (b15 (s64)) (b16 (s64)) (b17 (s64)) (b18 (s64)) (b19 (s64)) (b20 (s64)))))))))
@@ -1078,7 +1155,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
       (record (= b1 (. m x)) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 20)))
     (export f)))
   (call f (: (record (= x 9)) (Record (: x Int64))))
-  (output (: (record (= b1 9) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 20)) (record (b1 Int64) (b2 Int64) (b3 Int64) (b4 Int64) (b5 Int64) (b6 Int64) (b7 Int64) (b8 Int64) (b9 Int64) (b10 Int64) (b11 Int64) (b12 Int64) (b13 Int64) (b14 Int64) (b15 Int64) (b16 Int64) (b17 Int64) (b18 Int64) (b19 Int64) (b20 Int64)))))
+  (output (: (record (= b1 9) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 20)) (record (b1 Int64) (b2 Int64) (b3 Int64) (b4 Int64) (b5 Int64) (b6 Int64) (b7 Int64) (b8 Int64) (b9 Int64) (b10 Int64) (b11 Int64) (b12 Int64) (b13 Int64) (b14 Int64) (b15 Int64) (b16 Int64) (b17 Int64) (b18 Int64) (b19 Int64) (b20 Int64))))
+  (live-objects known-leak 2))
 
 (case "wen1 an enum host-import RESULT lifts and selects the guest arm"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -1092,7 +1170,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (host-responses (respond hosti.mode (: (fast unit) mode)))
   (host-calls (call cadenza:demo/hosti.mode))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects known-leak 1))
 
 (case "a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)"
   (doc "SHAPE 56 - a scalar-param export with a COMPOUND (record) RESULT: f(x: s64) -> record{b1,b2,b3: s64}. The result SPILLS (3 flat > the 1-result cap) → the canonical ABI returns it via a caller-provided retptr, which the guest must WRITE. The record-PARAM route already did this (record_interface_export's SpillRecord result-lower); the SCALAR-param route was gated out by `any_record` and fell through to the provider path, which handed back the value-heap u32 HANDLE (a leaked pointer, not the value — breaker's cor02/co02 rendered ~1114400). Fix: admit the typed-interface wrapper when a member has a spilled compound result too (needs_result_wrapper), not only a record param. Pins that a scalar-param compound result LIFTS to the record value on all backends' wasm path.")
@@ -1100,7 +1179,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (component-name "cadenza:demo/iface")
   (input (do (def (f (: x Int64)) (record (= b1 x) (= b2 (* x 2)) (= b3 (+ x 100)))) (export f)))
   (call f (: 7 Int64))
-  (output (: (record (= b1 7) (= b2 14) (= b3 107)) (record (b1 Int64) (b2 Int64) (b3 Int64)))))
+  (output (: (record (= b1 7) (= b2 14) (= b3 107)) (record (b1 Int64) (b2 Int64) (b3 Int64))))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
@@ -1116,7 +1196,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (record (= b1 x) (= b2 2)))
     (export f)))
   (call f (: 1 Int64))
-  (output (: (record (= b1 1) (= b2 2)) (record (b1 Int64) (b2 Int64)))))
+  (output (: (record (= b1 1) (= b2 2)) (record (b1 Int64) (b2 Int64))))
+  (live-objects known-leak 1))
 
 (case "sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (b1 (s64)) (b2 (s64)) (b3 (s64)) (b4 (s64)) (b5 (s64)) (b6 (s64)) (b7 (s64)) (b8 (s64)) (b9 (s64)) (b10 (s64)) (b11 (s64)) (b12 (s64)) (b13 (s64)) (b14 (s64)) (b15 (s64)) (b16 (s64)) (b17 (s64)) (b18 (s64)) (b19 (s64)) (b20 (s64)))))))))
@@ -1126,7 +1207,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
       (record (= b1 x) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 (* x 2))))
     (export f)))
   (call f (: 9 Int64))
-  (output (: (record (= b1 9) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 18)) (record (b1 Int64) (b2 Int64) (b3 Int64) (b4 Int64) (b5 Int64) (b6 Int64) (b7 Int64) (b8 Int64) (b9 Int64) (b10 Int64) (b11 Int64) (b12 Int64) (b13 Int64) (b14 Int64) (b15 Int64) (b16 Int64) (b17 Int64) (b18 Int64) (b19 Int64) (b20 Int64)))))
+  (output (: (record (= b1 9) (= b2 2) (= b3 3) (= b4 4) (= b5 5) (= b6 6) (= b7 7) (= b8 8) (= b9 9) (= b10 10) (= b11 11) (= b12 12) (= b13 13) (= b14 14) (= b15 15) (= b16 16) (= b17 17) (= b18 18) (= b19 19) (= b20 18)) (record (b1 Int64) (b2 Int64) (b3 Int64) (b4 Int64) (b5 Int64) (b6 Int64) (b7 Int64) (b8 Int64) (b9 Int64) (b10 Int64) (b11 Int64) (b12 Int64) (b13 Int64) (b14 Int64) (b15 Int64) (b16 Int64) (b17 Int64) (b18 Int64) (b19 Int64) (b20 Int64))))
+  (live-objects known-leak 1))
 
 (case "sp3 SCALAR param + record result with an Option field (Some side)"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (a (s64)) (d ("option" (s64))))))))))
@@ -1135,7 +1217,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (record (= a 9) (= d (Option.Some x))))
     (export f)))
   (call f (: 5 Int64))
-  (output (: (record (= a 9) (= d (Some 5))) (record (a Int64) (d (Option Int64))))))
+  (output (: (record (= a 9) (= d (Some 5))) (record (a Int64) (d (Option Int64)))))
+  (live-objects known-leak 2))
 
 (case "sp3n SCALAR param + record result with an Option field (None side, branch-selected)"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (a (s64)) (d ("option" (s64))))))))))
@@ -1144,7 +1227,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (record (= a x) (= d (if (> x 0) (Option.Some x) Option.None))))
     (export f)))
   (call f (: 0 Int64))
-  (output (: (record (= a 0) (= d (None unit))) (record (a Int64) (d (Option Int64))))))
+  (output (: (record (= a 0) (= d (None unit))) (record (a Int64) (d (Option Int64)))))
+  (live-objects known-leak 2))
 
 (case "sp4 SCALAR param + bare option result"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("option" (s64))))))))
@@ -1153,7 +1237,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (Option.Some (* x 3)))
     (export f)))
   (call f (: 4 Int64))
-  (output (: (Some 12) (Option Int64))))
+  (output (: (Some 12) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "sp5 SCALAR param + list result"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("list" (s64))))))))
@@ -1162,7 +1247,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (list x (* x 2) (* x 3)))
     (export f)))
   (call f (: 2 Int64))
-  (output (: (2 4 6) (List Int64))))
+  (output (: (2 4 6) (List Int64)))
+  (live-objects known-leak 2))
 
 (case "sp6 TWO scalar params + 2-field record result (multi-scalar face)"
   (wit-world (world w (export iface (member f (func (param x (s64)) (param y (s64)) (result ("record" (b1 (s64)) (b2 (s64)))))))))
@@ -1171,7 +1257,8 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64) (: y Int64)) (record (= b1 (+ x y)) (= b2 (* x y))))
     (export f)))
   (call f (: 3 Int64) (: 4 Int64))
-  (output (: (record (= b1 7) (= b2 12)) (record (b1 Int64) (b2 Int64)))))
+  (output (: (record (= b1 7) (= b2 12)) (record (b1 Int64) (b2 Int64))))
+  (live-objects known-leak 1))
 
 (case "sp7 SCALAR param + variant-with-payload result (sum face of the same gate)"
   (wit-world (world w (export iface (member f (func (param x (s64)) (result ("variant" (small (s64)) (big))))))))
@@ -1181,14 +1268,16 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (def (f (: x Int64)) (if (< x 100) (Pick.Small x) Pick.Big))
     (export f)))
   (call f (: 5 Int64))
-  (output (: (small 5) pick)))
+  (output (: (small 5) pick))
+  (live-objects known-leak 1))
 
 (case "cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)"
   (input (do
     (def (f (: x Int64)) (record (= b1 1) (= b2 2)))
     (export f)))
   (call f (: 1 Int64))
-  (output (: (record (= b1 1) (= b2 2)) (Record (: b1 Int64) (: b2 Int64)))))
+  (output (: (record (= b1 1) (= b2 2)) (Record (: b1 Int64) (: b2 Int64))))
+  (live-objects known-leak 1))
 
 ; ── Single-variant newtype escape (adv-63b/adv-64, migrated from rcdzc): a scalar-erased newtype returned
 ; from a PARAM'D export must emit a VALID module (not the recursive-sum-resource path) and render its NOMINAL
