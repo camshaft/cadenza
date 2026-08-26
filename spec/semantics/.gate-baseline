@@ -5169,6 +5169,7 @@ pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
 pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
 pass	cmh-list a const closed handle threading a growing LIST state folds its len query answers to 12
+pass	cmh-map a const closed handle threading a growing MAP state folds its len query answers to 12
 pass	cmh-set a const closed handle threading a growing SET state folds its len query answers to 12
 pass	cmp1 a COMPOSE-ACCUMULATING closure state — each dispatch replaces the state with a new closure wrapping the OLD one (double-then-add over the previous function), applied at 1 per step
 pass	cms1 closed handle with TUPLE state under (const ...)
