@@ -17430,3 +17430,61 @@
     (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64)))
+
+;; -- resume-ANSWER type kinds: Rational + BigInt + Symbol + Bytes-rope + Map op results (breaker batch 369) --
+(case "rak1 an op RESULT of type Rational resumes an exact fraction"
+  (input (do
+    (effect R (op half (-> Rational)))
+    (def (main (: n Int64))
+      (handle R (% n 5)
+        ((half () s (resume (Rational.of 1 (+ s 1)) (+ s 1))))
+        (if (= (+ (R.half) (R.half)) (Rational.of 9 20)) 1 0)))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 1 Int64)))
+
+(case "rak2 an op RESULT of type BigInt resumes a multi-limb value"
+  (input (do
+    (effect B (op big (-> BigInt)))
+    (def (main (: n Int64))
+      (handle B n
+        ((big () s (resume (* 9223372036854775807N (BigInt.of (+ s 1))) (+ s 1))))
+        (if (= (+ (B.big) (B.big)) 46116860184273879035N) 1 0)))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "rak3 an op RESULT of type Symbol resumes an interned symbol by state"
+  (input (do
+    (effect S (op tag (-> Symbol)))
+    (def (main (: n Int64))
+      (handle S (% n 2)
+        ((tag () s (resume (if (= (% s 2) 0) (Symbol.of "even") (Symbol.of "odd")) (+ s 1))))
+        (if (= (S.tag) (Symbol.of "odd")) (if (= (S.tag) (Symbol.of "even")) 3 2) 0)))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64)))
+
+(case "rak4 an op RESULT of type Bytes resumes a built rope"
+  (input (do
+    (effect Y (op chunk (-> Bytes)))
+    (def (main (: n Int64))
+      (handle Y n
+        ((chunk () s (resume (Bytes.concat b"\x01" (Bytes.of (list (UInt8.wrap s)))) (+ s 1))))
+        (+ (Bytes.len (Y.chunk)) (* 10 (Bytes.len (Y.chunk))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64)))
+
+(case "rak5 an op RESULT of type Map resumes a built map the body queries"
+  (input (do
+    (effect M (op snap (-> (Map Int64 Int64))))
+    (def (main (: n Int64))
+      (handle M n
+        ((snap () s (resume (Map.insert (Map.insert (map) s (* s 10)) (+ s 1) 0) (+ s 1))))
+        (match (Map.lookup (M.snap) n)
+          ((Option.Some v) v)
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 4 Int64))
+  (output (: 40 Int64)))
