@@ -4032,6 +4032,7 @@ pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
 pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a tuple wrapping a runtime list projects both fields and reclaims to no live heap objects
 pass	a tuple-destructuring fn (lambda) parameter binds its parts
 pass	a tuple-of-HEAP state — every dispatch grows BOTH components in one rebuild
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
