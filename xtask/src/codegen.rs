@@ -244,19 +244,41 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 /// Generate a schema module for every `cdz-platform/contracts/*.cdz`, plus the `contracts/mod.rs` that
 /// lists them (so adding a contract file wires it in with no hand-editing). See the section banner.
 fn generate_contracts(paths: &Paths, check: bool) {
-    let dir = paths.seed.join("crates/cdz-platform/contracts");
+    let contracts_dir = paths.seed.join("crates/cdz-platform/contracts");
     let out_dir = paths.seed.join("crates/cdz-platform/src/contracts");
-    let mut sources: Vec<PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "cdz"))
-            .collect(),
-        Err(e) => {
-            eprintln!("xtask codegen: read contracts dir {}: {e}", dir.display());
-            std::process::exit(1);
+    // The DIRECTORY is the classification (operator ruling, no hardcoded xtask list): `contracts/kernel/`
+    // contracts emit a Rust binding (the platform host uses them); `contracts/userspace/` contracts are
+    // CADENZA-ONLY (a guest/reducer consumes them via self-reflection, the host never does) — validated but
+    // NO Rust binding + no `contracts/mod.rs` entry. A source carries a `cadenza_only` flag = it lives under
+    // `userspace/`.
+    let read_cdz = |dir: &std::path::Path| -> Vec<PathBuf> {
+        match std::fs::read_dir(dir) {
+            Ok(rd) => {
+                let mut v: Vec<PathBuf> = rd
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().is_some_and(|x| x == "cdz"))
+                    .collect();
+                v.sort();
+                v
+            }
+            // A missing subdir is empty, not an error (e.g. no userspace contracts yet).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                eprintln!("xtask codegen: read contracts dir {}: {e}", dir.display());
+                std::process::exit(1);
+            }
         }
     };
-    sources.sort();
+    // (path, cadenza_only): kernel first (emit Rust), then userspace (validate-only).
+    let mut sources: Vec<(PathBuf, bool)> = read_cdz(&contracts_dir.join("kernel"))
+        .into_iter()
+        .map(|p| (p, false))
+        .collect();
+    sources.extend(
+        read_cdz(&contracts_dir.join("userspace"))
+            .into_iter()
+            .map(|p| (p, true)),
+    );
     if !check && let Err(e) = std::fs::create_dir_all(&out_dir) {
         eprintln!("xtask codegen: create {}: {e}", out_dir.display());
         std::process::exit(1);
@@ -290,13 +312,13 @@ fn generate_contracts(paths: &Paths, check: bool) {
         }
     };
     stage_copy(&lib, stage.join("contract-id.cdz"));
-    for src in &sources {
+    for (src, _) in &sources {
         let file = src.file_name().expect("a contract file name");
         stage_copy(src, stage.join(file));
     }
 
     let mut names: Vec<String> = Vec::with_capacity(sources.len());
-    for src in &sources {
+    for (src, cadenza_only) in &sources {
         let name = src
             .file_stem()
             .and_then(|s| s.to_str())
@@ -309,7 +331,11 @@ fn generate_contracts(paths: &Paths, check: bool) {
             })
             .to_string();
         let out = out_dir.join(format!("{name}.rs"));
-        names.push(name.clone());
+        // Only a KERNEL contract emits Rust + is declared in `contracts/mod.rs`; a userspace one is
+        // validated but has no Rust module.
+        if !cadenza_only {
+            names.push(name.clone());
+        }
 
         // MTIME short-circuit (inner loop ONLY): when the generated file is newer than its source, neither
         // revalidate (which builds + runs `cdz`) nor regenerate — the committed file is current. This is a
@@ -319,7 +345,7 @@ fn generate_contracts(paths: &Paths, check: bool) {
         // re-renders and content-compares, exactly like the ABI checks, so codegen-logic drift is a hard
         // failure rather than a silent skip. (Regression: the FIX B single-ctor elision left the kernel
         // contracts stale-but-mtime-fresh, and this gate reported them "up to date" until forced.)
-        if !check && up_to_date(&out, src) {
+        if !check && !cadenza_only && up_to_date(&out, src) {
             println!("xtask codegen: {} is up to date (mtime).", out.display());
             continue;
         }
@@ -342,6 +368,15 @@ fn generate_contracts(paths: &Paths, check: bool) {
             &["test", staged_str],
             &format!("validate {}", src.display()),
         );
+        // Userspace contract: validated above (its `@test`s ran), but emit NO Rust — a Cadenza guest consumes
+        // it via self-reflection, the host never does.
+        if *cadenza_only {
+            println!(
+                "xtask codegen: {} is userspace (contracts/userspace/) — validated, no Rust binding.",
+                src.display()
+            );
+            continue;
+        }
         let ast_bytes = run_cdz_capture(
             paths,
             &["convert", src_str, "--to", "binary"],
