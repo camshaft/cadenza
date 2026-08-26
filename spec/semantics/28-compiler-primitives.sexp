@@ -356,7 +356,7 @@
            (which demands a compile-time constant) against the encoding of the literal 7.")
   (input  (do
             (def (main)
-              (= (Ast.encode (Ast.Int (BigInt.of (. (record (x 7) (y 9)) x))))
+              (= (Ast.encode (Ast.Int (BigInt.of (. (record (= x 7) (= y 9)) x))))
                  (Ast.encode (Ast.Int (BigInt.of 7)))))
             (export main)))
   (output (: true Bool)))
@@ -369,7 +369,7 @@
            param's record type is recovered by inference from the `(. r x)` projection (no annotation needed).")
   (input  (do
             (def (get-x r) (. r x))
-            (def (main) (const (get-x (record (x 42) (y 7)))))
+            (def (main) (const (get-x (record (= x 42) (= y 7)))))
             (export main)))
   (output (: 42 Int64)))
 
@@ -379,7 +379,7 @@
            field in the CURRENT env (the bound `n`), not just a param-free literal — the value-interpreter twin
            of how a `(tuple …)` built from const params already folded.")
   (input  (do
-            (def (mk (const (: n Int64))) (record (x n) (y (* n 2))))
+            (def (mk (const (: n Int64))) (record (= x n) (= y (* n 2))))
             (def (sum-r r) (+ (. r x) (. r y)))
             (def (main) (const (sum-r (mk 10))))
             (export main)))
@@ -505,7 +505,7 @@
            `RecordNew` arm), so the whole recursion did.")
   (input  (do
             (def (walk (const (: n Int64)))
-              (if (= n 0) (record (v 0)) (record (v (+ 1 (. (walk (- n 1)) v))))))
+              (if (= n 0) (record (= v 0)) (record (= v (+ 1 (. (walk (- n 1)) v))))))
             (def (main) (const (. (walk 4) v)))
             (export main)))
   (output (: 4 Int64)))
@@ -664,7 +664,7 @@
            42, the `extra` sibling never materialized. Before, the nullary call declined in the value-
            interpreter and the record built whole.")
   (input  (do
-            (def (descriptor) (record (id 42) (extra (quote (a b c)))))
+            (def (descriptor) (record (= id 42) (= extra (quote (a b c)))))
             (def (main) (const (. (descriptor) id)))
             (export main)))
   (output (: 42 Int64)))
@@ -677,9 +677,9 @@
            the whole record built and the component failed to instantiate.")
   (input  (do
             (def (descriptor)
-              (record (id (Blake3.of (Ast.encode (quote (contract c Int64 Int64)))))
-                      (input (quote Int64))
-                      (output (quote Int64))))
+              (record (= id (Blake3.of (Ast.encode (quote (contract c Int64 Int64)))))
+                      (= input (quote Int64))
+                      (= output (quote Int64))))
             (def (main)
               (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract c Int64 Int64))))))
             (export main)))
@@ -695,7 +695,7 @@
   (input  (do
             (def (leaves (const (: a Ast)))
               (match a ((Ast.List xs) (List.len xs)) (_ 1)))
-            (def (descriptor) (record (id (leaves (quote (f 1 2)))) (extra (quote z))))
+            (def (descriptor) (record (= id (leaves (quote (f 1 2)))) (= extra (quote z))))
             (def (main) (const (. (descriptor) id)))
             (export main)))
   (output (: 3 Int64)))
@@ -745,9 +745,9 @@
            record materialized (its `Ast` fields have no runtime form) and the component failed to instantiate.")
   (input  (do
             (def (descriptor)
-              (record (id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
-                      (name "cdz-platform.temp-celsius")
-                      (input (quote Int64)) (output (quote Int64)) (types (quote (list)))))
+              (record (= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+                      (= name "cdz-platform.temp-celsius")
+                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote (list)))))
             (def (main) (= (. (descriptor) name) "cdz-platform.temp-celsius"))
             (export main)))
   (output (: true Bool)))
@@ -758,9 +758,9 @@
            operator's structured whole-record descriptor form folds + eliminates for the id, same as the name.")
   (input  (do
             (def (descriptor)
-              (record (id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
-                      (name "cdz-platform.temp-celsius")
-                      (input (quote Int64)) (output (quote Int64)) (types (quote (list)))))
+              (record (= id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+                      (= name "cdz-platform.temp-celsius")
+                      (= input (quote Int64)) (= output (quote Int64)) (= types (quote (list)))))
             (def (main) (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64))))))
             (export main)))
   (output (: true Bool)))

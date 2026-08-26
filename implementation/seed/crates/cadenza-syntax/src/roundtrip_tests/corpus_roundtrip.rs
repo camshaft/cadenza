@@ -33,6 +33,34 @@ fn has_canonicalizing_head(a: &Arenas) -> bool {
     })
 }
 
+/// A hint for the commonest round-trip authoring mistake: a `record` literal whose fields are written
+/// POSITIONAL `(name value)` instead of `(= name value)`. `structurally_eq` collapses a ctor HEAD
+/// (`record` ↔ `"record"`, `list` ↔ `"list"`, …), so a name-head compound literal is fine — but the ML
+/// surface prints a record field as `name = value`, which re-reads to the 3-element `(= name value)`,
+/// NOT the 2-element positional `(name value)` the input used, so they differ and the round-trip fails.
+/// If the tree carries a `record` head, point the author at the `=` field form. Heuristic — only
+/// consulted on an already-failing case, so an over-broad match is harmless.
+fn name_head_ctor_hint(a: &Arenas) -> Option<String> {
+    let has_record = (0..a.structure.len() as u32)
+        .map(StructId)
+        .any(|id| a.head_name(id) == Some("record"));
+    has_record.then(|| {
+        "a record field must be (= name value), NOT positional (name value): the ML surface prints \
+         `name = value` which re-reads to (= name value), so a positional field fails the structural \
+         round-trip — author records as (record (= f v) …)"
+            .to_string()
+    })
+}
+
+/// Truncate to at most `n` CHARS (not bytes — never splits a scalar), appending `…` when cut.
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(n).collect::<String>())
+    }
+}
+
 /// Directory of corpus files, relative to this crate's manifest.
 fn corpus_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -80,6 +108,9 @@ fn ml_surface_round_trips_the_corpus() {
     let mut passed = 0usize;
     // head-symbol -> (count, first failing example rendered)
     let mut fail_buckets: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    // EVERY failure, with its FILE, so a corpus author sees exactly which case to fix (not just one
+    // sample per head bucket) — this is the actionable-lint half of the round-trip gate.
+    let mut failures: Vec<String> = Vec::new();
     let mut files = 0usize;
 
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
@@ -91,6 +122,11 @@ fn ml_surface_round_trips_the_corpus() {
 
     for path in entries {
         files += 1;
+        let fname = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
         let text = std::fs::read_to_string(&path).unwrap();
         let file = sexpr::read_all(&text)
             .unwrap_or_else(|e| panic!("oracle parse {}: {}", path.display(), e.0));
@@ -113,21 +149,29 @@ fn ml_surface_round_trips_the_corpus() {
             if ok {
                 passed += 1;
             } else {
+                let reason = if !reparsed.ok() {
+                    format!("parse error: {:?}", reparsed.errors.first())
+                } else if structural_required && !reparsed.arenas.structurally_eq(&input) {
+                    "AST mismatch".to_string()
+                } else {
+                    "not idempotent".to_string()
+                };
+                let sexp = sexpr::print(&input);
+                // Actionable hint for the most common authoring mistake: a value-position name-head
+                // compound-ctor literal (`(record (f v) …)` / `(list …)` / `(tuple …)` / `(map …)`),
+                // which the ML surface canonicalizes to the unshadowable str-head form. Author it that
+                // way from the start so it round-trips structurally.
+                let hint = name_head_ctor_hint(&input);
                 let entry = fail_buckets.entry(bucket).or_insert((0, String::new()));
                 entry.0 += 1;
                 if entry.1.is_empty() {
-                    let reason = if !reparsed.ok() {
-                        format!("parse error: {:?}", reparsed.errors.first())
-                    } else if structural_required && !reparsed.arenas.structurally_eq(&input) {
-                        "AST mismatch".to_string()
-                    } else {
-                        "not idempotent".to_string()
-                    };
-                    entry.1 = format!(
-                        "{reason}\n    s-expr: {}\n    ml:     {ml}",
-                        sexpr::print(&input)
-                    );
+                    entry.1 = format!("{reason}\n    s-expr: {sexp}\n    ml:     {ml}");
                 }
+                failures.push(format!(
+                    "  [{fname}] {reason}{}\n    s-expr: {}",
+                    hint.map(|h| format!(" — {h}")).unwrap_or_default(),
+                    truncate(&sexp, 220),
+                ));
             }
         }
     }
@@ -137,6 +181,10 @@ fn ml_surface_round_trips_the_corpus() {
         eprintln!("\nfailure buckets (head symbol -> count):");
         for (head, (count, sample)) in &fail_buckets {
             eprintln!("  {head}: {count}\n    {sample}");
+        }
+        eprintln!("\nALL {} failing cases (file + reason):", failures.len());
+        for f in &failures {
+            eprintln!("{f}");
         }
     }
     // This test's oracle is the s-expression reader, so it covers the `.sexp` corpus only. As files

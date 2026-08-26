@@ -16973,7 +16973,7 @@
            99 × 500 = 49500, and after the run the live-cell count is 0 (a leak would grow it; an over-drop
            would trap/UAF).")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (x 1) (y 2)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= x 1) (= y 2)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.with (mk 0) #"x" 99) x))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -16986,7 +16986,7 @@
            looped 500× -> 500. The owned-temporary source (borrowed by the projections) and the fresh
            projected result must both be reclaimed after the scalar read — live-objects 0.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.project (mk 0) (a c)) a))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -16998,7 +16998,7 @@
   (doc    "`(Record.without (mk 0) (b))` drops field b of a runtime source; reading `.a` (1), looped 500× ->
            500. Source + fresh result both reclaimed — live-objects 0.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.without (mk 0) (b)) a))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -17011,7 +17011,7 @@
            500× -> 500. The owned source, the fresh rest-record, and the tuple result must all be reclaimed
            after the scalar read — live-objects 0. Exercises the (value, rest) tuple-result shape.")
   (input  (do
-            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (mk (: n Int64)) (if (= n 0) (record (= a 1) (= b 2) (= c 3)) (mk (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.pop (mk 0) a) 0))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
@@ -17026,8 +17026,8 @@
            owned-temporary source records (each borrowed by its projections) and the fresh union result must
            all be reclaimed — live-objects 0. Exercises the two-source shape.")
   (input  (do
-            (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1))))
-            (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1))))
+            (def (mkA (: n Int64)) (if (= n 0) (record (= a 1) (= b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) (record (= c 3) (= d 4)) (mkB (- n 1))))
             (def (loop (: j Int64) (: n Int64) (: tot Int64))
               (if (< j n) (loop (+ j 1) n (+ tot (. (Record.merge (mkA j) (mkB j)) c))) tot))
             (def (main (: v Int64)) (loop 0 v 0))
