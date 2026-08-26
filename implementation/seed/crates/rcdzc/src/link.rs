@@ -709,10 +709,36 @@ fn resolve_import_clause(
     };
 
     for &name_id in names {
-        let Some(name) = ast.as_name(name_id) else {
+        // An element is either a BARE Name (plain import: local == exported) or a per-name RENAME
+        // `(as orig alias)` — an `as`-headed list binding the module export `orig` under the local name
+        // `alias` (local = alias, exported = orig). The rename lets one file import two modules'
+        // uniformly-named exports (`descriptor`) under distinct local names WITHOUT the whole-module
+        // alias. Export-visibility + the did-you-mean fix key off `exported` (anchored at `exported_id`);
+        // the collision check + the introduced binding key off `local`.
+        let (exported, local, exported_id): (&str, &str, StructId) = if let Some(args) =
+            ast.as_form(name_id, "as")
+        {
+            let [orig_id, alias_id] = args else {
+                return Err(Reject::coded(
+                        Code::Malformed,
+                        "`(import …)` rename must be `(as orig alias)`: an exported name and a local alias",
+                    )
+                    .at(occ));
+            };
+            let (Some(orig), Some(alias)) = (ast.as_name(*orig_id), ast.as_name(*alias_id)) else {
+                return Err(Reject::coded(
+                    Code::Malformed,
+                    "`(import …)` rename `(as orig alias)`: `orig` and `alias` must be bare names",
+                )
+                .at(occ));
+            };
+            (orig, alias, *orig_id)
+        } else if let Some(n) = ast.as_name(name_id) {
+            (n, n, name_id)
+        } else {
             return Err(Reject::coded(
                 Code::Malformed,
-                "`(import …)` name list may contain only bare names",
+                "`(import …)` name list may contain only bare names or `(as orig alias)` renames",
             )
             .at(occ));
         };
@@ -722,16 +748,16 @@ fn resolve_import_clause(
         // (`__ast__$<from_file>`, spliced into the merged program by `link()` below) whose body is that
         // reflected AST. Point this import's `exported` at that synth def so the ordinary import→def binding
         // (`db::build_file_scope`) wires the local `__ast__` to it, with no db-side special-casing.
-        if name == AST_REFLECT_NAME {
-            if out.iter().any(|i| i.local == name) {
+        if exported == AST_REFLECT_NAME {
+            if out.iter().any(|i| i.local == local) {
                 return Err(Reject::coded(
                     Code::Malformed,
-                    format!("`(import …)`: `{name}` is imported more than once into this file"),
+                    format!("`(import …)`: `{local}` is imported more than once into this file"),
                 )
                 .at(occ));
             }
             out.push(Import {
-                local: AST_REFLECT_NAME.to_string(),
+                local: local.to_string(),
                 from_file,
                 exported: ast_reflect_def_name(from_file),
                 module_alias: false,
@@ -739,7 +765,7 @@ fn resolve_import_clause(
             });
             continue;
         }
-        if !exports_of[from_file].iter().any(|e| e == name) {
+        if !exports_of[from_file].iter().any(|e| e == exported) {
             // Distinguish the two reasons the name is not importable, so the message is ACTIONABLE:
             //  - `{path}` DEFINES `{name}` but does not `(export …)` it → say so + name the fix (add an
             //    export to that file), the "private item" case (rustc's "consider making it public").
@@ -751,21 +777,21 @@ fn resolve_import_clause(
             // intent. The private-item case has no single-node rewrite (the fix is to edit the OTHER file's
             // export list), so it stays message-only.
             let mut fix = None;
-            let msg = if defined_of[from_file].iter().any(|d| d == name) {
+            let msg = if defined_of[from_file].iter().any(|d| d == exported) {
                 format!(
-                    "`(import …)`: `{path}` defines `{name}` but does not export it — add `export \
-                     {{ {name} }}` to `{path}`"
+                    "`(import …)`: `{path}` defines `{exported}` but does not export it — add `export \
+                     {{ {exported} }}` to `{path}`"
                 )
             } else {
-                match crate::diag::suggest::nearest(name, &exports_of[from_file]) {
+                match crate::diag::suggest::nearest(exported, &exports_of[from_file]) {
                     Some(near) => {
                         let m = format!(
-                            "`(import …)`: `{path}` does not export `{name}` — did you mean `{near}`?"
+                            "`(import …)`: `{path}` does not export `{exported}` — did you mean `{near}`?"
                         );
-                        fix = Some(crate::diag::Fix::replace_heuristic(name_id, near));
+                        fix = Some(crate::diag::Fix::replace_heuristic(exported_id, near));
                         m
                     }
-                    None => format!("`(import …)`: `{path}` does not export `{name}`"),
+                    None => format!("`(import …)`: `{path}` does not export `{exported}`"),
                 }
             };
             let mut reject = Reject::coded(Code::Malformed, msg).at(occ);
@@ -779,17 +805,17 @@ fn resolve_import_clause(
         // positively-proven ill-formed program — a CODED reject, not a decline.
         //= spec/capabilities/modules-and-namespaces.md#colliding-imported-names-are-rejected
         //# Importing two definitions under the same name into one scope MUST be a compile-time error rather than resolved by an implicit precedence.
-        if out.iter().any(|i| i.local == name) {
+        if out.iter().any(|i| i.local == local) {
             return Err(Reject::coded(
                 crate::diag::Code::Malformed,
-                format!("`(import …)`: `{name}` is imported more than once into this file"),
+                format!("`(import …)`: `{local}` is imported more than once into this file"),
             )
             .at(occ));
         }
         out.push(Import {
-            local: name.to_string(),
+            local: local.to_string(),
             from_file,
-            exported: name.to_string(),
+            exported: exported.to_string(),
             module_alias: false,
             occ,
         });
@@ -1374,6 +1400,50 @@ mod tests {
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// PER-NAME import RENAME `(as orig alias)` (v-syntax's surface `import { descriptor as foo } from
+    /// "path"`): bind the module's export `orig` under the LOCAL name `alias`. The linker discriminant is
+    /// per-element — a bare Name is a plain import (local == exported); an `as`-headed 3-list is a rename
+    /// (local = alias, exported = orig). Export-visibility keys off `orig`, the introduced binding + the
+    /// collision check key off `alias`. Here `lib` exports `descriptor` (→ 30); the entry imports it as
+    /// `foo` and calls `foo` → 30, resolving via the aliased local with no whole-module handle. Dormant-
+    /// safe ahead of the ML surface (tested at the arena level the parser will emit).
+    #[test]
+    fn a_per_name_import_rename_binds_the_export_under_the_local_alias() {
+        let out = compile_package(
+            "(do (def (descriptor) 30) (export descriptor))",
+            "(do (import \"lib\" ((as descriptor foo))) (def (main) (foo)) (export main))",
+        );
+        assert!(
+            !out.has_error(),
+            "a per-name rename must bind the export under the local alias; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// A per-name rename's COLLISION is checked on the LOCAL alias, not the source export: importing two
+    /// different exports under the SAME local name is a CDZ0201 (colliding imported names), exactly as two
+    /// bare imports of the same name would be. `lib` exports `descriptor` + `other`; the entry renames
+    /// BOTH to `foo` → the second binding of `foo` collides.
+    #[test]
+    fn a_per_name_rename_colliding_on_the_local_alias_is_rejected() {
+        let out = compile_package(
+            "(do (def (descriptor) 30) (def (other) 12) (export descriptor) (export other))",
+            "(do (import \"lib\" ((as descriptor foo) (as other foo))) (def (main) (foo)) (export main))",
+        );
+        assert!(
+            out.has_error(),
+            "two renames to the same local alias must collide (CDZ0201)"
+        );
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("`foo` is imported more than once")),
+            "expected a colliding-local-alias error for `foo`; got {:?}",
+            out.diagnostics
+        );
     }
 
     /// END-TO-END through the ML SURFACE: the alias import `import alias from "path"` (v-syntax #3686,
