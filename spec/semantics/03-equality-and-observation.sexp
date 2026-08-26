@@ -3026,3 +3026,26 @@
     (export f)))
   (call f (: 5 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 407 (2026-08-26): bare ORDER over arena-sourced Bytes works — bo1 pins that
+; `(< (Ast.encode a) (Ast.encode b))` compiles and compares content-lexicographically (encode(7) <
+; encode(8) on the payload byte), so the flat-operands gate is EQUALITY-specific: bare `=` over the
+; same operands declines (filed) while `<` and the tuple-walk `=` (bo2) both handle arena sources.
+; De-confound note: earlier order declines were String ENTRY params (a separate filed decline —
+; String/Bytes entry params decline wholesale, even for .len, while Symbol/BigInt entry params pass).
+
+(case "bo1 bare order over two runtime encode results compares content-lexicographically"
+  (input (do
+    (def (f (: n Int64))
+      (if (< (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of (+ n 1))))) 1 0))
+    (export f)))
+  (call f (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "bo2 tuple-walk equality over two identical runtime encodes agrees"
+  (input (do
+    (def (f (: n Int64))
+      (if (= (tuple 1 (Ast.encode (Ast.Int (BigInt.of n)))) (tuple 1 (Ast.encode (Ast.Int (BigInt.of n))))) 1 0))
+    (export f)))
+  (call f (: 7 Int64))
+  (output (: 1 Int64)))
