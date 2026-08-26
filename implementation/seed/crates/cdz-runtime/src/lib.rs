@@ -5955,6 +5955,83 @@ fn op_ast_encode(handle: Handle, discs: Handle) -> Handle {
     buf
 }
 
+/// Inverse of [`big_to_intvalue`]: a codec `ast::IntValue{negative, magnitude:BE}` → a runtime heap
+/// `bigint::Big`. `Big::from_sign_magnitude_bytes` wants `[sign][LITTLE-endian magnitude]`, so reverse the
+/// big-endian magnitude back to little-endian and prepend the sign byte.
+fn intvalue_to_big(iv: &crate::ast::IntValue) -> bigint::Big {
+    let mut sm = Vec::with_capacity(1 + iv.magnitude.len());
+    sm.push(iv.negative as u8);
+    sm.extend(iv.magnitude.iter().rev().copied());
+    bigint::Big::from_sign_magnitude_bytes(&sm)
+}
+
+/// Rebuild a heap `Ast` value from a node of a `codec::decode`d cadenza-ast `Arenas` — the runtime twin of
+/// the compiler's `arenas_to_ast_value` (rcdzc `lower.rs`) and the inverse of [`encode_ast_to_arenas`].
+/// Builds each node with `op_sum_new` at the descriptor's discs, boxing scalar payloads exactly as a
+/// constructed `Ast` value does (bigint leaf / boxed float / boxed char scalar / RRB `vec-push` for a list).
+/// `None` on an out-of-range id or a leaf with no `Ast` variant (`BadEscape`/`BadChar` markers — which a
+/// well-formed `Ast.encode` never emits), so a malformed document decodes to the `Err` case, never a trap.
+fn decode_arenas_to_ast(
+    arenas: &crate::ast::Arenas,
+    sid: crate::ast::StructId,
+    d: &AstEncDiscs,
+) -> Option<Handle> {
+    match arenas.structure.get(sid.0 as usize)? {
+        crate::ast::Struct::Atom(lid) => {
+            let h = match arenas.leaves.get(lid.0 as usize)? {
+                crate::ast::Leaf::Int { value, .. } => {
+                    op_sum_new(d.int, box_bigint(&intvalue_to_big(value)))
+                }
+                crate::ast::Leaf::Float(dec) => {
+                    op_sum_new(d.float, op_box_float(f64::from_bits(dec.to_f64_bits())))
+                }
+                crate::ast::Leaf::Bool(b) => op_sum_new(d.boolv, op_box_bool(*b)),
+                crate::ast::Leaf::Str(s) => op_sum_new(d.strv, op_str_new(s.to_string())),
+                crate::ast::Leaf::Name(s) => op_sum_new(d.name, op_str_new(s.to_string())),
+                crate::ast::Leaf::Sym(s) => op_sum_new(d.symbol, op_str_new(s.to_string())),
+                crate::ast::Leaf::Char(c) => op_sum_new(d.chr, op_box_int(*c as i64)),
+                crate::ast::Leaf::Bytes(v) => {
+                    let buf = op_bytes_alloc(v.len() as u32);
+                    for (i, &b) in v.iter().enumerate() {
+                        op_bytes_set(buf, i as u32, b as u32);
+                    }
+                    op_sum_new(d.bytes, buf)
+                }
+                crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
+            };
+            Some(h)
+        }
+        crate::ast::Struct::List(children) => {
+            let mut v = op_vec_empty();
+            for &c in children.iter() {
+                v = op_vec_push(v, decode_arenas_to_ast(arenas, c, d)?);
+            }
+            Some(op_sum_new(d.list, v))
+        }
+    }
+}
+
+/// `ast-decode(bytes-handle, discs)` (heap op 94) — the runtime half of the compiler's `Ast.decode`, the
+/// TOTAL inverse of `ast-encode`: parse a `Bytes` leaf as one canonical `cdzast` document (via the shared
+/// `crate::codec::decode`) and rebuild the heap `Ast` value. Returns the `Ast` handle on success, or
+/// `Handle::NULL` on any parse failure (wrong header / malformed / trailing bytes / a non-`Ast` leaf) — the
+/// compiler's `Core::AstDecode` emit wraps the result (`h != null → Ok(h)`, else `Err`), so decode is total
+/// (a bad byte sequence is DATA, never a trap). BORROWS both operands.
+fn op_ast_decode(bytes_handle: Handle, discs: Handle) -> Handle {
+    let Some(d) = read_ast_enc_discs(discs) else {
+        return Handle::NULL;
+    };
+    let n = op_bytes_len(bytes_handle);
+    let mut raw = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        raw.push(op_bytes_get(bytes_handle, i) as u8);
+    }
+    match crate::codec::decode(&raw) {
+        Some(arenas) => decode_arenas_to_ast(&arenas, arenas.root, &d).unwrap_or(Handle::NULL),
+        None => Handle::NULL,
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 struct Component;
 
@@ -19848,6 +19925,61 @@ mod tests {
         );
         op_drop(root);
         op_drop(got);
+        op_drop(discs);
+    }
+
+    /// `ast-decode` round-trips `ast-encode`: `encode(decode(encode(v))) == encode(v)` over an Ast spanning
+    /// every variant. Encode is byte-canonical, so equal re-encoded bytes prove `decode` rebuilt the SAME
+    /// Ast (structure + every leaf value, through both type bridges). Also checks a malformed byte sequence
+    /// decodes to NULL (the `Err` path), never a trap.
+    #[test]
+    fn ast_decode_round_trips_encode() {
+        reset();
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+        // Same all-variant Ast as the encode test.
+        let mut v = op_vec_empty();
+        v = op_vec_push(v, op_sum_new(4, op_str_new("f".to_string())));
+        v = op_vec_push(v, op_sum_new(0, op_bigint_of_i64(300)));
+        v = op_vec_push(v, op_sum_new(0, op_bigint_of_i64(-3)));
+        v = op_vec_push(v, op_sum_new(2, op_box_bool(true)));
+        v = op_vec_push(v, op_sum_new(3, op_str_new("hi".to_string())));
+        v = op_vec_push(v, op_sum_new(6, bytes_leaf(&[0, 255])));
+        v = op_vec_push(v, op_sum_new(7, op_box_int('λ' as i64)));
+        v = op_vec_push(v, op_sum_new(8, op_str_new("m".to_string())));
+        v = op_vec_push(v, op_sum_new(1, op_box_float(1.5)));
+        let inner = op_vec_push(op_vec_empty(), op_sum_new(0, op_bigint_of_i64(7)));
+        v = op_vec_push(v, op_sum_new(5, inner));
+        let root = op_sum_new(5, v);
+
+        let enc1 = op_ast_encode(root, discs);
+        let enc1_bytes = bytes_to_vec(enc1);
+        let decoded = op_ast_decode(enc1, discs);
+        assert_ne!(
+            decoded,
+            Handle::NULL,
+            "a well-formed cdzast document decodes to an Ast, not NULL"
+        );
+        let enc2 = op_ast_encode(decoded, discs);
+        assert_eq!(
+            bytes_to_vec(enc2),
+            enc1_bytes,
+            "encode(decode(encode v)) must equal encode(v) — decode rebuilt the same Ast"
+        );
+
+        // A malformed byte sequence (wrong header) decodes to NULL — the Err path, no trap.
+        let junk = bytes_leaf(&[1, 2, 3, 4]);
+        assert_eq!(
+            op_ast_decode(junk, discs),
+            Handle::NULL,
+            "a non-cdzast byte sequence decodes to NULL (Err), never a trap"
+        );
+
+        op_drop(root);
+        op_drop(enc1);
+        op_drop(decoded);
+        op_drop(enc2);
+        op_drop(junk);
         op_drop(discs);
     }
 
