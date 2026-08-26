@@ -265,14 +265,26 @@ pub fn build_driver_source(
     let call = build_closure_consumer_call(module, export, args, false)
         .unwrap_or_else(|| call_expr(module, export, args, false));
     let call_or_await = format!("prog::{call}");
+
+    // Is this a host-closure FACTORY (return type names a closure) or a CONSUMER (takes a closure param)?
+    // Both cross a String/Bytes RESULT through the wasm boundary's serialized `list<u8>` form, so their
+    // result is rendered specially (below); a plain export keeps `cdz_render_expr`.
+    let ident = cdz_rust_render::rust_ident(export);
+    let is_factory = crate::sig::rust_factory_param_count(module, &ident, false).is_some();
+    let is_consumer = !is_factory
+        && crate::sig::parse_emitted_sig(module, &ident, false).is_some_and(|s| {
+            s.params
+                .iter()
+                .filter(|p| !crate::sig::is_env_param(p))
+                .any(|p| crate::sig::is_closure_param(p))
+        });
+
     // A host-closure FACTORY export's `cdz-return` note is the returned closure's CURRIED arrow
     // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
     // closure's FINAL result — peel the arrow to that type so `cdz_render_expr` renders it structurally
     // (a bare arrow would render as a closure and not compile). A non-factory export keeps its note.
     let ret_ty = cdz_return_type(module, export).map(|t| {
-        if crate::sig::rust_factory_param_count(module, &cdz_rust_render::rust_ident(export), false)
-            .is_some()
-        {
+        if is_factory {
             crate::sig::peel_arrow_result(&t)
         } else {
             t
@@ -288,6 +300,17 @@ pub fn build_driver_source(
         format!("fn main() {{ {call_or_await}; }}\n")
     } else {
         match ret_ty.as_deref() {
+            // A host-closure String/Bytes RESULT is serialized across the wasm boundary as `list<u8>`, so the
+            // corpus records it as the bare byte-int list `(104 105)` (`()` empty), NOT the `"hi"`/`b"…"` form
+            // a PLAIN String/Bytes export uses. rcdzc's rust target mirrors that observable form for a
+            // factory/consumer, so render `__r` (a `String`/`Vec<u8>`) as the byte list directly (also avoids
+            // the E0277 `Vec<u8>: Display` a `{}` render of a Bytes result would hit). Mirrors xtask.
+            Some(ty) if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") => {
+                let render = cdz_render_bytes_list(ty);
+                format!(
+                    "fn main() {{ let __r = {call_or_await}; println!(\"{{}}\", {render}); }}\n"
+                )
+            }
             Some(ty) => {
                 let sums = cdz_sum_descriptors(module);
                 let newtypes = cdz_newtype_descriptors(module);
@@ -317,6 +340,22 @@ pub fn build_driver_source(
 
     let host_shims = build_rust_host_shims(module, host_responses, host_calls);
     format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+}
+
+/// Render `__r` (a host-closure String/Bytes RESULT) as the boundary byte-int list `(104 105)` / `()`.
+/// `__r` is a `String` (String result — iterate its UTF-8 bytes) or `Vec<u8>` (Bytes result). Returns a
+/// Rust block expression usable as the `println!("{}", …)` arg. Mirrors xtask's `cdz_render_bytes_list`.
+fn cdz_render_bytes_list(ty: &str) -> String {
+    let iter = if ty == "String" {
+        "(__r).bytes()"
+    } else {
+        "(__r).iter().copied()"
+    };
+    format!(
+        "{{ let mut __s = String::from(\"(\"); let mut __first = true; for __b in {iter} {{ \
+         if !__first {{ __s.push(' '); }} __first = false; __s.push_str(&__b.to_string()); }} \
+         __s.push(')'); __s }}"
+    )
 }
 
 /// Kebab-normalize an EFFECT name (matching the backend's `canonical_host_op_key`): CamelCase / `_` / `-`
@@ -675,6 +714,23 @@ mod tests {
         assert_eq!(
             build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true),
             None
+        );
+    }
+
+    #[test]
+    fn bytes_list_render_iterates_bytes() {
+        assert!(cdz_render_bytes_list("String").contains("(__r).bytes()"));
+        assert!(cdz_render_bytes_list("Bytes").contains("(__r).iter().copied()"));
+    }
+
+    #[test]
+    fn factory_string_result_renders_as_a_byte_list() {
+        let m = "// cdz-return[mk]: (-> Int64 String)\n\
+                 pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> String> { std::rc::Rc::new(|_| String::from(\"hi\")) }";
+        let d = build_driver_source(m, "mk", &["0".into()], &[], &[]);
+        assert!(
+            d.contains("(__r).bytes()"),
+            "String factory result → byte list: {d}"
         );
     }
 
