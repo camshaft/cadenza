@@ -17281,3 +17281,38 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 4816 Int64))
   (call   main (: 0 Int64)) (output (: 2408 Int64)))
+
+;; -- pymo4 negative modulo threaded + pybw1 bitwise ops threaded + pyfd1 float division threaded (breaker batch 366) --
+(case "pymo4 probe: NEGATIVE modulo threaded through the handler — seed -((n%3)+1), tick answers (% (* s 7) 3) and threads (- s 2), so the state is negative and each dispatch takes a negative dividend mod 3 (truncated remainder: takes the sign of the dividend, e.g. -14%3 = -2, -7%3 = -1); three dispatches exercise signed-remainder semantics under state threading, and wasm vs rust must agree on the remainder sign"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (- (: 0 Int64) (+ (% n 3) (: 1 Int64)))
+      ((tick () s (resume (% (* s 7) (: 3 Int64)) (- s 2))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: -2100 Int64))
+  (call   main (: 0 Int64)) (output (: -1002 Int64)))
+
+(case "pybw1 probe: BITWISE and/or/xor threaded through the handler — tick answers (| (& s 6) (^ s 3)) threading (+ s 1), seed (n%3)+5, so each dispatch combines the live state through AND, XOR, then OR; three dispatches exercise bitwise-logical ops over threaded state and wasm/rust agreement on &, |, ^"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 5 Int64))
+      ((tick () s (resume (| (& s (: 6 Int64)) (^ s (: 3 Int64))) (+ s 1))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 7611 Int64))
+  (call   main (: 0 Int64)) (output (: 6706 Int64)))
+
+(case "pyfd1 probe: FLOAT64 division threaded through the handler — seed 1.0/2.0/4.0 by n%3, tick answers (/ s 2.0) and threads (+ s 3.0), so three dispatches read s, s+3, s+6 and halve each; the sum is (3s+9)/2, exact in Float64 (halves stay representable), exercising float division + addition under state threading with wasm/rust agreement"
+  (input (do
+  (effect E (op tick (-> Float64)))
+  (def (main (: n Int64))
+    (handle E (if (= (% n 3) (: 0 Int64)) (: 1.0 Float64)
+                  (if (= (% n 3) (: 1 Int64)) (: 2.0 Float64) (: 4.0 Float64)))
+      ((tick () s (resume (/ s (: 2.0 Float64)) (+ s (: 3.0 Float64)))))
+      (+ (E.tick) (+ (E.tick) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 7.5 Float64))
+  (call   main (: 0 Int64)) (output (: 6.0 Float64)))
