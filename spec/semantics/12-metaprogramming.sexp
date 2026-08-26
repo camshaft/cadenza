@@ -4061,3 +4061,25 @@
             (export main)))
   (call   main (: 41 Int64)) (output (: 42 Int64))
   (live-objects 0))
+
+;; -- runtime Ast.encode (op 93, the #3653 emit): encode-alone runs, the const twin folds, and RUNTIME == CONST-FOLDED length (the consistency witness) (breaker batch 398; decode-side emit pending for the round-trip pair) --
+(case "ce93s Ast.encode ALONE over a runtime AST yields canonical bytes"
+  (input (do
+    (def (main (: k Int64))
+      (Bytes.len (Ast.encode (Ast.Int (BigInt.of k)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 16 Int64)))
+(case "ce93c CONST twin: Ast.encode of the same constant AST folds to the same length"
+  (input (Bytes.len (Ast.encode (Ast.Int (BigInt.of 7)))))
+  (output (: 16 Int64)))
+
+(case "ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)"
+  (input (do
+    (def (main (: k Int64))
+      (if (= (Bytes.len (Ast.encode (Ast.Int (BigInt.of k))))
+             (Bytes.len (Ast.encode (Ast.Int (BigInt.of 7)))))
+          1 0))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1 Int64)))

@@ -7357,3 +7357,6 @@ pass	a whole-module alias projects an exported FUNCTION and applies it
 todo	cvp1 a variant host RESULT with a LIST payload lifts and is measured
 todo	cvp2 a variant host RESULT with a RECORD payload lifts and projects
 pass	mal1 a whole-module ALIAS import projects a member fn
+todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
+pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
+todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
