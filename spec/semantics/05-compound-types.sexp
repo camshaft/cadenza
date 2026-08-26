@@ -19319,3 +19319,23 @@
             (def (main (: z Int64)) (loop 0 4 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 4 Int64)))
+
+(case "a let-bound runtime tuple inside a parameterized function projects element 0"
+  (doc    "`(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`; t's init substitutes n=10 and
+           `(. t 0)` reads element 0 = n+1 = 11 (the atom-copy fix on a heap-compound let-local under a
+           live param). Folds to the scalar 11.")
+  (input  (do (def (g (: n Int64)) (let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))) (def (main) (g 10)) (export main)))
+  (call   main) (output (: 11 Int64)))
+
+(case "a record binding pattern in a let destructures by field"
+  (doc    "`(record (x a) (y b))` in let position destructures a record value by field, binding a/b to the
+           x/y fields (each a projection of the bound value). (+ a b) = 3 + 4 = 7.")
+  (input  (do (def (main) (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "a record binding pattern in a parameter destructures by field"
+  (doc    "`(def (f (record (x a) (y b))) ...)` destructures its single record argument by field, arity 1
+           (a destructuring parameter desugars to a let at load, sharing the binding-path). f (record (x 3)
+           (y 4)) = 7.")
+  (input  (do (def (f (record (x a) (y b))) (+ a b)) (def (main) (f (record (x 3) (y 4)))) (export main)))
+  (call   main) (output (: 7 Int64)))

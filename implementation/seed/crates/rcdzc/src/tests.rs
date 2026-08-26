@@ -6412,48 +6412,6 @@ fn a_synth_def_bodys_own_param_resolves_after_an_unrelated_scope_skip_resize() {
     );
 }
 
-/// The value-heap companion: a `let`-bound runtime TUPLE inside a parameterized function, projected —
-/// `(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`, `t`'s init substitutes `n`, and `(. t
-/// 0)` reads element 0 = `n+1` = 11. Exercises the atom-copy fix on a heap-compound let-local (the case
-/// that motivated finding the bug — an internal runtime compound under a live param). Folds to the
-/// scalar 11, so it needs no runtime.
-#[test]
-fn a_let_bound_runtime_tuple_under_a_fn_param_projects() {
-    use crate::testkit::parse;
-    let src = "(module m (def (g n) (let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))) \
-                 (def (main) (g 10)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
-}
-
-/// A RECORD binding pattern in `let` position (Increment B) — `(record (x a) (y b))` destructures a record
-/// value by field, binding `a`/`b` to the `x`/`y` fields, exactly as a tuple pattern binds its elements.
-/// The field binders resolve to a PROJECTION of the bound value (`a` ≡ `(. r x)`, `Resolved::Member` →
-/// `Core::Proj`), so this reuses the ordinary member-access read with zero new IR. `(+ a b)` = 3 + 4 = 7.
-#[test]
-fn a_record_binding_pattern_in_a_let_destructures_by_field() {
-    use crate::testkit::parse;
-    let src = "(module m (def (main) \
-                 (let (((record (x a) (y b)) (record (x 3) (y 4)))) (+ a b))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile let-record");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-}
-
-/// A RECORD binding pattern in PARAMETER position (Increment B) — `(def (f (record (x a) (y b))) …)`
-/// destructures its single record argument by field, keeping arity 1. A destructuring parameter desugars
-/// to a `let` at load (`binding_params::lower`), so the parameter and `let` positions share the ONE
-/// binding-path implementation (`check_binding_pattern` + `last_binder_named`'s record arm). `f (record (x
-/// 3)(y 4))` = 7.
-#[test]
-fn a_record_binding_pattern_in_a_parameter_destructures_by_field() {
-    use crate::testkit::parse;
-    let src = "(module m (def (f (record (x a) (y b))) (+ a b)) \
-                 (def (main) (f (record (x 3) (y 4)))) (export main))";
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(src))).expect("compile param-record");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-}
-
 /// A record binding pattern projects each field by NAME→sorted-slot, not by written order — so it binds
 /// correctly when the pattern names fields in a DIFFERENT order than the record value and when it names a
 /// SUBSET of the fields (a partial record pattern, more flexible than a tuple's full-arity match). Here the
