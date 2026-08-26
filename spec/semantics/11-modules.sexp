@@ -2252,3 +2252,16 @@
             (def (main) (Bytes.len (cid)))
             (export main)))
   (output (: 32 Int64)))
+
+;; -- whole-module ALIAS import projects a member fn (breaker batch 397b; the #3656 surface; effects stay name-resolved per the standing ruling) --
+(case "mal1 a whole-module ALIAS import projects a member fn"
+  (module "lib"
+    (do
+      (def (dbl (: x Int64)) (* x 2))
+      (export dbl)))
+  (input (do
+    (import "lib" m)
+    (def (main (: n Int64)) ((. m dbl) n))
+    (export main)))
+  (call main (: 21 Int64))
+  (output (: 42 Int64)))
