@@ -4681,6 +4681,10 @@ pass	an export with a nested-tuple parameter returns a list from its leaves
 pass	an export with a record-with-a-tuple-field parameter returns a list from its leaves
 pass	an export with a tuple parameter before a scalar returns a list from both
 pass	an export with two tuple parameters returns a list from both
+pass	an exported Float64 addition runs over runtime args at IEEE precision
+pass	an exported Float64 division runs over runtime args at IEEE precision
+pass	an exported Float64 multiplication runs over runtime args
+pass	an exported Float64 subtraction runs over runtime args
 pass	an exported OPEN-ROW projector instantiates at importer widths the module never saw
 pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER's call sites
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled

@@ -9858,33 +9858,6 @@ fn if_runs_to_2() {
 
 // ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
 
-/// The float dual: an exported `(+ a b)` over two runtime Float64 params — the ONE arithmetic operator
-/// dispatched to float by the operand type — emits `local.get 0; local.get 1; f64.add` (no fold — the
-/// params are unknown, no overflow guard — floats never trap) and the boundary carries the params as
-/// component `f64`. Run under wasmtime it computes the IEEE sum. Exercised with a NON-exact pair (0.1,
-/// 0.2 → 0.30000000000000004) so a wrong op or a fold-to-0.3 would be caught, plus `*`/`/` to pin each
-/// machine op. Compared BY BITS.
-#[test]
-fn an_exported_float_op_runs_over_runtime_args() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    for (op, a, b, want) in [
-        ("+", 0.1f64, 0.2f64, 0.1f64 + 0.2f64),
-        ("*", 6.0, 7.0, 42.0f64),
-        ("-", 5.5, 2.0, 3.5f64),
-        ("/", 1.0, 3.0, 1.0f64 / 3.0f64),
-    ] {
-        let src = format!("(module m (def (f (: a Float64) (: b Float64)) ({op} a b)) (export f))");
-        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-        let got: f64 = run_returns_with(&bytes, "f", &[Val::Float64(a), Val::Float64(b)]);
-        assert_eq!(
-            got.to_bits(),
-            want.to_bits(),
-            "runtime float {op} over ({a}, {b}) must equal the IEEE result by bits"
-        );
-    }
-}
-
 /// WARNING: INVALID WASM regression: a Float32 arithmetic op with a bare float LITERAL operand mis-emitted
 /// the literal at its Float64 default (an `f64.const` beside an `f32.add`) — `wasm-tools` rejected the
 /// module ("expected f32, found f64"). This hit TRIVIAL, idiomatic code (`(+ x 1.0)` over a Float32
