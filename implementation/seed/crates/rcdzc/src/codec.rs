@@ -105,6 +105,8 @@
 //! is an optional strengthening of the same check — not a gap: the refuse-on-mismatch guarantee holds
 //! today, and swapping the tag's content is a drop-in change.
 
+use alloc::vec::Vec;
+use alloc::string::String;
 use crate::ast::{Arenas, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId};
 use crate::leb128::{self, Reader};
 
