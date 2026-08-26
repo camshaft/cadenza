@@ -7446,3 +7446,10 @@ todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
+pass	imr1 a per-name import rename binds the export under the alias and runs
+pass	imr2 per-name renames disambiguate a uniform export name from two modules
+pass	imr3 one export imported under TWO aliases — both bind to the same def
+pass	imr4 a MIXED list — plain import and rename side by side
+pass	imr5 the ORIGINAL name is NOT bound after a rename (unbound reject)
+pass	imr6 an alias colliding with another import is a colliding-import reject
+pass	imr7 a renamed FUNCTION import applies through the alias

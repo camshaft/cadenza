@@ -2265,3 +2265,69 @@
     (export main)))
   (call main (: 21 Int64))
   (output (: 42 Int64)))
+
+; -- breaker batch 409 (2026-08-26): PER-NAME import rename `(as orig alias)` semantic faces
+; (#3719 resolve/link, same-hour probe; complements #3723's ML-surface rust tests with RUNNING corpus
+; pins). imr1 basic bind+run, imr2 the descriptor-collision disambiguation (the section-8 dispatcher
+; shape), imr3 one export under TWO aliases, imr4 mixed plain+rename list, imr5 the ORIGINAL name is
+; unbound after rename (clean CDZ0101), imr6 alias collision rejects CDZ0201, imr7 renamed fn applies.
+
+(case "imr1 a per-name import rename binds the export under the alias and runs"
+  (module "lib" (do (def (descriptor) 30) (export descriptor)))
+  (input (do
+    (import "lib" ((as descriptor foo)))
+    (def (main) (foo))
+    (export main)))
+  (output (: 30 Int64)))
+
+(case "imr2 per-name renames disambiguate a uniform export name from two modules"
+  (module "liba" (do (def (descriptor) 30) (export descriptor)))
+  (module "libb" (do (def (descriptor) 12) (export descriptor)))
+  (input (do
+    (import "liba" ((as descriptor a-desc)))
+    (import "libb" ((as descriptor b-desc)))
+    (def (main) (+ (a-desc) (b-desc)))
+    (export main)))
+  (output (: 42 Int64)))
+
+(case "imr3 one export imported under TWO aliases — both bind to the same def"
+  (module "lib" (do (def (descriptor (: x Int64)) (* x 3)) (export descriptor)))
+  (input (do
+    (import "lib" ((as descriptor tri) (as descriptor thrice)))
+    (def (main) (+ (tri 5) (thrice 9)))
+    (export main)))
+  (output (: 42 Int64)))
+
+(case "imr4 a MIXED list — plain import and rename side by side"
+  (module "lib" (do (def (base) 40) (def (bump (: x Int64)) (+ x 1)) (export base) (export bump)))
+  (input (do
+    (import "lib" (base (as bump inc)))
+    (def (main) (inc (base)))
+    (export main)))
+  (output (: 41 Int64)))
+
+(case "imr5 the ORIGINAL name is NOT bound after a rename (unbound reject)"
+  (module "lib" (do (def (descriptor) 30) (export descriptor)))
+  (input (do
+    (import "lib" ((as descriptor foo)))
+    (def (main) (descriptor))
+    (export main)))
+  (error CDZ0101))
+
+(case "imr6 an alias colliding with another import is a colliding-import reject"
+  (module "liba" (do (def (descriptor) 30) (export descriptor)))
+  (module "libb" (do (def (other) 12) (export other)))
+  (input (do
+    (import "liba" ((as descriptor thing)))
+    (import "libb" ((as other thing)))
+    (def (main) (thing))
+    (export main)))
+  (error CDZ0201))
+
+(case "imr7 a renamed FUNCTION import applies through the alias"
+  (module "lib" (do (def (descriptor (: x Int64) (: y Int64)) (- x y)) (export descriptor)))
+  (input (do
+    (import "lib" ((as descriptor sub)))
+    (def (main) (sub 50 8))
+    (export main)))
+  (output (: 42 Int64)))
