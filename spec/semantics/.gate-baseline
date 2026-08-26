@@ -1229,6 +1229,7 @@ pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
 pass	a bare prelude-colliding variant name matches as the local variant
+pass	a bare primitive operator passed as a first-class function value folds via the annotation see-through
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -4669,6 +4670,7 @@ pass	an indexed list walk performing per element — element × advancing draw, 
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
 pass	an init after the failing `?` never evaluates — even a provably-trapping one
+pass	an inline HOF applies a bare operator passed as its function argument
 pass	an inline Unit.define conflicting with a built-in conversion is rejected wherever it occurs
 pass	an inline-materialized BigInt constant operand is dropped, leaving no live heap objects
 pass	an inline-never definition is emitted once and called
@@ -7403,7 +7405,6 @@ todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
-todo	a bare primitive operator passed as a first-class function value (pending eta-expansion)
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)

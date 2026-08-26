@@ -1355,6 +1355,21 @@ fn substituted_arg(db: &mut Db, param: StructId, arg: StructId) -> StructId {
         }
         return arg;
     };
+    // A bare OPERATOR argument to a FUNCTION-typed parameter is substituted RAW, never wrapped. When the
+    // parameter type is a function arrow `(-> …)` and the argument is a bare operator (`meta_apply_of` is a
+    // prim and it is not itself an application), wrapping it as `(: + (-> …))` would put an annotated
+    // operator in HEAD position once β-reduction splices it (`(apply2 + 3 4)` → `((: + …) 3 4)`), where the
+    // operation dispatch cannot reach its `(meta apply)` and declines "value is not applyable". Substituting
+    // raw keeps `+` a dispatchable head that folds `(+ 3 4)`. The annotation's only job is the narrow-int
+    // fit-check, irrelevant to a function-typed parameter. Gated on the parameter type being an ARROW so a
+    // value-prim argument to a non-function parameter (e.g. `Map.empty` to a `(Map …)` param) still gets its
+    // wrap — its annotation grounds the value's element types and must be kept.
+    if db.ast.as_form(ty_occ, "->").is_some()
+        && !matches!(resolved_of(db, arg), Resolved::Apply { .. })
+        && meta_apply_of(db, arg).is_some()
+    {
+        return arg;
+    }
     // Pin the annotation type before it is shared into the synthesized `(: arg T)` — its names resolve
     // the same wherever the wrap lands (they are global type names), exactly as a pinned argument does.
     crate::resolve::resolve_subtree(db, ty_occ);
