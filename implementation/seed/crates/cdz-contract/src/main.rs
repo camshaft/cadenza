@@ -9,6 +9,7 @@
 //!
 //! ```text
 //! cdz-contract hash <dir> [--cdz <path>] [--out <file>]
+//! cdz-contract id <file.cdz> [--cdz <path>]
 //! cdz-contract blob <file>
 //! ```
 //!
@@ -34,7 +35,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Error::Usage(msg)) => {
             eprintln!(
-                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>]\n       cdz-contract blob <file>"
+                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>]\n       cdz-contract id <file.cdz> [--cdz <path>]\n       cdz-contract blob <file>"
             );
             ExitCode::from(2)
         }
@@ -62,10 +63,71 @@ struct HashArgs {
 fn run(args: &[String]) -> Result<(), Error> {
     match args.first().map(String::as_str) {
         Some("hash") => hash(parse_hash(&args[1..])?),
+        Some("id") => id(parse_id(&args[1..])?),
         Some("blob") => blob(&args[1..]),
         Some(other) => Err(Error::Usage(format!("unknown subcommand `{other}`"))),
         None => Err(Error::Usage("no subcommand given".into())),
     }
+}
+
+/// The parsed `id` invocation: one contract source file + the parser binary.
+struct IdArgs {
+    file: PathBuf,
+    cdz: String,
+}
+
+fn parse_id(args: &[String]) -> Result<IdArgs, Error> {
+    let mut file: Option<PathBuf> = None;
+    let mut cdz: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--cdz" => {
+                cdz = Some(
+                    it.next()
+                        .ok_or_else(|| Error::Usage("--cdz needs a path".into()))?
+                        .clone(),
+                );
+            }
+            flag if flag.starts_with('-') => {
+                return Err(Error::Usage(format!("unknown option `{flag}`")));
+            }
+            positional if file.is_none() => file = Some(PathBuf::from(positional)),
+            extra => return Err(Error::Usage(format!("unexpected argument `{extra}`"))),
+        }
+    }
+    Ok(IdArgs {
+        file: file.ok_or_else(|| Error::Usage("missing <file>".into()))?,
+        cdz: cdz
+            .or_else(|| std::env::var("CDZ").ok())
+            .unwrap_or_else(|| "cdz".into()),
+    })
+}
+
+/// `cdz-contract id <file.cdz>` — print the base62 contract-id of the single `@!contract` module in `<file>`,
+/// via the canonical STATIC derivation (`cdz_contract::contract_from_module` → `contract_id_from_module`). This
+/// is "compile the contracts and query their IDs" (operator 2026-08-26): rather than a hand-driven hash, query
+/// the ONE id that is byte-identical to (1) the platform router's routing keys and (2) a self-reflecting
+/// guest's `contract-id(Ast.module)` fold — all pinned byte-exact by the cdz-platform goldens. PURE function of
+/// the `@!contract`/`@!input`/`@!output` declaration: NO compile-to-wasm, NO run (the runtime `id()` self-
+/// reflection is the guest reducer-dispatch path; build tooling needs only this static id). The per-contract
+/// primitive behind the `hash` dir-walker's name→id mapping. Exit 1 if `<file>` declares no contract.
+fn id(args: IdArgs) -> Result<(), Error> {
+    let ast = convert(&args.cdz, &args.file)?;
+    let arenas = cadenza_ast::codec::decode(&ast).ok_or_else(|| {
+        Error::Failed(format!(
+            "`cdz convert` of {} produced an undecodable AST",
+            args.file.display()
+        ))
+    })?;
+    let (_name, id) = cdz_contract::contract_from_module(&arenas).ok_or_else(|| {
+        Error::Failed(format!(
+            "{} declares no @!contract (no `@!contract` pragma)",
+            args.file.display()
+        ))
+    })?;
+    println!("{id}");
+    Ok(())
 }
 
 /// `blob <file>`: print the raw content address of `<file>` — `Hash::of(HashTag::Blob, bytes)` rendered
