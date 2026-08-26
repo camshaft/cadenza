@@ -4311,6 +4311,7 @@ pass	a zero rational canonicalizes to zero over one however it was constructed
 pass	a zero rational produced by arithmetic is the same canonical zero
 pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
+pass	a zero-arm match on an inhabited scrutinee is non-exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
