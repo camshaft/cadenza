@@ -345,9 +345,11 @@
 ; --- Primitive 2: const execution — RECORD field projection folds ------------------------------------
 ; A direct field projection off a constant record `(. (record …) field)` const-folds (the evaluator builds
 ; a `CVal::Record` and projects the field by name). Regression guard for record const-folding — the value
-; class the P4 descriptor `contract(m) -> Record(id, …)` reads a field off. (A record projected THROUGH a
-; record-param FUNCTION does not yet fold — the reducer does not inline a record-param fn and the general
-; evaluator does not reach its body; tracked separately, deeper than a value-domain arm.)
+; class the P4 descriptor `contract(m) -> Record(id, …)` reads a field off. A record threaded THROUGH a
+; record-param FUNCTION now folds too: a `(record …)` LITERAL resolves to an APPLIED `RecordNew` (not the
+; symbol-headed `Resolved::Record`), so the value-interpreter reduces it via `reduce_ctor` to the symbol-
+; headed compound and builds a `CVal::Record` — evaluating each field in the current env, so a record built
+; from const-param values folds as well.
 
 (case "a direct record field projection const-folds"
   (doc    "`(. (record (x 7) (y 9)) x)` folds to 7 at compile time; witnessed byte-exact through `Ast.encode`
@@ -358,6 +360,30 @@
                  (Ast.encode (Ast.Int (BigInt.of 7)))))
             (export main)))
   (output (: true Bool)))
+
+(case "a record threaded through a record-param function const-folds"
+  (doc    "`(const (get-x (record (x 42) (y 7))))` folds to 42: the record LITERAL resolves to an applied
+           `RecordNew`, which the value-interpreter reduces (via `reduce_ctor`) to a `CVal::Record`, binds to
+           the `get-x` parameter, and projects `x` off inside the body. Previously declined — `apply_const_prim`
+           had no `RecordNew` arm — so a record-param helper under a `(const …)` block rejected CDZ0201. The
+           param's record type is recovered by inference from the `(. r x)` projection (no annotation needed).")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (main) (const (get-x (record (x 42) (y 7)))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a record BUILT from a const param then read through a function const-folds"
+  (doc    "`mk n` builds `(record (x n) (y (* n 2)))` from its const param, `sum-r` reads both fields; `(const
+           (sum-r (mk 10)))` folds to 30. Exercises the general case: the compound constructor evaluates each
+           field in the CURRENT env (the bound `n`), not just a param-free literal — the value-interpreter twin
+           of how a `(tuple …)` built from const params already folded.")
+  (input  (do
+            (def (mk (const (: n Int64))) (record (x n) (y (* n 2))))
+            (def (sum-r r) (+ (. r x) (. r y)))
+            (def (main) (const (sum-r (mk 10))))
+            (export main)))
+  (output (: 30 Int64)))
 
 ; --- Primitive 2: const execution — MAP query folds (lookup / replace) under `(const …)` --------------
 ; A `(const …)`-demanded MAP QUERY const-folds: `Map.empty`/`Map.insert`/`Map.lookup` evaluate over a
