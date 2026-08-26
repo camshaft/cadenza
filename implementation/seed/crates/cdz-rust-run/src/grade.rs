@@ -13,7 +13,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use cdz_corpus_grade::{
-    GTrial, GradeResult, Outcome as GradeOutcome, decode_test_run, grade_run, print_verdict,
+    GTrial, GradeResult, Outcome as GradeOutcome, check_regression, decode_test_run, grade_run,
+    print_verdict,
 };
 
 use crate::driver::build_driver_source;
@@ -23,6 +24,7 @@ use crate::sig::sole_export_name;
 /// Grade `module` (the emitted `--target rust[-async]` source; `None` when the compile was refused) against
 /// `test_run_ast`, printing the verdict and returning the process exit code (`0` pass/todo, `1` on the
 /// first fail). A thin wrapper over [`grade_to_result`] + the shared `print_verdict`.
+#[allow(clippy::too_many_arguments)] // the corpus exec's full rust grade surface (module + rlibs + metadata + baseline)
 pub fn grade(
     module: Option<&str>,
     test_run_ast: &[u8],
@@ -31,6 +33,7 @@ pub fn grade(
     compile_status: i32,
     compile_diag: &str,
     workdir: &Path,
+    baseline: Option<&str>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     let result = grade_to_result(
@@ -42,7 +45,16 @@ pub fn grade(
         compile_diag,
         workdir,
     )?;
-    Ok(print_verdict(&result, &test_run.description))
+    let exit = print_verdict(&result, &test_run.description);
+    // REGRESSION gate (gap #7): a case the per-backend baseline recorded as `pass` that no longer passes
+    // fails the exec — the per-case analogue of `xtask gate --check --target rust`.
+    if let Some(baseline) = baseline
+        && let Some(msg) = check_regression(result.grade.verdict(), &test_run.description, baseline)
+    {
+        eprintln!("grade: {msg}");
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(exit)
 }
 
 /// Grade a decoded `test_run` against `module`, returning the [`GradeResult`] (no printing) — the testable

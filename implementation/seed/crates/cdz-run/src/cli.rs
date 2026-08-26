@@ -109,6 +109,13 @@ pub struct RunArgs {
     /// and the resolved runtime MUST be the debug-counters build (the shipped one always reports 0).
     #[arg(long)]
     pub report_live_objects: bool,
+
+    /// GRADE mode: the committed per-backend baseline (`spec/semantics/.gate-baseline`), a
+    /// `<verdict>\t<description>` snapshot. When given, a REGRESSION — a case the baseline recorded as
+    /// `pass` that no longer passes — fails the grade (exit 1), the per-case analogue of `xtask gate
+    /// --check` (gap #7). Absent → no regression check (a plain pass/todo/fail grade).
+    #[arg(long, value_name = "PATH")]
+    pub baseline: Option<PathBuf>,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -143,6 +150,13 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
             None => String::new(),
         };
+        let baseline = match &cli.baseline {
+            Some(p) => Some(
+                std::fs::read_to_string(p)
+                    .map_err(|e| anyhow::anyhow!("read baseline {}: {e}", p.display()))?,
+            ),
+            None => None,
+        };
         let (bytes, runtime, runtime_cache_dir) = match &cli.component {
             Some(component) => {
                 let bytes = read_component_bytes(component)?;
@@ -167,6 +181,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             cli.component_name.as_deref(),
             cli.compile_status,
             &compile_diag,
+            baseline.as_deref(),
         );
     }
 

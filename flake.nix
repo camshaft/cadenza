@@ -1745,7 +1745,8 @@
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             export CDZ_STORE="${componentStore}"
             status=$(cat ${build}/compile.status)
-            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err)
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --baseline ${./spec/semantics/.gate-baseline})
             if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
             if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
             cdz-run "''${args[@]}"
@@ -1911,6 +1912,7 @@
             status=$(cat ${build}/compile.status)
             args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
                   --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                  --baseline ${./spec/semantics/.gate-baseline-rust}
                   --workdir "$TMPDIR/w")
             if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
             cdz-rust-run "''${args[@]}"
