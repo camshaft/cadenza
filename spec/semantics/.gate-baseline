@@ -3875,6 +3875,7 @@ pass	a sum-type value is constructed through a variant
 pass	a sum-type value is deconstructed by an exhaustive match
 pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state
 pass	a supplementary-plane char literal matches by scalar value
+pass	a surviving closure capturing a heap List reclaims its env cell and captured handle (no live objects)
 pass	a swapped-operand ordering pair is a contradiction that does not mis-fold to one comparison
 pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error

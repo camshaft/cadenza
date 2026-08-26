@@ -19217,3 +19217,17 @@
             (export f)))
   (call   f (: 3 Int64)) (output (: 8 Int64))
   (live-objects 0))
+
+(case "a surviving closure capturing a heap List reclaims its env cell and captured handle (no live objects)"
+  (doc    "`mk-adder` takes an UNANNOTATED `(fn (x) ...)` so the closure is NOT inlined -- it lowers to a real
+           Core::Closure capturing the heap List `xs`, stored in `f` and applied once (a heap env cell + a
+           dup'd captured-list handle). main(5) = f(9) (List.len [0..5]+[9] = 6) + List.len xs (5) = 11; the
+           env cell + captured handle must both reclaim after the closure's last use -- net 0 live cells
+           (was a 2/iter leak; a double-free would trap/underflow the count).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (mk-adder (: base (List Int64))) (fn (x) (List.len (List.push base x))))
+            (def (main (: n Int64)) (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) (List.len xs))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (live-objects 0))
