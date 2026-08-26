@@ -24,7 +24,27 @@ pub struct Worlds {
 impl Worlds {
     /// Parse a `.wit` document from its source text. `label` is the filename used in parse diagnostics.
     pub fn parse(label: &str, wit_src: &str) -> Result<Self, String> {
+        Self::parse_with_deps(&[], label, wit_src)
+    }
+
+    /// Parse a `.wit` document that may IMPORT another WIT package. Each `(label, src)` in `deps` is pushed
+    /// into the SAME `Resolve` FIRST (dependency order), so the main document's cross-package import (e.g. a
+    /// test world's `import cadenza:platform/reducer.{…}`, whose package lives in a SIBLING `world.wit`)
+    /// resolves — `wit-parser` binds a package reference against packages already in the resolve. `push_str`
+    /// per file (not `push_dir`) because the dep + main are DISTINCT packages, not one package's dir tree.
+    /// The resolve then holds worlds from every pushed package; name the wanted world(s) on the CLI so only
+    /// the main document's world is emitted (not the deps').
+    pub fn parse_with_deps(
+        deps: &[(String, String)],
+        label: &str,
+        wit_src: &str,
+    ) -> Result<Self, String> {
         let mut resolve = Resolve::default();
+        for (dlabel, dsrc) in deps {
+            resolve
+                .push_str(dlabel, dsrc)
+                .map_err(|e| format!("parse dep {dlabel}: {e}"))?;
+        }
         resolve
             .push_str(label, wit_src)
             .map_err(|e| format!("parse {label}: {e}"))?;
