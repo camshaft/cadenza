@@ -991,6 +991,35 @@
   (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))))) (export main)))
   (error  CDZ0201 (message "compile-time constant")))
 
+; --- Primitive 2: const Set.to-list folds through the RECURSIVE engine + a const-param consumer -------------
+; #3765 folds `Set.to-list` on a syntactic `Core::SetOf` (the `core_of` path). This extends the SAME
+; canonical-order materialization to the const-EVALUATOR path (`apply_const_prim`'s `SetToList` arm over a
+; `CVal::Set`), so a set the recursive engine BUILT (never a syntactic `Set.of`) also materializes, and the
+; folded list flows into a const-param helper. (breaker batch 420 coverage gaps m7/m4.) Same non-orderable
+; decline set (Char/Bytes/nested keep the runtime op).
+
+(case "a const Set.to-list over a RECURSION-built set folds to the sorted list"
+  (doc    "`acc n` inserts `n` onto `(acc (n-1))` from a `Set.of (list)` base — the set is built by the
+           recursive const engine (a `CVal::Set`, never a syntactic `Set.of`), so #3765's `core_of` fold does
+           not see it. The const_eval `SetToList` arm materializes it: `(const (Set.to-list (acc 3)))` folds to
+           `(1 2 3)` (canonical order), and `Set.len` reads 3. Pins the recursion-built materialization.")
+  (input  (do
+            (def (acc (const (: n Int64)))
+              (if (= n 0) (Set.of (list)) (Set.insert (acc (- n 1)) n)))
+            (def (main) (const (= (Set.to-list (acc 3)) (list 1 2 3))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a const Set.to-list result flows into a const-param helper"
+  (doc    "The folded list is a first-class `CVal::List`, so it feeds a `const`-param helper: `(f (Set.to-list
+           (Set.of (list 3 1 2))))` where `f` reads `(List.len xs)` folds to 3. Pins that the materialized list
+           composes with the const-execution engine (breaker gap m4's direct-consumer face).")
+  (input  (do
+            (def (f (const (: xs (List Int64)))) (List.len xs))
+            (def (main) (const (f (Set.to-list (Set.of (list 3 1 2))))))
+            (export main)))
+  (output (: 3 Int64)))
+
 ;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
 (case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
   (input (do
