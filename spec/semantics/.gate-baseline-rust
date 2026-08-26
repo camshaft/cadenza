@@ -7293,3 +7293,7 @@ pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the ent
 pass	fse1 NaN handler state survives the seam — canonical equality says nan = nan across dispatches
 pass	fse2 negative-zero handler state stays distinct from +0.0 across the seam (canonical bits)
 pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
+todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
+todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
+todo	cr03 an export combining an IN-GUEST handler AND a host import
+todo	cq04 host IMPORT: RECORD param + scalar result (reverse direction)
