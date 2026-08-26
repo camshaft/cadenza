@@ -463,6 +463,9 @@ version = "0.0.0"
 [[package]]
 name = "cdz-rust-run"
 version = "0.0.0"
+dependencies = [
+ "cdz-rust-render",
+]
 
 [[package]]
 name = "cdz-world-artifact"

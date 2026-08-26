@@ -5,6 +5,57 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::sig::{is_env_param, parse_emitted_sig};
+
+/// Marshal a call's canonical-sexp arg VALUES to the Rust expressions the emitted export expects. A scalar
+/// passes through, a compound (`(tuple …)`/`(record …)`) is rebuilt by `rust_call_arg`. TYPE-AWARE for a
+/// BIGINT param: a corpus arg is a BARE decimal (`5`) — its `(: 5 BigInt)` annotation is stripped by the
+/// corpus parser, so unlike a self-identifying `"…"` String there is nothing telling `rust_call_arg` it
+/// must cross as `cdz_num::Big` (emitted verbatim `5` is an i64 literal → rustc E0308 against `fn(a:
+/// cdz_num::Big)`). So read the emitted fn's param TYPES off its signature and marshal a decimal arg to a
+/// `cdz_num::Big` param via `big_arg_expr` (the owned-BigInt construction). Non-BigInt params, or a
+/// non-decimal arg, keep the ordinary `rust_call_arg`.
+pub fn marshal_call_args(
+    module: &str,
+    export: &str,
+    args: &[String],
+    async_mode: bool,
+) -> Vec<String> {
+    let name = cdz_rust_render::rust_ident(export);
+    let arg_param_tys: Vec<Option<String>> = parse_emitted_sig(module, &name, async_mode)
+        .map(|sig| {
+            sig.params
+                .iter()
+                .filter(|p| !is_env_param(p))
+                .map(|p| p.split_once(':').map(|(_, ty)| ty.trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    args.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let is_bigint_param = arg_param_tys
+                .get(i)
+                .and_then(|o| o.as_deref())
+                .is_some_and(|ty| ty == "cdz_num::Big");
+            if is_bigint_param && let Ok(n) = a.trim().parse::<i128>() {
+                cdz_rust_render::big_arg_expr(n)
+            } else {
+                cdz_rust_render::rust_call_arg(a)
+            }
+        })
+        .collect()
+}
+
+/// The ORDINARY (non-factory, non-closure) call expression for an export — `<ident>(<marshaled args>)`,
+/// the common corpus case (the factory/closure-consumer builders handle the host-closure subset). `args`
+/// are canonical-sexp value texts; the emitted export's parameter types drive the marshal.
+pub fn ordinary_call_expr(module: &str, export: &str, args: &[String], async_mode: bool) -> String {
+    let name = cdz_rust_render::rust_ident(export);
+    let marshaled = marshal_call_args(module, export, args, async_mode);
+    format!("{name}({})", marshaled.join(", "))
+}
+
 /// Kebab-normalize an EFFECT name (matching the backend's `canonical_host_op_key`): CamelCase / `_` / `-`
 /// runs collapse to single `-`, lowercased, no leading/trailing `-`.
 pub fn kebab_effect(name: &str) -> String {
@@ -311,5 +362,39 @@ mod tests {
         let shims = build_rust_host_shims(m, &[("ask.name".into(), "\"hi\"".into())], &[]);
         assert!(shims.contains("-> String"), "quoted → String: {shims}");
         assert!(shims.contains(".to_string()"));
+    }
+
+    #[test]
+    fn ordinary_call_marshals_scalar_and_compound_args() {
+        let m = "pub fn f(a: i64, b: (i64, i64)) -> i64 { a }";
+        assert_eq!(
+            ordinary_call_expr(m, "f", &["20".into(), "(tuple 7 9)".into()], false),
+            "f(20, (7, 9))"
+        );
+    }
+
+    #[test]
+    fn a_bigint_param_marshals_a_bare_decimal_via_big_arg_expr() {
+        // A `cdz_num::Big` param must NOT get the bare `5` (i64 literal → E0308) — it goes through
+        // big_arg_expr. A non-BigInt param keeps the verbatim scalar.
+        let m = "pub fn f(a: cdz_num::Big, b: i64) -> i64 { b }";
+        let got = marshal_call_args(m, "f", &["5".into(), "7".into()], false);
+        assert_ne!(
+            got[0], "5",
+            "the BigInt arg is not a bare i64 literal: {got:?}"
+        );
+        assert!(
+            got[0].contains("Big") || got[0].contains("big"),
+            "BigInt marshal: {got:?}"
+        );
+        assert_eq!(got[1], "7", "the i64 arg passes through verbatim");
+    }
+
+    #[test]
+    fn a_nullary_export_call_has_empty_args() {
+        assert_eq!(
+            ordinary_call_expr("pub fn main() -> i64 { 42 }", "main", &[], false),
+            "main()"
+        );
     }
 }
