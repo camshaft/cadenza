@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use cdz_corpus_grade::{
-    GTrial, Outcome as GradeOutcome, decode_test_run, grade_run, print_verdict,
+    GTrial, Outcome as GradeOutcome, check_regression, decode_test_run, grade_run, print_verdict,
 };
 
 use crate::{HostResponse, Outcome, RunOpts, run_capturing};
@@ -21,6 +21,7 @@ use crate::{HostResponse, Outcome, RunOpts, run_capturing};
 /// `<iface>#<export>`. Compile outcomes (error/declines) + warns are graded from
 /// `compile_status`/`compile_diag` by the shared grader — no wasm run. Returns the process exit code (`0`
 /// pass/todo, `1` on the first fail).
+#[allow(clippy::too_many_arguments)] // the corpus exec's full grade surface (artifact + metadata + baseline)
 pub fn grade(
     component_bytes: Option<&[u8]>,
     test_run_ast: &[u8],
@@ -29,6 +30,7 @@ pub fn grade(
     component_name: Option<&str>,
     compile_status: i32,
     compile_diag: &str,
+    baseline: Option<&str>,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     // The recorded host-response tape, shared across every trial's run.
@@ -73,5 +75,14 @@ pub fn grade(
         })
     })?;
 
-    Ok(print_verdict(&result, &test_run.description))
+    let exit = print_verdict(&result, &test_run.description);
+    // REGRESSION gate (gap #7): if a per-backend baseline is supplied, a case the baseline recorded as
+    // `pass` that no longer passes fails the exec — the per-case analogue of `xtask gate --check`.
+    if let Some(baseline) = baseline
+        && let Some(msg) = check_regression(result.grade.verdict(), &test_run.description, baseline)
+    {
+        eprintln!("grade: {msg}");
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(exit)
 }

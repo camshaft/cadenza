@@ -145,13 +145,21 @@ three gaps remain:
    `--async` exec — the async `block_on` harness is a deferred `cdz-rust-run` piece), then wire xtask's
    `run_program_rust` to delegate at cutover. The host-closure factory/consumer application + the async
    `block_on` harness (the small closure/async corpus subset) are deferred — those cases decline-to-Todo.
-7. **Regression detection (baseline-diff)**: the gate diffs each case's verdict against `.gate-baseline`
-   (7225 pass + 40 todo + 0 fail), so a `Pass→Todo/Fail` REGRESSION fails it; the nix graph only catches
-   an outright Fail (a declined value-case is Todo, exit 0). Options: (a) port a committed per-case
-   baseline the exec diffs against, or (b) encode the expected-Todo set in the corpus SOURCE (a `(todo)`
-   annotation on the ~40 known-incomplete cases) so unmarked cases MUST pass — no separate baseline file.
-8. **Cutover**: once 6+7 land and the nix `corpus` (wasm+rust+rust-async) is proven equivalent on the
-   full corpus, DELETE `xtask gate`, `.gate-baseline*`, and the gate/grader code from `xtask/src/main.rs`.
+7. **Regression detection (baseline-diff)** — DONE (per-case regression), option (a) (concierge-approved:
+   the per-backend todo set rules out a single source annotation; keep the baseline DATA, re-home its
+   CONSUMER to nix). Each exec passes `--baseline spec/semantics/.gate-baseline[-rust]` to the grader; the
+   shared `cdz-corpus-grade::check_regression` fails the exec on the EXACT `xtask gate --check` rule — a
+   case the baseline recorded as `pass` that no longer passes (a gained/still-todo/absent case is not a
+   regression; todo→fail is not flagged, matching the gate). The baseline is a store-path input, so a
+   `gate --save` edit re-verifies (coarse: the single 700KB file is shared by all cases, so any baseline
+   edit reruns every exec — accepted; baseline edits are infrequent). REMAINING sub-piece: "vanished"
+   detection (a baseline case with no corresponding run) needs a global view — a small aggregate that
+   diffs the baseline's description set against the shredded case set, not the per-case exec.
+8. **Cutover** (bring to the operator as a PROPOSAL — concierge gate: retiring the authoritative local
+   gate CODE touches pr-sync's merge model + every agent's local-verify loop): once 6+7 land and the nix
+   `corpus` (wasm+rust+rust-async) is proven equivalent on the full corpus, delete `xtask gate` + the
+   gate/grader code from `xtask/src/main.rs`, KEEPING the `.gate-baseline*` DATA (now consumed by the nix
+   exec + the vanished-check aggregate).
 
 ## Local-emit test loop (which path picks up a LOCAL rcdzc edit)
 

@@ -51,6 +51,71 @@ impl Grade {
             _ => Grade::Pass,
         }
     }
+
+    /// The payload-free verdict KIND, for the baseline compare (`<verdict>\t<description>`).
+    pub fn verdict(&self) -> Verdict {
+        match self {
+            Grade::Pass => Verdict::Pass,
+            Grade::Todo(_) => Verdict::Todo,
+            Grade::Fail(_) => Verdict::Fail,
+        }
+    }
+}
+
+/// The three-way verdict KIND (no payload), the vocabulary of the committed `.gate-baseline*` files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Pass,
+    Todo,
+    Fail,
+}
+
+impl Verdict {
+    /// Parse a baseline verdict tag (`pass`/`todo`/`fail`), matching the xtask gate's `Verdict::parse`.
+    pub fn parse(s: &str) -> Option<Verdict> {
+        match s.trim() {
+            "pass" => Some(Verdict::Pass),
+            "todo" => Some(Verdict::Todo),
+            "fail" => Some(Verdict::Fail),
+            _ => None,
+        }
+    }
+}
+
+/// The baseline verdict recorded for `description` in a `.gate-baseline*` file — its lines are
+/// `<verdict>\t<description>` (`#`/blank lines skipped). `None` if the description is absent. On a
+/// duplicate description the LAST line wins, matching the xtask gate's map-load (`base.insert`); a
+/// CONFLICTING duplicate is a baseline-integrity issue handled by `cargo xtask gate --save`/canonicalize,
+/// not by this per-case lookup.
+pub fn baseline_verdict(baseline: &str, description: &str) -> Option<Verdict> {
+    let mut found = None;
+    for line in baseline.lines() {
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((v, d)) = line.split_once('\t')
+            && d == description
+            && let Some(verdict) = Verdict::parse(v)
+        {
+            found = Some(verdict); // last-wins
+        }
+    }
+    found
+}
+
+/// A REGRESSION vs the committed baseline for this case: the baseline recorded `pass` but the current run
+/// did NOT pass — the exact `pass -> not-pass` rule the xtask gate's `check_baseline` fails on (a gained
+/// case `not-pass -> pass`, a still-todo case, or a case absent from the baseline is NOT a regression).
+/// Returns the failure message when regressed, else `None`. NOTE: "vanished" detection (a baseline case
+/// with no corresponding run) needs a global view over all cases and is a separate aggregate, not this
+/// per-case check.
+pub fn check_regression(actual: Verdict, description: &str, baseline: &str) -> Option<String> {
+    match baseline_verdict(baseline, description) {
+        Some(Verdict::Pass) if actual != Verdict::Pass => Some(format!(
+            "REGRESSION vs baseline: case {description:?} was pass, now {actual:?}"
+        )),
+        _ => None,
+    }
 }
 
 /// One decoded trial: an optional call (`export` + argument value-forms) and the expected outcome.
@@ -696,5 +761,37 @@ mod tests {
         // A wrong value → Fail.
         let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("41".into(), vec![]))).unwrap();
         assert!(matches!(res.grade, Grade::Fail(_)));
+    }
+
+    #[test]
+    fn baseline_lookup_and_regression() {
+        let baseline = "# gate baseline\n\
+                        pass\ta passing case\n\
+                        todo\tan incomplete case\n\
+                        pass\ta dup case\n\
+                        todo\ta dup case\n"; // last-wins → todo
+        assert_eq!(
+            baseline_verdict(baseline, "a passing case"),
+            Some(Verdict::Pass)
+        );
+        assert_eq!(
+            baseline_verdict(baseline, "an incomplete case"),
+            Some(Verdict::Todo)
+        );
+        assert_eq!(
+            baseline_verdict(baseline, "a dup case"),
+            Some(Verdict::Todo)
+        );
+        assert_eq!(baseline_verdict(baseline, "absent"), None);
+
+        // pass -> not-pass is the ONLY regression.
+        assert!(check_regression(Verdict::Todo, "a passing case", baseline).is_some());
+        assert!(check_regression(Verdict::Fail, "a passing case", baseline).is_some());
+        assert!(check_regression(Verdict::Pass, "a passing case", baseline).is_none());
+        // todo -> fail is NOT flagged (only pass -> not-pass), matching the gate.
+        assert!(check_regression(Verdict::Fail, "an incomplete case", baseline).is_none());
+        // gained (todo -> pass) is not a regression; an absent case is not either.
+        assert!(check_regression(Verdict::Pass, "an incomplete case", baseline).is_none());
+        assert!(check_regression(Verdict::Fail, "absent", baseline).is_none());
     }
 }

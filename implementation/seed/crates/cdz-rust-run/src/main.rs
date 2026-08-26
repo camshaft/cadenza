@@ -66,6 +66,12 @@ struct Cli {
     /// process-unique dir under the system temp dir.
     #[arg(long, value_name = "DIR")]
     workdir: Option<PathBuf>,
+
+    /// The committed rust baseline (`spec/semantics/.gate-baseline-rust`), a `<verdict>\t<description>`
+    /// snapshot. When given, a REGRESSION — a case the baseline recorded as `pass` that no longer passes —
+    /// fails the grade (exit 1), the per-case analogue of `xtask gate --check --target rust` (gap #7).
+    #[arg(long, value_name = "PATH")]
+    baseline: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -93,6 +99,13 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
         None => String::new(),
     };
+    let baseline = match &cli.baseline {
+        Some(p) => Some(
+            std::fs::read_to_string(p)
+                .map_err(|e| anyhow::anyhow!("read baseline {}: {e}", p.display()))?,
+        ),
+        None => None,
+    };
     let rlibs = RlibDirs {
         cdz_rt: cli.cdz_rt_dir.clone(),
         cdz_num: cli.cdz_num_dir.clone(),
@@ -112,5 +125,6 @@ fn real_main(cli: &Cli) -> anyhow::Result<ExitCode> {
         cli.compile_status,
         &compile_diag,
         &workdir,
+        baseline.as_deref(),
     )
 }
