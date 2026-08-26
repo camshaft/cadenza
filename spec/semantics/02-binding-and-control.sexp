@@ -5717,6 +5717,131 @@
   (call   main (: 0 Int64)) (trap "divide by zero")
   (call   main (: 2 Int64)) (output (: 0 Int64)))
 
+(case "a same-direction and of two upper-bound comparisons subsumes to the tighter bound"
+  (doc    "`(and (< x 5) (< x 10))` — both are upper bounds; the AND keeps the TIGHTER `(< x 5)`. x = 3 →
+           true, x = 7 → false (not < 5), x = 12 → false.")
+  (input  (do (def (main (: x Int64)) (if (and (< x 5) (< x 10)) 1 0)) (export main)))
+  (call   main (: 3 Int64))  (output (: 1 Int64))
+  (call   main (: 7 Int64))  (output (: 0 Int64))
+  (call   main (: 12 Int64)) (output (: 0 Int64)))
+
+(case "a same-direction or of two upper-bound comparisons subsumes to the looser bound"
+  (doc    "`(or (< x 5) (< x 10))` — the OR keeps the LOOSER `(< x 10)`. x = 3 → true, x = 7 → true (< 10),
+           x = 12 → false.")
+  (input  (do (def (main (: x Int64)) (if (or (< x 5) (< x 10)) 1 0)) (export main)))
+  (call   main (: 3 Int64))  (output (: 1 Int64))
+  (call   main (: 7 Int64))  (output (: 1 Int64))
+  (call   main (: 12 Int64)) (output (: 0 Int64)))
+
+(case "the same-direction subsumption fold keeps a trapping operand's trap"
+  (doc    "The kept comparison still evaluates the shared operand, so a trapping `(/ 100 z)` traps.
+           `(and (< (/ 100 z) 5) (< (/ 100 z) 10))` at z = 0 traps on the div.")
+  (input  (do (def (main (: z Int64)) (if (and (< (/ 100 z) 5) (< (/ 100 z) 10)) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "two inclusive bounds at the same point collapse to equality"
+  (doc    "`(and (>= x 5) (<= x 5))` is satisfied only at x = 5 — the two inclusive bounds collapse to
+           `(= x 5)`. 4 → 0, 5 → 1, 6 → 0.")
+  (input  (do (def (main (: x Int64)) (if (and (>= x 5) (<= x 5)) 1 0)) (export main)))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 6 Int64)) (output (: 0 Int64)))
+
+(case "two inclusive bounds collapse to equality over an unsigned width"
+  (doc    "The UInt64 face of the inclusive-bounds collapse: `(and (>= x 5) (<= x 5))` = `(= x 5)` — 4 → 0,
+           5 → 1, 6 → 0.")
+  (input  (do (def (main (: x UInt64)) (if (and (>= x 5) (<= x 5)) 1 0)) (export main)))
+  (call   main (: 4 UInt64)) (output (: 0 Int64))
+  (call   main (: 5 UInt64)) (output (: 1 Int64))
+  (call   main (: 6 UInt64)) (output (: 0 Int64)))
+
+(case "two inclusive bounds collapse to equality at a negative point"
+  (doc    "`(and (>= x -3) (<= x -3))` = `(= x -3)` — -2 → 0, -3 → 1, -4 → 0.")
+  (input  (do (def (main (: x Int64)) (if (and (>= x -3) (<= x -3)) 1 0)) (export main)))
+  (call   main (: -2 Int64)) (output (: 0 Int64))
+  (call   main (: -3 Int64)) (output (: 1 Int64))
+  (call   main (: -4 Int64)) (output (: 0 Int64)))
+
+(case "the inclusive-bounds collapse keeps a trapping operand's trap"
+  (doc    "`(and (>= (/ 100 z) 5) (<= (/ 100 z) 5))` at z = 0 traps — the discarded second bound's trap is
+           preserved (both bounds share the trapping `/`).")
+  (input  (do (def (main (: z Int64)) (if (and (>= (/ 100 z) 5) (<= (/ 100 z) 5)) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "an equality combined with a satisfiable range folds to the equality"
+  (doc    "`(and (= x 5) (> x 0))` — the equality pins x = 5, which satisfies `(> x 0)`, so the AND is
+           just `(= x 5)`: x = 5 → true, x = 3 → false, x = 200 → false.")
+  (input  (do (def (main (: x Int64)) (if (and (= x 5) (> x 0)) 1 0)) (export main)))
+  (call   main (: 5 Int64))   (output (: 1 Int64))
+  (call   main (: 3 Int64))   (output (: 0 Int64))
+  (call   main (: 200 Int64)) (output (: 0 Int64)))
+
+(case "an equality combined with a contradicting range folds to false"
+  (doc    "`(and (= x 5) (> x 100))` — x = 5 cannot also exceed 100, a contradiction → always false (5, 3,
+           200 all → 0).")
+  (input  (do (def (main (: x Int64)) (if (and (= x 5) (> x 100)) 1 0)) (export main)))
+  (call   main (: 5 Int64))   (output (: 0 Int64))
+  (call   main (: 3 Int64))   (output (: 0 Int64))
+  (call   main (: 200 Int64)) (output (: 0 Int64)))
+
+(case "an equality or-ed with a covering range subsumes to the range"
+  (doc    "`(or (= x 5) (>= x 0))` — the point x = 5 is already inside `(>= x 0)`, so the OR subsumes to
+           `(>= x 0)`: x = 5 → true, x = 3 → true, x = -5 → false. The not-covered companion `(or (= x 5)
+           (> x 100))` keeps the extra point: x = 5 → true, x = 50 → false.")
+  (input  (do (def (main (: x Int64)) (if (or (= x 5) (>= x 0)) 1 0)) (export main)))
+  (call   main (: 5 Int64))  (output (: 1 Int64))
+  (call   main (: 3 Int64))  (output (: 1 Int64))
+  (call   main (: -5 Int64)) (output (: 0 Int64)))
+
+(case "an equality or-ed with a non-covering range keeps the extra point"
+  (doc    "`(or (= x 5) (> x 100))` — 5 is NOT inside `(> x 100)`, so the equality point survives: x = 5 →
+           true (the point), x = 50 → false.")
+  (input  (do (def (main (: x Int64)) (if (or (= x 5) (> x 100)) 1 0)) (export main)))
+  (call   main (: 5 Int64))  (output (: 1 Int64))
+  (call   main (: 50 Int64)) (output (: 0 Int64)))
+
+(case "the equality-and-range contradiction fold keeps a trapping operand's trap"
+  (doc    "`(and (= (/ 10 z) 5) (> (/ 10 z) 100))` at z = 0 traps — the contradiction fold must not
+           discard the trapping shared operand.")
+  (input  (do (def (main (: z Int64)) (if (and (= (/ 10 z) 5) (> (/ 10 z) 100)) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
+(case "opposite-direction comparisons over a disjoint gap fold their and to false"
+  (doc    "`(and (< x 5) (> x 10))` — nothing is both below 5 and above 10 (a disjoint gap), so the AND is
+           always false: 0, 3, 5, 12 all → 0.")
+  (input  (do (def (main (: x Int64)) (if (and (< x 5) (> x 10)) 1 0)) (export main)))
+  (call   main (: 0 Int64))  (output (: 0 Int64))
+  (call   main (: 3 Int64))  (output (: 0 Int64))
+  (call   main (: 12 Int64)) (output (: 0 Int64)))
+
+(case "opposite-direction comparisons that cover the line fold their or to true"
+  (doc    "`(or (< x 5) (> x 3))` — every value is below 5 OR above 3 (the ranges overlap and cover the
+           line), so the OR is always true: 0, 4, 100, -5 all → 1.")
+  (input  (do (def (main (: x Int64)) (if (or (< x 5) (> x 3)) 1 0)) (export main)))
+  (call   main (: 0 Int64))   (output (: 1 Int64))
+  (call   main (: 4 Int64))   (output (: 1 Int64))
+  (call   main (: 100 Int64)) (output (: 1 Int64))
+  (call   main (: -5 Int64))  (output (: 1 Int64)))
+
+(case "an opposite-direction or with a real gap computes its non-constant value"
+  (doc    "`(or (< x 3) (> x 10))` leaves a real gap [3,10] and does NOT fold to a constant — a value in
+           the gap is false: x = 5 → 0.")
+  (input  (do (def (main (: x Int64)) (if (or (< x 3) (> x 10)) 1 0)) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
+(case "an opposite-direction and over a non-empty interval computes its non-constant value"
+  (doc    "`(and (< x 10) (> x 5))` is the non-empty interval 5 < x < 10 (does NOT fold to false): x = 7 →
+           1, x = 3 → 0.")
+  (input  (do (def (main (: x Int64)) (if (and (< x 10) (> x 5)) 1 0)) (export main)))
+  (call   main (: 7 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64)))
+
+(case "the opposite-direction disjoint-and fold keeps a trapping operand's trap"
+  (doc    "`(and (< (/ 100 z) 5) (> (/ 100 z) 10))` at z = 0 traps — the disjoint-and fold (which answers
+           the constant false) must not discard the trapping shared operand.")
+  (input  (do (def (main (: z Int64)) (if (and (< (/ 100 z) 5) (> (/ 100 z) 10)) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
 (case "an absorbed conjunction composes as a live disjunction's operand"
   (doc    "`(or (and (> n 0) false) (> m 0))` — the inner conjunction folds to constant false, which
            is the DISJUNCTION's neutral element, so the whole expression folds to `(> m 0)`: m decides

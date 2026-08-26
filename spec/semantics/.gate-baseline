@@ -3543,6 +3543,8 @@ pass	a runtime-woven Ast compares structurally equal to an equivalent quote
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
+pass	a same-direction and of two upper-bound comparisons subsumes to the tighter bound
+pass	a same-direction or of two upper-bound comparisons subsumes to the looser bound
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
 pass	a same-name GENERIC constructor via a called helper resolves to the constructor (adv-63)
@@ -4498,6 +4500,10 @@ pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an enumerate-and-rebuild round trip equals the source map by canonical identity
+pass	an equality combined with a contradicting range folds to false
+pass	an equality combined with a satisfiable range folds to the equality
+pass	an equality or-ed with a covering range subsumes to the range
+pass	an equality or-ed with a non-covering range keeps the extra point
 pass	an equality point fact decides a DIFFERENT equality test in the then branch — the point-fact eq-fold face
 pass	an equality point fact folds an inner range comparison, both directions — the point-fact analogue of the ordering fold
 pass	an equality point fact sheds a then-branch arithmetic overflow guard, but the trap survives unguarded
@@ -4665,6 +4671,8 @@ pass	an open-sum value rides a generic tuple and matches from both slots
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it
+pass	an opposite-direction and over a non-empty interval computes its non-constant value
+pass	an opposite-direction or with a real gap computes its non-constant value
 pass	an option value annotated with the wrong payload type is rejected
 pass	an option<s64> field in a record result crosses the export boundary on both arms
 pass	an option<s64> param field is read and rebuilt by the wrapper on both arms (via an imposed WIT world)
@@ -5887,6 +5895,8 @@ pass	oos1 a NESTED-Option STATE ladder — None to Some None to Some Some v and 
 pass	op1 a WHOLE nested handle expression as an op's ARGUMENT beside an outer draw
 pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
 pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
+pass	opposite-direction comparisons over a disjoint gap fold their and to false
+pass	opposite-direction comparisons that cover the line fold their or to true
 pass	or evaluates the right operand when the left is false
 pass	or performs the right operand's effect when the left is false
 pass	or short-circuit does not perform the right operand's effect
@@ -6703,6 +6713,7 @@ pass	the entrypoint multiplies its runtime argument
 pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
+pass	the equality-and-range contradiction fold keeps a trapping operand's trap
 pass	the event queue pops the earliest-Instant entry first (pop-min)
 pass	the exact Float32 finite max fits in a runtime branch
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
@@ -6733,6 +6744,7 @@ pass	the identity function applied to an integer returns the integer
 pass	the identity-less reducer-echo round-trips the real message shape into a step (via an imposed WIT world)
 pass	the implication-extended kernel Thm stays unforgeable — Thm.Seq of a bogus implication outside is CDZ0214
 pass	the inclusive Int8 boundaries fit in a runtime branch and one-past rejects
+pass	the inclusive-bounds collapse keeps a trapping operand's trap
 pass	the inner sum-state match routed through a HELPER DEF taking the payload as a parameter — a def boundary in the peeled arm body
 pass	the int-to-float generator is order-preserving (a < b implies of a <= of b — NON-decreasing)
 pass	the interleaved middle op SERVES when made two-site itself (the shape-not-position witness)
@@ -6795,6 +6807,7 @@ pass	the new map from a runtime-key swap holds the new value at that key
 pass	the new map from a runtime-key take has the key removed
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
+pass	the opposite-direction disjoint-and fold keeps a trapping operand's trap
 pass	the other parity of a mutually-recursive pair
 pass	the outer discriminant is decisive over any inner content for nested sums
 pass	the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key
@@ -6836,6 +6849,7 @@ pass	the same nullary variant constrained to different concrete types reflects d
 pass	the same program with a different response gives a different deterministic result
 pass	the same without-extend chain on a LIST-borne record computes
 pass	the same-core-shape sibling dispatches ITS body, not the first
+pass	the same-direction subsumption fold keeps a trapping operand's trap
 pass	the scalar length of a GENUINELY-runtime multi-byte string walks the UTF-8 leaf
 pass	the scalar length of a runtime multi-byte string counts scalars, not bytes
 pass	the scalar length of a runtime string spanning every UTF-8 width
@@ -7049,6 +7063,9 @@ pass	two heap-list accumulators swap slots through every tail call
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator
 pass	two host-seeded SIBLING handlers — each region's seed consumes its response in evaluation order
+pass	two inclusive bounds at the same point collapse to equality
+pass	two inclusive bounds collapse to equality at a negative point
+pass	two inclusive bounds collapse to equality over an unsigned width
 pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
