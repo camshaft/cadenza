@@ -6665,6 +6665,7 @@ pass	runtime string ordering surfaces all four relational operators
 pass	runtime structural equality of two owned cons-lists reclaims both operands (no live objects)
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
+pass	runtime subtraction computes in range and traps on overflow at both boundaries
 pass	runtime tuple concatenation preserves element order across the seam
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
