@@ -7455,3 +7455,19 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 55 Int64))
   (call   main (: 0 Int64)) (output (: 5 Int64)))
+
+;; -- operators CURRY (#3633): a bare operator through a CURRIED-annotated HOF applied ((g a) b), and a let-bound partial ((+ 1)) applied — the partial-application witnesses (breaker batch 394) --
+(case "ch01 a bare prim passed as a function value applies"
+  (input  (do
+            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: a Int64) (: b Int64)) ((g a) b))
+            (def (main (: n Int64)) (ap + n 2))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))
+
+(case "ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))"
+  (input  (do
+            (def (main (: n Int64)) (let ((inc (+ 1))) (inc n)))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))

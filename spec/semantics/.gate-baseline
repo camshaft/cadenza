@@ -7552,3 +7552,5 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
 pass	cj03r Ast.print of a RUNTIME AST value renders
 pass	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
+pass	ch01 a bare prim passed as a function value applies
+pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
