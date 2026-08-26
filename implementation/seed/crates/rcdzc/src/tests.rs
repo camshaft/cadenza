@@ -25955,15 +25955,14 @@ mod match_engine {
     /// `verify_enforce` rewrites the def BODY but leaves the `(@ (requires …) …)` wrapper in place, so
     /// `strip_annotations` still records the predicate.
     ///
-    /// (D) UPDATE (2026-07-17): `@requires` is now ENFORCED at body-entry (`verify_enforce`), so it is no
-    /// longer behavior-neutral in general — a VIOLATED precondition traps (pinned in the corpus). But when
-    /// the input SATISFIES the precondition, the def runs identically to the un-annotated one (the enforced
-    /// `(if PRE BODY (trap))` takes the pass arm and returns BODY's value). This test exercises the
-    /// SATISFYING path (`x=41`, `41 > 0`), so the annotated def still runs to 42 — value-transparent on a
-    /// valid input. (Plain `@ensures` is still recorded-but-not-yet-enforced — the universal `@ensures`
-    /// enforcement is the immediately-following increment; the corpus pins the `@requires` trap-on-violation.)
+    /// This unit pins only the RECORDING (a pure-fn invariant: `db.requires_of`/`ensures_of` see the
+    /// predicates). The (D) run-time ENFORCEMENT behavior — a violated `@requires` traps, a satisfying input
+    /// is value-transparent, and enforcement descends through a stacked `@ensures` wrapper — is pinned
+    /// end-to-end in the corpus (`26-program-conditions.sexp`: "@requires stacked OVER @ensures: the
+    /// precondition is still enforced …" for `(f -5)` -> trap, and the @requires/@ensures satisfying family
+    /// for the value-transparent path), so it no longer needs a wasmtime run here.
     #[test]
-    fn requires_ensures_predicates_are_recorded_and_behavior_neutral_on_a_valid_input() {
+    fn requires_ensures_predicates_are_recorded() {
         use crate::testkit::parse;
         // A def carrying a @requires and a @ensures. The predicates are ordinary forms over the param `x`
         // (and, for @ensures, the implicit result binder `ret`); b4a just records their StructIds.
@@ -25980,44 +25979,6 @@ mod match_engine {
             db.ensures_of(f).len(),
             1,
             "the @ensures(> ret 0) predicate is recorded for f"
-        );
-        // ENFORCEMENT ON THE STACKED `@requires`-OVER-`@ensures` SHAPE. `src` spells the canonical contract
-        // `(@ (requires (> x 0)) (@ (ensures (> ret 0)) (def (f x) (+ x 1))))` — the `@requires` does NOT
-        // directly wrap the def (the `@ensures` layer sits between). `verify_enforce::enforce` DESCENDS
-        // through the intervening `(@ (ensures …) …)` wrapper to reach the def and injects
-        // `(if (> x 0) (+ x 1) (trap))`, so the precondition is enforced at body-entry for this ordering too.
-        // (Before that descent fix a `@requires` over another `@`-wrapper was silently SKIPPED — a satisfying
-        // input passed either way, so this test MUST exercise BOTH the satisfying AND the violating input to
-        // witness enforcement, not just recording.)
-        use wasmtime::component::Val;
-        let annotated =
-            compile_component(&crate::codec::encode(&parse(src))).expect("annotated compiles");
-        let plain_src = "(module m (def (f (: x Int64)) (+ x 1)) (export f))";
-        let plain =
-            compile_component(&crate::codec::encode(&parse(plain_src))).expect("plain compiles");
-        // SATISFYING input x=41: `(> 41 0)` holds → the injected `if` takes the pass arm → same as plain.
-        assert_eq!(
-            run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
-            42,
-            "the @requires/@ensures-annotated f runs to (+ 41 1)=42 on the SATISFYING input x=41"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&plain, "f", &[Val::S64(41)]),
-            run_returns_with::<i64>(&annotated, "f", &[Val::S64(41)]),
-            "on a precondition-satisfying input the annotated def runs identically to the un-annotated def"
-        );
-        // VIOLATING input x=-5: `(> -5 0)` is FALSE → the injected `if` takes the trap arm → the call TRAPS.
-        // This is the teeth the satisfying-only assertions lacked: it proves the outer `@requires` (over the
-        // `@ensures` layer) is actually ENFORCED, not merely recorded. A `wasm unreachable` surfaces as an
-        // Err from the wasmtime call — assert the annotated def traps while the plain def returns -4.
-        assert!(
-            call_traps(&annotated, "f", &[Val::S64(-5)]),
-            "the @requires(> x 0) (stacked over @ensures) TRAPS on the VIOLATING input x=-5"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&plain, "f", &[Val::S64(-5)]),
-            -4,
-            "the un-annotated plain def has no precondition and returns (+ -5 1) = -4 on x=-5"
         );
     }
 
