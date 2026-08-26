@@ -25012,6 +25012,74 @@ fn const_eval_apply(
         {
             return Some(CVal::Int(crate::ast::IntValue::from_i64(s.len() as i64)));
         }
+        // `Set.remove (s, e)` → `s` without `e` (a no-op if absent). Order-independent, never materialized.
+        if prim == Prim::SetRemove
+            && let [CVal::Set(s), e] = &vs[..]
+        {
+            let mut out = Vec::with_capacity(s.len());
+            for x in s.iter() {
+                match cval_eq(x, e) {
+                    Some(true) => {}
+                    Some(false) => out.push(x.clone()),
+                    None => return None,
+                }
+            }
+            return Some(CVal::Set(out));
+        }
+        // SET ALGEBRA (queried, never materialized — same soundness as the other `CVal::Set` ops). `∪` keeps
+        // the left members and appends each right member not already present; `∩` keeps left members that are
+        // also in the right; `∖` keeps left members not in the right. Membership is `cval_set_member`, which
+        // declines (`None`) on an undecidable comparison, so the whole op declines rather than risk a wrong
+        // member set. (Only order-INDEPENDENT results — a size, a membership — ever leave the fold; the set
+        // itself never re-materializes, `cval_to_core` declines a `CVal::Set`.)
+        if prim == Prim::SetUnion
+            && let [CVal::Set(a), CVal::Set(b)] = &vs[..]
+        {
+            let mut out = a.clone();
+            for e in b.iter() {
+                if !cval_set_member(a, e)? {
+                    out.push(e.clone());
+                }
+            }
+            return Some(CVal::Set(out));
+        }
+        if prim == Prim::SetIntersection
+            && let [CVal::Set(a), CVal::Set(b)] = &vs[..]
+        {
+            let mut out = Vec::new();
+            for e in a.iter() {
+                if cval_set_member(b, e)? {
+                    out.push(e.clone());
+                }
+            }
+            return Some(CVal::Set(out));
+        }
+        if prim == Prim::SetDifference
+            && let [CVal::Set(a), CVal::Set(b)] = &vs[..]
+        {
+            let mut out = Vec::new();
+            for e in a.iter() {
+                if !cval_set_member(b, e)? {
+                    out.push(e.clone());
+                }
+            }
+            return Some(CVal::Set(out));
+        }
+        // `Map.remove (m, k)` → `m` without the entry keyed `k` (a no-op if absent). Key comparison via
+        // `cval_eq`; an undecidable one declines. Order-independent, never materialized (query-only).
+        if prim == Prim::MapRemove
+            && let [CVal::Map(m), k] = &vs[..]
+        {
+            let mut out = Vec::with_capacity(m.len());
+            for (ek, ev) in m.iter() {
+                match cval_eq(ek, k) {
+                    Some(true) => {}
+                    Some(false) => out.push((ek.clone(), ev.clone())),
+                    None => return None,
+                }
+            }
+            return Some(CVal::Map(out));
+        }
         // FLOAT arithmetic — `+`/`-`/`*`/`/` (the `Prim::Add`… identity; `core_of` remaps to `FAdd`… only at
         // emit, on a `float_operand` test) over two constant floats. Fold at the node's solved width EXACTLY
         // like `lower_float_arith`: round each operand + the result through the width (`Float32` via binary32),
@@ -25189,6 +25257,20 @@ fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
         }
         _ => None,
     }
+}
+
+/// Whether `e` is a member of the constant set / assoc-list `s` (by `cval_eq`). `None` if ANY comparison is
+/// undecidable — the caller then declines the whole set/map op rather than risk a wrong verdict (the same
+/// soundness guard the `Set.contains` / `Map.lookup` arms already apply inline).
+fn cval_set_member(s: &[CVal], e: &CVal) -> Option<bool> {
+    for x in s.iter() {
+        match cval_eq(x, e) {
+            Some(true) => return Some(true),
+            Some(false) => {}
+            None => return None,
+        }
+    }
+    Some(false)
 }
 
 /// Structural equality of two constant values (Stage a's value domain). `None` for a pair this stage does
