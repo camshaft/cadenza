@@ -729,3 +729,38 @@
             (def (main) (f (tuple 2 0)))
             (export main)))
   (error  CDZ0304 (message "tuple base reached")))
+
+; --- Primitive 2: const execution — the OPERATOR'S structured whole-record descriptor form ------------
+; The platform's structured contract descriptor is a 5-field record `(id Bytes, name String, input Ast,
+; output Ast, types Ast)` returned by a nullary `descriptor()` (= `contract(Ast.module)`); a guest reads
+; ONE scalar field off it (`descriptor().id` for routing, `descriptor().name` for display). #3543 made the
+; field projection ELIMINATE the record — the three non-representable `Ast` siblings never materialize — so
+; the whole-record form instantiates + runs (not just the `Bytes` forms). These pin that end-to-end: BOTH a
+; Bytes and a String field project off the same multi-Ast-sibling record and fold, with NO `(const …)` block
+; (the ordinary member fold, exactly as a guest writes it). Regression guard for the #3413 structured form.
+
+(case "the structured descriptor's String name field projects and eliminates the record"
+  (doc    "`descriptor()` returns the 5-field `(id name input output types)` record; `(. (descriptor) name)`
+           folds to the name String and the `Ast`-typed siblings drop — no `(const …)` block. Before #3543 the
+           record materialized (its `Ast` fields have no runtime form) and the component failed to instantiate.")
+  (input  (do
+            (def (descriptor)
+              (record (id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+                      (name "cdz-platform.temp-celsius")
+                      (input (quote Int64)) (output (quote Int64)) (types (quote (list)))))
+            (def (main) (= (. (descriptor) name) "cdz-platform.temp-celsius"))
+            (export main)))
+  (output (: true Bool)))
+
+(case "the structured descriptor's Bytes id field projects byte-exact and eliminates the record"
+  (doc    "The routing path: `(. (descriptor) id)` off the same 5-field record folds to the `Blake3.of(Ast.encode
+           …)` id Bytes (equal to the direct fold), dropping the `Ast` siblings — no `(const …)` block. Pins the
+           operator's structured whole-record descriptor form folds + eliminates for the id, same as the name.")
+  (input  (do
+            (def (descriptor)
+              (record (id (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64)))))
+                      (name "cdz-platform.temp-celsius")
+                      (input (quote Int64)) (output (quote Int64)) (types (quote (list)))))
+            (def (main) (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract temp-celsius Int64 Int64))))))
+            (export main)))
+  (output (: true Bool)))
