@@ -136,6 +136,23 @@ use bindings::exports::cadenza::runtime::heap::Guest;
 #[allow(dead_code)]
 mod bigint;
 
+// The shared canonical cadenza-AST binary codec — the SAME `ast`/`leb128`/`codec` source files rcdzc
+// compiles, pulled in with `#[path]` (`copy-don't-depend` shared SOURCE, NOT a crate dependency: a
+// crate dep would enter cross-crate LTO and perturb the frozen runtime wasm hash — the #459 lesson).
+// `#[allow(dead_code)]` so the whole codec is DCE'd from the shipped wasm (hash-neutral) until the
+// `ast-encode`/`ast-decode` heap ops call it; those ops walk a heap `Ast` value into `ast::Arenas` and
+// `codec::encode` it BYTE-IDENTICALLY to the compiler's compile-time `Ast.encode` const fold (and the
+// inverse for decode), so one serializer source guarantees the runtime and const forms agree.
+#[allow(dead_code)]
+#[path = "../../rcdzc/src/leb128.rs"]
+mod leb128;
+#[allow(dead_code)]
+#[path = "../../rcdzc/src/ast.rs"]
+mod ast;
+#[allow(dead_code)]
+#[path = "../../rcdzc/src/codec.rs"]
+mod codec;
+
 /// A single-threaded stand-in for `std::thread_local!`, so the two scratch/counter cells work under
 /// `no_std` (the shipped wasm build) without pulling in `std`. A component instance is
 /// single-threaded, so a plain `static` behind an `UnsafeCell` is sound: there is no other thread to

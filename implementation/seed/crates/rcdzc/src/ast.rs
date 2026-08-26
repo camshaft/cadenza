@@ -19,7 +19,13 @@
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
 use alloc::vec::Vec;
+use alloc::vec;
 use alloc::collections::BTreeMap;
+// `String`/`ToString`/`format!` from `alloc` (not std's prelude) so this file compiles under the
+// `#![no_std]` `cdz-runtime` that `include!`s it as well as under std `rcdzc`; `alloc::string::String`
+// == `std::string::String`.
+use alloc::string::{String, ToString};
+use alloc::format;
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -886,7 +892,23 @@ impl Decimal {
         // A WHOLE float uses its FULL exact expansion (`{f:.0}`), matching scalar display_float + rust +
         // the runtime `float_leaf`; a non-whole keeps `{:e}` (shortest == written form). Both round-trip to
         // the same bits — this changes the digit REPRESENTATION, not the value.
-        let s = if f.fract() == 0.0 {
+        // `f.fract() == 0.0` (is `f` a whole number) without the std-only `f64::fract`, so this file
+        // compiles under `#![no_std]` (cdz-runtime `include!`s it). Exact and identical to `fract() ==
+        // 0.0` for every finite f64 (guarded above): inspect the IEEE-754 fields — an unbiased exponent
+        // < 0 (|f| < 1) is whole only at ±0.0; an exponent >= 52 leaves no fractional mantissa bits;
+        // otherwise f is whole iff its low `52 - exp` mantissa bits are all zero.
+        let is_whole = {
+            let bits = f.to_bits();
+            let exp = ((bits >> 52) & 0x7ff) as i64 - 1023;
+            if exp < 0 {
+                f == 0.0
+            } else if exp >= 52 {
+                true
+            } else {
+                (bits & ((1u64 << (52 - exp)) - 1)) == 0
+            }
+        };
+        let s = if is_whole {
             format!("{f:.0}")
         } else {
             format!("{f:e}")
