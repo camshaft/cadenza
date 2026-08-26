@@ -7508,3 +7508,7 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
+pass	ecl1 a let-bound hop answer used TWICE folds
+pass	ecl2 a let CHAIN through the hop answer folds
+pass	ecl3 TWO let-bound hop answers fold
+pass	ecl5 a let INSIDE the performing closure body folds
