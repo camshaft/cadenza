@@ -1066,6 +1066,66 @@
   (call   main (: -4 Int64))
   (output (: 32 Int64)))
 
+; ── A COMMON OPERATOR/COMPARISON hoisted out of both if arms is value-transparent (build/compute once) ─
+; `(if c (op a …) (op b …))` shares the operator across both arms; the backend may hoist it to `(op (if c
+; a b) …)` — the op applied ONCE over the SELECTED operand (the differing operand becomes a branchless
+; select). Value-transparent, and crucially operand SELECTION not eager evaluation of BOTH arms: a checked
+; op's overflow guard fires iff the TAKEN arm overflows, so the untaken arm's would-be trap is never
+; evaluated. These pin the observable value/trap across the arith, integer-compare, and float
+; equality/ordering (incl. NaN) faces, plus the repeated-compare CSE.
+(case "a common operator hoisted out of both if arms selects the operand and computes once"
+  (doc    "`(if c (+ a 1) (+ b 1))` shares `(+ _ 1)`, hoistable to `(+ (if c a b) 1)` — the checked add and
+           its overflow guard applied ONCE over the selected operand. Value both directions: c=true,a=5 -> 6;
+           c=false,b=9 -> 10. And it is operand SELECTION, not eager evaluation of both: c=true with
+           a=Int64.max TRAPS (the taken (+ a 1) overflows), but c=false with the SAME a=Int64.max does NOT
+           trap (b is selected; the untaken arm's overflow is never evaluated). A hoist that eagerly added
+           both operands would wrongly trap the c=false case.")
+  (input  (do (def (main (: c Bool) (: a Int64) (: b Int64)) (if c (+ a 1) (+ b 1))) (export main)))
+  (call   main (: true Bool) (: 5 Int64) (: 9 Int64)) (output (: 6 Int64))
+  (call   main (: false Bool) (: 5 Int64) (: 9 Int64)) (output (: 10 Int64))
+  (call   main (: true Bool) (: 9223372036854775807 Int64) (: 9 Int64)) (trap "overflow")
+  (call   main (: false Bool) (: 9223372036854775807 Int64) (: 9 Int64)) (output (: 10 Int64)))
+
+(case "a common integer comparison hoisted out of both if arms compares once over the selected operand"
+  (doc    "`(if (if c (< a k) (< b k)) 1 0)` shares `(< _ k)`, hoistable to `(< (if c a b) k)`. A comparison
+           is total, so the hoist is unconditionally value-safe: (c,a,b,k)=(true,3,9,5) -> (< 3 5)=true -> 1;
+           (false,3,9,5) -> (< 9 5)=false -> 0; (true,9,3,5) -> (< 9 5)=false -> 0.")
+  (input  (do (def (main (: c Bool) (: a Int64) (: b Int64) (: k Int64)) (if (if c (< a k) (< b k)) 1 0)) (export main)))
+  (call   main (: true Bool) (: 3 Int64) (: 9 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 3 Int64) (: 9 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: true Bool) (: 9 Int64) (: 3 Int64) (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a common float equality hoisted out of both if arms compares once over the selected operand"
+  (doc    "The Float64 face: `(if (if c (= a k) (= b k)) 1 0)` shares `(= _ k)`, hoistable to `(= (if c a b)
+           k)` — one canonical-byte float compare over the selected operand (total, never traps). (c,a,b,k):
+           (true,1.0,9.0,1.0) -> (= 1 1)=true -> 1; (false,1.0,9.0,1.0) -> (= 9 1)=false -> 0;
+           (false,1.0,2.0,2.0) -> (= 2 2)=true -> 1; (true,9.0,2.0,2.0) -> (= 9 2)=false -> 0.")
+  (input  (do (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) (if (if c (= a k) (= b k)) 1 0)) (export main)))
+  (call   main (: true Bool) (: 1.0 Float64) (: 9.0 Float64) (: 1.0 Float64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 1.0 Float64) (: 9.0 Float64) (: 1.0 Float64)) (output (: 0 Int64))
+  (call   main (: false Bool) (: 1.0 Float64) (: 2.0 Float64) (: 2.0 Float64)) (output (: 1 Int64))
+  (call   main (: true Bool) (: 9.0 Float64) (: 2.0 Float64) (: 2.0 Float64)) (output (: 0 Int64)))
+
+(case "a common float ordering hoist reproduces the IEEE partial order including NaN"
+  (doc    "`(if (if c (< a k) (< b k)) 1 0)` over Float64 hoists to `(< (if c a b) k)` — one f64.lt over the
+           selected operand. f64.lt is total (NaN compares false, no trap), so the hoist is value-identical
+           for every input including NaN: (true,1,9,5) -> (< 1 5)=true -> 1; (false,1,9,5) -> (< 9 5)=false
+           -> 0; (true,NaN,1,5) selects a=NaN -> (< NaN 5)=false -> 0; (false,1,NaN,5) selects b=NaN -> (<
+           NaN 5)=false -> 0.")
+  (input  (do (def (main (: c Bool) (: a Float64) (: b Float64) (: k Float64)) (if (if c (< a k) (< b k)) 1 0)) (export main)))
+  (call   main (: true Bool) (: 1.0 Float64) (: 9.0 Float64) (: 5.0 Float64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 1.0 Float64) (: 9.0 Float64) (: 5.0 Float64)) (output (: 0 Int64))
+  (call   main (: true Bool) (: NaN Float64) (: 1.0 Float64) (: 5.0 Float64)) (output (: 0 Int64))
+  (call   main (: false Bool) (: 1.0 Float64) (: NaN Float64) (: 5.0 Float64)) (output (: 0 Int64)))
+
+(case "a repeated float comparison is computed once and reused (value-transparent CSE)"
+  (doc    "`(+ (if (< a b) 10 0) (if (< a b) 20 0))` uses the same `(< a b)` twice; the backend value-numbers
+           it to one f64.lt computed once and reused by both consumers — value-transparent. a=1,b=2 -> (< 1
+           2)=true -> 10 + 20 = 30; a=2,b=1 -> false -> 0 + 0 = 0.")
+  (input  (do (def (main (: a Float64) (: b Float64)) (+ (if (< a b) 10 0) (if (< a b) 20 0))) (export main)))
+  (call   main (: 1.0 Float64) (: 2.0 Float64)) (output (: 30 Int64))
+  (call   main (: 2.0 Float64) (: 1.0 Float64)) (output (: 0 Int64)))
+
 ; The DEEP UNIFORM companion of the shallow `(* x x)` share above. A deep left-nested accumulator chain
 ; `(+ (+ … (+ (+ p (* p 0)) (* p 1)) …) (* p 7))` is the shape the wasm CSE class-partition buckets by a
 ; full-depth structural hash: every `(+ …)` node has the SAME shallow key (`Arith(Add)` over `[Arith,Arith]`)
