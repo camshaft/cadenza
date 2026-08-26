@@ -917,6 +917,16 @@ pub mod exports {
                     let result0 = T::hash_blake3(arg0 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_ast_print_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::ast_print(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1427,6 +1437,16 @@ pub mod exports {
                     ///    32-byte Bytes handle the caller drops. TOTAL: never traps (empty input hashes the empty string, blake3's
                     ///    defined digest of no bytes). APPENDED last (frozen-contract rule). See `op_hash_blake3`.
                     fn hash_blake3(bytes: u32) -> u32;
+                    /// 91 — BLAKE3 of a Bytes leaf's contents → a fresh 32-byte Bytes leaf (borrows input)
+                    ///  ast-print(handle, discs) -> handle
+                    ///    The runtime half of the compiler's `Ast.print`: render a RUNTIME `Ast` heap value to its canonical
+                    ///    re-readable s-expression text (a fresh owned String leaf), BYTE-IDENTICAL to the compile-time
+                    ///    `print_ast_value` fold (rcdzc lower.rs) — Int→BigInt decimal, Float→shortest round-trip decimal,
+                    ///    Bool→true/false, Str→escaped `"…"`, Name→bare, Bytes→`b"…"`, List→`(e e …)`. The `Ast` variant discs
+                    ///    are looked up BY NAME by the compiler (not hardcodable), so it BAKES them into `discs` — a Bytes of
+                    ///    7 LEB varints in slot order [int,float,bool,str,name,bytes,list] the runtime reads. BORROWS `handle`
+                    ///    + `discs`; returns a fresh owned String handle. APPENDED last (frozen-contract rule). See `op_ast_print`.
+                    fn ast_print(handle: u32, discs: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1762,7 +1782,10 @@ pub mod exports {
                         "cadenza:runtime/heap#hash-blake3")] unsafe extern "C" fn
                         export_hash_blake3(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_hash_blake3_cabi::<$ty > (arg0) } }
-                        };
+                        #[unsafe (export_name = "cadenza:runtime/heap#ast-print")] unsafe
+                        extern "C" fn export_ast_print(arg0 : i32, arg1 : i32,) -> i32 {
+                        unsafe { $($path_to_types)*:: _export_ast_print_cabi::<$ty >
+                        (arg0, arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -1971,10 +1994,10 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2362] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbc\x11\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2396] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xde\x11\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x91\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x93\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2022,10 +2045,10 @@ map-to-list\x01/\x04\0\x0estr-from-bytes\x01\x0e\x01@\x03\x01ay\x01by\x04descy\0
 z\x04\0\x09value-cmp\x010\x01@\x02\x01ay\x04descy\0y\x04\0\x12value-canonicalize\
 \x011\x01@\x03\x01ay\x01by\x04descy\0\x7f\x04\0\x0fvalue-eq-shaped\x012\x04\0\x11\
 str-nfc-normalize\x01$\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x013\
-\x01@\x01\x05bytesy\0y\x04\0\x0bhash-blake3\x014\x04\0\x14cadenza:runtime/heap\x05\
-\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09\
-producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rus\
-t\x060.41.0";
+\x01@\x01\x05bytesy\0y\x04\0\x0bhash-blake3\x014\x01@\x02\x06handley\x05discsy\0\
+y\x04\0\x09ast-print\x015\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza\
+:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cp\
+rocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {
