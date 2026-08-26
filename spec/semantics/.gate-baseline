@@ -1959,6 +1959,7 @@ pass	a generic sum with a type parameter nested inside another sum payload match
 pass	a generic tuple-wrapper referenced mid-solve in a recursive group then at a second type
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another
+pass	a genuine narrowing wrap still masks to the target width
 pass	a genuinely-escaping continuation (deferred resume-thunk) resumes cross-activation at the advanced clock
 pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact value
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
@@ -2605,6 +2606,7 @@ pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width unsigned wrapping-add constant folds by wrapping to the masked outcome
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
+pass	a narrowing wrap of a wider wrap elides the inner wrap
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negated zero equality composes with the negation fold
 pass	a negative and its positive twin encode to distinct bytes
@@ -3592,6 +3594,7 @@ pass	a same-name monomorphic constructor in a called helper resolves to the cons
 pass	a same-name multi-variant constructor in a called helper resolves to the constructor
 pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default
+pass	a same-sign widening wrap is the identity
 pass	a same-signature mutual tail cycle shares one constant-stack loop
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
@@ -3691,6 +3694,7 @@ pass	a short-circuit or with identical operands folds idempotently to the operan
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
+pass	a sign-changing wrap still sign-extends the low bits
 pass	a signed dependent size that reads negative falls through, not a backward read
 pass	a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes
 pass	a signed i8 segment encodes as two's complement
@@ -3701,6 +3705,7 @@ pass	a signed narrow-width parameter plus a bare literal computes at the paramet
 pass	a signed narrow-width wrapping-add constant folds by wrapping to the negative outcome
 pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
+pass	a signed wrap of a value the range lattice proves in-range elides its sign-extend
 pass	a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
@@ -4166,6 +4171,7 @@ pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
 pass	a wildcard-less Bool match returning Bool negates its scrutinee
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
+pass	a wrap from a type that already fits the target is the identity
 pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
 pass	a wrapped byte's zero equality tests the masked value, not the wide slot
 pass	a wrong-arity built-in generic in a variant payload is rejected at the declaration
@@ -4823,6 +4829,7 @@ pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
 pass	an unsigned segment reads the same sign-bit-only byte as 128
+pass	an unsigned wrap of a value the range lattice proves in-range elides its mask
 pass	an unsigned-byte entrypoint takes and returns a u8 at the boundary
 pass	an untaken arm's overflowing operand does not trap under the operator hoist
 pass	an unused let binding compiles and runs but the build surfaces a CDZ0306 unused-binding warning

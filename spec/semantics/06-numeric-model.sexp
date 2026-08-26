@@ -5917,6 +5917,69 @@
   (input  (UInt16.wrap 65537))
   (output (: 1 UInt16)))
 
+; ── WRAP ELISION is value-transparent: a wrap whose source/value already fits the target is the identity ─
+; `T.wrap x` truncates to the target width, but when the SOURCE already fits (same-sign, source width <=
+; target) the mask/sign-extend is redundant and elided; likewise a nested `T.wrap(U.wrap x)` with the outer
+; no wider than the inner drops the inner, and a wrap of a value the range lattice proves in-range drops the
+; mask. A genuine narrowing / sign-change still reshapes. These pin the observable VALUE across all faces;
+; the "which opcodes are elided" witnesses stay white-box rcdzc Lir assertions.
+(case "a wrap from a type that already fits the target is the identity"
+  (doc    "`(UInt8.wrap a)` over a runtime UInt8 is the identity — the source already fits, so the mask is
+           elided and the value is unchanged, including the top-bit value 200 and the max 255: 200 -> 200,
+           255 -> 255, 0 -> 0.")
+  (input  (do (def (f (: a UInt8)) (UInt8.wrap a)) (export f)))
+  (call   f (: 200 UInt8)) (output (: 200 UInt8))
+  (call   f (: 255 UInt8)) (output (: 255 UInt8))
+  (call   f (: 0 UInt8)) (output (: 0 UInt8)))
+
+(case "a same-sign widening wrap is the identity"
+  (doc    "`(UInt16.wrap a)` over a runtime UInt8 same-sign-WIDENS — a UInt8 (0..255) already fits UInt16, so
+           the wrap is the identity: 200 -> 200.")
+  (input  (do (def (f (: a UInt8)) (UInt16.wrap a)) (export f)))
+  (call   f (: 200 UInt8)) (output (: 200 UInt16)))
+
+(case "a genuine narrowing wrap still masks to the target width"
+  (doc    "The elision is precise: a real NARROWING still reshapes. `(UInt8.wrap a)` over a runtime UInt64
+           keeps only the low 8 bits: 300 -> 300 mod 256 = 44; 255 fits -> 255.")
+  (input  (do (def (f (: a UInt64)) (UInt8.wrap a)) (export f)))
+  (call   f (: 300 UInt64)) (output (: 44 UInt8))
+  (call   f (: 255 UInt64)) (output (: 255 UInt8)))
+
+(case "a sign-changing wrap still sign-extends the low bits"
+  (doc    "A SIGN CHANGE still reshapes: `(Int8.wrap a)` over a runtime UInt8 reinterprets the low 8 bits
+           signed — 200 (0xC8, sign bit set) -> -56; 100 fits -> 100.")
+  (input  (do (def (f (: a UInt8)) (Int8.wrap a)) (export f)))
+  (call   f (: 200 UInt8)) (output (: -56 Int8))
+  (call   f (: 100 UInt8)) (output (: 100 Int8)))
+
+(case "a narrowing wrap of a wider wrap elides the inner wrap"
+  (doc    "`(Int8.wrap (Int16.wrap x))` over a runtime Int32 — the outer width 8 <= the inner 16, so the
+           inner wrap is redundant (the outer keeps only the low 8 bits, unchanged by the inner) and is
+           elided. Value parity with the single outer wrap: 70000 & 0xFF = 112; 300 -> 44; -1 -> -1; 127 ->
+           127; 128 -> -128 (the sign-bit boundary).")
+  (input  (do (def (f (: x Int32)) ((. Int8 wrap) ((. Int16 wrap) x))) (export f)))
+  (call   f (: 70000 Int32)) (output (: 112 Int8))
+  (call   f (: 300 Int32)) (output (: 44 Int8))
+  (call   f (: -1 Int32)) (output (: -1 Int8))
+  (call   f (: 127 Int32)) (output (: 127 Int8))
+  (call   f (: 128 Int32)) (output (: -128 Int8)))
+
+(case "an unsigned wrap of a value the range lattice proves in-range elides its mask"
+  (doc    "`(UInt8.wrap (& x 255))` over a runtime Int64 — the operand's value is provably in [0,255] (the `&
+           255` masks it), so the wrap's own truncation is redundant and elided. Value parity with the full
+           wrap: 300 & 255 = 44; 255 -> 255; -1 & 255 = 255.")
+  (input  (do (def (f (: x Int64)) (: ((. UInt8 wrap) (& x 255)) UInt8)) (export f)))
+  (call   f (: 300 Int64)) (output (: 44 UInt8))
+  (call   f (: 255 Int64)) (output (: 255 UInt8))
+  (call   f (: -1 Int64)) (output (: 255 UInt8)))
+
+(case "a signed wrap of a value the range lattice proves in-range elides its sign-extend"
+  (doc    "`(Int8.wrap (& x 7))` over a runtime Int64 — the operand's value is provably in [0,7], which fits
+           Int8, so the sign-extend reshape is redundant and elided. Value parity: 5 -> 5; 7 -> 7.")
+  (input  (do (def (f (: x Int64)) (: ((. Int8 wrap) (& x 7)) Int8)) (export f)))
+  (call   f (: 5 Int64)) (output (: 5 Int8))
+  (call   f (: 7 Int64)) (output (: 7 Int8)))
+
 (case "greater-than comparison"
   (doc    "The compiler uses > for bounds checking and conditional logic.")
   (input  (> 5 3))
