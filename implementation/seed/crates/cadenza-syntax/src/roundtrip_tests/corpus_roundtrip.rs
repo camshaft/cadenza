@@ -41,15 +41,29 @@ fn has_canonicalizing_head(a: &Arenas) -> bool {
 /// If the tree carries a `record` head, point the author at the `=` field form. Heuristic — only
 /// consulted on an already-failing case, so an over-broad match is harmless.
 fn name_head_ctor_hint(a: &Arenas) -> Option<String> {
-    let has_record = (0..a.structure.len() as u32)
+    let heads: Vec<Option<&str>> = (0..a.structure.len() as u32)
         .map(StructId)
-        .any(|id| a.head_name(id) == Some("record"));
-    has_record.then(|| {
-        "a record field must be (= name value), NOT positional (name value): the ML surface prints \
-         `name = value` which re-reads to (= name value), so a positional field fails the structural \
-         round-trip — author records as (record (= f v) …)"
-            .to_string()
-    })
+        .map(|id| a.head_name(id))
+        .collect();
+    let mut hints: Vec<&str> = Vec::new();
+    // A record VALUE/PATTERN literal (`record` head): a field is `(= name value)`. A positional
+    // `(name value)` reprints as `name = value` → re-reads to `(= name value)` (structural mismatch).
+    if heads.contains(&Some("record")) {
+        hints.push(
+            "a record VALUE/PATTERN field must be (= name value), NOT positional (name value) — \
+             author (record (= f v) …)",
+        );
+    }
+    // A record TYPE (`Record` head): a field is `(: name Type)`. A positional `(name Type)` reprints
+    // as the un-reparseable `Record(name(Type))` (a record-type field is `name: Type`, not `name(Type)`)
+    // → a hard parse ERROR on re-read, not merely a mismatch.
+    if heads.contains(&Some("Record")) {
+        hints.push(
+            "a record-TYPE field must be (: name Type), NOT positional (name Type) — author \
+             (Record (: f T) …) (positional prints the un-reparseable field(T))",
+        );
+    }
+    (!hints.is_empty()).then(|| hints.join("; "))
 }
 
 /// Truncate to at most `n` CHARS (not bytes — never splits a scalar), appending `…` when cut.
