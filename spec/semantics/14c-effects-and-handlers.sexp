@@ -17858,3 +17858,31 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 24 Int64)))
+
+;; -- effect-performing closures through ONE-SHOT fn-arg helpers fold: single-effect + TWO-effect closures (breaker batch 399; the #3666 flips — recursive-HOF and two-hop remain the open residual) --
+(case "cx5d effectful closure through a NON-recursive helper that calls it once"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap1 (: g (-> Int64 Int64))) (g 5))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (ap1 (fn (x) (+ x (E.tick))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 5 Int64)))
+
+(case "cx7 a closure performing TWO different effects passed as a fn argument"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (def (ap1 (: g (-> Int64 Int64))) (g 1))
+    (def (main (: n Int64))
+      (handle A n
+        ((a () s (resume (* s 10) (+ s 1))))
+        (handle B 7
+          ((b () s (resume s (+ s 1))))
+          (ap1 (fn (x) (+ x (+ (A.a) (B.b))))))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 28 Int64)))

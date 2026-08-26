@@ -7605,3 +7605,5 @@ pass	mal1 a whole-module ALIAS import projects a member fn
 pass	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 pass	ce93c CONST twin: Ast.encode of the same constant AST folds to the same length
 pass	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
+pass	cx5d effectful closure through a NON-recursive helper that calls it once
+pass	cx7 a closure performing TWO different effects passed as a fn argument
