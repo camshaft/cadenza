@@ -4852,6 +4852,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn const_force_eval_expression_round_trips_to_a_fixed_point() {
+        // `const(expr)` is the compile-time force-eval EXPRESSION form: an ordinary application of the
+        // head name `const` to one argument, so it lowers to the homoiconic list `(const EXPR)` — an
+        // `Ast.List` headed by `Name "const"`, NOT a bespoke codec node (v-inference/force-eval resolve
+        // the head). The ML surface must reach a FIXED POINT `ml(ml(x)) == ml(x)` for it, across the
+        // expression shapes a user writes.
+        for src in [
+            "const(x)",
+            "const(f(a))",
+            "const(1 + 2)",
+            "const(const(x))",
+            "y + const(x)",
+        ] {
+            assert_roundtrip(src, 80);
+        }
+        // The lowering is the plain `(const EXPR)` list, so the s-expr surface round-trips it for free
+        // (no codec change) — this pins that the ML surface produces exactly that homoiconic shape.
+        let parsed = parser::read_ml("const(f(a))");
+        assert!(parsed.ok(), "parse const(f(a)): {:?}", parsed.errors);
+        let sexp = sexpr::print(&parsed.arenas);
+        assert!(
+            sexp.contains("(const (f a))"),
+            "const(expr) lowers to the homoiconic list, got: {sexp}"
+        );
+    }
+
+    #[test]
+    fn const_expression_is_distinct_from_the_const_param_modifier() {
+        // DISAMBIGUATION: `const(expr)` in EXPRESSION position (force-eval) and a `const`-prefixed
+        // PARAMETER (the compile-time-parameter modifier, `(const BINDER)`) are told apart by POSITION,
+        // not by a different head — the expression is a call, the modifier prefixes a param binder.
+        // Round-tripping a def whose parameter carries the modifier through the ML surface must preserve
+        // the `(const x)` binder shape (it must NOT be re-read as a force-eval expression), so the two
+        // uses of the head name `const` never collide.
+        let arenas = sexpr::read("(def f ((const x)) x)").expect("read const-param def sexp");
+        let ml = print(&arenas, 80);
+        let reparsed = parser::read_ml(&ml);
+        assert!(reparsed.ok(), "reparse {ml:?}: {:?}", reparsed.errors);
+        let sexp = sexpr::print(&reparsed.arenas);
+        assert!(
+            sexp.contains("((const x))"),
+            "const param modifier survives the ML surface as `(const x)` in param position, \
+             got ml={ml:?} sexp={sexp}"
+        );
+    }
+
     /// Parse ML, print it, re-parse — the printed form must yield a structurally-equal arena, and
     /// printing again must be byte-identical (idempotence).
     fn assert_roundtrip(src: &str, width: usize) -> String {
