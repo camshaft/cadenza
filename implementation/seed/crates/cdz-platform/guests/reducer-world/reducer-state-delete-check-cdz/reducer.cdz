@@ -13,8 +13,8 @@ import { respond, on-response, on-notification, pass, fail, join-exists } from "
 // The key a KvGet MISSED (hit==0) after removal, and the key a KvDelete removed (existed==1) — `join-exists`
 // looks for a miss whose key was deleted, proving the store observably honoured removal across messages. Both
 // gates are load-bearing: a get that hit, or a delete of an absent key, yields no key.
-def get-miss-key(rec) = match rec.entry with | Entry.KvGet(g) if (g.hit == 0) => Some(g.key) | _ => None
-def delete-existed-key(rec) = match rec.entry with | Entry.KvDelete(dd) if (dd.existed == 1) => Some(dd.key) | _ => None
+def get-miss-key(rec) = match rec.entry with | Entry.KvGet(g) if not(g.hit) => Some(g.key) | _ => None
+def delete-existed-key(rec) = match rec.entry with | Entry.KvDelete(dd) if dd.existed => Some(dd.key) | _ => None
 
 def verdict-payload(records: List(LogRecord)) =
   if join-exists(records, get-miss-key, delete-existed-key)
