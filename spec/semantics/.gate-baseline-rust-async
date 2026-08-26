@@ -7391,3 +7391,11 @@ pass	s2a Char const-param equality in const recursion trap surfaces CDZ0304
 pass	s2b INLINE record projection in the recursive argument trap surfaces CDZ0304
 pass	s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304
 pass	s2d record-returning const helper projected in the recursive argument trap surfaces CDZ0304
+pass	cm01 (const ...) in a resume ANSWER position folds
+pass	cm03 (const ...) as a handler SEED folds
+pass	cm02c (const ...) closed handle with STRING state
+pass	cn-c1 Symbol equality under (const ...)
+pass	cn-c3 BigInt beyond-i64 multiply under (const ...)
+pass	cn-c4 Rational exact division under (const ...)
+pass	cn-c5 Qty unit algebra under (const ...)
+pass	cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand

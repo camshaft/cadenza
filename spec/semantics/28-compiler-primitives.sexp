@@ -1282,3 +1282,66 @@
             (def (main) (f 3))
             (export main)))
   (error  CDZ0304 (message "s2d projected to zero")))
+
+; -- breaker batch 402 (2026-08-26): const-eval INNER-POSITION and VALUE-CLASS fold pins — the
+; non-redundant residue of the P2 flip sweep after overlap-check vs the existing const pins.
+; cm01/cm03 pin (const ...) demanded INSIDE a handler (resume answer position, seed position);
+; cm02c the multi-dispatch STRING-state closed handle; cn-c1/c3/c4/c5 pin the value classes
+; Symbol / beyond-i64 BigInt / exact Rational / Qty unit-algebra folding under (const ...);
+; cn-c2c the Set query under Ast.encode's const-param demand path (Map twin pinned above).
+
+(case "cm01 (const ...) in a resume ANSWER position folds"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (% n 3)
+                ((tick () s (resume (const (* 6 7)) (+ s 1))))
+                (+ (E.tick) (E.tick))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 84 Int64)))
+
+(case "cm03 (const ...) as a handler SEED folds"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main (: n Int64))
+              (handle E (const (+ 20 20))
+                ((tick () s (resume s (+ s 1))))
+                (+ (E.tick) (E.tick))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 81 Int64)))
+
+(case "cm02c (const ...) closed handle with STRING state"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main)
+              (const (handle E "x"
+                ((tick () s (resume (String.byte-len s) (String.concat s "y"))))
+                (+ (* 10 (E.tick)) (E.tick)))))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "cn-c1 Symbol equality under (const ...)"
+  (input  (do (def (main) (const (if (= (Symbol.of "hot") (Symbol.of "hot")) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "cn-c3 BigInt beyond-i64 multiply under (const ...)"
+  (input  (do (def (main) (const (= (* 111111111111N 111111111111N) 12345679012320987654321N))) (export main)))
+  (output (: true Bool)))
+
+(case "cn-c4 Rational exact division under (const ...)"
+  (input  (do (def (main) (const (= (+ (Rational.of 1 3) (Rational.of 1 6)) (Rational.of 1 2)))) (export main)))
+  (output (: true Bool)))
+
+(case "cn-c5 Qty unit algebra under (const ...)"
+  (input  (do (def (main) (const (Qty.value (+ (Qty.of 3 (Unit.of #"meter")) (Qty.of 4 (Unit.of #"meter")))))) (export main)))
+  (output (: 7 Int64)))
+
+(case "cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand"
+  (input  (do
+            (def (f (const (: n Int64)))
+              (if (Set.contains (Set.of (list 1 2 3)) n) "in" "out"))
+            (def (run) (= (Ast.encode (Ast.Name (f 2))) (Ast.encode (Ast.Name "in"))))
+            (export run)))
+  (output (: true Bool)))
