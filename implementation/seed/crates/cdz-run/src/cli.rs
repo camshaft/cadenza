@@ -312,6 +312,23 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         // Run + read the heap's live-cell count, printing the value then a `live-objects\t<N>` line on
         // stdout (the corpus `(live-objects N)` gate reads the tab line). Requires the debug-counters
         // runtime (the shipped one always reports 0). No host-call capture on this path.
+        //
+        // DIAGNOSTIC (to STDERR — stdout carries only the value + the `live-objects` tab line the gate
+        // parses): name the runtime that will ACTUALLY run, by the content address of its bytes, plus how it
+        // was resolved. A `live-objects 0` from the SHIPPED release runtime is otherwise indistinguishable
+        // from a genuine leak-free run; printing the loaded hash makes a vacuous run self-evident (if the
+        // hash is the release build, the count is meaningless — pass `--runtime <debug-counters>.wasm`).
+        if let Some(rt) = &opts.runtime {
+            let src = if cli.runtime.is_some() {
+                "--runtime override"
+            } else {
+                "store-resolved"
+            };
+            eprintln!(
+                "{prog}: live-objects run on value-heap runtime {} ({src})",
+                content_address(rt)
+            );
+        }
         let (outcome, live) = run_with_live_objects(&component_bytes, &opts)?;
         return match outcome {
             Outcome::Value(text) => {
