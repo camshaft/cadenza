@@ -2476,7 +2476,7 @@
   (doc    "The operator's record-API shape (`contract(m) -> Record(id, …, types)`, caller reads a field):
            the general const-evaluator handles RECORD construction + FIELD PROJECTION as values, so a
            descriptor whose field is computed by a recursive Ast transform folds and the projection reads it
-           at compile time. `build` returns `(record (types (Ast.List (collect xs))) (count 7))` — the
+           at compile time. `build` returns a record with a `types` field and a `count` field — the
            `types` field is the recursive comment-peeling type-filter over a `const (List Ast)`. Projecting
            `.types` and const-encoding it yields positive bytes: the record, the recursion inside it, and the
            projection all const-evaluate. This is the substrate for a userspace contract descriptor built
@@ -2497,7 +2497,7 @@
                   (let ((g (peel h)) (tail (collect t)))
                     (if (= (head-name g) "type") (List.prepend tail g) tail)))))
             (def (build (const (: xs (List Ast))))
-              (record (types (Ast.List (collect xs))) (count 7)))
+              ("record" (= types (Ast.List (collect xs))) (= count 7)))
             (def (main)
               (> (Bytes.len (Ast.encode (. (build (list
                    (Ast.List (list (Ast.Name "comment") (Ast.Str "c")
