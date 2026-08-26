@@ -50,10 +50,11 @@ def collect-types(const forms: List(Ast)) -> List(Ast) =
       let tail = collect-types(rest) in
       if head-name(g) == "type" then List.prepend(tail, g) else tail
 
-// Find a `(pragma <key> <value>)` and return <value> (peeling comments); Ast.Name "?" if absent.
+// Find a `(pragma <key> <value>)` and return <value> (peeling comments). TRAPS if a REQUIRED pragma is
+// absent (a malformed contract module) — a genuine error, so the const-fold fails rather than emit a wrong id.
 def find-pragma(const forms: List(Ast), const key: String) -> Ast =
   match forms with
-  | [] => Ast.Name("?")
+  | [] => trap(String.concat("contract-id: contract module is missing a required pragma: ", key))
   | [f, .. rest] =>
       let g = unwrap(f) in
       if (head-name(g) == "pragma") and (name-of(child(g, 1)) == key)
@@ -73,7 +74,7 @@ def declaration(const m: Ast) -> Ast =
                 types-of(forms),
                 find-pragma(forms, "input"),
                 find-pragma(forms, "output")])
-  | _ => Ast.Name("?")
+  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
 // The contract-id: 0x01 Contract tag ++ blake3 of the canonical declaration's encoding.
 def contract-id(const m: Ast) -> Bytes =
@@ -88,7 +89,6 @@ def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output
         input = find-pragma(forms, "input"),
         output = find-pragma(forms, "output"),
         types = types-of(forms) }
-  | _ =>
-      { id = b"", name = "", input = Ast.Name("?"), output = Ast.Name("?"), types = Ast.Name("?") }
+  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
 export { contract-id, contract }
