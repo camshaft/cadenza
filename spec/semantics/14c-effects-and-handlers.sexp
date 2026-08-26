@@ -17740,3 +17740,37 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 200 Int64)))
+
+;; -- float specials through the effect seam: NaN-state canonical equality, negative-zero distinctness, runtime-inf state arithmetic (breaker batch 380) --
+(case "fse1 NaN handler state survives the seam — canonical equality says nan = nan across dispatches"
+  (input (do
+    (effect F (op probe (-> Int64)))
+    (def (main (: n Int64))
+      (handle F (Float64.nan)
+        ((probe () s (resume (if (= s s) 1 0) s)))
+        (+ (F.probe) (* 10 (F.probe)))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 11 Int64)))
+
+(case "fse2 negative-zero handler state stays distinct from +0.0 across the seam (canonical bits)"
+  (input (do
+    (effect F (op probe (-> Int64)))
+    (def (main (: n Int64))
+      (handle F -0.0
+        ((probe () s (resume (if (= s 0.0) 1 (if (= s -0.0) 2 0)) s)))
+        (F.probe)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "fse3g INF seed via a RUNTIME param (corpus-style special passing)"
+  (input (do
+    (effect F (op grow (-> Int64)))
+    (def (main (: x Float64))
+      (handle F x
+        ((grow () s (resume (if (= (* s 2.0) s) 1 0) (* s 2.0))))
+        (F.grow)))
+    (export main)))
+  (call main (: inf Float64))
+  (output (: 1 Int64)))
