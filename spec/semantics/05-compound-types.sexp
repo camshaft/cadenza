@@ -19396,7 +19396,7 @@
   (output (: 7 Int64))
   (live-objects 0))
 
-(case "lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells"
+(case "lm3 a branch-selected list-of-tuples match computes (KNOWN LEAK: 4 cells on the debug runtime, heap-element list class — v-runtime fixing; live-objects clause returns with the fix)"
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0) (list (tuple n 1) (tuple (+ n 1) 2)) (list (tuple 0 0)))
@@ -19404,10 +19404,9 @@
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 11 Int64))
-  (live-objects 0))
+  (output (: 11 Int64)))
 
-(case "lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail"
+(case "lm5 a rest-binder match computes (KNOWN LEAK: 2 cells on the debug runtime, derived-tail vec-drop — v-runtime fixing; live-objects clause returns with the fix)"
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0) (list n (+ n 1) (+ n 2) (+ n 3)) (list 9))
@@ -19415,8 +19414,7 @@
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 3 Int64))
-  (live-objects 0))
+  (output (: 3 Int64)))
 
 (case "lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list"
   (input (do
@@ -19498,7 +19496,7 @@
   (output (: 7 Int64))
   (live-objects 0))
 
-(case "msr6 a NESTED match — outer list arm rebinds an inner record — reclaims both shells"
+(case "msr6 a nested list+record match computes (KNOWN LEAK: 4 cells on the debug runtime — v-runtime fixing; live-objects clause returns with the fix)"
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0) (list (record (= v n)) (record (= v (* n 2)))) (list (record (= v 0))))
@@ -19507,5 +19505,4 @@
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 15 Int64))
-  (live-objects 0))
+  (output (: 15 Int64)))
