@@ -302,7 +302,10 @@ pass	Record.extend chained onto Record.without of a map-borne record computes, n
 pass	Record.extend widens a map-extracted record and the wide row enters a new map
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.merge carries a CLOSURE field into the union layout and it applies
+pass	Record.merge of two runtime records leaves no live heap objects
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
+pass	Record.pop over a runtime record (value, rest) leaves no live heap objects
+pass	Record.project over a runtime record leaves no live heap objects
 pass	Record.project over runtime field values keeps the named fields and their live values
 pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
 pass	Record.with grows a LIST field by pushing onto the projected old value
@@ -311,6 +314,7 @@ pass	Record.with over a RUNTIME field leaves the original record readable (persi
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
 pass	Record.with over a runtime-produced record leaves no live heap objects
 pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
+pass	Record.without over a runtime record leaves no live heap objects
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Record.without strips a field on a map-extracted record and both maps stay typed
 pass	Result ordering agrees across targets — Ok below Err on the shared declaration order
