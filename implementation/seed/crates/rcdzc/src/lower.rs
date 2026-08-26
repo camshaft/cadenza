@@ -1534,7 +1534,6 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                                                                     !matches!(
                                                                         n,
                                                                         "Record"
-                                                                            | "Tuple"
                                                                             | "Map"
                                                                             | "Set"
                                                                             | "->"
