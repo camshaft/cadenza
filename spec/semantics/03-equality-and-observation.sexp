@@ -3080,7 +3080,8 @@
       (if (= (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
     (export f)))
   (call f (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
 
 (case "aeq2 bare equality of String.to-bytes twins"
   (input (do
@@ -3089,7 +3090,8 @@
         (if (= (String.to-bytes s) (String.to-bytes s)) 1 0)))
     (export main)))
   (call main (: 1 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
 
 (case "aeq3 arena Bytes laundered through fn params bare-compare equal"
   (input (do
@@ -3097,7 +3099,8 @@
     (def (f (: n Int64)) (cmp (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n)))))
     (export f)))
   (call f (: 7 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
 
 (case "aeq4 a slice VIEW bare-compares equal to its flat twin"
   (input (do
@@ -3106,4 +3109,5 @@
              (Bytes.of (list (UInt8.wrap n) 2))) 1 0))
     (export f)))
   (call f (: 5 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))

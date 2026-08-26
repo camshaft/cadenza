@@ -1779,7 +1779,8 @@
       (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n) 2))) (Blake3.of (Bytes.of (list (UInt8.wrap n) 2)))) 1 0))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
 
 (case "bk2 one-byte-different inputs bare-compare unequal digests"
   (input (do
@@ -1787,7 +1788,8 @@
       (if (= (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap (+ n 1)))))) 1 0))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 Int64))
+  (live-objects 0))
 
 (case "bk3 runtime digests dedup as set members by content"
   (input (do
@@ -1795,7 +1797,8 @@
       (Set.len (Set.of (list (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list 9)))))))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects 0))
 
 (case "bk4 a Map keyed by a runtime digest is findable by a fresh recompute"
   (input (do
@@ -1805,7 +1808,8 @@
         ((Option.None) -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 42 Int64)))
+  (output (: 42 Int64))
+  (live-objects 0))
 
 (case "bk5 Blake3-of-encode runtime composition compares equal across recomputation"
   (input (do
@@ -1813,4 +1817,5 @@
       (if (= (Blake3.of (Ast.encode (Ast.Int (BigInt.of n)))) (Blake3.of (Ast.encode (Ast.Int (BigInt.of n))))) 1 0))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 1 Int64)))
+  (output (: 1 Int64))
+  (live-objects 0))
