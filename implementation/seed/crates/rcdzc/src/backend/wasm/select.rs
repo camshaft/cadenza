@@ -9050,6 +9050,40 @@ fn emit_option_to_mem(
 /// [`emit_option_to_mem`], scoped (like the record-field variant arm, #3368) to a uniform single scalar
 /// payload — a mixed-width / `Bytes` / compound payload join is a later increment.
 #[allow(clippy::too_many_arguments)]
+/// The core JOIN valtype of a scalar-payload variant's flattened payload slot (canonical ABI `flatten_variant`
+/// join, the REGISTER path): `I64` if any payload case is a 64-bit int, else `I32` for all int/bool/char
+/// payloads; the single float valtype for a uniform-float variant. `None` if the payload set mixes int and
+/// float (the reinterpret join lattice — a later increment; the detector already excludes it). Mirrors
+/// `wit_ctype::flatten_variant`'s join so the guest push matches the import's core param slot. DIVERGES from
+/// the MEMORY max-natural width (`emit_variant_to_mem`): e.g. `variant{u8, u16}` joins to `I32` (register)
+/// but its memory payload area is 2 bytes.
+fn variant_register_join_vt(
+    db: &mut Db,
+    variant_ty: &Ty,
+    payload_discs: &[i32],
+) -> Result<ValType, Reject> {
+    let mut join: Option<ValType> = None;
+    for &pd in payload_discs {
+        let pty = variant_payload_ty_at(db, variant_ty, pd as u32)
+            .ok_or_else(|| Reject::decline("a variant payload type could not be resolved"))?;
+        let vt =
+            valtype_of(&pty).ok_or_else(|| Reject::decline("a variant payload has no valtype"))?;
+        join = Some(match join {
+            None => vt,
+            Some(prev) if prev == vt => vt,
+            Some(ValType::I32) if vt == ValType::I64 => ValType::I64,
+            Some(ValType::I64) if vt == ValType::I32 => ValType::I64,
+            _ => {
+                return Err(Reject::decline(
+                    "a variant mixes int and float payloads (the reinterpret join is a later increment)",
+                ));
+            }
+        });
+    }
+    join.ok_or_else(|| Reject::decline("a variant has no payload case to join"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_variant_to_mem(
     db: &mut Db,
     var_slot: u32,
@@ -9071,23 +9105,39 @@ fn emit_variant_to_mem(
     let first_pd = *payload_discs
         .first()
         .ok_or_else(|| Reject::decline("a variant element has no payload case"))?;
+    // The MEMORY payload area = the MAX natural (size, align) over the payload cases (canonical variant
+    // layout): each case stores at its natural width into this max-sized slot, and little-endian + the host
+    // reading the SELECTED case's width from the low bytes makes ONE max-width store correct. This DIVERGES
+    // from the register-flatten join valtype for a mixed-width variant (e.g. variant{u8, u16}: the register
+    // join is i32 = 4 bytes, but the memory max-natural is 2 bytes). Integer cases all read via `get-int`
+    // (i64); a uniform-float variant reads `get-float` (a mixed int/float payload is declined by the detector).
+    let mut psize = 0u32;
+    let mut palign = 1u32;
+    for &pd in &payload_discs {
+        let pty = variant_payload_ty_at(db, variant_ty, pd as u32).ok_or_else(|| {
+            Reject::decline("a variant element payload type could not be resolved")
+        })?;
+        let (s, a) = canonical_layout(db, &pty);
+        psize = psize.max(s);
+        palign = palign.max(a);
+    }
     let payload_ty = variant_payload_ty_at(db, variant_ty, first_pd as u32)
         .ok_or_else(|| Reject::decline("a variant element payload type could not be resolved"))?;
-    let (psize, palign) = canonical_layout(db, &payload_ty);
     let disc_size = disc_size_for(ncases);
     let payload_off = align_up_u32(disc_size, palign);
     let pv = valtype_of(&payload_ty)
         .ok_or_else(|| Reject::decline("a variant element scalar payload has no valtype"))?;
+    let is_float = matches!(pv, ValType::F32 | ValType::F64);
     let read = get_op_ty(db, &payload_ty)?
         .ok_or_else(|| Reject::decline("a variant element payload has no unbox op"))?;
     let width_store = |offset: u32| -> Result<Lir, Reject> {
-        Ok(match (pv, psize) {
-            (ValType::I64, _) => Lir::I64Store { offset },
-            (ValType::F64, _) => Lir::F64Store { offset },
-            (ValType::F32, _) => Lir::F32Store { offset },
-            (ValType::I32, 4) => Lir::I32Store { offset },
-            (ValType::I32, 2) => Lir::I32Store16 { offset },
-            (ValType::I32, 1) => Lir::I32Store8 { offset },
+        Ok(match (is_float, psize) {
+            (true, 8) => Lir::F64Store { offset },
+            (true, 4) => Lir::F32Store { offset },
+            (false, 8) => Lir::I64Store { offset },
+            (false, 4) => Lir::I32Store { offset },
+            (false, 2) => Lir::I32Store16 { offset },
+            (false, 1) => Lir::I32Store8 { offset },
             _ => {
                 return Err(Reject::decline(
                     "a variant element payload has no width store",
@@ -9102,10 +9152,10 @@ fn emit_variant_to_mem(
             _ => Lir::I32Store { offset },
         }
     };
-    let zero = match pv {
-        ValType::I64 => Lir::ConstI64(0),
-        ValType::F64 => Lir::F64ConstBits(0),
-        ValType::F32 => Lir::F32ConstBits(0),
+    let zero = match (is_float, psize) {
+        (true, 8) => Lir::F64ConstBits(0),
+        (true, 4) => Lir::F32ConstBits(0),
+        (false, 8) => Lir::ConstI64(0),
         _ => Lir::ConstI32(0),
     };
     let disc = work_base;
@@ -9136,8 +9186,8 @@ fn emit_variant_to_mem(
     out.push(Lir::LocalGet(var_slot));
     out.push(Lir::CallImport(OP_SUM_PAYLOAD));
     out.push(Lir::CallImport(read));
-    if read == OP_GET_INT && matches!(pv, ValType::I32) {
-        out.push(Lir::I32WrapI64);
+    if read == OP_GET_INT && psize <= 4 {
+        out.push(Lir::I32WrapI64); // narrow the i64 heap cell to the i32 store slot (<=4-byte payload area)
     }
     out.push(width_store(payload_off)?);
     out.push(Lir::Else); // a nullary case → dest[payload_off] = 0
@@ -9636,9 +9686,11 @@ fn emit_record_arg_marshal(
                     variant_payload_ty_at(db, fty, first_pd as u32).ok_or_else(|| {
                         Reject::decline("a variant field payload type could not be resolved")
                     })?;
-                let pv = valtype_of(&payload_ty).ok_or_else(|| {
-                    Reject::decline("a variant field scalar payload has no valtype")
-                })?;
+                // The register-flatten payload slot is the canonical JOIN valtype over the cases (i32 for all
+                // <=32-bit int/bool/char, i64 if any 64-bit; the float valtype for uniform float) — NOT the
+                // first case's width. The host lift reads the SELECTED case's width from the join slot's low
+                // bits, so a narrow case pushed as the join valtype is read back correctly.
+                let pv = variant_register_join_vt(db, fty, &payload_discs)?;
                 let read = get_op_ty(db, &payload_ty)?
                     .ok_or_else(|| Reject::decline("a variant field payload has no unbox op"))?;
                 let ans = work_base + 4;

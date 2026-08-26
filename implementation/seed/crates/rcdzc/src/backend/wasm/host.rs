@@ -299,9 +299,17 @@ pub fn variant_scalar_payload_cases(
             0 => cases.push((name, None)),
             1 => {
                 let pty = crate::backend::wasm::select::variant_payload_ty_at(db, ty, disc as u32)?;
-                let pv = abi_val_type(&pty)?; // a scalar payload only this increment
-                if join.is_some_and(|prev| prev != pv) {
-                    return None; // MIXED payload widths → the flatten join is a later increment
+                let pv = abi_val_type(&pty)?; // a scalar payload only
+                // Admit MIXED payload widths as long as they JOIN cleanly: all-integer (incl bool/char, which
+                // share the i32 slot) join to the widest int slot, and a uniform float is fine. REJECT mixing
+                // int with float, or f32 with f64 — those need the canonical reinterpret join lattice (a later
+                // increment). The marshal computes the register join valtype + the memory max-natural width.
+                let is_float = |a: AbiValType| matches!(a, AbiValType::F32 | AbiValType::F64);
+                if let Some(prev) = join
+                    && prev != pv
+                    && (is_float(prev) || is_float(pv))
+                {
+                    return None;
                 }
                 join = Some(pv);
                 any_payload = true;
