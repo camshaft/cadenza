@@ -292,6 +292,7 @@ pub(crate) mod cse {
             | Resolved::Proj { .. }
             | Resolved::Member { .. }
             | Resolved::Annot { .. }
+            | Resolved::ConstBlock { .. }
             | Resolved::Let { .. } => true,
             // An APPLY is admitted ONLY when it is a PRIM operator application — `(+ a b)`, `(& x 7)`,
             // `(< a b)` etc. `crate::eval::prim_of` follows the head (a bare operator name resolves to a

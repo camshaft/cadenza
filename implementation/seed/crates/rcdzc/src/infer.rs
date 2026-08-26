@@ -628,6 +628,10 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // The annotation carries its type AS a value, exactly as §Types Are First-Class Values requires.
         //= spec/capabilities/core-semantics.md#types-are-first-class-values
         //# A type annotation `(: <expr> <Type>)` MUST carry its type as a value, not as a syntactic marker erased before evaluation.
+        // `(const e)` is SEE-THROUGH for typing — it types AS its inner expression (no annotation to
+        // unify, no type of its own); the force-eval / reject-if-not-const semantics are downstream in
+        // lowering (v-compiler-primitives). `type_of((const e)) == type_of(e)`.
+        Resolved::ConstBlock { expr } => type_of(db, expr),
         Resolved::Annot { expr, ty_expr } => match crate::eval::typeval_of(db, ty_expr) {
             Some(annot_ty) => {
                 let expr_ty = type_of(db, expr);
@@ -4178,7 +4182,9 @@ fn collect_param_constraints(
             }
             collect_param_constraints(db, body, env, def, subst, fresh);
         }
-        Resolved::Annot { expr, .. } => collect_param_constraints(db, expr, env, def, subst, fresh),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            collect_param_constraints(db, expr, env, def, subst, fresh)
+        }
         Resolved::Member { operand, .. } => {
             collect_param_constraints(db, operand, env, def, subst, fresh)
         }
@@ -14200,6 +14206,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // is the conflicting-use type error (`(: true Int64)` — Bool asserted as Int64 → CDZ0203); a
         // success grounds a deferred width harmlessly. If `T` is not a type this stage reduces, decline
         // the CHECK (no false reject) — the expr still type-checks on its own via the descent below.
+        // `(const e)` carries no type annotation, so it has no runtime-width / ctor-arity fault of its
+        // own — descend the check into its inner expression (see-through).
+        Resolved::ConstBlock { expr } => collect(db, expr, out),
         Resolved::Annot { expr, ty_expr } => {
             // A RUNTIME WIDTH is forbidden: `(: 5 (UInt n))` with `n` a runtime value (a parameter, a
             // call result) puts runtime data in a type-determining position, which the type system

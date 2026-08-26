@@ -3338,7 +3338,7 @@ fn reduce_arm_deferred_resume(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> 
             // The scrutinee may carry a leading annotation `(: (helper …) T)` (the handler-arm value is
             // annotated at its declared type) — peel it to reach the call before testing/reducing.
             let call = match resolved_of(db, scrutinee) {
-                Resolved::Annot { expr, .. } => expr,
+                Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => expr,
                 _ => scrutinee,
             };
             if let Some(reduced_scrut) = reduce_one_shot_helper_call(db, call, ctx) {
@@ -10312,7 +10312,7 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
         Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
             pure_hole(db, operand, ctx)
         }
-        Resolved::Annot { expr, .. } => pure_hole(db, expr, ctx),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => pure_hole(db, expr, ctx),
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             pure_hole_seq(db, elems.iter().copied(), ctx)
         }
@@ -10398,7 +10398,9 @@ fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<
         Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
             leading_strict_hole(db, operand, ctx)
         }
-        Resolved::Annot { expr, .. } => leading_strict_hole(db, expr, ctx),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            leading_strict_hole(db, expr, ctx)
+        }
         Resolved::Tuple { elems } | Resolved::List { elems } => {
             leading_strict_hole_seq(db, elems.iter().copied(), ctx)
         }
