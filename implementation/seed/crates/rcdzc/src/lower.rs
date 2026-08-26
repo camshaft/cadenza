@@ -24710,6 +24710,18 @@ fn const_eval_apply(
     if let Some(prim) =
         crate::eval::prim_of(db, head).or_else(|| crate::eval::meta_apply_of(db, head))
     {
+        // A compound-VALUE constructor reached in its APPLIED form — a `(record …)`/`(tuple …)`/`(list …)`
+        // literal that resolves to an applied `RecordNew`/`TupleNew`/`ListNew` rather than the symbol-headed
+        // `Resolved::Record`/`Tuple`/`List` (a record literal always does). `reduce_ctor` rewrites it to that
+        // symbol-headed compound, whose resolved form the dedicated arms above (`Resolved::Record` etc.) build
+        // into a `CVal` — evaluating each field/element in the CURRENT env, so a compound built from const-
+        // param values folds too. Without this a record literal declined (`apply_const_prim` carries no
+        // `RecordNew` arm), so a record threaded through a fn — `(const (get-x (record …)))` — could not fold.
+        if matches!(prim, Prim::RecordNew | Prim::TupleNew | Prim::ListNew)
+            && let Ok(built) = crate::eval::reduce_ctor(db, prim, node, args)
+        {
+            return const_eval(db, built, env, budget);
+        }
         let mut vs = Vec::with_capacity(args.len());
         for &a in args {
             vs.push(ce!(a));

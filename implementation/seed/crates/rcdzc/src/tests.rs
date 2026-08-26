@@ -6123,10 +6123,16 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     // (`expected i64, found i32`), so `compile_component` returning `Ok` + `required_runtime` parsing
     // the bytes is itself the primary guard (it re-validates the component). The composed run below then
     // confirms the VALUE when the runtime store is present.
+    // Field `a` is seeded from a RUNTIME parameter so the record cannot const-fold away — the general
+    // const-evaluator now folds a record threaded through a record-param fn (`(f (f (record …)))` over an
+    // all-constant record reduces to the projected scalar, no heap), which is the correct behavior but would
+    // sidestep the runtime record-assembler this test guards. The runtime seed keeps the composed build on
+    // the heap path where the slot-collision miscompile lived. `f(f({a:seed,b:5}))` → `{a:seed+2, b:5}`;
+    // with seed = 0, `.a` = 2.
     let src = "(module m \
                  (def (f (: r (Record (a Int64) (b Int64)))) \
                     (record (a (+ (. r a) 1)) (b (. r b)))) \
-                 (def (main) (. (f (f (record (a 0) (b 5)))) a)) (export main))";
+                 (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5)))) a)) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src)))
         .expect("a composed record-transform call must compile");
     assert!(
@@ -6141,7 +6147,7 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     };
     let opts = cdz_run::RunOpts {
         export: Some("main".to_string()),
-        args: Vec::new(),
+        args: vec!["0".to_string()],
         runtime: Some(runtime.clone()),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
@@ -6150,17 +6156,19 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
         cdz_run::Outcome::Value(s) => {
             assert_eq!(
                 s, "2",
-                "f(f({{a:0,b:5}})) bumps a twice → {{a:2,b:5}}, so .a = 2"
+                "f(f({{a:seed,b:5}})) with seed=0 bumps a twice → {{a:2,b:5}}, so .a = 2"
             )
         }
         cdz_run::Outcome::Trap(t) => panic!("composed record-transform trapped (miscompile?): {t}"),
     }
     // A THREE-field record with TWO checked-arith fields and the arith field read LAST — exercises more
     // than one arith scratch interleaved with the assembler slots. `(* c 3)` twice over c=2 → 18.
+    // Field `a` seeded from the runtime parameter (same reason as above) keeps the three-field build on the
+    // heap; `.c` is independent of the seed — `(* c 3)` twice over c = 2 → 18 regardless.
     let three = "(module m \
                    (def (f (: r (Record (a Int64) (b Int64) (c Int64)))) \
                       (record (a (+ (. r a) 1)) (b (. r b)) (c (* (. r c) 3)))) \
-                   (def (main) (. (f (f (record (a 0) (b 5) (c 2)))) c)) (export main))";
+                   (def (main (: seed Int64)) (. (f (f (record (a seed) (b 5) (c 2)))) c)) (export main))";
     let three_bytes = compile_component(&crate::codec::encode(&parse(three)))
         .expect("a three-field composed record-transform call must compile");
     assert!(
@@ -6171,7 +6179,7 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
     );
     let three_opts = cdz_run::RunOpts {
         export: Some("main".to_string()),
-        args: Vec::new(),
+        args: vec!["0".to_string()],
         runtime: Some(runtime),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
