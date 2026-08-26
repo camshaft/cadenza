@@ -1473,6 +1473,28 @@
   (call   main (: 3 UInt8) (: 5 UInt8))
   (output (: 103 UInt8)))
 
+(case "equality with zero selects eqz and computes correctly for both operand orders"
+  (doc    "`(= n 0)` selects to a single eqz instruction and must still compute the correct boolean over a
+           runtime operand: true at zero, false otherwise, for BOTH operand orders (a wrong eqz that
+           ignored its operand would return a constant). Encoded as (+ (* 10 (if (= n 0) 1 0)) (if (= 0 n)
+           1 0)) so both orders are observed at once: n=0 yields 10+1=11; a nonzero n yields 0 from both.")
+  (input  (do
+            (def (main (: n Int64)) (+ (* 10 (if (= n 0) 1 0)) (if (= 0 n) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 7 Int64)) (output (: 0 Int64))
+  (call   main (: -1 Int64)) (output (: 0 Int64)))
+
+(case "an exported signed comparison runs over runtime args with signed order"
+  (doc    "`(< a b)` runs to a boolean over runtime Int64 args — the signed machine comparison at the
+           boundary. 1 < 2 is true; 5 < 5 is false; and crucially -1 < 1 is TRUE — an unsigned compare
+           would read -1 as a huge magnitude and answer false, so this pins the signed sense of the
+           emitted comparison.")
+  (input  (do (def (lt (: a Int64) (: b Int64)) (< a b)) (export lt)))
+  (call   lt (: 1 Int64) (: 2 Int64)) (output (: true Bool))
+  (call   lt (: 5 Int64) (: 5 Int64)) (output (: false Bool))
+  (call   lt (: -1 Int64) (: 1 Int64)) (output (: true Bool)))
+
 (case "a FLOAT literal that fits its contextually-grounded narrow width through an arith op computes"
   (doc    "The FLOAT face of contextual width grounding, fitting side: `(+ a 1.5)` over `(: a Float32)` — the
            `+` unifies its operand widths, grounding the bare `1.5` at Float32, where it is exactly
