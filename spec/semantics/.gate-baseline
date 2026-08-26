@@ -7816,3 +7816,6 @@ pass	stl2 a (const Set.to-list) result is consumed by runtime List.len outside t
 pass	le1 a SINGLE-element const Set.to-list folds
 pass	le2 an EMPTY const Set.to-list folds to the empty list
 pass	le3 a single-entry const Map.to-list reads its lone (k v)
+pass	lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)
+pass	lnr2 a const Map.to-list with a LONE non-orderable KEY still declines
+pass	lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0

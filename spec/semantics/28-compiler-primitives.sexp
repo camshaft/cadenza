@@ -1648,3 +1648,21 @@
                ((Option.None) -1))))
     (export main)))
   (output (: 77 Int64)))
+
+; -- breaker batch 422 (2026-08-26): the #3774 sort-by-skip SOUNDNESS faces — a LONE non-orderable
+; element (Set) / KEY (Map) still declines under the const to-list fold (pre-fix, sort_by over 0/1
+; elements never called the comparator, so a lone compound would have MATERIALIZED while the runtime
+; op declines — a compile/runtime divergence). The EMPTY set of a non-orderable element type is
+; order-trivial and folds to the empty list (the correct boundary of the per-element pre-check).
+
+(case "lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)"
+  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2))))))) (export main)))
+  (error CDZ0201 (message "compile-time constant")))
+
+(case "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
+  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) (tuple 1 2) 10))))) (export main)))
+  (error CDZ0201 (message "compile-time constant")))
+
+(case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
+  (input (do (def (main) (const (List.len (Set.to-list (: (Set.of (list)) (Set (Tuple Int64 Int64))))))) (export main)))
+  (output (: 0 Int64)))
