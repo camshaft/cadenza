@@ -820,3 +820,48 @@
            (contains/len/algebra) fold.")
   (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list 1 2 3)))))) (export main)))
   (error  CDZ0201 (message "compile-time constant")))
+
+;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
+(case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main) (const (handle E 40 ((tick () s (resume s (+ s 1)))) (+ (E.tick) 2))))
+    (export main)))
+  (output (: 42 Int64)))
+
+(case "chk2 a closed handle with STRING state folds under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E "x"
+          ((tick () s (resume (String.byte-len s) (String.concat s "y"))))
+          (+ (* 10 (E.tick)) (E.tick)))))
+    (export main)))
+  (output (: 12 Int64)))
+
+(case "cms1 closed handle with TUPLE state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E (tuple 1 10)
+          ((tick () s
+             (match s
+               ((tuple a b) (resume (+ a b) (tuple (+ a 1) (* b 2)))))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 33 Int64)))
+
+(case "cms2 closed handle with RECORD state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E (record (= a 1) (= b 10))
+          ((tick () s
+             (resume (+ (. s a) (. s b))
+                     (record (= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 33 Int64)))
