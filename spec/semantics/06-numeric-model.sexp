@@ -9595,3 +9595,11 @@
            the division does).")
   (input  (do (def (f (: a Int64) (: b Int64)) (% a b)) (export f)))
   (call   f (: -9223372036854775808 Int64) (: -1 Int64)) (output (: 0 Int64)))
+
+(case "runtime addition computes in range and traps on overflow, not wrapping"
+  (doc    "The unqualified `+` on runtime operands is the checked-arith default: it computes in range
+           (20+22=42, -5+-3=-8) and Int64.max + 1 TRAPS (integer overflow), never wrapping to Int64.min.")
+  (input  (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
+  (call   add (: 20 Int64) (: 22 Int64)) (output (: 42 Int64))
+  (call   add (: -5 Int64) (: -3 Int64)) (output (: -8 Int64))
+  (call   add (: 9223372036854775807 Int64) (: 1 Int64)) (trap "integer overflow"))
