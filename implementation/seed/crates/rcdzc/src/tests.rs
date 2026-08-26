@@ -54607,29 +54607,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_large_scalar_match_beyond_the_br_table_cap_compiles_and_dispatches() {
-        // A scalar match with MORE arms than the br_table density cap (>256 int arms) is INELIGIBLE for
-        // the jump table (a dense table can hold at most 256 distinct values), so it emits the linear
-        // `if (== k)` probe cascade. The eligibility test is gated O(1) on the arm count BEFORE building
-        // the per-arm literal vector, so re-attempting the table on every recursive `rest` stays O(arms)
-        // rather than O(arms²) — this exercises that fallback path end-to-end and pins that a matched
-        // value still reaches the right arm through the long chain. 300 consecutive arms `k → k*2`.
-        use wasmtime::component::Val;
-        let n = 300;
-        let arms: String = (0..n).map(|i| format!("({i} {}) ", i * 2)).collect();
-        let src = format!("(module m (def (f (: k Int64)) (match k {arms}(_ -1))) (export f))");
-        let bytes = component(&src);
-        // A value in the middle of the chain, the last arm, and out-of-range (the wildcard default).
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]), 0);
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(150)]), 300);
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(n - 1)]),
-            (n - 1) * 2
-        );
-        assert_eq!(run_returns_with::<i64>(&bytes, "f", &[Val::S64(9999)]), -1);
-    }
-
-    #[test]
     fn a_scalar_match_uses_a_br_table_only_when_dense_else_the_probe_chain() {
         // The scalar `br_table` fast path (`try_emit_scalar_br_table`) fires ONLY for a DENSE ≥3-int-arm
         // match (+ wildcard default): `span <= 2 * count` AND `span <= 256`. A SPARSE match (values spread

@@ -3590,6 +3590,7 @@ pass	a scalar element is projected directly from a fn-return tuple with runtime 
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar export crosses the WIT boundary and returns its argument
+pass	a scalar match beyond the jump-table cap falls back to a probe cascade and still dispatches
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
