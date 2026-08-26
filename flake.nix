@@ -1445,7 +1445,7 @@
 
         # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
         # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
-        # each with the pinned `cdz` binary, and emits the deterministic (sorted) name→base64url-id JSON.
+        # each with the pinned `cdz` binary, and emits the deterministic (sorted) name→base62-id JSON.
         contractSourcesDir = ./implementation/seed/crates/cdz-platform/contracts;
         contractHashes = pkgs.runCommand "cdz-contract-hashes"
           { nativeBuildInputs = [ contractHasher seedCompiler ]; } ''
@@ -1510,7 +1510,7 @@
               '')
               uses;
             # Resolve each `contract = "<name>"` to its content hash from the name→id mapping, then rewrite the
-            # node to `(= contract "<base64url-id>")` (a delivery's contract may be a base64url string, §8/§9).
+            # node to `(= contract "<base62-id>")` (a delivery's contract is the base62 contract-id string, §8/§9).
             # The id is looked up at BUILD time (jq over the mapping file) rather than at eval — same no-IFD
             # discipline as the program rewrite. An unknown name is a hard error (never a silent skip); jq
             # yields the string "null" for a missing key, which we reject explicitly.
@@ -2439,7 +2439,7 @@
         packages.cdz-platform-itest = platformItest;
 
         # The contract name→hash tooling (section 1). `.#cdz-contract` is the built CLI; `.#contract-hashes`
-        # is the reproducible name→base64url-id JSON mapping over the platform's contract sources — the data a
+        # is the reproducible name→base62-id JSON mapping over the platform's contract sources — the data a
         # run resolves a `contract = "<name>"` reference against (see mkHarnessAst).
         packages.cdz-contract = contractHasher;
         packages.contract-hashes = contractHashes;
@@ -2690,20 +2690,21 @@
             runtimeDebugHashParity = parity { name = "runtime-debug"; hashFile = runtimeDebugHash; constName = "DEBUG_RUNTIME_HASH"; };
             nfcHashParity = parity { name = "nfc"; hashFile = nfcHash; constName = "REQUIRED_NFC_HASH"; };
             # The contract name→hash mapping is well-formed: a non-empty JSON object whose every value is a
-            # base64url contract-id (§8 text form — `[A-Za-z0-9_-]`, no padding). Catches a silently-empty
-            # mapping (e.g. a contracts dir that stopped parsing) that a run not referencing contracts by name
-            # would never surface. The harness runs that DO name a contract are the functional check on top.
+            # base62 contract-id (§8 text form — `[0-9A-Za-z]`, the one post-flag-day form; no hex/base64url).
+            # Catches a silently-empty mapping (e.g. a contracts dir that stopped parsing) that a run not
+            # referencing contracts by name would never surface. The harness runs that DO name a contract are
+            # the functional check on top.
             contractHashesValid = pkgs.runCommand "contract-hashes-valid"
               { nativeBuildInputs = [ pkgs.jq ]; } ''
               set -euo pipefail
               n="$(jq 'length' ${contractHashes})"
               if [ "$n" -lt 1 ]; then echo "contract-hash mapping is empty" >&2; exit 1; fi
-              # every value is a non-empty base64url string
-              if ! jq -e 'to_entries | all(.value | type == "string" and test("^[A-Za-z0-9_-]+$"))' \
+              # every value is a non-empty base62 string (no `_`/`-` — base62, not base64url)
+              if ! jq -e 'to_entries | all(.value | type == "string" and test("^[0-9A-Za-z]+$"))' \
                    ${contractHashes} > /dev/null; then
-                echo "contract-hash mapping has a non-base64url id:" >&2; cat ${contractHashes} >&2; exit 1
+                echo "contract-hash mapping has a non-base62 id:" >&2; cat ${contractHashes} >&2; exit 1
               fi
-              echo "ok: contract-hash mapping well-formed ($n contract(s), all base64url ids)" > "$out"
+              echo "ok: contract-hash mapping well-formed ($n contract(s), all base62 ids)" > "$out"
             '';
 
             # The HARNESS-RUN checks (§9), the shape the operator asked for on #2994: iterate every `*.ml`
