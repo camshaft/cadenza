@@ -3504,6 +3504,32 @@
   (call   main (: 255 UInt8))
   (output (: 255 UInt16)))
 
+(case "widening a runtime UNSIGNED narrow integer to Int64 zero-extends (total, emits)"
+  (doc    "`(Int64.of x)` with `x` a runtime UInt8 widens totally by ZERO-extending — every UInt8 (0..255)
+           fits Int64, so no trap, and the top-bit value 200 and the max 255 widen to the same NON-NEGATIVE
+           Int64 (not sign-extended). The unsigned companion of the Int8->Int64 sign-extend widen above:
+           255 -> 255, 200 -> 200, 0 -> 0.")
+  (input  (do (def (main (: x UInt8)) (Int64.of x)) (export main)))
+  (call   main (: 255 UInt8)) (output (: 255 Int64))
+  (call   main (: 200 UInt8)) (output (: 200 Int64))
+  (call   main (: 0 UInt8)) (output (: 0 Int64)))
+
+(case "widening a runtime UInt8 to UInt64 zero-extends (total, emits)"
+  (doc    "`(UInt64.of x)` with `x` a runtime UInt8 is a full-width UNSIGNED widen — total (0..255 fits
+           UInt64), zero-extends with no sign confusion: 255 -> 255. Pins the widen to the widest unsigned
+           target.")
+  (input  (do (def (main (: x UInt8)) (UInt64.of x)) (export main)))
+  (call   main (: 255 UInt8)) (output (: 255 UInt64)))
+
+(case "narrowing a runtime UInt64 to UInt8 with .of declines (checked-narrow emit pending)"
+  (doc    "`(UInt8.of x)` with `x` a runtime UInt64 is a genuine NARROWING — most UInt64 values overflow
+           UInt8 (0..255), so `of` must range-check-then-trap, an emit the seed does not yet do, so it
+           soundly DECLINES rather than emitting an unchecked truncation (which would silently keep the low
+           bits where `of` must trap). The unsigned-wide-source companion of the Int64->UInt8 narrow decline
+           above.")
+  (input  (do (def (main (: x UInt64)) (UInt8.of x)) (export main)))
+  (declines))
+
 ; --- Float is WIDTH-INDEXED: (Float N) over N in {32, 64}, with Float32/Float64 aliases -------------
 ; numeric-model.md #A Floating-Point Type Is Indexed By A Compile-Time Width: a float type is the
 ; width-indexed constructor `Float` applied to a compile-time width, and Float32/Float64 alias
