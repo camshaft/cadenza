@@ -52,3 +52,10 @@ def crashed-event-conforms() =
   match a-crashed-event() with
   | Event.Crashed(e) => if e.reducer == b"reducer" then unit else trap("crashed reducer mismatch")
   | _ => trap("expected an Event.Crashed")
+
+// Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
+// contract-descriptor(Ast.module) — a reducer imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
+export { descriptor }

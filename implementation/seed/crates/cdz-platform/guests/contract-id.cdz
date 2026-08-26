@@ -138,4 +138,20 @@ def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output
         types = types-of(forms) }
   | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
-export { contract-id, contract, contract-declaration }
+// The UNIFORM contract descriptor (operator shape, §1): one record of the SAME SHAPE for every contract, all
+// fields runtime-representable (Bytes/String) via self-reflection over `Ast.module` — the id, the name, the
+// ENCODED input type, the ENCODED output type, and the fully ENCODED module AST. A contract exports it as
+// `def descriptor() = contract-descriptor(Ast.module); export { descriptor }`; a reducer imports it and reads
+// `descriptor().id` to route (or `.name`/`.input`/`.output`/`.ast` to inspect). All fields fold at compile
+// time (the operands derive from the const `Ast.module`), so the record is a constant — no runtime `Ast.encode`.
+def contract-descriptor(const m: Ast) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  match m with
+  | Ast.List(forms) =>
+      { id = contract-id(m),
+        name = contract-name(forms),
+        input = Ast.encode(find-pragma(forms, "input")),
+        output = Ast.encode(find-pragma(forms, "output")),
+        ast = Ast.encode(m) }
+  | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
+
+export { contract-id, contract, contract-declaration , contract-descriptor }
