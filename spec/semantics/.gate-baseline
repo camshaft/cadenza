@@ -7869,3 +7869,7 @@ todo	eo3 an Option param BETWEEN scalars keeps positions
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	er1 a Rational entry param in exact arithmetic
 todo	ey1 a Symbol entry param keys a Map
+pass	rha1 a resumed op with a LIST argument — the arm reads it, everything reclaims
+pass	rha2 a resumed op with an in-program STRING argument reclaims
+pass	rha3 heap ARG and heap STATE together in one dispatch — both reclaim
+pass	rha4 an op ARGUMENT becomes the next STATE — the replaced state reclaims

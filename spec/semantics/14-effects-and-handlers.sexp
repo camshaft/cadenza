@@ -8159,3 +8159,56 @@
   (call main (: 5 Int64))
   (output (: 2 Int64))
   (live-objects 0))
+
+; -- breaker batch 434 (2026-08-26): RESUMED ops with heap ARGUMENTS — the last quadrant of the
+; effects heap matrix (state / abort-args / resume-answers pinned earlier): a LIST arg read by the
+; arm, an in-program STRING arg, heap ARG + heap STATE in one dispatch, and the arg-BECOMES-state
+; swap (the replaced state reclaims). All live-objects 0; wasm-only rows.
+
+(case "rha1 a resumed op with a LIST argument — the arm reads it, everything reclaims"
+  (input (do
+    (effect E (op put (-> (List Int64) Int64)))
+    (def (main (: n Int64))
+      (handle E n
+        ((put (xs) s (resume (+ (List.len xs) s) s)))
+        (E.put (if (> n 0) (list n (+ n 1)) (list 9 9 9)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case "rha2 a resumed op with an in-program STRING argument reclaims"
+  (input (do
+    (effect E (op put (-> String Int64)))
+    (def (main (: n Int64))
+      (handle E n
+        ((put (t) s (resume (String.byte-len t) s)))
+        (E.put (String.concat "ab" (if (> n 0) "c" "de")))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case "rha3 heap ARG and heap STATE together in one dispatch — both reclaim"
+  (input (do
+    (effect E (op put (-> (List Int64) Int64)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n) (list 9 9))
+        ((put (xs) s (resume (+ (List.len xs) (List.len s)) s)))
+        (E.put (list n (+ n 1) (+ n 2)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 4 Int64))
+  (live-objects 0))
+
+(case "rha4 an op ARGUMENT becomes the next STATE — the replaced state reclaims"
+  (input (do
+    (effect E (op swap (-> (List Int64) Int64)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n) (list 9 9))
+        ((swap (xs) s (resume (List.len s) xs)))
+        (+ (E.swap (list 1 2 3)) (* 10 (E.swap (list 7))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 31 Int64))
+  (live-objects 0))
