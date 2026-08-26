@@ -34,6 +34,20 @@ enum Grade {
     Fail(String),
 }
 
+impl Grade {
+    /// Combine verdicts, keeping the WORST (Fail > Todo > Pass) — the case verdict is the worst of its
+    /// trials + checks, matching the gate's `grade_ran` (any Fail → Fail, else any Todo → Todo, else Pass).
+    fn worse(self, other: Grade) -> Grade {
+        match (&self, &other) {
+            (Grade::Fail(_), _) => self,
+            (_, Grade::Fail(_)) => other,
+            (Grade::Todo(_), _) => self,
+            (_, Grade::Todo(_)) => other,
+            _ => Grade::Pass,
+        }
+    }
+}
+
 /// One decoded trial: an optional call (`export` + argument value-forms) and the expected outcome.
 struct GTrial {
     call: Option<GCall>,
@@ -45,13 +59,18 @@ struct GCall {
     args: Vec<String>,
 }
 
-/// The expected outcome of a trial. Only `Output`/`Trap` are gradable at exec; `Error`/`Declines` are
-/// build-phase (kept so a mixed case can skip them explicitly rather than misread the tree).
+/// The expected outcome of a trial. `Output`/`Trap` are RUN outcomes (graded against the wasm run);
+/// `Error`/`Declines` are COMPILE outcomes (graded against the captured compiler diagnostic — the build
+/// phase's `compile.status` + `compile.err`, passed via `--compile-status`/`--compile-diag`).
 enum GExpect {
     Output(String),
     Trap(String),
-    Error,
-    Declines,
+    /// `(expect-error CODE msg?)` — the compiler must REFUSE with exactly `CODE`, and (if given) a
+    /// diagnostic message CONTAINING the substring.
+    Error(String, Option<String>),
+    /// `(expect-declines msg?)` — the compiler must refuse (any code, or codeless); the optional message
+    /// substring must appear in the diagnostic.
+    Declines(Option<String>),
 }
 
 /// A decoded `test-run.ast`: the case's run/grade metadata.
@@ -63,6 +82,10 @@ struct TestRun {
     host_responses: Vec<(String, String)>,
     /// The expected observed host-call op sequence; verified against the run's actual calls.
     host_calls: Vec<String>,
+    /// The WARNING diagnostics a compiles-clean case pins (`(warns CODE msg?)…`) — each `(code, optional
+    /// message-substring)`. A PRESENCE check against the compiler's warnings (`--compile-diag`), orthogonal
+    /// to the primary outcome.
+    warns: Vec<(String, Option<String>)>,
 }
 
 /// Grade `component` against `test_run_ast`, running each runnable trial. `component_name` (a case's
@@ -71,11 +94,13 @@ struct TestRun {
 /// none — a build-graded case), `1` on the first `Fail`. The verdict + description go to stdout so the
 /// aggregate step can collect them; a `Fail` reason also goes to stderr.
 pub fn grade(
-    component_bytes: &[u8],
+    component_bytes: Option<&[u8]>,
     test_run_ast: &[u8],
     runtime: Option<Vec<u8>>,
     runtime_cache_dir: Option<PathBuf>,
     component_name: Option<&str>,
+    compile_status: i32,
+    compile_diag: &str,
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast).context("decoding test-run.ast")?;
     let host_responses: Vec<HostResponse> = test_run
@@ -86,6 +111,7 @@ pub fn grade(
             value: value.clone(),
         })
         .collect();
+    let compiled = compile_status == 0;
 
     let mut worst: Grade = Grade::Pass;
     let mut ran_a_trial = false;
@@ -94,10 +120,38 @@ pub fn grade(
     let mut first_observed: Option<Vec<String>> = None;
 
     for trial in &test_run.trials {
-        // Build-phase outcomes have no runnable artifact — skip (the build derivation graded them).
-        if matches!(trial.expect, GExpect::Error | GExpect::Declines) {
+        // COMPILE-OUTCOME expectations (error/declines) are graded against the captured diagnostic, not a
+        // run — no wasm needed. Do it here so this one bin grades every outcome kind (the gate's grade_trial
+        // for the Declined arm, ported).
+        match &trial.expect {
+            GExpect::Error(code, msg) => {
+                worst = worst.worse(grade_compile_error(compiled, compile_diag, code, msg.as_deref()));
+                if matches!(worst, Grade::Fail(_)) {
+                    break;
+                }
+                continue;
+            }
+            GExpect::Declines(msg) => {
+                worst = worst.worse(grade_compile_declines(compiled, compile_diag, msg.as_deref()));
+                if matches!(worst, Grade::Fail(_)) {
+                    break;
+                }
+                continue;
+            }
+            GExpect::Output(_) | GExpect::Trap(_) => {}
+        }
+
+        // RUN outcome (output/trap). If the compiler DECLINED a value/trap case, the gate grades it Todo (a
+        // not-yet-implemented feature), never Fail — match that, and there is no wasm to run.
+        if !compiled {
+            worst = worst.worse(Grade::Todo(
+                "output/trap case the compiler declined (not-yet-implemented; todo like the gate)".into(),
+            ));
             continue;
         }
+        let Some(component_bytes) = component_bytes else {
+            anyhow::bail!("grade: an output/trap case compiled (status 0) but no component was supplied");
+        };
         ran_a_trial = true;
 
         let export = match (&trial.call, component_name) {
@@ -122,16 +176,27 @@ pub fn grade(
             first_observed = Some(observed);
         }
 
-        match grade_trial(&trial.expect, &outcome) {
-            Grade::Pass => {}
-            g @ Grade::Todo(_) => {
-                if matches!(worst, Grade::Pass) {
-                    worst = g;
-                }
-            }
-            g @ Grade::Fail(_) => {
-                worst = g;
-                break; // a single failing trial fails the case
+        worst = worst.worse(grade_trial(&trial.expect, &outcome));
+        if matches!(worst, Grade::Fail(_)) {
+            break; // a single failing trial fails the case
+        }
+    }
+
+    // WARNS (orthogonal presence check): a case may pin warnings the compile must emit. Only checkable on
+    // a clean compile (warnings live in the compiler's stderr) — the gate grades warns on the wasm target
+    // for a compiles-clean program; mirror that. Each pinned (code, msg?) must match some emitted warning.
+    if !matches!(worst, Grade::Fail(_)) && !test_run.warns.is_empty() && compiled {
+        let emitted = collect_warnings(compile_diag);
+        for (code, msg) in &test_run.warns {
+            let hit = emitted
+                .iter()
+                .any(|(c, m)| c == code && msg.as_deref().is_none_or(|p| m.contains(p)));
+            if !hit {
+                worst = Grade::Fail(format!(
+                    "expected warning {code}{} not emitted; got {emitted:?}",
+                    msg.as_deref().map(|p| format!(" (message ~ {p:?})")).unwrap_or_default()
+                ));
+                break;
             }
         }
     }
@@ -209,11 +274,86 @@ fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
                 "expected trap {reason}, got value {v} (miscompile)"
             )),
         },
-        // Not reached (filtered before running), but total for safety.
-        GExpect::Error | GExpect::Declines => {
-            Grade::Todo("compile-outcome expectation is graded at build, not exec".into())
+        // Not reached (compile-outcome expectations are graded before the run), but total for safety.
+        GExpect::Error(..) | GExpect::Declines(..) => {
+            Grade::Todo("compile-outcome expectation is graded from the diagnostic, not the run".into())
         }
     }
+}
+
+/// Grade an `(expect-error CODE msg?)` against the compile outcome — the gate's `grade_trial` error arm,
+/// ported. Running an ill-formed program (compiled) is a Fail (miscompile); the right CODE (+ optional
+/// message substring) is a Pass; a DIFFERENT code is Todo (the program was still refused).
+fn grade_compile_error(compiled: bool, diag: &str, want: &str, msg: Option<&str>) -> Grade {
+    if compiled {
+        return Grade::Fail(format!(
+            "expected compile error {want} but the program COMPILED (miscompile)"
+        ));
+    }
+    let (got, message) = first_error_diag(diag);
+    match got {
+        Some(code) if code == want => match msg {
+            None => Grade::Pass,
+            Some(p) if message.contains(p) => Grade::Pass,
+            Some(p) => Grade::Fail(format!("error {want} but message {message:?} lacks {p:?}")),
+        },
+        _ => Grade::Todo(format!("refused, but not with {want} (got {got:?})")),
+    }
+}
+
+/// Grade an `(expect-declines msg?)` against the compile outcome — the gate's declines arm. ANY refusal
+/// passes (coded or codeless); a compiled program is a Fail; the optional message must appear.
+fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> Grade {
+    if compiled {
+        return Grade::Fail("expected the compiler to DECLINE but it COMPILED (miscompile)".into());
+    }
+    match msg {
+        None => Grade::Pass,
+        Some(p) => {
+            let (_, message) = first_error_diag(diag);
+            if message.contains(p) {
+                Grade::Pass
+            } else {
+                Grade::Fail(format!("declined, but message {message:?} lacks {p:?}"))
+            }
+        }
+    }
+}
+
+/// The FIRST error diagnostic in a compiler stderr as `(code, message)` — `error [CODE] (node N): msg`
+/// (coded) or `error: msg` (codeless). Ported verbatim from the `xtask gate` (`first_error_diag`).
+fn first_error_diag(diag: &str) -> (Option<String>, String) {
+    for line in diag.lines() {
+        if let Some((_, after)) = line.split_once("error [")
+            && let Some((code, rest)) = after.split_once(']')
+            && !code.trim().is_empty()
+        {
+            let message = rest.split_once(": ").map(|(_, m)| m).unwrap_or("").trim();
+            return (Some(code.trim().to_string()), message.to_string());
+        }
+        if !line.contains("error [")
+            && let Some((_, msg)) = line.split_once("error: ")
+        {
+            return (None, msg.trim().to_string());
+        }
+    }
+    (None, String::new())
+}
+
+/// EVERY `warning [CODE] (node N): message` in a compiler stderr, as `(code, message)` — a clean compile
+/// can emit a SET. Ported verbatim from the `xtask gate` (`collect_warnings`).
+fn collect_warnings(diag: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in diag.lines() {
+        if let Some((_, after)) = line.split_once("warning [")
+            && let Some((code, rest)) = after.split_once(']')
+            && !code.trim().is_empty()
+        {
+            let message = rest.split_once(": ").map(|(_, m)| m).unwrap_or("").trim();
+            out.push((code.trim().to_string(), message.to_string()));
+        }
+    }
+    out
 }
 
 /// Decode a `(test-run …)` binary AST into a [`TestRun`]. Mirrors the shred's `test_run_ast` builder
@@ -228,6 +368,7 @@ fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut trials = Vec::new();
     let mut host_responses = Vec::new();
     let mut host_calls = Vec::new();
+    let mut warns = Vec::new();
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -268,7 +409,16 @@ fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                     }
                 }
             }
-            // `warns` are build-phase (compile stderr); ignored here.
+            Some("warns") => {
+                for &w in a.as_form(clause, "warns").unwrap_or(&[]) {
+                    if let Some(t) = a.as_form(w, "warn")
+                        && let Some(code) = t.first().copied().and_then(|id| str_leaf(&a, id))
+                    {
+                        let msg = t.get(1).copied().and_then(|id| str_leaf(&a, id));
+                        warns.push((code, msg));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -278,6 +428,7 @@ fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         trials,
         host_responses,
         host_calls,
+        warns,
     })
 }
 
@@ -318,8 +469,24 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     .and_then(|vid| str_leaf(a, vid))
                     .map(GExpect::Trap);
             }
-            Some("expect-error") => expect = Some(GExpect::Error),
-            Some("expect-declines") => expect = Some(GExpect::Declines),
+            Some("expect-error") => {
+                // `(expect-error CODE msg?)` — first leaf is the code, an optional second is the message.
+                if let Some(t) = a.as_form(child, "expect-error") {
+                    let code = t.first().copied().and_then(|id| str_leaf(a, id));
+                    let msg = t.get(1).copied().and_then(|id| str_leaf(a, id));
+                    if let Some(code) = code {
+                        expect = Some(GExpect::Error(code, msg));
+                    }
+                }
+            }
+            Some("expect-declines") => {
+                // `(expect-declines msg?)` — optional message leaf.
+                let msg = a
+                    .as_form(child, "expect-declines")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(a, id));
+                expect = Some(GExpect::Declines(msg));
+            }
             _ => {}
         }
     }

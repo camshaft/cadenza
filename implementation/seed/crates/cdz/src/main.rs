@@ -5381,6 +5381,8 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 release: false,
                 opt_level: None,
                 grade: None,
+                compile_status: 0,
+                compile_diag: None,
                 component_name: None,
             }),
         }

@@ -77,14 +77,24 @@ pub struct RunArgs {
     pub opt_level: Option<String>,
 
     /// GRADE mode (the corpus nix pipeline's exec phase, `design/DESIGN-corpus-nix-per-case-caching.md`):
-    /// instead of a single `--call` run, run the component against a shredded `test-run.ast` (built by
-    /// `cdz corpus records --out-dir`) — every runnable trial (call + args + host tape) is run and the
-    /// outcome graded against its `(expect-output …)` / `(expect-trap …)`, reproducing the `xtask gate`
-    /// comparison. Exit `0` if all pass (or `Todo`), `1` on the first `Fail`. `--call`/`--arg`/
-    /// `--host-response` are taken from the artifact, not the CLI. Compile-outcome expectations
-    /// (`error`/`declines`/`warns`) are build-phase and not graded here.
+    /// grade the case against a shredded `test-run.ast` (built by `cdz corpus records --out-dir`),
+    /// reproducing the `xtask gate` comparison for EVERY outcome kind. RUN outcomes (`expect-output`/
+    /// `expect-trap`) run the wasm `COMPONENT` (which is then OPTIONAL — absent when the compile was
+    /// refused); COMPILE outcomes (`expect-error`/`expect-declines`) + `warns` are graded from the captured
+    /// compiler result (`--compile-status`/`--compile-diag`). `--call`/`--arg`/`--host-response` come from
+    /// the artifact. Exit `0` if all pass (or `Todo`), `1` on the first `Fail`.
     #[arg(long, value_name = "TEST_RUN_AST")]
     pub grade: Option<PathBuf>,
+
+    /// GRADE mode: the exit status of the case's compile (`0` = compiled → `COMPONENT` present; non-zero =
+    /// the compiler refused → an error/declines outcome). Defaults to `0`.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub compile_status: i32,
+
+    /// GRADE mode: the compiler's captured stderr (the diagnostic), for grading `expect-error`/
+    /// `expect-declines` (code + message) and `warns` (presence). Empty/absent → no diagnostic text.
+    #[arg(long, value_name = "PATH")]
+    pub compile_diag: Option<PathBuf>,
 
     /// The interface a `(wit-world …)` case's guest exports under (its `(component-name …)`), used ONLY
     /// with `--grade` to qualify a trial's call as `<iface>#<export>` — the same qualification the gate
@@ -114,6 +124,44 @@ pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
 }
 
 fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
+    // GRADE mode: grade a case against a shredded `test-run.ast` (the corpus nix pipeline's exec phase).
+    // The component is OPTIONAL here — a case whose compile was REFUSED (error/declines) has no wasm; it is
+    // graded purely from `--compile-status`/`--compile-diag`. When present, the wasm is read + its runtime
+    // resolved so the RUN outcomes (output/trap) can execute. Takes over from the single-call path below.
+    if let Some(test_run_path) = &cli.grade {
+        let test_run_ast = std::fs::read(test_run_path)
+            .map_err(|e| anyhow::anyhow!("read test-run.ast {}: {e}", test_run_path.display()))?;
+        let compile_diag = match &cli.compile_diag {
+            Some(p) => std::fs::read_to_string(p).unwrap_or_default(),
+            None => String::new(),
+        };
+        let (bytes, runtime, runtime_cache_dir) = match &cli.component {
+            Some(component) => {
+                let bytes = read_component_bytes(component)?;
+                let runtime = match required_runtime(&bytes)? {
+                    Some(req) => Some(resolve_runtime(cli, &req)?),
+                    None => None,
+                };
+                let rcd = resolve_runtime_cache_dir(
+                    runtime.is_some(),
+                    cli.runtime.is_some(),
+                    cli.store.clone(),
+                );
+                (Some(bytes), runtime, rcd)
+            }
+            None => (None, None, None),
+        };
+        return crate::grade::grade(
+            bytes.as_deref(),
+            &test_run_ast,
+            runtime,
+            runtime_cache_dir,
+            cli.component_name.as_deref(),
+            cli.compile_status,
+            &compile_diag,
+        );
+    }
+
     // The component is required on this path: a `.wasm`/stdin arg to run directly. A None `component`
     // reaches here only via the standalone `cdz-run` (which has no compiler to build a project from) — the
     // `cdz run` front-end intercepts the project cases (`Project.cdz` / a directory / omitted) BEFORE
@@ -125,15 +173,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         );
     };
     // The component bytes: from a file, or from stdin when the path is `-`.
-    let component_bytes = if component.as_os_str() == "-" {
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
-            .map_err(|e| anyhow::anyhow!("read component from stdin: {e}"))?;
-        buf
-    } else {
-        std::fs::read(component)
-            .map_err(|e| anyhow::anyhow!("read component {}: {e}", component.display()))?
-    };
+    let component_bytes = read_component_bytes(component)?;
 
     // Resolve the value-heap runtime ONLY if the component records one — a scalar/const component
     // imports nothing and needs no runtime, so a missing store is not an error there. When it does,
@@ -217,21 +257,6 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     let runtime_cache_dir =
         resolve_runtime_cache_dir(runtime.is_some(), cli.runtime.is_some(), cli.store.clone());
 
-    // GRADE mode: run the component against a shredded `test-run.ast` and grade every runnable trial
-    // (the corpus nix pipeline's exec phase). Takes over from the single-call run below — call/args/host
-    // tape come from the artifact, not the CLI.
-    if let Some(test_run_path) = &cli.grade {
-        let test_run_ast = std::fs::read(test_run_path)
-            .map_err(|e| anyhow::anyhow!("read test-run.ast {}: {e}", test_run_path.display()))?;
-        return crate::grade::grade(
-            &component_bytes,
-            &test_run_ast,
-            runtime,
-            runtime_cache_dir,
-            cli.component_name.as_deref(),
-        );
-    }
-
     // The runtime imports `cadenza:nfc/normalize@0.0.0+<hash>` (self-describing — the NFC dependency's
     // content address is stamped inline into the import), and the host resolves that NFC component from the
     // store BY THAT INLINE HASH inside `compose_nfc_into_runtime_linker` (via `runtime_cache_dir`/`CDZ_STORE`/
@@ -306,6 +331,20 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
 // derivation guarantee that execution is deterministic in the (program, runtime content address) pair:
 //= spec/contracts/reproducible-derivation.md#derivation-is-a-function-of-source-and-toolchain
 //# A program that is run or resumed against the value-heap runtime MUST be run against the runtime whose content address is the one pinned for that program, so that execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified execution environment rather than a silent substitution.
+/// Read a component's bytes — from a file, or from stdin when the path is `-` (so the bin composes in a
+/// pipe). Shared by the single-run path and grade mode.
+fn read_component_bytes(component: &std::path::Path) -> anyhow::Result<Vec<u8>> {
+    if component.as_os_str() == "-" {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)
+            .map_err(|e| anyhow::anyhow!("read component from stdin: {e}"))?;
+        Ok(buf)
+    } else {
+        std::fs::read(component)
+            .map_err(|e| anyhow::anyhow!("read component {}: {e}", component.display()))
+    }
+}
+
 fn resolve_runtime(cli: &RunArgs, req: &crate::RuntimeReq) -> anyhow::Result<Vec<u8>> {
     if let Some(path) = &cli.runtime {
         return std::fs::read(path)
