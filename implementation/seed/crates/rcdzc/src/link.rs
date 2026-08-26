@@ -1376,9 +1376,10 @@ mod tests {
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
-    /// END-TO-END through the ML SURFACE: the alias import `import "path" as alias` (v-syntax #3686)
-    /// links + projects through the #3656 module-alias machinery when authored in a `.cdz`. `read_ml`
-    /// parses `import "lib" as lib` to the `(import "lib" lib)` arena (bare-NAME third element = the
+    /// END-TO-END through the ML SURFACE: the alias import `import alias from "path"` (v-syntax #3686,
+    /// respelled from `as` to `from` in #3692) links + projects through the #3656 module-alias machinery
+    /// when authored in a `.cdz`. `read_ml` parses `import lib from "lib"` to the `(import "lib" lib)`
+    /// arena (bare-NAME third element = the
     /// linker's alias discriminant), so `lib.helper` → `(. lib helper)` resolves to the aliased module's
     /// export (→ 40) and the package compiles clean. This is the seam neither v-syntax's parser tests
     /// (parse SHAPE only) nor `the_alias_import_form_resolves_and_projects` (arena-direct s-expr) cover —
@@ -1387,7 +1388,7 @@ mod tests {
     fn the_ml_surface_alias_import_resolves_and_projects() {
         let out = compile_package_ml_app(
             &[("lib", "(do (def (helper) 40) (export helper))")],
-            "import \"lib\" as lib\ndef main() = lib.helper\nexport { main }",
+            "import lib from \"lib\"\ndef main() = lib.helper\nexport { main }",
         );
         assert!(
             !out.has_error(),
@@ -1411,8 +1412,8 @@ mod tests {
                 ("liba", "(do (def (descriptor) 30) (export descriptor))"),
                 ("libb", "(do (def (descriptor) 12) (export descriptor))"),
             ],
-            "import \"liba\" as a\n\
-             import \"libb\" as b\n\
+            "import a from \"liba\"\n\
+             import b from \"libb\"\n\
              def from-a() = a.descriptor\n\
              def from-b() = b.descriptor\n\
              export { from-a, from-b }",
