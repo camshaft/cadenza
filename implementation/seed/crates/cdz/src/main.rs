@@ -7906,7 +7906,7 @@ fn check_one(file: &str, json: bool, verify_fixes: bool) -> (bool, Vec<String>) 
             rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::Diagnostics)]),
         ));
         inputs.push(compiler_cli::entry_artifact(&files[0].name));
-        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+        dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_DIAGNOSTICS)
     } else {
         run_sidecar(
             &files[0].arenas,
@@ -8986,7 +8986,7 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
             rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::FuncLayout)]),
         ));
         inputs.push(compiler_cli::entry_artifact(&files[0].name));
-        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+        dispatch_query_over_inputs(inputs, rcdzc::sidecar::KIND_FUNC_LAYOUT)
     } else {
         run_sidecar(
             &files[0].arenas,
@@ -9133,6 +9133,26 @@ fn run_sidecar_many(
     // No emit target: a query-only run (`DESIGN-sidecar-api.md` query-only mode). The stack guard keeps
     // pathologically deep input a decline, not a crash.
     rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+}
+
+/// Run a SINGLE-RESULT sidecar query over already-prepared `inputs` (a multi-file / package query — the
+/// caller built the `ast`[s] + `KIND_SIDECAR` request + `entry`), producing a `CompileOutput` the caller
+/// reads via `out.artifact(result_kind)`. Under `!standalone` this delegates to `cdz-compile` (spawn +
+/// capture the `-o -` result, tagged `result_kind`); under `standalone` it runs the compiler in-process.
+/// The caller knows the request yields exactly one result of `result_kind` (a lone `Query`).
+fn dispatch_query_over_inputs(
+    inputs: Vec<rcdzc::Artifact>,
+    result_kind: &str,
+) -> rcdzc::CompileOutput {
+    #[cfg(not(feature = "standalone"))]
+    {
+        delegate::run_query_over_inputs(&inputs, result_kind, PROG)
+    }
+    #[cfg(feature = "standalone")]
+    {
+        let _ = result_kind; // the in-process output already carries every artifact by kind
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    }
 }
 
 /// Report a sidecar QUERY RESULT ROW that did not parse into its expected shape — the shared loud-failure

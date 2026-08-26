@@ -373,62 +373,66 @@ fn query_result_kind(request: &rcdzc::Request) -> Option<&'static str> {
     })
 }
 
-/// Delegate a SINGLE sidecar query over `arenas`: build the `ast` + binary-AST `sidecar` request, spawn
-/// `cdz-compile … -o -` (query-only, no `--target`), and CAPTURE stdout — the `-o -` path writes the ONE
-/// query result artifact's bytes to stdout — tagging them with the known result kind. stderr is inherited
-/// so a compile failure's located diagnostics surface. Returns `None` when it can't delegate (a non-query
-/// or a batch of >1 — the caller then runs in-process), so callers see a `CompileOutput` either way. On a
-/// clean run: `CompileOutput { artifacts: [Artifact(kind, bytes)] }`; on a nonzero exit: an EMPTY output
-/// (diagnostics already on stderr → the caller's `report_errors` is a no-op + it fails), matching the
-/// in-process "no artifact for a failed entry" shape.
+/// Delegate a SINGLE sidecar query over `arenas`: build the `ast` + binary-AST `sidecar` request and run
+/// it via [`run_query_over_inputs`]. Returns `None` when it can't delegate (a non-query, or a batch of >1
+/// — batch needs positional result-file reading, a later slice), so the caller runs in-process.
 pub fn run_sidecar_delegated(
     arenas: &cadenza_syntax::Arenas,
     requests: &[rcdzc::Request],
     prog: &str,
 ) -> Option<rcdzc::CompileOutput> {
-    // Single query only: batch (`--where`) needs positional result-file reading (a later slice), and an
-    // emit request never comes through here. A non-query / batch → `None` → the caller runs in-process.
     let [request] = requests else {
         return None;
     };
     let kind = query_result_kind(request)?;
+    let inputs = vec![
+        Artifact::new(
+            rcdzc::Artifact::KIND_AST,
+            "main",
+            cadenza_syntax::codec::encode(arenas),
+        ),
+        Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            build_sidecar_request(requests),
+        ),
+    ];
+    Some(run_query_over_inputs(&inputs, kind, prog))
+}
 
+/// Delegate a SINGLE-RESULT sidecar query over ALREADY-PREPARED input artifacts (`ast`[s] + a
+/// `KIND_SIDECAR` request + any `entry`/`spans`) — the general delegated-query core, for the multi-file
+/// (package) query paths as well as the single-file [`run_sidecar_delegated`]. Materializes the inputs to
+/// temp files, spawns `cdz-compile … -o -` (query-only, no `--target`), and CAPTURES stdout — the `-o -`
+/// path writes the ONE query result artifact's bytes to stdout — tagging them with `result_kind` (the kind
+/// the caller reads via `out.artifact(kind)`). stderr is inherited, so a failed entry's located
+/// diagnostics surface and an EMPTY output makes the caller fail, matching the in-process shape. The
+/// caller must know the request produces exactly ONE result artifact of `result_kind` (true for every
+/// single `Query`); an emit / multi-result request does NOT come through here.
+pub fn run_query_over_inputs(
+    inputs: &[Artifact],
+    result_kind: &str,
+    prog: &str,
+) -> rcdzc::CompileOutput {
     let dir = scratch_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("{prog}: cannot create temp dir {}: {e}", dir.display());
-        return Some(empty_output());
+        return empty_output();
     }
     let _guard = crate::RemoveOnDrop::dir(dir.clone());
 
-    let ast_path = dir.join("main.ast");
-    let sidecar_path = dir.join("drive.sidecar");
-    if std::fs::write(&ast_path, cadenza_syntax::codec::encode(arenas)).is_err()
-        || std::fs::write(&sidecar_path, build_sidecar_request(requests)).is_err()
-    {
-        eprintln!(
-            "{prog}: cannot write temp sidecar inputs under {}",
-            dir.display()
-        );
-        return Some(empty_output());
-    }
+    let Some(specs) = materialize_specs(inputs, &dir, prog) else {
+        return empty_output();
+    };
 
     let program = locate();
     let mut cmd = Command::new(&program);
-    cmd.arg(format!(
-        "{}:main={}",
-        rcdzc::Artifact::KIND_AST,
-        ast_path.display()
-    ))
-    .arg(format!(
-        "{}:drive={}",
-        rcdzc::sidecar::KIND_SIDECAR,
-        sidecar_path.display()
-    ))
-    .arg("-o")
-    .arg("-")
-    .stdout(Stdio::piped())
-    .stderr(Stdio::inherit())
-    .stdin(Stdio::null());
+    cmd.args(&specs)
+        .arg("-o")
+        .arg("-")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .stdin(Stdio::null());
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -438,34 +442,34 @@ pub fn run_sidecar_delegated(
                  $PATH) — a delegating (`--no-default-features`) `cdz` spawns the compiler instead of \
                  linking it; build it with `cargo build -p rcdzc --bin cdz-compile` and re-run"
             );
-            return Some(empty_output());
+            return empty_output();
         }
         Err(e) => {
             eprintln!(
                 "{prog}: could not run cdz-compile ({}): {e}",
                 program.display()
             );
-            return Some(empty_output());
+            return empty_output();
         }
     };
     let output = match child.wait_with_output() {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{prog}: could not read cdz-compile output: {e}");
-            return Some(empty_output());
+            return empty_output();
         }
     };
     if !output.status.success() {
-        // The query's entry failed to compile — cdz-compile printed located diagnostics on stderr. Return
-        // an empty output so the caller's `out.artifact(KIND)` misses and it fails, same as in-process.
-        return Some(empty_output());
+        // The query's entry failed to compile — cdz-compile printed located diagnostics on stderr. An
+        // empty output makes the caller's `out.artifact(KIND)` miss + fail, same as in-process.
+        return empty_output();
     }
-    // The captured stdout IS the query result artifact's bytes; tag it with the kind we know from the
-    // request so the caller's `out.artifact(kind)` finds it.
-    Some(rcdzc::CompileOutput {
-        artifacts: vec![rcdzc::Artifact::new(kind, "0", output.stdout)],
+    // The captured stdout IS the query result artifact's bytes; tag it with the known result kind so the
+    // caller's `out.artifact(result_kind)` finds it.
+    rcdzc::CompileOutput {
+        artifacts: vec![rcdzc::Artifact::new(result_kind, "0", output.stdout)],
         diagnostics: vec![],
-    })
+    }
 }
 
 /// An empty `CompileOutput` (no artifacts, no diagnostics) — a delegated query run's failure shape, where
