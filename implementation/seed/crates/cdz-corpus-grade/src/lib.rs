@@ -118,6 +118,35 @@ pub fn check_regression(actual: Verdict, description: &str, baseline: &str) -> O
     }
 }
 
+/// The per-case exec EXIT CODE — prints the verdict, then decides pass/fail. WITHOUT a baseline, the exec
+/// fails on any outright `Fail` (the miscompile check). WITH a baseline, it reproduces `xtask gate --check`
+/// EXACTLY: it fails ONLY on a REGRESSION (a case the baseline recorded as `pass` that no longer passes).
+/// A NON-regression verdict — including a baseline-`todo`/absent case that is now `Todo` OR even `Fail`
+/// (`todo→fail` and a new-case fail are NOT flagged by `--check`) — passes; a suppressed `Fail` is noted so
+/// the log stays honest. (The whole-run "vanished" case is a separate aggregate.)
+pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>) -> ExitCode {
+    let printed = print_verdict(result, description);
+    match baseline {
+        None => printed,
+        Some(bl) => match check_regression(result.grade.verdict(), description, bl) {
+            Some(msg) => {
+                eprintln!("grade: {msg}");
+                ExitCode::FAILURE
+            }
+            None => {
+                if matches!(result.grade, Grade::Fail(_)) {
+                    eprintln!(
+                        "grade: {description}: FAIL but baseline verdict is {:?} — not a regression \
+                         (xtask gate --check parity: only pass→not-pass fails)",
+                        baseline_verdict(bl, description)
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+        },
+    }
+}
+
 /// One decoded trial: an optional call (`export` + argument value-forms) and the expected outcome.
 pub struct GTrial {
     pub call: Option<GCall>,
@@ -808,6 +837,59 @@ mod tests {
         // gained (todo -> pass) is not a regression; an absent case is not either.
         assert!(check_regression(Verdict::Pass, "an incomplete case", baseline).is_none());
         assert!(check_regression(Verdict::Fail, "absent", baseline).is_none());
+    }
+
+    #[test]
+    fn exec_exit_matches_xtask_check_semantics() {
+        let fmt = |c: ExitCode| format!("{c:?}"); // ExitCode has no PartialEq; compare Debug
+        let success = fmt(ExitCode::SUCCESS);
+        let failure = fmt(ExitCode::FAILURE);
+        let baseline = "pass\ta passing case\ntodo\tan incomplete case\n";
+        let res = |g: Grade| GradeResult {
+            grade: g,
+            ran_a_trial: true,
+        };
+        // WITH baseline: a baseline-PASS case that now FAILS is a REGRESSION → FAILURE.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Fail("x".into())),
+                "a passing case",
+                Some(baseline)
+            )),
+            failure
+        );
+        // WITH baseline: a baseline-TODO case that now FAILS is NOT a regression → SUCCESS (xtask parity).
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Fail("x".into())),
+                "an incomplete case",
+                Some(baseline)
+            )),
+            success
+        );
+        // WITH baseline: an ABSENT case that FAILS is not a regression → SUCCESS.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Fail("x".into())),
+                "absent",
+                Some(baseline)
+            )),
+            success
+        );
+        // WITHOUT baseline: any outright Fail → FAILURE (the miscompile check).
+        assert_eq!(
+            fmt(exec_exit(&res(Grade::Fail("x".into())), "x", None)),
+            failure
+        );
+        // A Pass always succeeds.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Pass),
+                "a passing case",
+                Some(baseline)
+            )),
+            success
+        );
     }
 
     /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects`; a test-run without

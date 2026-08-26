@@ -11,8 +11,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use cdz_corpus_grade::{
-    GTrial, Grade, Outcome as GradeOutcome, check_regression, decode_test_run, grade_run,
-    print_verdict,
+    GTrial, Grade, Outcome as GradeOutcome, decode_test_run, exec_exit, grade_run,
 };
 
 use crate::{HostResponse, Outcome, RunOpts, run_capturing, run_with_live_objects};
@@ -116,14 +115,8 @@ pub fn grade(
         }
     }
 
-    let exit = print_verdict(&result, &test_run.description);
-    // REGRESSION gate (gap #7): if a per-backend baseline is supplied, a case the baseline recorded as
-    // `pass` that no longer passes fails the exec — the per-case analogue of `xtask gate --check`.
-    if let Some(baseline) = baseline
-        && let Some(msg) = check_regression(result.grade.verdict(), &test_run.description, baseline)
-    {
-        eprintln!("grade: {msg}");
-        return Ok(ExitCode::FAILURE);
-    }
-    Ok(exit)
+    // The exit reproduces `xtask gate --check` when a baseline is supplied (fail ONLY on a pass→not-pass
+    // regression; a baseline-todo/absent case that is now todo/fail is not a --check failure), else fails on
+    // any outright Fail (the miscompile check).
+    Ok(exec_exit(&result, &test_run.description, baseline))
 }
