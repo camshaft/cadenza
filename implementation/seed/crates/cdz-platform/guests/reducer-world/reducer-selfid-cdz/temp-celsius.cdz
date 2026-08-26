@@ -1,0 +1,20 @@
+@!contract "temp.celsius"
+@!input Temp
+@!output Temp
+
+// The test-contract module for the P4 self-reflection routing run (design/cadenza-platform.md §1, P4). A
+// minimal single-type schema that SELF-REFLECTS its WHOLE contract as a STRUCTURED descriptor via the shared
+// `contract` lib on `Ast.module` (this module's own AST): `descriptor()` returns
+// Record(id, name, input, output, types), so a consumer can inspect the contract's name/input/output/types
+// field-by-field — not just the routing-key id — setting the precedent that a self-describing contract module
+// reflects its full structured self. The reducer imports `descriptor` and projects `.id` for routing; that
+// projection const-folds cross-module to the temp.celsius routing key (byte-identical to the host contract-id:
+// 0x01 Contract tag ++ blake3 of the canonical (contract "temp.celsius" (types (type Temp …)) Temp Temp)).
+// The def lives HERE (the contract module) and the reducer imports+projects it (the record is never re-exported
+// across the host boundary). This structured-record form instantiates on the current compiler via the
+// record-projection fold (v-cp #3543): the projection folds the record away so its Ast-typed fields never
+// materialize at runtime.
+type Temp = | Mk(f64)
+import { contract } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) = contract(Ast.module)
+export { descriptor }
