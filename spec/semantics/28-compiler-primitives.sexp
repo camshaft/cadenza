@@ -572,3 +572,32 @@
             (def (main) (const (f 55296)))
             (export main)))
   (output (: -1 Int64)))
+
+; --- Primitive 2: const execution — a Char const param folds on the BARE-CALL path too ----------------
+; The recursive-call ACTIVATION gate fires the interpreter for a bare `(f #\c …)` call (not just a `(const
+; …)` block) when a `const` param is const-foldable and all args are const. A Char literal must be RECOGNIZED
+; as a const value (`is_const_value`/`core_is_const_value` carry `Core::ConstChar`) for the gate's all-args-
+; const check to pass — else the fold is skipped and a Char-returning recursive `f` reaches the emitter,
+; which has no runtime Char representation. With that, the bare-call path is symmetric with Int64: a taken
+; trap surfaces CDZ0304 (not a decline), and a value folds.
+
+(case "a taken trap over a Char const param on the bare-call path surfaces CDZ0304"
+  (doc    "`(f #\\a 2)` counts `n` to 0 then traps; the bare recursive-call fold executes the trap and
+           surfaces its message as CDZ0304 — symmetric with the Int64 shape. Before `Core::ConstChar` was a
+           recognized const value, the gate skipped the fold and the Char-returning `f` failed to emit.")
+  (input  (do
+            (def (f (const (: c Char)) (const (: n Int64)))
+              (if (= n 0) (trap "char base reached") (f c (- n 1))))
+            (def (main) (f #\a 2))
+            (export main)))
+  (error  CDZ0304 (message "char base reached")))
+
+(case "a Char const param folds a VALUE through a bare recursive call"
+  (doc    "`(f #\\a 3)` recurses `n` to 0 then reads `Char.to-int c` = 97 — the value form of the bare-call
+           path (no `(const …)` block), folding a Char threaded through the recursion.")
+  (input  (do
+            (def (f (const (: c Char)) (const (: n Int64)))
+              (if (= n 0) (Char.to-int c) (f c (- n 1))))
+            (def (main) (f #\a 3))
+            (export main)))
+  (output (: 97 Int64)))
