@@ -17992,3 +17992,47 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 5 Int64)))
+
+; -- breaker batch 411 (2026-08-26): escaped-closure recovery GENERALIZATIONS (#3722 same-hour
+; probe, cx6 siblings): three nested one-shot hops (depth), an extra scalar arg alongside the
+; closure, and two different performing closures through the same helper (multiplicity) all fold.
+; Filed adjacent to v-effects: let-binding the hop's answer inside the handle body mis-rejects
+; CDZ0101 (well-formed; the pure twin passes), and a branch-selected performing closure declines.
+
+(case "cx9a a performing closure through THREE nested one-shot helper hops folds"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap3 (: g (-> Int64 Int64))) (g 5))
+    (def (ap2 (: g (-> Int64 Int64))) (ap3 g))
+    (def (ap1 (: g (-> Int64 Int64))) (ap2 g))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (ap1 (fn (x) (+ x (E.tick))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 5 Int64)))
+
+(case "cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64)) (: k Int64)) (g k))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (ap (fn (x) (+ x (E.tick))) 5)))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 5 Int64)))
+
+(case "cx9c TWO different performing closures through the same helper on separate calls"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 1))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (+ (ap (fn (x) (+ x (E.tick)))) (ap (fn (y) (* y (E.tick)))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 11 Int64)))

@@ -7739,3 +7739,6 @@ pass	lm2 a helper-built branch-selected list scrutinee reclaims across the call
 pass	lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells
 pass	lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail
 pass	lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list
+pass	cx9a a performing closure through THREE nested one-shot helper hops folds
+pass	cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure
+pass	cx9c TWO different performing closures through the same helper on separate calls
