@@ -7832,3 +7832,8 @@ pass	aeq1 bare equality over two runtime Ast.encode results
 pass	aeq2 bare equality of String.to-bytes twins
 pass	aeq3 arena Bytes laundered through fn params bare-compare equal
 pass	aeq4 a slice VIEW bare-compares equal to its flat twin
+pass	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
+pass	bk2 one-byte-different inputs bare-compare unequal digests
+pass	bk3 runtime digests dedup as set members by content
+pass	bk4 a Map keyed by a runtime digest is findable by a fresh recompute
+pass	bk5 Blake3-of-encode runtime composition compares equal across recomputation
