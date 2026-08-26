@@ -385,3 +385,26 @@
                        ((Option.None) 0))))
             (export main)))
   (output (: 99 Int64)))
+
+; --- Primitive 2: const execution — SET query folds (of / insert / contains / len) under `(const …)` --
+; Parallel to Map: a `(const …)`-demanded SET QUERY const-folds over a `CVal::Set` (distinct members).
+; `Set.of` dedups a constant list; `Set.insert` adds if absent; `Set.contains` → Bool; `Set.len` → count.
+; Same soundness guard: a const set is only QUERIED, never MATERIALIZED (its runtime CHAMP iteration order
+; is not presumed). (Bare `Set.empty` as a value is a minor residual — no `SetEmpty` prim to fold; use
+; `Set.of`.)
+
+(case "a `(const …)` set membership + dedup-len fold"
+  (doc    "`Set.of (list 1 2 2 3)` dedups to {1,2,3} (len 3); `Set.contains … 2` is true. The const set is
+           queried, never materialized. Here `Set.len` of the deduped set folds to 3.")
+  (input  (do
+            (def (main) (const (Set.len (Set.of (list 1 2 2 3)))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a `(const …)` set contains after insert folds"
+  (doc    "`Set.contains (Set.insert (Set.of (list 1 2)) 3) 3` folds to true (100 branch) — insert adds a
+           new member, contains queries it, all at compile time under the force-eval block.")
+  (input  (do
+            (def (main) (const (if (Set.contains (Set.insert (Set.of (list 1 2)) 3) 3) 100 200)))
+            (export main)))
+  (output (: 100 Int64)))
