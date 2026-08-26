@@ -3857,3 +3857,29 @@
   (call main (: 7 Int64))
   (output (: 10 Int64))
   (live-objects 0))
+
+; -- breaker batch 430 (2026-08-26): BACKEND-ASYMMETRY witnesses from the rust-async row audit —
+; two wasm-only declines that BOTH rust targets run correctly: Char Set.to-list (sorted, ckr1) and a
+; String ENTRY param (ckr2, which also exercises Symbol members). Rows: wasm todo / rust+async pass —
+; they auto-flag when the wasm emit gaps close. Refines the routings: the Char to-list decline is a
+; WASM-lowering gap (not runtime capability), and the String/Bytes entry-param gap is wasm-boundary
+; specific.
+
+(case "ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)"
+  (input (do
+    (def (main (: n Int64))
+      (match (List.at (Set.to-list (Set.of (list #\c (if (> n 0) #\a #\q) #\b))) 0)
+        ((Option.Some ch) (if (= ch #\a) 1 0))
+        ((Option.None) -1)))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)"
+  (input (do
+    (def (main (: s String))
+      (let ((st (Set.of (list (Symbol.of "hot") (Symbol.of s) (Symbol.of "cold")))))
+        (+ (Set.len st) (if (Set.contains st (Symbol.of "cold")) 100 0))))
+    (export main)))
+  (call main (: "hot" String))
+  (output (: 102 Int64)))

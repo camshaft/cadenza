@@ -7850,3 +7850,5 @@ pass	rh4 heap STATE and heap ANSWER together — both reclaim
 pass	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
 pass	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 pass	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
+todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
+todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
