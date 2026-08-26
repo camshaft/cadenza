@@ -1,0 +1,51 @@
+// TEST-ONLY host interface for arg-VALUE-capture conformance (design/cadenza-platform.md §9). NOT a platform
+// capability — its OWN package, physically separate from the platform `wit/world.wit`, so it can never
+// co-mingle with or leak into a platform world a real reducer/genesis imports (the platform world vocabulary
+// stays = real capabilities only; this is test infra, like the harness's Recording decorators + Entry
+// variants). Compiled only for the arg-capture conformance guests.
+//
+// It exists to catch a SILENT arg-marshalling miscompile: `validate` / the emit byte-oracle / a run-fires
+// gate all pass even if a host op receives the WRONG bytes, because none asserts the marshalled ARG VALUES.
+// A guest calls `probe` with KNOWN values; the harness records what the host RECEIVED; a Cadenza checker
+// asserts the received value byte-for-byte. It is sized to the mixed-width variant-payload marshal (the
+// register-flatten join valtype vs the memory max-natural store width — the asymmetric coercion whose wrong
+// width is otherwise unobservable). Extending it to another arg shape is a new op or variant case, additive.
+package cadenza:test-arg-probe;
+
+interface arg-probe {
+  // A variant with MIXED-WIDTH scalar payloads — exercises the register-flatten path: the canonical join
+  // valtype is i64 here (a case is 64-bit). A sign-mangled `big` or a `small` read from the wrong bits is
+  // caught by asserting the received value.
+  variant mixed {
+    none,
+    small(u8),
+    big(s64),
+  }
+  // A variant whose cases are ALL <=32-bit — exercises the memory path: the register join valtype would be
+  // i32 (4 bytes) but the canonical memory payload area is MAX NATURAL = 2 bytes (u16). A wrong 4-byte store
+  // overruns into the next list element, caught by asserting adjacent elements stay intact.
+  variant narrow {
+    none,
+    a(u8),
+    b(u16),
+  }
+  // A record carrying a variant FIELD + a scalar — the register-flatten (record-arg marshal) path.
+  record probe-record {
+    v: mixed,
+    tag: s64,
+  }
+  // `r` drives the record-field (register-flatten) path; `items` the list-element (memory) path. No return —
+  // the capture of the RECEIVED arguments is the whole point.
+  probe: func(r: probe-record, items: list<narrow>);
+}
+
+// TEST-ONLY world for arg-capture conformance guests — beside the platform reducer worlds, never one of them.
+// A guest exports the reducer `guest` interface (so the harness spawns + drives it exactly like a
+// reducer-world guest) and imports `arg-probe`. It mirrors the platform `reducer-world` shape: exporting
+// `cadenza:platform/guest` carries the reducer envelope types (message/response/notification/step) it `use`s
+// from the cadenza:platform package — resolved cross-package via the world-artifact `--dep wit/world.wit`,
+// exactly as `reducer-world` gets them — so the world declares no separate `reducer` import.
+world arg-probe-world {
+  import arg-probe;
+  export cadenza:platform/guest;
+}

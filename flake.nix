@@ -1201,6 +1201,15 @@
             mkdir -p "$out"
             ./target/release/cdz-world-artifact \
               implementation/seed/crates/cdz-platform/wit/world.wit "$out"
+            # The TEST-ONLY arg-probe world (its OWN package `cadenza:test-arg-probe`, in wit/test/), for the
+            # arg-VALUE-capture conformance gate. It imports `arg-probe` and exports `cadenza:platform/guest`,
+            # so it needs the platform package resolved cross-package — passed as `--dep wit/world.wit` (the
+            # `Worlds::parse_with_deps` path, #3424). Emitted into the SAME store as the platform worlds, so
+            # `cadenzaWorldArgs "arg-probe-world"` resolves it and a `guests/arg-probe-world/<guest>/` dir
+            # auto-discovers against it (v-platform-itest builds that guest + the arg-value checker).
+            ./target/release/cdz-world-artifact \
+              implementation/seed/crates/cdz-platform/wit/test/arg-probe.wit "$out" arg-probe-world \
+              --dep implementation/seed/crates/cdz-platform/wit/world.wit
             runHook postInstall
           '';
         };
