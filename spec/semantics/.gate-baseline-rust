@@ -7278,3 +7278,6 @@ pass	dd3 two inner effects FAN IN to one shared outer counter in body order
 pass	abd1 an inner ABORT discards its continuation — the outer handler's state advances only for dispatches that ran
 pass	abd2 an abort arm observes the state threaded by earlier resuming dispatches
 pass	abd3 an abort VALUE computed by delegating to the outer handler threads the outer state
+pass	xme1 an effect declared in a LIBRARY module is handled by the importing entry
+pass	xme3 TWO library modules share ONE effect — both performers route to the entry's single handler
+pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the entry only calls it

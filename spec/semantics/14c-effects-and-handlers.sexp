@@ -17662,3 +17662,64 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 1150 Int64)))
+
+;; -- cross-module effects: imported effect handled by entry, shared effect across two libs, lib-internal run-wrapper (breaker batch 379) --
+(case "xme1 an effect declared in a LIBRARY module is handled by the importing entry"
+  (module "lib"
+    (do
+      (effect E (op tick (-> Int64)))
+      (def (poke) (+ (E.tick) (E.tick)))
+      (export E)
+      (export poke)))
+  (input (do
+    (import "lib" (E poke))
+    (def (main (: n Int64))
+      (handle E n
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (poke)))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 70 Int64)))
+
+(case "xme3 TWO library modules share ONE effect — both performers route to the entry's single handler"
+  (module "base"
+    (do
+      (effect E (op tick (-> Int64)))
+      (export E)))
+  (module "liba"
+    (do
+      (import "base" (E))
+      (def (pokea) (E.tick))
+      (export pokea)))
+  (module "libb"
+    (do
+      (import "base" (E))
+      (def (pokeb) (* 100 (E.tick)))
+      (export pokeb)))
+  (input (do
+    (import "base" (E))
+    (import "liba" (pokea))
+    (import "libb" (pokeb))
+    (def (main (: n Int64))
+      (handle E n
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (+ (pokea) (pokeb))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 4030 Int64)))
+
+(case "xme4 a library exports a RUN-WRAPPER installing its own handler — the entry only calls it"
+  (module "lib"
+    (do
+      (effect E (op tick (-> Int64)))
+      (def (run-counting (: seed Int64))
+        (handle E seed
+          ((tick () s (resume (* s 10) (+ s 1))))
+          (+ (E.tick) (E.tick))))
+      (export run-counting)))
+  (input (do
+    (import "lib" (run-counting))
+    (def (main (: n Int64)) (+ (run-counting n) (run-counting (* n 2))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 200 Int64)))
