@@ -414,6 +414,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-corpus-grade"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "cadenza-syntax",
+]
+
+[[package]]
 name = "cdz-num"
 version = "0.0.0"
 dependencies = [
@@ -451,6 +459,7 @@ dependencies = [
  "anyhow",
  "cadenza-syntax",
  "cdz-contract",
+ "cdz-corpus-grade",
  "clap",
  "wasmtime",
  "wat",

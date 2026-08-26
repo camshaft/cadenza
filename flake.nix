@@ -347,6 +347,7 @@
           cdz-contract = "implementation/seed/crates/cdz-contract";
           cdz-platform = "implementation/seed/crates/cdz-platform";
           cdz-corpus = "implementation/seed/crates/cdz-corpus";
+          cdz-corpus-grade = "implementation/seed/crates/cdz-corpus-grade";
           cdz-num = "implementation/seed/crates/cdz-num";
           cdz-rt = "implementation/seed/crates/cdz-rt";
           cdz-run = "implementation/seed/crates/cdz-run";
@@ -2340,6 +2341,7 @@
               clippy-cdz-component-rewrite = mkCrateClippyCrane { crate = "cdz-component-rewrite"; };
               clippy-cdz-contract = mkCrateClippyCrane { crate = "cdz-contract"; };
               clippy-cdz-corpus = mkCrateClippyCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
+              clippy-cdz-corpus-grade = mkCrateClippyCrane { crate = "cdz-corpus-grade"; };
               clippy-cdz-num = mkCrateClippyCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-platform = mkCrateClippyCrane { crate = "cdz-platform"; };
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
@@ -2371,6 +2373,7 @@
               test-cdz-component-rewrite = mkCrateTestCrane { crate = "cdz-component-rewrite"; };
               test-cdz-contract = mkCrateTestCrane { crate = "cdz-contract"; };
               test-cdz-corpus = mkCrateTestCrane { crate = "cdz-corpus"; extraSrc = [ ./spec/semantics ]; };
+              test-cdz-corpus-grade = mkCrateTestCrane { crate = "cdz-corpus-grade"; };
               test-cdz-num = mkCrateTestCrane { crate = "cdz-num"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-platform = mkCrateTestCrane { crate = "cdz-platform"; };
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
