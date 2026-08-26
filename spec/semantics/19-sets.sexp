@@ -1980,21 +1980,18 @@
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 2 Int64)))
 
-; KNOWN LIMITATION (a defined DECLINE, not a miscompile): building a runtime set at TWO different element
-; types in ONE program declines. The synthesized runtime-`Set.of` fold is a single generic recursive def;
-; instantiating it at two element types (a `Set Int64` AND a `Set Bool`) hits the recursive-generic Set-op
-; element-grounding tie (a plain generic recursive def at two types works, so it is the `Set.insert`/empty-
-; seed grounding specifically — v-inference's parked recursive-generic territory). This is a clean DECLINE
-; (before this feature ALL runtime `Set.of` declined, so single-type is a strict gain); when the inference
-; tie is fixed this becomes fully general and this case flips to pass. Pinned as `todo` to guard the boundary.
-(case "Set.of over runtime lists at two different element types declines pending the recursive-generic tie"
+; Building runtime sets at TWO different element types in ONE program. Each runtime-`Set.of` site gets its
+; OWN synthesized fold def (`__set_of_rt$0`, `__set_of_rt$1`, …), so every fold is MONOMORPHIC — instantiated
+; at exactly one element type — and no single generic def is instantiated at two types. This sidesteps the
+; recursive-generic `Set.insert`/empty-seed element-var grounding tie that a single shared generic fold hit
+; (formerly a CDZ0201 decline pinned here as `todo`). Both a `Set Int64` and a `Set Bool` build and dedup.
+(case "runtime Set.of at two different element types in one program each build via a per-site monomorphic fold"
   (doc    "Two runtime-`Set.of` constructions at DIFFERENT element types in one program: a `Set Int64` from
            `(List.concat (list a b) (list a))` and a `Set Bool` from `(List.concat (list (> a b)) (list (<
-           a b)))`. The synthesized runtime-set fold is one generic recursive def; instantiating it at both
-           Int64 and Bool declines (CDZ0201 — the recursive-generic `Set.insert`/empty-seed element grounding
-           tie, v-inference's lane). A DEFINED decline, not a wrong answer: a single-element-type program
-           compiles + runs (the round-trip/concat cases above). The value WOULD be 22 if the tie were
-           resolved (Int set {a,b} = 2, Bool set {true,false} = 2 → 2 + 10·2); kept `todo` until then.")
+           a b)))`. Each site is rewritten to call its OWN synthesized fold def, so each fold is monomorphic
+           (one element type) and both compile — no cross-type instantiation of a shared generic def, so the
+           recursive-generic element-grounding tie never arises. Int set {a,b} = 2, Bool set {true,false} = 2
+           → 2 + 10·2 = 22. A single-element-type program is byte-identical to the earlier one-def synthesis.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
               (+ (Set.len (Set.of (List.concat (list a b) (list a))))
