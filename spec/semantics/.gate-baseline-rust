@@ -7551,3 +7551,6 @@ pass	abx1 two-op effect, BOTH arms resuming (control)
 pass	abx2 two-op effect, one resuming one ABORTIVE (scalar state)
 pass	abx4 mixed arms, list state, abort arm IGNORES the state
 pass	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
+todo	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
+todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
+todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
