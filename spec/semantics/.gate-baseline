@@ -7451,3 +7451,6 @@ pass	pd11 a shared STRING operand survives a concat — both views keep their ow
 pass	shx1 two SIBLING handles of one effect in one expression keep independent states
 pass	shx2 a SEQUENTIAL second handle is seeded by the first handle's result
 pass	shx3 a helper installing a FRESH handle per call gets a fresh state each time
+pass	dd1 a FIVE-level nested delegation chain threads every level's state per inner dispatch
+pass	dd2 a delegation that SKIPS intervening handler levels routes to the right outer handler
+pass	dd3 two inner effects FAN IN to one shared outer counter in body order

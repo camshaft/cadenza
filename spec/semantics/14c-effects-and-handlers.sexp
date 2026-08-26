@@ -17567,3 +17567,54 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 70070 Int64)))
+
+;; -- deep delegation: five-level chain + level-skipping routing + fan-in to one shared counter (breaker batch 377) --
+(case "dd1 a FIVE-level nested delegation chain threads every level's state per inner dispatch"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (effect C (op c (-> Int64)))
+    (effect D (op d (-> Int64)))
+    (effect E (op e (-> Int64)))
+    (def (main (: n Int64))
+      (handle A 1 ((a () s (resume (* s 10) (+ s 1))))
+        (handle B 2 ((b () s (resume (+ s (A.a)) (+ s 1))))
+          (handle C 3 ((c () s (resume (+ s (B.b)) (+ s 1))))
+            (handle D 4 ((d () s (resume (+ s (C.c)) (+ s 1))))
+              (handle E n ((e () s (resume (+ s (D.d)) (+ s 1))))
+                (+ (E.e) (E.e))))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 62 Int64)))
+
+(case "dd2 a delegation that SKIPS intervening handler levels routes to the right outer handler"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (effect C (op c (-> Int64)))
+    (effect D (op d (-> Int64)))
+    (effect E (op e (-> Int64)))
+    (def (main (: n Int64))
+      (handle A 1 ((a () s (resume (* s 10) (+ s 1))))
+        (handle B 2 ((b () s (resume (+ s (A.a)) (+ s 1))))
+          (handle C 30 ((c () s (resume s s)))
+            (handle D 40 ((d () s (resume s s)))
+              (handle E n ((e () s (resume (+ s (B.b)) (+ s 1))))
+                (+ (E.e) (E.e))))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 46 Int64)))
+
+(case "dd3 two inner effects FAN IN to one shared outer counter in body order"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (effect C (op c (-> Int64)))
+    (def (main (: n Int64))
+      (handle A (% n 7) ((a () s (resume s (+ s 1))))
+        (handle B 0 ((b () s (resume (+ 100 (A.a)) s)))
+          (handle C 0 ((c () s (resume (+ 200 (A.a)) s)))
+            (+ (B.b) (+ (C.c) (B.b)))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 403 Int64)))
