@@ -220,7 +220,6 @@ fn engine_fp(engine: &Engine) -> String {
 fn load_runtime_component(
     engine: &Engine,
     runtime_bytes: &[u8],
-    hash: &str,
     opts: &RunOpts,
 ) -> Result<Component> {
     let Some(dir) = opts.runtime_cache_dir.as_deref() else {
@@ -230,10 +229,20 @@ fn load_runtime_component(
     };
     // `<hash>-wt<engine-fingerprint>.cwasm`: the runtime's content address pins the SOURCE, the engine
     // fingerprint pins the COMPILER (wasmtime version + every `Config` input affecting the artifact), so a
-    // cache file is only ever consulted for the exact runtime+engine it was made for. (`hash` is empty
-    // only for an unpinned import, which errors earlier; guard anyway.)
-    let cache_path =
-        (!hash.is_empty()).then(|| dir.join(format!("{hash}-wt{}.cwasm", engine_fp(engine))));
+    // cache file is only ever consulted for the exact runtime+engine it was made for.
+    //
+    // Key by the content address of the ACTUAL `runtime_bytes` we are compiling — NOT the component's
+    // recorded requirement (`req.hash`). In the normal store-resolved path these are equal (`resolve_runtime`
+    // content-verifies the stored bytes against `req.hash`), so the release cwasm keeps the SAME key and is
+    // still reused. But with an explicit `--runtime <path>` override the override bytes have a DIFFERENT
+    // address than `req.hash`; keying by `req.hash` there served the ALREADY-cached RELEASE cwasm and
+    // silently ignored the override bytes — the bug that made a `--runtime <debug> --store <store>` run
+    // execute the RELEASE runtime, so `--report-live-objects` read the shipped counter-less build and printed
+    // a vacuous 0. Hashing the bytes we actually compile makes the cwasm a true content-addressed cache: the
+    // debug runtime gets its own key and can never collide with the release one.
+    let hash = crate::cli::content_address(runtime_bytes);
+    let cache_path = dir.join(format!("{hash}-wt{}.cwasm", engine_fp(engine)));
+    let cache_path = Some(cache_path);
 
     // Fast path: a cached artifact that deserializes cleanly.
     if let Some(path) = &cache_path
@@ -2217,7 +2226,7 @@ fn instantiate_runtime(
             req.hash
         )
     })?;
-    let runtime = load_runtime_component(engine, runtime_bytes, &req.hash, opts)?;
+    let runtime = load_runtime_component(engine, runtime_bytes, opts)?;
     let heap_func_names = heap_interface_funcs(engine, &runtime)?;
     let mut rt_linker: Linker<()> = Linker::new(engine);
     // TRANSITIVE COMPOSE (FINDING#23, leaves-first): the runtime is NOT a leaf — its world imports
@@ -3756,10 +3765,13 @@ mod tests {
             runtime_cache_dir: Some(dir.clone()),
             ..Default::default()
         };
-        let hash = "deadbeefcafe";
+        // The cache file is keyed by the CONTENT ADDRESS of the bytes actually compiled (not a
+        // component's recorded requirement), so the debug-override path can never collide with a
+        // release cwasm — see `load_runtime_component`.
+        let hash = crate::cli::content_address(&bytes);
 
         // First call: cache miss → compile + write the fingerprinted artifact.
-        load_runtime_component(&e, &bytes, hash, &opts).expect("first load compiles");
+        load_runtime_component(&e, &bytes, &opts).expect("first load compiles");
         let expected = dir.join(format!("{hash}-wt{}.cwasm", engine_fp(&e)));
         assert!(
             expected.exists(),
@@ -3767,7 +3779,7 @@ mod tests {
         );
 
         // Second call: the file exists → it must DESERIALIZE cleanly (the fast path), not error.
-        load_runtime_component(&e, &bytes, hash, &opts)
+        load_runtime_component(&e, &bytes, &opts)
             .expect("second load deserializes the cached artifact");
 
         let _ = std::fs::remove_dir_all(&dir);
