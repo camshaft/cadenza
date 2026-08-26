@@ -18873,3 +18873,43 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 806 Int64)))
+
+;; -- Perceus dup-site boundary faces II: recursive update chain + divergent aliases + RRB leaf-boundary shared update (breaker batch 374) --
+(case "pd4 a RECURSIVE per-level List.update chain zeroes a copy while the original survives"
+  (input (do
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (setz (: xs (List Int64)) (: i Int64))
+      (if (= i 3) xs (setz (List.update xs i 0) (+ i 1))))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((zs (setz xs 0)))
+          (+ (* 100 (rd xs 0)) (+ (rd zs 0) (rd zs 2))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 700 Int64)))
+
+(case "pd5 TWO divergent update aliases from one list each see only their own write"
+  (input (do
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((a (List.update xs 0 100)))
+          (let ((b (List.update xs 1 200)))
+            (+ (rd a 1) (+ (rd b 0) (* 100 (rd xs 0))))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 709 Int64)))
+
+(case "pd6 a shared update at index 35 of a 40-element list crosses the RRB leaf boundary persistently"
+  (input (do
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39)))
+        (let ((ys (List.update xs 35 (* n 1000))))
+          (+ (rd ys 35) (rd xs 35)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 7035 Int64)))
