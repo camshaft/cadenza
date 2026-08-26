@@ -7471,3 +7471,34 @@
             (export main)))
   (call   main (: 41 Int64))
   (output (: 42 Int64)))
+
+(case "a let-bound value inside a function taking a parameter compiles and runs"
+  (doc    "The beta-reduction atom-copy behavior: `(g 10)` inlines g's body `(let ((x (+ n 1))) (+ x x))`,
+           substituting n->10 in the binding init; the let-local x must re-resolve against the substituted
+           init. Runs to (+ 11 11) = 22.")
+  (input  (do (def (g (: n Int64)) (let ((x (+ n 1))) (+ x x))) (def (main) (g 10)) (export main)))
+  (call   main) (output (: 22 Int64)))
+
+(case "a record field key coinciding with a parameter name survives the call, projected"
+  (doc    "A field key `(record (x 5))` and projection key `(. r x)` are LABELS, immune to beta-substitution
+           of the param `x`; the record is not corrupted -> projecting x reads 5.")
+  (input  (do (def (f (: x Int64)) (. (record (x 5)) x)) (def (main) (f 7)) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "a param-colliding record key does not corrupt a non-colliding field"
+  (doc    "Multi-field: the colliding key `x` (= param name) does not corrupt the record; project the
+           non-colliding field y -> 2.")
+  (input  (do (def (f (: x Int64)) (. (record (x 1) (y 2)) y)) (def (main) (f 7)) (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "a record field VALUE referencing the parameter still substitutes"
+  (doc    "The complement of key-immunity: a field VALUE that references the param STILL beta-substitutes
+           (immunity is key-only). `(record (y x))` with x=7, projected y -> 7.")
+  (input  (do (def (f (: x Int64)) (. (record (y x)) y)) (def (main) (f 7)) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "each parameter of a wide six-param signature resolves to its own binder"
+  (doc    "`f` takes six params and references three out of order; a wrong binder index would compute a
+           wrong result. (f 1 2 4 8 16 32) -> p1 + p3 + p5 = 2+8+32 = 42.")
+  (input  (do (def (f (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64)) (+ p1 (+ p3 p5))) (def (main) (f 1 2 4 8 16 32)) (export main)))
+  (call   main) (output (: 42 Int64)))

@@ -2249,6 +2249,7 @@ pass	a let-bound set shared across a consuming Set.union and a later read is dup
 pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
 pass	a let-bound value in a handle body flows into a perform's argument (the always-worked twin)
+pass	a let-bound value inside a function taking a parameter compiles and runs
 pass	a let-bound variable derived from a runtime parameter passed as a call argument
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
@@ -2829,6 +2830,7 @@ pass	a one-shot two-hole body folds with the leading perform in an if condition
 pass	a package entry's exported def wins over a same-named def in a library file
 pass	a package entry's exported def wins over an alphabetically-later same-named library def
 pass	a pairwise MAX-GAP walk over an Instant timeline subtracts adjacent newtype payloads
+pass	a param-colliding record key does not corrupt a non-colliding field
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
@@ -3057,10 +3059,12 @@ pass	a record binding pattern may leave a field's value a wildcard
 pass	a record binding pattern naming an absent field is rejected
 pass	a record carrying a field the annotation does not name is rejected
 pass	a record carrying an Ast-typed field materializes as a WHOLE runtime value and its Ast field is matched
+pass	a record field VALUE referencing the parameter still substitutes
 pass	a record field VALUE still reads the parameter it names after the call
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record field holding a sum is projected then matched
 pass	a record field holding a via-remove map equals the direct-field record
+pass	a record field key coinciding with a parameter name survives the call, projected
 pass	a record field key that coincides with a parameter name survives the call
 pass	a record field with no value expression is rejected, not a crash
 pass	a record is built and consumed inside the arm (structural product per dispatch)
@@ -5433,6 +5437,7 @@ pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
 pass	each multi-shot branch OBSERVES its own divergent state via a trailing peek
 pass	each multi-shot branch observes its own heap-lineage length
+pass	each parameter of a wide six-param signature resolves to its own binder
 pass	each recursion level installs its own handle around a def-bound perform
 pass	ed1 TWO defs each install their OWN handler for one effect — main calls both, seeds and arms fully independent
 pass	ed2 a handled def CALLED from inside another def's handle — the callee's region shadows the caller's mid-body
