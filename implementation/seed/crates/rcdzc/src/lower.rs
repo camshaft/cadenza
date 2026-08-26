@@ -408,16 +408,31 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             if core_is_const_value(db, &ordinary) {
                 return ordinary;
             }
-            // A poison from the ordinary fold (e.g. a provable ConstTrap) IS the block's outcome — surface it.
-            if let Core::Poison(r) = ordinary {
-                return Core::Poison(r);
+            // A PROVABLE ConstTrap (CDZ0304) from the ordinary fold is FAIL-LOUD — surface it directly, so the
+            // whole-expression `const_eval` below cannot mask a proven trap by taking a different reduction.
+            if let Core::Poison(r) = &ordinary
+                && r.code == Some(Code::ConstTrap)
+            {
+                return Core::Poison(r.clone());
             }
+            // Otherwise try whole-expression `const_eval`. core_of's PIECEWISE lowering can DECLINE (a non-trap
+            // poison) where the whole expression folds — e.g. a recursion threading a `Set`/`Map` ACCUMULATOR
+            // returns an intermediate `CVal::Set`/`CVal::Map` that `cval_to_core` won't MATERIALIZE (the
+            // query-only soundness guard), so the piecewise fold of the recursive call declines, yet
+            // `const_eval` evaluates the whole `(const (… query (grow …)))` fine, flowing the collection
+            // through the query as a `CVal`. So try `const_eval` whether `ordinary` is a (non-trap) decline
+            // poison OR a non-constant runtime `Core`. A `const_eval`-discovered trap (`CVal::Trap`) still
+            // surfaces as its fail-loud ConstTrap core via the `matches!` below.
             let mut budget: u64 = 1_000_000;
             if let Some(cv) = const_eval(db, expr, &CEnv::default(), &mut budget)
                 && let Some(core) = cval_to_core(db, &cv)
                 && (core_is_const_value(db, &core) || matches!(cv, CVal::Trap(_)))
             {
                 core
+            } else if let Core::Poison(r) = ordinary {
+                // `const_eval` could not fold it either — surface the ORIGINAL decline (more specific than the
+                // generic const-block message; e.g. a genuinely-runtime operand's own reason).
+                Core::Poison(r)
             } else {
                 Core::Poison(
                     Reject::coded(
