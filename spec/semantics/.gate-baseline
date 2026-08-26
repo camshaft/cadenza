@@ -2867,6 +2867,7 @@ pass	a partial constructor stored in a record field completes when applied
 pass	a partial record match naming one scalar field drops the unnamed heap fields
 pass	a partially-applied RUNTIME closure binds its residual to a let, then completes it
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
+pass	a partially-applied operator passed to an annotated named HOF applies its remaining operand
 pass	a pass-through closure that returns its arg via a trivial let composes at one element type
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
@@ -5074,6 +5075,8 @@ pass	cdr1 a CIDER press splitting juice from pomace — pressing yields two-thir
 pass	cds1 a COUNTDOWN alarm with snooze — tick decrements answering the remaining time until it FIRES at zero (answering a negated ten-plus-fire-count and auto-reloading the seed interval), snooze adds slack, and the shorter interval fires MID-STREAM where the longer one fires on the very last tick
 pass	cel1 a RULE-NINETY cellular automaton in one Int64 byte — step XORs the left-shifted and right-shifted worlds masked to eight bits answering the new generation, density popcounts between steps, and the seeds' initial worlds diverge into different orbits with different densities
 pass	cfr1 a CONTINUED-FRACTION expander — each step peels the integer part of p/q answering it then inverts the remainder to (q, p-a*q), a drained fraction answers -1 forever, and the seeds share a denominator but one terminates two steps early so its tail is sentinels while the other is still peeling
+pass	ch01 a bare prim passed as a function value applies
+pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
 pass	ch1 a FOUR-op result chain in one nested expression — each op transforms the last result while bumping the shared state differently
 pass	ch2 the same FOUR-op chain flattened through LETs — one binding per hop must equal the nested form exactly
 pass	ch21 CHAINED computed keys — the second perform's key is computed FROM the first's answer, both dispatches walk the two-lookup-match arm
@@ -5099,6 +5102,8 @@ pass	chg1 a BATTERY controller with a protected reserve — charge clamps at one
 pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
 pass	chk2 a closed handle with STRING state folds under (const ...)
 pass	chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole
+pass	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
+pass	cj03r Ast.print of a RUNTIME AST value renders
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
@@ -5107,9 +5112,12 @@ pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
 pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
+pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
 pass	cmp1 a COMPOSE-ACCUMULATING closure state — each dispatch replaces the state with a new closure wrapping the OLD one (double-then-add over the previous function), applied at 1 per step
 pass	cms1 closed handle with TUPLE state under (const ...)
 pass	cms2 closed handle with RECORD state under (const ...)
+pass	cms3 closed handle with MAP state under (const ...)
+pass	cms4 closed handle with SET state under (const ...)
 pass	cmt1 a COMPENSATING transaction log — each do applies its delta AND pushes the inverse onto the undo stack, each compensate pops the LAST inverse and applies it, unwinding in strict LIFO order back to the seed
 pass	cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits
 pass	cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None
@@ -7552,10 +7560,3 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	cj03r Ast.print of a RUNTIME AST value renders
-pass	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
-pass	ch01 a bare prim passed as a function value applies
-pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
-pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
-pass	cms3 closed handle with MAP state under (const ...)
-pass	cms4 closed handle with SET state under (const ...)
