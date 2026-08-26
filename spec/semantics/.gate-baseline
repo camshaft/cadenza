@@ -2679,6 +2679,7 @@ pass	a nested-map BUMP (lookup-inner, insert-inner, reinsert-outer) builds a mul
 pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation frame drop
 pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a neutral and-true keeps both the trap and the value of its left operand
+pass	a neutral or-false keeps both the trap and the value of its left operand
 pass	a newtype match-arm destructure reads the erased scalar back
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
