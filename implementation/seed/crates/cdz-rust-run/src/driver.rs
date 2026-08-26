@@ -56,6 +56,26 @@ pub fn ordinary_call_expr(module: &str, export: &str, args: &[String], async_mod
     format!("{name}({})", marshaled.join(", "))
 }
 
+/// The call expression for an export, FACTORY-aware. A host-closure FACTORY (its return type names a
+/// closure — rcdzc emits `pub fn f(caps…) -> Rc<dyn Fn(x)->r>`) is applied in TWO groups: the first
+/// `K` = factory-capture-count marshaled args build the handle, the rest apply the returned closure —
+/// `f(caps)(applied)` — the native equivalent of the wasm make/call resource ABI. A non-factory export is
+/// the ordinary single call `f(args)`. Mirrors xtask `run_program_rust`'s factory-split. (The closure-
+/// PARAMETER consumer application — a `build_closure_consumer_call` — and the async `block_on` harness stay
+/// deferred; the corpus's factory cases need only this split.)
+pub fn call_expr(module: &str, export: &str, args: &[String], async_mode: bool) -> String {
+    use crate::sig::rust_factory_param_count;
+    let name = cdz_rust_render::rust_ident(export);
+    let marshaled = marshal_call_args(module, export, args, async_mode);
+    match rust_factory_param_count(module, &name, async_mode) {
+        Some(k) if k <= marshaled.len() => {
+            let (caps, applied) = marshaled.split_at(k);
+            format!("{name}({})({})", caps.join(", "), applied.join(", "))
+        }
+        _ => format!("{name}({})", marshaled.join(", ")),
+    }
+}
+
 /// Assemble the full RUST driver source for a SYNC, ORDINARY-call corpus case — the common path (the
 /// host-closure factory/consumer application + async `block_on` harness are later increments). It wraps the
 /// emitted `module` in `mod prog { … }` (so its `pub fn main` becomes `prog::main`, not a duplicate crate
@@ -77,8 +97,20 @@ pub fn build_driver_source(
         cdz_sum_descriptors, cdz_sum_params, cdz_sum_qualified_heads, cdz_unit_form,
     };
 
-    let call_or_await = format!("prog::{}", ordinary_call_expr(module, export, args, false));
-    let ret_ty = cdz_return_type(module, export);
+    let call_or_await = format!("prog::{}", call_expr(module, export, args, false));
+    // A host-closure FACTORY export's `cdz-return` note is the returned closure's CURRIED arrow
+    // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
+    // closure's FINAL result — peel the arrow to that type so `cdz_render_expr` renders it structurally
+    // (a bare arrow would render as a closure and not compile). A non-factory export keeps its note.
+    let ret_ty = cdz_return_type(module, export).map(|t| {
+        if crate::sig::rust_factory_param_count(module, &cdz_rust_render::rust_ident(export), false)
+            .is_some()
+        {
+            crate::sig::peel_arrow_result(&t)
+        } else {
+            t
+        }
+    });
 
     // A diverging result type (`-> !`) — its `cdz-return` note is `Any` / `!` / a bare `?N` result var.
     let diverging = ret_ty.as_deref().is_some_and(|t| {
@@ -452,6 +484,34 @@ mod tests {
             "BigInt marshal: {got:?}"
         );
         assert_eq!(got[1], "7", "the i64 arg passes through verbatim");
+    }
+
+    #[test]
+    fn call_expr_factory_splits_caps_from_applied() {
+        // A factory `adder(k) -> Rc<dyn Fn(i64)->i64>` with call args [k=3, x=5]: K=1 capture → adder(3)(5).
+        let m = "pub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }";
+        assert_eq!(
+            call_expr(m, "adder", &["3".into(), "5".into()], false),
+            "adder(3)(5)"
+        );
+        // A non-factory export is the ordinary single call.
+        assert_eq!(
+            call_expr(
+                "pub fn f(a: i64, b: i64) -> i64 { a }",
+                "f",
+                &["1".into(), "2".into()],
+                false
+            ),
+            "f(1, 2)"
+        );
+    }
+
+    #[test]
+    fn driver_factory_export_calls_split_and_renders_the_peeled_result() {
+        let m = "// cdz-return[adder]: (-> Int64 Int64)\npub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }";
+        let d = build_driver_source(m, "adder", &["3".into(), "5".into()], &[], &[]);
+        assert!(d.contains("prog::adder(3)(5)"), "factory-split call: {d}");
+        assert!(d.contains("println!"), "renders the peeled Int64 result");
     }
 
     #[test]

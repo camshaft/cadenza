@@ -187,6 +187,44 @@ pub fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> O
     Some(sig.params.iter().filter(|p| !is_env_param(p)).count())
 }
 
+/// Peel a CURRIED arrow type down to its final (non-arrow) RESULT — `(-> Int64 (-> Int64 (Tuple Int64
+/// Int64)))` → `(Tuple Int64 Int64)`. A host-closure factory's `cdz-return` note is the returned closure's
+/// arrow; the driver applies the factory to full arity, so the rendered value is this final result, not the
+/// arrow. A non-arrow type is returned unchanged. Balanced-paren aware: the arrow is `(-> <arg> <rest>)`
+/// where `<arg>` may itself be a parenthesized compound, so skip the first top-level sub-term and take
+/// `<rest>`, recursing while `<rest>` is itself a `(-> …)`. Ported from xtask's `peel_arrow_result`.
+pub fn peel_arrow_result(ty: &str) -> String {
+    let mut cur = ty.trim();
+    loop {
+        let inner = match cur.strip_prefix("(-> ") {
+            Some(i) => i.trim_end().strip_suffix(')').map(str::trim),
+            None => None,
+        };
+        let Some(inner) = inner else {
+            return cur.to_string();
+        };
+        // `inner` = `<arg> <rest>`. Skip the first top-level term (`<arg>`), balancing parens.
+        let bytes = inner.as_bytes();
+        let mut depth = 0usize;
+        let mut split = None;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                b' ' if depth == 0 => {
+                    split = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        match split {
+            Some(i) => cur = inner[i + 1..].trim(),
+            None => return cur.to_string(),
+        }
+    }
+}
+
 /// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
 /// boundary between the factory's own arg group and the returned-closure application. `None` when there is
 /// no top-level application group (a non-factory `export(args…)`, or a factory whose closure is not
@@ -356,6 +394,19 @@ mod tests {
         );
         // A plain non-factory call has no application group.
         assert_eq!(split_factory_application("f(1, 2)"), None);
+    }
+
+    #[test]
+    fn peel_arrow_result_takes_the_final_type() {
+        assert_eq!(peel_arrow_result("(-> Int64 Int64)"), "Int64");
+        assert_eq!(
+            peel_arrow_result("(-> Int64 (-> Int64 (Tuple Int64 Int64)))"),
+            "(Tuple Int64 Int64)"
+        );
+        // A compound ARG is skipped as one term.
+        assert_eq!(peel_arrow_result("(-> (Tuple Int64 Int64) Int64)"), "Int64");
+        // A non-arrow type is unchanged.
+        assert_eq!(peel_arrow_result("Int64"), "Int64");
     }
 
     #[test]
