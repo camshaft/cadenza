@@ -2574,22 +2574,10 @@ fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
         "no `(/ 100 x)` may be hoisted before the `||` short-circuit branch (would trap at x=0 where \
          the lhs is true and the rhs must never run): {code:?}"
     );
-    // RUNTIME trap/value parity for the `||`: x=0 → lhs `(= x 0)` true → short-circuits, rhs never runs
-    // → true (1), NO trap; x=4 → lhs false → rhs `(< 25 5)` = false → the `or` is false (0); x=50 → lhs
-    // false → rhs `(< 2 5)` = true → 1.
-    use wasmtime::component::Val;
-    let src = "(module m (def (f (: x Int64)) (or (= x 0) (< (/ 100 x) 5))) (export f))";
-    let bytes =
-        compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
-    assert!(
-        run_returns_with::<bool>(&bytes, "f", &[Val::S64(0)]),
-        "x=0: lhs true short-circuits the `||`, the trapping rhs must NOT run (no divide-by-zero) → true"
-    );
-    assert!(!run_returns_with::<bool>(&bytes, "f", &[Val::S64(4)])); // 100/4=25, !(25<5) → false
-    assert!(run_returns_with::<bool>(&bytes, "f", &[Val::S64(50)])); // 100/50=2, 2<5 → true
-    // The TAKEN rhs still traps when it genuinely runs: x nonzero but... a divide-by-zero can only occur
-    // at x=0, which short-circuits — so the `||` here never traps for any input (the point: the frontier
-    // fix removed the SPURIOUS trap without suppressing a real one; a real divide only runs at x!=0).
+    // RUNTIME trap/value parity for the `||` (x=0 short-circuits on the true lhs → the trapping rhs never
+    // runs → true, no trap; x=4 → false; x=50 → true) migrated to the corpus (run via cdz-run): case "a
+    // self-shielding or does not hoist its trapping right operand past the short-circuit" in
+    // spec/semantics/02-binding-and-control.sexp.
 }
 
 /// CSE must not hoist a repeated trapping subexpr out of a conditionally-selected MATCH ARM (the match
@@ -2609,7 +2597,6 @@ fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
 #[test]
 fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_match_arm() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     let src = "(module m \
                  (def (main (: k Int64) (: d Int64)) \
                    (match k (0 100) (_ (+ (/ 10 d) (/ 10 d))))) \
@@ -2619,14 +2606,9 @@ fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_match_arm() {
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "an all-scalar Int64 match program imports no value-heap runtime — the witness runs store-free"
     );
-    // k=0 selects the constant arm; the wildcard arm's repeated `(/ 10 d)` never runs, so d=0 must NOT
-    // trap. A CSE that hoisted `(/ 10 d)` above the match would divide by zero here — `run_returns_with`'s
-    // `.call().expect(...)` would then panic on the trap, failing the test; a clean 100 proves no hoist.
-    let got: i64 = run_returns_with(&bytes, "main", &[Val::S64(0), Val::S64(0)]);
-    assert_eq!(
-        got, 100,
-        "k=0 selects the constant arm; the other arm's trapping `(/ 10 d)` must not be hoisted/run → 100"
-    );
+    // Value parity (k=0 selects the constant arm → 100; the wildcard arm's trapping `(/ 10 0)` must not be
+    // hoisted/run) migrated to the corpus (run via cdz-run): case "a repeated trapping divide inside one
+    // match arm is not hoisted past the match" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same

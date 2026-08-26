@@ -1565,6 +1565,27 @@
   (call   f (: true Bool)  (: 20 Int64) (: 4 Int64)) (output (: 10 Int64))
   (call   f (: true Bool)  (: 9 Int64)  (: 0 Int64)) (trap   "division by zero"))
 
+(case "a self-shielding or does not hoist its trapping right operand past the short-circuit"
+  (doc    "`(or (= x 0) (< (/ 100 x) 5))` — the LEFT operand `(= x 0)` is true EXACTLY at the value (x=0)
+           where the right operand's `(/ 100 x)` would divide by zero, so the short-circuit shields it: x=0
+           -> lhs true -> the `||` is true (1) and the divide never runs (NO trap). CSE must not hoist `(/
+           100 x)` before the short-circuit branch. x=4 -> lhs false -> `(< 25 5)` false -> 0; x=50 -> `(< 2
+           5)` true -> 1. The single-divide self-shielding companion of the repeated-divide or-shield above.")
+  (input  (do (def (f (: x Int64)) (if (or (= x 0) (< (/ 100 x) 5)) 1 0)) (export f)))
+  (call   f (: 0 Int64)) (output (: 1 Int64))
+  (call   f (: 4 Int64)) (output (: 0 Int64))
+  (call   f (: 50 Int64)) (output (: 1 Int64)))
+
+(case "a repeated trapping divide inside one match arm is not hoisted past the match"
+  (doc    "The match companion of the if-arm and connective CSE-shield cases above: `(match k (0 100) (_ (+
+           (/ 10 d) (/ 10 d))))` uses the checked `(/ 10 d)` twice, but only in the WILDCARD arm. A match
+           runs only the SELECTED arm, so an arm-local repeated node must stay inside its arm, never hoisted
+           to the function top. main(0, 0) selects the `k=0` constant arm -> 100, and the wildcard arm's `(/
+           10 0)` must NOT run (no divide-by-zero). Pins the Match conditional-position CSE frontier, the
+           last unwitnessed position after And/Or/If.")
+  (input  (do (def (main (: k Int64) (: d Int64)) (match k (0 100) (_ (+ (/ 10 d) (/ 10 d))))) (export main)))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 100 Int64)))
+
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
            a block evaluates to its last form's value). The earlier forms are pure here, so the block's
