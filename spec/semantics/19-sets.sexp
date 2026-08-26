@@ -3831,3 +3831,27 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 2 Int64)))
+
+; -- breaker batch 425 (2026-08-26): the #3786 flat-gate QUERY faces — Set.contains and Map.lookup
+; with ARENA-sourced Bytes probes (Ast.encode) now compile and answer correctly (AstEncode/AstPrint
+; classified Owned). OUTPUT-ONLY pins: a borrowing op does not yet reclaim its owned operand (the
+; Blake3Of-class follow-up) — live-objects clauses arrive with that fix.
+
+(case "xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode"
+  (input (do
+    (def (main (: n Int64))
+      (if (Set.contains (Set.of (list (Ast.encode (Ast.Int (BigInt.of n))))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "xf4 a Map keyed by encode-Bytes discriminates two different encodes"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (Map.insert (map) (Ast.encode (Ast.Int (BigInt.of n))) 10) (Ast.encode (Ast.Name "x")) 20)))
+        (match (Map.lookup m (Ast.encode (Ast.Int (BigInt.of n))))
+          ((Option.Some v) v)
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 10 Int64)))
