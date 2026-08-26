@@ -3325,6 +3325,7 @@ pass	a runtime BigInt remainder takes the dividend's sign
 pass	a runtime BigInt three-way compare agrees with the boolean ordering
 pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude
 pass	a runtime BigInt three-way compare reports equality as Equal
+pass	a runtime BigInt wrapped in Ast.Int round-trips and reclaims the boxed payload on drop (no live objects)
 pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
 pass	a runtime Bool host arg crosses the boundary and drives two response bindings
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure

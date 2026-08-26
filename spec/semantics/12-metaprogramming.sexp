@@ -4050,3 +4050,14 @@
     (export main)))
   (call main (: 7 Int64))
   (output (: 5 Int64)))
+
+(case "a runtime BigInt wrapped in Ast.Int round-trips and reclaims the boxed payload on drop (no live objects)"
+  (doc    "`(+ (BigInt.of k) 1N)` is a RUNTIME BigInt (entry param k drives it, so it heap-allocs a Big and
+           does NOT const-fold), wrapped in `(Ast.Int ...)`, matched, and narrowed back with `Int64.of`.
+           main(41) = (41+1) narrowed = 42. Dropping the Ast.Int must cascade the reclaim into the boxed
+           BigInt payload -- net 0 live cells (a leaked payload = the sum drop not cascading).")
+  (input  (do
+            (def (main (: k Int64)) (let ((x (+ (BigInt.of k) 1N))) (match (Ast.Int x) ((Ast.Int n) (Int64.of n)) (_ -1))))
+            (export main)))
+  (call   main (: 41 Int64)) (output (: 42 Int64))
+  (live-objects 0))
