@@ -9559,6 +9559,10 @@ fn record_interface_export(
     let mut wrappers = Vec::new();
     let mut funcs = Vec::new();
     let mut any_record = false;
+    // Set when a member's RESULT spills to memory (a compound result-lower): the typed-interface wrapper must
+    // then take over even for an all-scalar-param member, to WRITE the result to the retptr (else the compound
+    // result leaks as a raw u32 handle via the provider path). The result-side twin of `any_record`.
+    let mut needs_result_wrapper = false;
     for member in &export_iface.members {
         // Bind the WIT member to a guest export by kebab-normalized name (a Cadenza def `onMessage` binds to
         // the WIT `on-message` member — same rule as fields/variants/exports).
@@ -9611,6 +9615,15 @@ fn record_interface_export(
             return None;
         }
         let (result_lower, result_vts) = record_result_lower(db, &e.result, &member.func.result)?;
+        // A member whose RESULT spills to memory (a compound result-lower, not a passthrough scalar) needs
+        // this wrapper for the result WRITE even when its params are all bare scalars — the scalar-param +
+        // compound-result case (co02: `f(x:s64) -> record{…}`). Without this the `!any_record` gate below bails
+        // and the export falls through to the provider path, which hands the compound result back as its raw
+        // u32 handle (a leaked pointer, not the lifted value). The result-write machinery (`SpillRecord` /
+        // `canon_write_of`) is identical to the record-param route — only the param-shape gate excluded it.
+        if matches!(result_lower, serialize::ResultLower::SpillRecord { .. }) {
+            needs_result_wrapper = true;
+        }
         let def_abs = layout.abs(e.def)?;
         wrappers.push(serialize::WrapperDesc {
             name: member.name.clone(),
@@ -9630,9 +9643,10 @@ fn record_interface_export(
             },
         });
     }
-    // A pure-scalar interface is handled (no wrapper) by scalar_interface_export; only take over when a
-    // member actually has a record param needing a wrapper.
-    if !any_record {
+    // A pure-scalar interface (all-scalar params AND scalar/unit results) is handled (no wrapper) by
+    // scalar_interface_export; take over when a member needs a wrapper — either a RECORD param (rebuild) OR a
+    // spilled COMPOUND result (retptr write). A scalar-param + compound-result member needs only the latter.
+    if !any_record && !needs_result_wrapper {
         return None;
     }
     // The exported instance must EXPORT each named (record/variant) type its funcs reference, or the
