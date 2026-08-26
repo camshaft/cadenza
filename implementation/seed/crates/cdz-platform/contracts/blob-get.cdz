@@ -1,0 +1,24 @@
+@!contract "cdz-platform.blob.get"
+@!input GetRequest
+@!output GetResult
+
+// The §8 content-addressed store GET contract (design/cadenza-platform.md §8): read the bytes at a content
+// hash. Distinct from cdz-platform.blob.put so a reducer dispatches read-vs-store by CONTRACT-ID. NON-CORE
+// (non-core): Cadenza reducers consume it via self-reflection; codegen emits no Rust binding for it.
+
+// The content hash to read (raw Bytes of the hash).
+type GetRequest = | Get(Bytes)
+// The read result: the stored bytes, or Missing if the hash is unknown.
+type GetResult = | Found(Bytes) | Missing
+
+def a-get() -> GetRequest = GetRequest.Get(b"some-hash")
+@test
+def get-conforms() =
+  match a-get() with | GetRequest.Get(h) => if h == b"some-hash" then unit else trap("get hash mismatch")
+
+// The uniform self-reflecting descriptor (operator shape), same as every contract.
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
+
+export { GetRequest.*, GetResult.*, descriptor }

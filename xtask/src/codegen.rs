@@ -241,8 +241,20 @@ fn emit_or_check(out: &PathBuf, source: &str, check: bool, oracle: &str, summary
 // `xtask check`) fails if a committed file is stale.
 // ================================================================================================
 
-/// Generate a schema module for every `cdz-platform/contracts/*.cdz`, plus the `contracts/mod.rs` that
-/// lists them (so adding a contract file wires it in with no hand-editing). See the section banner.
+/// The contracts whose schema the Rust kernel/host actually uses (grep-verified against
+/// `crate::contracts::<name>` use-sites) — the ONLY ones codegen emits a Rust binding for. Every other
+/// contract (application/conformance schemas a Cadenza guest consumes by self-reflection — `blob.*`,
+/// `state.*`, itest fixtures) is validated but generates NO Rust, per the operator's "don't generate Rust for
+/// non-core contracts, it just bloats and is never used". Add a name here only when the host genuinely needs
+/// its Rust types. (`effect` is a §4 fixture with zero current host use-sites — a declassify candidate, kept
+/// for now pending a check that no Rust test references it.)
+const CORE_CONTRACTS: &[&str] = &[
+    "deliver", "timer", "run", "lifecycle", "spawned", "check", "verdict", "effect",
+];
+
+/// Generate a schema module for every CORE `cdz-platform/contracts/*.cdz` ([`CORE_CONTRACTS`]), plus the
+/// `contracts/mod.rs` that lists them (so adding a contract file wires it in with no hand-editing). A
+/// non-core contract is validated but emits no Rust. See the section banner.
 fn generate_contracts(paths: &Paths, check: bool) {
     let dir = paths.seed.join("crates/cdz-platform/contracts");
     let out_dir = paths.seed.join("crates/cdz-platform/src/contracts");
@@ -312,7 +324,20 @@ fn generate_contracts(paths: &Paths, check: bool) {
             })
             .to_string();
         let out = out_dir.join(format!("{name}.rs"));
-        names.push(name.clone());
+
+        // Only CORE contracts — the ones the Rust kernel/host actually uses — get a Rust binding. A non-core
+        // contract (a Cadenza guest/reducer consumes it via self-reflection, the host never does) is still
+        // VALIDATED (its `@test`s run) but emits NO Rust and is OMITTED from `contracts/mod.rs`: the operator's
+        // "don't generate Rust for non-core contracts, it just bloats and is never used". CORE is grep-verified
+        // against the actual `crate::contracts::<name>` use-sites in the host; a new application/conformance
+        // contract (blob.*, state.*, itest fixtures) is non-core by default. (A `.cdz` marker pragma would be
+        // more self-documenting, but the pragma registry is a closed set — an unknown `@!` key is rejected,
+        // CDZ0601 — so classification lives here rather than in the source.)
+        let cadenza_only = !CORE_CONTRACTS.contains(&name.as_str());
+        // Only a CORE contract is declared in `contracts/mod.rs` (a non-core one has no Rust module).
+        if !cadenza_only {
+            names.push(name.clone());
+        }
 
         // MTIME short-circuit (inner loop ONLY): when the generated file is newer than its source, neither
         // revalidate (which builds + runs `cdz`) nor regenerate — the committed file is current. This is a
@@ -322,7 +347,7 @@ fn generate_contracts(paths: &Paths, check: bool) {
         // re-renders and content-compares, exactly like the ABI checks, so codegen-logic drift is a hard
         // failure rather than a silent skip. (Regression: the FIX B single-ctor elision left the kernel
         // contracts stale-but-mtime-fresh, and this gate reported them "up to date" until forced.)
-        if !check && up_to_date(&out, src) {
+        if !check && !cadenza_only && up_to_date(&out, src) {
             println!("xtask codegen: {} is up to date (mtime).", out.display());
             continue;
         }
@@ -345,6 +370,15 @@ fn generate_contracts(paths: &Paths, check: bool) {
             &["test", staged_str],
             &format!("validate {}", src.display()),
         );
+        // Non-core (`@!cadenza-only`): validated above (its `@test`s ran), but emit no Rust — a Cadenza guest
+        // reads it via self-reflection, the host never does.
+        if cadenza_only {
+            println!(
+                "xtask codegen: {} is non-core (not in CORE_CONTRACTS) — validated, no Rust binding generated.",
+                src.display()
+            );
+            continue;
+        }
         let ast_bytes = run_cdz_capture(
             paths,
             &["convert", src_str, "--to", "binary"],

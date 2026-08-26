@@ -1,0 +1,26 @@
+@!contract "cdz-platform.blob.put"
+@!input PutRequest
+@!output PutResult
+
+// The §8 content-addressed store PUT contract (design/cadenza-platform.md §8): store the carried bytes,
+// answered with their content hash. A DISTINCT contract (not a payload sentinel on a shared contract) so a
+// reducer dispatches store-vs-read by CONTRACT-ID — the operator's multi-contract shape. Pairs with
+// cdz-platform.blob.get. NON-CORE (not in the codegen core allow-list): consumed by Cadenza reducers via self-reflection, not by
+// the Rust host, so codegen validates it but emits no Rust binding.
+
+// The bytes to store.
+type PutRequest = | Put(Bytes)
+// The content hash the store answered with (a Hash crosses as its raw Bytes).
+type PutResult = | Stored(Bytes)
+
+def a-put() -> PutRequest = PutRequest.Put(b"blob-bytes")
+@test
+def put-conforms() =
+  match a-put() with | PutRequest.Put(p) => if p == b"blob-bytes" then unit else trap("put payload mismatch")
+
+// The uniform self-reflecting descriptor (operator shape), same as every contract.
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
+
+export { PutRequest.*, PutResult.*, descriptor }
