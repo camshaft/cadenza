@@ -44,9 +44,9 @@ wasmtime::component::bindgen!({
 });
 
 use crate::{
-    BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId, KvStore,
-    Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, RejectedSink, Request,
-    ResourceLimits, Response, RunSink,
+    ArgProbeSink, BlobStore, Bytes, ContractId, Delivered, Delivery, EdgeKind, Error, Hash, HostId,
+    KvStore, Message, Notification, Origin, Outcome, ReducerGraph, ReducerId, RejectedSink,
+    Request, ResourceLimits, Response, RunSink,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -114,6 +114,11 @@ struct HostState {
     /// `step.requests` entry otherwise. `None` when no observing node wired a recorder (the run path pays zero
     /// then). Mirrors [`rejected`](Self::rejected).
     run_sink: Option<Arc<dyn RunSink>>,
+    /// Where a TEST-ONLY `arg-probe.probe` host call is recorded — the received `probe-record` and
+    /// `list<narrow>`, each canonical-`Value.encode`d — so an arg-value-capture conformance run asserts the
+    /// marshalled ARG VALUES byte-for-byte (§9). `None` outside the arg-capture conformance world (the common
+    /// case), so an ordinary reducer pays zero. Mirrors [`run_sink`](Self::run_sink).
+    arg_probe: Option<Arc<dyn ArgProbeSink>>,
     /// The per-reducer linear-memory limiter the wasm store enforces (see `arm_store_safety`): a ceiling on
     /// linear memory so one guest cannot exhaust host RAM and take down the process. Lives here because a wasm
     /// [`Store`]'s limiter projects from its data (`Store::limiter`); the store enforces the limits it holds.
@@ -1095,6 +1100,7 @@ fn null_host_state(
         run,
         rejected: None,
         run_sink: None,
+        arg_probe: None,
         limits: reducer_store_limits(limits),
         resource_limits: *limits,
     }
@@ -1124,6 +1130,7 @@ type ProvenanceFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Provenance> + Send + S
 type DeliveryFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn Delivery> + Send + Sync>;
 type RejectedSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RejectedSink> + Send + Sync>;
 type RunSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn RunSink> + Send + Sync>;
+type ArgProbeSinkFactory = Arc<dyn Fn(ReducerId) -> Arc<dyn ArgProbeSink> + Send + Sync>;
 
 pub struct WasmProgramStore {
     /// The shared per-host instantiation core (engine, linkers, content store, compiled cache, pure-run memo),
@@ -1158,6 +1165,10 @@ pub struct WasmProgramStore {
     /// [`with_run_sink`](WasmProgramStore::with_run_sink), so a run is not recorded (each reducer's `run_sink`
     /// is `None`) unless an observing node injects a recording sink.
     make_run_sink: Option<RunSinkFactory>,
+    /// Builds each reducer's sink for the TEST-ONLY `arg-probe.probe` host call (§9 arg-value capture). `None`
+    /// until set with [`with_arg_probe`](WasmProgramStore::with_arg_probe), so it is wired only for the
+    /// arg-capture conformance world (each reducer's `arg_probe` is `None` otherwise). Mirrors `make_run_sink`.
+    make_arg_probe: Option<ArgProbeSinkFactory>,
 }
 
 impl WasmProgramStore {
@@ -1206,6 +1217,7 @@ impl WasmProgramStore {
             make_delivery: Arc::new(|_id| Arc::new(crate::NoDelivery) as Arc<dyn Delivery>),
             make_rejected: None,
             make_run_sink: None,
+            make_arg_probe: None,
         })
     }
 
@@ -1251,6 +1263,17 @@ impl WasmProgramStore {
     #[must_use]
     pub fn with_run_sink(mut self, make_run_sink: RunSinkFactory) -> Self {
         self.make_run_sink = Some(make_run_sink);
+        self
+    }
+
+    /// Wire each reducer's sink for the TEST-ONLY `arg-probe.probe` host call (§9 arg-value capture). Pass
+    /// `move |_id| sink.clone()` for a shared recording sink so the received (canonical-encoded) `probe-record`
+    /// and `list<narrow>` become an observation a checker asserts byte-for-byte. Unset (`None`) by default, so
+    /// it is wired only for the arg-capture conformance world; wiring a factory makes each reducer's
+    /// `arg_probe` `Some`. Uniform with [`with_run_sink`](WasmProgramStore::with_run_sink).
+    #[must_use]
+    pub fn with_arg_probe(mut self, make_arg_probe: ArgProbeSinkFactory) -> Self {
+        self.make_arg_probe = Some(make_arg_probe);
         self
     }
 }
@@ -1331,6 +1354,7 @@ impl ProgramStore for WasmProgramStore {
             run: Some(Arc::clone(&self.inst)),
             rejected: self.make_rejected.as_ref().map(|f| f(ctx.id)),
             run_sink: self.make_run_sink.as_ref().map(|f| f(ctx.id)),
+            arg_probe: self.make_arg_probe.as_ref().map(|f| f(ctx.id)),
             limits: reducer_store_limits(&effective),
             resource_limits: effective,
         };
@@ -1379,6 +1403,7 @@ mod tests {
             run: None,
             rejected: None,
             run_sink: None,
+            arg_probe: None,
             limits: super::reducer_store_limits(&super::ResourceLimits::default()),
             resource_limits: super::ResourceLimits::default(),
         }

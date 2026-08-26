@@ -273,6 +273,22 @@ pub trait RunSink: Send + Sync {
     );
 }
 
+/// A sink for the TEST-ONLY `arg-probe.probe` host call — the arg-value-capture conformance probe (§9). A
+/// guest calls `probe` with KNOWN typed values; the host `Value.encode`s the RECEIVED `r` (a `probe-record`)
+/// and `items` (a `list<narrow>`) and hands them here, so a Cadenza checker asserts the marshalled ARG VALUES
+/// byte-for-byte — catching a silent arg-marshalling miscompile (a mixed-width variant payload read from the
+/// wrong bits) that `validate` / the emit byte-oracle / a run-fires gate all miss. Not a platform capability —
+/// test infra, wired only for the arg-capture conformance world (like the harness's `Recording` decorators).
+/// `Send + Sync`, shared behind an `Arc`; a host holds one as an `Option<Arc<dyn ArgProbeSink>>` (`None` = not
+/// recorded, the disabled path pays zero). Mirrors [`RunSink`].
+pub trait ArgProbeSink: Send + Sync {
+    /// Record a `probe` call: the received `record` (the `probe-record` value) and `items` (the `list<narrow>`
+    /// value), EACH already canonical-`Value.encode`d to bytes by the host, so a checker asserts them
+    /// byte-for-byte. Synchronous — a sink appends to an in-memory observation log. Only ever called when the
+    /// host holds `Some` sink.
+    fn record(&self, record: &[u8], items: &[u8]);
+}
+
 /// The in-memory [`System`], generic over its [`Runtime`](crate::Runtime): each reducer an async task on the
 /// runtime, draining a channel mailbox. Its state lives in a [`Shared`] behind an `Arc`, so a running
 /// reducer's own task can spawn and deliver in turn — the recursion the router needs to route an emitted
