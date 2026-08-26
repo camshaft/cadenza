@@ -4280,6 +4280,7 @@ pass	a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)
+pass	a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)
 pass	a velocity multiplied by a time recovers the distance dimension
 pass	a view-interned Symbol participates in Set.to-list content order
 pass	a violated @requires traps BEFORE the body's abortive perform can fire

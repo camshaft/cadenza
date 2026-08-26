@@ -1093,3 +1093,11 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.mode (: (fast unit) mode)))
   (host-calls (call cadenza:demo/hosti.mode))
   (output (: 1 Int64)))
+
+(case "a SCALAR-param export returning a RECORD lifts the result (not a raw handle) (via an imposed WIT world)"
+  (doc "SHAPE 56 - a scalar-param export with a COMPOUND (record) RESULT: f(x: s64) -> record{b1,b2,b3: s64}. The result SPILLS (3 flat > the 1-result cap) → the canonical ABI returns it via a caller-provided retptr, which the guest must WRITE. The record-PARAM route already did this (record_interface_export's SpillRecord result-lower); the SCALAR-param route was gated out by `any_record` and fell through to the provider path, which handed back the value-heap u32 HANDLE (a leaked pointer, not the value — breaker's cor02/co02 rendered ~1114400). Fix: admit the typed-interface wrapper when a member has a spilled compound result too (needs_result_wrapper), not only a record param. Pins that a scalar-param compound result LIFTS to the record value on all backends' wasm path.")
+  (wit-world (world w (export iface (member f (func (param x (s64)) (result ("record" (b1 (s64)) (b2 (s64)) (b3 (s64)))))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (def (f (: x Int64)) (record (= b1 x) (= b2 (* x 2)) (= b3 (+ x 100)))) (export f)))
+  (call f (: 7 Int64))
+  (output (: (record (= b1 7) (= b2 14) (= b3 107)) (record (b1 Int64) (b2 Int64) (b3 Int64)))))
