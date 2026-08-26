@@ -3293,7 +3293,23 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
                 .filter(|_| s.chars().count() == 1)
                 .map(Val::Char),
         )?,
-        Type::String => Val::String(s.to_string()),
+        // The corpus writes a string argument as a QUOTED literal (`(: "abc" String)` → `s` = `"abc"`,
+        // quotes included). Parse the literal — strip the delimiters, apply the closed escape set, and
+        // NFC-normalize — exactly as the front-end reads a source string, so the marshalled value is the
+        // string's CONTENT (`abc`), not the 5-char token `"abc"`. An unquoted `s` (a bare CLI arg) is taken
+        // verbatim. (The Rust backend path needs no equivalent: it emits the corpus literal as Rust source,
+        // where `"abc"` already denotes the 3-char string.)
+        Type::String => {
+            let val = match s
+                .strip_prefix('"')
+                .and_then(|inner| inner.strip_suffix('"'))
+            {
+                Some(inner) => cadenza_syntax::literal::unescape_string(inner)
+                    .map_err(|c| anyhow!("argument `{s}`: unknown string escape `\\{c}`"))?,
+                None => s.to_string(),
+            };
+            Val::String(val)
+        }
         // A FIXED-SHAPE tuple argument (the direct-call compound-arg path): the host supplies it as a
         // component `tuple<…>` value, which the canonical ABI flattens into the guest's core params. The
         // corpus writes it as `(tuple <f0> <f1> …)` (an optional leading `tuple` head, else a bare

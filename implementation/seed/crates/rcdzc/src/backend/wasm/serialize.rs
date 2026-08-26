@@ -988,6 +988,8 @@ fn core_module_impl(
             .flatten()
             .any(FieldRebuild::has_bytes_leaf)
             || matches!(w.result, ResultLower::SpillRecord { .. })
+            // A TOP-LEVEL memory-bearing leaf param (String/Bytes) reads its bytes out of linear memory too.
+            || w.mem_leaf_params.iter().any(Option::is_some)
     });
     // A host op with a COMPOUND result also needs the SHARED linear memory (imported `"mem"`.`"mem"`) — the
     // host writes the spilled result there and the guest lift reads it. (Same `import_realloc` condition; the
@@ -1257,18 +1259,19 @@ fn core_module_impl(
             let mut inner = Vec::new();
             let mut leaf = 0u32;
             for (pi, pp) in wrap.params.iter().enumerate() {
-                // A TOP-LEVEL memory-bearing leaf param (String/Bytes) takes precedence: lift its `(ptr, len)`
-                // into a value-heap Bytes handle (copy-in loop) — for a String, build a String from it — and
-                // leave that handle on the stack as the def arg directly (NOT wrapped in a record cell).
-                if let Some(kind) = wrap.mem_leaf_params.get(pi).copied().flatten() {
+                // A TOP-LEVEL memory-bearing leaf param (String/Bytes) takes precedence: copy its boundary
+                // `(ptr, len)` bytes out of linear memory into a value-heap byte-leaf handle and leave that
+                // handle on the stack as the def arg DIRECTLY (NOT wrapped in a record cell). A `String` and a
+                // `Bytes` param have the SAME lift: a Cadenza `String` value IS a flat UTF-8 byte-leaf, built
+                // exactly by `bytes-alloc` + `bytes-set` (the `Core::ConstStr` emit + the `str-new` rep), so the
+                // copied buffer is already a canonical String handle — no `str-from-bytes` decode (a WIT
+                // `string` param is guaranteed valid UTF-8, and that op would re-wrap it). Only the boundary
+                // TYPE differs (`string` vs `list<u8>`), fixed at the routing site via `ty_natural_wit`.
+                if wrap.mem_leaf_params.get(pi).copied().flatten().is_some() {
                     let (buf, ctr) =
                         scratch.expect("a memory-bearing leaf param needs the scratch locals");
                     emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
-                    leaf += 2; // the list/string flattened to (ptr, len)
-                    if kind == MemLeafKind::Str {
-                        inner.push(op::CALL);
-                        uleb128(imp("str-from-bytes"), &mut inner); // Bytes handle → String handle
-                    }
+                    leaf += 2; // the string/list flattened to (ptr, len)
                     continue;
                 }
                 match pp {
