@@ -48179,51 +48179,11 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             0,
             "and eq/not-mirrored-eq → false"
         );
-        // ORDERING is NOT commutative — `(< a b)` and `(< b a)` are DIFFERENT (a disjoint pair), so they must
-        // not collapse via a bogus swap-idempotence; both compares are consumed by the (correct) disjoint
-        // handling, which yields a constant here, so 0 eq/ne is fine — the point is the VALUE is right.
-        use wasmtime::component::Val;
-        let f = |params: &str, body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f {params}) (if {body} 1 0)) (export f))"
-            ))))
-            .expect("compile")
-        };
-        // VALUE PARITY: mirrored-eq forms equal `(= a b)`.
-        let andm = f("(: a Int64) (: b Int64)", "(and (= a b) (= b a))");
-        let orm = f("(: a Int64) (: b Int64)", "(or (= a b) (= b a))");
-        for (a, b) in [(3, 3), (3, 5), (0, 0)] {
-            let want = if a == b { 1 } else { 0 };
-            assert_eq!(
-                run_returns_with::<i64>(&andm, "f", &[Val::S64(a), Val::S64(b)]),
-                want,
-                "and-mirrored @{a},{b}"
-            );
-            assert_eq!(
-                run_returns_with::<i64>(&orm, "f", &[Val::S64(a), Val::S64(b)]),
-                want,
-                "or-mirrored @{a},{b}"
-            );
-        }
-        // `(< a b)` && `(< b a)` is a contradiction → always false (must NOT mis-fold to one comparison).
-        let lt = f("(: a Int64) (: b Int64)", "(and (< a b) (< b a))");
-        for (a, b) in [(3, 5), (5, 3), (4, 4)] {
-            assert_eq!(
-                run_returns_with::<i64>(&lt, "f", &[Val::S64(a), Val::S64(b)]),
-                0,
-                "ordering-mirror contradiction @{a},{b}"
-            );
-        }
-        // TRAP SAFETY: a trapping operand declines the commutative swap (needs trap-free), so both compares
-        // stay and the trap fires. `(/ 10 a)` traps at a=0.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: a Int64) (: b Int64)) (if (and (= (/ 10 a) b) (= b (/ 10 a))) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0), Val::S64(5)]),
-            "a trapping operand keeps both compares and traps"
-        );
+        // Value + trap parity — mirrored-eq (and/or) equals `(= a b)`, the swapped-ordering pair `(and
+        // (< a b) (< b a))` is a contradiction (always false), and the commutative swap declines a
+        // trapping operand — is the corpus family "a mirrored equality pair … folds by commutativity",
+        // "a swapped-operand ordering pair is a contradiction …", and "the commutative equality swap-fold
+        // declines a trapping operand …" (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
