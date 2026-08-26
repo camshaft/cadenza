@@ -4,11 +4,15 @@
 // identical to the host (`cdz_platform::Contract` / `cdz_contract::contract_id_from_module`). So a guest
 // (e.g. a reducer) can match `msg.contract` against a contract's id WITHOUT a hardcoded hash literal.
 //
-// Two entry points:
-//   contract-id(m) -> Bytes                     -- just the id (the routing key). Crosses module imports.
-//   contract(m)    -> Record(id, name, input, output, types)  -- the full descriptor (the id plus the
-//     structured AST pieces). Import the accessor under a name DISTINCT from the record fields
-//     (`def cid() = contract(Ast.module).id`, not `def id()`), so it crosses module imports.
+// Entry points (all fold at compile time; import under a name DISTINCT from any record field, e.g.
+// `def cid() = contract-id(Ast.module)`, so the nullary projecting def folds + crosses module imports):
+//   contract-id(m)          -> Bytes  -- just the id (the routing key). Runtime-representable.
+//   contract-declaration(m) -> Bytes  -- the WHOLE contract, its canonical `(contract …)` declaration
+//     encoded. Runtime-representable + re-inspectable (`Ast.decode`); the id is `0x01 ++ blake3` of it.
+//     Export this alongside `contract-id` to self-describe fully — the id routes, the declaration inspects.
+//   contract(m) -> Record(id, name, input, output, types)  -- the full descriptor as a COMPILE-TIME value.
+//     Its `input`/`output`/`types` are `Ast` (compile-time-only), so it does NOT cross a module import as a
+//     runtime value — use it at compile time, or `contract-declaration` to export the whole contract.
 //
 // Handles the NATURAL contract-module shape: doc comments nest following forms (peeled per form via
 // `unwrap`), and `def`/`@test`/`export` forms are dropped (only `(type …)` forms collected). The whole
@@ -91,6 +95,14 @@ def declaration(const m: Ast) -> Ast =
 def contract-id(const m: Ast) -> Bytes =
   Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m))))
 
+// The WHOLE contract as its canonical declaration `(contract <name> (types …) <input> <output>)` run
+// through `Ast.encode` — Bytes, so it is runtime-representable (crosses module imports + reducer
+// instantiation, unlike the `contract` record whose Ast-typed fields are compile-time-only) yet fully
+// re-inspectable: a consumer `Ast.decode`s it to read the name / types / input / output, and the id is
+// exactly `0x01 ++ blake3` of it. This is the self-describing "whole contract" a module should export
+// alongside its `contract-id` — the id for routing, the declaration for inspection.
+def contract-declaration(const m: Ast) -> Bytes = Ast.encode(declaration(m))
+
 // The contract name from `@!contract`. TRAPS if that pragma's value is not a string literal (a malformed
 // contract module) — a genuine error, so the fold fails rather than yield an empty name.
 def contract-name(const forms: List(Ast)) -> String =
@@ -98,7 +110,11 @@ def contract-name(const forms: List(Ast)) -> String =
   | Option.Some(s) => s
   | Option.None => trap("contract-id: @!contract value is not a string literal")
 
-// The full descriptor: the id plus the structured pieces.
+// The full descriptor: the id plus the structured pieces, as a COMPILE-TIME value. Its `input`/`output`/
+// `types` are `Ast` — compile-time-only, NOT runtime-representable — so this record cannot cross a module
+// import as a runtime value or be carried by an instantiated reducer (a def returning it fails to
+// instantiate). Use it at compile time to read the pieces; to export the whole contract at runtime, export
+// `contract-declaration` (Bytes) and re-inspect via `Ast.decode`.
 def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
   match m with
   | Ast.List(forms) =>
@@ -109,4 +125,4 @@ def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output
         types = types-of(forms) }
   | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
-export { contract-id, contract }
+export { contract-id, contract, contract-declaration }
