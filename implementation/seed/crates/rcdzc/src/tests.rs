@@ -11418,33 +11418,6 @@ fn a_let_wrapped_recursive_dispatch_threads_outstate_to_a_trailing_observer() {
     }
 }
 
-/// FIXED (breaker finding, was a CHECK/COMPILE DIVERGENCE — a spurious decline of a well-typed program).
-/// `(def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get)))` — a RUNTIME-seeded handler
-/// whose IDENTITY arm resumes the seed unchanged through a BARE-perform body. `cdz check` solved the result
-/// Int64 (the value is plainly the seed), but LOWERING declined "function return type has no machine
-/// representation" (wasm) / "result type Any has no native Rust representation" (rust). ROOT: the ordinary
-/// `thread` path in `reduce_handle` returns the perform's resume VALUE (here the state binder → the init seed
-/// `k`) via `deep_fresh_copy` — a freshly-pushed subtree with root parent `None`. When that value is a BARE
-/// NAME referencing an ENCLOSING binder (`k` = main's param), the copy has no lexical chain, so it reads
-/// UNBOUND → `Poison` → `type_of(rewritten)` = `Any` → the decline. Advancing the arm (`resume (+ s 1) …`),
-/// a compound body (`(+ 0 (St.get))`), or a literal seed each HID it (those force the value through an op
-/// that re-parents its operands); the pure pass-through was the gap. FIX: `reduce_handle` now
-/// `reparent_under_handle_site`s the threaded result (the same re-anchoring the E5 pure-one-hole + multi-shot
-/// blocks already do), restoring the chain so `k` re-resolves to main's param and types Int64. k=9 → 9.
-#[test]
-fn a_runtime_seeded_identity_arm_bare_perform_handle_yields_the_seed() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(do \
-        (effect St (op get (-> Unit Int64))) \
-        (def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get))) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("compiles (identity arm resuming the runtime seed — was a spurious 'no machine rep' decline)");
-    let v: i64 = run_returns_with(&bytes, "main", &[Val::S64(9)]);
-    assert_eq!(v, 9, "the identity arm resumes the seed; k=9 → 9");
-}
-
 /// ADVERSARIAL companion (task #15, breaker witness): a caller-observed MUTUALLY-recursive effectful callee
 /// must DECLINE CLEANLY, never leak the internal `$s0`/`$t0` state-param names. `ea`/`eb` form an SCC (each
 /// performs `Counter.bump`), and `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's out-state via the

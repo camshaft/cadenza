@@ -2038,6 +2038,7 @@ pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
 pass	a guarded record match arm gates the fields it binds and falls through on a failing guard
 pass	a guarded variant arm falls through when the guard fails
 pass	a guarded wildcard arm falls through to a tail-recursive call
+pass	a handle as an exported fn's DIRECT body resumes the caller's runtime-param seed
 pass	a handle body reads an enclosing function parameter
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose body NEVER performs is exactly its body (zero dispatches)

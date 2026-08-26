@@ -492,6 +492,20 @@
             (export main)))
   (call   main (: 9 Int64)) (output (: 9 Int64)))
 
+(case "a handle as an exported fn's DIRECT body resumes the caller's runtime-param seed"
+  (doc    "The identity-arm-resumes-seed pin's DIRECT-in-export face (the helper-held case seeded by a
+           caller param covers the helper variant). Here the handle IS the export's direct body and the
+           threaded resume result is a BARE NAME referencing main's OWN param k — the reduced body must
+           reparent to the export def's param so k re-resolves, else it read UNBOUND and the fn declined
+           'no machine representation' / a bogus CDZ0101. The identity arm (get (u) s (resume s s)) resumes
+           the seed unchanged, so main(k) = k. k=9 -> 9. This pure pass-through was the gap the advancing/
+           compound/helper-held variants each hid.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main (: k Int64)) (handle St k ((get (u) s (resume s s))) (St.get)))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
 (case "a resuming perform in an if-condition threads its state advance to the taken branch"
   (doc    "`(if (and b (> (St.tick) 0)) (St.tick) -99)` seeded 0, arm `(tick (u) s (resume (+ s 1) (+ s 1)))`.
            With b=true the condition's tick advances state 0->1, so the then-branch `(St.tick)` reads 1 and
