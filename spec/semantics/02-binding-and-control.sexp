@@ -3704,6 +3704,68 @@
   (call   f (: 2000 Int64)) (output (: 30 Int64))
   (call   f (: 7 Int64)) (output (: 99 Int64)))
 
+; ── DEAD-ARM ELIMINATION is value-transparent ────────────────────────────────────────────────────────
+; An arm the scrutinee's provable range can never reach is dropped (probe + body) by the backend. The
+; elimination is a pure emit optimization — a dead arm was unreachable anyway — so dispatch is IDENTICAL
+; whether or not it fires. These pin the observable VALUE across the shapes that trigger the drop: a
+; masked scrutinee (`& x 7` in [0,7]), a wide-unsigned probe that only LOOKS out of range (kept), a
+; guarded arm, a flow-refined scrutinee (`(> n 100)`), and the all-arms-dead collapse to the wildcard.
+(case "a match over a masked scrutinee whose out-of-range arm is unreachable dispatches to the live arms"
+  (doc    "`(match (& x 7) (100 111) (0 222) (_ 333))` — `(& x 7)` is always in [0,7], so the `100` arm can
+           never match (it is dropped by dead-arm elimination, but that is unobservable). Dispatch: x=8 →
+           8&7=0 → the `0` arm → 222; x=5 → 5&7=5 → the wildcard → 333.")
+  (input  (do (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f)))
+  (call   f (: 8 Int64)) (output (: 222 Int64))
+  (call   f (: 5 Int64)) (output (: 333 Int64)))
+
+(case "a match over a masked scrutinee keeps an in-range arm at the range boundary"
+  (doc    "The live-arm companion: `(match (& x 7) (7 111) (100 222) (_ 333))` — `7` IS in [0,7] so the `7`
+           arm is LIVE (kept) while `100` is dead. x=15 → 15&7=7 → the `7` arm → 111; x=8 → 8&7=0 → the
+           wildcard → 333. Pins that only the genuinely-unreachable arm is elided, not the boundary-live one.")
+  (input  (do (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f)))
+  (call   f (: 15 Int64)) (output (: 111 Int64))
+  (call   f (: 8 Int64)) (output (: 333 Int64)))
+
+(case "a wide-unsigned match probe past i64 is not mistaken for out-of-range and still fires"
+  (doc    "SOUNDNESS: a `UInt64` probe of 2^63 has a NEGATIVE i64 bit pattern but a value legitimately in
+           the UInt64 range — it must NOT be treated as out-of-range and dropped. `(match x (2^63 111) (0
+           222) (_ 333))` over a UInt64: x=2^63 → the arm fires → 111; x=0 → 222. (Bodies are Int64 literals,
+           so the result reads back as Int64.)")
+  (input  (do (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f)))
+  (call   f (: 9223372036854775808 UInt64)) (output (: 111 Int64))
+  (call   f (: 0 UInt64)) (output (: 222 Int64)))
+
+(case "a guarded arm over a masked scrutinee stays gated by its guard when the probe is in range"
+  (doc    "A LIVE guarded arm is kept and its guard still gates it: `(match (& x 7) ((guard 7 (> x 100)) 111)
+           (100 222) (_ 333))` — the `7` probe is in [0,7] (live), so the arm fires only when x&7==7 AND
+           x>100. x=127 → 127&7=7 and 127>100 → 111; x=7 → 7&7=7 but 7>100 false → wildcard 333; x=8 →
+           8&7=0 ≠ 7 → wildcard 333. (The dead-arm elimination drops a GUARDED out-of-range arm whole —
+           guard included — but that arm, `100` here, is unobservable; this pins the live guarded arm.)")
+  (input  (do (def (f (: x Int64)) (match (: (& x 7) Int64) ((guard 7 (> x 100)) 111) (100 222) (_ 333))) (export f)))
+  (call   f (: 127 Int64)) (output (: 111 Int64))
+  (call   f (: 7 Int64)) (output (: 333 Int64))
+  (call   f (: 8 Int64)) (output (: 333 Int64)))
+
+(case "a flow-refined match scrutinee dispatches with the refinement-dead arm elided"
+  (doc    "Inside the THEN branch of `(> n 100)` the scrutinee `n` is refined to [101, MAX], so the `5` arm
+           is dead (dropped by dead-arm elimination, unobservable). `(if (> n 100) (match n (5 111) (200
+           222) (_ 333)) 0)`: n=200 → >100 and ==200 → 222; n=150 → >100, not 200 → wildcard 333; n=5 →
+           !(>100) → the else 0.")
+  (input  (do (def (f (: n Int64)) (if (> n 100) (match n (5 111) (200 222) (_ 333)) 0)) (export f)))
+  (call   f (: 200 Int64)) (output (: 222 Int64))
+  (call   f (: 150 Int64)) (output (: 333 Int64))
+  (call   f (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a match all of whose non-wildcard arms are unreachable collapses to the wildcard body"
+  (doc    "When EVERY non-wildcard arm is dead, the match collapses to the wildcard body, returned for every
+           input. `(match (& x 7) (100 111) (200 222) (_ 333))` — `(& x 7)` is always in [0,7], so neither
+           `100` nor `200` can ever match; every x yields the wildcard 333: x=0 → 333, x=7 → 333, x=999 →
+           999&7=7 → still 333.")
+  (input  (do (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (200 222) (_ 333))) (export f)))
+  (call   f (: 0 Int64)) (output (: 333 Int64))
+  (call   f (: 7 Int64)) (output (: 333 Int64))
+  (call   f (: 999 Int64)) (output (: 333 Int64)))
+
 (case "a Bool match with its arms in either order is exhaustive"
   (doc    "core-semantics.md #Matching Is Exhaustive Or Rejected: exhaustiveness of a Bool match is a
            property of the arm-value SET {true, false}, not the arm order. `(match b (false 2) (true

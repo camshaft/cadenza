@@ -54450,30 +54450,12 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             "the dead `100` probe is dropped, got: {live:?}"
         );
 
-        // VALUE PARITY: dispatch unchanged after dropping the dead arm.
-        use wasmtime::component::Val;
-        let b1 = component(
-            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (0 222) (_ 333))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(8)]), 222); // 8&7=0 → arm 0
-        assert_eq!(run_returns_with::<i64>(&b1, "f", &[Val::S64(5)]), 333); // 5&7=5 → wildcard
-        let b2 = component(
-            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (7 111) (100 222) (_ 333))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(15)]), 111); // 15&7=7 → live arm 7
-        assert_eq!(run_returns_with::<i64>(&b2, "f", &[Val::S64(8)]), 333); // 8&7=0 → wildcard
-
-        // WIDE-UNSIGNED SOUNDNESS: a `UInt64` probe of `2^63` has a negative i64 BIT pattern but a value
-        // OUTSIDE i64 — it must NOT be treated as out of range and dropped. The arm is kept and fires. (The
-        // scrutinee is UInt64 but the bodies are Int64 literals, so the RESULT reads back as i64.)
-        let b3 = component(
-            "(module m (def (f (: x UInt64)) (match x (9223372036854775808 111) (0 222) (_ 333))) (export f))",
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&b3, "f", &[Val::U64(9223372036854775808)]),
-            111
-        );
-        assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(0)]), 222);
+        // VALUE PARITY (dispatch unchanged after dropping the dead arm; the masked-scrutinee dispatch, the
+        // boundary-live arm, and the wide-unsigned UInt64-probe soundness) migrated to the corpus (run via
+        // cdz-run): cases "a match over a masked scrutinee whose out-of-range arm is unreachable dispatches
+        // to the live arms", "... keeps an in-range arm at the range boundary", and "a wide-unsigned match
+        // probe past i64 is not mistaken for out-of-range and still fires" in
+        // spec/semantics/02-binding-and-control.sexp.
 
         // GUARDED DEAD ARM: the elimination drops a dead arm PROBE-AND-ALL — including its guard. A
         // `(guard 100 <cond>)` arm over `(& x 7) ∈ [0,7]` can never match (the probe `100` is out of
@@ -54511,15 +54493,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             glive.contains(&Lir::I64GtS),
             "the LIVE guarded arm's guard comparison `(> x 100)` is emitted, got: {glive:?}"
         );
-        // A LIVE guarded arm is KEPT and its guard still gates it: `(guard 7 (> x 100))` over `(& x 7)`
-        // fires only when x&7==7 AND x>100. x=127 (127&7=7, 127>100) → 111; x=7 (7&7=7 but 7>100 false) →
-        // falls through to the wildcard 333. The guard is NOT dropped for a LIVE in-range probe.
-        let b4 = component(
-            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) ((guard 7 (> x 100)) 111) (100 222) (_ 333))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(127)]), 111); // 127&7=7, 127>100 → guard true
-        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(7)]), 333); // 7&7=7 but 7>100 false → wildcard
-        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(8)]), 333); // 8&7=0 ≠ 7 → wildcard
+        // VALUE PARITY (a LIVE guarded arm is kept and still gated by its guard) migrated to the corpus (run
+        // via cdz-run): case "a guarded arm over a masked scrutinee stays gated by its guard when the probe
+        // is in range" in spec/semantics/02-binding-and-control.sexp.
 
         // FLOW-REFINED DEAD ARM: the drop's OTHER `value_range` source. The cases above narrow the
         // scrutinee via an `&`-MASK (a static arith range); this exercises the pass comment's second
@@ -54550,14 +54526,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             unrefined.contains(&Lir::ConstI64(5)) && unrefined.contains(&Lir::ConstI64(111)),
             "the unrefined `5`-arm (probe + body) stays live, got: {unrefined:?}"
         );
-        // VALUE PARITY: dropping the refined-dead arm must not change dispatch. `(> n 100)` then a match:
-        // n=200 → arm 200 → 222; n=150 (in-range, not 200) → wildcard 333; n=5 (fails the guard) → else 0.
-        let b5 = component(
-            "(module m (def (f (: n Int64)) (if (> n 100) (match n (5 111) (200 222) (_ 333)) 0)) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(200)]), 222); // >100, ==200 → 222
-        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(150)]), 333); // >100, not 200 → wildcard
-        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(5)]), 0); // !(>100) → else 0 (dead arm unreachable anyway)
+        // VALUE PARITY (dropping the refined-dead arm does not change dispatch) migrated to the corpus (run
+        // via cdz-run): case "a flow-refined match scrutinee dispatches with the refinement-dead arm elided"
+        // in spec/semantics/02-binding-and-control.sexp.
 
         // ALL NON-WILDCARD ARMS DEAD → the match COLLAPSES to the wildcard body, emitted UNCONDITIONALLY.
         // `(match (& x 7) (100 …) (200 …) (_ …))` over `(& x 7) ∈ [0,7]`: BOTH `100` and `200` are dead,
@@ -54586,14 +54557,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             onelive.contains(&Lir::I64Eq),
             "with a live arm the probe `eq` survives (collapse is all-dead-specific), got: {onelive:?}"
         );
-        // VALUE PARITY: the collapsed match returns the wildcard body for EVERY input (all probes were
-        // unreachable). `(& x 7)` is always in [0,7], never 100/200, so every x yields 333.
-        let b6 = component(
-            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (200 222) (_ 333))) (export f))",
-        );
-        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(0)]), 333);
-        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(7)]), 333);
-        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(999)]), 333); // 999&7=7 → still wildcard
+        // VALUE PARITY (the collapsed match returns the wildcard body for every input) migrated to the
+        // corpus (run via cdz-run): case "a match all of whose non-wildcard arms are unreachable collapses
+        // to the wildcard body" in spec/semantics/02-binding-and-control.sexp.
     }
 
     /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
