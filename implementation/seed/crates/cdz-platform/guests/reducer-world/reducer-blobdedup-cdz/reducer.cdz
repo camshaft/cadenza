@@ -1,0 +1,20 @@
+// The §8 CONTENT-ADDRESSING (dedup) guest (design/cadenza-platform.md §8). The store is content-addressed: a
+// blob's hash is a function of its BYTES, so storing identical content twice yields the SAME hash — the store
+// dedups by content, it does not mint a fresh id per put. This reducer stores the delivered payload TWICE and
+// reads it back by the first put's hash; the paired checker asserts BOTH puts produced the hash that was read
+// (content-addressing), not two distinct ids. Complements reducer-blobs-cdz (which asserts only the put/get
+// round-trip). Shares reducer-lib scaffolding; keeps its own on-message. Targets reducer-world (imports blobs).
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  host blobs in
+    ( blobs.put(msg.payload) ;
+      let h = blobs.put(msg.payload) in
+        (match blobs.get(h) with
+          | Some(v) =>
+              { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+                outcome = Outcome.Continue }
+          | None =>
+              { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"blob-get-miss" }) }) )
+
+export { on-message, on-response, on-notification }

@@ -1,0 +1,39 @@
+// The §8 CONTENT-ADDRESSING (dedup) checker (design/cadenza-platform.md §8/§9). The paired guest stores the
+// SAME payload twice and reads it back by hash. Content-addressing means both puts yield the SAME hash (the
+// store dedups by content) — so the checker asserts that the hash the read HIT on was produced by BOTH puts:
+// exactly two BlobPut records carry the read-back hash. LOG-ONLY, guest-agnostic, no hardcoded hash.
+//
+// NON-VACUOUS: if the store minted a fresh id per put (no content-addressing), only ONE BlobPut would carry
+// the read-back hash and the count is 1 — fail. If the guest never stored/read, there is no BlobGet(hit) and
+// the check fails. The hit gate is load-bearing (an unpersisted put yields no hit).
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail } from "checker-lib"
+
+// The hash a successful BlobGet hit on (None unless hit == 1) — the content hash the round-trip read back.
+def get-hit-hash(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => (None : Option(Bytes))
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with
+        | Entry.BlobGet(g) if (g.hit == 1) => Some(g.hash)
+        | _ => get-hit-hash(records, i + 1))
+
+// Count the BlobPut records whose hash equals `h` (how many stores content-addressed to that hash).
+def count-put-with-hash(records: List(LogRecord), i: Int64, h: Bytes, acc: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      count-put-with-hash(records, i + 1, h,
+        (match rec.entry with | Entry.BlobPut(p) => if p.hash == h then acc + 1 else acc | _ => acc))
+
+def verdict-payload(records: List(LogRecord)) =
+  match get-hit-hash(records, 0) with
+  | None => fail("no BlobGet(hit): the guest did not store+read a blob, so content-addressing could not be observed")
+  | Some(h) =>
+      if count-put-with-hash(records, 0, h, 0) == 2
+      then pass()
+      else fail("the read-back hash was produced by only one BlobPut: two identical-content puts did not content-address to the same hash (the store did not dedup by content)")
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
