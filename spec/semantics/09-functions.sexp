@@ -6964,11 +6964,12 @@
   (output (: true Bool)))
 
 (case "a Bytes entry argument is marshalled as a Vec<u8>"
-  (doc    "`(def (main (: b Bytes)) (Bytes.len b))` called with `(Bytes.of (list 1 2 3))` → 3. The driver
-           marshals it as `vec![1u8, 2u8, 3u8]` (the Vec the body builds), not the raw `((. Bytes of) …)`
-           text (a stray `.`).")
+  (doc    "`(def (main (: b Bytes)) (Bytes.len b))` called with the byte list `(list 1 2 3)` annotated as
+           `Bytes` → 3. The driver marshals it as `vec![1u8, 2u8, 3u8]` — the byte-list literal form both
+           backends accept for a `Bytes` argument (the canonical `(: (list …) Bytes)` spelling, as the ep5
+           multi-param case uses); the wasm entry-param lift copies those bytes into a value-heap Bytes.")
   (input  (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
-  (call   main (: (Bytes.of (list 1 2 3)) Bytes))
+  (call   main (: (list 1 2 3) Bytes))
   (output (: 3 Int64)))
 
 (case "a List entry argument is marshalled as a vec!"

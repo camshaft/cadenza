@@ -814,6 +814,27 @@ pub fn emit(
     // assemble the envelope. Export `k` in the layout lifts core func `k` (exports first, in order).
     let multi_export = layout.exports.len() > 1;
     let is_provider = db.component_name.is_some();
+
+    // PLAIN-EXPORT ENTRY-PARAM path (entry-param declines slice 1): a bare exported def (no imposed WIT
+    // world, no host effect) whose parameter is a memory-bearing `String`/`Bytes` crosses as `string`/
+    // `list<u8>` with a guest LIFT WRAPPER — the host→guest MIRROR of the host-op String/Bytes arg marshal.
+    // Off this path (a compound param beyond String/Bytes, a compound result, multiple exports, a host
+    // effect) `try_bare_entry_param_component` returns `None` and the export falls through to the existing
+    // boundary loop, which declines a memory-bearing param honestly (no regression).
+    if !is_provider
+        && db.wit_world.is_none()
+        && host_imports.is_empty()
+        && extern_imports.is_empty()
+        && layout.exports.iter().any(|e| {
+            e.params
+                .iter()
+                .any(|(_, t)| matches!(t, crate::ty::Ty::String | crate::ty::Ty::Bytes))
+        })
+        && let Some(result) = try_bare_entry_param_component(db, layout, &funcs, &imports)
+    {
+        return result;
+    }
+
     let mut boundary: Vec<BoundaryExport> = Vec::new();
     for e in &layout.exports {
         // A PROVIDER export whose result is a runtime-owned COMPOUND crosses to a PEER as its opaque `u32`
@@ -9486,6 +9507,118 @@ fn record_fields_rebuild(
         slots.push(slot as u32);
     }
     Some((rebuild, slots))
+}
+
+/// The PLAIN-EXPORT ENTRY-PARAM emit (entry-param declines slice 1): a SINGLE bare exported def whose param
+/// is a memory-bearing `String`/`Bytes` (crossing as `string`/`list<u8>`) gets a guest LIFT WRAPPER — the
+/// wrapper copies the incoming `(ptr, len)` bytes out of linear memory into a value-heap `Bytes` (a `String`
+/// then via `str-from-bytes`) and calls the def; the component types the param as `string`/`list<u8>` with a
+/// Memory/Realloc canon-lift ([`envelope::assemble_bare_typed_with_runtime`]). This is the host→guest MIRROR
+/// of the host-op String/Bytes ARG marshal already emitted on the import side.
+///
+/// Returns `None` (fall through to the boundary loop's honest decline) for any shape outside this slice:
+/// more than one export, a compound param other than String/Bytes, a unit param, or a non-scalar/unit
+/// result. Widened to List/Option/BigInt/Rational/Symbol (and multi-export) in later slices.
+fn try_bare_entry_param_component(
+    db: &Db,
+    layout: &Layout,
+    funcs: &[SelectedFunc],
+    imports: &[&runtime_abi::RtOp],
+) -> Option<Result<Vec<u8>, Reject>> {
+    use crate::backend::wasm::lir::{ValType, valtype_of};
+    use crate::ty::Ty;
+    // Slice 1: exactly one bare export.
+    if layout.exports.len() != 1 {
+        return None;
+    }
+    let e = &layout.exports[0];
+    let mut param_vts: Vec<u8> = Vec::new();
+    let mut mem_leaf_params: Vec<Option<serialize::MemLeafKind>> = Vec::new();
+    let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
+    let mut needs_str = false;
+    for (i, (_, gty)) in e.params.iter().enumerate() {
+        let wit = crate::wit_world::ty_natural_wit(gty)?;
+        match gty {
+            Ty::String => {
+                // string flattens to (ptr, len); the wrapper lifts it via mem_leaf_params.
+                param_vts.push(ValType::I32.byte());
+                param_vts.push(ValType::I32.byte());
+                mem_leaf_params.push(Some(serialize::MemLeafKind::Str));
+                needs_str = true;
+            }
+            Ty::Bytes => {
+                param_vts.push(ValType::I32.byte());
+                param_vts.push(ValType::I32.byte());
+                mem_leaf_params.push(Some(serialize::MemLeafKind::Bytes));
+            }
+            Ty::Int(_) | Ty::Bool | Ty::Float(_) => {
+                param_vts.push(valtype_of(gty)?.byte());
+                mem_leaf_params.push(None);
+            }
+            _ => return None, // a compound/unit param — a later slice
+        }
+        wit_params.push((format!("p{i}"), wit));
+    }
+    // Require at least one memory-bearing leaf (a scalar-only export is the existing bare path, untouched).
+    if !mem_leaf_params.iter().any(Option::is_some) {
+        return None;
+    }
+    // RESULT: a scalar the def returns raw (Passthrough) or unit; a compound result is a later slice.
+    let (result_vts, wit_result) = match &e.result {
+        Ty::Unit => (Vec::new(), None),
+        r @ (Ty::Int(_) | Ty::Bool | Ty::Float(_)) => (
+            vec![valtype_of(r)?.byte()],
+            Some(crate::wit_world::ty_natural_wit(r)?),
+        ),
+        _ => return None,
+    };
+    // Augment the runtime-import set with the lift ops (dedup, APPENDED so the def's op indices — a prefix —
+    // are preserved). The added count bumps `import_base` so the def's + wrapper's core func indices line up.
+    let mut entry_imports: Vec<&runtime_abi::RtOp> = imports.to_vec();
+    let _ = needs_str; // String and Bytes share the byte-leaf lift (no str-from-bytes); kept for readability
+    let lift_ops = ["bytes-alloc", "bytes-set"];
+    for name in lift_ops {
+        if !entry_imports.iter().any(|o| o.name == name) {
+            let op = runtime_abi::RUNTIME_OPS.iter().find(|o| o.name == name)?;
+            entry_imports.push(op);
+        }
+    }
+    let added = (entry_imports.len() - imports.len()) as u32;
+    let entry_layout = layout.with_import_base(layout.import_base + added);
+    let def_abs = entry_layout.abs(e.def)?;
+    let wrapper = serialize::WrapperDesc {
+        name: e.name.clone(),
+        param_vts,
+        result_vts,
+        params: vec![None; e.params.len()],
+        param_slots: vec![None; e.params.len()],
+        mem_leaf_params,
+        def_abs,
+        result: serialize::ResultLower::Passthrough,
+    };
+    let typed_func = envelope::TypedFunc {
+        name: e.name.clone(),
+        params: wit_params,
+        result: wit_result,
+    };
+    let wrapped_core = match serialize::core_module_with_wrappers(
+        funcs,
+        &entry_imports,
+        &[],
+        std::slice::from_ref(&wrapper),
+        &entry_layout,
+    ) {
+        Ok(c) => c,
+        Err(e) => return Some(Err(Reject::decline(e))),
+    };
+    let _ = db; // reserved for a future named-type / spans hook
+    let import_name = runtime_import_name();
+    Some(Ok(envelope::assemble_bare_typed_with_runtime(
+        &wrapped_core,
+        std::slice::from_ref(&typed_func),
+        &entry_imports,
+        &import_name,
+    )))
 }
 
 /// Like [`scalar_interface_export`] but for a member with a RECORD param: build the boundary WRAPPER descs
