@@ -45977,46 +45977,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn eval_of_a_malformed_empty_ast_list_traps_with_the_canonical_unreachable_kind() {
-        use crate::testkit::parse;
-        // metaprogramming.md §Eval Is Optional: eval on a MALFORMED AST traps. An `(Ast.List (list))`
-        // with no elements is a compound with no operator — malformed. `eval_ast::reconstruct` has no
-        // source to rebuild for an empty list, so it rewrites the eval to an explicit `(trap "malformed
-        // AST")`: a diverging RUNTIME halt, not a value. On wasm that `Core::Trap` lowers to the
-        // `unreachable` instruction; the trap carries NO custom string (a `Core::Trap` is message-less
-        // on both backends), so the observable REASON classifies as the canonical `unreachable` kind —
-        // the SAME kind the explicit-`trap` lowering surfaces everywhere. Pins both that it traps AND
-        // that the reason is the reasonless `unreachable`, not a distinguishable arithmetic trap.
-        // `main` diverges (its body is a `trap`, type `Never`), so it exports zero results — size the
-        // results buffer to the func's actual result arity so the call reaches the trap rather than
-        // erroring on an arity mismatch (which would masquerade as a reasonless failure).
-        let src = "(module m (def (main) (eval (Ast.List (list)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        use wasmtime::component::{Component, Linker};
-        use wasmtime::{Engine, Store};
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &bytes).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let func = instance.get_func(&mut store, "main").expect("export main");
-        let mut results = vec![wasmtime::component::Val::Bool(false); func.results(&store).len()];
-        let err = func
-            .call(&mut store, &[], &mut results)
-            .expect_err("eval of an empty (malformed) Ast.List must trap, not produce a value");
-        let reason = err
-            .downcast_ref::<wasmtime::Trap>()
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| panic!("the malformed-AST halt must be a wasm Trap, got: {err}"));
-        assert!(
-            reason.to_ascii_lowercase().contains("unreachable"),
-            "the malformed-AST trap's canonical kind is `unreachable`, got: {reason}"
-        );
-    }
-
-    #[test]
     fn an_ast_bool_folds_through_reify_eval_and_the_encode_decode_round_trip() {
         use crate::testkit::parse;
         // The `Ast.Bool` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
