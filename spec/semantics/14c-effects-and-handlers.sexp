@@ -17895,3 +17895,63 @@
     (export main)))
   (call main (: 2 Int64))
   (output (: 28 Int64)))
+
+; -- breaker batch 404 (2026-08-26): float handler-state seed/answer faces that PASS (fse3c literal
+; seed float-mul, fse3e self-subtraction answer, fse3f finite COMPUTED seed — isolating the residual
+; fse3d decline to non-finite-PRODUCING computed seeds) and the cx5 pure/let-bound controls (cx5b
+; pure closure through the recursive HOF, cx5c let-bound effectful closure invoked directly).
+
+(case "fse3c single grow op, literal float seed, float-mul next-state"
+  (input (do
+    (effect F (op grow (-> Int64)))
+    (def (main (: n Int64))
+      (handle F 1.5
+        ((grow () s (resume (if (= (* s 2.0) s) 1 0) (* s 2.0))))
+        (F.grow)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "fse3e cancel arm alone — (- s s) self-subtraction in the answer"
+  (input (do
+    (effect F (op cancel (-> Int64)))
+    (def (main (: n Int64))
+      (handle F 1.5
+        ((cancel () s (resume (if (= (- s s) (- s s)) 10 20) s)))
+        (F.cancel)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "fse3f FINITE computed seed (+ 1.0 0.5)"
+  (input (do
+    (effect F (op grow (-> Int64)))
+    (def (main (: n Int64))
+      (handle F (+ 1.0 0.5)
+        ((grow () s (resume (if (= (* s 2.0) s) 1 0) (* s 2.0))))
+        (F.grow)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "cx5b CONTROL: pure closure through the same recursive HOF"
+  (input (do
+    (def (each3 (: k Int64) (: acc Int64) (: g (-> Int64 Int64)))
+      (if (= k 0) acc (each3 (- k 1) (+ acc (g k)) g)))
+    (def (main (: n Int64))
+      (each3 3 0 (fn (x) (* x n))))
+    (export main)))
+  (call main (: 10 Int64))
+  (output (: 60 Int64)))
+
+(case "cx5c LET-BOUND effectful closure invoked directly (no HOF)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((g (fn (x) (+ x (E.tick)))))
+          (+ (g 1) (g 2)))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 13 Int64)))

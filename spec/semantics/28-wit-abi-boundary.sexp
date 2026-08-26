@@ -870,3 +870,102 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (tag (record (= a 40) (= b 2))) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 42 Int64)))
+
+; -- breaker batch 404 (2026-08-26): in-guest-handler x host-import COMBINATION faces (cr01-cr03d:
+; two exports in one interface, exported body running a handled effect, handler+host-call in
+; let-sequenced / nested / body-inside shapes) and the nullary-import + record-host-arg s64-result
+; faces (cq04c). Imposed-world: wasm pass, rust todo (import-side emit pending).
+
+(case "cr01 TWO exported members in one interface — both callable"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))) (member g (func (param m ("record" (x (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (def (f (: m (Record (: x Int64)))) (* (. m x) 2))
+    (def (g (: m (Record (: x Int64)))) (+ (. m x) 100))
+    (export f)
+    (export g)))
+  (call g (: (record (= x 5)) (Record (: x Int64))))
+  (output (: 105 Int64)))
+
+(case "cr02 an export whose body runs an IN-GUEST handled effect"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (def (f (: m (Record (: x Int64))))
+      (handle Cnt (. m x)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (+ (Cnt.tick) (Cnt.tick))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (output (: 70 Int64)))
+
+(case "cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (let ((k (handle Cnt (. m x)
+                   ((tick () s (resume (* s 10) (+ s 1))))
+                   (+ (Cnt.tick) (Cnt.tick)))))
+          (+ (Int64.of (hosti.base unit)) k))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1070 Int64)))
+
+(case "cr03c host call INSIDE the handled body"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (handle Cnt (. m x)
+          ((tick () s (resume (* s 10) (+ s 1))))
+          (+ (Cnt.tick) (Int64.of (hosti.base unit))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1030 Int64)))
+
+(case "cr03d combination with s64 host result (no Int64.of) — nested"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (effect hosti (op base (-> Unit Int64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (+ (hosti.base unit)
+           (handle Cnt (. m x)
+             ((tick () s (resume (* s 10) (+ s 1))))
+             (+ (Cnt.tick) (Cnt.tick))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 Int64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1070 Int64)))
+
+(case "cq04c record host-ARG with s64 result (no Int64.of)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member put (func (param v ("record" (a (s64)) (b (s64)))) (result (s64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op put (-> (Record (: a Int64) (: b Int64)) Int64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (hosti.put (record (= a (. m x)) (= b 9)))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.put (: 42 Int64)))
+  (host-calls (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))

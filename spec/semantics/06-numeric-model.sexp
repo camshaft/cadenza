@@ -9732,3 +9732,14 @@
     (export main)))
   (call main (: 0 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 404 (2026-08-26): bare runtime Int64.of over a UInt64 param-derived value —
+; the isolated T.of face (ct01), no host boundary in the loop.
+
+(case "ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)"
+  (input (do
+    (def (main (: k Int64))
+      (Int64.of (UInt64.wrap k)))
+    (export main)))
+  (call main (: 42 Int64))
+  (output (: 42 Int64)))
