@@ -5568,7 +5568,13 @@ pass	identical PURE reads of a perform-built list — safe to share, values agre
 pass	identical PURE subterms around distinct performs — pure sharing must not merge dispatches
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
+pass	if1 Float64.Infinity minus itself is NaN (canonical-byte equal to nan)
 pass	if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draws
+pass	if2 one divided by Float64.Infinity is exactly zero
+pass	if3 negated Infinity is below every finite float
+pass	if4 Infinity plus a finite float saturates to Infinity
+pass	if5 runtime division by zero produces Infinity and crosses the boundary
+pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
