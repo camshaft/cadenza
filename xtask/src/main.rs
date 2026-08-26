@@ -166,6 +166,22 @@ enum Cmd {
         /// Git `%B`: their version.
         theirs: PathBuf,
     },
+    /// Prune UNREFERENCED entries from the `.gate-baseline*` files: drop any `verdict\ttitle` line whose
+    /// case TITLE is absent from the current corpus (a case that was RENAMED or REMOVED). This is the
+    /// SEPARATE periodic prune the union merge model needs (operator direction 2026-08-20): the
+    /// `merge=fleet-baseline` driver UNIONS the two sides so parallel agents never clobber each other's
+    /// appends — but a union can never DELETE a stale line (a branch that removes it has the removal undone
+    /// on merge with a `main` that still carries it), so a renamed/removed case's OLD title lingers as a
+    /// `gate --check` "vanished" entry FLEET-WIDE and can't be pruned via a normal PR. Keeping the union +
+    /// pruning unreferenced entries SEPARATELY is the fix. Cheap: it derives the reference title set from
+    /// `cdz-corpus records` alone (no compile/grade), so it can run periodically. Prunes all three backend
+    /// baselines uniformly, keeping them title-set-agreeing.
+    PruneBaselines {
+        /// Don't write; LIST what would be pruned and exit non-zero if any unreferenced entry exists (for
+        /// a CI/preview pass). Without it, DELETE the unreferenced entries in place.
+        #[arg(long)]
+        check: bool,
+    },
     /// Emoji-ban lint, standalone (operator directive): fail if any emoji/pictographic/dingbat char
     /// appears in an `implementation/**/*.rs` source COMMENT. This is the same `emoji_free_lint` the
     /// omnibus `check` runs, exposed as its own fast subcommand so CI can gate it as an isolated
@@ -349,6 +365,7 @@ fn main() {
         Cmd::DevGate { crates } => dev_gate(&paths, &crates),
         Cmd::CanonicalizeBaselines => canonicalize_baselines(&paths),
         Cmd::MergeBaseline { ours, theirs } => merge_baseline(&ours, &theirs),
+        Cmd::PruneBaselines { check } => prune_baselines(&paths, profile, check),
         Cmd::LintEmoji => match emoji_free_lint(&paths) {
             Ok(()) => println!("lint-emoji: ok — no emoji in source comments"),
             Err(msg) => {
@@ -5140,6 +5157,142 @@ fn merge_baseline(ours: &Path, theirs: &Path) {
     }
 }
 
+/// The set of case TITLES the current corpus defines — every `case\t<title>` the `cdz-corpus records`
+/// stream emits across all `spec/semantics/NN-*.sexp` files. This is the REFERENCE set the baseline
+/// prune checks against: a baseline `verdict\ttitle` line whose title is absent here is UNREFERENCED
+/// (its case was renamed or removed). It mirrors the title set `check_baseline` derives from a full
+/// gate run, but WITHOUT compiling/grading — it only builds + runs the corpus normalizer, so the prune
+/// is cheap enough to run periodically. Builds ONLY `cdz-corpus` (not the compiler/runtime).
+fn corpus_titles(paths: &Paths, profile: &str) -> std::collections::BTreeSet<String> {
+    let sh = Shell::new().expect("open a shell");
+    sh.change_dir(&paths.repo);
+    if let Err(e) = cmd!(sh, "cargo build --quiet --profile {profile} -p cdz-corpus")
+        .quiet()
+        .run()
+    {
+        eprintln!("prune-baselines: building cdz-corpus failed: {e}");
+        std::process::exit(1);
+    }
+    let subdir = if profile == "dev" { "debug" } else { profile };
+    let corpus = paths.repo.join("target").join(subdir).join("cdz-corpus");
+    let mut titles = std::collections::BTreeSet::new();
+    for file in default_corpus_files(paths) {
+        let out = std::process::Command::new(&corpus)
+            .arg("records")
+            .arg(&file)
+            .output()
+            .unwrap_or_else(|e| launch_fail("cdz-corpus records", e));
+        if !out.status.success() {
+            eprintln!(
+                "prune-baselines: reading {}: {}",
+                file.display(),
+                first_line(&out.stderr)
+            );
+            std::process::exit(1);
+        }
+        // Each record's title is the `case\t<title>` line (the same key `parse_records` reads into
+        // `description` and `save_baseline` writes as the baseline line's description half), so a
+        // baseline title matches a corpus title iff the raw strings are equal.
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(title) = line.strip_prefix("case\t") {
+                titles.insert(title.to_string());
+            }
+        }
+    }
+    titles
+}
+
+/// Pure core of the baseline prune: given a baseline file's text and the set of titles the corpus
+/// currently defines, return the text with every UNREFERENCED `verdict\ttitle` data line removed (its
+/// title absent from `corpus`), plus the pruned titles (sorted). Header/comment/blank lines and every
+/// still-referenced data line are preserved VERBATIM in order, so an already-canonical (sorted)
+/// baseline stays canonical — the prune only DELETES, it never reorders or rewrites a kept line. A line
+/// that isn't `something\ttitle` is treated as structure and kept (we only drop lines we positively
+/// identify as an unreferenced data line — never eat a line we don't understand).
+fn prune_baseline_text(
+    text: &str,
+    corpus: &std::collections::BTreeSet<String>,
+) -> (String, Vec<String>) {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut pruned: Vec<String> = Vec::new();
+    for line in text.lines() {
+        // Drop ONLY a line we positively identify as an unreferenced `verdict\ttitle` data line; a
+        // header/comment/blank line, or any line whose title is still in the corpus, is kept verbatim.
+        if !line.starts_with('#')
+            && !line.is_empty()
+            && let Some((_verdict, title)) = line.split_once('\t')
+            && !corpus.contains(title)
+        {
+            pruned.push(title.to_string());
+            continue;
+        }
+        kept.push(line);
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    pruned.sort();
+    (out, pruned)
+}
+
+/// Prune UNREFERENCED entries from every `.gate-baseline*` file (the `PruneBaselines` subcommand). Reads
+/// the corpus's current title set once, then for each baseline file drops any `verdict\ttitle` line
+/// whose title is no longer in the corpus. In `--check` mode it only LISTS what would be pruned and
+/// exits non-zero if anything is stale (a cheap CI/preview pass); otherwise it rewrites each file that
+/// had stale entries. Prunes all three backend baselines against the same corpus set, keeping them
+/// title-set-agreeing (the `baseline_titles_agree` lint). Absent baseline files are skipped.
+fn prune_baselines(paths: &Paths, profile: &str, check: bool) {
+    let corpus = corpus_titles(paths, profile);
+    let mut report: Vec<String> = Vec::new();
+    let mut total_pruned = 0usize;
+    for path in all_baseline_paths(paths) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!("prune-baselines: cannot read {}: {e}", path.display());
+                std::process::exit(2);
+            }
+        };
+        let (pruned_text, pruned) = prune_baseline_text(&text, &corpus);
+        if pruned.is_empty() {
+            continue;
+        }
+        total_pruned += pruned.len();
+        report.push(format!(
+            "{}: {} unreferenced entr{}:\n    {}",
+            path.display(),
+            pruned.len(),
+            if pruned.len() == 1 { "y" } else { "ies" },
+            pruned.join("\n    ")
+        ));
+        if !check {
+            std::fs::write(&path, pruned_text).expect("write pruned baseline");
+        }
+    }
+    if report.is_empty() {
+        println!(
+            "prune-baselines: ok — no unreferenced baseline entries (every title is in the corpus)."
+        );
+        return;
+    }
+    if check {
+        eprintln!(
+            "prune-baselines --check: {total_pruned} unreferenced baseline entr{} (title absent from the \
+             corpus — a renamed/removed case). Run `cargo xtask prune-baselines` to delete:\n  {}",
+            if total_pruned == 1 { "y" } else { "ies" },
+            report.join("\n  ")
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "prune-baselines: pruned {total_pruned} unreferenced baseline entr{}:\n  {}",
+        if total_pruned == 1 { "y" } else { "ies" },
+        report.join("\n  ")
+    );
+}
+
 /// Compare current verdicts to the baseline. Returns the process exit code: non-zero if any case
 /// REGRESSED (baseline pass → now not pass) or a baseline case vanished. Newly-passing cases and
 /// new cases are reported but do not fail the check.
@@ -8738,6 +8891,57 @@ mod trap_grading_tests {
             canonicalize_baseline_text("mystery\tsome case\n").expect("no conflict"),
             None,
             "an unknown verdict tag → hands off"
+        );
+    }
+
+    #[test]
+    fn prune_baseline_text_drops_unreferenced_titles_and_keeps_structure() {
+        // The lm5-rename shape: an OLD title (no #3756) lingers next to its RENAMED twin. Only the title
+        // absent from the corpus is pruned; the header, blank lines, and every referenced line survive
+        // VERBATIM in order (a canonical/sorted file stays canonical).
+        let text = "# gate baseline\npass\tlm3 old title\npass\tlm5 new title (#3756)\npass\tlm5 old title\nfail\tmsr6 old title\n";
+        let corpus: std::collections::BTreeSet<String> =
+            ["lm5 new title (#3756)".to_string()].into_iter().collect();
+        let (out, pruned) = prune_baseline_text(text, &corpus);
+        assert_eq!(
+            pruned,
+            vec![
+                "lm3 old title".to_string(),
+                "lm5 old title".to_string(),
+                "msr6 old title".to_string(),
+            ],
+            "every title absent from the corpus is pruned (sorted)"
+        );
+        assert_eq!(
+            out, "# gate baseline\npass\tlm5 new title (#3756)\n",
+            "header + the one referenced line survive verbatim; trailing newline preserved"
+        );
+    }
+
+    #[test]
+    fn prune_baseline_text_is_a_noop_when_every_title_is_referenced() {
+        let text = "# h\npass\ta\ntodo\tb\n";
+        let corpus: std::collections::BTreeSet<String> =
+            ["a".to_string(), "b".to_string()].into_iter().collect();
+        let (out, pruned) = prune_baseline_text(text, &corpus);
+        assert!(pruned.is_empty(), "nothing pruned when all referenced");
+        assert_eq!(
+            out, text,
+            "a fully-referenced file is returned byte-identical"
+        );
+    }
+
+    #[test]
+    fn prune_baseline_text_never_drops_a_line_it_cannot_parse() {
+        // A line with no tab is structure we don't model — keep it (we only delete lines we positively
+        // identify as an unreferenced `verdict\ttitle` data line), mirroring the canonicalizer's hands-off.
+        let text = "# h\nno-tab structure line\npass\tdead\n";
+        let corpus = std::collections::BTreeSet::new(); // corpus empty → `dead` is unreferenced
+        let (out, pruned) = prune_baseline_text(text, &corpus);
+        assert_eq!(pruned, vec!["dead".to_string()]);
+        assert_eq!(
+            out, "# h\nno-tab structure line\n",
+            "the tab-less line is kept; only the identified data line is dropped"
         );
     }
 

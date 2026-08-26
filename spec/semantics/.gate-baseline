@@ -6012,9 +6012,7 @@ pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, th
 pass	lm1 a branch-selected owned list scrutinee is reclaimed after the match
 pass	lm2 a helper-built branch-selected list scrutinee reclaims across the call
 pass	lm3 a branch-selected list-of-tuples match computes (KNOWN LEAK: 4 cells on the debug runtime, heap-element list class — v-runtime fixing; live-objects clause returns with the fix)
-pass	lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells
 pass	lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail (#3756)
-pass	lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail
 pass	lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list
 pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
@@ -6147,7 +6145,6 @@ pass	msr1 a branch-selected owned STRING scrutinee dispatched by literal arms re
 pass	msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims
 pass	msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims
 pass	msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element
-pass	msr6 a NESTED match — outer list arm rebinds an inner record — reclaims both shells
 pass	msr6 a nested list+record match computes (KNOWN LEAK: 4 cells on the debug runtime — v-runtime fixing; live-objects clause returns with the fix)
 pass	mts1 a Map whose VALUES are TUPLES — per-key (count,sum) stats update through tuple rebuild inside the arm, the answer packs the fresh pair
 pass	multi-argument application is curried application
