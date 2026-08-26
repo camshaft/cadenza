@@ -576,6 +576,18 @@ pub enum Core {
     Blake3Of {
         operand: StructId,
     },
+    /// `Ast.print t` on a RUNTIME `Ast` — render the heap `Ast` value to its canonical re-readable s-expression
+    /// TEXT (a fresh owned `String` leaf) via the appended value-heap runtime op `ast-print` (heap index 92). A
+    /// CONSTANT `Ast` folds to a `Core::ConstStr` in `lower_print` (the compile half) and never reaches here;
+    /// this is the RUNTIME path. The op BORROWS the `operand` handle + the `discs` `Bytes` (an inspector, like
+    /// `value-encode`/`hash-blake3`) and returns a fresh owned `String`. `discs` is a compile-time-baked
+    /// `Core::ConstBytes` of the 7 `Ast` variant discriminants (LEB, slot order `[int,float,bool,str,name,
+    /// bytes,list]`) the runtime reads to classify variants BY NAME (never hardcoded). Text is byte-identical
+    /// to the compile-time `print_ast_value` fold (the runtime op mirrors it exactly).
+    AstPrint {
+        operand: StructId,
+        discs: std::rc::Rc<[u8]>,
+    },
     /// `BigInt.of x` on a RUNTIME fixed-width integer — widen `x` (an i64-slot value) into a `BigInt`
     /// heap leaf via the runtime `bigint-of-i64` op. A CONSTANT source folds to `Core::ConstInt` retyped
     /// `BigInt` in `lower` (B1) and never reaches here; this is the runtime path (B3b).

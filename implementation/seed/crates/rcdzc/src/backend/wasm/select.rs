@@ -277,6 +277,9 @@ const OP_STR_NFC_NORMALIZE: &str = "str-nfc-normalize";
 /// `hash-blake3(bytes) -> handle` — the blake3 content hash (heap op 91). BORROWS the Bytes handle (an
 /// inspector), returns a FRESH OWNED 32-byte Bytes leaf. Backs `Core::Blake3Of` (P3b runtime lowering).
 const OP_HASH_BLAKE3: &str = "hash-blake3";
+/// The value-heap `ast-print` op (heap index 92, appended after `hash-blake3`): renders a heap `Ast` handle
+/// to canonical s-expr text (a fresh `String` leaf), guided by a baked disc descriptor. Backs `Core::AstPrint`.
+const OP_AST_PRINT: &str = "ast-print";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -1311,6 +1314,10 @@ fn binding_escapes_dup_aware(
         Core::Blake3Of { operand } => {
             binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
         }
+        // `Ast.print` (runtime) BORROWS its Ast operand (renders a fresh String — operand not retained).
+        Core::AstPrint { operand, .. } => {
+            binding_escapes_dup_aware(db, operand, binder, true, dup_sites)
+        }
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             binding_escapes_dup_aware(db, operand, binder, scalar_element, dup_sites)
@@ -2171,6 +2178,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::StrScalarLen { operand }
         | Core::BytesCompact { operand }
         | Core::Blake3Of { operand }
+        | Core::AstPrint { operand, .. }
         | Core::MapSize { map: operand }
         | Core::SetLen { set: operand }
         | Core::SetToList { set: operand, .. }
@@ -2691,6 +2699,8 @@ fn mark_binder_dups_inner(
         }
         // `Blake3.of` BORROWS its Bytes operand (an inspector, like `Bytes.len`).
         Core::Blake3Of { operand } => borrow(db, operand, live_after, sites),
+        // `Ast.print` (runtime) BORROWS its Ast operand (an inspector; the baked `discs` is not a node).
+        Core::AstPrint { operand, .. } => borrow(db, operand, live_after, sites),
         // `Bytes.compact` (adv-66) is NOT a borrow — it lowers to the SAME runtime `bytes-compact` op as
         // `StrToBytes` (op_bytes_compact: flattens the rope IN PLACE and returns the SAME handle), so it
         // CONSUMES its operand and hands the handle back as the result. `binding_escapes_dup_aware` already
@@ -4587,6 +4597,15 @@ fn collect_used_ops_into_seen(
         }
         Core::BytesCompact { operand } => {
             out.insert(OP_BYTES_COMPACT);
+            collect_used_ops_into_seen(db, operand, out, visited);
+        }
+        // `Ast.print` (runtime) calls the `ast-print` heap op (op 92) over its Ast operand. The emit also
+        // bakes the disc descriptor into a fresh `Bytes` buffer (`bytes-alloc` + per-byte `bytes-set`), so
+        // those ops must be imported too (mirrors `ValueEncode`'s desc bake).
+        Core::AstPrint { operand, .. } => {
+            out.insert(OP_AST_PRINT);
+            out.insert(OP_BYTES_ALLOC);
+            out.insert(OP_BYTES_SET);
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `Blake3.of` calls the `hash-blake3` heap op (op 91) over its Bytes operand.
@@ -12324,6 +12343,24 @@ fn emit(
         Core::Blake3Of { operand } => {
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::CallImport(OP_HASH_BLAKE3)); // → [digest] (borrows bytes)
+            Ok(())
+        }
+        // `Ast.print` (runtime) — render the heap `Ast` to its canonical s-expr TEXT. Emit the `Ast` operand
+        // (leaves its handle), bake the disc descriptor into a FRESH `Bytes` buffer on top (the operand emit
+        // already ran on a clean stack, so no scratch slot is needed — the per-byte `bytes-set` touches only
+        // the top three, leaving the `Ast` handle beneath), then the `ast-print` heap op (op 92): it BORROWS
+        // the `Ast` handle + `discs` and returns a FRESH `String` leaf. `ast-print(handle, discs)` — the stack
+        // `[ast, discs-buf]` feeds param0=ast, param1=discs. Byte-identical to the compile-time fold.
+        Core::AstPrint { operand, discs } => {
+            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [ast]
+            out.push(Lir::ConstI32(discs.len() as i32));
+            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [ast, discs-buf]
+            for (j, &byte) in discs.iter().enumerate() {
+                out.push(Lir::ConstI32(j as i32));
+                out.push(Lir::ConstI32(byte as i32));
+                out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
+            }
+            out.push(Lir::CallImport(OP_AST_PRINT)); // → [string] (borrows ast + discs)
             Ok(())
         }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
