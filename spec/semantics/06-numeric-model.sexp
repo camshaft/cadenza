@@ -9503,3 +9503,36 @@
   (call   sub (: 10 Int64) (: 3 Int64)) (output (: 7 Int64))
   (call   sub (: -9223372036854775808 Int64) (: 1 Int64)) (trap "integer overflow")
   (call   sub (: 9223372036854775807 Int64) (: -1 Int64)) (trap "integer overflow"))
+
+(case "a constant +1 add traps only at Int64.max, never spuriously near min"
+  (doc    "`(+ a 1)` uses the single-compare overflow guard: g(0)=1, g(max-1)=max, g(min)=min+1 (must NOT
+           spuriously trap near min), g(max) traps.")
+  (input  (do (def (g (: a Int64)) (+ a 1)) (export g)))
+  (call   g (: 0 Int64)) (output (: 1 Int64))
+  (call   g (: 9223372036854775806 Int64)) (output (: 9223372036854775807 Int64))
+  (call   g (: -9223372036854775808 Int64)) (output (: -9223372036854775807 Int64))
+  (call   g (: 9223372036854775807 Int64)) (trap "integer overflow"))
+
+(case "a constant -1 subtract traps only at Int64.min"
+  (doc    "`(- a 1)`: g(min+1)=min, g(min) traps.")
+  (input  (do (def (g (: a Int64)) (- a 1)) (export g)))
+  (call   g (: -9223372036854775807 Int64)) (output (: -9223372036854775808 Int64))
+  (call   g (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "a constant +(-1) add (negative constant) traps only at Int64.min"
+  (doc    "`(+ a -1)` subtracts one; a negative constant flips the boundary to min: g(0)=-1, g(min) traps.")
+  (input  (do (def (g (: a Int64)) (+ a -1)) (export g)))
+  (call   g (: 0 Int64)) (output (: -1 Int64))
+  (call   g (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+(case "a constant -(-1) subtract (= a+1) traps only at Int64.max"
+  (doc    "`(- a -1)` = a+1: g(0)=1, g(max) traps.")
+  (input  (do (def (g (: a Int64)) (- a -1)) (export g)))
+  (call   g (: 0 Int64)) (output (: 1 Int64))
+  (call   g (: 9223372036854775807 Int64)) (trap "integer overflow"))
+
+(case "a constant-on-the-left +1 add is commutative and traps only at Int64.max"
+  (doc    "`(+ 1 a)` behaves as the right-constant form: g(41)=42, g(max) traps.")
+  (input  (do (def (g (: a Int64)) (+ 1 a)) (export g)))
+  (call   g (: 41 Int64)) (output (: 42 Int64))
+  (call   g (: 9223372036854775807 Int64)) (trap "integer overflow"))
