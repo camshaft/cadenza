@@ -1957,6 +1957,36 @@
           echo "ok: corpus-rust — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→rust-build→rust-exec caching graph" > "$out"
         '';
 
+        # VANISHED-check (gap #7 completion) — the GLOBAL half of baseline regression detection the per-case
+        # exec cannot do. The per-case `--baseline` check catches a `pass -> not-pass` regression on a case
+        # that RAN; it cannot see a baseline case that is no longer in the corpus at all (silently dropped,
+        # its expected verdict now unenforced). This aggregate diffs each committed baseline's description
+        # set against the corpus's — `cdz-corpus records` emits a `case\t<description>` line per case — and
+        # FAILS on any baseline description absent from the corpus. The corpus description set is
+        # backend-independent (every case runs on every backend), so ONE check covers all three baselines.
+        # Closure = the parser (`cdzCorpus`) only; reruns when the corpus or a baseline changes.
+        corpusVanishedCheck = pkgs.runCommand "corpus-vanished-check"
+          { nativeBuildInputs = [ cdzCorpus ]; } ''
+          set -euo pipefail
+          # The corpus's case descriptions (from the flat record stream), sorted + unique.
+          cdz-corpus records ${
+            pkgs.lib.concatMapStringsSep " " (f: "${./spec/semantics + "/${f}"}") corpusFileNames
+          } | grep '^case	' | cut -f2- | LC_ALL=C sort -u > corpus-descs
+          rc=0
+          for base in ${./spec/semantics/.gate-baseline} ${./spec/semantics/.gate-baseline-rust} ${./spec/semantics/.gate-baseline-rust-async}; do
+            grep -v '^#' "$base" | grep -v '^$' | cut -f2- | LC_ALL=C sort -u > base-descs
+            # Baseline descriptions with NO corpus case (`comm -23` = lines only in the first file).
+            vanished=$(LC_ALL=C comm -23 base-descs corpus-descs || true)
+            if [ -n "$vanished" ]; then
+              echo "VANISHED baseline cases (in $(basename "$base"), no corpus case):" >&2
+              echo "$vanished" >&2
+              rc=1
+            fi
+          done
+          if [ "$rc" -ne 0 ]; then exit 1; fi
+          echo "ok: corpus-vanished — every committed baseline case still has a corpus case (3 baselines)" > "$out"
+        '';
+
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
         # runtime-ABI STALENESS gate: xtask regenerates runtime_abi.rs (+ wasm_abi.rs) — reading the
         # runtime WIT + BUILDING the cdz-runtime (release + debug) and cdz-nfc components via
@@ -2821,6 +2851,9 @@
             # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
             # aggregate; the per-file `corpus-rust-<file>` aggregates are spread in below.
             corpus-rust = corpusRustAll;
+            # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
+            # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
+            corpus-vanished = corpusVanishedCheck;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
