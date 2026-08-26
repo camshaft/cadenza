@@ -5124,6 +5124,9 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             // A `Char` probe comes from a char-literal `#\a` pattern; it agrees only with a `Char`
             // scrutinee (a char pattern over an Int/String scrutinee is a shape error, CDZ0201).
             crate::core::Probe::Char(_) => Some(crate::ty::Ty::Char),
+            // A `Bytes` probe comes from a byte-string-literal `b"…"` pattern; it agrees only with a `Bytes`
+            // scrutinee (a bytes pattern over an Int/String scrutinee is a shape error, CDZ0201).
+            crate::core::Probe::Bytes(_) => Some(crate::ty::Ty::Bytes),
             // A `ListLen`/`MapHasKeys` probe never arises in the SCALAR match path (each comes from a
             // list/map PAYLOAD sub-pattern in the sum decision tree, not `classify_probe`); no scalar-type
             // check applies.
@@ -5193,6 +5196,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         Core::ConstBool(b) => Some(GuardFoldScrut::Bool(*b)),
         Core::ConstStr(s) => Some(GuardFoldScrut::Str(s.to_string())),
         Core::ConstChar(c) => Some(GuardFoldScrut::Char(*c)),
+        Core::ConstBytes(b) => Some(GuardFoldScrut::Bytes(b.to_vec())),
         _ => None,
     };
     if let Some(sc) = const_scrut {
@@ -5203,6 +5207,7 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 GuardFoldScrut::Bool(b) => probe_matches_bool(probe, *b),
                 GuardFoldScrut::Str(s) => probe_matches_str(probe, s),
                 GuardFoldScrut::Char(c) => probe_matches_char(probe, *c),
+                GuardFoldScrut::Bytes(b) => probe_matches_bytes(probe, b),
             };
             if !probe_hit {
                 continue; // this arm's pattern doesn't match the constant — try the next
@@ -5252,23 +5257,31 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         trace!(target: "rcdzc::lower", scrutinee = scrutinee.0, "non-scalar match with a single catch-all binder lowers to its body");
         return core_of(db, *body);
     }
-    // A RUNTIME STRING scrutinee matched against STRING LITERALS — the compiler's keyword/opcode dispatch
-    // (`(match head ("if" …) ("let" …) (_ …))`). A String is a heap value (not `is_scalar`), so the scalar
-    // probe-chain below cannot drive it; but runtime string EQUALITY already lowers to `value-eq` (a `(= s
-    // "add")` emits it), so a string match is exactly a chain of `value-eq` tests. Rather than thread a
-    // heap handle through the Int/Bool-shaped `Core::Match` emit, DESUGAR to a nested `if`-chain built from
-    // synthesized AST — `(if (= scrutinee "add") body0 (if (= scrutinee "sub") body1 <else>))` — and lower
-    // THAT (the ordinary `Resolved::If` + `=`-over-strings paths handle it, including tail position). A
-    // guarded arm nests its guard: `(if (= scrutinee lit) (if guard body <else>) <else>)`. The final
-    // catch-all (a `_`/binder wildcard, guaranteed by the exhaustiveness check above) is the innermost
-    // `else`. Only fires for a definitely-`String` scrutinee whose arms are all string-literal / wildcard
-    // probes (the type check above already rejected a mismatched probe); a non-string compound still
-    // declines below.
-    if matches!(scrut_ty, crate::ty::Ty::String)
-        && probes
-            .iter()
-            .all(|(p, _, _)| matches!(p, crate::core::Probe::Str(_) | crate::core::Probe::Wild))
-    {
+    // A RUNTIME STRING / SYMBOL / BYTES scrutinee matched against text/byte LITERALS — the compiler's
+    // keyword/opcode dispatch (`(match head ("if" …) ("let" …) (_ …))`), the symbol twin (`(match tag
+    // (#"add" …) …)`), and the byte-string twin (`(match b (b"AB" …) …)`). Each is a heap value (not
+    // `is_scalar`), so the scalar probe-chain below cannot drive it; but runtime EQUALITY over each already
+    // lowers to `value-eq` (a `(= s "add")` / `(= tag #"add")` / `(= b b"AB")` emits it — a direct-Bytes
+    // operand is compacted first, so a rope compares by content), so such a match is exactly a chain of
+    // `value-eq` tests. Rather than thread a heap handle through the Int/Bool-shaped `Core::Match` emit,
+    // DESUGAR to a nested `if`-chain built from synthesized AST — `(if (= scrutinee "add") body0 (if (=
+    // scrutinee "sub") body1 <else>))` — and lower THAT (the ordinary `Resolved::If` + `=`-over-heap-value
+    // paths handle it, including tail position). A guarded arm nests its guard: `(if (= scrutinee lit) (if
+    // guard body <else>) <else>)`. The final catch-all (a `_`/binder wildcard, guaranteed by the
+    // exhaustiveness check above) is the innermost `else`. Only fires for a definitely-`String`/`Symbol`/
+    // `Bytes` scrutinee whose arms are all text-literal (`Str` probe, shared by String + Symbol) / byte-
+    // literal (`Bytes` probe) / wildcard probes (the type check above already rejected a mismatched probe —
+    // a `Str` over Bytes, a `Bytes` over String — so the surviving probes are kind-consistent with the
+    // scrutinee); any other compound still declines below.
+    if matches!(
+        scrut_ty,
+        crate::ty::Ty::String | crate::ty::Ty::Symbol | crate::ty::Ty::Bytes
+    ) && probes.iter().all(|(p, _, _)| {
+        matches!(
+            p,
+            crate::core::Probe::Str(_) | crate::core::Probe::Bytes(_) | crate::core::Probe::Wild
+        )
+    }) {
         // Split the arms into the leading STRING-LITERAL / guarded probes (each becomes an `if` level) and
         // the final unconditional WILDCARD tail (the innermost `else`). Build from `arms` (the AST pattern
         // nodes) so the `=` RHS is the arm's own literal node and each body is reused verbatim.
@@ -8237,6 +8250,7 @@ enum GuardFoldScrut {
     Bool(bool),
     Str(String),
     Char(char),
+    Bytes(Vec<u8>),
 }
 
 /// Walk a constant-value path from `root` down `steps`, returning the leaf's core if EVERY step lands
@@ -9673,6 +9687,14 @@ fn pattern_constraints(
         // rep). Its expected sub-value type is `Char` (the char twin of the String/Symbol-literal payload).
         crate::resolved::Resolved::Char(c) => {
             Some((crate::core::Probe::Char(c), crate::ty::Ty::Char))
+        }
+        // A BYTE-STRING-literal payload sub-pattern — `(Some b"AB")` matches a `Some` carrying exactly the
+        // bytes `AB`. The Bytes twin of the String-literal payload: it imposes no discriminant, adds a
+        // `Probe::Bytes` lit-test gated at the leaf, folds against a constant `Core::ConstBytes`, and a
+        // RUNTIME Bytes payload emits the `value-eq` byte-leaf content compare (`build_lit_test`'s
+        // non-refining arm, exactly as a runtime String payload). Its expected sub-value type is `Bytes`.
+        crate::resolved::Resolved::Bytes(bs) => {
+            Some((crate::core::Probe::Bytes(bs.into()), crate::ty::Ty::Bytes))
         }
         _ => None,
     };
@@ -11795,6 +11817,10 @@ fn classify_probe(db: &mut Db, pat: StructId) -> Option<crate::core::Probe> {
         // `#"add"` dispatches exactly as a match on `"add"` does. This is the head-dispatch idiom over a
         // symbol (`(match tag (#"add" …) (#"sub" …))`), the symbol twin of String-literal patterns.
         Resolved::SymbolConst(s) => Some(crate::core::Probe::Str(s)),
+        // A BYTE-STRING-literal pattern (`(b"AB" …)`). Classified as a `Bytes` probe — the Bytes twin of
+        // `Str`: a constant scrutinee folds by content equality, and a runtime Bytes scrutinee desugars to a
+        // `value-eq` content-compare chain (a Bytes is a heap value, dispatched exactly as a runtime String).
+        Resolved::Bytes(bs) => Some(crate::core::Probe::Bytes(bs.into())),
         // A CHAR-literal pattern (`(#\a …)`). Classified as a `Char` probe — a constant scrutinee folds by
         // codepoint equality (`Char` is `Eq`), the last scalar-literal kind to gain a match arm (Int/Bool/
         // Str/Symbol already do). A runtime char has no machine rep yet, so it declines at `is_scalar`
@@ -11814,6 +11840,7 @@ fn probe_matches_int(probe: &crate::core::Probe, v: &IntValue) -> bool {
         crate::core::Probe::Bool(_)
         | crate::core::Probe::Str(_)
         | crate::core::Probe::Char(_)
+        | crate::core::Probe::Bytes(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }
@@ -11827,6 +11854,7 @@ fn probe_matches_bool(probe: &crate::core::Probe, b: bool) -> bool {
         crate::core::Probe::Int(_)
         | crate::core::Probe::Str(_)
         | crate::core::Probe::Char(_)
+        | crate::core::Probe::Bytes(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }
@@ -11842,6 +11870,7 @@ fn probe_matches_str(probe: &crate::core::Probe, s: &str) -> bool {
         crate::core::Probe::Int(_)
         | crate::core::Probe::Bool(_)
         | crate::core::Probe::Char(_)
+        | crate::core::Probe::Bytes(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }
@@ -11857,6 +11886,24 @@ fn probe_matches_char(probe: &crate::core::Probe, c: char) -> bool {
         crate::core::Probe::Int(_)
         | crate::core::Probe::Bool(_)
         | crate::core::Probe::Str(_)
+        | crate::core::Probe::Bytes(_)
+        | crate::core::Probe::ListLen { .. }
+        | crate::core::Probe::MapHasKeys { .. } => false,
+    }
+}
+
+/// Whether a probe matches a constant byte-sequence scrutinee (for the fold). A `Wild` matches anything; a
+/// byte-string literal matches by CONTENT equality (raw byte compare — a `Core::ConstBytes` scrutinee and
+/// pattern are both flat canonical byte forms, so `==` is exact, the same basis as the constant `Bytes`
+/// equality fold). The Bytes twin of `probe_matches_str`.
+fn probe_matches_bytes(probe: &crate::core::Probe, b: &[u8]) -> bool {
+    match probe {
+        crate::core::Probe::Bytes(p) => **p == *b,
+        crate::core::Probe::Wild => true,
+        crate::core::Probe::Int(_)
+        | crate::core::Probe::Bool(_)
+        | crate::core::Probe::Str(_)
+        | crate::core::Probe::Char(_)
         | crate::core::Probe::ListLen { .. }
         | crate::core::Probe::MapHasKeys { .. } => false,
     }

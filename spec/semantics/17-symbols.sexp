@@ -677,6 +677,27 @@
             (def (main) (classify (String.concat "ad" "d"))) (export main)))
   (error  CDZ0201))
 
+(case "a runtime Symbol value dispatches on symbol literals"
+  (doc    "The positive same-kind case: a RUNTIME `Symbol` scrutinee (built via `Symbol.of` from a
+           parameter-selected string, so it does not fold) matched against `#\"add\"` / `#\"sub\"` symbol
+           literals with a catch-all → each arm is a content `value-eq` (a Symbol shares the String
+           byte-leaf rep, so it dispatches exactly as a runtime string keyword match). `#\"add\"`→1,
+           `#\"sub\"`→2, any other symbol→the `_` tail. Pins that symbol dispatch is not only a
+           constant fold — a runtime symbol is dispatched by content, the symbol twin of runtime string
+           dispatch (10-bytes has the Bytes twin).")
+  (input  (do
+            (def (classify (: s Symbol))
+              (match s
+                (#"add" 1)
+                (#"sub" 2)
+                (_ 0)))
+            (def (main (: n Int64))
+              (classify (Symbol.of (if (= n 0) "add" (if (= n 1) "sub" "zz")))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64)))
+
 (case "a string-literal sub-pattern in a Symbol tuple element is a type error"
   (doc    "The TUPLE-element face: `(: p (Tuple Symbol Int64))` matched with `(tuple \"add\" n)` — a STRING
            literal over the Symbol element — crosses the boundary → CDZ0201. Pins the tuple-element position

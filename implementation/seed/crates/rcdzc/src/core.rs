@@ -172,6 +172,13 @@ pub enum Probe {
     /// char-equality probe are emitted (a later, cross-vertical increment — the Char twin of the runtime
     /// string-equality path). So a `Probe::Char` never survives to a backend, exactly like `Probe::Str`.
     Char(char),
+    /// `scrutinee == this byte sequence` — a byte-string-literal pattern (`(b"AB" …)`). The Bytes twin of
+    /// `Str`: a Bytes is a heap value (not `is_scalar`), so it is dispatched exactly as a runtime String
+    /// match — a CONSTANT `Core::ConstBytes` scrutinee folds by content equality (selecting the first arm
+    /// whose bytes equal it), and a RUNTIME Bytes scrutinee desugars to a chain of `(= scrutinee b"…")`
+    /// `value-eq` content compares (a direct-Bytes `=` compacts each operand, so a rope compares by
+    /// content). Carried as the literal's raw bytes, resolved/compared at fold time.
+    Bytes(std::rc::Rc<[u8]>),
     /// A LIST pattern's length test — the list at this path must have `len` elements (`at_least` false, a
     /// fixed-arity `(list p0 … p{len-1})`) or AT LEAST `len` (`at_least` true, a rest pattern `(list p0 …
     /// p{len-1} .. rest)` binding the tail). Like `Str`, only the CONSTANT-scrutinee FOLD is realized (a
