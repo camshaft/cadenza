@@ -1,0 +1,28 @@
+// The §4 DECODE-GUARD checker for the multi-contract state dispatcher (design/cadenza-platform.md §4/§9). The
+// happy-path runs (reducer-statedispatch-cdz-run) prove the dispatcher DECODES a well-formed payload by each
+// contract's schema and acts. This is the negative complement: a message arrives on a RECOGNIZED contract
+// (cdz-platform.state.set — the id guard passes, so this is NOT the unknown-contract path the #3663 pilot
+// covers) but with a MALFORMED payload that is not a valid SetRequest encoding. The dispatcher's set arm
+// `Value.decode`s it, gets None, and rejects with Close(set-decode-failed) rather than acting on garbage or
+// trapping — the decode-by-schema half of operate-on-contract-id is a real guard, not an assumption.
+//
+// JUDGEMENT: pass iff some Closed(reason = b"set-decode-failed"). NON-VACUOUS: a dispatcher that decoded
+// garbage into a bogus SetRequest (or ignored the decode failure) would state.put + emit rather than Close, so
+// no such Closed exists; a guest that fails to instantiate performs no Close either. The reason is guest-
+// controlled and distinct from the (malformed) payload, so it cannot be echoed vacuously.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def closed-set-decode-failed(rec) =
+  match rec.entry with
+  | Entry.Closed(c) => c.reason == b"set-decode-failed"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if any-record(records, closed-set-decode-failed)
+  then pass()
+  else fail("no Closed b\"set-decode-failed\": the state.set arm did not reject the malformed payload (decode-by-schema is not a real guard, or the decode trapped instead of returning None)")
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
