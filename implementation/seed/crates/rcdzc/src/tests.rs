@@ -8971,59 +8971,6 @@ fn runtime_list_float_shaped_equality_leaves_no_live_objects() {
     );
 }
 
-/// RUNTIME STRING ORDERING leak balance: a `<`/`<=`/`>`/`>=` on two RUNTIME Strings (`Core::StrCmp`)
-/// leaves NO live heap cells — the ordering twin of `runtime_value_eq_leaves_no_live_objects`. `StrCmp`
-/// walks both String leaves with borrowing `bytes-len`/`bytes-get` reads and drops only an OWNED
-/// temporary operand after the borrow (the exact `ValueEq` ownership contract). The classification bug
-/// this pins (fixed in `9b7950746`): `StrCmp` was grouped with the SCALAR compares (Arith/Compare/…,
-/// classified CONSUMING) in both Perceus sites (`binding_escapes`, `mark_binder_dups_inner`), but a
-/// LET-BOUND String reaching a `StrCmp` operand as a direct `LocalRef` is BORROWED — so it was wrongly
-/// marked escaping/consumed and the enclosing `let` SKIPPED its drop while the borrowing `StrCmp` left
-/// the value to its owner → a missing-drop LEAK. A value-only test cannot see it (the answer is correct
-/// either way); only the live-object count does. Verified DISCRIMINATING: with the pre-`9b7950746`
-/// classification this shape emits ONE `drop` (the kept `let` skips `r`'s reclaim) and leaks; the fixed
-/// classification emits TWO and nets to 0.
-///
-/// Shape: `r` is a LET-BOUND owned runtime rope ("hixxx", un-foldable so it genuinely allocates), KEPT
-/// (used in BOTH `<` and `String.byte-len`, so it survives as a `Core::Let` binding whose closing drop
-/// is gated on `binding_escapes`). `main` returns a scalar (the byte-len), so the ONLY heap traffic is
-/// `r`'s rope; after the run `live-objects` must be 0. `#[ignore]` — needs the debug-counters store
-/// (`cargo xtask build`; run with `-- --ignored`).
-#[test]
-#[ignore]
-fn runtime_string_ordering_over_a_let_bound_operand_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[str-cmp] debug-counters runtime not in the store; skipping balance probe");
-        return;
-    };
-    // `rep` appends "x" three times via `String.concat` → an OWNED rope "hixxx". `r` is LET-BOUND and
-    // KEPT (used as a direct `<` operand AND read again by `byte-len`), the exact let-bound-direct-
-    // operand shape the StrCmp mis-classification leaked. `main` returns the scalar byte-len.
-    let src = "(module m \
-                 (def (rep (: s String) (: n Int64)) \
-                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
-                 (def (main) (let ((r (rep \"hi\" 3))) \
-                    (if (< r \"zzzzzzzz\") ((. String byte-len) r) (- 0 1)))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(5),
-        "the let-bound rope 'hixxx' is < 'zzzzzzzz', so the arm returns its byte-len 5"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "str-cmp leak: the let-bound rope operand's heap cells are still live after the ordering \
-         compare (expected 0 — the borrowing StrCmp leaves `r` to its owner, so the kept `let` must \
-         drop it; the pre-9b7950746 consume-classification skipped that drop → leak)"
-    );
-}
-
 /// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
 /// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
 /// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope

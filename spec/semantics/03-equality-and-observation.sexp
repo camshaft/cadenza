@@ -2945,3 +2945,15 @@
             (export main)))
   (call   main) (output (: 5 Int64))
   (live-objects 0))
+
+(case "a runtime String ordering compare over a let-bound rope operand leaves no live heap objects"
+  (doc    "`rep` appends \"x\" 3x via String.concat -> an OWNED rope \"hixxx\", LET-BOUND as `r` and KEPT (used
+           as a direct `<` operand AND read again by String.byte-len). `(< r \"zzzzzzzz\")` is true, so main
+           returns byte-len 5. StrCmp borrows r (leaves it to its owner), so the kept let must drop it -- net
+           0 live cells (a let-bound-direct-operand mis-classification leaked it pre-fix).")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (let ((r (rep "hi" 3))) (if (< r "zzzzzzzz") (String.byte-len r) (- 0 1))))
+            (export main)))
+  (call   main) (output (: 5 Int64))
+  (live-objects 0))
