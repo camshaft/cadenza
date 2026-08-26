@@ -48541,46 +48541,11 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             2,
             "swapped operands kept"
         );
-
-        // VALUE PARITY: the tautology holds across the boundary; the false-law never fires; the swapped
-        // non-fold computes its real (non-tautology) result.
-        use wasmtime::component::Val;
-        let orfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (or (< x 5) (>= x 5))) (export f))",
-        )))
-        .expect("compile");
-        for v in [3, 5, 10, -1] {
-            assert!(
-                run_returns_with::<bool>(&orfn, "f", &[Val::S64(v)]),
-                "or complement @{v}"
-            );
-        }
-        let andfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64)) (and (< x 5) (>= x 5))) (export f))",
-        )))
-        .expect("compile");
-        for v in [3, 5, 10] {
-            assert!(
-                !run_returns_with::<bool>(&andfn, "f", &[Val::S64(v)]),
-                "and complement @{v}"
-            );
-        }
-        let swfn = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: a Int64) (: b Int64)) (or (< a b) (>= b a))) (export f))",
-        )))
-        .expect("compile");
-        assert!(
-            !run_returns_with::<bool>(&swfn, "f", &[Val::S64(5), Val::S64(3)]),
-            "swapped a=5 b=3 is false, not a tautology"
-        );
-        // TRAP SAFETY: a trapping comparison operand keeps the runtime form and traps.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (or (< (/ 100 z) 5) (>= (/ 100 z) 5)) 1 0)) (export f))"
-        ))).expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "a trapping comparison operand keeps its trap"
-        );
+        // Value + trap parity — the or-complement is always true and the and-complement always false, the
+        // swapped-operand pair is not a tautology, and a trapping shared operand keeps its trap — is the
+        // corpus family "complementary ordering comparisons fold their or to true and their and to false",
+        // "swapped-operand complements do not fold …", and "the tautology fold keeps a trapping shared
+        // operand" (spec/semantics/02-binding-and-control.sexp), run via cdz-run.
     }
 
     #[test]
