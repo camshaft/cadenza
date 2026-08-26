@@ -12,12 +12,15 @@
 // width is otherwise unobservable). Extending it to another arg shape is a new op or variant case, additive.
 package cadenza:test-arg-probe;
 
+// The nullary case is `absent`, not `none`: a top-level `None` constructor would shadow the builtin
+// `Option.None` module-wide in the Cadenza guest + checker (which use `Option`), so the case is named to
+// avoid the clash. The name is arbitrary to the marshal — the point is the payload widths, not the label.
 interface arg-probe {
   // A variant with MIXED-WIDTH scalar payloads — exercises the register-flatten path: the canonical join
   // valtype is i64 here (a case is 64-bit). A sign-mangled `big` or a `small` read from the wrong bits is
   // caught by asserting the received value.
   variant mixed {
-    none,
+    absent,
     small(u8),
     big(s64),
   }
@@ -25,7 +28,7 @@ interface arg-probe {
   // i32 (4 bytes) but the canonical memory payload area is MAX NATURAL = 2 bytes (u16). A wrong 4-byte store
   // overruns into the next list element, caught by asserting adjacent elements stay intact.
   variant narrow {
-    none,
+    absent,
     a(u8),
     b(u16),
   }
