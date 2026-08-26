@@ -7217,6 +7217,7 @@ pass	zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Blake3.of of a runtime Bytes is a 32-byte digest (runtime op 91)
+pass	runtime Set.of at THREE different element types in one program all build via per-site monomorphic folds
 pass	runtime Set.of at two different element types in one program each build via a per-site monomorphic fold
 todo	Type is a first-class value
 todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)

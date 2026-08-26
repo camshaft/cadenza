@@ -7396,6 +7396,7 @@ pass	zpl1 a ZIPLINE with a brake zone — gliding advances the position by speed
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
+pass	runtime Set.of at THREE different element types in one program all build via per-site monomorphic folds
 pass	runtime Set.of at two different element types in one program each build via a per-site monomorphic fold
 todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
 todo	a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)

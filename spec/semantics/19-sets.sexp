@@ -2000,6 +2000,29 @@
   (call   main (: 5 Int64) (: 7 Int64))
   (output (: 22 Int64)))
 
+; The N-site generalization of the per-site monomorphic fold: THREE runtime-`Set.of` sites at THREE distinct
+; element types in one program — a `Set Int64`, a `Set Bool`, AND a `Set String`. Each site gets its own
+; monomorphic fold def, so no synthesized def is instantiated at more than one element type and the
+; recursive-generic tie never arises regardless of how many distinct types coexist. Int set {a,b} = 2; Bool
+; set {a>b, a<b} = {false, true} = 2; String set {(if a>b "hi" "lo"), "lo"} — with a<b the branch selects
+; "lo", so the set is {"lo"} = 1. 2 + 10·2 + 100·1 = 122. Guards that per-site synthesis scales past the
+; pairwise case and that a String (heap-rope element) set participates.
+(case "runtime Set.of at THREE different element types in one program all build via per-site monomorphic folds"
+  (doc    "Three runtime-`Set.of` constructions at DIFFERENT element types — `Set Int64` from `(list a b a)`,
+           `Set Bool` from `(list (> a b) (< a b))`, and `Set String` from `(list (if (> a b) \"hi\" \"lo\")
+           \"lo\")` — coexist in one program. Each site is rewritten to its OWN synthesized monomorphic fold,
+           so N distinct element types coexist with no cross-type instantiation. With a=5, b=7: Int {5,7}=2,
+           Bool {false,true}=2, String {\"lo\"}=1 (the `a>b` branch is false → \"lo\", deduped with the literal
+           \"lo\"). 2 + 10·2 + 100·1 = 122. The N-site generalization of the two-type case above.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (+ (Set.len (Set.of (list a b a)))
+                 (+ (* 10 (Set.len (Set.of (list (> a b) (< a b)))))
+                    (* 100 (Set.len (Set.of (list (if (> a b) "hi" "lo") "lo")))))))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 122 Int64)))
+
 (case "a runtime-keyed map entry enumerates as its key-value tuple"
   (doc    "`(Map.to-list (Map.insert Map.empty k 42))` with k a parameter — the single entry
            enumerates as a (k, 42) tuple whose value projects 42. Pins the entry-tuple
