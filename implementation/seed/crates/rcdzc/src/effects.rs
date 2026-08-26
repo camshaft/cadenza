@@ -3297,6 +3297,114 @@ fn reduce_one_shot_helper_call(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
     None
 }
 
+/// ESCAPED-CLOSURE-LEAK RECOVERY (cx5d). When `reduce_handle`'s output LEAKS a discharged perform — a
+/// closure performing an arm op, passed to a NON-recursive ONE-SHOT helper that APPLIES it OUTSIDE the fold's
+/// reach (the closure lifts standalone, its perform un-homed → `reduced_body_leaks_escaped_perform` fires) —
+/// β-INLINE each such helper call in the ORIGINAL handle `body`, so the closure is applied INLINE, within
+/// the fold's reach. A subsequent re-run of `reduce_handle` then threads the now-in-reach perform. Returns
+/// the rewritten body if it inlined ≥ 1 such call (already re-resolved), else `None`.
+///
+/// CTX-FREE (matches the discharged ops directly from `arms`). SAFETY is the caller's: it re-runs
+/// `reduce_handle` and RE-CHECKS the leak, using the result only if it now folds cleanly — so this can only
+/// turn a decline into a fold, NEVER change a folding case (every case that folds today reaches no leak, so
+/// the caller never invokes this) nor a value (one-shot: each helper param is used `<= 1` time, so the
+/// inlined perform runs exactly once). A recursive / multi-use helper, or a non-lambda-non-simple arg, is
+/// left alone (the honest decline stands, as before).
+pub fn inline_escaped_one_shot_perform_call(
+    db: &mut Db,
+    body: StructId,
+    arms: &[HandleArm],
+) -> Option<StructId> {
+    let arm_ops: Vec<(u32, u32)> = arms
+        .iter()
+        .filter_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, i)| (d.0, i)))
+        .collect();
+    if arm_ops.is_empty() {
+        return None;
+    }
+    let (rewritten, changed) = inline_escaped_worker(db, body, &arm_ops);
+    if changed {
+        // `apply_lambda` copies the callee body (a copied binder ref keeps a stale memoized resolution) and
+        // the `push_list` rebuild produces fresh unresolved parents — forget the whole subtree so the
+        // re-run `reduce_handle`'s `resolved_of` recomputes every ref against the inlined structure (the same
+        // re-resolve hygiene `reduce_arm_deferred_resume` applies per inlined call).
+        crate::resolve::forget_subtree(db, rewritten);
+        Some(rewritten)
+    } else {
+        None
+    }
+}
+
+/// Recursive worker for [`inline_escaped_one_shot_perform_call`]: rewrite `node`, β-inlining an eligible
+/// one-shot helper call that passes an escaping performing closure. Returns `(rewritten, changed)`.
+fn inline_escaped_worker(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) -> (StructId, bool) {
+    if let Resolved::Apply { head, args } = resolved_of(db, node)
+        && crate::eval::effect_op_of(db, head).is_none() // the head is not itself a perform
+        && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
+        && !crate::eval::is_recursive(db, hbody)
+        && params.len() == args.len()
+        && params
+            .iter()
+            .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
+        && args.iter().all(|&a| {
+            matches!(resolved_of(db, a), Resolved::Lambda { .. }) || arg_is_simple_pure(db, a)
+        })
+        && args.iter().any(|&a| lambda_body_reaches_op(db, a, arm_ops))
+        && let Ok(Some(reduced)) = crate::eval::apply_lambda(db, head, &args)
+    {
+        // The inlined body may expose another such call (finite AST bounds the recursion).
+        let (r, _) = inline_escaped_worker(db, reduced, arm_ops);
+        return (r, true);
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let mut new_children = Vec::with_capacity(children.len());
+            let mut any = false;
+            for c in children {
+                let (rc, ch) = inline_escaped_worker(db, c, arm_ops);
+                any |= ch;
+                new_children.push(rc);
+            }
+            if any {
+                (db.push_list(new_children), true)
+            } else {
+                (node, false)
+            }
+        }
+        Struct::Atom(_) => (node, false),
+    }
+}
+
+/// A syntactically-simple PURE argument: a bare name or an atom leaf (no perform to preserve/reorder). Used
+/// by the escaped-closure recovery's one-shot gate for the NON-lambda args (the lambda arg is the closure).
+fn arg_is_simple_pure(db: &Db, node: StructId) -> bool {
+    db.ast.as_name(node).is_some() || matches!(db.ast.get(node), Struct::Atom(_))
+}
+
+/// Whether `node` is a lambda whose BODY reaches a perform of one of `arm_ops` (a discharged op this handle
+/// routes) — the escaping closure whose perform the recovery re-homes by inlining its applying helper.
+fn lambda_body_reaches_op(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) -> bool {
+    let Some((_params, hbody)) = crate::eval::lambda_params_and_body(db, node) else {
+        return false;
+    };
+    subtree_reaches_arm_op(db, hbody, arm_ops)
+}
+
+fn subtree_reaches_arm_op(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) -> bool {
+    if let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((d, i)) = crate::eval::effect_op_of(db, head)
+        && arm_ops.contains(&(d.0, i))
+    {
+        return true;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| subtree_reaches_arm_op(db, c, arm_ops)),
+        Struct::Atom(_) => false,
+    }
+}
+
 /// Rebuild a `(match SCRUTINEE arm…)` node with a NEW scrutinee, preserving the arms. The match AST is
 /// `(match <scrutinee> <arm>…)` — child 0 is the `match` head, child 1 is the scrutinee, the rest are arms
 /// — so this replaces child 1. `arms` is passed for a shape assertion only (the arm children are copied from

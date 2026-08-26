@@ -17250,6 +17250,27 @@
   (export main)))
   (output (: 12 Int64)))
 
+;; cx5d: an EFFECT-PERFORMING closure passed as a fn ARGUMENT to a non-recursive one-shot helper that APPLIES
+;; it. The general tail fold threads the closure arg as a pure lambda value (a closure performs only when
+;; applied), so the helper is NOT inlined and the perform LEAKS out of the fold's reach — the handle would
+;; decline HANDLER_NOT_REDUCIBLE. The escaped-closure-leak recovery β-inlines the one-shot helper so the
+;; closure is applied INLINE (in reach) and re-reduces: `ap1 g = (g 5)`, `(ap1 (fn (x) (+ x (E.tick))))` →
+;; `(+ 5 (E.tick))`, threaded like any perform → main(3) = 5 (seed 0 → resume (* 0 10) = 0, so 5+0). The
+;; recovery is one-shot gated (perform runs once) and re-checks the leak (folds only if clean). CONTRAST cx5c
+;; (the SAME closure invoked DIRECTLY, no helper) which always folded, and cx5 (a RECURSIVE helper) which
+;; stays declined (the one-shot gate excludes recursion). (breaker cx5 suite.)
+(case "cx5d an effect-performing closure through a non-recursive one-shot helper fn-arg folds via the escaped-closure recovery"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (ap1 (: g (-> Int64 Int64))) (g 5))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (* s 10) (+ s 1))))
+      (ap1 (fn (x) (+ x (E.tick))))))
+  (export main)))
+  (call   main (: 3 Int64))
+  (output (: 5 Int64)))
+
 ;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
 (case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
   (input (do
