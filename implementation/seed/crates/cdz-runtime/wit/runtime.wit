@@ -483,6 +483,16 @@ interface heap {
   //    32-byte Bytes handle the caller drops. TOTAL: never traps (empty input hashes the empty string, blake3's
   //    defined digest of no bytes). APPENDED last (frozen-contract rule). See `op_hash_blake3`.
   hash-blake3: func(bytes: u32) -> u32;                // 91 — BLAKE3 of a Bytes leaf's contents → a fresh 32-byte Bytes leaf (borrows input)
+
+  //  ast-print(handle, discs) -> handle
+  //    The runtime half of the compiler's `Ast.print`: render a RUNTIME `Ast` heap value to its canonical
+  //    re-readable s-expression text (a fresh owned String leaf), BYTE-IDENTICAL to the compile-time
+  //    `print_ast_value` fold (rcdzc lower.rs) — Int→BigInt decimal, Float→shortest round-trip decimal,
+  //    Bool→true/false, Str→escaped `"…"`, Name→bare, Bytes→`b"…"`, List→`(e e …)`. The `Ast` variant discs
+  //    are looked up BY NAME by the compiler (not hardcodable), so it BAKES them into `discs` — a Bytes of
+  //    7 LEB varints in slot order [int,float,bool,str,name,bytes,list] the runtime reads. BORROWS `handle`
+  //    + `discs`; returns a fresh owned String handle. APPENDED last (frozen-contract rule). See `op_ast_print`.
+  ast-print: func(handle: u32, discs: u32) -> u32;     // 92 — runtime Ast heap value + baked discs → canonical s-expr text String (borrows both)
 }
 
 world runtime {

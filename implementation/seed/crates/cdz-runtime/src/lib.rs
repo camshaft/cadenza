@@ -5658,6 +5658,141 @@ fn op_hash_blake3(input: Handle) -> Handle {
     alloc(Vec::new(), digest.as_bytes().to_vec())
 }
 
+/// The 7 `Ast` variant discs the compiler conveys to `ast-print`/`ast-read`. The compiler looks these up
+/// BY NAME from the (prelude-defined) `Ast` sum decl, so the runtime NEVER hardcodes them — they ride in
+/// the `discs` Bytes, LEB-encoded in this fixed slot order: [int, float, bool, str, name, bytes, list].
+struct AstDiscs {
+    int: u32,
+    float: u32,
+    boolv: u32,
+    strv: u32,
+    name: u32,
+    bytes: u32,
+    list: u32,
+}
+
+/// Decode the baked disc descriptor: 7 LEB128 varints in `[int,float,bool,str,name,bytes,list]` order.
+/// `None` on a truncated/malformed descriptor (the compiler always bakes a well-formed one, so not-reached).
+fn read_ast_discs(discs: Handle) -> Option<AstDiscs> {
+    let n = op_bytes_len(discs);
+    let mut buf = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        buf.push(op_bytes_get(discs, i) as u8);
+    }
+    let mut pos = 0usize;
+    let mut next = || -> Option<u32> {
+        let mut val: u32 = 0;
+        let mut shift = 0u32;
+        loop {
+            let b = *buf.get(pos)?;
+            pos += 1;
+            val |= ((b & 0x7f) as u32) << shift;
+            if b & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        Some(val)
+    };
+    Some(AstDiscs {
+        int: next()?,
+        float: next()?,
+        boolv: next()?,
+        strv: next()?,
+        name: next()?,
+        bytes: next()?,
+        list: next()?,
+    })
+}
+
+/// Escape a string's contents for a `"…"` Ast.Str literal — the closed set `\n \t \r \\ \"` — mirroring the
+/// compiler's `push_escaped_str` (rcdzc lower.rs) so `Ast.print` is byte-identical to the compile-time fold.
+fn push_escaped_ast_str(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+}
+
+/// Render a runtime `Ast` heap value to canonical re-readable s-expression text — BYTE-IDENTICAL to the
+/// compiler's `print_ast_value` (rcdzc lower.rs): Int→BigInt decimal, Float→Rust shortest round-trip
+/// decimal (forced `.0`), Bool→true/false, Str→escaped `"…"`, Name→bare, Bytes→`b"…"` (printable / named /
+/// `\xNN` lower-hex), List→`(e e …)` space-separated recursive. An `Ast` variant carries exactly one
+/// payload (a real heap sum node → `op_sum_disc` reads its stored disc). An unknown disc renders nothing.
+fn render_ast(h: Handle, d: &AstDiscs, out: &mut String) {
+    let disc = op_sum_disc(h);
+    let payload = op_sum_payload(h);
+    if disc == d.int {
+        out.push_str(&unbox_bigint(payload).to_decimal_string());
+    } else if disc == d.float {
+        // Match `float_text` (rcdzc): Rust's `{}` shortest round-trip, forced to carry `.`/`e` so it
+        // re-lexes as a float (a bare `3` would re-read as Ast.Int). f64's Display is core (no_std-ok).
+        let s = alloc::format!("{}", op_get_float(payload));
+        out.push_str(&s);
+        if !(s.contains('.') || s.contains('e') || s.contains('E')) {
+            out.push_str(".0");
+        }
+    } else if disc == d.boolv {
+        out.push_str(if op_get_bool(payload) { "true" } else { "false" });
+    } else if disc == d.strv {
+        out.push('"');
+        push_escaped_ast_str(out, &op_str_get(payload));
+        out.push('"');
+    } else if disc == d.name {
+        out.push_str(&op_str_get(payload));
+    } else if disc == d.bytes {
+        out.push_str("b\"");
+        let n = op_bytes_len(payload);
+        for i in 0..n {
+            let b = op_bytes_get(payload, i) as u8;
+            match b {
+                b'\n' => out.push_str("\\n"),
+                b'\t' => out.push_str("\\t"),
+                b'\r' => out.push_str("\\r"),
+                b'\\' => out.push_str("\\\\"),
+                b'"' => out.push_str("\\\""),
+                0x20..=0x7e => out.push(b as char),
+                _ => {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    out.push('\\');
+                    out.push('x');
+                    out.push(HEX[(b >> 4) as usize] as char);
+                    out.push(HEX[(b & 0xf) as usize] as char);
+                }
+            }
+        }
+        out.push('"');
+    } else if disc == d.list {
+        out.push('(');
+        let n = op_arr_len(payload);
+        for i in 0..n {
+            if i > 0 {
+                out.push(' ');
+            }
+            render_ast(op_arr_get(payload, i), d, out);
+        }
+        out.push(')');
+    }
+}
+
+/// `ast-print(handle, discs)` (heap op 92) — the runtime half of the compiler's `Ast.print`: render a
+/// RUNTIME `Ast` heap value to its canonical re-readable s-expression text (a fresh owned String leaf),
+/// byte-identical to the compile-time `print_ast_value` fold. BORROWS `handle` + `discs` (the caller owns
+/// their release, like `value-encode`); the disc→variant mapping is read from the compiler-baked `discs`.
+fn op_ast_print(handle: Handle, discs: Handle) -> Handle {
+    let mut out = String::new();
+    if let Some(d) = read_ast_discs(discs) {
+        render_ast(handle, &d, &mut out);
+    }
+    op_str_new(out)
+}
+
 #[cfg(target_arch = "wasm32")]
 struct Component;
 
@@ -5962,6 +6097,13 @@ impl Guest for Component {
     // fresh owned handle the caller drops. See `op_hash_blake3`.
     fn hash_blake3(bytes: u32) -> u32 {
         op_hash_blake3(Handle::from_u32(bytes)).to_u32()
+    }
+    // Ast render (index 92) — the runtime half of `Ast.print`: a runtime Ast heap value → its canonical
+    // s-expr text (a fresh String leaf), byte-identical to the compiler's print_ast_value. BORROWS both;
+    // `discs` conveys the Ast variant discs (baked by the compiler, by-name — never hardcoded). See
+    // `op_ast_print`.
+    fn ast_print(handle: u32, discs: u32) -> u32 {
+        op_ast_print(Handle::from_u32(handle), Handle::from_u32(discs)).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
@@ -19412,6 +19554,53 @@ mod tests {
             before,
             "no leak — the op borrows its input and every handle is released"
         );
+    }
+
+    /// `ast-print` (heap op 92) renders a runtime Ast heap value to canonical re-readable s-expr text,
+    /// byte-identical to the compiler's `print_ast_value`. Builds Asts directly (`sum-new` at chosen discs
+    /// + payloads) and asserts the text; the disc→variant map is read from the baked `discs` Bytes (here
+    /// `[int,float,bool,str,name,bytes,list] = [0..=6]`). Covers the List recursion + Int/Name/Bool/Str.
+    #[test]
+    fn ast_print_renders_canonical_sexpr_text() {
+        reset();
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6]); // int,float,bool,str,name,bytes,list
+
+        // (+ 1 2): Ast.List(6) [Ast.Name(4,"+"), Ast.Int(0,1), Ast.Int(0,2)] — the print_ast_value example.
+        let name = op_sum_new(4, op_str_new("+".to_string()));
+        let i1 = op_sum_new(0, op_bigint_of_i64(1));
+        let i2 = op_sum_new(0, op_bigint_of_i64(2));
+        let mut arr = op_arr_alloc(3);
+        arr = op_arr_set(arr, 0, name);
+        arr = op_arr_set(arr, 1, i1);
+        arr = op_arr_set(arr, 2, i2);
+        let list = op_sum_new(6, arr);
+        let out = op_ast_print(list, discs);
+        assert_eq!(op_str_get(out), "(+ 1 2)", "List of Name + two Ints → (+ 1 2)");
+        op_drop(list);
+        op_drop(out);
+
+        // Ast.Name → the bare word.
+        let nm = op_sum_new(4, op_str_new("foo".to_string()));
+        let o = op_ast_print(nm, discs);
+        assert_eq!(op_str_get(o), "foo");
+        op_drop(nm);
+        op_drop(o);
+
+        // Ast.Bool(true) → "true".
+        let bt = op_sum_new(2, op_box_bool(true));
+        let o = op_ast_print(bt, discs);
+        assert_eq!(op_str_get(o), "true");
+        op_drop(bt);
+        op_drop(o);
+
+        // Ast.Str with a quote + newline → the escaped `"…"` literal (closed set \n \t \r \\ \").
+        let st = op_sum_new(3, op_str_new("a\"b\nc".to_string()));
+        let o = op_ast_print(st, discs);
+        assert_eq!(op_str_get(o), "\"a\\\"b\\nc\"", "Str renders as an escaped double-quoted literal");
+        op_drop(st);
+        op_drop(o);
+
+        op_drop(discs);
     }
 
     #[test]
