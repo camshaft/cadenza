@@ -3585,7 +3585,135 @@ struct GateOpts {
 
 /// Run one or more corpus files through the pipeline and grade each case against its recorded
 /// outcome. Delegates case parsing + normalization to `cdz-syntax corpus`, then drives each program.
+/// The nix flake system string (`aarch64-linux`), for the `.#checks.<sys>.…` attr path. Read once from
+/// `builtins.currentSystem` (cheap eval); falls back to `<arch>-linux` if nix is unavailable.
+fn nix_current_system() -> String {
+    std::process::Command::new("nix")
+        .args([
+            "eval",
+            "--raw",
+            "--impure",
+            "--expr",
+            "builtins.currentSystem",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}-linux", std::env::consts::ARCH))
+}
+
+/// The cached-corpus check attr for a corpus `.sexp` file at `target`, or `None` if the file is not a
+/// recognized `NN-feature` corpus file (only those have a `corpus[-rust]-<stem>` nix check). Whole-corpus
+/// (no file) uses the top-level `corpus`/`corpus-rust` aggregate.
+fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
+    let prefix = match target {
+        GateTarget::Wasm => "corpus",
+        GateTarget::Rust => "corpus-rust",
+        _ => return None, // rust-async / cadenza-ml have no cached nix corpus check
+    };
+    match stem {
+        None => Some(prefix.to_string()),
+        // A per-file check exists only for the `NN-feature` corpus files (numeric prefix), matching the
+        // flake's `corpusFileNames`.
+        Some(s) if s.starts_with(|c: char| c.is_ascii_digit()) => Some(format!("{prefix}-{s}")),
+        Some(_) => None,
+    }
+}
+
+/// Run the corpus gate through the CACHED per-case nix corpus (`.#checks.<sys>.corpus[-rust][-<stem>]`)
+/// instead of recompiling every case in-process — the operator's "don't rebuild the world on every gate"
+/// (2026-08-26; ships the #3363 per-case caching as the gate agents run). A corpus-only edit re-runs ONLY
+/// the changed case (content-addressed build); a compiler edit re-runs builds but the exec cache-hits on
+/// identical emit. The nix exec reproduces `xtask gate --check` (baseline regression + the exec_exit rule),
+/// so this is regression-GATED by construction. Returns `Some(exit_code)` when it delegated, or `None` to
+/// fall through to the in-process path (an unrecognized `--files` entry, or nix unavailable). Only
+/// wasm/rust targets have a cached check; `--save`/`--shard`/`--case`/rust-async stay in-process (caller).
+fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> Option<i32> {
+    let sys = nix_current_system();
+    // Map the requested files → check attrs. Empty ⇒ the whole-corpus aggregate.
+    let attrs: Vec<String> = if files.is_empty() {
+        vec![corpus_check_attr(target, None)?]
+    } else {
+        let mut v = Vec::with_capacity(files.len());
+        for f in files {
+            let stem = f.file_stem().and_then(|s| s.to_str());
+            // Any file we can't map to a cached check ⇒ fall through to in-process (don't silently skip it).
+            v.push(corpus_check_attr(target, stem)?);
+        }
+        v
+    };
+    let installables: Vec<String> = attrs
+        .iter()
+        .map(|a| format!(".#checks.{sys}.{a}"))
+        .collect();
+    println!(
+        "gate: CACHED corpus build via nix ({}) — reuses per-case results, no rebuild-the-world \
+         (set CDZ_GATE_INPROCESS=1 to force the in-process gate)",
+        installables.join(" ")
+    );
+    let mut cmd = std::process::Command::new("nix");
+    cmd.current_dir(&paths.repo)
+        .arg("build")
+        .args(&installables)
+        .args(["-L", "--keep-going"]);
+    let child = match cmd
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("gate: could not launch nix ({e}); falling back to the in-process gate");
+            return None;
+        }
+    };
+    // Bound the build so a hung nix builder can't freeze an agent's gate forever — but GENEROUSLY: a COLD
+    // whole-corpus build (first run / after a compiler change re-emits every case) is heavy, so default to
+    // 45min (a hang bound, not a throttle; a warm `--files` run finishes in seconds-to-minutes far under it).
+    // `CDZ_GATE_NIX_TIMEOUT_SECS` overrides.
+    let cap = std::env::var("CDZ_GATE_NIX_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(std::time::Duration::from_secs)
+        .unwrap_or_else(|| std::time::Duration::from_secs(45 * 60));
+    match wait_with_timeout(child, cap) {
+        Ok(Some(output)) => Some(output.status.code().unwrap_or(1)),
+        Ok(None) => {
+            eprintln!("gate: nix cached corpus build exceeded its wall-clock cap (killed)");
+            Some(1)
+        }
+        Err(e) => {
+            eprintln!("gate: waiting on nix failed ({e}); falling back to the in-process gate");
+            None
+        }
+    }
+}
+
 fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
+    // OPERATOR (2026-08-26 "cut over to the faster/cached wasm builds"): the whole-corpus + `--files`
+    // verify path runs through the CACHED per-case nix corpus so it does NOT recompile every case each run
+    // (#3363). `--case` (single-case debug), `--save` (baseline regen — needs in-process verdicts),
+    // `--shard` (case-sharded nightly), and rust-async/cadenza-ml (no cached check) stay in-process below.
+    // Escape hatch: `CDZ_GATE_INPROCESS=1`. Regression-gated by construction (the nix exec runs `--baseline`).
+    // `--check` stays IN-PROCESS: it also does VANISHED detection (a baseline case with no run), which the
+    // per-case `corpus` build doesn't — so pr-sync's authoritative `gate --check` keeps its full
+    // regression+vanished semantics untouched. (The cached nix `corpus`/`corpus-vanished` checks cover both
+    // for CI separately.) The delegated path is regression-gated by construction anyway (the nix exec runs
+    // `--baseline`), so an agent's plain `gate <files>` still catches a pass→not-pass regression.
+    if opts.case.is_none()
+        && !opts.save
+        && !opts.check
+        && opts.shard.is_none()
+        && matches!(opts.target, GateTarget::Wasm | GateTarget::Rust)
+        && std::env::var_os("CDZ_GATE_INPROCESS").is_none()
+        && let Some(code) = gate_via_nix_cache(paths, &opts.files, opts.target)
+    {
+        std::process::exit(code);
+    }
+
     let tools = build_tools(paths, profile);
     let files = if opts.files.is_empty() {
         default_corpus_files(paths)
