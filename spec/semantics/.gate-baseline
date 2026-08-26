@@ -7499,3 +7499,7 @@ pass	cmu3 runtime UInt64 checked-add wraps None at max, Some just below
 pass	cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero
 pass	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 pass	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
+pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
+pass	chk2 a closed handle with STRING state folds under (const ...)
+pass	cms1 closed handle with TUPLE state under (const ...)
+pass	cms2 closed handle with RECORD state under (const ...)
