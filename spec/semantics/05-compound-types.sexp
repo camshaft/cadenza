@@ -18833,3 +18833,43 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String))))))
+
+;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
+(case "pd1 a list shared into a RECORD field survives an update through the original binding"
+  (input (do
+    (def (rd (: xs (List Int64)))
+      (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((r (record (= keep xs))))
+          (let ((ys (List.update xs 0 99)))
+            (+ (rd (. r keep)) (* 100 (rd ys)))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 9907 Int64)))
+
+(case "pd2 a helper updates its list PARAM — the caller's original is intact after the call"
+  (input (do
+    (def (rd (: xs (List Int64)))
+      (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (bump (: xs (List Int64))) (rd (List.update xs 0 99)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (+ (bump xs) (* 100 (rd xs)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 799 Int64)))
+
+(case "pd3 a CLOSURE capturing a list sees the original across an interleaved update"
+  (input (do
+    (def (rd (: xs (List Int64)))
+      (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((g (fn (u) (rd xs))))
+          (let ((first (g 0)))
+            (let ((ys (List.update xs 0 99)))
+              (+ (* 100 first) (+ (rd ys) (g 0))))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 806 Int64)))
