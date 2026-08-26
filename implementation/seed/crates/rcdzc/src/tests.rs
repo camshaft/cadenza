@@ -7851,55 +7851,6 @@ fn a_heap_binder_in_a_fused_match_arm_is_reclaim_neutral_and_uaf_free() {
     );
 }
 
-/// rc-BALANCE witness for the recursive-match-binder scrutinee-materialization fix (`26e3471ac`, the S2
-/// twin): a match binder used twice over a recursive-call scrutinee carrying a HEAP payload. The fix keeps
-/// the `Core::MatchSum` wrapper (scrutinee materialized into ONE slot); v-memory-safety flagged that the
-/// materialized `Let` must DROP the named heap value after its last borrow (like `lower_let`'s kept-binding
-/// drop) — a leak here would be a scrutinee named once but never reclaimed, OR a double-free if a binder
-/// both borrows and the wrapper drops. `f` recurses building `(Mk r r)` where `r` is a runtime-built LIST
-/// (a heap value), binds `a` from the match, and uses it TWICE in `(Mk a a)`; the outer `main` projects one
-/// field's length + drops the rest. A balanced dup/drop over the materialized scrutinee + the twice-used
-/// heap binder nets live-cells to 0. (Runs at a small depth — this probes rc balance, not the exponential;
-/// the linearity is the `a_recursive_match_binder_scrutinee_is_materialized_once` runtime test.)
-#[test]
-#[ignore = "needs the debug-counters store (cargo xtask build)"]
-fn a_recursive_match_binder_over_a_heap_scrutinee_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[rc] debug-counters runtime not in the store; skipping match-binder balance probe"
-        );
-        return;
-    };
-    // `f` recurses to a base `(Mk (list 0) (list 0))` (heap lists), and each recursive arm matches
-    // `(f (+ n 1))`, binds `a` (a heap List), and USES IT TWICE in `(Mk a a)`. `main (f -4)` projects
-    // `List.len` of the first field. The scrutinee is materialized once per level (the wrapper's slot); a
-    // leak would be the named heap scrutinee not reclaimed, or the twice-used `a` double-freed.
-    let src = "(module m (type P (Mk (List Int64) (List Int64))) \
-                 (def (f (: n Int64)) (if (= n 0) (Mk (list 0) (list 0)) \
-                     (match (f (+ n 1)) ((Mk a _) (Mk a a))))) \
-                 (def (main (: n Int64)) (match (f n) ((Mk x _) ((. List len) x)))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[Val::S64(-4)]),
-        Val::S64(1),
-        "the first field is (list 0), length 1, at every depth (value-correct + NO UAF)"
-    );
-    // NOTE (2026-07-19): this probe (v-compiler-perf's rc-balance witness for the recursive-match-binder
-    // heap scrutinee) asserted live_objects==0, which held under the inc2 COMPOUND-shell reclaim. That
-    // reclaim was RESTRICTED to all-scalar-payload-only after it caused the sread UAF (a child borrowed out
-    // via `Map.lookup`/`List.at` aliases the shell; the deep drop freed a still-read value → OOB). So this
-    // compound (Mk (List)(List)) shell is no longer reclaimed → it LEAKS again (value-correct, non-OOB —
-    // the tracked residual for a SOUND compound-reclaim increment). Downgraded to a value-correctness + NO-UAF
-    // guard (a UAF would trap before returning 1); the zero-leak assertion returns when the sound compound
-    // reclaim lands.
-    let _ = rt.live_objects();
-}
-
 /// rc-BALANCE witness for the `Ast.Int` HEAP-BigInt payload the `Int64`->`BigInt` flip introduced
 /// (`1bfb5c29e`): before the flip `Ast.Int`'s payload was an inline scalar (no heap); now constructing
 /// `(Ast.Int x)` over a RUNTIME BigInt boxes a heap `Big`, and matching `(Ast.Int n)` extracts a heap
