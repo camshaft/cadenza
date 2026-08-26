@@ -7544,3 +7544,15 @@
     (export main)))
   (call main (: 4 Int64))
   (output (: 2 Int64)))
+
+(case "an exported two-Int64 addition runs over runtime args, not folded"
+  (doc    "An exported `(add (: a Int64) (: b Int64)) (+ a b)` is a real wasm function taking two s64 params;
+           the body does not fold (params unknown) -> `local.get 0; local.get 1; i64.add`. add(20,22)=42.")
+  (input  (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
+  (call   add (: 20 Int64) (: 22 Int64)) (output (: 42 Int64)))
+
+(case "the same exported addition over a second runtime arg pair recomputes"
+  (doc    "The SAME add export over a different pair proves the value is genuinely runtime, not a fold:
+           add(100, -1) = 99.")
+  (input  (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
+  (call   add (: 100 Int64) (: -1 Int64)) (output (: 99 Int64)))

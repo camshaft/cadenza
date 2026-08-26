@@ -9858,23 +9858,6 @@ fn if_runs_to_2() {
 
 // ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
 
-/// An exported `(def (add (: a Int64) (: b Int64)) (+ a b))` compiles to a component whose `add`
-/// export is a real wasm function taking two s64 params — run under wasmtime with (20, 22) it returns
-/// 42. This is the end-to-end proof of runtime integer operands: the body did NOT fold (the params
-/// are unknown), it emitted `local.get 0; local.get 1; i64.add`, and the boundary carries the params.
-#[test]
-fn an_exported_addition_runs_over_runtime_args() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let src = "(module m (def (add (: a Int64) (: b Int64)) (+ a b)) (export add))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let got: i64 = run_returns_with(&bytes, "add", &[Val::S64(20), Val::S64(22)]);
-    assert_eq!(got, 42);
-    // A different argument pair exercises the SAME function — the value is genuinely runtime.
-    let got2: i64 = run_returns_with(&bytes, "add", &[Val::S64(100), Val::S64(-1)]);
-    assert_eq!(got2, 99);
-}
-
 /// The float dual: an exported `(+ a b)` over two runtime Float64 params — the ONE arithmetic operator
 /// dispatched to float by the operand type — emits `local.get 0; local.get 1; f64.add` (no fold — the
 /// params are unknown, no overflow guard — floats never trap) and the boundary carries the params as

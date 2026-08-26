@@ -4684,6 +4684,7 @@ pass	an exported OPEN-ROW projector instantiates at importer widths the module n
 pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER's call sites
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
+pass	an exported two-Int64 addition runs over runtime args, not folded
 pass	an expression INTERPRETER threads a Map environment through Let-shadowing scopes
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
@@ -7101,6 +7102,7 @@ pass	the runtime-if list takes its else branch and measures that length
 pass	the runtime-list version of a tail fold compiles and folds correctly
 pass	the same conditional delegation makes no host call when the branch is not taken
 pass	the same declared effect is handled in-program by one entrypoint and delegated by another
+pass	the same exported addition over a second runtime arg pair recomputes
 pass	the same function called under two handlers is discharged by each in turn
 pass	the same list is still live after the if when the consuming branch is not taken
 pass	the same list not escaped (the None branch) is still usable after the join
