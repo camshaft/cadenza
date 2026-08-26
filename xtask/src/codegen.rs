@@ -276,10 +276,7 @@ fn generate_contracts(paths: &Paths, check: bool) {
         .join("crates/cdz-platform/guests/contract-id.cdz");
     let _ = std::fs::remove_dir_all(&stage);
     if let Err(e) = std::fs::create_dir_all(&stage) {
-        eprintln!(
-            "xtask codegen: create staging dir {}: {e}",
-            stage.display()
-        );
+        eprintln!("xtask codegen: create staging dir {}: {e}", stage.display());
         std::process::exit(1);
     }
     let stage_copy = |from: &std::path::Path, to: PathBuf| {
