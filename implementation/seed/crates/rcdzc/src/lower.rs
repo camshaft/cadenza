@@ -25105,6 +25105,24 @@ fn const_eval_apply(
         }
         return const_eval(db, body, &child, budget);
     }
+    // A NULLARY def call `(mk)` — a nullary def resolves its NAME to a `Ref` straight at its body (no
+    // `Lambda` wrapper), so `lambda_params_of` is `None` and the param-binding path below bails. Evaluate
+    // its body directly in a fresh env (no params to bind). This lets a PROJECTION/consumer of a nullary
+    // const fn that returns a compound fold — `descriptor().id` where `descriptor()` returns a record: the
+    // field read reduces to that field's constant and the record (with its non-representable `Ast` siblings)
+    // never materializes. GUARDED on `!is_recursive`: the step `budget` bounds TOTAL work but NOT native
+    // stack depth, so an unproductive nullary self-recursion `(def (f) (f))` would recurse ~1M native frames
+    // and overflow the stack before the budget stops it (the same hazard the closure fold avoids by not
+    // re-evaluating the head). A recursive nullary is instead handled by `core_of`'s dedicated arm (which
+    // reads `is_recursive` and tries the general evaluator with its own reduction guard), so declining here
+    // is a hand-off, not a loss.
+    if args.is_empty()
+        && crate::eval::lambda_params_of(db, head).is_none()
+        && let Some(body) = crate::eval::lambda_body_of_nullary(db, head)
+        && !crate::eval::is_recursive(db, body)
+    {
+        return const_eval(db, body, &CEnv::default(), budget);
+    }
     let params = crate::eval::lambda_params_of(db, head)?;
     if params.len() != args.len() {
         return None;
