@@ -21,3 +21,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# The shared Rust-render helpers (identifier sanitize + call-arg / BigInt-arg marshalling) the rcdzc rust
+# backend emits through; the driver's call-expression builder reuses them so a corpus arg crosses the
+# native boundary exactly as the compiled fn's parameter type expects.
+cdz-rust-render = { path = "../cdz-rust-render" }
