@@ -1346,10 +1346,12 @@ fn rewrite_references(
             // so a reducer can decode + dispatch on it by schema (§3/§4). Resolves like the blob references
             // (WHEREVER it appears): the value is ascribed with `<Type>` at the encode boundary — the root
             // ascription `Value.decode` requires — and any nested blob reference in the value resolves first.
-            // `<value>` must be written in the CANONICAL value form the codec uses: a single-constructor sum
-            // ELIDES its constructor (write the payload directly — `Value("Effect", b"x")`, not
-            // `Value("Effect", Perform(b"x"))`, since `Effect = | Perform(Bytes)`); a multi-constructor sum
-            // keeps its constructor head (`Value("T", SomeCtor(...))`). The type token is the schema type name.
+            // The `<value>` is written in ordinary value form: a single-constructor sum ELIDES its constructor
+            // (write the payload directly — `Value("Effect", b"x")`, not `Value("Effect", Perform(b"x"))`, since
+            // `Effect = | Perform(Bytes)`); a multi-constructor sum keeps its constructor head
+            // (`Value("T", SomeCtor(...))`). A record/list payload is written in plain ML syntax
+            // (`{ key = b"K", value = b"V" }`, `[b"a", b"b"]`) and canonicalized on encode (see
+            // `rewrite_value_canonical`). The type token is the schema type name.
             if let Some((&head, args)) = children.split_first()
                 && old.as_name(head) == Some("Value")
             {
@@ -1363,9 +1365,14 @@ fn rewrite_references(
                     want: "a type-name string as the first arg of Value(\"<Type>\", <value>)",
                 })?;
                 // Encode the value subtree standalone: copy+resolve it into a fresh arena, ascribe it with the
-                // type, and encode — the bytes a guest `Value.decode`s type-directed against `<Type>`.
+                // type, and encode — the bytes a guest `Value.decode`s type-directed against `<Type>`. The copy
+                // is CANONICALIZING (`rewrite_value_canonical`, not the plain `rewrite_references`): the ML
+                // surface a run is written in heads records/lists with the string constructors `("record" …)`/
+                // `("list" …)` and keeps record fields in declaration order, but the compiler's `Value.encode`
+                // emits the NAME-headed `(record …)`/`(list …)` with fields ascending by name — so an author can
+                // write a structured payload in ordinary ML record/list syntax and it still decodes.
                 let mut vb = Builder::new();
-                let inner = rewrite_references(old, value_id, table, &mut vb)?;
+                let inner = rewrite_value_canonical(old, value_id, table, &mut vb)?;
                 let ascribed = ascribe(&mut vb, inner, ty);
                 let bytes = codec::encode(&vb.finish(ascribed));
                 return Ok(bytes_leaf(b, &bytes));
@@ -1398,6 +1405,96 @@ fn rewrite_references(
                 .map(|&c| rewrite_references(old, c, table, b))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(b.list(children))
+        }
+    }
+}
+
+/// Copy a `Value("<Type>", <value>)` payload subtree into `b` in the CANONICAL value form the codec produces —
+/// the shape a guest `Value.decode`s type-directed. The ML surface a run is written in (`cdz convert`) heads
+/// records/lists with the STRING constructors `("record" …)`/`("list" …)` and keeps record fields in
+/// DECLARATION order, but the compiler's own `Value.encode` emits the NAME-headed `(record …)`/`(list …)` with
+/// record fields ascending by NAME (see [`crate::contract_value::record`]); a guest decoding the string-headed
+/// or unsorted form fails, because the runtime decoder — unlike our own liberal readers ([`record_field`]/
+/// [`list_items`]) — reads only the canonical head/order. So records are rebuilt name-headed + sorted and lists
+/// name-headed, recursively, while nested blob references still resolve exactly as in [`rewrite_references`] and
+/// every other node (bare-name constructors, ascriptions, leaves) copies through unchanged. Idempotent on an
+/// already-canonical subtree.
+fn rewrite_value_canonical(
+    old: &Arenas,
+    id: StructId,
+    table: &BTreeMap<String, Bytes>,
+    b: &mut Builder,
+) -> Result<StructId, SpecError> {
+    match old.get(id) {
+        Struct::Atom(leaf) => Ok(b.atom_leaf(old.leaf(*leaf).clone())),
+        Struct::List(children) => {
+            // A nested blob reference resolves to its bytes/hash, exactly as in the general resolve pass.
+            if let Some((&head, args)) = children.split_first()
+                && let Some(ctor @ ("BlobBytes" | "BlobHash")) = old.as_name(head)
+            {
+                let [name_id] =
+                    <[StructId; 1]>::try_from(args).map_err(|_| SpecError::WrongType {
+                        field: "blob reference",
+                        want: "a single blob name in BlobBytes(<name>) / BlobHash(<name>)",
+                    })?;
+                let name = old.as_str(name_id).ok_or(SpecError::WrongType {
+                    field: "blob reference",
+                    want: "a blob-name string in BlobBytes(<name>) / BlobHash(<name>)",
+                })?;
+                let bytes = table.get(name).ok_or_else(|| SpecError::UnknownBlob {
+                    referrer: format!("{ctor} reference"),
+                    blob: name.to_string(),
+                })?;
+                let resolved = if ctor == "BlobHash" {
+                    Bytes::copy_from_slice(ProgramHash::of(bytes).hash().as_bytes())
+                } else {
+                    bytes.clone()
+                };
+                return Ok(bytes_leaf(b, &resolved));
+            }
+            // A record → the canonical NAME-headed, ascending-name-sorted `(record …)`, each field value
+            // recursively canonicalized. Accept either head (`is_record`) so it is idempotent.
+            if is_record(old, id) {
+                let fields = old
+                    .as_form(id, "record")
+                    .or_else(|| old.as_ctor_form(id, "record"))
+                    .expect("is_record just matched a record head");
+                let mut out = Vec::with_capacity(fields.len());
+                for &f in fields {
+                    let kv = old.as_form(f, "=").ok_or(SpecError::WrongType {
+                        field: "Value record field",
+                        want: "a (= <name> <value>) field",
+                    })?;
+                    let [name_id, value_id] =
+                        <[StructId; 2]>::try_from(kv).map_err(|_| SpecError::WrongType {
+                            field: "Value record field",
+                            want: "a (= <name> <value>) field",
+                        })?;
+                    let name = old.as_name(name_id).ok_or(SpecError::WrongType {
+                        field: "Value record field",
+                        want: "a field name",
+                    })?;
+                    let value = rewrite_value_canonical(old, value_id, table, b)?;
+                    out.push((name, value));
+                }
+                return Ok(record(b, out));
+            }
+            // A list → the canonical NAME-headed `(list …)`, each element recursively canonicalized.
+            if let Some(items) = list_items(old, id) {
+                let elems = items
+                    .iter()
+                    .map(|&e| rewrite_value_canonical(old, e, table, b))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let head = b.name("list");
+                return Ok(b.list(std::iter::once(head).chain(elems).collect()));
+            }
+            // Everything else — a bare-name constructor `(Ctor …)`, an ascription `(: …)`, … — copies
+            // structurally with its children canonicalized.
+            let out = children
+                .iter()
+                .map(|&c| rewrite_value_canonical(old, c, table, b))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(b.list(out))
         }
     }
 }
@@ -2654,6 +2751,68 @@ mod tests {
             let deep = bytes_leaf(&mut vb, b"DEEP");
             let inner = bare_ctor(&mut vb, "Perform", vec![deep]);
             let root = ascribe(&mut vb, inner, "Effect");
+            Bytes::from(codec::encode(&vb.finish(root)))
+        };
+        match &spec.deliveries[0].1 {
+            DeliveryEvent::Message { payload, .. } => assert_eq!(*payload, want),
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    /// A `Value("<Type>", { … })` payload written in ML RECORD syntax is CANONICALIZED on encode: the ML surface
+    /// heads a record with the STRING constructor `("record" …)` and keeps fields in declaration order, but the
+    /// compiler's `Value.encode` (what a guest `Value.decode`s) emits the NAME-headed `(record …)` with fields
+    /// ascending by name. So the resolved payload bytes must match the canonical form even when the author wrote
+    /// the fields OUT of order — the string head is rewritten and the fields are sorted. Without
+    /// [`rewrite_value_canonical`] the string-headed / declaration-order bytes reach the guest and its
+    /// `Value.decode` returns `None` (the multi-contract state dispatcher's set arm decode-failed exactly so).
+    #[test]
+    fn resolve_references_canonicalizes_a_record_value_payload() {
+        // A string-headed ML-surface record `("record" (= value b"V") (= key b"K"))` — fields DELIBERATELY in
+        // non-canonical (value-before-key) order to prove the sort, and the STRING head to prove the rewrite.
+        let arenas = built(|b| {
+            let ty = s(b, "SetRequest");
+            let f_value = {
+                let eq = b.name("=");
+                let name = b.name("value");
+                let v = bytes_leaf(b, b"V");
+                b.list(vec![eq, name, v])
+            };
+            let f_key = {
+                let eq = b.name("=");
+                let name = b.name("key");
+                let v = bytes_leaf(b, b"K");
+                b.list(vec![eq, name, v])
+            };
+            let rec_head = s(b, "record");
+            let ml_record = b.list(vec![rec_head, f_value, f_key]);
+            let vref = bare_ctor(b, "Value", vec![ty, ml_record]);
+            let contract = bytes_leaf(b, ContractId::of(b"c").hash().as_bytes());
+            let msg = record(b, vec![("contract", contract), ("payload", vref)]);
+            let target = s(b, "root");
+            let delivery = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![delivery]);
+            let blobs = list(b, vec![]);
+            let registry = reg(b, "sys");
+            record(
+                b,
+                vec![
+                    ("registry", registry),
+                    ("blobs", blobs),
+                    ("deliver", deliver),
+                ],
+            )
+        });
+        let resolved = resolve_references(&arenas, |_| None).expect("resolve the Value reference");
+        let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
+        // The bytes a guest gets: codec-encoding of the NAME-headed, name-SORTED record `(record (= key b"K")
+        // (= value b"V"))` ascribed with its type — built via the canonical `record()` (sorts) + `ascribe`.
+        let want = {
+            let mut vb = Builder::new();
+            let k = bytes_leaf(&mut vb, b"K");
+            let v = bytes_leaf(&mut vb, b"V");
+            let rec = record(&mut vb, vec![("key", k), ("value", v)]);
+            let root = ascribe(&mut vb, rec, "SetRequest");
             Bytes::from(codec::encode(&vb.finish(root)))
         };
         match &spec.deliveries[0].1 {

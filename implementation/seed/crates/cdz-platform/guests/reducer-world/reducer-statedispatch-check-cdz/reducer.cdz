@@ -1,0 +1,37 @@
+// Checker for the §7 P3 multi-contract state dispatch run (design/cadenza-platform.md §1/§4/§7/§9). The paired
+// reducer responds to THREE distinct contracts by descriptor id (state.set/get/delete). The run delivers
+// set(K,V), then get(K), then delete(K). This checker asserts, log-only, that all three arms dispatched to their
+// correct handlers via the observed STATE side-effects, and that get round-trips what set wrote:
+//   (1) KvPut(key=K, value=V)      — the SET arm dispatched + wrote (state.set -> state.put).
+//   (2) KvGet(key=K, hit)          — the GET arm dispatched + read (state.get -> state.get, hit).
+//   (3) Emitted GetResult.Found(b"V") — the get arm returned the value SET wrote, ENCODED as the contract's
+//       declared @!output variant (round-trip across distinct contracts + output-ABI fidelity). Decoding the
+//       emitted payload as GetResult and matching Found(v)==b"V" is stronger than a raw-bytes compare: it proves
+//       the reducer honored the GetResult schema, and Found is a DISTINCT tag from Missing (no b"MISS" sentinel
+//       that a stored value could collide with — v-platform review finding).
+//   (4) KvDelete(key=K)            — the DELETE arm dispatched (state.delete -> state.delete).
+// The per-arm STATE op is the unambiguous proof that msg.contract routed to the right handler (set->put,
+// get->get, delete->delete) — an assumption-based reducer or a wrong dispatch would not produce all three.
+// NON-VACUOUS: a missing arm drops its Kv op; a broken round-trip / wrong-variant emit drops the decoded Found(V).
+import { LogRecord, Entry } from "log-schema"
+import { GetResult } from "state-get"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def kvput-kv(rec) = match rec.entry with | Entry.KvPut(p) => (p.key == b"K") and (p.value == b"V") | _ => false
+def kvget-hit(rec) = match rec.entry with | Entry.KvGet(g) => (g.key == b"K") and (g.hit == 1) | _ => false
+def kvdelete-k(rec) = match rec.entry with | Entry.KvDelete(d) => d.key == b"K" | _ => false
+def emitted-found-v(rec) =
+  match rec.entry with
+  | Entry.Emitted(e) => (match (Value.decode(e.payload) : Option(GetResult)) with | Some(GetResult.Found(v)) => v == b"V" | _ => false)
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, kvput-kv)) then fail("no KvPut(K,V): the state.set arm did not dispatch/write")
+  else if not(any-record(records, kvget-hit)) then fail("no KvGet(K, hit): the state.get arm did not dispatch/read")
+  else if not(any-record(records, emitted-found-v)) then fail("get did not emit GetResult.Found(V): round-trip across the distinct set/get contracts failed, or the reducer did not honor the GetResult output ABI")
+  else if not(any-record(records, kvdelete-k)) then fail("no KvDelete(K): the state.delete arm did not dispatch")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }

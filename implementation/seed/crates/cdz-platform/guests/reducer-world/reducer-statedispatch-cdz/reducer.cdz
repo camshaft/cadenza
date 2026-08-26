@@ -1,0 +1,47 @@
+// The §7 P3 MULTI-CONTRACT STATE dispatcher (design/cadenza-platform.md §1/§4/§7, operator directive: distinct
+// contracts per op, dispatched by contract-id — the generalization of §8's blob.put/get to state set/get/delete).
+// It responds to THREE distinct contracts, routing each by its self-reflected descriptor id:
+//   - cdz-platform.state.set    -> decode SetRequest, state.put(key,value), emit SetResult.Root(Blake3.of(value))
+//   - cdz-platform.state.get    -> decode GetRequest, state.get(key), emit GetResult.Found(value) / GetResult.Missing
+//   - cdz-platform.state.delete -> decode DeleteRequest, state.delete(key), emit DeleteResult.Root(Blake3.of(key))
+//   - any other contract        -> Close(unknown-contract)
+// The three contracts all export the uniform `descriptor` (contract ABI), so they are imported under whole-module
+// ALIASES (import sset from "state-set" etc.; v-syntax #3692 from-form + v-inference #3656) and disambiguated by
+// projection (sset.descriptor().id ...); the distinct-named request AND result types come via named-list imports.
+//
+// Every arm emits its contract's declared @!output variant, Value.encode'd — SetResult.Root / GetResult.Found|
+// Missing / DeleteResult.Root — so the response side honors the contract ABI (v-platform review). Missing is a
+// DISTINCT variant tag, not a b"MISS" sentinel: a stored value can never collide with it (and it respects the
+// operator's no-sentinel stance). The Set/Delete Root(Bytes) is a guest-computed WRITE-DIGEST (Blake3 of the
+// written value / deleted key) — NOT the §7 whole-state root, which a reducer cannot compute guest-side
+// (get/put/delete, no scan). Root(Bytes) stays bytes=bytes, so the VALUE upgrades to a true state root with zero
+// ABI churn if a host root-hash substrate lands. on-response/on-notification inert (reducer-lib).
+import sset from "state-set"
+import sget from "state-get"
+import sdel from "state-delete"
+import { SetRequest, SetResult } from "state-set"
+import { GetRequest, GetResult } from "state-get"
+import { DeleteRequest, DeleteResult } from "state-delete"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def emit-on(msg, bytes) =
+  { requests = [{ contract = msg.contract, payload = bytes, token = b"", deadlineNanos = None }], outcome = Outcome.Continue }
+def reject(msg, reason) = { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = reason }) }
+
+def on-message(msg) =
+  host state in
+    (if msg.contract == sset.descriptor().id then
+       (match (Value.decode(msg.payload) : Option(SetRequest)) with
+        | Some(SetRequest.Set(r)) => (state.put(r.key, r.value) ; emit-on(msg, Value.encode(SetResult.Root(Blake3.of(r.value)))))
+        | None => reject(msg, b"set-decode-failed"))
+     else if msg.contract == sget.descriptor().id then
+       (match (Value.decode(msg.payload) : Option(GetRequest)) with
+        | Some(GetRequest.Get(k)) => (match state.get(k) with | Some(v) => emit-on(msg, Value.encode(GetResult.Found(v))) | None => emit-on(msg, Value.encode(GetResult.Missing)))
+        | None => reject(msg, b"get-decode-failed"))
+     else if msg.contract == sdel.descriptor().id then
+       (match (Value.decode(msg.payload) : Option(DeleteRequest)) with
+        | Some(DeleteRequest.Delete(k)) => (state.delete(k) ; emit-on(msg, Value.encode(DeleteResult.Root(Blake3.of(k)))))
+        | None => reject(msg, b"delete-decode-failed"))
+     else reject(msg, b"unknown-contract"))
+
+export { on-message, on-response, on-notification }

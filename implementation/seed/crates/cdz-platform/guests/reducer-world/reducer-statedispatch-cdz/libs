@@ -1,0 +1,5 @@
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/state-set.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/state-get.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/state-delete.cdz
+implementation/seed/crates/cdz-platform/guests/contract-id.cdz
