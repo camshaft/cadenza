@@ -15717,35 +15717,6 @@ mod runtime_ops {
     }
 
     #[test]
-    fn signed_negation_traps_only_at_min() {
-        // `(- 0 a)` is integer negation; the specialized guard is `a == MIN → trap` (the sole overflow),
-        // replacing the general two-`xor` sub guard. The Lir shape is checked in select.rs; here we
-        // confirm the VALUE is `-a` for every in-range input and that ONLY `MIN` traps.
-        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(5)]), -5);
-        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(-5)]), 5);
-        assert_eq!(run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(0)]), 0);
-        assert_eq!(
-            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MAX)]),
-            -i64::MAX
-        );
-        // MIN+1 is fine (its negation is MAX); MIN itself traps (−MIN is not representable).
-        assert_eq!(
-            run::<i64>("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN + 1)]),
-            i64::MAX
-        );
-        assert!(
-            traps("(: a Int64)", "(- 0 a)", &[Val::S64(i64::MIN)]),
-            "negating MIN must trap"
-        );
-        // A NARROW negation keeps the range-check path — same value/trap behavior at its own width.
-        assert_eq!(run::<i32>("(: a Int32)", "(- 0 a)", &[Val::S32(7)]), -7);
-        assert!(
-            traps("(: a Int32)", "(- 0 a)", &[Val::S32(i32::MIN)]),
-            "negating Int32 MIN must trap"
-        );
-    }
-
-    #[test]
     fn multiply_by_negative_one_is_negation() {
         // `(* x -1)` / `(* -1 x)` is negation `(- 0 x)` — a strength reduction: the full-width `* -1`
         // otherwise keeps the expensive `div_s` round-trip guard (the const-multiplier fast path excludes
@@ -15790,30 +15761,11 @@ mod runtime_ops {
                 "{body} emits a subtraction (0 - x): {c:?}"
             );
         }
-        // VALUE + TRAP parity with the numeric model.
-        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(5)]), -5);
-        assert_eq!(run::<i64>("(: x Int64)", "(* -1 x)", &[Val::S64(-7)]), 7);
-        assert_eq!(run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(0)]), 0);
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(* x -1)", &[Val::S64(i64::MAX)]),
-            -i64::MAX
-        );
-        assert!(
-            traps("(: x Int64)", "(* x -1)", &[Val::S64(i64::MIN)]),
-            "MIN * -1 overflows → trap"
-        );
-        // Narrow: -128 * -1 = 128 overflows Int8 → trap; in range computes.
-        assert_eq!(run::<i8>("(: x Int8)", "(* x -1)", &[Val::S8(100)]), -100);
-        assert!(
-            traps("(: x Int8)", "(* x -1)", &[Val::S8(-128)]),
-            "MIN_8 * -1 overflows Int8 → trap"
-        );
-        // The kept operand's OWN trap is preserved (no is_trap_free guard): (* (/ 10 y) -1), y=0 → ÷0.
-        assert!(traps("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(0)]));
-        assert_eq!(
-            run::<i64>("(: y Int64)", "(* (/ 10 y) -1)", &[Val::S64(2)]),
-            -5
-        );
+        // Value + trap parity (`* -1` = -x in both orders; Int64/Int8 MIN overflow traps; the kept operand's
+        // own trap `(* (/ 10 y) -1)` survives) migrated to the corpus (run via cdz-run): cases "multiplying a
+        // runtime integer by negative one is checked negation in both operand orders" and
+        // "multiply-by-negative-one strength reduction keeps its operand's own trap" in
+        // spec/semantics/06-numeric-model.sexp.
     }
 
     #[test]

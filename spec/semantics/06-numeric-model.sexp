@@ -3807,6 +3807,36 @@
   (call   f (: -42 Int64))                  (output (: 42 Int64))
   (call   f (: -9223372036854775808 Int64)) (trap   "overflow"))
 
+(case "a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum"
+  (doc    "The narrow-width companion of the Int64 negation above: `(- 0 a)` over an entry parameter `a :
+           Int32` returns -a for an in-range value (7 -> -7) and traps at a = Int32.min (-2147483648), whose
+           magnitude +2^31 has no Int32 representation. Pins that the checked negate traps at ITS width, not
+           only at Int64 — a backend negating at the wider slot, or wrapping, would return Int32.min (a wrong
+           value) instead of trapping.")
+  (input  (do (def (f (: a Int32)) (- 0 a)) (export f)))
+  (call   f (: 7 Int32))           (output (: -7 Int32))
+  (call   f (: -2147483648 Int32)) (trap   "overflow"))
+
+(case "multiplying a runtime integer by negative one is checked negation in both operand orders"
+  (doc    "`(* x -1)` and `(* -1 x)` are the strength-reduction of negation `(- 0 x)` (the full-width `* -1`
+           otherwise keeps an expensive div_s round-trip guard). The VALUE is -x in either operand order:
+           `main` = `(tuple (* x -1) (* -1 x))`, x=5 -> (-5 -5), x=0 -> (0 0). At x = Int64.min the negation
+           overflows (magnitude +2^63 unrepresentable), so it traps exactly like `(- 0 x)` — not a wrapping
+           Int64.min.")
+  (input  (do (def (main (: x Int64)) (tuple (* x -1) (* -1 x))) (export main)))
+  (call   main (: 5 Int64)) (output (: (tuple -5 -5) (Tuple Int64 Int64)))
+  (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64)) (trap "overflow"))
+
+(case "multiply-by-negative-one strength reduction keeps its operand's own trap"
+  (doc    "The strength-reduced `* -1` negation keeps the OTHER operand's trap (no is_trap_free guard drops
+           it, since the sole operand is load-bearing): `(* (/ 10 y) -1)` at y=0 divides by zero -> traps;
+           y=2 -> `(/ 10 2)` = 5, negated -> -5. Pins that the rewrite to negation does not discard the
+           trapping operand.")
+  (input  (do (def (f (: y Int64)) (* (/ 10 y) -1)) (export f)))
+  (call   f (: 2 Int64)) (output (: -5 Int64))
+  (call   f (: 0 Int64)) (trap "divide by zero"))
+
 (case "a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation"
   (doc    "The narrow-width companion of the Int64 runtime-overflow set above: `(+ x (: 1 UInt8))` over an
            entry parameter `x : UInt8`, called with x = 255 (UInt8.max). The operands are the exported
