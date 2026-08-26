@@ -53,80 +53,21 @@
 
 use crate::ast::{Struct, StructId};
 use crate::db::Db;
-use crate::leb128::{self, Reader};
+use crate::leb128;
 use crate::resolved::Resolved;
+use cdz_sidecar_wire::Reader;
 
-/// The kinded input artifact carrying the request list.
-pub const KIND_SIDECAR: &str = "sidecar";
-
-/// The output artifact kind for a `TypeOf` query result — the rendered type of the queried node(s).
-pub const KIND_TYPE_INFO: &str = "type-info";
-
-/// The output artifact kind for a `UsesOf` query result — the node indices that reference a name.
-pub const KIND_USES: &str = "uses";
-
-/// The output artifact kind for a `TypeAt` query result — the rendered type of a specific node.
-pub const KIND_TYPE_AT: &str = "type-at";
-
-/// The output artifact kind for a `Diagnostics` query result — the program's well-formedness faults.
-pub const KIND_DIAGNOSTICS: &str = "diagnostics";
-
-/// The output artifact kind for a `ResolveOf` query result — the defining occurrence's node id.
-pub const KIND_RESOLVE: &str = "resolve";
-
-/// The output artifact kind for a `ScopeAt` query result — the bindings visible at a node.
-pub const KIND_SCOPE: &str = "scope";
-
-/// The output artifact kind for an `Exports` query result — the module's exported names + types.
-pub const KIND_EXPORTS: &str = "exports";
-
-/// The output artifact kind for a `Highlight` query result — one `node-id  kind` line per classified
-/// token (SEMANTIC SYNTAX HIGHLIGHTING), the LSP `semanticTokens` analogue.
-pub const KIND_HIGHLIGHT: &str = "highlight";
-
-/// The output artifact kind for a `DocOf`/`DocAt` query result — a definition's (or a built-in's)
-/// documentation text, the "hover documentation" companion of `KIND_TYPE_AT`.
-pub const KIND_DOC: &str = "doc";
-
-/// The output artifact kind for an `Instantiations` query result — every concrete monomorphization of a
-/// generic / ad-hoc-polymorphic definition (recursive-generic, type-valued-param, and `const`-dictionary
-/// specializations), one per line.
-pub const KIND_INSTANTIATIONS: &str = "instantiations";
-
-/// The output artifact kind for a `Symbols` query result — the module's DOCUMENT OUTLINE: every top-level
-/// declaration (value/function def, type, effect, module) classified by kind, the LSP `documentSymbol`
-/// analogue.
-pub const KIND_SYMBOLS: &str = "symbols";
-
-/// The output artifact kind for a `ParamManifest` query result — the `@param` WIDGET MANIFEST: one record
-/// per `@param` site (name, declared type, widget, range/options/default, name-node), the data a HOST
-/// (browser/CAD/notebook) reads to render controls for a program's parameters.
-pub const KIND_PARAM_MANIFEST: &str = "param-manifest";
-
-/// The output artifact kind for the Option-C shared-closure CONTENT-HASH — a `u64` (hex) folding each
-/// cross-edge def's content-hash over the sorted union edge set ([`closure_content_hash`]). Emitted by the
-/// `EmitTestsComposed` (MISS) path alongside the `component-provider`, so a runner persists the provider
-/// keyed by this hash (recompute-free) and validates its own HIT-decision hash against this canonical one.
-pub const KIND_CLOSURE_HASH: &str = "closure-hash";
-
-/// The output artifact kind for a `FuncLayout` query result — the emitted-function layout: each reachable
-/// definition's absolute wasm func-index paired with a content-hash of its AST subtree, in func-index
-/// order, preceded by a `defs-begin` marker row carrying the def-region base (`import_base`). The
-/// observation mechanism behind the compile-reuse prove-first witness (shared defs must get stable
-/// func-indices + identical content across per-file test builds) and the Option-A cache-key basis.
-pub const KIND_FUNC_LAYOUT: &str = "func-layout";
-
-/// The output artifact kind for an `ExportedTypes` query result — each exported definition's RESOLVED
-/// type as a STRUCTURED cdzast sub-AST (not the rendered string `Exports` carries). The bytes are a
-/// length-prefixed bulk blob: `u32_le count`, then `count` records of `u32_le name_len | name (UTF-8) |
-/// u32_le ty_len | ty_bytes`, where `ty_bytes` is a full `cdzast` codec artifact rooted at
-/// `eval::encode_ty_payload` of the def's `def_scheme.ty`. The cadenza-docs I2 fact: `cdz doc` decodes
-/// each `ty_bytes` (byte-identical codec) and grafts it as the doc-item's `(ty …)` — so the doc type is
-/// structured/queryable, not a printed string. An export whose type does not resolve is OMITTED (so
-/// `count` is the number of exports WITH a resolved type — the graceful-degrade the doc-item's optional
-/// `(ty …)` expects). All-in-one so `cdz doc` makes ONE sidecar round-trip. Co-owned with v-syntax
-/// (I emit the fact; the `cdz doc` CLI merges it into the I1 doc-module).
-pub const KIND_EXPORT_TYPES: &str = "export-types";
+// The sidecar QUERY wire types — the `Query` request vocabulary and the `KIND_*` result-artifact
+// names — live in the dependency-free `cdz-sidecar-wire` crate so a delegating driver (the `cdz` bin
+// under the nix `--no-default-features` build) can build a query request and name its result WITHOUT
+// linking this compiler (`design/DESIGN-cdz-delegate-compile.md`). Re-exported here so the engine below
+// and every `crate::sidecar::{Query, KIND_*}` reference is UNCHANGED; the request codec's query arms
+// delegate to the crate, keeping it the single source of the query wire form.
+pub use cdz_sidecar_wire::{
+    KIND_CLOSURE_HASH, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORT_TYPES, KIND_EXPORTS,
+    KIND_FUNC_LAYOUT, KIND_HIGHLIGHT, KIND_INSTANTIATIONS, KIND_PARAM_MANIFEST, KIND_RESOLVE,
+    KIND_SCOPE, KIND_SIDECAR, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query,
+};
 
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
@@ -192,202 +133,6 @@ pub enum Request {
     Query(Query),
 }
 
-/// A read of a fact column — the query half of the request vocabulary. Each arm names the column it
-/// reads; the answer is total (a node with no answer yields a defined "unknown", never a crash).
-///
-/// The `TypeOf`/`TypeAt` queries expose the types the compiler INFERRED in a machine-readable form: a
-/// `cdz type`/`type-at` answers with the queried node's rendered type as an output artifact (data), not
-/// human-formatted prose — so an agent reads an inferred type programmatically.
-//= spec/capabilities/agent-authoring.md#every-compiler-output-is-machine-readable
-//# The compiler MUST expose the types it inferred in a machine-readable form.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Query {
-    /// The solved type of a top-level definition, BY NAME — a read of the type column
-    /// (`infer::def_scheme` / `infer::type_of`). Answered as the definition's rendered type
-    /// (`Ty::render_name`), the same canonical text a value's annotation carries. A name that names no
-    /// definition yields a defined "no such definition" result rather than an error.
-    TypeOf { name: String },
-    /// Every occurrence that RESOLVES to the named top-level definition or sum type — the transpose of
-    /// the resolution column. Answered as the list of referencing node indices (`StructId.0`), which a
-    /// consumer holding the span table maps to source regions (`query-engine.md` §Provenance Is
-    /// Recovered By Back-Reference). The defining occurrence itself is not a use.
-    UsesOf { name: String },
-    /// The solved type of a SPECIFIC NODE, by its `StructId` — a read of the type column
-    /// (`infer::type_of` → `Ty::render_name`). This is the node-granular companion of `TypeOf` (which
-    /// is by definition name): given a node id, answer its rendered type. It is the query behind a
-    /// "type at cursor" hover — the CONSUMER (which holds the span table) resolves a source OFFSET to
-    /// the innermost node id and asks this, so the compiler stays span-free (`query-engine.md`
-    /// §Provenance Is Recovered By Back-Reference: the compiler emits/consumes node IDENTITY, the
-    /// front-end owns spans). Total: a node id past the program, or one with no meaningful type, yields
-    /// a defined "unknown" answer rather than an error.
-    TypeAt { node: u32 },
-    /// The DEFINING OCCURRENCE a reference node resolves to, by its `StructId` — a read of the
-    /// resolution column (`resolve::resolved_of`), the go-to-definition counterpart of `UsesOf` (which
-    /// is the reverse index). A name reference resolves to `Ref { value }` (a nullary def's body, a
-    /// `let` initializer, a parameter binder, a sum/prelude binding) or `Lambda { body }` (a def WITH
-    /// parameters — the function case); the answer is that target occurrence's node id, which the
-    /// consumer maps to a source range. Node-id-keyed and span-free, like `TypeAt`: the consumer
-    /// resolves a cursor OFFSET to the reference node and asks this. Total: a node that is not a
-    /// navigable reference (a literal, a prim, an unbound name) yields the EMPTY result (no line).
-    ResolveOf { node: u32 },
-    /// EVERY well-formedness fault in the program — a read of the fault set (`compile::diagnostics`),
-    /// WITHOUT requiring the program to export anything or emit. This is the "diagnostics as you type"
-    /// primitive: the same faults `compile` reports (type mismatch, unbound name, duplicate def/field,
-    /// non-linear binder, …), but not gated on `layout`/export, so a mid-edit buffer that declares no
-    /// export still gets its diagnostics. Answered as one fault per line, TAB-separated: `severity  code
-    ///   node-id  fix-node  fix-replacement  fix-verified  message` (node-id-keyed like `UsesOf` — the
-    /// consumer maps each node to a source range; the three fix columns carry the structural repair and
-    /// are `-` when absent). Total: a clean program yields the empty result.
-    Diagnostics,
-    /// The BINDINGS VISIBLE at a node, by its `StructId` — "variable scope tracking" (the operator's
-    /// original motivating example). Walks the lexical scope (`db.parent_of`, the same substrate
-    /// `resolve::lookup_scope` uses) collecting every binder in scope: a `let`'s bindings visible from
-    /// the point (earlier bindings from a later initializer; all from the body), an enclosing `fn`/`def`'s
-    /// parameters, a match-arm binder. Answered as one binding per line, `name<TAB>type<TAB>binder-node-id`
-    /// (the type read from the binder's `infer::type_of`; node-id-keyed like the others). INNERMOST wins:
-    /// a shadowed name appears once, bound to the nearest enclosing binder. Total: at the top level (no
-    /// enclosing binder) the result is empty. This is the query an editor's autocomplete / scope panel
-    /// rides on.
-    ScopeAt { node: u32 },
-    /// SEMANTIC SYNTAX HIGHLIGHTING — every user node CLASSIFIED by the role it plays, so an editor can
-    /// colour a name by what it MEANS (a type vs a constructor vs a local vs a call vs an unbound typo)
-    /// rather than by its spelling. The LSP `semanticTokens` analogue, and the highlight companion of the
-    /// other node-id-keyed queries: it reads the SAME columns a compile reads — the resolved column
-    /// (`resolve::resolved_of`) and the meta channels a value already carries (`(meta variant)` marks a
-    /// constructor, `(meta t)` a type, `(meta apply)` a callable) — so a token's colour equals what the
-    /// compiler determines, never a second lexical guess. Answered as one `node-id<TAB>kind` line per
-    /// classified LEAF (the atoms an editor paints; a list form is not itself painted — its children are),
-    /// in ascending id order. `kind` is one of a fixed closed vocabulary (`HighlightKind`). Node-id-keyed
-    /// and span-free like `TypeAt`/`UsesOf`: the consumer maps each id to a source range. TOTAL — a node
-    /// with no meaningful classification is simply omitted (an editor leaves it to its lexical fallback).
-    Highlight,
-    /// The MODULE's EXPORTS — each exported name paired with its type, one per line as
-    /// `name<TAB>type<TAB>def-name-node-id`. Reads `db.exports` (the `(export …)` clauses) and each
-    /// export's def scheme (`infer::def_scheme` → the signature). The node id is the exported def's NAME
-    /// occurrence, so a consumer can jump to it. Node-id-keyed like the others; TOTAL — a module with no
-    /// exports yields the empty result. This is the "module interface at a glance" query.
-    Exports,
-    /// Each exported definition's RESOLVED type as a STRUCTURED cdzast sub-AST — the STRUCTURED companion
-    /// of `Exports` (which renders types to a STRING). The cadenza-docs I2 fact (`(C)` architecture):
-    /// `rcdzc` cannot depend on `cadenza-syntax` (copy-don't-depend), so `cdz doc` runs the I1 doc-item
-    /// projection on the `cadenza-syntax` side, asks THIS query for the resolved types, and grafts each as
-    /// the doc-item's `(ty …)` — the type reaches docs as a queryable/linkable sub-AST, not a printed
-    /// string. Bulk (no args) so `cdz doc` makes ONE round-trip. Answered as the `KIND_EXPORT_TYPES` blob:
-    /// `u32_le count` then per export `u32_le name_len | name | u32_le ty_len | ty_bytes`, where `ty_bytes`
-    /// is `codec::encode` of a standalone arena rooted at `eval::encode_ty_payload(db, &scheme.ty)` — a
-    /// full cdzast artifact the consumer's byte-identical codec decodes directly. Covers all THREE exported
-    /// item kinds: a value DEF (its `def_scheme.ty` via `encode_ty_payload` → a `(-> …)`/scalar), a TYPE
-    /// decl (`typeval_of` → a `(Sum …)`/`(Record …)`), and an EFFECT decl — the effect is a GROUPED
-    /// op-signature payload `(effect (op <name> <arrow>)…)` (an effect has no single `Ty`; each op's arrow
-    /// is encoded like a def/type, via `effect_op_types_node`). Resolved by trying the def slot, then the
-    /// type-decl, then the effect-decl by name. An export whose type does not resolve in any kind — a def
-    /// with an ill-typed annotation, an effect with no resolvable op — is OMITTED (graceful-degrade: the
-    /// doc-item's `(ty …)` is optional). Deterministic (export order). Co-owned with v-syntax.
-    ExportedTypes,
-    /// The DOCUMENTATION of a definition or built-in, BY NAME — the doc companion of `TypeOf`. Answered
-    /// from an ordered fallback, all reads of columns the compiler already fills:
-    ///   1. a user definition's `(doc "…")` text (`db.doc_of_def`, keyed by the def's signature — the
-    ///      text `strip_def_docs` captured off the def body at load);
-    ///   2. else a BUILT-IN binding's `(meta doc)` channel — a built-in module is just a record, so its
-    ///      documentation is data on that record, read GENERICALLY (`eval::project_meta(rec, "doc")`),
-    ///      never by matching the name (the no-keys-outside-the-prelude rule: the query resolves the name
-    ///      to its prelude record, then reads a channel, exactly as member access does);
-    ///   3. else a GRAMMAR KEYWORD's doc (`if`/`let`/`match`/… — not bindings in the prelude map, so their
-    ///      text is a small table, the doc analogue of the hardcoded `resolve::GRAMMAR` set).
-    ///
-    /// TOTAL: a name that documents nothing yields a defined "no documentation for `name`" line.
-    DocOf { name: String },
-    /// The DOCUMENTATION of the definition the node at `node` belongs to or references, by its `StructId`
-    /// — the doc companion of `TypeAt`/`ResolveOf`, the "documentation at cursor" hover. Resolves the node
-    /// to a definition (its own def, or the def a reference resolves to via `resolve::resolved_of` +
-    /// `def_index_by_body`), then reads that def's `(doc "…")` text (`db.doc_of_def`). Node-id-keyed and
-    /// span-free like `TypeAt`: the consumer resolves a cursor OFFSET to the node and asks this. TOTAL: a
-    /// node that is not (and does not reference) a documented definition yields the empty result.
-    DocAt { node: u32 },
-    /// The DISPOSITION of a definition BY NAME — what the compiler DID with it — plus, if it is
-    /// specialized, every concrete instantiation. The reverse of "one source def emits one function":
-    /// because generics do not cross the component boundary (`component-abi.md` §Generics Do Not Cross The
-    /// Boundary) and the default is always-inline, one source def may become zero, one, or many emitted
-    /// functions. This query reports which happened, reading columns lowering/monomorphization already fill:
-    ///   - `specialized` — MONOMORPHIZED into one function per distinct instantiation
-    ///     (`db.instantiations`, `lower::type_specialize`): a recursive generic at each concrete type, a
-    ///     type-valued-parameter def at each type, or — the ad-hoc-polymorphism case — a `const` dictionary
-    ///     inlined at each concrete dictionary. Its instances are listed.
-    ///   - `transformed→COPY` — the ACCUMULATOR transform (`db.transformed`) rewrote a linear recursion into
-    ///     a tail-recursive copy (a constant-stack loop); the source's body folds to a seed of the copy.
-    ///   - `inlined` — β-reduced into each call site (`db.inlined`), no standalone function emitted (a
-    ///     non-recursive def / generic — monomorphization by β-reduction).
-    ///   - `emitted` — emitted as ONE standalone function under its own name and called (`db.called`) or
-    ///     exported (a recursive def with a runtime argument, an `inline-never` def, a boundary entry).
-    ///   - `unreferenced` — none of the above (dead code, or a template no use instantiated).
-    ///
-    /// It FORCES monomorphization over the whole program (`layout::force_monomorphize`) so the record is
-    /// complete regardless of what a query-only run would otherwise lower. Answered as TAB-tagged lines: one
-    /// `disp<TAB>def-name-node-id<TAB>disposition` (a `+`-joined set when more than one applies), then — for
-    /// a `specialized` def — one `inst<TAB>spec-name<TAB>def-name-node-id<TAB>arg;arg;…` per instance (a kept
-    /// runtime param `name: TYPE`, an erased compile-time param `const name = VALUE`). Total: an UNKNOWN
-    /// name yields the empty result; a known def always gets exactly one `disp` line.
-    Instantiations { name: String },
-    /// The DOCUMENT OUTLINE — every TOP-LEVEL declaration in the module, classified by what it declares,
-    /// so an editor can render a symbol tree / breadcrumb (`textDocument/documentSymbol`). Reads the SAME
-    /// declaration columns a compile fills — `db.defs` (value/function definitions), `db.type_decls` (sum
-    /// types), `db.effect_decls` (effects), `db.modules` (namespaces) — so a symbol equals what the
-    /// compiler scanned, never a second lexical pass. This is the SUPERSET companion of `Exports` (which
-    /// lists only the `(export …)`-named subset with their solved types): `Symbols` lists EVERY
-    /// declaration — private ones included — by kind, which is what an outline shows. Answered as one
-    /// `name<TAB>kind<TAB>name-node-id` line per declaration; `kind` is a fixed closed vocabulary
-    /// (`SymbolKind` — `value`/`function`/`type`/`effect`/`module`), the node id is the declaration's NAME
-    /// occurrence so a consumer can jump to it. Node-id-keyed and span-free like the other queries; the
-    /// order is declaration order within each column, columns grouped (defs, then types, effects, modules),
-    /// so it is a deterministic function of the program. TOTAL — a module with no declarations yields the
-    /// empty result. INTERNAL defs (do-local / module-member callables `modules::register_callable`
-    /// synthesizes) are OMITTED: they are not top-level source declarations an outline names.
-    Symbols,
-    /// The `@param` WIDGET MANIFEST — one record per well-typed `@param` site `(: (@ (param <kv>) name)
-    /// Type)`, the data a HOST (browser/CAD/notebook) reads to render a control per program parameter.
-    /// Reads `param_sidecar::scan_manifest` (the read-only `@param`-site scan — the SAME sites the
-    /// generate half turns into a typed `Param` effect, so the manifest's rendered type and the generated
-    /// accessor's result type share one source of truth), then renders each record's DECLARED TYPE via the
-    /// type column (`infer::type_of` → `Ty::render_name` — the render needs the `Db`, which lives on this
-    /// query side, not the arena-only scan). Answered as one record per line, TAB-separated:
-    /// `name  widget  type  range-lo-node  range-hi-node  options-node  default-node  name-node` — `widget`
-    /// is the bare widget atom or `-`; `type` is the rendered declared type; the four value columns are the
-    /// arena node ids of `(: range [lo hi])`'s two elements, `(: options […])`'s list, and `(: default v)`'s
-    /// value (`-` when the kv is absent), which the CONSUMER (holding the shared `StructId` arena + span
-    /// table) renders + maps to `file:line:col` — node-id-keyed and span-free like the sibling queries
-    /// (`query-engine.md`: the compiler emits node IDENTITY, the front-end owns spans + value rendering).
-    /// `name-node` is the param NAME occurrence, mapped to `file:line:col`. TOTAL: a program with no
-    /// `@param` sites yields the empty result.
-    ParamManifest,
-    /// The EMITTED-FUNCTION LAYOUT — every reachable definition's absolute wasm FUNCTION INDEX paired with
-    /// a CONTENT-HASH of its AST subtree, in func-index order. FORCES monomorphization then runs
-    /// `layout::compute` (like `Instantiations`), so the reported set + order equal what a real emit lays.
-    /// Answered as one line per reachable def, `func-index<TAB>content-hash<TAB>def-name`, preceded by a
-    /// single MARKER line `defs-begin<TAB><import_base><TAB>-` giving the def-region base (runtime-op
-    /// imports occupy `0..import_base` ahead of the first defined function), so a consumer knows where the
-    /// def region starts and compares the right range. The content-hash is a stable hash of the def's
-    /// `(def …)` AST subtree (structure + leaves), so two builds that SHARE a def (byte-identical source)
-    /// report the SAME hash — the observation the compile-reuse prove-first witness diffs (a shared def
-    /// must get the SAME func-index AND the SAME content-hash across two per-file test builds) and the
-    /// basis for the Option-A content-addressed cache key. Roots on `(export …)`; a program with NO export
-    /// falls back to the `@test`-rooted layout (`layout::compute_tests`, what `EmitTests`/`cdz test` lays),
-    /// so a pure-`@test` file reports the marker + its `@test`-reachable def rows. TOTAL: the result is
-    /// empty ONLY when BOTH layouts decline (no export AND no `@test`); an empty-but-laid-out program yields
-    /// just the marker line. Deterministic (func-index order).
-    FuncLayout,
-    /// The Option-C shared-closure CONTENT-HASH for the `@test` dir — a `u64` (hex) folding each cross-edge
-    /// def's content-hash over the UNION cross-edge set ([`closure_content_hash`] over
-    /// [`crate::layout::cross_component_edges_union`]). The provider-CACHE decision key: a `cdz test <dir>`
-    /// runner reads this to decide a cache HIT (compare to the cached provider's key) BEFORE emitting —
-    /// LAYOUT-ONLY (`compute_tests` + the cross-edge union + the fold), NO provider emit, so it costs the
-    /// ~layout pass (≈ func-layout), NOT the ~1360-def provider lower it lets the runner SKIP on a hit
-    /// (`EmitTestsConsumerOnly` + the cached provider). The SAME canonical hash the `EmitTestsComposed`
-    /// miss-path `closure-hash` sidecar emits — one definition, so the decision key, the persist key, and a
-    /// runner's own validation all agree (drift-guard). TOTAL: a build with no cross-edge (single-file / no
-    /// shared closure) reports the fold over the empty set (a defined, stable "no closure" hash), never errors.
-    ClosureHash,
-}
-
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
 mod tag {
     pub const EMIT_WASM: u8 = 0x00;
@@ -426,26 +171,6 @@ mod tag {
     /// (`Request::EmitTestsConsumerOnly`) — the single-file provider-cache path: skip the provider emit
     /// (the caller supplies the cached provider at run time), emit the cheap consumer(s) + the iface sidecar.
     pub const EMIT_TESTS_CONSUMER_ONLY: u8 = 0x08;
-    pub const QUERY_TYPE_OF: u8 = 0x10;
-    pub const QUERY_USES_OF: u8 = 0x11;
-    pub const QUERY_TYPE_AT: u8 = 0x12;
-    pub const QUERY_DIAGNOSTICS: u8 = 0x13;
-    pub const QUERY_RESOLVE_OF: u8 = 0x14;
-    pub const QUERY_SCOPE_AT: u8 = 0x15;
-    pub const QUERY_EXPORTS: u8 = 0x16;
-    pub const QUERY_HIGHLIGHT: u8 = 0x17;
-    pub const QUERY_DOC_OF: u8 = 0x18;
-    pub const QUERY_DOC_AT: u8 = 0x19;
-    pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
-    pub const QUERY_SYMBOLS: u8 = 0x1b;
-    pub const QUERY_PARAM_MANIFEST: u8 = 0x1c;
-    pub const QUERY_FUNC_LAYOUT: u8 = 0x1d;
-    /// The Option-C shared-closure CONTENT-HASH query (`Query::ClosureHash`) — the provider-cache decision
-    /// key (layout-only, no provider emit).
-    pub const QUERY_CLOSURE_HASH: u8 = 0x1e;
-    /// The cadenza-docs I2 structured export-types fact (`Query::ExportedTypes`) — each exported def's
-    /// resolved type as a cdzast sub-AST, bulk (no args).
-    pub const QUERY_EXPORTED_TYPES: u8 = 0x1f;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -477,39 +202,8 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::EMIT_TESTS_CONSUMER_ONLY => Some(Request::EmitTestsConsumerOnly),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
-        tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_USES_OF => Some(Request::Query(Query::UsesOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_TYPE_AT => Some(Request::Query(Query::TypeAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_DIAGNOSTICS => Some(Request::Query(Query::Diagnostics)),
-        tag::QUERY_RESOLVE_OF => Some(Request::Query(Query::ResolveOf {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_SCOPE_AT => Some(Request::Query(Query::ScopeAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_EXPORTS => Some(Request::Query(Query::Exports)),
-        tag::QUERY_HIGHLIGHT => Some(Request::Query(Query::Highlight)),
-        tag::QUERY_DOC_OF => Some(Request::Query(Query::DocOf {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_DOC_AT => Some(Request::Query(Query::DocAt {
-            node: u32::try_from(r.read_varu64()?).ok()?,
-        })),
-        tag::QUERY_INSTANTIATIONS => Some(Request::Query(Query::Instantiations {
-            name: read_string(r)?,
-        })),
-        tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
-        tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
-        tag::QUERY_FUNC_LAYOUT => Some(Request::Query(Query::FuncLayout)),
-        tag::QUERY_CLOSURE_HASH => Some(Request::Query(Query::ClosureHash)),
-        tag::QUERY_EXPORTED_TYPES => Some(Request::Query(Query::ExportedTypes)),
-        _ => None,
+        // Any non-Emit tag is a QUERY tag — decode it via the wire crate (single source).
+        other => cdz_sidecar_wire::decode_query(other, r).map(Request::Query),
     }
 }
 
@@ -535,59 +229,9 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::EmitTestsConsumerOnly => out.push(tag::EMIT_TESTS_CONSUMER_ONLY),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
-        Request::Query(Query::TypeOf { name }) => {
-            out.push(tag::QUERY_TYPE_OF);
-            write_string(out, name);
-        }
-        Request::Query(Query::UsesOf { name }) => {
-            out.push(tag::QUERY_USES_OF);
-            write_string(out, name);
-        }
-        Request::Query(Query::TypeAt { node }) => {
-            out.push(tag::QUERY_TYPE_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Diagnostics) => out.push(tag::QUERY_DIAGNOSTICS),
-        Request::Query(Query::ResolveOf { node }) => {
-            out.push(tag::QUERY_RESOLVE_OF);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::ScopeAt { node }) => {
-            out.push(tag::QUERY_SCOPE_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Exports) => out.push(tag::QUERY_EXPORTS),
-        Request::Query(Query::Highlight) => out.push(tag::QUERY_HIGHLIGHT),
-        Request::Query(Query::DocOf { name }) => {
-            out.push(tag::QUERY_DOC_OF);
-            write_string(out, name);
-        }
-        Request::Query(Query::DocAt { node }) => {
-            out.push(tag::QUERY_DOC_AT);
-            leb128::write_u64(out, *node as u64);
-        }
-        Request::Query(Query::Instantiations { name }) => {
-            out.push(tag::QUERY_INSTANTIATIONS);
-            write_string(out, name);
-        }
-        Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
-        Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
-        Request::Query(Query::FuncLayout) => out.push(tag::QUERY_FUNC_LAYOUT),
-        Request::Query(Query::ClosureHash) => out.push(tag::QUERY_CLOSURE_HASH),
-        Request::Query(Query::ExportedTypes) => out.push(tag::QUERY_EXPORTED_TYPES),
+        // A query request's wire bytes come from the wire crate (single source).
+        Request::Query(q) => cdz_sidecar_wire::encode_query(out, q),
     }
-}
-
-/// A length-prefixed UTF-8 string: a `VarU64` byte length, then the bytes. Total decode.
-fn read_string(r: &mut Reader) -> Option<String> {
-    let len = r.read_var_len()?;
-    let bytes = r.take(len)?;
-    String::from_utf8(bytes.to_vec()).ok()
-}
-
-fn write_string(out: &mut Vec<u8>, s: &str) {
-    leb128::write_u64(out, s.len() as u64);
-    out.extend_from_slice(s.as_bytes());
 }
 
 /// Run one `Query` against the loaded `Db`, producing its answer as UTF-8 text bytes. This is the
@@ -2692,8 +2336,9 @@ mod tests {
 
     #[test]
     fn truncated_string_is_none() {
-        // count=1, QUERY_TYPE_OF, string len=5, but no string bytes.
-        assert_eq!(decode(&[0x01, tag::QUERY_TYPE_OF, 0x05]), None);
+        // count=1, QUERY_TYPE_OF (0x10, a query tag now owned by cdz_sidecar_wire), string len=5, but no
+        // string bytes — the delegated query decode must report truncation as None (total decode).
+        assert_eq!(decode(&[0x01, 0x10, 0x05]), None);
     }
 
     #[test]

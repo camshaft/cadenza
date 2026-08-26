@@ -461,6 +461,10 @@ name = "cdz-rust-render"
 version = "0.0.0"
 
 [[package]]
+name = "cdz-sidecar-wire"
+version = "0.0.0"
+
+[[package]]
 name = "cdz-world-artifact"
 version = "0.0.0"
 dependencies = [
@@ -1884,6 +1888,7 @@ dependencies = [
  "cdz-num",
  "cdz-rt",
  "cdz-run",
+ "cdz-sidecar-wire",
  "clap",
  "tracing",
  "tracing-subscriber",

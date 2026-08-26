@@ -1,0 +1,23 @@
+# cdz-sidecar-wire — the pure WIRE types of the compiler's sidecar QUERY protocol.
+#
+# The `Query` request vocabulary, the `KIND_*` result-artifact names, and the LEB128 request codec —
+# extracted from `rcdzc::sidecar` so a consumer can BUILD a sidecar query request and NAME its result
+# artifact WITHOUT linking the compiler (`design/DESIGN-cdz-delegate-compile.md`). This is what lets the
+# `cdz` binary drive the compiler's queries by SPAWNING `cdz-compile` (the nix `--no-default-features`
+# build) instead of running `rcdzc` in-process: cdz encodes the request here, hands it to `cdz-compile`
+# as a sidecar input, and reads the named result artifact back — no compiler in cdz's closure.
+#
+# WIRE TYPES ONLY: no `Db`/`Resolved`/AST, no `Target`/backend, and NO query ENGINE or result FORMATTING
+# (those stay in `rcdzc::sidecar`, which re-exports `Query`/`KIND_*` from here so its engine code is
+# unchanged and delegates the query-request codec arms to this crate — single source for the wire form).
+# Zero dependencies; the LEB128 varint is the standard format, self-contained (not a copy of a contract).
+[package]
+name = "cdz-sidecar-wire"
+version = "0.0.0"
+edition = "2024"
+
+[lib]
+name = "cdz_sidecar_wire"
+path = "src/lib.rs"
+
+[dependencies]
