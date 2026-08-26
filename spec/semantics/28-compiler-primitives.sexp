@@ -887,6 +887,45 @@
   (input (do (def (main) (const (match (Map.lookup (Map.remove (Map.insert (Map.empty) 1 10) 1) 1) ((Option.Some v) v) ((Option.None) -1)))) (export main)))
   (output (: -1 Int64)))
 
+; --- Primitive 2: const execution — COMPOUND keys/elements in a const Map/Set fold via structural cval_eq --
+; The const Map/Set cases above key on SCALARS; membership there is a scalar `cval_eq`. A KEY / element can
+; also be a COMPOUND — a tuple, record, or sum — and `apply_const_prim`'s `cval_eq` compares those STRUCTURALLY
+; (element-/field-/payload-wise; the sums/records/tuples arm from the Option-nav fold work). These pin that a
+; const Map keyed on a compound folds its `Map.lookup`, that a compound key the map lacks folds to `None`, and
+; that a const Set of compounds DEDUPS by structural equality — the subtle surface where a `cval_eq` regression
+; would silently MISMATCH keys (wrong value, or a spurious dedup). A key comparison the stage cannot decide
+; declines the whole op (never a wrong verdict), so these witness the DECIDABLE compound-key path folds.
+
+(case "a const Map keyed on a TUPLE folds a lookup by structural key equality"
+  (doc "`Map.lookup` over `{(1,2)↦10, (3,4)↦20}` at key `(3,4)` folds to `Some 20` — `cval_eq` compares the
+        tuple keys element-wise, matching the second entry. Pins compound-tuple-key const Map folding.")
+  (input (const (match (Map.lookup (Map.insert (Map.insert Map.empty (tuple 1 2) 10) (tuple 3 4) 20) (tuple 3 4)) ((Option.Some v) v) ((Option.None) 0))))
+  (output (: 20 Int64)))
+
+(case "a const Map lookup of an absent TUPLE key folds to None"
+  (doc "At key `(9,9)`, absent from `{(1,2)↦10}`, the lookup folds to `None` (absent arm → -1) — `cval_eq`
+        DECIDES the tuple keys unequal element-wise. The negative companion of the found case above.")
+  (input (const (match (Map.lookup (Map.insert Map.empty (tuple 1 2) 10) (tuple 9 9)) ((Option.Some v) v) ((Option.None) -1))))
+  (output (: -1 Int64)))
+
+(case "a const Set of TUPLES dedups by structural equality"
+  (doc "`Set.of (list (1,2) (1,2) (3,4))` folds to a 2-member set — `cval_eq` finds the two `(1,2)` tuples
+        equal element-wise and dedups them, leaving `{(1,2),(3,4)}`; `Set.len` reads 2.")
+  (input (const (Set.len (Set.of (list (tuple 1 2) (tuple 1 2) (tuple 3 4))))))
+  (output (: 2 Int64)))
+
+(case "a const Set of RECORDS dedups by structural field equality"
+  (doc "`Set.of (list (record (a 1)) (record (a 1)) (record (a 2)))` folds to 2 — `cval_eq` compares records
+        field-wise, deduping the two `{a:1}` records. Pins the record arm of structural const-Set dedup.")
+  (input (const (Set.len (Set.of (list (record (= a 1)) (record (= a 1)) (record (= a 2)))))))
+  (output (: 2 Int64)))
+
+(case "a const Map keyed on a SUM variant folds a lookup by structural key equality"
+  (doc "`Map.lookup` over `{(Option.Some 5)↦42}` at `(Option.Some 5)` folds to `Some 42` — `cval_eq` compares
+        the sum keys by discriminant then payload. Pins the sum arm of compound-key const Map folding.")
+  (input (const (match (Map.lookup (Map.insert Map.empty (Option.Some 5) 42) (Option.Some 5)) ((Option.Some v) v) ((Option.None) 0))))
+  (output (: 42 Int64)))
+
 ; --- Primitive 2: const execution — the CHAMP-ORDER SOUNDNESS negative (never materialize a const Map/Set) --
 ; A const Map/Set is QUERY-ONLY: `cval_to_core` DECLINES a `CVal::Map`/`CVal::Set`, so an ORDER-EXPOSING use —
 ; materializing it to a list via `Map.to-list`/`Set.to-list` — does NOT fold. The runtime collection is a CHAMP
