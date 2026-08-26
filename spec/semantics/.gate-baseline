@@ -1418,7 +1418,9 @@ pass	a runtime checked-mul over UInt64 operands emits the unsigned division roun
 pass	a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow
 pass	a NARROW-width signed checked-add/sub range-checks BOTH bounds (Int8 over/underflow)
 pass	a NARROW-width checked-sub over a RUNTIME operand range-checks the LOWER bound (Int8 underflow)
-pass	a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)
+pass	a NARROW-width checked-mul over a RUNTIME operand range-checks the narrow bounds (unsigned, UInt64 accumulator)
+pass	a NARROW-width signed checked-mul range-checks BOTH bounds incl. the min×-1 edge (Int8)
+pass	a NARROW UInt32 checked-mul fits the UInt64 accumulator exactly (the widest narrow product)
 pass	a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)
 pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after

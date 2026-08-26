@@ -26685,30 +26685,30 @@ fn lower_checked_arith(
             // to-narrow)`, out → `None`. This sidesteps the width-relative sign-bit problem (the reason the
             // narrow path was pinned) by computing exactly in the wide accumulator and checking the narrow
             // bounds — the same interval the `.of` narrowing checks. Each operand is named ONCE (in its widen),
-            // so no host-operand double-fire. NARROW checked-MUL still declines (a u32×u32 product exceeds i64,
-            // so the exact-in-i64 trick does not cover it uniformly — a later increment).
+            // so no host-operand double-fire. MUL is included: the product of two ≤32-bit operands fits a
+            // 64-bit accumulator (u32×u32 max = 2^64−2^33 < 2^64 fits UInt64; i32×i32 ≤ 2^62 fits Int64), so the
+            // SAME widen-and-range-check works — with the accumulator SIGNEDNESS matching the op so the compare
+            // reads the product's true magnitude (an unsigned narrow MUL needs a UInt64 accumulator + unsigned
+            // compares; every other narrow op fits a signed Int64 accumulator).
             if it.ground_width() < 64 {
-                if matches!(prim, Prim::CheckedMul) {
-                    return Core::Poison(Reject::decline(
-                        "a runtime narrow-width checked-mul is not yet emitted (a u32×u32 product exceeds the \
-                         i64 accumulator; fold constants, or use the 64-bit width)",
-                    ));
-                }
                 let Some((Some(tmin), Some(tmax))) = resolved_int_bounds(it) else {
                     return Core::Poison(Reject::decline(
                         "a narrow checked op needs resolved integer bounds",
                     ));
                 };
-                let i64_ty = crate::ty::Ty::Int(crate::ty::IntTy::fixed(true, 64));
-                // Widen each operand to Int64 (value-preserving), then the exact wrapping op at Int64 (no
-                // overflow for narrow operands).
+                // An unsigned narrow MUL widens into a UInt64 accumulator (its product can exceed i64's
+                // positive range); every other narrow op (signed any, unsigned add/sub) fits a signed Int64.
+                let acc_unsigned = !signed && matches!(prim, Prim::CheckedMul);
+                let acc_ty = crate::ty::Ty::Int(crate::ty::IntTy::fixed(!acc_unsigned, 64));
+                // Widen each operand to the accumulator (value-preserving — same-signedness extend), then the
+                // exact wrapping op there (no overflow for narrow operands: sum/diff/product all fit 64 bits).
                 let a64 = synth_core(
                     db,
                     Core::Convert {
                         op: Prim::Wrap,
                         operand: lhs,
                     },
-                    i64_ty.clone(),
+                    acc_ty.clone(),
                 );
                 let b64 = synth_core(
                     db,
@@ -26716,12 +26716,12 @@ fn lower_checked_arith(
                         op: Prim::Wrap,
                         operand: rhs,
                     },
-                    i64_ty.clone(),
+                    acc_ty.clone(),
                 );
-                let wrap_prim = if matches!(prim, Prim::CheckedAdd) {
-                    Prim::WrappingAdd
-                } else {
-                    Prim::WrappingSub
+                let wrap_prim = match prim {
+                    Prim::CheckedAdd => Prim::WrappingAdd,
+                    Prim::CheckedSub => Prim::WrappingSub,
+                    _ => Prim::WrappingMul,
                 };
                 let s64 = synth_core(
                     db,
@@ -26730,7 +26730,7 @@ fn lower_checked_arith(
                         lhs: a64,
                         rhs: b64,
                     },
-                    i64_ty.clone(),
+                    acc_ty.clone(),
                 );
                 // The narrow value the Some arm carries (wrap the in-range exact result to the target width —
                 // value-preserving in range).
@@ -26759,9 +26759,11 @@ fn lower_checked_arith(
                     result_ty.clone(),
                 );
                 // if s64 > tmax then None else if s64 < tmin then None else Some(narrow_s). The bound consts
-                // + `s64` are Int64, so the `Compare`s are signed (correct: the exact result's true sign).
-                let hi = synth_core(db, Core::ConstInt(IntValue::from_i64(tmax)), i64_ty.clone());
-                let lo = synth_core(db, Core::ConstInt(IntValue::from_i64(tmin)), i64_ty.clone());
+                // + `s64` share the accumulator type, so the `Compare`s take its signedness — signed for the
+                // Int64 accumulator (the exact result's true sign), UNSIGNED for the UInt64 mul accumulator
+                // (reads the product's true magnitude; the `< tmin=0` check is then vacuous, as it should be).
+                let hi = synth_core(db, Core::ConstInt(IntValue::from_i64(tmax)), acc_ty.clone());
+                let lo = synth_core(db, Core::ConstInt(IntValue::from_i64(tmin)), acc_ty.clone());
                 let over = synth_core(
                     db,
                     Core::Compare {
