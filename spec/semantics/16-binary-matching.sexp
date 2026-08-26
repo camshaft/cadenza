@@ -2304,3 +2304,39 @@
               (export run)))
   (call   run (: 202 Int64))
   (output (: 25351883 Int64)))
+
+(case "a dependent-size bin-match payload read reclaims its slice across a loop (no live objects)"
+  (doc    "Each iteration builds a fresh runtime 3-byte frame [h,7,8] and matches the dependent-size
+           `(bytes payload k)` (k = the runtime u8 header), reading `Bytes.len payload`. h=2 binds 2 payload
+           bytes per iter -> 500 x 2 = 1000. The BinSizedRead dups the borrowed scrutinee and bytes-slice
+           consumes the dup, returning a fresh owned slice; the dup/consume pairing must net the heap to 0
+           (a leaked slice or unbalanced dup would scale to ~N live).")
+  (input  (do
+            (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64))
+              (if (< j n)
+                (loop (+ j 1) n h (+ tot (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                                          ((bin (u8 k) (bytes payload k)) (Bytes.len payload))
+                                          (_ -1))))
+                tot))
+            (def (f (: h Int64)) (loop 0 500 h 0))
+            (export f)))
+  (call   f (: 2 Int64)) (output (: 1000 Int64))
+  (live-objects 0))
+
+(case "a NON-FINAL dependent-size bin-match with a dynamic-offset rest read reclaims every slice (no live objects)"
+  (doc    "Each iteration builds a fresh runtime 4-byte frame [h,7,8,9] and matches `(bytes body k)` (k = the
+           runtime u8 header) followed by `(bytes rest)` -- rest reads at the DYNAMIC offset 1+k. h=2 ->
+           body=[7,8] (2) + rest=[9] (1) = 3 per iter -> 500 x 3 = 1500. TWO owned slices per match plus the
+           dynamic off_plus read, each dup/consume pair must net to 0 (a leaked slice or an off_plus dup
+           without consume would scale to ~N live).")
+  (input  (do
+            (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64))
+              (if (< j n)
+                (loop (+ j 1) n h (+ tot (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                                          ((bin (u8 k) (bytes body k) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
+                                          (_ -1))))
+                tot))
+            (def (f (: h Int64)) (loop 0 500 h 0))
+            (export f)))
+  (call   f (: 2 Int64)) (output (: 1500 Int64))
+  (live-objects 0))
