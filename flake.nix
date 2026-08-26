@@ -2556,6 +2556,7 @@
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
               clippy-cdz-rust-run = mkCrateClippyCrane { crate = "cdz-rust-run"; };
+              clippy-cdz-world-artifact = mkCrateClippyCrane { crate = "cdz-world-artifact"; };
               clippy-rcdzc = mkCrateClippyCrane {
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
@@ -2588,6 +2589,7 @@
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
+              test-cdz-world-artifact = mkCrateTestCrane { crate = "cdz-world-artifact"; };
               test-rcdzc = mkCrateTestCrane {
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
