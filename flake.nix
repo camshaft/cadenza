@@ -356,6 +356,7 @@
           # [workspace]), so — like cdz-component-rewrite / cdz-contract — it MUST be registered here or the
           # crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
           cdz-world-artifact = "implementation/seed/crates/cdz-world-artifact";
+          cdz-rust-run = "implementation/seed/crates/cdz-rust-run";
           rcdzc = "implementation/seed/crates/rcdzc";
           xtask = "xtask";
         };
@@ -2335,6 +2336,7 @@
               clippy-cdz-rt = mkCrateClippyCrane { crate = "cdz-rt"; };
               clippy-cdz-run = mkCrateClippyCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               clippy-cdz-rust-render = mkCrateClippyCrane { crate = "cdz-rust-render"; };
+              clippy-cdz-rust-run = mkCrateClippyCrane { crate = "cdz-rust-run"; };
               clippy-rcdzc = mkCrateClippyCrane {
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
@@ -2365,6 +2367,7 @@
               test-cdz-rt = mkCrateTestCrane { crate = "cdz-rt"; };
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
+              test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
               test-rcdzc = mkCrateTestCrane {
                 crate = "rcdzc";
                 extraSrc = [ ./spec/semantics ./implementation/compiler-ml ./implementation/seed/crates/cdz-runtime/src/bigint.rs ];
