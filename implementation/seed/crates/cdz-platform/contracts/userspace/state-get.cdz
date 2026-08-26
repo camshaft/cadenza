@@ -1,0 +1,19 @@
+@!contract "cdz-platform.state.get"
+@!input GetRequest
+@!output GetResult
+
+// The §7 session-state GET contract (design/cadenza-platform.md §7): read the value at a key in the session's
+// key-value state. A point-in-time lookup (a fold sees state as left by prior folds), so it either finds a
+// value or misses. Distinct from cdz-platform.state.set / .delete so a reducer dispatches by CONTRACT-ID.
+// The value is Bytes (a large value is a content-addressed-store hash held in state). Userspace: a Cadenza
+// reducer consumes it via self-reflection; no Rust binding is generated.
+type GetRequest = | Get(Bytes)
+type GetResult = | Found(Bytes) | Missing
+def a-get() -> GetRequest = GetRequest.Get(b"k")
+@test
+def get-conforms() =
+  match a-get() with | GetRequest.Get(k) => if k == b"k" then unit else trap("get key mismatch")
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
+export { GetRequest.*, GetResult.*, descriptor }
