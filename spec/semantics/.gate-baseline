@@ -6992,6 +6992,7 @@ pass	the width-indexed and aliased float annotations of one value do not conflic
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
+pass	the wrapping-mul zero annihilator does not drop a trapping operand
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
@@ -7300,6 +7301,7 @@ pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
+pass	wrapping-arithmetic identities compute the identity value over a runtime operand
 pass	wrapping-mul of the minimum integer by -1 wraps back to the minimum
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64

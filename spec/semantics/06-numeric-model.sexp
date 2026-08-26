@@ -5568,6 +5568,25 @@
   (input  (Int64.wrapping-mul Int64.max 2))
   (output (: -2 Int64)))
 
+(case "wrapping-arithmetic identities compute the identity value over a runtime operand"
+  (doc    "The wrapping ops share the checked ops' algebraic identities (the wrap is total, so the fold is
+           value-identical): `a +% 0 = a`, `a *% 1 = a`, `a *% 0 = 0`. Over a runtime `a` the op is elided
+           to a bare operand read (or the constant 0), and the VALUE is unchanged. `main` = `(tuple
+           (Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))`: a=7 -> (7 7 0),
+           a=-3 -> (-3 -3 0).")
+  (input  (do (def (main (: a Int64)) (tuple (Int64.wrapping-add a 0) (Int64.wrapping-mul a 1) (Int64.wrapping-mul a 0))) (export main)))
+  (call   main (: 7 Int64)) (output (: (tuple 7 7 0) (Tuple Int64 Int64 Int64)))
+  (call   main (: -3 Int64)) (output (: (tuple -3 -3 0) (Tuple Int64 Int64 Int64))))
+
+(case "the wrapping-mul zero annihilator does not drop a trapping operand"
+  (doc    "`a *% 0` folds to 0, but the annihilator must NOT discard a TRAPPING other operand:
+           `(Int64.wrapping-mul (/ 10 b) 0)` keeps the division (the trap is a defined outcome — the same
+           is_trap_free discipline as the checked x·0 annihilator). b=2 -> `(/ 10 2)` = 5, then *% 0 = 0;
+           b=0 -> the division traps (divide by zero), NOT a folded 0.")
+  (input  (do (def (f (: b Int64)) (Int64.wrapping-mul (/ 10 b) 0)) (export f)))
+  (call   f (: 2 Int64)) (output (: 0 Int64))
+  (call   f (: 0 Int64)) (trap "divide by zero"))
+
 (case "wrapping subtraction wraps modulo two to the sixty-fourth on underflow"
   (doc    "`(Int64.wrapping-sub Int64.min 1)` = Int64.max (9223372036854775807): wrapping subtraction does
            NOT trap on underflow — it wraps in two's complement, so MIN − 1 becomes MAX (numeric-model.md
