@@ -84,6 +84,13 @@ pub struct Record {
     /// where the world's arena node is live (`clone_into`'d into a fresh arena, then encoded — no reparse).
     /// `None` for the common synthesized-world case (no `wit-world.ast` emitted).
     pub wit_world_ast: Option<Vec<u8>>,
+    /// The recorded live-heap-cell count a `(live-objects N)` clause asserts AFTER the run — the
+    /// heap-balance invariant (`N = 0` is no leak / no double-free) the memory-liveness cases pin. When
+    /// set, the gate drives the run on the DEBUG-COUNTERS runtime with `cdz-run --report-live-objects` and
+    /// compares the reported count to N (the shipped runtime reports 0 unconditionally, so the assertion
+    /// has teeth only on the debug-counters runtime). ORTHOGONAL to the value/trap outcome: a case asserts
+    /// its `(output …)`/`(trap …)` AND this balance. `None` for a case with no `(live-objects …)`.
+    pub live_objects: Option<u32>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -417,6 +424,13 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(cn);
             out.push('\n');
         }
+        // `live-objects\t<N>` — the post-run heap-balance the case asserts on the debug-counters runtime
+        // (orthogonal to the value/trap outcome). Absent for a case with no `(live-objects …)`.
+        if let Some(n) = r.live_objects {
+            out.push_str("live-objects\t");
+            out.push_str(&n.to_string());
+            out.push('\n');
+        }
         out.push_str("---\n");
     }
     out
@@ -610,6 +624,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut wit_world: Option<String> = None;
     let mut wit_world_id: Option<StructId> = None;
     let mut component_name: Option<String> = None;
+    let mut live_objects: Option<u32> = None;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -804,6 +819,15 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     .and_then(|t| t.first().copied())
                     .and_then(|id| string_leaf(a, id));
             }
+            // `(live-objects N)` — assert the value-heap runtime's live-cell count is N after the run (the
+            // heap-balance invariant; N=0 is no leak). Orthogonal to the value/trap outcome; the gate drives
+            // this on the debug-counters runtime.
+            Some("live-objects") => {
+                live_objects = a
+                    .as_form(clause, "live-objects")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
+            }
             // `doc` — not needed to run + compare a case.
             _ => {}
         }
@@ -837,6 +861,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         wit_world,
         component_name,
         wit_world_ast,
+        live_objects,
     })
 }
 
@@ -1739,5 +1764,47 @@ mod tests {
             2
         );
         assert_eq!(text.matches("call\t").count(), 2);
+    }
+
+    /// A `(live-objects N)` clause parses into `Record.live_objects` and renders as a `live-objects\t<N>`
+    /// line; it is orthogonal to the value outcome (the trial's `(output …)` still stands).
+    #[test]
+    fn live_objects_clause_parses_and_renders() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) (BigInt.of b)))) (export main)))
+                 (call main (: 40 Int64) (: 2 Int64)) (output (: 42 Int64))
+                 (live-objects 0))"#,
+        )
+        .unwrap();
+        assert_eq!(recs[0].live_objects, Some(0));
+        assert_eq!(recs[0].trials.len(), 1);
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) (BigInt.of b)))) (export main)))
+                 (call main (: 40 Int64) (: 2 Int64)) (output (: 42 Int64))
+                 (live-objects 0))"#,
+        )
+        .unwrap();
+        assert!(text.contains("live-objects\t0\n"));
+    }
+
+    /// A case with NO `(live-objects …)` leaves the field `None` and emits no `live-objects` line.
+    #[test]
+    fn no_live_objects_clause_is_none() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool)) (output (: true Bool)))"#,
+        )
+        .unwrap();
+        assert_eq!(recs[0].live_objects, None);
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool)) (output (: true Bool)))"#,
+        )
+        .unwrap();
+        assert!(!text.contains("live-objects"));
     }
 }
