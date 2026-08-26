@@ -933,18 +933,60 @@
 ; canonical byte form), and the runtime `set-to-list`/`map-to-list` ops explicitly re-sort by that order
 ; (`value_cmp_shaped`), which the compiler's `const_key_order` is the same order (v-runtime confirmed it a
 ; CONTRACT, not an implementation detail; runtime witnesses pinned in 19-sets by breaker #3749). So a NON-empty
-; CONSTANT `Set.to-list` now FOLDS to a canonically-sorted `(list …)` — byte-matching the runtime op — turning a
-; `(const … Set.to-list …)` DEMAND from a REJECT into a fold. An element the canonical order cannot rank as a
-; constant (float / bytes / nested-collection / a runtime element) keeps the runtime op (`const_key_order`
-; declines EXACTLY those, matching the runtime op's own non-orderable decline). `Map.to-list` still declines under
-; a const demand for now (its entry PAIR-shape fold is a separate increment; the same contract applies).
+; CONSTANT `Set.to-list` / `Map.to-list` now FOLD to a canonically-ordered list — byte-matching the runtime op —
+; turning a `(const … to-list …)` DEMAND from a REJECT into a fold. `Map.to-list` yields a list of `(key value)`
+; TUPLES in canonical KEY order (the op's `(List (Tuple K V))` shape). A key/element the canonical order cannot
+; rank as a constant (float / bytes / nested-collection / a runtime value) keeps the runtime op (`const_key_order`
+; declines EXACTLY those, matching the runtime op's own non-orderable decline).
 
-(case "a const Map materialized to a list declines — Map.to-list fold is a later increment"
-  (doc    "`Map.to-list` over a constant map does not yet const-fold (the entry key-value PAIR materialization is
-           a separate increment), so `(const (List.len (Map.to-list …)))` still REJECTS. The query ops fold; the
-           Map to-list fold — same canonical-value-order contract as Set.to-list below — is deferred.")
-  (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert (Map.empty) 1 10) 2 20))))) (export main)))
-  (error  CDZ0201 (message "compile-time constant")))
+(case "a const Map.to-list folds its length under a const demand"
+  (doc    "`Map.to-list` over a constant map folds to a key-sorted list of `(k v)` tuples, so `(const (List.len
+           (Map.to-list …)))` folds to 2 — no longer a REJECT. The Map twin of the Set.to-list fold.")
+  (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert (map) 2 20) 1 10))))) (export main)))
+  (output (: 2 Int64)))
+
+(case "a const Map.to-list enumerates key-sorted — the head entry is the smallest key"
+  (doc    "The entries materialize as `(tuple key value)` in canonical KEY order, so the head of a 3-entry map
+           `{3↦30,1↦10,2↦20}` is `(tuple 1 10)`: `(+ (* 100 k) v)` = 110. Pins the (k v) tuple element shape +
+           the key-sorted order.")
+  (input  (do (def (main)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert (Map.insert (map) 3 30) 1 10) 2 20)) 0)
+                         ((Option.Some (tuple k v)) (+ (* 100 k) v))
+                         ((Option.None) -1))))
+              (export main)))
+  (output (: 110 Int64)))
+
+(case "a const Map.to-list carries the value at each index"
+  (doc    "The value rides with its key at every position: index 1 of `{5↦50,2↦20}` (key-sorted) is
+           `(tuple 5 50)`, `(+ k v)` = 55.")
+  (input  (do (def (main)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) 5 50) 2 20)) 1)
+                         ((Option.Some (tuple k v)) (+ k v))
+                         ((Option.None) -1))))
+              (export main)))
+  (output (: 55 Int64)))
+
+(case "a const Map.to-list sorts STRING keys lexicographically"
+  (doc    "String keys sort lexicographically (`\"ab\" < \"bb\"`), so the head of `{\"bb\"↦2,\"ab\"↦1}` is
+           `(tuple \"ab\" 1)` — value 1. Pins the String-key canonical order for the Map fold.")
+  (input  (do (def (main)
+                (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) "bb" 2) "ab" 1)) 0)
+                         ((Option.Some (tuple k v)) v)
+                         ((Option.None) -1))))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "a const Map.to-list order byte-matches the RUNTIME map-to-list op (cross-check)"
+  (doc    "The belt-and-suspenders soundness cross-check (the #3765 shape for Map): a RUNTIME `Map.to-list` (the
+           map built through a runtime `Map.insert n`, forcing the heap `map-to-list` op) yields the SAME list of
+           `(k v)` tuples as the COMPILE-TIME fold — both key-sorted. Pins that `const_key_order` (compile) and
+           `value_cmp_shaped` (runtime) agree for Map keys, catching any drift between the two impls.")
+  (input  (do (def (run (: n Int64))
+                (= (tuple 1 (Map.to-list (Map.insert (Map.insert (map) n 10) (+ n 1) 20)))
+                   (tuple 1 (const (Map.to-list (Map.insert (Map.insert (map) 3 10) 4 20))))))
+              (export run)))
+  (call   run 3)
+  (output (: true Bool)))
 
 (case "a const Set.to-list folds to a canonically-sorted list under a const demand"
   (doc    "`Set.to-list` over a CONSTANT set folds to its elements in canonical VALUE order (spec-pinned, ==

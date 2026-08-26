@@ -8722,10 +8722,27 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
             "Map.to-list of an empty map must fold to an empty ListNew (no descriptor needed), got {other:?}"
         ),
     }
-    // A NON-empty constant map still emits the runtime op (canonical key order).
-    match fold("(Map.to-list (Map.insert Map.empty 1 10))") {
+    // A NON-empty CONSTANT map now FOLDS to a key-sorted `Core::ListNew` of `(key value)` tuples (the runtime
+    // `map-to-list` op sorts by the SAME spec-pinned canonical value order — `const_key_order` == the runtime's
+    // `value_cmp_shaped`, a v-runtime contract — so materializing here byte-matches the op; the Map twin of the
+    // Set.to-list fold).
+    match fold("(Map.to-list (Map.insert (Map.insert Map.empty 2 20) 1 10))") {
+        Core::ListNew { elems } => assert_eq!(
+            elems.len(),
+            2,
+            "a non-empty constant Map.to-list folds to a 2-element sorted ListNew of tuples, got {} elems",
+            elems.len()
+        ),
+        other => {
+            panic!("a non-empty constant Map.to-list must fold to a sorted ListNew, got {other:?}")
+        }
+    }
+    // A map with a NON-orderable KEY (a nested tuple — `const_key_order` declines) keeps the runtime op.
+    match fold("(Map.to-list (Map.insert Map.empty (tuple 1 2) 99))") {
         Core::MapToList { .. } => {}
-        other => panic!("a non-empty Map.to-list must emit the runtime op, got {other:?}"),
+        other => {
+            panic!("a non-orderable-key Map.to-list must emit the runtime op, got {other:?}")
+        }
     }
     // The fold sees through an inlined nullary `(def (em) Map.empty)` — the exact seed shape; the whole
     // expression const-folds to 0, so no runtime is imported.
