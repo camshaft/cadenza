@@ -2722,6 +2722,9 @@ pass	a nested application of a let-bound lambda resolves each argument at its ca
 pass	a nested call chain whose callee duplicates its parameter folds without exponential blowup
 pass	a nested chain of function calls compiles in linear time and folds to a constant
 pass	a nested char-literal payload falls through on a non-matching char
+pass	a nested checked op computes over runtime args after dest-threading
+pass	a nested checked op traps when the inner add overflows despite the shared slot
+pass	a nested checked op traps when the outer multiply overflows
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — negative
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — positive
 pass	a nested conditional (the sign idiom) folds to branchless nested selects — zero
