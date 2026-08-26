@@ -1270,13 +1270,16 @@ fn run_program(
     host_calls: &[String],
     wit_world: Option<&str>,
     component_name: Option<&str>,
+    live_objects: Option<u32>,
     target: GateTarget,
 ) -> Ran {
     // A case that imposes an explicit WIT world (general WIT-ABI shape) is driven only through the WASM
     // path (the authoritative WIT-ABI boundary check). The Rust/ML backends have no external-world ingest
     // on this path, so a wit-world case is not-yet-supported there → DECLINE (Todo, coverage-not-yet),
     // never a disagreement. (The wasm path handles it; the others stay byte-identical for non-world cases.)
-    if wit_world.is_some() && !matches!(target, GateTarget::Wasm) {
+    // A `(live-objects …)` case is likewise WASM-only: the heap-balance counter is the debug-counters
+    // value-heap runtime's `live-objects` export, which the Rust/ML backends have no analog for.
+    if (wit_world.is_some() || live_objects.is_some()) && !matches!(target, GateTarget::Wasm) {
         return Ran::Declined {
             code: None,
             message: String::new(),
@@ -1293,6 +1296,7 @@ fn run_program(
             None,
             wit_world,
             component_name,
+            live_objects,
         ),
         // Both Rust backends render a host call the SAME way: the emitted `mod prog` calls
         // `crate::__cdz_host_<key>()` and `run_program_rust` generates those shim fns from `host_responses`
@@ -1483,6 +1487,7 @@ fn run_program_wasm(
     opt_level: Option<&str>,
     wit_world: Option<&str>,
     component_name: Option<&str>,
+    live_objects: Option<u32>,
 ) -> Ran {
     use std::io::Write;
     use std::process::Stdio;
@@ -1508,6 +1513,35 @@ fn run_program_wasm(
         .stderr(Stdio::piped());
     if let Some(dir) = store {
         run.arg("--store").arg(dir);
+    }
+    // A `(live-objects N)` case asserts the post-run heap-balance. Drive on the DEBUG-COUNTERS runtime
+    // (its `live-objects` export reports the real live-cell count; the shipped runtime always reports 0)
+    // via `--runtime <debug-path>` (the store-lookup override), plus `--report-live-objects` so cdz-run
+    // prints a trailing `live-objects\t<N>` line. If the debug runtime is not in the store, the balance
+    // cannot be checked → DECLINE (Todo), matching a missing-store case (never a false pass).
+    if live_objects.is_some() {
+        match resolve_debug_runtime(store) {
+            Some(path) => {
+                // NFC (the runtime's inline dependency) resolves from the store; if the gate passed no
+                // `--store`, point it at the debug runtime's own store dir so NFC + the debug runtime come
+                // from the same build.
+                if store.is_none()
+                    && let Some(parent) = path.parent()
+                {
+                    run.arg("--store").arg(parent);
+                }
+                run.arg("--runtime").arg(&path);
+                run.arg("--report-live-objects");
+            }
+            None => {
+                return Ran::Declined {
+                    code: None,
+                    message:
+                        "live-objects: debug-counters runtime not in store (cargo xtask build)"
+                            .to_string(),
+                };
+            }
+        }
     }
     // A `(call …)` case names the export and passes runtime arguments; cdz-run coerces each `--arg` to
     // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
@@ -1544,14 +1578,86 @@ fn run_program_wasm(
         // cdz-run prints the OBSERVED host calls to stderr as `host-call\t<op>` lines, in call order;
         // parse them so the case's `(host-calls …)` can be verified. Empty for a non-host program.
         let observed = observed_host_calls(&run_out.stderr);
-        Ran::Value(
-            String::from_utf8_lossy(&run_out.stdout).trim().to_string(),
-            observed,
-            warnings,
-        )
+        let stdout = String::from_utf8_lossy(&run_out.stdout);
+        // With `--report-live-objects`, cdz-run appends a `live-objects\t<M>` line after the value. Split
+        // it off, compare the reported count to the case's expected N, and FAIL (a synthesized trap, which
+        // grade_ran surfaces against the expected `(output …)`) on a mismatch — the heap-balance assertion.
+        // The value is everything before that line.
+        if let Some(expected) = live_objects {
+            let mut lo: Option<u32> = None;
+            let mut value_lines: Vec<&str> = Vec::new();
+            for l in stdout.lines() {
+                if let Some(n) = l.strip_prefix("live-objects\t") {
+                    lo = n.trim().parse::<u32>().ok();
+                } else {
+                    value_lines.push(l);
+                }
+            }
+            match lo {
+                Some(m) if m == expected => Ran::Value(
+                    value_lines.join("\n").trim().to_string(),
+                    observed,
+                    warnings,
+                ),
+                Some(m) => Ran::Trap(format!(
+                    "live-objects mismatch: expected {expected}, got {m}"
+                )),
+                None => Ran::Trap(
+                    "live-objects: cdz-run printed no `live-objects` line (is the debug-counters \
+                     runtime in the store?)"
+                        .to_string(),
+                ),
+            }
+        } else {
+            Ran::Value(stdout.trim().to_string(), observed, warnings)
+        }
     } else {
         Ran::Trap(first_line(&run_out.stderr))
     }
+}
+
+/// Resolve the DEBUG-COUNTERS value-heap runtime file in the content-addressed store — its `live-objects`
+/// export reports the real live-cell count (the shipped runtime always returns 0). Reads the store's
+/// `runtime.toml` `debug_runtime = "<hash>"` line and returns `<store>/<hash>.wasm` if it exists. `None`
+/// when no store is configured, no `runtime.toml`, no `debug_runtime` line, or the file is absent — the
+/// caller then declines the `(live-objects …)` case (Todo) rather than checking a vacuous balance.
+fn resolve_debug_runtime(store: &Option<PathBuf>) -> Option<PathBuf> {
+    // Candidate stores: the explicit `--store` if given; else `$CDZ_STORE` then the default
+    // `target/cadenza-store` (where `cargo xtask build` writes the debug-counters runtime — the release
+    // gate leaves `--store` unset and relies on cdz-run's own resolution for the SHIPPED runtime, but the
+    // debug runtime only lives in the built target store, so probe it explicitly).
+    let candidates: Vec<PathBuf> = match store {
+        Some(dir) => vec![dir.clone()],
+        None => {
+            let mut v = Vec::new();
+            if let Ok(s) = std::env::var("CDZ_STORE") {
+                v.push(PathBuf::from(s));
+            }
+            v.push(PathBuf::from("target/cadenza-store"));
+            v
+        }
+    };
+    for dir in candidates {
+        let Ok(toml) = std::fs::read_to_string(dir.join("runtime.toml")) else {
+            continue;
+        };
+        let hash = toml.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("debug_runtime")?
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches('"')
+                .to_string()
+                .into()
+        });
+        let Some(hash) = hash else { continue };
+        let path = dir.join(format!("{hash}.wasm"));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// The single-file component-emit path: program text (stdin) → binary AST → component (stdout), via
@@ -3756,6 +3862,7 @@ fn sweep_one_case(
                 Some(lvl),
                 rec.wit_world.as_deref(),
                 rec.component_name.as_deref(),
+                None, // the opt sweep looks for a tier divergence, not a heap-balance regression
             ),
             // A host-delegating case is level-independent in its host protocol (the opt sweep looks for a
             // TIER divergence, not a host-boundary regression), so it declines here and is skipped below —
@@ -3926,6 +4033,7 @@ fn gate_one_case(
                         &rec.host_calls,
                         rec.wit_world.as_deref(),
                         rec.component_name.as_deref(),
+                        rec.live_objects,
                         target,
                     )
                 })
@@ -4017,6 +4125,12 @@ struct CorpusRecord {
     /// The interface a `(wit-world …)` case's guest exports under (stream `component-name` line) — passed to
     /// `cdz compile --component-name` and used to qualify the run export. `None` when no world is imposed.
     component_name: Option<String>,
+    /// The live-heap-cell count a `(live-objects N)` clause asserts after the run (stream `live-objects` line).
+    /// When set, the wasm gate driver runs the program on the DEBUG-COUNTERS runtime with `cdz-run
+    /// --report-live-objects` and fails the case if the reported count differs from N — the heap-balance
+    /// invariant (N=0 is no leak / no double-free), orthogonal to the value outcome. `None` for a case with
+    /// no `(live-objects …)`.
+    live_objects: Option<u32>,
 }
 
 /// One (call, expected-payload) trial of a case — a single run of the compiled program.
@@ -4066,6 +4180,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
     let (mut wit_world, mut component_name): (Option<String>, Option<String>) = (None, None);
+    let mut live_objects: Option<u32> = None;
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
     for line in text.lines() {
         if line == "---" {
@@ -4080,6 +4195,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 warns: std::mem::take(&mut warns),
                 wit_world: std::mem::take(&mut wit_world),
                 component_name: std::mem::take(&mut component_name),
+                live_objects: live_objects.take(),
             });
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
@@ -4133,6 +4249,9 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 // `--component-name`) and the run (`--call <iface>#<export>`).
                 "wit-world" => wit_world = Some(val.to_string()),
                 "component-name" => component_name = Some(val.to_string()),
+                // `live-objects\t<N>` — the post-run heap-balance the case asserts (on the debug-counters
+                // runtime). Parsed into `live_objects`; the wasm gate driver checks it.
+                "live-objects" => live_objects = val.trim().parse::<u32>().ok(),
                 _ => {}
             }
         }
@@ -4160,6 +4279,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 &rec.host_calls,
                 rec.wit_world.as_deref(),
                 rec.component_name.as_deref(),
+                rec.live_objects,
                 target,
             )
         })
@@ -5774,6 +5894,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                         &rec.host_calls,
                         rec.wit_world.as_deref(),
                         rec.component_name.as_deref(),
+                        rec.live_objects,
                         GateTarget::CadenzaMl,
                     );
                     let outcome = match &ml {
@@ -5794,6 +5915,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                                 &rec.host_calls,
                                 rec.wit_world.as_deref(),
                                 rec.component_name.as_deref(),
+                                rec.live_objects,
                                 GateTarget::Wasm,
                             );
                             // An oracle-side harness failure is likewise not comparable — not a disagreement.
@@ -7846,6 +7968,7 @@ mod trap_grading_tests {
             warns: vec![(warn_code.to_string(), Some(warn_msg.to_string()))],
             wit_world: None,
             component_name: None,
+            live_objects: None,
         };
         // The run: a value 42 whose compile emitted `unused binding `unused``.
         let ran = vec![Ran::Value(
