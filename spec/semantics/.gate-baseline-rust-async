@@ -7321,3 +7321,7 @@ pass	cms2 closed handle with RECORD state under (const ...)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
+pass	cnw1 runtime UInt8 checked-add at the 255 boundary
+pass	cnw3 runtime Int8 checked-add at the signed 127 boundary
+pass	cnw4 runtime Int8 checked-sub at the signed -128 boundary
+pass	cnw5 runtime UInt16 checked-add at the 65535 top

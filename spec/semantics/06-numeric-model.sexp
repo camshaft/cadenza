@@ -9217,3 +9217,44 @@
     (export main)))
   (call main (: 5 Int64) (: 7 Int64)) (output (: 0 Int64))
   (call main (: 7 Int64) (: 7 Int64)) (output (: 2 Int64)))
+
+;; -- NARROW-width runtime checked-add/sub boundaries: UInt8@255, Int8@127/-128, UInt16@65535 — width-relative range checks exact at each edge (breaker batch 388; the #3594 increment) --
+(case "cnw1 runtime UInt8 checked-add at the 255 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt8.checked-add (UInt8.wrap a) (UInt8.wrap k))
+        ((Option.Some v) (if (= v (UInt8.wrap 255)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 250 Int64) (: 5 Int64)) (output (: 2 Int64))
+  (call main (: 250 Int64) (: 10 Int64)) (output (: 0 Int64)))
+
+(case "cnw3 runtime Int8 checked-add at the signed 127 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (Int8.checked-add (Int8.wrap a) (Int8.wrap k))
+        ((Option.Some v) (if (= v (Int8.wrap 127)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 120 Int64) (: 7 Int64)) (output (: 2 Int64))
+  (call main (: 120 Int64) (: 8 Int64)) (output (: 0 Int64)))
+
+(case "cnw4 runtime Int8 checked-sub at the signed -128 boundary"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (Int8.checked-sub (Int8.wrap a) (Int8.wrap k))
+        ((Option.Some v) (if (= v (Int8.wrap -128)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: -120 Int64) (: 8 Int64)) (output (: 2 Int64))
+  (call main (: -120 Int64) (: 9 Int64)) (output (: 0 Int64)))
+
+(case "cnw5 runtime UInt16 checked-add at the 65535 top"
+  (input (do
+    (def (main (: a Int64) (: k Int64))
+      (match (UInt16.checked-add (UInt16.wrap a) (UInt16.wrap k))
+        ((Option.Some v) (if (= v (UInt16.wrap 65535)) 2 1))
+        ((Option.None) 0)))
+    (export main)))
+  (call main (: 65530 Int64) (: 5 Int64)) (output (: 2 Int64))
+  (call main (: 65530 Int64) (: 6 Int64)) (output (: 0 Int64)))
