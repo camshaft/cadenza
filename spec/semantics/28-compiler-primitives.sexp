@@ -1838,3 +1838,26 @@
   (call main (: 5 Int64))
   (output (: 1 Int64))
   (live-objects 0))
+
+; -- breaker batch 431 (2026-08-26): #3799 complement pins — a const Map with CHAR keys to-lists
+; key-sorted (the Set face is owner-pinned), and the sorted Char head surfaces a taken trap as
+; CDZ0304 under the const demand (the fail-loud discipline through the Char fold). Both targets
+; (the fold bakes at compile time — the runtime wasm Char op gap, ckr1, is untouched).
+
+(case "chm1 a const Map with CHAR keys to-lists key-sorted"
+  (input (do
+    (def (main)
+      (const (match (List.at (Map.to-list (Map.insert (Map.insert (map) #\c 3) #\a 1)) 0)
+               ((Option.Some (tuple k v)) (if (= k #\a) v -2))
+               ((Option.None) -1))))
+    (export main)))
+  (output (: 1 Int64)))
+
+(case "chm2 the sorted Char head surfaces a taken trap under the const demand (CDZ0304)"
+  (input (do
+    (def (main)
+      (const (match (List.at (Set.to-list (Set.of (list #\q #\b #\z))) 0)
+               ((Option.Some ch) (if (= ch #\b) (trap "chm2 head is b") (trap "chm2 WRONG")))
+               ((Option.None) (trap "chm2 EMPTY")))))
+    (export main)))
+  (error CDZ0304 (message "chm2 head is b")))
