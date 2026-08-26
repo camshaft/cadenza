@@ -1309,6 +1309,9 @@ pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
 pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
 pass	a branching recursive tree fold infers its unannotated callback across both arms
+pass	a branchless and over two comparisons is the conjunction of the two relations
+pass	a branchless and over two leaf booleans is the full conjunction truth table
+pass	a branchless or over two leaf booleans is the full disjunction truth table
 pass	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
@@ -3544,6 +3547,7 @@ pass	a runtime-selected function chosen directly at the application head is appl
 pass	a runtime-selected trapping branch with a non-zero divisor computes normally
 pass	a runtime-woven Ast and its quote twin resolve to ONE Map key
 pass	a runtime-woven Ast compares structurally equal to an equivalent quote
+pass	a same-constant equality pair still folds idempotently and ordering subsumption is unaffected
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
@@ -7060,6 +7064,8 @@ pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
 pass	two equal runtime quantities in a Set dedup to one element
+pass	two equalities to different constants are an and-contradiction that does not subsume
+pass	two equalities to different constants under or are the 2-point set neither collapses to
 pass	two expects of one bound optional share its resident handle
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
