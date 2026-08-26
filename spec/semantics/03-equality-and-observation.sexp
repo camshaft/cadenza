@@ -2934,3 +2934,14 @@
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
+
+(case "String.scalar-len over an owned-temporary runtime rope leaves no live heap objects"
+  (doc    "`rep` appends \"x\" 3x via String.concat -> an OWNED rope \"hixxx\" (5 unicode scalars);
+           `String.scalar-len` borrows it (bytes-len/bytes-get walk) -> 5, and the owned rope must be
+           reclaimed after the walk (the Owned-operand gate, like Bytes.len) -- net 0 live cells.")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (String.scalar-len (rep "hi" 3)))
+            (export main)))
+  (call   main) (output (: 5 Int64))
+  (live-objects 0))
