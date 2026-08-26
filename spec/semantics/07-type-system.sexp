@@ -1297,6 +1297,15 @@
             (def (main) (match (never-returns))) (export main)))
   (trap   "unreachable"))
 
+(case "a zero-arm match on an inhabited scrutinee is non-exhaustive"
+  (doc    "The inhabited companion of the uninhabited zero-arm case: `(match n)` over an Int64 scrutinee
+           has values (every integer) that no arm covers, so an empty arm list is genuinely NON-EXHAUSTIVE
+           and rejected CDZ0210 — NOT the malformed no-arms rejection it once was, and NOT the vacuously
+           exhaustive zero-arm match a Never-typed scrutinee admits. Pins that the zero-arm base case is
+           exhaustive only when the scrutinee is uninhabited.")
+  (input  (do (def (f (: n Int64)) (match n)) (export f)))
+  (error  CDZ0210))
+
 ; TYPE REFLECTION — `(Type.of e)` reduces at compile time to the type-VALUE of `e`'s inferred type,
 ; realizing type-system.md #Inference And First-Class Types Meet At A Bidirectional Boundary (a type is
 ; a first-class value the compiler can compute). It is a COMPILE-TIME operation: a `Type` value is

@@ -30650,32 +30650,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_zero_arm_match_is_valid_on_an_uninhabited_scrutinee_else_non_exhaustive() {
-        // 07-type-system §Never Is The Empty Sum (4th sentence): a match on a Never-typed (diverging)
-        // scrutinee is exhaustive with ZERO arms — the degenerate base case, NOT the malformed "no arms"
-        // rejection it used to be. The scrutinee still evaluates, so its divergence IS the match's outcome.
-        use wasmtime::component::Val;
-        // A zero-arm match over a diverging scrutinee, in an internal Int64 position, TRAPS at run time
-        // (the `(bomb)` never returns, so the match diverges). Uses an internal position to sidestep the
-        // orthogonal bare-trap-EXPORT limitation (an undetermined `main` return type — see the note above).
-        assert!(
-            call_traps(
-                &component(
-                    "(module m (def (bomb) (trap \"unreachable\")) (def (main) (+ 1 (match (bomb)))) (export main))"
-                ),
-                "main",
-                &[] as &[Val],
-            ),
-            "a zero-arm match on a diverging scrutinee traps through the scrutinee"
-        );
-        // A zero-arm match on an INHABITED scrutinee is genuinely NON-EXHAUSTIVE (CDZ0210) — the scrutinee
-        // has values a case must cover — NOT the old malformed "this match has no arms" (CDZ0201).
-        let d = reject_full("(module m (def (f (: n Int64)) (match n)) (export f))")
-            .expect("a zero-arm match on an inhabited scrutinee must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0210"), "got: {}", d.message);
-    }
-
-    #[test]
     fn a_match_on_a_function_value_is_rejected_not_an_internal_closure_decline() {
         // `(match g …)` where `g` is a function has no matchable value — a match deconstructs a DATA value
         // by its cases, and a function has none. It used to fall through to the scalar-probe path and hit
