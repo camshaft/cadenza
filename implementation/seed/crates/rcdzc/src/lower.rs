@@ -24302,6 +24302,11 @@ fn lower_map_field_runtime(
 enum CVal {
     Int(crate::ast::IntValue),
     Bool(bool),
+    /// A `Char` value (a Unicode scalar). Materializes to `Core::ConstChar`. Equality/ordering compare by
+    /// scalar value; `Char.to-int` reads the scalar, `Char.from-int` builds one (fallibly, via `Option`).
+    /// Carried so a Char threaded through a RECURSION const-folds — a non-recursive Char op already folds via
+    /// `core_of`, but the recursive engine runs the value-interpreter, which had no Char value.
+    Char(char),
     Str(std::rc::Rc<str>),
     Bytes(std::rc::Rc<[u8]>),
     Unit,
@@ -24412,6 +24417,7 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
     match resolved_of(db, node) {
         Resolved::Int(v) => Some(CVal::Int(v)),
         Resolved::Bool(b) => Some(CVal::Bool(b)),
+        Resolved::Char(c) => Some(CVal::Char(c)),
         Resolved::Str(s) | Resolved::SymbolConst(s) => Some(CVal::Str(s.into())),
         Resolved::Bytes(b) => Some(CVal::Bytes(b.into())),
         Resolved::Unit => Some(CVal::Unit),
@@ -24553,6 +24559,7 @@ fn core_to_cval(db: &mut Db, c: &Core) -> Option<CVal> {
     Some(match c {
         Core::ConstInt(v) => CVal::Int(v.clone()),
         Core::ConstBool(b) => CVal::Bool(*b),
+        Core::ConstChar(c) => CVal::Char(*c),
         Core::ConstStr(s) => CVal::Str(s.clone()),
         Core::ConstBytes(b) => CVal::Bytes(b.clone()),
         Core::Unit => CVal::Unit,
@@ -24745,6 +24752,28 @@ fn const_eval_apply(
                     disc: none_disc,
                     payloads: Vec::new(),
                 }
+            });
+        }
+        // `Char.from-int i` — the FALLIBLE `Int64 → (Option Char)`: `(Some #\c)` for a Unicode scalar value,
+        // `(None)` for a surrogate / out-of-range integer (the recursive-engine twin of the `core_of`
+        // `lower_char_from_int` fold; discs off THIS node's result type, like `List.at`). Never traps.
+        if prim == Prim::CharFromInt
+            && let [CVal::Int(i)] = &vs[..]
+        {
+            let (some_disc, none_disc) = option_discs(db, node)?;
+            let scalar = i
+                .to_i64()
+                .and_then(|n| u32::try_from(n).ok())
+                .and_then(char::from_u32);
+            return Some(match scalar {
+                Some(c) => CVal::Sum {
+                    disc: some_disc,
+                    payloads: vec![CVal::Char(c)],
+                },
+                None => CVal::Sum {
+                    disc: none_disc,
+                    payloads: Vec::new(),
+                },
             });
         }
         // MAP ops (queried, never materialized — `CVal::Map`). `Map.empty` → an empty map; `Map.insert
@@ -24960,6 +24989,16 @@ fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
         (Prim::Le, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) != Ordering::Greater)),
         (Prim::Ge, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) != Ordering::Less)),
         (Prim::Eq, [a, b]) => cval_eq(a, b).map(CVal::Bool),
+        // `Char.to-int` reads a Char's Unicode scalar as an `Int64`; ordering/`<`… compare by that scalar
+        // (the documented Char semantics — `Resolved::Char`). This is the recursive-engine twin of the
+        // `core_of` `CharToInt` fold; a Char threaded through a recursion needs it to fold.
+        (Prim::CharToInt, [CVal::Char(c)]) => {
+            Some(CVal::Int(crate::ast::IntValue::from_i64(*c as u32 as i64)))
+        }
+        (Prim::Lt, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a < b)),
+        (Prim::Gt, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a > b)),
+        (Prim::Le, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a <= b)),
+        (Prim::Ge, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a >= b)),
         (Prim::ListNew, elems) => Some(CVal::List(elems.to_vec())),
         (Prim::ListLen, [CVal::List(xs)]) => {
             Some(CVal::Int(crate::ast::IntValue::from_i64(xs.len() as i64)))
@@ -24988,6 +25027,7 @@ fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
     match (a, b) {
         (CVal::Int(x), CVal::Int(y)) => Some(x.cmp(y) == Ordering::Equal),
         (CVal::Bool(x), CVal::Bool(y)) => Some(x == y),
+        (CVal::Char(x), CVal::Char(y)) => Some(x == y),
         (CVal::Str(x), CVal::Str(y)) => Some(x == y),
         (CVal::Bytes(x), CVal::Bytes(y)) => Some(x == y),
         (CVal::Unit, CVal::Unit) => Some(true),
@@ -25179,6 +25219,7 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
     match (resolved_of(db, pat), v) {
         (Resolved::Int(lit), CVal::Int(x)) => Some(x.cmp(&lit) == std::cmp::Ordering::Equal),
         (Resolved::Bool(lit), CVal::Bool(x)) => Some(*x == lit),
+        (Resolved::Char(lit), CVal::Char(x)) => Some(*x == lit),
         (Resolved::Str(lit), CVal::Str(x)) => Some(x.as_ref() == lit.as_str()),
         _ => None,
     }
@@ -25203,6 +25244,7 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
     Some(match v {
         CVal::Int(x) => Core::ConstInt(x.clone()),
         CVal::Bool(b) => Core::ConstBool(*b),
+        CVal::Char(c) => Core::ConstChar(*c),
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
@@ -25272,6 +25314,7 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
             radix: crate::ast::Radix::Dec,
         }),
         CVal::Bool(b) => db.push_atom(crate::ast::Leaf::Bool(*b)),
+        CVal::Char(c) => db.push_atom(crate::ast::Leaf::Char(*c)),
         CVal::Str(s) => db.push_atom(crate::ast::Leaf::Str(s.clone())),
         CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.to_vec())),
         CVal::Unit => synth_core(db, Core::Unit, crate::ty::Ty::Unit),

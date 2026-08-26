@@ -523,3 +523,52 @@
                  (Ast.encode (Ast.Bytes (Bytes.of (list 65 65 65))))))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — a CHAR value threads through the recursive engine -----------------
+; The value-interpreter carries a `CVal::Char` (materializes to `Core::ConstChar`), so a `Char` const param
+; folds through a RECURSION. A NON-recursive Char op already folds via `core_of` (`Char.to-int`/`from-int`);
+; the recursive engine runs the interpreter, which had no Char value, so `(const …)` over a recursive
+; Char-param fn declined (cb04). Equality/ordering compare by scalar; `Char.to-int` reads it; `Char.from-int`
+; builds one fallibly (`Option`, `None` for a surrogate / out-of-range int).
+
+(case "a Char threaded through a recursion const-folds (cb04)"
+  (doc    "`walk n c` adds 1 per step down to `Char.to-int c` at the base; `(const (walk 3 #\\a))` folds to
+           3 + 97 = 100 (`#\\a` scalar is 97). The Char const param binds a `CVal::Char` through the
+           recursion — before, the interpreter had no Char value so the fold declined CDZ0201.")
+  (input  (do
+            (def (walk (const (: n Int64)) (const (: c Char)))
+              (if (= n 0) (Char.to-int c) (+ 1 (walk (- n 1) c))))
+            (def (main) (const (walk 3 #\a)))
+            (export main)))
+  (output (: 100 Int64)))
+
+(case "Char equality in a recursion counts matches under const"
+  (doc    "`cnt n c` counts, over `n` steps, how many equal `#\\a` — `(const (cnt 4 #\\a))` folds to 4. Pins
+           Char `=` (scalar compare) composing with the recursive engine.")
+  (input  (do
+            (def (cnt (const (: n Int64)) (const (: c Char)))
+              (if (= n 0) 0 (if (= c #\a) (+ 1 (cnt (- n 1) c)) (cnt (- n 1) c))))
+            (def (main) (const (cnt 4 #\a)))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "Char.from-int then to-int round-trips under const"
+  (doc    "`(const (f 97))` folds to 97: `Char.from-int 97` = `(Some #\\a)`, matched and read back with
+           `Char.to-int`. Pins the fallible `Int -> (Option Char)` folding through a const-param fn + match.")
+  (input  (do
+            (def (f (const (: n Int64)))
+              (match (Char.from-int n) ((Option.Some c) (Char.to-int c)) ((Option.None) -1)))
+            (def (main) (const (f 97)))
+            (export main)))
+  (output (: 97 Int64)))
+
+(case "Char.from-int of a surrogate folds to None under const"
+  (doc    "`(const (f 55296))` folds to -1: 55296 = U+D800 is a UTF-16 surrogate, not a scalar value, so
+           `Char.from-int` yields `(None)` and the match takes the absent arm. Pins the fallible path's
+           negative direction (out-of-range/surrogate) at compile time.")
+  (input  (do
+            (def (f (const (: n Int64)))
+              (match (Char.from-int n) ((Option.Some c) (Char.to-int c)) ((Option.None) -1)))
+            (def (main) (const (f 55296)))
+            (export main)))
+  (output (: -1 Int64)))
