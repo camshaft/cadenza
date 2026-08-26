@@ -341,3 +341,20 @@
             (def (main) (const (+ 1.5 2.0)))
             (export main)))
   (output (: 3.5 Float64)))
+
+; --- Primitive 2: const execution — RECORD field projection folds ------------------------------------
+; A direct field projection off a constant record `(. (record …) field)` const-folds (the evaluator builds
+; a `CVal::Record` and projects the field by name). Regression guard for record const-folding — the value
+; class the P4 descriptor `contract(m) -> Record(id, …)` reads a field off. (A record projected THROUGH a
+; record-param FUNCTION does not yet fold — the reducer does not inline a record-param fn and the general
+; evaluator does not reach its body; tracked separately, deeper than a value-domain arm.)
+
+(case "a direct record field projection const-folds"
+  (doc    "`(. (record (x 7) (y 9)) x)` folds to 7 at compile time; witnessed byte-exact through `Ast.encode`
+           (which demands a compile-time constant) against the encoding of the literal 7.")
+  (input  (do
+            (def (main)
+              (= (Ast.encode (Ast.Int (BigInt.of (. (record (x 7) (y 9)) x))))
+                 (Ast.encode (Ast.Int (BigInt.of 7)))))
+            (export main)))
+  (output (: true Bool)))
