@@ -13,11 +13,13 @@
 //   contract(m) -> Record(id, name, input, output, types)  -- the full structured descriptor. The landed
 //     self-describe form (P4, #3413): `def descriptor() = contract(Ast.module)` + `export { descriptor }` in
 //     the contract module; a consumer imports it and PROJECTS a field (`descriptor().id` to route,
-//     `descriptor().name` to inspect). The projection const-folds (v-cp #3543) so the record's `Ast`-typed
-//     `input`/`output`/`types` never materialize at runtime — it instantiates. What does NOT work:
-//     MATERIALIZING the whole record as a runtime value (returning it across the host boundary), since those
-//     `Ast` fields have no runtime representation — project a field, or use `contract-declaration` (Bytes)
-//     for the whole contract as one runtime value.
+//     `descriptor().name` to inspect). The projection const-folds (v-cp #3543). The WHOLE record also
+//     materializes as a runtime value now — an `Ast` value is runtime-representable (an ordinary sum the
+//     runtime holds and `match` reads), so returning the whole descriptor (even across the host boundary)
+//     instantiates and runs; it need not survive only via a projection fold. (The one thing still
+//     unimplemented is `Ast.encode`/`print`/`read` of a GENUINELY-runtime `Ast` value — the runtime
+//     AST-serialize op is the v-cp/v-runtime `Core::AstEncode` + ast-encode(93) arc in flight; a
+//     descriptor's `Ast` fields fold via `Ast.encode` of the CONST module AST, so this does not affect it.)
 //
 // Handles the NATURAL contract-module shape: doc comments nest following forms (peeled per form via
 // `unwrap`), and `def`/`@test`/`export` forms are dropped (only `(type …)` forms collected). The whole
@@ -118,11 +120,14 @@ def contract-name(const forms: List(Ast)) -> String =
 // The full structured descriptor: the id plus the structured pieces. The landed self-describe form (P4,
 // #3413) is `def descriptor() = contract(Ast.module)` + `export { descriptor }` in the contract module; a
 // consumer imports it and PROJECTS a field — `descriptor().id` (route) or `descriptor().name` (inspect) —
-// and the projection const-folds (v-cp #3543) so the record's `Ast`-typed `input`/`output`/`types` never
-// materialize at runtime and it instantiates. What does NOT work follows from those fields having no runtime
-// representation: MATERIALIZING the whole record as a runtime value (returning it across the host boundary)
-// fails to instantiate. So project a field (the record folds away), never return the whole record; for the
-// whole contract as one runtime value use `contract-declaration` (Bytes, `Ast.decode`-able).
+// and the projection const-folds (v-cp #3543). Returning the WHOLE record as a runtime value also works: an
+// `Ast` value is runtime-representable (an ordinary sum the runtime holds and `match` reads), so the whole
+// descriptor materializes, instantiates, and runs — even returned across the host boundary — and need not
+// survive only via a projection fold (pinned in spec/semantics/12-metaprogramming.sexp). Projecting a field
+// is still the cheaper path when only one field is needed (the record folds away entirely); and for the whole
+// contract as one already-serialized runtime value, `contract-declaration` (Bytes, `Ast.decode`-able) avoids
+// re-encoding the `Ast` fields. (The `Ast` fields here are `Ast.encode`d from the CONST module AST, which
+// folds; `Ast.encode` of a genuinely-runtime `Ast` value is the separate v-cp/v-runtime op-93 arc in flight.)
 def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
   match m with
   | Ast.List(forms) =>
