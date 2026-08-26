@@ -1,0 +1,6 @@
+implementation/seed/crates/cdz-platform/contracts/kernel/check.cdz
+implementation/seed/crates/cdz-platform/contracts/kernel/verdict.cdz
+implementation/seed/crates/cdz-platform/guests/log-schema.cdz
+implementation/seed/crates/cdz-platform/guests/checker-lib.cdz
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/guests/contract-id.cdz
