@@ -3576,6 +3576,9 @@ pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar export crosses the WIT boundary and returns its argument
 pass	a scalar newtype matched back in place round-trips the erased inner
 pass	a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary
+pass	the NULLARY scalar-newtype escape renders the nominal (: 5 W), agreeing with the param'd path
+pass	a NARROW-inner scalar newtype escape at a NEGATIVE value renders the nominal (: -300 I16)
+pass	a multi-variant sum box is REAL not erased: (Some k) wrapped then matched round-trips
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
