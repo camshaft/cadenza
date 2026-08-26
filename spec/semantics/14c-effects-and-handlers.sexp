@@ -17168,6 +17168,21 @@
   (call   main (: 100 Int64)) (output (: 100101 Int64))
   (call   main (: 255 Int64)) (output (: 255000 Int64)))
 
+;; pyu8w1: a UInt8 handler state NEAR THE 255 BOUNDARY threaded by UInt8.wrapping-add, so across three
+;; dispatches the state wraps past 255 back through zero; each tick answers the WIDENED state (Int64.of s)
+;; and packs the three reads, making a wrong wrap or a widened-instead-of-wrapped thread visible. Completes
+;; the widened-answer narrow-state face with pyu8t1 (folds under the F1 emitted-width guard). (breaker.)
+(case "pyu8w1 a UInt8 handler state near the 255 boundary threaded by UInt8.wrapping-add wraps past 255 through zero — each tick answers the widened state (Int64.of) and the three packed reads fold to the wrapped walk"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (UInt8.wrapping-add (: 250 UInt8) (UInt8.wrap (% n 3)))
+      ((tick () s (resume (Int64.of s) (UInt8.wrapping-add s (: 5 UInt8)))))
+      (+ (* 1000000 (E.tick)) (+ (* 1000 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 251000005 Int64))
+  (call   main (: 0 Int64)) (output (: 250255004 Int64)))
+
 ;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
 (case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
   (input (do
