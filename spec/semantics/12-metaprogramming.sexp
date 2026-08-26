@@ -2508,6 +2508,86 @@
             (export main)))
   (output (: true Bool)))
 
+; The RUNTIME counterpart of the compile-time projected-descriptor case above: a record carrying an `Ast`-typed
+; field can be returned as a WHOLE runtime value, not merely projected away at compile time. An `Ast` value is
+; runtime-representable (an ordinary sum value the runtime holds and `match` reads), so the descriptor record
+; materializes at run time. These pin the record-return invariant the operator's uniform contract descriptor
+; depends on — returning the whole descriptor, not just a projected field, compiles and runs.
+
+(case "a record carrying an Ast-typed field materializes as a WHOLE runtime value and its Ast field is matched"
+  (doc    "The record-return invariant the operator's uniform contract descriptor depends on: a record whose
+           field is `Ast`-typed can be built and returned as a WHOLE RUNTIME value (not merely projected away
+           at compile time), because an `Ast` value is runtime-representable — it is an ordinary sum value the
+           runtime holds and `match` reads. A runtime `Bool` selects between two records so neither the record
+           nor its `Ast` field can be folded away; the selected record is bound whole (`r`), and its `Ast` field
+           is projected (`. r input`) and MATCHED at run time. `f true` builds the first record and its
+           `Ast.Name` field matches → 1. Pins that returning a record with an `Ast` field materializes at
+           runtime (the shape that formerly only survived via a compile-time projection fold).")
+  (input  (do
+            (def (f (: b Bool))
+              (let ((r (if b
+                          (record (= name "a") (= input (Ast.Name "i")))
+                          (record (= name "b") (= input (Ast.List (list)))))))
+                (match (. r input)
+                  ((Ast.Name _) 1)
+                  (_ 0))))
+            (def (main (: b Bool)) (f b))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "the full contract-descriptor record (Bytes/String/Ast fields) materializes whole at runtime; scalar fields read"
+  (doc    "The full self-describing descriptor shape `Record(id: Bytes, name: String, input: Ast, output: Ast,
+           types: Ast)` returned as a WHOLE runtime value: a runtime `Bool` picks between two fully-populated
+           descriptors so the record materializes rather than folding, then its runtime-representable scalar
+           fields are projected at run time — `Bytes.len (. r id)` + `String.byte-len (. r name)`. `f true`
+           reads `b\"idA\"` (len 3) and `\"nameA\"` (byte-len 5) → 8; `f false` reads `b\"idBB\"` (4) and
+           `\"nameBB\"` (6) → 10. Pins that the mixed-field descriptor record (including the `Ast`-typed
+           input/output/types) is a legal runtime value, so a consumer that returns the whole descriptor — not
+           just a projected field — compiles and runs.")
+  (input  (do
+            (def (desc (: b Bool))
+              (if b
+                  (record (= id b"idA") (= name "nameA")
+                          (= input (Ast.Name "i")) (= output (Ast.Name "o")) (= types (Ast.List (list))))
+                  (record (= id b"idBB") (= name "nameBB")
+                          (= input (Ast.Name "j")) (= output (Ast.Name "p")) (= types (Ast.List (list (Ast.Name "z")))))))
+            (def (main (: b Bool))
+              (let ((r (desc b)))
+                (+ (Bytes.len (. r id)) (String.byte-len (. r name)))))
+            (export main)))
+  (call   main (: true Bool)) (output (: 8 Int64))
+  (call   main (: false Bool)) (output (: 10 Int64)))
+
+(case "the operator's uniform all-Bytes/String contract descriptor materializes whole at runtime"
+  (doc    "The operator's target uniform contract descriptor: ONE record of purely runtime-representable
+           fields — `Record(id: Bytes, name: String, encodedInput: Bytes, encodedAst: Bytes)` — where the
+           encoded fields are `Ast.encode` of the module's own reflected AST (compile-time-const, so they fold
+           to `Bytes` constants). A runtime `Bool` selects between the real descriptor and an empty stub so the
+           whole record materializes as a runtime value rather than folding to a projected constant; its fields
+           are then projected at run time and their byte/char lengths summed. The check is content-agnostic:
+           the real descriptor's summed length exceeds the fixed non-encoded part (id 3 bytes + name 12 chars),
+           since `Ast.encode(Ast.module)` folds to a non-empty canonical `cdzast` document, so `main true`
+           yields `true`; the empty stub sums to 0, so `main false` yields `false`. Pins that the uniform,
+           all-runtime-representable descriptor record is returnable as a WHOLE value — the shape v-platform's
+           uniform-descriptor redesign depends on.")
+  (input  (do
+            (def (descriptor)
+              (record (= id b"\x01ID")
+                      (= name "temp.celsius")
+                      (= encodedInput (Ast.encode (Ast.List (list (Ast.Name "input") (Ast.Name "Temp")))))
+                      (= encodedAst (Ast.encode Ast.module))))
+            (def (stub)
+              (record (= id b"") (= name "") (= encodedInput b"") (= encodedAst b"")))
+            (def (main (: b Bool))
+              (let ((r (if b (descriptor) (stub))))
+                (> (+ (+ (Bytes.len (. r id)) (String.byte-len (. r name)))
+                      (+ (Bytes.len (. r encodedInput)) (Bytes.len (. r encodedAst))))
+                   15)))
+            (export main)))
+  (call   main (: true Bool)) (output (: true Bool))
+  (call   main (: false Bool)) (output (: false Bool)))
+
 (case "a recursive transform composed over Ast.module const-evaluates at compile time"
   (doc    "The general const-evaluator evaluates a total function applied to `Ast.module` — the reflected
            enclosing module `Ast` — to a constant, so a self-reflection transform that RECURSES over the

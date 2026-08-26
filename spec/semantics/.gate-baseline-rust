@@ -2972,6 +2972,7 @@ pass	a record binding pattern binds fields by name, out of order and partial
 pass	a record binding pattern may leave a field's value a wildcard
 pass	a record binding pattern naming an absent field is rejected
 pass	a record carrying a field the annotation does not name is rejected
+pass	a record carrying an Ast-typed field materializes as a WHOLE runtime value and its Ast field is matched
 pass	a record field VALUE still reads the parameter it names after the call
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record field holding a sum is projected then matched
@@ -6706,6 +6707,7 @@ pass	the filtered rebuild EQUALS the direct selection build (selection is canoni
 pass	the first failing `?` short-circuits; a later `?` never runs
 pass	the float ordering-versus-equality split on the zero pair
 pass	the four rational-to-Int64 projections of one runtime rational store in a list and read back distinct
+pass	the full contract-descriptor record (Bytes/String/Ast fields) materializes whole at runtime; scalar fields read
 pass	the gcd face: a reducible num/den pair from performs canonicalizes (4/8 → 1/2)
 pass	the generated Param accessor carries the @param's declared type into arithmetic
 pass	the generated-set convergence property has discriminating power — two different generated sets are NOT equal
@@ -6785,6 +6787,7 @@ pass	the new map from a runtime-key swap holds the new value at that key
 pass	the new map from a runtime-key take has the key removed
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
+pass	the operator's uniform all-Bytes/String contract descriptor materializes whole at runtime
 pass	the other parity of a mutually-recursive pair
 pass	the outer discriminant is decisive over any inner content for nested sums
 pass	the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key
