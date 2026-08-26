@@ -8461,66 +8461,6 @@ fn a_concat_built_list_set_element_is_found_by_a_push_built_equal_element() {
     );
 }
 
-/// A rope String NESTED IN A COMPOUND compares EQUAL to its flat twin — the nested-leaf face of the
-/// rope-eq miscompile. The value heap is TAGLESS, so `champ_eq`'s structural walk compares a nested leaf
-/// by its PHYSICAL raw bytes and cannot know a child is a rope (vs a compound); without a fix a rope
-/// String in a tuple/record/sum/map-key compared UNEQUAL to its flat twin. The fix compacts a String/
-/// Bytes leaf with `bytes-compact` AT THE COMPOUND CONSTRUCTION SITE (the nested-leaf twin of `box-float`
-/// canonicalizing a NaN when its leaf is boxed), so no compound ever holds a rope. Three shapes here:
-///   (a) VALUE — `(= (tuple (rep "hi" 3) 1) (tuple "hixxx" 1))`: the left tuple's element is a rope of
-///       content "hixxx", so `=` is true → 1 (was 0 — the nested rope compared physically).
-///   (b) MAP-KEY — a tuple key whose string element is a rope must hash into the SAME CHAMP slot as its
-///       flat-twin query key → `Map.lookup` finds 42 (was None → -1).
-///   (c) LEAK — the construction-site compact consumes the rope and stores a flat leaf, so the tuples the
-///       borrowing `value-eq` / the lookup drops net to 0 live cells.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn a_rope_nested_in_a_compound_compares_equal_and_keys_and_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[nested-rope] debug-counters runtime not in the store; skipping balance probe");
-        return;
-    };
-    // (a) + (b): a rope element in a tuple compared by value, and a rope element in a tuple MAP KEY looked
-    // up by its flat twin. `rep "hi" 3` builds an OWNED rope whose content is "hixxx".
-    let value_src = "(module m \
-                 (def (rep (: s String) (: n Int64)) \
-                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
-                 (def (main) (if (= (tuple (rep \"hi\" 3) 1) (tuple \"hixxx\" 1)) 1 0)) (export main))";
-    let value_prog = compile_component(&crate::codec::encode(&parse(value_src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&value_prog, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(1),
-        "a rope String nested in a tuple must compare EQUAL to its flat twin (was 0 — the tagless \
-         champ_eq walk compared the nested rope leaf physically before the construction-site compact)"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "nested-rope-eq leak: the construction-site compact consumes each rope and stores a flat leaf, so \
-         the two tuples the borrowing value-eq drops must net to 0 live cells"
-    );
-
-    let key_src = "(module m \
-                 (def (rep (: s String) (: n Int64)) \
-                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
-                 (def (main) \
-                    (match (Map.lookup (Map.insert Map.empty (tuple (rep \"hi\" 3) 1) 42) (tuple \"hixxx\" 1)) \
-                      ((Some v) v) ((None) (- 0 1)))) (export main))";
-    let key_prog = compile_component(&crate::codec::encode(&parse(key_src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&key_prog, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(42),
-        "a compound map key whose string element is a rope must be found by its flat-twin key (was None \
-         → -1 — the tuple key hashed with its nested rope leaf uncompacted, landing in a different slot)"
-    );
-}
-
 /// The char-by-char lexer idiom: a recursive scan reading each Unicode scalar with `String.at` at a
 /// RUNTIME index and comparing its content — `(= (String.at s i) "a")`. `String.at` returns
 /// `Some(bytes-slice(str, pos, len))`, a ROPE slice (an offset INTO the source), so before the fix its

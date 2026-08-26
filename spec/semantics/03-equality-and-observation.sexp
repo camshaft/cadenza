@@ -2981,3 +2981,26 @@
             (export main)))
   (call   main) (output (: 1 Int64))
   (live-objects 0))
+
+(case "a rope String nested in a tuple compares equal to its flat twin and reclaims both tuples (no live objects)"
+  (doc    "The value heap is TAGLESS, so champ_eq compares a nested leaf by physical bytes; the fix compacts a
+           String leaf at the COMPOUND CONSTRUCTION SITE so no compound holds a rope. `rep \"hi\" 3` builds an
+           OWNED rope \"hixxx\"; `(= (tuple (rep \"hi\" 3) 1) (tuple \"hixxx\" 1))` is true -> 1. The compact
+           consumes each rope + stores a flat leaf, so the two tuples the borrowing value-eq drops net to 0.")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (if (= (tuple (rep "hi" 3) 1) (tuple "hixxx" 1)) 1 0))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "a compound map key whose string element is a rope is found by its flat-twin key"
+  (doc    "A tuple key whose string element is a rope must hash into the SAME CHAMP slot as its flat-twin
+           query key (the construction-site compact stores a flat leaf, so the hash matches). Insert
+           (tuple (rep \"hi\" 3) 1)->42, look up (tuple \"hixxx\" 1) -> Some 42 (was None -> -1 without the
+           compact, hashing the uncompacted rope into a different slot).")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (match (Map.lookup (Map.insert Map.empty (tuple (rep "hi" 3) 1) 42) (tuple "hixxx" 1)) ((Some v) v) ((None) (- 0 1))))
+            (export main)))
+  (call   main) (output (: 42 Int64)))

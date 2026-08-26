@@ -1559,6 +1559,7 @@ pass	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
 pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
+pass	a compound map key whose string element is a rope is found by its flat-twin key
 pass	a compound-element float renders the same full expansion as the scalar path
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 pass	a computed Float32 map key is found by its literal twin
@@ -3274,6 +3275,7 @@ pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through 
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
+pass	a rope String nested in a tuple compares equal to its flat twin and reclaims both tuples (no live objects)
 pass	a rope accumulates across perform/resume boundaries and content-checks at the exit
 pass	a rope built before a perform survives the resume and the arm's own heap does not leak into it
 pass	a rope in a record field equals its flat-twin field
