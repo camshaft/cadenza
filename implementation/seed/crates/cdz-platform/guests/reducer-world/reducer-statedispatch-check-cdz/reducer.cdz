@@ -18,7 +18,7 @@ import { GetResult } from "state-get"
 import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
 
 def kvput-kv(rec) = match rec.entry with | Entry.KvPut(p) => (p.key == b"K") and (p.value == b"V") | _ => false
-def kvget-hit(rec) = match rec.entry with | Entry.KvGet(g) => (g.key == b"K") and (g.hit == 1) | _ => false
+def kvget-hit(rec) = match rec.entry with | Entry.KvGet(g) => (g.key == b"K") and g.hit | _ => false
 def kvdelete-k(rec) = match rec.entry with | Entry.KvDelete(d) => d.key == b"K" | _ => false
 def emitted-found-v(rec) =
   match rec.entry with

@@ -7,14 +7,14 @@
 //
 // JUDGEMENT: pass iff some successful BlobGet(hash = H, hit) shares its hash with a BlobPut(hash = H) — the
 // reducer stored bytes (getting hash H) and read them back by H with a hit. RELATIONAL on the content hash,
-// no hardcoded value. The hit gate is load-bearing (get-hit-hash yields None unless hit == 1): it catches a
+// no hardcoded value. The hit gate is load-bearing (get-hit-hash yields None unless hit): it catches a
 // store that recorded the get but did not persist the put. NON-VACUOUS: a guest that fails to instantiate
 // touches no blob store, so no BlobGet(hit) key exists and the check fails.
 import { Entry } from "log-schema"
 import { respond, on-response, on-notification, pass, fail, join-exists } from "checker-lib"
 
-// A successful BlobGet's hash (None unless hit == 1) — the read side of the round-trip join.
-def get-hit-hash(rec) = match rec.entry with | Entry.BlobGet(g) if (g.hit == 1) => Some(g.hash) | _ => None
+// A successful BlobGet's hash (None unless hit) — the read side of the round-trip join.
+def get-hit-hash(rec) = match rec.entry with | Entry.BlobGet(g) if g.hit => Some(g.hash) | _ => None
 // A BlobPut's hash — the store side.
 def put-hash(rec) = match rec.entry with | Entry.BlobPut(p) => Some(p.hash) | _ => None
 

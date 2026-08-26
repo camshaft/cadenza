@@ -349,7 +349,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
             let contract = bytes_leaf(b, contract.hash().as_bytes());
             let payload = bytes_leaf(b, payload);
             let token = bytes_leaf(b, continuation_token);
-            let deadline = bool_value(b, *has_deadline);
+            let has_deadline_leaf = bool_value(b, *has_deadline);
             tagged(
                 b,
                 "Emitted",
@@ -357,7 +357,7 @@ fn event_value(b: &mut Builder, op: &EventOp) -> StructId {
                     ("contract", contract),
                     ("payload", payload),
                     ("token", token),
-                    ("deadline", deadline),
+                    ("hasDeadline", has_deadline_leaf),
                 ],
             )
         }
@@ -433,7 +433,7 @@ fn read_event(arenas: &Arenas, id: StructId, tag: &str) -> Option<EventOp> {
             contract: read_contract(arenas, field(arenas, id, "contract")?)?,
             payload: read_bytes(arenas, field(arenas, id, "payload")?)?,
             continuation_token: read_bytes(arenas, field(arenas, id, "token")?)?,
-            has_deadline: read_bool(arenas, field(arenas, id, "deadline")?)?,
+            has_deadline: read_bool(arenas, field(arenas, id, "hasDeadline")?)?,
         },
         "Closed" => EventOp::Closed {
             schema: read_contract(arenas, field(arenas, id, "schema")?)?,
@@ -933,9 +933,11 @@ fn list_value(b: &mut Builder, items: Vec<StructId>) -> StructId {
     b.list(std::iter::once(head).chain(items).collect())
 }
 
-/// A boolean as `1` / `0` — the fidelity-preserving flag encoding.
+/// A boolean as the canonical Cadenza `Bool` value — a `Leaf::Bool` atom (the codec's payloadless
+/// `KIND_BOOL_TRUE`/`KIND_BOOL_FALSE` tag), so a checker's field is a real `Bool`, not an integer `0`/`1`. This
+/// mirrors [`checker_protocol::encode_verdict`], which already writes the verdict's `pass` as `Leaf::Bool`.
 fn bool_value(b: &mut Builder, v: bool) -> StructId {
-    uint_leaf(b, u64::from(v))
+    b.atom_leaf(Leaf::Bool(v))
 }
 
 fn list_items(arenas: &Arenas, id: StructId) -> Option<&[StructId]> {
@@ -953,10 +955,12 @@ fn str_at(arenas: &Arenas, id: StructId) -> Option<&str> {
 }
 
 fn read_bool(arenas: &Arenas, id: StructId) -> Option<bool> {
-    match read_uint(arenas, id)? {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
+    match arenas.get(id) {
+        Struct::Atom(leaf) => match arenas.leaf(*leaf) {
+            Leaf::Bool(v) => Some(*v),
+            _ => None,
+        },
+        Struct::List(_) => None,
     }
 }
 
