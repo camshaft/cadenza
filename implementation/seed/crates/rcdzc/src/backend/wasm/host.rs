@@ -74,6 +74,12 @@ pub enum HostParam {
     /// stays [`Bytes`](HostParam::Bytes) (its own `(ptr,len)` shape), not this. The arg-side analogue of the
     /// spilled result-list LIFT.
     List(Box<RecordFieldAbi>),
+    /// A bare scalar-payload VARIANT param (the top-level position, not nested in a record/list) — crosses as
+    /// a component `variant` DEFINED type, flattening (canonical variant flatten) to `(disc:i32, join(case
+    /// payloads))`. Carries the cases (name, optional scalar payload valtype) in DECLARATION order (= the
+    /// component discriminant order). The guest marshals it via `select::emit_variant_reg_flatten` (the same
+    /// helper a `RecordFieldAbi::Variant` field uses); a mixed int/float payload is excluded by the detector.
+    Variant(Vec<(String, Option<AbiValType>)>),
 }
 
 /// Whether a record-field ABI bottoms out at a `list<u8>` (`Bytes`) leaf — so a `list<T>` param carrying it
@@ -1113,6 +1119,16 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
                     _ if !peer_bound && enum_cases(db, &at).is_some() => {
                         params.push(HostParam::Enum(enum_cases(db, &at).unwrap()));
                     }
+                    // A scalar-payload VARIANT arg (a Cadenza sum with scalar/nullary payload cases) crosses as
+                    // a component `variant` DEFINED type — the canonical flatten join (disc + max-width
+                    // payload). Checked BEFORE the scalar `_` arm (a Sum has no `abi_val_type`, so `_` would
+                    // leave `params` short and decline). The composite-nested variant rides
+                    // `RecordFieldAbi::Variant` / the list marshal; this is the top-level bare-variant param.
+                    _ if !peer_bound && variant_scalar_payload_cases(db, &at).is_some() => {
+                        params.push(HostParam::Variant(
+                            variant_scalar_payload_cases(db, &at).unwrap(),
+                        ));
+                    }
                     _ => {
                         let v = if peer_bound {
                             extern_abi_val_type(&at)
@@ -1594,12 +1610,20 @@ pub fn first_unrepresentable_host_op(
                 false
             };
             let arg_is_boundary_list = allow_option_bytes && !peer_bound && list_elem_ok;
+            // A scalar-payload VARIANT arg passed BARE (the top-level param position, not nested in a record/
+            // list) crosses NATIVELY as a component `variant` DEFINED type — the canonical flatten join (disc +
+            // max-width payload), the same marshal a record-field/list-element variant uses, now at the param
+            // position. Same reducer/host-fused gating; a mixed int/float payload is excluded by the detector.
+            let arg_is_boundary_variant = allow_option_bytes
+                && !peer_bound
+                && variant_scalar_payload_cases(db, &at).is_some();
             if !matches!(at, Ty::Unit | Ty::String | Ty::Bytes)
                 && !ty_undetermined(&at)
                 && !abi_ok(&at)
                 && !arg_is_boundary_record
                 && !arg_is_boundary_enum
                 && !arg_is_boundary_list
+                && !arg_is_boundary_variant
             {
                 return Some((op.to_string(), "argument", at.render_name(&db.name_ctx())));
             }

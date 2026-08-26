@@ -146,6 +146,33 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
             HostParam::List(_) => {
                 params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
             }
+            // A bare scalar-payload VARIANT param flattens (canonical variant flatten) to `(disc:i32,
+            // join(case payloads))` — the same core shape as a `RecordFieldAbi::Variant` field, now at the
+            // param position. The join slot is the widest core int (i64 if any 64-bit case, else i32) or the
+            // uniform float; it MUST match `wit_ctype::flatten_variant` (the component type) and the guest
+            // push (`select::variant_register_join_vt`). The component boundary type is a `variant` DEFINED
+            // type (see mod.rs `host_op_comp_functype`).
+            HostParam::Variant(cases) => {
+                params.push(wasm_abi::CORE_I32); // the discriminant
+                let mut join: Option<u8> = None;
+                for pv in cases.iter().filter_map(|(_, p)| *p) {
+                    let cb = pv.core_byte();
+                    join = Some(match join {
+                        None => cb,
+                        Some(prev) if prev == cb => cb,
+                        Some(a)
+                            if (a == wasm_abi::CORE_I32 && cb == wasm_abi::CORE_I64)
+                                || (a == wasm_abi::CORE_I64 && cb == wasm_abi::CORE_I32) =>
+                        {
+                            wasm_abi::CORE_I64
+                        }
+                        Some(_) => cb, // a float mix is excluded by the detector; keep last defensively
+                    });
+                }
+                if let Some(cb) = join {
+                    params.push(cb);
+                }
+            }
         }
     }
     // `params` now holds exactly the FLATTENED core-slot bytes (a scalar = 1, a string/bytes = 2, a record

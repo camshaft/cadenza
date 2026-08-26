@@ -728,3 +728,12 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome)))))
+
+(case "a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
+  (doc "SHAPE 53 - a scalar-payload variant{tiny(u8), big(s64), mark} passed BARE as the TOP-LEVEL host-op param (hosti.put(v: variant), NOT nested in a record/list). The param crosses as a component `variant` DEFINED type; the guest decomposes the value-heap variant handle into the canonical `(disc, payload)` register-flatten (join = i64 for the mixed u8/s64 cases) via emit_variant_reg_flatten - the SAME helper a record-field/list-element variant uses, now at the param position (HostParam::Variant). Three calls exercise a u8 payload case, an s64 payload case, and the nullary `mark` (payload-width zero). Runtime coverage for v-rust-backend's bare-variant host-arg param (breaker mwv1); a wrong join/flatten fails wasm-tools validate / instantiation.")
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64))))) (import cadenza:demo/hosti (member put (func (param v ("variant" (tiny (u8)) (big (s64)) (mark))) (result ("unit")))))))
+  (component-name "cadenza:demo/iface")
+  (input (do (type V (Tiny UInt8) (Big Int64) (Mark)) (effect hosti (op put (-> V Unit))) (def (f (: m (Record (: x Int64)))) (host (hosti) (do (hosti.put (V.Tiny (UInt8.wrap 7))) (hosti.put (V.Big 900000000000)) (hosti.put V.Mark) (. m x)))) (export f)))
+  (call f (: (record (= x 42)) (Record (: x Int64))))
+  (host-calls (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put) (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))
