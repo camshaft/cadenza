@@ -24409,6 +24409,12 @@ enum CVal {
     /// Carried so a Char threaded through a RECURSION const-folds — a non-recursive Char op already folds via
     /// `core_of`, but the recursive engine runs the value-interpreter, which had no Char value.
     Char(char),
+    /// A `Float` value — the EXACT `Decimal` (matches `Core::ConstFloat`). Arithmetic (`+`/`-`/`*`/`/`) folds at
+    /// the operation node's solved WIDTH exactly like `lower_float_arith` (a non-finite result declines);
+    /// equality is by canonical bits, ordering by IEEE partial order (both at the operand width, in the prim
+    /// block, which has the node). Only a FINITE float is ever a `CVal::Float` (a `nan` is `Core::ConstFloatNan`,
+    /// declined by `core_to_cval`). Carried so a Float threaded through a RECURSION const-folds (ca03).
+    Float(crate::ast::Decimal),
     Str(std::rc::Rc<str>),
     Bytes(std::rc::Rc<[u8]>),
     Unit,
@@ -24520,6 +24526,7 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         Resolved::Int(v) => Some(CVal::Int(v)),
         Resolved::Bool(b) => Some(CVal::Bool(b)),
         Resolved::Char(c) => Some(CVal::Char(c)),
+        Resolved::Float(d) => Some(CVal::Float(d)),
         Resolved::Str(s) | Resolved::SymbolConst(s) => Some(CVal::Str(s.into())),
         Resolved::Bytes(b) => Some(CVal::Bytes(b.into())),
         Resolved::Unit => Some(CVal::Unit),
@@ -24662,6 +24669,7 @@ fn core_to_cval(db: &mut Db, c: &Core) -> Option<CVal> {
         Core::ConstInt(v) => CVal::Int(v.clone()),
         Core::ConstBool(b) => CVal::Bool(*b),
         Core::ConstChar(c) => CVal::Char(*c),
+        Core::ConstFloat(d) => CVal::Float(d.clone()),
         Core::ConstStr(s) => CVal::Str(s.clone()),
         Core::ConstBytes(b) => CVal::Bytes(b.clone()),
         Core::Unit => CVal::Unit,
@@ -25005,6 +25013,50 @@ fn const_eval_apply(
         {
             return Some(CVal::Int(crate::ast::IntValue::from_i64(s.len() as i64)));
         }
+        // FLOAT arithmetic — `+`/`-`/`*`/`/` (the `Prim::Add`… identity; `core_of` remaps to `FAdd`… only at
+        // emit, on a `float_operand` test) over two constant floats. Fold at the node's solved width EXACTLY
+        // like `lower_float_arith`: round each operand + the result through the width (`Float32` via binary32),
+        // then `Decimal::from_f64` — a NON-FINITE result (overflow → ±inf, `/0.0` → NaN) has no value form, so
+        // it declines (`None`). Handled here (not `apply_const_prim`) because the width needs `node`'s type.
+        if matches!(prim, Prim::Add | Prim::Sub | Prim::Mul | Prim::Div)
+            && let [CVal::Float(a), CVal::Float(b)] = &vs[..]
+        {
+            let width = match crate::infer::type_of(db, node) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+            };
+            let at = |f: f64| if width == 32 { f as f32 as f64 } else { f };
+            let (x, y) = (
+                at(f64::from_bits(a.to_f64_bits())),
+                at(f64::from_bits(b.to_f64_bits())),
+            );
+            let r = at(match prim {
+                Prim::Add => x + y,
+                Prim::Sub => x - y,
+                Prim::Mul => x * y,
+                _ => x / y,
+            });
+            return crate::ast::Decimal::from_f64(r).map(CVal::Float);
+        }
+        // FLOAT comparison — `=` by the CANONICAL BYTE FORM at the operand width (`-0.0 ≠ 0.0`), `< <= > >=`
+        // by the IEEE PARTIAL order (an unordered/NaN operand → false), matching `lower_comparison`'s constant
+        // float arms. Both operands are finite (a bare `nan` is `Core::ConstFloatNan`, which `core_to_cval`
+        // declines, and float arithmetic declines a non-finite result — so no NaN reaches a `CVal::Float`).
+        if matches!(prim, Prim::Eq | Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge)
+            && let [CVal::Float(a), CVal::Float(b)] = &vs[..]
+        {
+            let (fa, fb) = (a.to_f64_bits(), b.to_f64_bits());
+            let ba = const_float_bits_at_operand_width(db, args[0], fa);
+            let bb = const_float_bits_at_operand_width(db, args[1], fb);
+            return Some(CVal::Bool(if matches!(prim, Prim::Eq) {
+                ba == bb
+            } else {
+                match f64::from_bits(ba).partial_cmp(&f64::from_bits(bb)) {
+                    Some(ord) => compare_ord(prim, ord),
+                    None => false,
+                }
+            }));
+        }
         if let Some(r) = apply_const_prim(prim, &vs) {
             return Some(r);
         }
@@ -25347,6 +25399,7 @@ fn cval_to_core(db: &mut Db, v: &CVal) -> Option<Core> {
         CVal::Int(x) => Core::ConstInt(x.clone()),
         CVal::Bool(b) => Core::ConstBool(*b),
         CVal::Char(c) => Core::ConstChar(*c),
+        CVal::Float(d) => Core::ConstFloat(d.clone()),
         CVal::Str(s) => Core::ConstStr(s.clone()),
         CVal::Bytes(b) => Core::ConstBytes(b.clone()),
         CVal::Unit => Core::Unit,
@@ -25417,6 +25470,7 @@ fn cval_to_ast(db: &mut Db, v: &CVal) -> Option<StructId> {
         }),
         CVal::Bool(b) => db.push_atom(crate::ast::Leaf::Bool(*b)),
         CVal::Char(c) => db.push_atom(crate::ast::Leaf::Char(*c)),
+        CVal::Float(d) => db.push_atom(crate::ast::Leaf::Float(d.clone())),
         CVal::Str(s) => db.push_atom(crate::ast::Leaf::Str(s.clone())),
         CVal::Bytes(b) => db.push_atom(crate::ast::Leaf::Bytes(b.to_vec())),
         CVal::Unit => synth_core(db, Core::Unit, crate::ty::Ty::Unit),

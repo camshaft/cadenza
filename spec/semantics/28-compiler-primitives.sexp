@@ -601,3 +601,51 @@
             (def (main) (f #\a 3))
             (export main)))
   (output (: 97 Int64)))
+
+; --- Primitive 2: const execution — a FLOAT value threads through the recursive engine (ca03) ---------
+; The value-interpreter carries a `CVal::Float` (the exact `Decimal`, matching `Core::ConstFloat`), so a
+; `Float64`/`Float32` const param folds through a RECURSION. Arithmetic (`+`/`-`/`*`/`/`) folds at the
+; operation node's solved WIDTH exactly like `lower_float_arith` (Float32 rounds through binary32; a
+; non-finite result declines); `=` is by canonical bits at the operand width (`-0.0` differs from `0.0`),
+; `< <= > >=` by the IEEE partial order — both handled in the prim block, which has the node for the width.
+; A non-recursive float op already folds via `core_of`; the recursive engine had no Float value (ca03).
+
+(case "a Float64 accumulator threaded through a recursion const-folds"
+  (doc    "`fsum n acc` adds 1.5 per step down to `acc`; `(const (fsum 3 0.0))` folds to 4.5. The Float const
+           param binds a `CVal::Float` through the recursion and each `+` folds at the node's Float64 width.")
+  (input  (do
+            (def (fsum (const (: n Int64)) (const (: acc Float64)))
+              (if (= n 0) acc (fsum (- n 1) (+ acc 1.5))))
+            (def (main) (const (fsum 3 0.0)))
+            (export main)))
+  (output (: 4.5 Float64)))
+
+(case "Float64 comparison in a recursion counts matches under const"
+  (doc    "`cnt n x` counts, over `n` steps, how many times `x < 2.0` — `(const (cnt 4 1.5))` folds to 4.
+           Pins float `<` (IEEE partial order) composing with the recursive engine.")
+  (input  (do
+            (def (cnt (const (: n Int64)) (const (: x Float64)))
+              (if (= n 0) 0 (if (< x 2.0) (+ 1 (cnt (- n 1) x)) (cnt (- n 1) x))))
+            (def (main) (const (cnt 4 1.5)))
+            (export main)))
+  (output (: 4 Int64)))
+
+(case "a taken trap over a Float64 const param on the bare-call path surfaces CDZ0304"
+  (doc    "`(f 1.5 2)` counts `n` to 0 then traps; the bare recursive-call fold executes the trap and surfaces
+           its message as CDZ0304 — a Float const value is recognized by `is_const_value` (`Core::ConstFloat`),
+           so the activation gate fires (symmetric with Int64/Char).")
+  (input  (do
+            (def (f (const (: x Float64)) (const (: n Int64)))
+              (if (= n 0) (trap "float base reached") (f x (- n 1))))
+            (def (main) (f 1.5 2))
+            (export main)))
+  (error  CDZ0304 (message "float base reached")))
+
+(case "Float64 equality by canonical bits folds through a recursion"
+  (doc    "`mk n` recurses to the constant `0.0`; `(const (= (mk 2) 0.0))` folds to true — float `=` under the
+           canonical byte form, evaluated in the prim block at the operand width.")
+  (input  (do
+            (def (mk (const (: n Int64))) (if (= n 0) 0.0 (mk (- n 1))))
+            (def (main) (const (= (mk 2) 0.0)))
+            (export main)))
+  (output (: true Bool)))
