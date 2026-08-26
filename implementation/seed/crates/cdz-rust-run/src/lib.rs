@@ -11,4 +11,5 @@
 //! the `rustc` invocation (linking the pre-built `cdz_rt`/`cdz_num`/`cadenza_ast` rlibs), the run, and the
 //! outcome grade.
 
+pub mod driver;
 pub mod sig;
