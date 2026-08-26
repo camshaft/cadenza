@@ -1511,6 +1511,16 @@
                           ((None u) -1))) (export main)))
   (output (: 2 Int64)))
 
+(case "Set.to-list length is the deduped distinct-element count"
+  (doc    "The dedup-cardinality face of Set.to-list: a list with duplicates `(list 3 1 2 1 3)` (five
+           elements, three distinct) builds a set {1,2,3}, and `(List.len (Set.to-list …))` is the DEDUPED
+           count 3 — not the input length 5. The canonical-order case pins index 0 and the interior order
+           over already-distinct inputs; this pins that duplicates COLLAPSE in the enumerated list.")
+  (input  (do
+            (def (main) (List.len (Set.to-list (Set.of (list 3 1 2 1 3)))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "Set.to-list enumerates the FULL interior order, not just the smallest element"
   (doc    "The element-0 case above only pins the smallest element (2) at index 0 — a canonical-order bug
            that kept the smallest first but mis-ordered the INTERIOR (e.g. {2,8,5}) would still pass it. This

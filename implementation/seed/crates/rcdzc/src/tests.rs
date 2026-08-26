@@ -8511,46 +8511,6 @@ fn a_heap_element_inserted_into_an_empty_set_runs_and_leaves_no_extra_leak() {
     );
 }
 
-/// `Set.to-list` enumerates a set's elements as a `List` in CANONICAL element-value order (sorted,
-/// deduped) — the inverse of `Set.of`, realizing collections-and-text.md §Map/Set iteration is
-/// deterministic. Runs under wasmtime: `(List.at (Set.to-list (Set.of (list 5 2 8 2))) 0)` is the
-/// SMALLEST element (2), NOT the insertion/hash-order first, and `(List.len (Set.to-list …))` is the
-/// deduped cardinality (3). `#[ignore]` — needs the runtime store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn set_to_list_enumerates_in_canonical_order() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[set-to-list] runtime not in the store; skipping");
-        return;
-    };
-    // First (index 0) of the canonical list of {2,5,8} is the smallest, 2 — not hash/insertion order.
-    let first_src = "(module m (def (main) \
-                     (match (List.at (Set.to-list (Set.of (list 5 2 8 2))) 0) ((Some v) v) ((None u) -1))) \
-                     (export main))";
-    let first =
-        compile_component(&crate::codec::encode(&parse(first_src))).expect("Set.to-list compiles");
-    let mut rt = ComposedRuntime::new(&first, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(2),
-        "Set.to-list yields elements in canonical (sorted) order — index 0 is the min, 2"
-    );
-
-    // The enumerated list length is the DEDUPED cardinality ({1,2,3} → 3).
-    let len_src = "(module m (def (main) \
-                   (List.len (Set.to-list (Set.of (list 3 1 2 1 3))))) (export main))";
-    let len = compile_component(&crate::codec::encode(&parse(len_src))).expect("compiles");
-    let mut rt_len = ComposedRuntime::new(&len, &runtime_bytes);
-    assert_eq!(
-        rt_len.call("main", &[]),
-        Val::S64(3),
-        "Set.to-list length is the set's distinct-element count"
-    );
-}
-
 /// `Set.to-list` over a set of COMPOUND (tuple) elements enumerates them in canonical LEXICOGRAPHIC order —
 /// breaker's differential 10761: wasm used to FALSE-DECLINE a compound-element set ("no orderable
 /// descriptor") while rust computed the sorted order. The fix drops the scalar-only guards in `shape_of`
