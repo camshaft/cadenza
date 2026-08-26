@@ -7744,3 +7744,7 @@ pass	lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list
 pass	cx9a a performing closure through THREE nested one-shot helper hops folds
 pass	cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure
 pass	cx9c TWO different performing closures through the same helper on separate calls
+pass	cdf1 recursive AST leaf-count via Option-threaded walk under an explicit (const ...) demand surfaces the taken trap
+pass	cdf2b decode-of-encode navigation (Result-correct) under (const ...) surfaces the taken trap
+pass	cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand
+pass	cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap

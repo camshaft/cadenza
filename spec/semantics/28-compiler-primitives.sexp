@@ -1345,3 +1345,81 @@
             (def (run) (= (Ast.encode (Ast.Name (f 2))) (Ast.encode (Ast.Name "in"))))
             (export run)))
   (output (: true Bool)))
+
+; -- breaker batch 412 (2026-08-26): composition-depth folds under EXPLICIT (const ...) demand —
+; the sweep-4 residue dissolved. The old trap-in-MAIN detectors graded todo by INTENDED demand
+; semantics (dc05/cn02 family: no demand -> no fold -> runtime trap correct); under a (const ...)
+; demand every composed shape folds and surfaces the taken trap: recursive AST leaf-count via an
+; Option-threaded indexed walk (cdf1), decode-of-encode navigated through Result+Option+Ast matches
+; (cdf2b trap + cdf2v value twin — the COMPILE-TIME Ast.decode folds; only the runtime op94 emit
+; remains open), and a function-typed const param applied inside const recursion (cdf3). The cd06
+; import face was a module-body grammar artifact (cd06b, with (do ...), already passes).
+
+(case "cdf1 recursive AST leaf-count via Option-threaded walk under an explicit (const ...) demand surfaces the taken trap"
+  (input (do
+    (def (leaves (const (: a Ast)))
+      (match a
+        ((Ast.List xs) (leaves-of xs 0))
+        (_ 1)))
+    (def (leaves-of (const (: xs (List Ast))) (const (: i Int64)))
+      (match (List.at xs i)
+        ((Option.Some c) (+ (leaves c) (leaves-of xs (+ i 1))))
+        ((Option.None) 0)))
+    (def (main)
+      (const (if (= (leaves (quote (f 1 2))) 3)
+                 (trap "cdf1 three leaves")
+                 (trap "cdf1 WRONG leaf count"))))
+    (export main)))
+  (error CDZ0304 (message "cdf1 three leaves")))
+
+(case "cdf2b decode-of-encode navigation (Result-correct) under (const ...) surfaces the taken trap"
+  (input (do
+    (def (second-int (const (: a Ast)))
+      (match (Ast.decode (Ast.encode a))
+        ((Ok d)
+          (match d
+            ((Ast.List xs)
+              (match (List.at xs 1)
+                ((Option.Some c)
+                  (match c
+                    ((Ast.Int b) b)
+                    (_ (BigInt.of -1))))
+                ((Option.None) (BigInt.of -1))))
+            (_ (BigInt.of -2))))
+        ((Err _) (BigInt.of -3))))
+    (def (main)
+      (const (if (= (second-int (quote (g 7))) 7N)
+                 (trap "cdf2b roundtrip navigated")
+                 (trap "cdf2b WRONG"))))
+    (export main)))
+  (error CDZ0304 (message "cdf2b roundtrip navigated")))
+
+(case "cdf2v decode-of-encode navigation VALUE twin under Ast.encode demand"
+  (input (do
+    (def (second-int (const (: a Ast)))
+      (match (Ast.decode (Ast.encode a))
+        ((Ok d)
+          (match d
+            ((Ast.List xs)
+              (match (List.at xs 1)
+                ((Option.Some c)
+                  (match c
+                    ((Ast.Int b) b)
+                    (_ (BigInt.of -1))))
+                ((Option.None) (BigInt.of -1))))
+            (_ (BigInt.of -2))))
+        ((Err _) (BigInt.of -3))))
+    (def (run) (= (Ast.encode (Ast.Int (second-int (quote (g 7))))) (Ast.encode (Ast.Int 7N))))
+    (export run)))
+  (output (: true Bool)))
+
+(case "cdf3 function-typed const param applied in const recursion under (const ...) surfaces the taken trap"
+  (input (do
+    (def (ap (const (: g (-> Int64 Int64))) (const (: n Int64)))
+      (if (= n 0) (g 5) (ap g (- n 1))))
+    (def (main)
+      (const (if (= (ap (fn (x) (* x 2)) 2) 10)
+                 (trap "cdf3 lambda applied in fold")
+                 (trap "cdf3 WRONG"))))
+    (export main)))
+  (error CDZ0304 (message "cdf3 lambda applied in fold")))
