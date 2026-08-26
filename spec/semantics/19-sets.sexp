@@ -3769,3 +3769,21 @@
     (export main)))
   (call main (: 1 Int64))
   (output (: 102 Int64)))
+
+; -- breaker batch 420 (2026-08-26): #3765 same-hour edge pins — the Set.to-list fold also fires
+; on the Ast.encode/const-PARAM demand path (stl1) and its folded result flows out of the (const ...)
+; block into runtime consumption (stl2). Filed coverage gaps (all reject the miscoded CDZ0201, the
+; ci04 Malformed catch-all): CHAR and BYTES elements, RECURSION-BUILT sets (incl. typed-empty seed),
+; and a const-param helper consuming the folded list.
+
+(case "stl1 Set.to-list folds under the Ast.encode const-param demand path"
+  (input (do
+    (def (f (const (: n Int64)))
+      (List.len (Set.to-list (Set.of (list n (* n 2) n)))))
+    (def (run) (= (Ast.encode (Ast.Int (BigInt.of (f 4)))) (Ast.encode (Ast.Int (BigInt.of 2)))))
+    (export run)))
+  (output (: true Bool)))
+
+(case "stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block"
+  (input (do (def (main) (List.len (const (Set.to-list (Set.of (list 1 2)))))) (export main)))
+  (output (: 2 Int64)))

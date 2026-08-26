@@ -7525,3 +7525,5 @@ pass	ck1 a Char set dedups repeated members
 pass	ck2 Char set membership hits and misses
 pass	ck4 a Map keyed by Char discriminates and looks up
 pass	ck5b Symbol set dedup+membership, in-program strings
+pass	stl1 Set.to-list folds under the Ast.encode const-param demand path
+pass	stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block
