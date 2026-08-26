@@ -26,23 +26,24 @@
 //! source. The fold reuses only ops that already lower on every backend (`List.len`/`List.at`/`Set.insert`/
 //! empty `Set.of`), so it is HASH-NEUTRAL — no new `Core`/runtime op, no rust-backend arm needed.
 //!
-//! ## Known limitation: ONE runtime-`Set.of` element type per program (a defined DECLINE, not a miscompile)
-//! The synthesized `__set_of_rt` is a GENERIC recursive def. A program that builds a runtime set at TWO
-//! DIFFERENT element types (a `Set Int64` AND a `Set Bool`) instantiates this one generic recursive def at
-//! both, which the type checker currently REJECTS (CDZ0201) — the recursive-generic driver tie around
-//! `Set.insert` / empty-seed element-var grounding (v-inference's parked territory; a plain generic
-//! recursive def at two types works, so it is the Set-op grounding specifically). This is a clean DECLINE,
-//! not a wrong answer: before this pass ALL runtime `Set.of` declined, so single-type support is a strict
-//! gain and the two-type case merely still declines. When v-inference lands the recursive-generic Set-op
-//! grounding fix, this SAME synthesis becomes fully general with no rework — remove this note + flip the
-//! two-type negative corpus pin to positive.
+//! ## One MONOMORPHIC fold def per site (runtime sets at multiple element types are supported)
+//! The pass synthesizes ONE fold def PER runtime-`Set.of` occurrence, each with a unique name
+//! (`__set_of_rt$0`, `__set_of_rt$1`, …), and rewrites each site to call its own. Because the pass is
+//! purely SYNTACTIC — it runs before type inference, so an element type is not yet available to key the
+//! defs by type — per-SITE keying is the syntactic handle that still makes each fold MONOMORPHIC: a site's
+//! element type is fixed by that site, so each synthesized def is instantiated at exactly one element type.
+//! This sidesteps the recursive-generic `Set.insert`/empty-seed element-var grounding tie that a SINGLE
+//! shared generic def hit when instantiated at two different element types (a `Set Int64` AND a `Set Bool`
+//! in one program — formerly a CDZ0201 decline). A single-site program is byte-identical to the earlier
+//! one-def form; the cost of multi-site programs is one small fold def per occurrence (rare).
 
 use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Def;
 use crate::prelude::{push_atom, push_list};
 
-/// The synthesized fold def's name — a single shared generic def (see the module's known-limitation note
-/// on why one generic def, not per-type). The `$`-suffixed spelling cannot collide with a source name.
+/// The synthesized fold def's name PREFIX — one MONOMORPHIC def per runtime-`Set.of` site, named
+/// `__set_of_rt$0`, `__set_of_rt$1`, … (see [`introduce`] on why per-site, not one shared generic def).
+/// The `$`-and-digit spelling cannot collide with a source name.
 const FOLD_NAME: &str = "__set_of_rt$";
 
 /// Append a bare `Name` atom occurrence — the synthesis workhorse (a reference or a binder).
@@ -113,33 +114,45 @@ pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) {
         return; // no runtime `Set.of` — leave the program untouched
     }
 
-    // ── Synthesize the ONE generic fold def (see the module note: one generic def; two element types is a
-    // defined decline). Build `(def (__set_of_rt$ xs i acc) (if (< i (List.len xs)) (match (List.at xs i)
-    // ((Some v) (__set_of_rt$ xs (+ i 1) (Set.insert acc v))) ((None _u) acc)) acc))` as fresh AST that
-    // resolves through the ordinary scope walk (each synthesized name binds to the nearest synthesized
-    // binder, then to the fold def by name), exactly as `accum`'s accumulator def does.
-    let fold_body = synth_fold_body(ast);
-    let fold_name = push_name(ast, FOLD_NAME);
-    let xs_binder = push_name(ast, "xs");
-    let i_binder = push_name(ast, "i");
-    let acc_binder = push_name(ast, "acc");
-    let sig = push_list(ast, vec![fold_name, xs_binder, i_binder, acc_binder]);
-    let def_head = push_name(ast, "def");
-    // A real `(def sig body)` form node so a body reference ascends parents to it (resolve Case 4).
-    let _def_form = push_list(ast, vec![def_head, sig, fold_body]);
-    defs.push(Def {
-        name: FOLD_NAME.to_string(),
-        sig_occ: sig,
-        params: vec![xs_binder, i_binder, acc_binder],
-        body: Some(fold_body),
-        internal: false,
-    });
+    // ── Synthesize ONE fold def PER SITE, each with a UNIQUE name (`__set_of_rt$0`, `__set_of_rt$1`, …),
+    // and rewrite each site to call its OWN def. Why per-site rather than one shared generic def: the pre-
+    // pass is purely SYNTACTIC (it runs before type inference, so the element type is not yet known and
+    // cannot key the defs by type). A single shared generic def called at two DIFFERENT element types (a
+    // `Set Int64` AND a `Set Bool`) instantiates that one recursive-generic def at both, hitting the
+    // recursive-generic `Set.insert`/empty-seed element-var grounding tie → CDZ0201 (the former known
+    // limitation). Because each site's element type is fixed by that site, giving each site its own def
+    // makes every synthesized fold MONOMORPHIC — instantiated at exactly one element type — so the
+    // cross-type tie never arises (a plain generic recursive def at ONE type already lowers). The cost is
+    // one small fold def per runtime-`Set.of` occurrence (rare); a single-site program is byte-identical
+    // to before (one def), so this is a strict generality gain with no regression to the common case.
+    // Build `(def (__set_of_rt$k xs i acc) (if (< i (List.len xs)) (match (List.at xs i) ((Some v)
+    // (__set_of_rt$k xs (+ i 1) (Set.insert acc v))) ((None _u) acc)) acc))` as fresh AST that resolves
+    // through the ordinary scope walk, exactly as `accum`'s accumulator def does.
+    for (k, (call_id, arg)) in sites.into_iter().enumerate() {
+        let fold_name = format!("{FOLD_NAME}{k}");
+        let fold_body = synth_fold_body(ast, &fold_name);
+        let name_occ = push_name(ast, &fold_name);
+        let xs_binder = push_name(ast, "xs");
+        let i_binder = push_name(ast, "i");
+        let acc_binder = push_name(ast, "acc");
+        let sig = push_list(ast, vec![name_occ, xs_binder, i_binder, acc_binder]);
+        let def_head = push_name(ast, "def");
+        // A real `(def sig body)` form node so a body reference ascends parents to it (resolve Case 4).
+        let _def_form = push_list(ast, vec![def_head, sig, fold_body]);
+        defs.push(Def {
+            name: fold_name.clone(),
+            sig_occ: sig,
+            params: vec![xs_binder, i_binder, acc_binder],
+            body: Some(fold_body),
+            internal: false,
+        });
 
-    // ── Rewrite each site in place: `(Set.of ARG)` → `(__set_of_rt$ ARG 0 (Set.of (list)))`. The ARG
-    // occurrence is REUSED verbatim (it keeps its binding); the seed is a fresh empty `(Set.of (list))`
-    // (a `(list)` literal, so it folds to the canonical empty set and is not itself a rewrite site).
-    for (call_id, arg) in sites {
-        let fold_ref = push_name(ast, FOLD_NAME);
+        // Rewrite the site in place: `(Set.of ARG)` → `(__set_of_rt$k ARG 0 (Set.of (list)))`. The ARG
+        // occurrence is REUSED verbatim (it keeps its binding); the seed is a fresh empty `(Set.of (list))`
+        // (a `(list)` literal, so it folds to the canonical empty set and is not itself a rewrite site).
+        // Overwriting `call_id` in place means every reference to this occurrence (an argument, a `let`
+        // init, a def body) now sees the fold call.
+        let fold_ref = push_name(ast, &fold_name);
         let zero = push_atom(
             ast,
             Leaf::Int {
@@ -148,10 +161,6 @@ pub(crate) fn introduce(ast: &mut Arenas, defs: &mut Vec<Def>) {
             },
         );
         let seed = synth_empty_set(ast);
-        // Overwrite the `(Set.of ARG)` node IN PLACE with the fold call's children — `call_id` BECOMES
-        // `(__set_of_rt$ ARG 0 (Set.of (list)))`, so every reference to this occurrence (an argument, a
-        // let init, a def body) now sees the fold call. The `arg` occurrence is reused verbatim (it keeps
-        // its binding); the seed is a fresh empty set literal.
         ast.structure[call_id.0 as usize] = Struct::List(vec![fold_ref, arg, zero, seed]);
     }
 }
@@ -168,10 +177,11 @@ fn synth_empty_set(ast: &mut Arenas) -> StructId {
     push_list(ast, vec![set_of_head, empty_list])
 }
 
-/// Build the fold body: `(if (< i (List.len xs)) (match (List.at xs i) ((Some v) (__set_of_rt$ xs (+ i 1)
+/// Build the fold body: `(if (< i (List.len xs)) (match (List.at xs i) ((Some v) (<fold_name> xs (+ i 1)
 /// (Set.insert acc v))) ((None _u) acc)) acc)`. All names resolve through the enclosing synthesized `(def
-/// (__set_of_rt$ xs i acc) …)` sig via the scope walk.
-fn synth_fold_body(ast: &mut Arenas) -> StructId {
+/// (<fold_name> xs i acc) …)` sig via the scope walk. `fold_name` is the PER-SITE def name so the
+/// recursive self-call binds to that site's own def (see [`introduce`]).
+fn synth_fold_body(ast: &mut Arenas, fold_name: &str) -> StructId {
     // `(< i (List.len xs))` — the in-bounds guard.
     let list_len = {
         let dot = push_name(ast, ".");
@@ -221,9 +231,9 @@ fn synth_fold_body(ast: &mut Arenas) -> StructId {
         );
         push_list(ast, vec![plus, i, one])
     };
-    // `(__set_of_rt$ xs (+ i 1) (Set.insert acc v))` — the tail self-call.
+    // `(<fold_name> xs (+ i 1) (Set.insert acc v))` — the tail self-call to THIS site's own fold def.
     let rec_call = {
-        let fold_ref = push_name(ast, FOLD_NAME);
+        let fold_ref = push_name(ast, fold_name);
         let xs = push_name(ast, "xs");
         push_list(ast, vec![fold_ref, xs, next_i, set_insert])
     };
