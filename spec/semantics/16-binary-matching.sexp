@@ -1877,13 +1877,14 @@
 
 (case "a runtime bin match decodes a FINAL constant-size utf8 segment"
   (doc    "The RUNTIME companion of the constant-scrutinee utf8 segment pins (:356/:368): `(bin (utf8 s 2))`
-           over a runtime-built two-byte value must decode strict UTF-8 (x=105 -> \"hi\", 2 scalars) and
-           treat ill-formed bytes as a NON-MATCH falling to the catch-all (x=255 -> -1), exactly as the
-           const path does. TODAY the runtime lowering declines EVERY utf8 segment — even this final
-           constant-size one, which needs no dynamic cursor (the decline message names bit-fields and
-           non-final unsized bytes; utf8 routes there too) — consistently on wasm AND both rust targets,
-           so this pins the gap as TODO alongside the :1365 non-final dependent-size pin, flipping to
-           PASS when the utf8 runtime read lands. The two rows are the decode + totality faces in one.")
+           over a runtime-built two-byte value decodes strict UTF-8 (x=105 -> \"hi\", 2 scalars) and treats
+           ill-formed bytes as a NON-MATCH falling to the catch-all (x=255 -> -1), exactly as the const
+           path does. This FINAL constant-size utf8 segment needs no dynamic cursor — its byte range is the
+           tail after the (here empty) fixed prefix — so the runtime lowering reads the range, folds its
+           bytes into the whole-scrutinee length, and ANDs strict UTF-8 well-formedness into the arm
+           predicate (ill-formed -> the arm does not match). The two rows are the decode + totality faces
+           in one. A non-zero static offset is the companion pin below; a non-final / dependent-size utf8
+           whose byte length would make a following segment's offset dynamic is a later slice.")
   (input  (do
         (def (main (: x UInt8))
           (do
@@ -1893,6 +1894,26 @@
               (_ -1))))
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "a runtime bin match decodes a FINAL utf8 segment at a NON-ZERO static offset"
+  (doc    "The static-offset companion of the final constant-size utf8 pin (:1878, which reads utf8 at
+           offset 0): a `(u8 tag)` prefix puts the `(utf8 s 2)` segment at byte offset 1, so the decode
+           must read the LAST two bytes, not the first. Over `(Bytes.of (list 1 104 x))`: tag=1, then `s`
+           decodes bytes [104, x] as strict UTF-8 — x=105 -> \"hi\" (2 scalars) -> 10*1 + 2 = 12; x=255 is
+           an invalid continuation byte, so the utf8 segment does NOT match and the `_` arm yields -1.
+           Pins (a) the utf8 read honours the preceding int prefix's static byte offset, and (b) the utf8
+           byte width is folded into the whole-scrutinee length (`bytes-len == 1 + 2`) — a length test
+           that dropped the two utf8 bytes would make this 3-byte input fall through to -1 at x=105.")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list 1 104 x)))
+            (match b
+              ((bin (u8 tag) (utf8 s 2)) (+ (* 10 tag) (String.scalar-len s)))
+              (_ -1))))
+        (export main)))
+  (call   main (: 105 UInt8)) (output (: 12 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64)))
 
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
