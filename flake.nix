@@ -1434,6 +1434,12 @@
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+        # The RUST exec grader (`cdz-rust-run --grade`) — the rust-target analogue of `cdz-run` for the corpus
+        # rust exec layer. COMPILER-FREE by construction (its closure is cdz-rust-run's deps: cdz-rust-render +
+        # cdz-corpus-grade + cadenza-syntax, NO rcdzc), so a compiler change cannot rotate a rust exec beyond
+        # the (content-addressed) build input. It shells the ambient `rustc` (provided by the exec derivation)
+        # to compile the emitted driver, linking the pre-built `rustRlibs`.
+        cdzRustRun = mkPhaseBin { pname = "cdz-rust-run"; crate = "cdz-rust-run"; closure = crateClosure "cdz-rust-run"; };
 
         # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
         # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
@@ -1793,6 +1799,158 @@
         corpusAll = pkgs.runCommand "corpus-all" { } ''
           ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusFileAggs)}
           echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
+        '';
+
+        # ── The RUST exec layer (design gap #6) ──────────────────────────────────────────────────────────
+        #
+        # The rust-target twin of the wasm corpus graph above: the SAME per-case shred (reused verbatim —
+        # native artifacts are backend-independent) → a rust BUILD (`cdz-compile -t rust` → emitted `.rs`) →
+        # a rust EXEC (`cdz-rust-run --grade` compiles the emitted `.rs`'s driver with `rustc` + grades). The
+        # rust backend declines many constructs today; a refused compile on an output/trap case grades Todo
+        # (never Fail), exactly like the `xtask` rust gate — so a mostly-declining file is green. Because the
+        # corpus `(output …)` value IS the wasm oracle's value (the corpus invariant), grading rust against
+        # the corpus directly is equivalent to the xtask rust gate's differential grade vs the wasm oracle.
+
+        # The pre-built runtime rlibs the rust exec links: `cdz_rt` (async `CdzEnv`), `cdz_num` (`cdz_num::Big`),
+        # `cadenza_ast` (the native R2 value codec) + its transitive `num_bigint` in `deps/`. Mirrors xtask
+        # `build_tools`' `cargo build -p cdz-rt -p cdz-num -p cadenza-ast`, copying the rlibs + `deps/` out. Built
+        # ONCE and INPUT-addressed (not CA): a compiler (`rcdzc`) edit is NOT in these crates' closures, so the
+        # rlibs stay cached across compiler changes; only a runtime-crate edit rebuilds them. `cdz-rust-run`
+        # links each via `-L dependency=<dir> --extern <crate>=<dir>/lib<crate>.rlib` — all three point here.
+        rustRlibs =
+          let
+            closure = pkgs.lib.unique (
+              crateClosure "cdz-rt" ++ crateClosure "cdz-num" ++ crateClosure "cadenza-ast");
+          in
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = "cdz-rust-rlibs";
+            version = "0.0.0";
+            src = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                (pkgs.lib.concatMap crateCompileSrc closure)
+                ++ nonClosureManifests closure
+                # cdz-num `#[path]`-includes the runtime's bigint.rs from a SIBLING crate (a source-share, not
+                # a dep-graph edge, so crateClosure/crateCompileSrc miss it) — add it, as the crane per-crate
+                # cdz-num/cdz-calc/rcdzc checks do (`extraSrc`).
+                ++ [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]
+                ++ [ ./xtask/Cargo.toml ./Cargo.toml ./Cargo.lock ./.cargo ./rust-toolchain.toml ]);
+            };
+            nativeBuildInputs = [ rustToolchain ];
+            buildPhase = ''
+              runHook preBuild
+              chmod -R u+w .
+              ${stubNonClosure closure}
+              [ -f xtask/src/main.rs ] || { mkdir -p xtask/src; echo "fn main(){}" > xtask/src/main.rs; }
+              [ -f xtask/src/lib.rs ] || echo "" > xtask/src/lib.rs
+              ${mkCargoVendorEnv { vendor = seedCargoVendor; }}
+              cargo build --release --locked -p cdz-rt -p cdz-num -p cadenza-ast
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out/deps"
+              cp target/release/libcdz_rt.rlib "$out/"
+              cp target/release/libcdz_num.rlib "$out/"
+              cp target/release/libcadenza_ast.rlib "$out/"
+              cp -r target/release/deps/. "$out/deps/"
+              runHook postInstall
+            '';
+          };
+
+        # BUILD (content-addressed) — compile ONE case's native artifacts to RUST, capturing the outcome. The
+        # rust twin of `mkCorpusBuild`: `-t rust` → `emit.rs` on success; a refusal captures `compile.status`/
+        # `compile.err` (the exec grades it). Forwards `test-run.ast` so the exec keys ONLY on this output +
+        # `cdzRustRun` + `rustRlibs`. (No `--component-name`/`wit-world`: the rust backend has no interface
+        # export; a case that needs one declines here → Todo.)
+        mkCorpusRustBuild = { name, shred, idx }:
+          pkgs.runCommand "corpus-rust-build-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            case=$(echo ${shred}/${name}/${idx}-*)
+            [ -d "$case" ] || { echo "no shred dir for case ${idx} of ${name}"; exit 1; }
+
+            inputs=("ast:main=$case/program.ast")
+            entry=()
+            for m in "$case"/module-*.ast; do
+              if [ -e "$m" ]; then
+                n=$(basename "$m" .ast); n=''${n#module-}
+                inputs+=("ast:$n=$m")
+                entry=(--entry main)
+              fi
+            done
+
+            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t rust -o "$out/emit.rs" 2>"$out/compile.err"; then
+              printf '0' > "$out/compile.status"
+            else
+              printf '%s' "$?" > "$out/compile.status"
+            fi
+            cp "$case/test-run.ast" "$out/test-run.ast"
+          '';
+
+        # EXEC — grade one case's RUST emit. Closure = the COMPILER-FREE `cdzRustRun` + `rustRlibs` + the ambient
+        # `rustc` (rustToolchain) it shells to compile the driver. NO compiler, so a compiler change cannot
+        # rotate this beyond the (content-addressed) build input. `cdz-rust-run --grade` is the universal rust
+        # grader (output/trap via compile+run; error/declines + warns from the captured compile outcome).
+        mkCorpusRustExec = { name, build, idx }:
+          pkgs.runCommand "corpus-rust-exec-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRustRun rustToolchain ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            mkdir -p "$TMPDIR/w"
+            status=$(cat ${build}/compile.status)
+            args=(--grade ${build}/test-run.ast --compile-status "$status" --compile-diag ${build}/compile.err
+                  --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                  --workdir "$TMPDIR/w")
+            if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            cdz-rust-run "''${args[@]}"
+            echo "ok: corpus-rust ${name} case ${idx}" > "$out"
+          '';
+
+        corpusRustCaseChecks = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          builtins.listToAttrs (map
+            (idx: {
+              name = "${name}-${idx}";
+              value = mkCorpusRustExec {
+                inherit name idx;
+                build = mkCorpusRustBuild { inherit name shred idx; };
+              };
+            })
+            idxs);
+
+        mkCorpusRustFileAgg = { name, file }:
+          let cases = corpusRustCaseChecks { inherit name file; };
+          in
+          assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "corpus-rust-${name}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: corpus-rust ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred→rust-build→rust-exec" > "$out"
+          '';
+
+        corpusRustFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-rust-${stem}";
+              value = mkCorpusRustFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        corpusRustAll = pkgs.runCommand "corpus-rust-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusRustFileAggs)}
+          echo "ok: corpus-rust — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→rust-build→rust-exec caching graph" > "$out"
         '';
 
         # Full-CI-in-nix increment 6b: the GHA `codegen` job (`cargo xtask codegen --check`). This is the
@@ -2654,6 +2812,11 @@
             # (content-addressed `cdz-compile`) → exec (compiler-free `cdz-run --grade`). `corpus` is the
             # whole-corpus aggregate; the per-file `corpus-<file>` aggregates are spread in below.
             corpus = corpusAll;
+            # The RUST-target twin of `corpus` (design gap #6): the same per-case shred → a rust build
+            # (`cdz-compile -t rust`) → a rust exec (`cdz-rust-run --grade`, which compiles the emitted `.rs`'s
+            # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
+            # aggregate; the per-file `corpus-rust-<file>` aggregates are spread in below.
+            corpus-rust = corpusRustAll;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -2772,7 +2935,11 @@
           # derivations (`corpus-build/exec-<file>-<idx>`) are cached transitively through these — a candidate
           # touching one case rebuilds just that case's chain, and a compiler change that re-emits identical
           # wasm cache-hits every exec (content-addressed build + store).
-          // corpusFileAggs;
+          // corpusFileAggs
+          # PER-FILE rust corpus aggregates: `corpus-rust-<file>` for every corpus file (the rust-target twin
+          # of the wasm `corpus-<file>` set), so CI can build/cache one file's rust per-case graph in isolation
+          # (the top-level `corpus-rust` forces them all).
+          // corpusRustFileAggs;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —

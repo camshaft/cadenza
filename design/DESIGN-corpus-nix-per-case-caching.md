@@ -132,10 +132,19 @@ three gaps remain:
    STATUS: the crate is BUILT — `sig` (signature analysis), `driver` (export call + host-response shims),
    `run` (rustc compile+run, linking the caller-supplied `cdz_rt`/`cdz_num`/`cadenza_ast` rlibs), and
    `grade` (the rust trial-runner through `cdz-corpus-grade`), plus the `cdz-rust-run --grade` bin the nix
-   layer shells out to. REMAINING: the nix CA-rlib derivation + per-case rust build+exec layer (mirror the
-   wasm `mkCorpusBuild`/`mkCorpusExec`), then wire xtask's `run_program_rust` to delegate at cutover. The
-   host-closure factory/consumer application + the async `block_on` harness (the small closure/async corpus
-   subset) are deferred — those cases decline-to-Todo until added.
+   layer shells out to. The NIX RUST EXEC LAYER is now WIRED: `rustRlibs` (input-addressed — builds
+   `cdz-rt`/`cdz-num`/`cadenza-ast` rlibs + `deps/` once, cached across compiler changes) + `mkCorpusRustBuild`
+   (content-addressed `cdz-compile -t rust` → `emit.rs`) + `mkCorpusRustExec` (`cdz-rust-run --grade`, which
+   compiles the emitted `.rs`'s driver with `rustc` linking `rustRlibs`) + the per-file `corpus-rust-<file>`
+   aggregates and the top-level `corpus-rust` check. The same per-case `mkCorpusShred` is reused (native
+   artifacts are backend-independent). Because the corpus `(output …)` value IS the wasm oracle's value (the
+   corpus invariant), grading rust against the corpus directly is equivalent to the xtask rust gate's
+   differential grade vs the wasm oracle. Verified GREEN end to end in nix: `corpus-rust-01-literals` and
+   `corpus-rust-06-numeric-model` (717 cases, incl. runtime BigInt on the arbitrary-precision runtime — proves
+   the `cdz_num`/`cadenza_ast` rlib linking). REMAINING: a `rust-async` variant (a `-t rust-async` build +
+   `--async` exec — the async `block_on` harness is a deferred `cdz-rust-run` piece), then wire xtask's
+   `run_program_rust` to delegate at cutover. The host-closure factory/consumer application + the async
+   `block_on` harness (the small closure/async corpus subset) are deferred — those cases decline-to-Todo.
 7. **Regression detection (baseline-diff)**: the gate diffs each case's verdict against `.gate-baseline`
    (7225 pass + 40 todo + 0 fail), so a `Pass→Todo/Fail` REGRESSION fails it; the nix graph only catches
    an outright Fail (a declined value-case is Todo, exit 0). Options: (a) port a committed per-case
