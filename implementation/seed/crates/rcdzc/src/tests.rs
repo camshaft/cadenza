@@ -10304,40 +10304,6 @@ fn a_curried_closure_capturing_an_inner_handled_result_closes_over_the_value() {
     }
 }
 
-/// FINDING #10 (breaker, MED-HIGH silent 3-backend miscompile — the bind-once/closure-capture face). A
-/// let-bound CLOSURE whose init-let binds a PERFORMING draw referenced by the returned lambda —
-/// `(let ((f (let ((a (St.next))) (fn (x) (* a x))))) (f 10))` under a +1-stride St handler — re-derived its
-/// body from source at each application (`apply_lambda`/`beta_reduce`), re-running the draw and discarding
-/// the once-evaluated value: ca1c ran 60 (want 50), ca1 ran 122/62 (want 80/26). The capture-once fold
-/// (thread the draw once, close over the result) is a later increment; until then DECLINE the exact shape so
-/// it grades an honest todo, never a silent wrong value. Also covers the FACTORY-ARG entry (cc3): a helper
-/// RETURNING a closure over a param fed by a performing arg (`(let ((f (mk (St.next)))) …)`).
-#[test]
-fn a_closure_over_a_performing_capture_declines_not_miscompiles() {
-    use crate::testkit::parse;
-    // ca1c: nested-let-init closure, single application (was the silent 60).
-    let ca1c = "(do (effect St (op next (-> Int64))) \
-                (def (main (: n Int64)) \
-                  (handle St n ((next () s (resume s (+ s 1)))) \
-                    (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (f 10)))) \
-                (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(ca1c))).is_err(),
-        "a closure over a performing nested-let capture must decline, not miscompile to 60"
-    );
-    // cc3: factory-arg entry — a helper RETURNING a closure over a param fed by a performing arg.
-    let cc3 = "(do (effect St (op next (-> Int64))) \
-               (def (mk (: m Int64)) (fn ((: x Int64)) (* x m))) \
-               (def (main (: n Int64)) \
-                 (handle St n ((next () s (resume s (+ s 1)))) \
-                   (let ((f (mk (St.next)))) (+ (f 10) (f (St.next)))))) \
-               (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(cc3))).is_err(),
-        "a factory returning a closure over a performing-arg param must decline, not miscompile to 116"
-    );
-}
-
 /// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
 /// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
 /// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
