@@ -606,6 +606,9 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // `nan` — the canonical NaN Float VALUE (a bare prim naming a value). Types as `Ty::Float` (a
         // bare `nan` grounds to Float64), so `(= nan nan)` type-checks like any float equality.
         Resolved::Prim(crate::resolved::Prim::FloatNan) => Ty::float(),
+        // `Infinity` — the positive-infinity Float VALUE. Types as `Ty::Float` exactly as `nan` (a bare
+        // `Infinity` grounds to Float64), so `(< Infinity x)` / `(= Infinity Infinity)` type-check.
+        Resolved::Prim(crate::resolved::Prim::FloatInf) => Ty::float(),
         // A bare built-in operation value standing alone has no scalar type yet (it is not a runtime
         // value until functions/closures exist). Typed `Any`; applying it is what has a type.
         Resolved::Prim(_) => Ty::Any,

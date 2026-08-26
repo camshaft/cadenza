@@ -2184,6 +2184,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "f64::from_bits(0x7FF8_0000_0000_0000u64)".to_string()
             })
         }
+        // A constant positive-INFINITY float (`Float64.Infinity`) → `f64::INFINITY` / `f32::INFINITY`.
+        // Unlike NaN, `INFINITY`'s bit pattern is fully defined and identical across targets/backends
+        // (`0x7FF0…` / `0x7F80_0000`), so the language-level constant maps directly with no canonicalization
+        // needed — byte-identical to the wasm backend's `+inf` const. (Width from the node's solved type.)
+        Core::ConstFloatInf => {
+            let width = float_width_of(db, id);
+            Ok(if width == 32 {
+                "f32::INFINITY".to_string()
+            } else {
+                "f64::INFINITY".to_string()
+            })
+        }
         // A runtime `.wrap` conversion → an `as` cast to the target Rust type. Rust's `as` between
         // integers keeps the low bits and reinterprets at the target sign — bit-identical to
         // `IntValue::wrap_to`, and total (never panics), as `.wrap` requires.

@@ -2384,6 +2384,29 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         let colon = push_atom(ast, Leaf::Name(":".into()));
         push_list(ast, vec![colon, intrinsic, nan_ty_expr])
     };
+    // `Infinity` — the canonical POSITIVE-INFINITY value of THIS float width, a CONSTANT field reached by
+    // member access `(. Float64 Infinity)`. Built exactly like `nan`: the width-agnostic `float-inf`
+    // intrinsic (`Prim::FloatInf` → `Core::ConstFloatInf`) ANNOTATED with this module's width `(: <inf>
+    // (Float width))`, so `Float64.Infinity` is `Ty::Float(Fixed(64))` and does not unify with a `Float32`
+    // (the same cross-width guard the `nan` annotation provides). NOT a literal (`Decimal` holds only
+    // finite values). Unlike NaN it is fully ordered, so `(< 1.0 Float64.Infinity)` folds true. Negative
+    // infinity is `(- Float64.Infinity)`.
+    let inf_ty_expr = {
+        let ctor = push_atom(ast, Leaf::Name("Float".into()));
+        let w = push_atom(
+            ast,
+            Leaf::Int {
+                value: IntValue::from_i64(width as i64),
+                radix: Radix::Dec,
+            },
+        );
+        push_list(ast, vec![ctor, w])
+    };
+    let inf_val = {
+        let intrinsic = intrinsic_node(ast, "float-inf");
+        let colon = push_atom(ast, Leaf::Name(":".into()));
+        push_list(ast, vec![colon, intrinsic, inf_ty_expr])
+    };
     let fields = vec![
         meta_field(ast, "t", ty_expr),
         {
@@ -2397,6 +2420,10 @@ fn float_module_record(ast: &mut Arenas, width: u32) -> StructId {
         {
             let k = push_atom(ast, Leaf::Name("nan".into()));
             push_list(ast, vec![k, nan_val])
+        },
+        {
+            let k = push_atom(ast, Leaf::Name("Infinity".into()));
+            push_list(ast, vec![k, inf_val])
         },
     ];
     let mut children = vec![head];

@@ -9403,3 +9403,57 @@
   (input  (do (def (f (: n Int64)) (: (match n (0 1.5) (1 2.5) (2 3.5) (3 4.5) (_ 0.25)) Float32)) (export f)))
   (call   f (: 2 Int64)) (output (: 3.5 Float32))
   (call   f (: 9 Int64)) (output (: 0.25 Float32)))
+; INFINITY — the positive-infinity float constant, exposed on the Float32/Float64 modules as `Infinity`
+; (the operator-directed float-module surface, mirroring `nan`). Unlike NaN, `Infinity` is fully ORDERED
+; under the IEEE partial order: `+∞ = +∞`, `+∞ > every finite float`, and it is unordered w.r.t. NaN. It is
+; a usable float VALUE (it crosses the boundary and folds in comparisons), but — exactly like `nan` — it is
+; NOT reifiable into an `Ast.Float` node (a non-canonical float has no canonical AST value form), so
+; `(Ast.Float Float64.Infinity)` declines, consistent with `(Ast.Float Float64.nan)`.
+
+(case "Float64.Infinity is greater than any finite float"
+  (doc "The module exposes `Infinity`; `+∞ > 1e300` folds true under the IEEE partial order.")
+  (input (do (def (main) (if (> Float64.Infinity 1e300) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "Float64.Infinity equals itself under the canonical byte form"
+  (doc "`+∞` has a single canonical bit form, so `(= Float64.Infinity Float64.Infinity)` folds true.")
+  (input (do (def (main) (if (= Float64.Infinity Float64.Infinity) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "Float64.Infinity is not less than a finite float"
+  (doc "`(< Float64.Infinity 1.0)` folds false — `+∞` is the maximum.")
+  (input (do (def (main) (if (< Float64.Infinity 1.0) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
+(case "a finite float is less than Float64.Infinity"
+  (doc "`(< 1.0 Float64.Infinity)` folds true — every finite is below `+∞`.")
+  (input (do (def (main) (if (< 1.0 Float64.Infinity) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "Float64.Infinity is not equal to a finite float"
+  (doc "`(= Float64.Infinity 1.0)` folds false — distinct byte forms.")
+  (input (do (def (main) (if (= Float64.Infinity 1.0) 1 0)) (export main)))
+  (output (: 0 Int64)))
+
+(case "main returns Float64.Infinity as a boundary value"
+  (doc "`Infinity` is a real float value that crosses the export boundary — byte-identical on wasm (f64
+        +inf const) and rust (`f64::INFINITY`).")
+  (input (do (def (main) Float64.Infinity) (export main)))
+  (output (: inf Float64)))
+
+(case "Float32.Infinity is greater than a finite Float32"
+  (doc "The derived Float32 module exposes `Infinity` at width 32; `+∞ > 1.0` folds true.")
+  (input (do (def (main) (if (> Float32.Infinity (: 1.0 Float32)) 1 0)) (export main)))
+  (output (: 1 Int64)))
+
+(case "two Float64.Infinity constants dedup in a set"
+  (doc "`Infinity` keys by its bit pattern like any finite float, so `(Set.of (list Infinity Infinity 1.0))`
+        dedups the two infinities to one element → length 2.")
+  (input (do (def (main) (Set.len (Set.of (list Float64.Infinity Float64.Infinity 1.0)))) (export main)))
+  (output (: 2 Int64)))
+
+(case "an Ast.Float node cannot carry Float64.Infinity (declines, like nan)"
+  (doc "`Infinity` is a usable value but not Ast-canonical: `(Ast.Float Float64.Infinity)` declines, exactly
+        as `(Ast.Float Float64.nan)` does — a non-canonical float has no canonical AST value form.")
+  (input (do (def (main) (Ast.Float Float64.Infinity)) (export main)))
+  (output (reject)))

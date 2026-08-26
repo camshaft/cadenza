@@ -1709,6 +1709,7 @@ fn binding_escapes_dup_aware(
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
         | Core::Captured { .. }
@@ -2397,6 +2398,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
         | Core::Captured { .. }
@@ -3146,6 +3148,7 @@ fn mark_binder_dups_inner(
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
         | Core::Captured { .. }
@@ -5145,6 +5148,7 @@ fn collect_used_ops_into_seen(
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
         | Core::Param { .. }
@@ -10117,6 +10121,21 @@ fn emit(
                 out.push(Lir::F32ConstBits(f32::NAN.to_bits()));
             } else {
                 out.push(Lir::F64ConstBits(f64::NAN.to_bits()));
+            }
+            Ok(())
+        }
+        // Positive INFINITY emits an `f{32,64}.const` of the infinity bit pattern at the node's solved
+        // width — a real Float value that crosses the boundary, exactly like the finite/NaN const. `INFINITY`
+        // has one exact, target-independent bit form (no canonicalization, unlike NaN's platform payload).
+        Core::ConstFloatInf => {
+            let width = match peel_qty_ty(crate::infer::type_of(db, id)) {
+                crate::ty::Ty::Float(ft) => ft.ground_width(),
+                _ => 64,
+            };
+            if width == 32 {
+                out.push(Lir::F32ConstBits(f32::INFINITY.to_bits()));
+            } else {
+                out.push(Lir::F64ConstBits(f64::INFINITY.to_bits()));
             }
             Ok(())
         }
@@ -18369,6 +18388,14 @@ fn emit_float_operand(
             }
             return Ok(());
         }
+        Core::ConstFloatInf => {
+            if w == 32 {
+                out.push(Lir::F32ConstBits(f32::INFINITY.to_bits()));
+            } else {
+                out.push(Lir::F64ConstBits(f64::INFINITY.to_bits()));
+            }
+            return Ok(());
+        }
         _ => {}
     }
     emit(db, id, slots, base, high, scratch_ty, layout, out)?;
@@ -18411,6 +18438,16 @@ fn emit_canon_float_bits(
                 out.push(Lir::ConstI32(0x7FC0_0000u32 as i32));
             } else {
                 out.push(Lir::ConstI64(0x7FF8_0000_0000_0000u64 as i64));
+            }
+            return Ok(());
+        }
+        // A constant +∞: its exact IEEE bits (`0x7F80_0000` / `0x7FF0…`), no canonicalization (infinity
+        // has one bit form), byte-identical to the rust backend's `f{32,64}::INFINITY`.
+        Core::ConstFloatInf => {
+            if w == 32 {
+                out.push(Lir::ConstI32(0x7F80_0000u32 as i32));
+            } else {
+                out.push(Lir::ConstI64(0x7FF0_0000_0000_0000u64 as i64));
             }
             return Ok(());
         }

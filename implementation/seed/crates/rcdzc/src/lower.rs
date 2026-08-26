@@ -1091,6 +1091,9 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         // `nan` — the canonical NaN Float VALUE (a bare prim naming a value, not an operation). Lowers to
         // `Core::ConstFloatNan`; folds in `=` by the canonical byte form.
         Resolved::Prim(Prim::FloatNan) => Core::ConstFloatNan,
+        // `Infinity` — the positive-infinity Float VALUE (a bare prim naming a value). Lowers to
+        // `Core::ConstFloatInf`; folds in `=`/ordering by IEEE (`+∞ = +∞`, `+∞ > every finite`).
+        Resolved::Prim(Prim::FloatInf) => Core::ConstFloatInf,
         // A bare built-in operation value that is not applied has no runtime form yet (no closures) —
         // it declines. Applying it is what lowers.
         Resolved::Prim(_) => Core::Poison(Reject::decline(crate::diag::PRIM_AS_VALUE_DECLINE)),
@@ -3141,10 +3144,16 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
         // consistent with `(Ast.Float nan)` and `,@(list nan)`. A RUNTIME float operand still lifts (a finite
         // runtime float is the common case; a runtime NaN traps uniformly at the escape boundary — the
         // runtime residual owned by the rust-encode side, not compile-declinable). Checked before the wrap.
-        crate::ty::Ty::Float(_) if matches!(core_of(db, operand), Core::ConstFloatNan) => {
+        crate::ty::Ty::Float(_)
+            if matches!(
+                core_of(db, operand),
+                Core::ConstFloatNan | Core::ConstFloatInf
+            ) =>
+        {
             Core::Poison(Reject::decline(
-                "an active unquote of a non-canonical float (a NaN has no canonical value form) cannot lift \
-                 into an `Ast.Float`; a finite float lifts, matching `(Ast.Float nan)` and `,@` of a NaN list",
+                "an active unquote of a non-canonical float (a NaN or infinity has no canonical value form) \
+                 cannot lift into an `Ast.Float`; a finite float lifts, matching `(Ast.Float nan)`, \
+                 `(Ast.Float Infinity)`, and `,@` of a non-canonical-float list",
             ))
         }
         // `Ast.Float`'s payload is Float64, so a width-64-grounded float operand lifts to `Ast.Float`.
@@ -21071,6 +21080,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::FloatOfInt
         | Prim::FloatOf
         | Prim::FloatNan
+        | Prim::FloatInf
         | Prim::MapCtor
         | Prim::MapNew
         | Prim::MapEmpty
@@ -21587,12 +21597,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     {
         let lhs = core_of(db, args[0]);
         let rhs = core_of(db, args[1]);
-        // A constant pair (including NaN) still folds via the constant arms — defer to them.
+        // A constant pair (including NaN / +∞) still folds via the constant arms — defer to them (a
+        // non-canonical const has no runtime float value form, so it must fold, not emit a FloatCompare).
         let both_const = matches!(
             (&lhs, &rhs),
             (
-                Core::ConstFloat(_) | Core::ConstFloatNan,
-                Core::ConstFloat(_) | Core::ConstFloatNan
+                Core::ConstFloat(_) | Core::ConstFloatNan | Core::ConstFloatInf,
+                Core::ConstFloat(_) | Core::ConstFloatNan | Core::ConstFloatInf
             )
         );
         if !both_const {
@@ -21694,6 +21705,34 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), "folded nan <ordering> finite → false (IEEE unordered)");
                 Core::ConstBool(false)
             }
+        }
+        // +∞ is a fully-ORDERED float constant (UNLIKE NaN): `+∞ = +∞`, `+∞ > every finite`, and `+∞`
+        // is UNORDERED w.r.t. NaN. Its byte-form equality and its IEEE ordering AGREE (a single canonical
+        // +∞ bit form that is numerically equal only to itself), so `compare_ord` over the numeric ordering
+        // gives the right answer for `=` too — no byte-vs-order divergence here (that only bites NaN and
+        // signed zero). Handled BEFORE the finite `ConstFloat` pair, mirroring the NaN arms.
+        (Core::ConstFloatInf, Core::ConstFloatInf) => {
+            // `+∞` vs `+∞`: equal under both byte form and ordering (`=`/`<=`/`>=` true, `<`/`>` false).
+            let r = compare_ord(op, std::cmp::Ordering::Equal);
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded +inf <cmp> +inf");
+            Core::ConstBool(r)
+        }
+        (Core::ConstFloatInf, Core::ConstFloat(_)) => {
+            // `+∞ > x` for every finite `x`: `>`/`>=` true, `=`/`<`/`<=` false.
+            let r = compare_ord(op, std::cmp::Ordering::Greater);
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded +inf <cmp> finite");
+            Core::ConstBool(r)
+        }
+        (Core::ConstFloat(_), Core::ConstFloatInf) => {
+            // `x < +∞` for every finite `x`: `<`/`<=` true, `=`/`>`/`>=` false.
+            let r = compare_ord(op, std::cmp::Ordering::Less);
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded finite <cmp> +inf");
+            Core::ConstBool(r)
+        }
+        (Core::ConstFloatInf, Core::ConstFloatNan) | (Core::ConstFloatNan, Core::ConstFloatInf) => {
+            // A NaN operand is unordered and byte-unequal to +∞ → every relation is false.
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "folded +inf <cmp> nan → false (NaN unordered)");
+            Core::ConstBool(false)
         }
         // Two CONSTANT floats compare by their canonical value AT THE OPERAND'S OWN FLOAT WIDTH
         // (contracts/deterministic-value-form.md #Numeric Values Serialize Deterministically — floats
@@ -23045,6 +23084,13 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         (Core::ConstFloatNan, Core::ConstFloat(_)) | (Core::ConstFloat(_), Core::ConstFloatNan) => {
             Some(false)
         }
+        // A nested +∞: equal only to +∞ (single canonical bit form), unequal to any finite float and to a
+        // NaN — the same byte-form rule the scalar `=` fold applies, recursed through a compound.
+        (Core::ConstFloatInf, Core::ConstFloatInf) => Some(true),
+        (Core::ConstFloatInf, Core::ConstFloat(_))
+        | (Core::ConstFloat(_), Core::ConstFloatInf)
+        | (Core::ConstFloatInf, Core::ConstFloatNan)
+        | (Core::ConstFloatNan, Core::ConstFloatInf) => Some(false),
         (Core::Unit, Core::Unit) => Some(true),
         // Two sum values: equal iff same discriminant AND equal payloads (pairwise). A different disc is
         // not-equal WITHOUT comparing payloads (`(Some 1)` ≠ `None`). Same disc ⇒ same variant ⇒ same
@@ -23518,25 +23564,31 @@ fn lower_sum_new(db: &mut Db, id: StructId, head: StructId, args: &[StructId]) -
         };
     }
     // NON-CANONICAL Ast.Float GUARD (uniform decline — operator-ruled A, adv-ast-float-nan differential).
-    // Reifying a NON-canonical float (a NaN) into an `Ast.Float` node has no canonical value form: the wasm
-    // host-encode boundary TRAPS on the NaN bit pattern ("encode bytes are not a valid canonical value
-    // form") while the rust backend would accept it — a backend DISAGREEMENT on an accepted program. The
-    // sibling non-canonical-float-in-AST paths (`,@(list nan)` splice-lift, `(Ast.Float (/ 1.0 0.0))` +inf)
-    // already DECLINE at compile time; make the direct `(Ast.Float nan)` construction consistent by
-    // declining a CONSTANT non-canonical payload here (reject-don't-miscompile, uniform on both backends).
-    // A runtime-produced NaN payload is caught at the escape boundary (v-runtime's canonical-encode piece);
-    // this is the compile-time-constant half. Only the `Ast` sum's Float variant is guarded — an ordinary
-    // float value crosses fine (a bare NaN round-trips identically on both backends).
+    // Reifying a NON-canonical float (a NaN or an infinity) into an `Ast.Float` node has no canonical value
+    // form: the wasm host-encode boundary TRAPS on the bit pattern ("encode bytes are not a valid canonical
+    // value form") while the rust backend would accept it — a backend DISAGREEMENT on an accepted program.
+    // The sibling non-canonical-float-in-AST paths (`,@(list nan)` splice-lift, `(Ast.Float (/ 1.0 0.0))`
+    // +inf) already DECLINE at compile time; make the direct `(Ast.Float nan)` / `(Ast.Float Infinity)`
+    // construction consistent by declining a CONSTANT non-canonical payload here (reject-don't-miscompile,
+    // uniform on both backends). `Infinity` follows `nan` exactly: it is a USABLE float value but is NOT
+    // reifiable into an `Ast.Float` (the value-accessibility directive does not make it Ast-canonical). A
+    // runtime-produced non-canonical payload is caught at the escape boundary (v-runtime's canonical-encode
+    // piece); this is the compile-time-constant half. Only the `Ast` sum's Float variant is guarded — an
+    // ordinary float value crosses fine (a bare NaN/inf round-trips identically on both backends).
     if args.len() == 1
-        && matches!(core_of(db, args[0]), Core::ConstFloatNan)
+        && matches!(
+            core_of(db, args[0]),
+            Core::ConstFloatNan | Core::ConstFloatInf
+        )
         && let Some(ast_disc) = ast_variant_discs(db)
         && disc == ast_disc.float
         && matches!(&ast_disc.ty, crate::ty::Ty::Sum { decl, .. }
             if crate::eval::variant_owner_decl(db, head).is_some_and(|d| d == *decl))
     {
         return Core::Poison(Reject::decline(
-            "an `Ast.Float` node cannot carry a non-canonical float (a NaN has no canonical value \
-             form); a finite float reifies, matching how `,@` of a NaN list and `Ast.Float` of +inf decline",
+            "an `Ast.Float` node cannot carry a non-canonical float (a NaN or infinity has no canonical \
+             value form); a finite float reifies, matching how `,@` of a non-canonical-float list and \
+             `Ast.Float` of a NaN/infinity decline",
         ));
     }
     // @invariant ESTABLISH DIVERT for a MULTI-VARIANT sum (the boxed path). A multi-variant sum is not erased
@@ -23863,6 +23915,10 @@ fn scalar_const_key(db: &mut Db, id: StructId) -> Option<ScalarKey> {
         Core::ConstChar(c) => Some(ScalarKey::Char(c)),
         Core::ConstFloat(d) => Some(ScalarKey::FloatBits(d.to_f64_bits())),
         Core::ConstFloatNan => Some(ScalarKey::FloatNan),
+        // +∞ has a definite bit pattern, so it keys by its bits like any finite float (no NaN-style
+        // singleton needed) — distinct from every finite float and from NaN, so `(Set.of (list Infinity
+        // Infinity 1.0))` dedups the two infinities to one element.
+        Core::ConstFloatInf => Some(ScalarKey::FloatBits(f64::INFINITY.to_bits())),
         Core::Unit => Some(ScalarKey::Unit),
         // A compound (tuple/record/sum/list/set/map/bytes) or a runtime value has no scalar token — the
         // caller keeps it on the O(compounds²) pairwise path (compounds are rare + small).
@@ -29968,6 +30024,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::FloatOfInt => "of-int",
         Prim::FloatOf => "of",
         Prim::FloatNan => "nan",
+        Prim::FloatInf => "Infinity",
         Prim::MapCtor => "Map",
         Prim::MapNew => "map-new",
         Prim::MapEmpty => "map-empty",
