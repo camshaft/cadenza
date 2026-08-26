@@ -7403,3 +7403,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
+pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
+pass	oak3 an op ARGUMENT of type Map is queried by the arm and drives the state
