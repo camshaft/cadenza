@@ -7713,3 +7713,5 @@ pass	nfe3 tuple-walk equality says +inf and -inf encodes DIFFER (distinct tags)
 pass	nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonical NaN form)
 pass	bfl1 bare equality over flat Bytes.of runtime twins
 pass	bfl2 bare equality across Bytes.concat vs Bytes.of flat twins
+pass	bo1 bare order over two runtime encode results compares content-lexicographically
+pass	bo2 tuple-walk equality over two identical runtime encodes agrees
