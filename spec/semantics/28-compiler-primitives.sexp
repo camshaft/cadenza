@@ -408,3 +408,22 @@
             (def (main) (const (if (Set.contains (Set.insert (Set.of (list 1 2)) 3) 3) 100 200)))
             (export main)))
   (output (: 100 Int64)))
+
+(case "a `(const …)` map lookup MISS folds to Option.None"
+  (doc    "Negative path: `Map.lookup … 2` on a map lacking key 2 folds to `Option.None`; the match's None
+           arm yields 0. Pins the absent-key branch (the positive lookup is pinned above).")
+  (input  (do
+            (def (main)
+              (const (match (Map.lookup (Map.insert (Map.empty) 1 10) 2)
+                       ((Option.Some v) v)
+                       ((Option.None) 0))))
+            (export main)))
+  (output (: 0 Int64)))
+
+(case "a `(const …)` set contains of an ABSENT member folds to false"
+  (doc    "Negative path: `Set.contains (Set.of (list 1 2 3)) 9` folds to false → the 200 branch. Pins the
+           absent-member result (the present-member case is pinned above).")
+  (input  (do
+            (def (main) (const (if (Set.contains (Set.of (list 1 2 3)) 9) 100 200)))
+            (export main)))
+  (output (: 200 Int64)))
