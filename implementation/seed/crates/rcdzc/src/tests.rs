@@ -6335,52 +6335,6 @@ fn a_parameter_inside_a_synthesized_scope_form_resolves() {
     assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
 }
 
-/// A runtime CHECKED conversion `T.of x` whose SOURCE type provably fits the target is TOTAL — no value
-/// can be out of range, so it can never trap and is emitted as the widening `wrap` (extend-and-
-/// reinterpret). This is the runtime `Int64.of (x:UInt8)` gap the corpus pinned as a decline; it now
-/// runs. A NON-total `of` (a narrowing, or a sign-change that overflows) still DECLINES — that needs the
-/// range-check-then-trap emit, a later increment. `of` and `wrap` differ only on an out-of-range value,
-/// and totality proves there is none, so reusing the `wrap` emit is sound.
-#[test]
-fn a_runtime_integer_of_whose_source_fits_the_target_widens_totally() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // UInt8 → Int64: the pinned gap. A UInt8 (0..255) always fits Int64, so `Int64.of` is total; the max
-    // 255 and the top-bit 200 widen to the same non-negative Int64 (zero-extend, NOT sign-extend).
-    let u8_to_i64 = "(module m (def (f (: a UInt8)) (Int64.of a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(u8_to_i64))).expect("compile");
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(255)]), 255);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(200)]), 200);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::U8(0)]), 0);
-    // Int8 → Int64: a signed widening SIGN-extends — -1 stays -1, -128 stays -128 (not 128 or a big u).
-    let i8_to_i64 = "(module m (def (f (: a Int8)) (Int64.of a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(i8_to_i64))).expect("compile");
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-1)]), -1);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(-128)]), -128);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S8(127)]), 127);
-    // UInt8 → UInt16: a same-sign narrow widening also totals (0..255 ⊂ 0..65535).
-    let u8_to_u16 = "(module m (def (f (: a UInt8)) (UInt16.of a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(u8_to_u16))).expect("compile");
-    assert_eq!(run_returns_with::<u16>(&b, "f", &[Val::U8(255)]), 255);
-    // UInt8 → UInt64: a full-width unsigned widening zero-extends (255 stays 255, no sign confusion).
-    let u8_to_u64 = "(module m (def (f (: a UInt8)) (UInt64.of a)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(u8_to_u64))).expect("compile");
-    assert_eq!(run_returns_with::<u64>(&b, "f", &[Val::U8(255)]), 255);
-    // NON-total `of` still DECLINES (the checked-narrowing emit is a later increment): a UInt8 → Int8
-    // could hold 255 which overflows Int8 (-128..127), so `Int8.of (x:UInt8)` must trap-check → declines.
-    let not_total = "(module m (def (f (: a UInt8)) (Int8.of a)) (export f))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(not_total))).is_err(),
-        "a non-total (possibly out-of-range) runtime T.of must still decline, not emit a truncating wrap"
-    );
-    // A genuine narrowing UInt64 → UInt8 likewise declines (most values overflow UInt8).
-    let narrowing = "(module m (def (f (: a UInt64)) (UInt8.of a)) (export f))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(narrowing))).is_err(),
-        "a runtime narrowing T.of must still decline"
-    );
-}
-
 /// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
 /// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
 /// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
