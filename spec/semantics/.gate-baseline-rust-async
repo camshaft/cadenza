@@ -7343,3 +7343,6 @@ todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 pass	ch01 a bare prim passed as a function value applies
 pass	ch01e bare operator PARTIALLY applied — (let ((inc (+ 1))) (inc n))
+pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
+pass	cms3 closed handle with MAP state under (const ...)
+pass	cms4 closed handle with SET state under (const ...)

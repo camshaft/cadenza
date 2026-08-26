@@ -965,3 +965,40 @@
             (def (main) (const (handle E (Set.of (list 7)) ((tick (u) s (resume (Set.len s) (Set.insert s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
             (export main)))
   (output (: 12 Int64)))
+
+;; -- (const ...) handles with COLLECTION states fold: growing List, Map insert+lookup, growing Set (breaker batch 395; the #3636 flip — completes the state-kind matrix begun in batch 386) --
+(case "cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)"
+  (input  (do
+            (effect E (op tick (-> Int64)))
+            (def (main)
+              (const (handle E (list 7)
+                ((tick () s (resume (List.len s) (List.prepend s 0))))
+                (+ (* 10 (E.tick)) (E.tick)))))
+            (export main)))
+  (output (: 12 Int64)))
+
+(case "cms3 closed handle with MAP state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (rd (: m (Map Int64 Int64)))
+      (match (Map.lookup m 0)
+        ((Option.Some v) v)
+        ((Option.None) -1)))
+    (def (main)
+      (const
+        (handle E (Map.insert (map) 0 5)
+          ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 11 Int64)))
+
+(case "cms4 closed handle with SET state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E (Set.of (list 1))
+          ((tick () s (resume (Set.len s) (Set.insert s (+ (Set.len s) 1)))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 3 Int64)))
