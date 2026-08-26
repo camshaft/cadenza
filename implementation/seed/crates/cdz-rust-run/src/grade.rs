@@ -119,6 +119,7 @@ mod tests {
             host_responses: vec![],
             host_calls: vec![],
             warns: vec![],
+            live_objects: None,
         }
     }
 

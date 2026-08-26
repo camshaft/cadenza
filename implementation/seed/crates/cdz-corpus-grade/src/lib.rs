@@ -150,6 +150,11 @@ pub struct TestRun {
     pub host_calls: Vec<String>,
     /// Pinned warnings `(code, optional message-substring)` — a PRESENCE check against the compile diag.
     pub warns: Vec<(String, Option<String>)>,
+    /// The live-heap-cell count a `(live-objects N)` case asserts after the run (the heap-balance invariant,
+    /// N=0 is no leak). When set, the wasm exec runs on the debug-counters runtime and fails the case if the
+    /// reported count differs. `None` for a case with no `(live-objects …)`. (The nix exec branches on this
+    /// marker at build time to add `--runtime <debug-counters>`; cdz-run's `--grade` asserts it.)
+    pub live_objects: Option<u32>,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -424,6 +429,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut host_responses = Vec::new();
     let mut host_calls = Vec::new();
     let mut warns = Vec::new();
+    let mut live_objects: Option<u32> = None;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -474,6 +480,14 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                     }
                 }
             }
+            // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf).
+            Some("live-objects") => {
+                live_objects = a
+                    .as_form(clause, "live-objects")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(&a, id))
+                    .and_then(|s| s.trim().parse::<u32>().ok());
+            }
             _ => {}
         }
     }
@@ -484,6 +498,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         host_responses,
         host_calls,
         warns,
+        live_objects,
     })
 }
 
@@ -793,5 +808,33 @@ mod tests {
         // gained (todo -> pass) is not a regression; an absent case is not either.
         assert!(check_regression(Verdict::Pass, "an incomplete case", baseline).is_none());
         assert!(check_regression(Verdict::Fail, "absent", baseline).is_none());
+    }
+
+    /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects`; a test-run without
+    /// one leaves it `None`.
+    #[test]
+    fn decode_reads_live_objects() {
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        let build = |with_lo: bool| -> Vec<u8> {
+            let mut b = Builder::new();
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let head = b.name("test-run");
+            let dh = b.name("description");
+            let dv = s(&mut b, "case");
+            let desc = b.list(vec![dh, dv]);
+            let trials_head = b.name("trials");
+            let trials = b.list(vec![trials_head]);
+            let mut kids = vec![head, desc, trials];
+            if with_lo {
+                let loh = b.name("live-objects");
+                let lov = s(&mut b, "0");
+                kids.push(b.list(vec![loh, lov]));
+            }
+            let root = b.list(kids);
+            codec::encode(&b.finish(root))
+        };
+        assert_eq!(decode_test_run(&build(true)).unwrap().live_objects, Some(0));
+        assert_eq!(decode_test_run(&build(false)).unwrap().live_objects, None);
     }
 }

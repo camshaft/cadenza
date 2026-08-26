@@ -244,6 +244,13 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         }
         kids.push(b.list(wk));
     }
+    // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). The nix exec
+    // branches on this marker at build time to add `--runtime <debug-counters>` + the assert; cdz-run's
+    // `--grade` reads it back (decode_test_run) and checks it. Absent for a case with no `(live-objects …)`.
+    if let Some(n) = rec.live_objects {
+        let nl = str_leaf(&mut b, &n.to_string());
+        kids.push(form(&mut b, "live-objects", vec![nl]));
+    }
 
     let root = b.list(kids);
     codec::encode(&b.finish(root))
@@ -374,6 +381,32 @@ mod tests {
         );
         let run_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[2])).unwrap());
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
+    }
+
+    /// A `(live-objects N)` case's `test-run.ast` carries the balance as a `(live-objects <N>)` form (the
+    /// marker the nix exec branches on + `cdz-run --grade` reads). A case without the clause emits none.
+    #[test]
+    fn shred_test_run_carries_live_objects() {
+        let recs = crate::read(
+            r#"(case "bal"
+                 (input (do (def (main (: a Int64) (: b Int64)) (Int64.of (+ (BigInt.of a) (BigInt.of b)))) (export main)))
+                 (call main (: 40 Int64) (: 2 Int64)) (output (: 42 Int64))
+                 (live-objects 0))
+               (case "nobal"
+                 (input (do (def (main (: b Bool)) b) (export main)))
+                 (call main (: true Bool)) (output (: true Bool)))"#,
+        )
+        .unwrap();
+        let bal = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(
+            bal.contains("(live-objects \"0\")"),
+            "test-run carries the balance: {bal}"
+        );
+        let nobal = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
+        assert!(
+            !nobal.contains("live-objects"),
+            "a case without the clause emits no live-objects form: {nobal}"
+        );
     }
 
     /// A `(wit-world …)` + `(component-name …)` case emits the world as a NATIVE `wit-world.ast` — the
