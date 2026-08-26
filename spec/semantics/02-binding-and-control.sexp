@@ -5140,6 +5140,43 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+(case "a computed match scrutinee is evaluated once and its overflow guard still fires"
+  (doc    "`(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add, evaluated ONCE into a
+           slot that every probe reads (not a recomputed add). Dispatch: (a+b)=0 → 10, =1 → 20, =5 →
+           wildcard 30. The single evaluation must still CHECK: an a+b overflowing Int64 traps before any
+           probe runs (the compute-once must not drop the scrutinee's own overflow guard).")
+  (input  (do
+            (def (f (: a Int64) (: b Int64)) (match (+ a b) (0 10) (1 20) (_ 30)))
+            (export f)))
+  (call   f (: -2 Int64) (: 2 Int64)) (output (: 10 Int64))
+  (call   f (: 1 Int64) (: 0 Int64)) (output (: 20 Int64))
+  (call   f (: 3 Int64) (: 2 Int64)) (output (: 30 Int64))
+  (call   f (: 9223372036854775807 Int64) (: 1 Int64)) (trap "overflow"))
+
+(case "a match every unguarded arm of which yields the same value collapses to that value"
+  (doc    "`(match a (1 x) (2 x) (_ x))` always yields `x` regardless of the scrutinee `a` (the match
+           analogue of `(if c x x)` -> `x`) — every arm is the SAME trap-free body, so the probe chain is
+           dropped and the value is just `x`. Verified across a matched literal and the wildcard: a=1 -> 7,
+           a=9 -> 7. (Sound because the scrutinee `a` is a trap-free parameter; a trapping scrutinee must
+           still be evaluated — the case below.)")
+  (input  (do
+            (def (f (: a Int64) (: x Int64)) (match a (1 x) (2 x) (_ x)))
+            (export f)))
+  (call   f (: 1 Int64) (: 7 Int64)) (output (: 7 Int64))
+  (call   f (: 9 Int64) (: 7 Int64)) (output (: 7 Int64)))
+
+(case "a trapping scrutinee of an all-same-body match is still evaluated"
+  (doc    "The all-same-body collapse (above) drops the probe chain, but the scrutinee was evaluated to
+           drive the now-gone probes, so a scrutinee that could TRAP must still be evaluated. `(match (/ 10
+           b) (1 x) (_ x))` always yields `x`, yet the division must still run: b=2 -> 7 (the common body),
+           b=0 -> a divide-by-zero trap, not a silent `x`. Pins that the collapse preserves the scrutinee's
+           effects.")
+  (input  (do
+            (def (f (: b Int64) (: x Int64)) (match (/ 10 b) (1 x) (_ x)))
+            (export f)))
+  (call   f (: 2 Int64) (: 7 Int64)) (output (: 7 Int64))
+  (call   f (: 0 Int64) (: 7 Int64)) (trap "divide by zero"))
+
 ; Two additions completing the multi-arm sink's shape coverage above: the TUPLE shared-plus-differing
 ; case (the sum/list/record cases pin the same-arm alignment, but the tuple shape's shared/differing
 ; split was uncovered), and a bare sum-PAYLOAD dispatch across three arms (the pure `Some`-payload

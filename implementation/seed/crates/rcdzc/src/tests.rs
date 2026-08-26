@@ -54596,35 +54596,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(999)]), 333); // 999&7=7 → still wildcard
     }
 
-    #[test]
-    fn a_computed_match_scrutinee_is_evaluated_once() {
-        use wasmtime::component::Val;
-        // `(match (+ a b) (0 10) (1 20) (_ 30))` — the scrutinee is a CHECKED add. It is evaluated ONCE
-        // into a slot; each probe reads that slot (not a recomputed add). Correct dispatch across arms:
-        let src = "(module m (def (f (: a Int64) (: b Int64)) \
-                     (match (+ a b) (0 10) (1 20) (_ 30))) (export f))";
-        let bytes = component(src);
-        // (a+b)=0 → 10; =1 → 20; =5 → wildcard 30. The single evaluation must feed every probe.
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(-2), Val::S64(2)]),
-            10
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(1), Val::S64(0)]),
-            20
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(3), Val::S64(2)]),
-            30
-        );
-        // The scrutinee's own overflow guard must STILL fire (evaluated once, but still checked): a+b
-        // overflowing Int64 traps before any probe runs.
-        assert!(
-            call_traps(&bytes, "f", &[Val::S64(i64::MAX), Val::S64(1)]),
-            "an overflowing computed scrutinee must trap (its guard is not lost by the compute-once)"
-        );
-    }
-
     /// A match every UNGUARDED arm of which yields the SAME value COLLAPSES to that value — the probe
     /// chain is dropped (the match analogue of `(if c x x)` → `x`). `(match a (1 x) (2 x) (_ x))` always
     /// returns `x`, so it lowers to just `x` with no `i64.eq`/branch on `a`. Sound because the scrutinee
@@ -54634,7 +54605,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     fn an_all_same_body_match_collapses_to_the_body() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
-        use wasmtime::component::Val;
         let src = "(module m (def (f (: a Int64) (: x Int64)) \
                      (match a (1 x) (2 x) (_ x))) (export f))";
         // The collapse dropped the dispatch entirely: no equality probe on the scrutinee survives in the Lir.
@@ -54665,37 +54635,9 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             !code.contains(&Lir::I64Eq) && !code.iter().any(|i| matches!(i, Lir::If(_))),
             "an all-same-body match must collapse to its body (no probe chain / branch), got: {code:?}"
         );
-        // Every scrutinee value yields x — verify across a matched literal and the wildcard.
-        let bytes = component(src);
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(1), Val::S64(7)]),
-            7
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(9), Val::S64(7)]),
-            7
-        );
-    }
-
-    /// The all-same-body collapse is gated on a TRAP-FREE scrutinee: the discriminant is unused after the
-    /// collapse, but the scrutinee was evaluated to drive the (now-gone) probes, so a scrutinee that could
-    /// trap must STILL be evaluated. `(match (/ 10 b) (1 x) (_ x))` always yields `x`, but the division
-    /// must still run — `b = 0` traps rather than returning `x`.
-    #[test]
-    fn a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated() {
-        use wasmtime::component::Val;
-        let src = "(module m (def (f (: b Int64) (: x Int64)) \
-                     (match (/ 10 b) (1 x) (_ x))) (export f))";
-        let bytes = component(src);
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "f", &[Val::S64(2), Val::S64(7)]),
-            7,
-            "a non-trapping scrutinee still yields the common body"
-        );
-        assert!(
-            call_traps(&bytes, "f", &[Val::S64(0), Val::S64(7)]),
-            "a div-by-zero scrutinee must trap even though every arm yields the same value"
-        );
+        // Value parity (every scrutinee value yields x) migrated to the corpus (run via cdz-run): case "a
+        // match every unguarded arm of which yields the same value collapses to that value" in
+        // spec/semantics/02-binding-and-control.sexp.
     }
 
     #[test]
