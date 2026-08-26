@@ -17246,3 +17246,38 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 60 Int64))
   (call   main (: 0 Int64)) (output (: 24 Int64)))
+
+;; -- pycl1 arm closes over an outer let + pydv1 negative signed-division threaded + pysh8 variable shift-by-state (breaker batch 365) --
+(case "pycl1 probe: the handler arm CLOSES OVER a free variable from the enclosing lexical scope — base = (* n 7) is let-bound OUTSIDE the handle, and the arm's resume answer reads it (+ (* s 100) base); base is constant across dispatches while the state threads, so the fold must capture the outer binding into the arm's closure correctly (not lose it or recompute)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (let ((base (* n 7)))
+      (handle E (% n 3)
+        ((tick () s (resume (+ (* s 100) base) (+ s 1))))
+        (+ (E.tick) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 440 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "pydv1 probe: NEGATIVE integer division threaded through the handler — seed is -(n%3), tick answers (/ (* s 7) 2) and threads (- s 3), so the state goes negative and each dispatch divides a negative product by 2 (truncate-toward-zero: -49/2 = -24, -21/2 = -10); the three dispatches exercise signed division/sign semantics under state threading, and wasm vs rust must agree on truncation direction"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (- (: 0 Int64) (% n 3))
+      ((tick () s (resume (/ (* s 7) (: 2 Int64)) (- s 3))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: -4424 Int64))
+  (call   main (: 0 Int64)) (output (: -1021 Int64)))
+
+(case "pysh8 probe: a variable LEFT-SHIFT by the threaded handler state — tick answers (<< 1 s) threading (+ s 1), seed (n%3)+1, so three dispatches compute 1<<s0, 1<<(s0+1), 1<<(s0+2); the shift amount is data (the live state), exercising variable-shift semantics under state threading and wasm/rust agreement on the shift"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 1 Int64))
+      ((tick () s (resume (<< (: 1 Int64) s) (+ s 1))))
+      (+ (* 1000 (E.tick)) (+ (* 100 (E.tick)) (E.tick)))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 4816 Int64))
+  (call   main (: 0 Int64)) (output (: 2408 Int64)))
