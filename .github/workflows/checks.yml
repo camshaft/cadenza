@@ -39,6 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo fmt (via nix)
         run: nix build .#checks.x86_64-linux.fmt --print-build-logs
@@ -56,6 +60,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo clippy shard A (via nix — rcdzc + cdz-num + cdz-calc + cadenza-syntax)
         run: nix build .#checks.x86_64-linux.clippy-shard-a --print-build-logs
@@ -73,6 +81,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo clippy shard B (via nix — cdz (workspace) + cdz-run + xtask + cadenza-ast + cdz-corpus + cdz-rt + cdz-rust-render)
         run: nix build .#checks.aarch64-linux.clippy-shard-b --print-build-logs
@@ -91,6 +103,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: test (via nix — per-crate aggregate, hermetic)
         run: nix build .#checks.x86_64-linux.test --print-build-logs
@@ -175,6 +191,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo xtask codegen --check (via nix)
         run: nix build .#checks.aarch64-linux.codegen-check --print-build-logs
@@ -246,6 +266,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cadenza @test suites — cdz test on cad/compiler-ml/choreography/iterators (via nix)
         run: nix build .#checks.aarch64-linux.cad-tests --print-build-logs
@@ -314,6 +338,10 @@ jobs:
       # third-party action that installs Nix is a supply-chain surface (github-liaison #1805, operator
       # supply-chain caution). Matches the repo's tag-pinning convention for third-party actions.
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       # SCOPED to the reproducibility-BACKSTOP subset (v-nix + v-ft data-driven CI-speed, 2026-08-05): a full
       # `nix flake check` rebuilt the UNION of ALL flake outputs (~48.6m advisory) — redundantly re-running the
@@ -345,6 +373,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo xtask roundtrip (via nix)
         run: nix build .#checks.aarch64-linux.roundtrip --print-build-logs
@@ -362,6 +394,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: cargo xtask bench (via nix)
         run: nix build .#checks.x86_64-linux.bench-check --print-build-logs
@@ -393,6 +429,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
+          # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
+          extra-conf: "extra-experimental-features = ca-derivations"
       - uses: ./.github/actions/nix-store-cache
       - name: guide examples (via nix — hermetic, pinned binaryen/wasm-bindgen)
         run: nix build .#checks.aarch64-linux.guide-examples --print-build-logs
