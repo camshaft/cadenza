@@ -7556,3 +7556,5 @@ todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
 pass	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 pass	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
+pass	chm1 a const Map with CHAR keys to-lists key-sorted
+pass	chm2 the sorted Char head surfaces a taken trap under the const demand (CDZ0304)
