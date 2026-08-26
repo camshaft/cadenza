@@ -1063,6 +1063,25 @@
   (call   run 9)
   (output (: true Bool)))
 
+; --- Primitive 2: const Set.to-list folds CHAR elements by Unicode-scalar order (wasm-emit gap is orthogonal) -
+; A `Char` element orders by Unicode SCALAR value; the RUNTIME to-list of a Char set sorts by that order on the
+; rust targets (19-sets ckr1). The runtime WASM to-list op declines a Char element (a wasm-EMIT gap, v-rb's
+; lane), but a const-fold BAKES the sorted list and never invokes that op — so the const fold works on ALL
+; backends (a compile-time constant), sound because `const_key_order`'s Char arm (`char: Ord` = the scalar
+; order) matches the rust runtime. (This is why the const fold was un-blockable independent of the wasm-emit gap.)
+
+(case "a const Set.to-list of CHAR elements folds sorted by Unicode scalar, dedup'd"
+  (doc    "`{#\\c, #\\a, #\\b, #\\a}` folds to the 3-member set `{#\\a,#\\b,#\\c}`; `Set.to-list` materializes
+           them in Unicode-scalar order, so the head is `#\\a` (scalar 97) and the length is 3 (the duplicate
+           `#\\a` deduped). Pins the Char const-fold + scalar order (matching the rust runtime, 19-sets ckr1).")
+  (input  (do (def (main)
+                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list #\c #\a #\b #\a)))))
+                          (match (List.at (Set.to-list (Set.of (list #\c #\a #\b #\a))) 0)
+                            ((Option.Some h) (Char.to-int h))
+                            ((Option.None) -1)))))
+              (export main)))
+  (output (: 3097 Int64)))
+
 ; --- Primitive 2: const Set.to-list folds through the RECURSIVE engine + a const-param consumer -------------
 ; #3765 folds `Set.to-list` on a syntactic `Core::SetOf` (the `core_of` path). This extends the SAME
 ; canonical-order materialization to the const-EVALUATOR path (`apply_const_prim`'s `SetToList` arm over a
