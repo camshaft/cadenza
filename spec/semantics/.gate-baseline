@@ -530,6 +530,7 @@ pass	a 1100-element prepend-built runtime list reads every index through a multi
 pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
+pass	a 2-arm all-literal Float32 match grounds its arms to f32 via the select path
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order
 pass	a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members
@@ -540,6 +541,7 @@ pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determi
 pass	a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
+pass	a 3-arm all-literal Float32 match grounds its arms to f32 via the probe-chain path
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 33-VARIANT sum dispatches across the discriminant range with a payload variant last
@@ -1772,6 +1774,7 @@ pass	a delegated effect performed inside an intra-program handler
 pass	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 pass	a delegated host effect composes with the value-heap runtime
 pass	a delegation naming an effect that is never reached is rejected as latent authority
+pass	a dense all-literal Float32 match grounds its arms to f32 via the br_table path
 pass	a dense if-equality chain dispatches every value including the default
 pass	a dense if-equality chain dispatches on a let-bound value
 pass	a dense many-arm match dispatches by value to a covered arm and to the default

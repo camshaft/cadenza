@@ -10030,61 +10030,6 @@ fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
 }
 
 #[test]
-fn a_float32_match_with_all_literal_arms_grounds_via_the_select_and_probe_chain_paths() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // A `match` whose arms are ALL bare float literals over a RUNTIME scrutinee, under a `Float32`
-    // annotation — `(: (match n (0 1.5) (_ 0.25)) Float32)` — emitted an INVALID module ("expected f32,
-    // found f64"): such a match is a set of trap-free literal arms, so it lowers to a branchless `select`
-    // (2 arms) or a probe-chain terminal pair, NOT the structured `Core::Match` if-block. Those select
-    // paths grounded a bare-literal arm via `emit_branch(arm, &res_ty)` where `res_ty` was derived from
-    // `result_it` ALONE — Int-only — so a FLOAT result fell to `Ty::Bool` and the ConstFloat arm defaulted
-    // to `Float64`, emitting `f64.const` under an `f32` select. Fix: derive `res_ty`'s float width from the
-    // (solved) `block_ty` for a float result, so `emit_branch` grounds each arm to f32 (the sibling of the
-    // structured-arm grounding). Covers the 2-arm select, the ≥3-arm probe-chain terminal pair, AND the
-    // dense br_table path (which already grounded via `emit_arm_body`). v-wasm-opt-flagged residual.
-    // NOTE the `f64.const`-under-`f32` clash is a WASM VALIDATION error, caught at compile — no store needed.
-    let two = "(module m (def (f (: n Int64)) (: (match n (0 1.5) (_ 0.25)) Float32)) (export f))";
-    let three = "(module m (def (f (: n Int64)) (: (match n (0 1.5) (1 2.5) (_ 0.25)) Float32)) (export f))";
-    let dense = "(module m (def (f (: n Int64)) \
-                 (: (match n (0 1.5) (1 2.5) (2 3.5) (3 4.5) (_ 0.25)) Float32)) (export f))";
-    let two_b = compile_component(&crate::codec::encode(&parse(two))).expect(
-        "2-arm all-literal Float32 match is a valid module (was invalid: f64 under f32 select)",
-    );
-    let three_b = compile_component(&crate::codec::encode(&parse(three)))
-        .expect("3-arm all-literal Float32 match is a valid module");
-    let dense_b = compile_component(&crate::codec::encode(&parse(dense)))
-        .expect("dense-arm all-literal Float32 match is a valid module");
-    // VALUE CORRECTNESS: each arm reads back its exact f32 literal (the grounding preserved the value).
-    for (b, n, want) in [
-        (&two_b, 0i64, 1.5f32),
-        (&two_b, 9, 0.25),
-        (&three_b, 1, 2.5),
-        (&three_b, 9, 0.25),
-        (&dense_b, 2, 3.5),
-        (&dense_b, 9, 0.25),
-    ] {
-        let got: f32 = run_returns_with(b, "f", &[Val::S64(n)]);
-        assert_eq!(
-            got.to_bits(),
-            want.to_bits(),
-            "arm value at n={n} grounds to the exact f32"
-        );
-    }
-    // A Float64 all-literal match is UNCHANGED (its arms were always the default f64).
-    let f64src =
-        "(module m (def (f (: n Int64)) (: (match n (0 1.5) (_ 0.25)) Float64)) (export f))";
-    let f64_b =
-        compile_component(&crate::codec::encode(&parse(f64src))).expect("Float64 unchanged");
-    let got: f64 = run_returns_with(&f64_b, "f", &[Val::S64(0)]);
-    assert_eq!(
-        got.to_bits(),
-        1.5f64.to_bits(),
-        "Float64 all-literal match unchanged"
-    );
-}
-
-#[test]
 fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
     use crate::testkit::parse;
     // Skip when the value-heap runtime store is absent (storeless CI `cargo test --workspace`) — this test
