@@ -6902,3 +6902,16 @@
   (input  (do (def (main) (let ((unused 99)) 42)) (export main)))
   (output (: 42 Int64))
   (warns  CDZ0306 (message "unused binding")))
+
+(case "a reference buried under many non-binding forms resolves to its outer let binder"
+  (doc    "The lexical-scope skip index hops over the non-binding spine (record / if / application) to the
+           binding let. `k` (=5) sits under three non-binding ifs and a record projection above the let that
+           binds it; each `(< k N)` is true so the innermost `k` runs, projected back = 5.")
+  (input  (do (def (main) (let ((k 5)) (if (< k 30) (if (< k 20) (if (< k 10) (. (record (a k)) a) 1) 2) 3))) (export main)))
+  (call   main) (output (: 5 Int64)))
+
+(case "shadowing resolves nearest-wins through the scope-skip index"
+  (doc    "An inner let rebinding a name an outer let also binds must reach the INNER one (nearest-wins).
+           `(let ((x 1)) (let ((x 2)) x))` = 2, not 1 (a skip jumping past the inner let would return 1).")
+  (input  (do (def (main) (let ((x 1)) (let ((x 2)) x))) (export main)))
+  (call   main) (output (: 2 Int64)))

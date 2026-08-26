@@ -6324,38 +6324,6 @@ fn a_wrap_of_an_in_range_value_elides_the_truncation() {
     // spec/semantics/06-numeric-model.sexp.
 }
 
-/// A reference buried under many NON-binding forms still resolves to its outer binder — the
-/// correctness guard for the lexical-scope SKIP index (`Db::scope_skip`) that hops over the non-binding
-/// spine (record/`if`/application) instead of visiting every enclosing form. A wrong skip pointer (or
-/// skipping a form that DOES bind) would mis-resolve `k` or lose it. Here `k` sits under a chain of
-/// `if`s and a record, all non-binding, above the `let` that binds it: `(if …)` selects the true branch
-/// each time so the innermost `k` (= 5) is what runs. Pins that the skip walk lands on the `let`.
-#[test]
-fn a_reference_under_non_binding_nesting_resolves_to_its_outer_binder() {
-    use crate::testkit::parse;
-    // k is bound by the let; the body nests it under three non-binding `if`s and a record projection,
-    // none of which bind `k`. `(< k N)` is true for k=5 < 10/20/30, so each `if` takes its `then`
-    // (which carries `k` further in), and `(. (record (a k)) a)` projects back to k = 5.
-    let src = "(module m (def (main) \
-                 (let ((k 5)) \
-                   (if (< k 30) (if (< k 20) (if (< k 10) (. (record (a k)) a) 1) 2) 3))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 5);
-}
-
-/// Shadowing still resolves nearest-wins THROUGH the skip index: an inner `let` rebinding a name that
-/// an outer `let` also binds must reach the INNER one (the skip pointer lands on the nearest binding
-/// candidate first). `(let ((x 1)) (let ((x 2)) x))` = 2, not 1 — a skip that jumped past the inner
-/// `let` to the outer would return 1.
-#[test]
-fn shadowing_resolves_nearest_through_the_skip_index() {
-    use crate::testkit::parse;
-    let src = "(module m (def (main) (let ((x 1)) (let ((x 2)) x))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
-}
-
 /// A SYNTHESIZED def-form's body reference to its OWN parameter still resolves even after an UNRELATED
 /// `extend_scope_skip_*` call grows the scope-skip vector PAST it. This is the monomorphization SCC bug
 /// (`type_specialize` builds a spec-copy `(def (spec p…) body)` after load; a peer's later map-match /
