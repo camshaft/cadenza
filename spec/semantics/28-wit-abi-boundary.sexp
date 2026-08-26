@@ -1189,3 +1189,62 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
     (export f)))
   (call f (: 1 Int64))
   (output (: (record (= b1 1) (= b2 2)) (Record (: b1 Int64) (: b2 Int64)))))
+
+; ── Single-variant newtype escape (adv-63b/adv-64, migrated from rcdzc): a scalar-erased newtype returned
+; from a PARAM'D export must emit a VALID module (not the recursive-sum-resource path) and render its NOMINAL
+; name; a compound-inner newtype stays on the heap escape; matched/wrapped-then-matched controls round-trip.
+
+(case "a scalar-erased single-variant newtype escaping a param'd export emits a valid module and renders the nominal name"
+  (doc    "adv-63b/adv-64. A single-variant newtype over a SCALAR, `(type W (Mk Int64))`, returned from a
+           PARAMETERIZED export erases to a bare core int; the boundary escape router must NOT take the
+           nominal recursive-sum-resource path (which expects a heap handle) for a raw i64 — that emitted an
+           INVALID module ('expected i32, found i64'). The scalar-erased newtype falls through to the scalar
+           value-form branch (scalar_box boxes a bare Int result), so it escapes+renders as the NOMINAL
+           `(: 5 W)` — a running case here implicitly proves the module is VALID (an invalid module could not
+           run), and the output pins the nominal rendering (adv-64: NOT the erased `(: 5 Int64)`). The
+           nullary path always rendered the nominal; this pins the param'd path agrees.")
+  (input  (do (type W (Mk Int64)) (def (main (: k Int64)) (Mk k)) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 W)))
+
+(case "a GENERIC scalar newtype instantiated at Int64 escapes a param'd export as a valid module"
+  (doc    "The generic face of the scalar-newtype escape: `(type Box (Mk a))` instantiated at Int64 takes the
+           same erased-scalar escape path and emits a valid module, rendering the nominal `(: 5 Box)`. Pins
+           that the escape router's scalar fall-through is not confused by the type parameter.")
+  (input  (do (type Box (Mk a)) (def (main (: k Int64)) (Mk k)) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Box)))
+
+(case "a NARROW-inner scalar newtype escaping a param'd export emits a valid module (i32-slot box)"
+  (doc    "The width-edge face: `(type U8 (Mk UInt8))` has a sub-i32 (i32-slot) inner, so the scalar box's
+           i32->i64 extend must fire for the <=32 slot (and must NOT for a mid/full width) — a wrong extend
+           was an invalid-module risk. Escapes+renders the nominal `(: 5 U8)`, and running proves the module
+           is valid. Pairs with the full-width W case (Int64, no extend).")
+  (input  (do (type U8 (Mk UInt8)) (def (main (: k UInt8)) (Mk k)) (export main)))
+  (call   main (: 5 UInt8)) (output (: 5 U8)))
+
+(case "a COMPOUND-inner single-variant newtype takes the heap escape and its inner is read back"
+  (doc    "The compound-inner counterpart: `(type LW (Mk (List Int64)))` erases to a list HANDLE, so it stays
+           on the heap/resource escape branch (the recursive-sum-branch guard keeps it there) — the fix only
+           diverts SCALAR-erased newtypes to the value-form branch. Wrapping a runtime-built [1,2] and matching
+           it back reads the inner list length 2, confirming the compound path is unaffected.")
+  (input  (do (type LW (Mk (List Int64)))
+              (def (wrap (: xs (List Int64))) (Mk xs))
+              (def (main) (match (wrap (List.push (List.push (list) 1) 2)) ((Mk ys) (List.len ys))))
+              (export main)))
+  (output (: 2 Int64)))
+
+(case "a scalar newtype matched back in place round-trips the erased inner"
+  (doc    "Control (the matched face always worked — the match re-erases the Payload step): `(match (Mk k)
+           ((Mk v) v))` deconstructs the newtype in place and returns the erased inner k. k=5 -> 5. Pins the
+           scalar-newtype value round-trip is unbroken by the escape-branch fix.")
+  (input  (do (type W (Mk Int64)) (def (main (: k Int64)) (match (Mk k) ((Mk v) v))) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary"
+  (doc    "Control: a param'd helper `wrap` returns the newtype (the escaping-def value), and main matches it
+           back — the erased scalar crosses the internal call boundary and is deconstructed. wrap(5) then
+           (Mk v)->v = 5. Pins the wrapped-then-matched round-trip alongside the direct escape.")
+  (input  (do (type W (Mk Int64))
+              (def (wrap (: k Int64)) (Mk k))
+              (def (main (: k Int64)) (match (wrap k) ((Mk v) v)))
+              (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
