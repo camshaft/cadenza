@@ -7440,3 +7440,6 @@ pass	geb4 a 2-bit mask times 2^62 keeps the multiply guard — traps at 2 and 3,
 pass	pd1 a list shared into a RECORD field survives an update through the original binding
 pass	pd2 a helper updates its list PARAM — the caller's original is intact after the call
 pass	pd3 a CLOSURE capturing a list sees the original across an interleaved update
+pass	pd4 a RECURSIVE per-level List.update chain zeroes a copy while the original survives
+pass	pd5 TWO divergent update aliases from one list each see only their own write
+pass	pd6 a shared update at index 35 of a 40-element list crosses the RRB leaf boundary persistently
