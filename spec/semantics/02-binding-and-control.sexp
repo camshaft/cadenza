@@ -5742,6 +5742,41 @@
 ; the discarded operand's evaluation) would miscompile. The fold's own comment says "caller
 ; trap-guards the discard"; these witness both that guard and the two identity preconditions.
 
+(case "a mirrored equality pair under and folds by commutativity to one equality"
+  (doc    "`=` is COMMUTATIVE, so `(= a b)` and `(= b a)` are the SAME predicate; `(and (= a b) (= b a))`
+           idempotently folds to `(= a b)`. The VALUE is `a == b`: (3,3) → 1, (3,5) → 0, (0,0) → 1. The
+           `and`-connective mirrored-equality fold.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (and (= a b) (= b a)) 1 0)) (export main)))
+  (call   main (: 3 Int64) (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a mirrored equality pair under or folds by commutativity to one equality"
+  (doc    "The `or` companion: `(or (= a b) (= b a))` also folds to `(= a b)` (commutative, idempotent).
+           Value `a == b`: (3,3) → 1, (3,5) → 0, (0,0) → 1.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (or (= a b) (= b a)) 1 0)) (export main)))
+  (call   main (: 3 Int64) (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a swapped-operand ordering pair is a contradiction that does not mis-fold to one comparison"
+  (doc    "Ordering is NOT commutative: `(< a b)` and `(< b a)` are DIFFERENT (a disjoint pair), so `(and
+           (< a b) (< b a))` is a CONTRADICTION — always false (a and b cannot each be strictly less than
+           the other). A bogus swap-idempotence that collapsed them to one `<` would be wrong; the value
+           is false at every relation: (3,5) → 0, (5,3) → 0, (4,4) → 0.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (and (< a b) (< b a)) 1 0)) (export main)))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64) (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 4 Int64) (: 4 Int64)) (output (: 0 Int64)))
+
+(case "the commutative equality swap-fold declines a trapping operand and keeps both compares"
+  (doc    "The commutative-swap fold (`(= a b)` ~ `(= b a)`) requires a TRAP-FREE operand, so a trapping
+           operand declines the swap — both compares stay and the trap fires. `(and (= (/ 10 a) b) (= b
+           (/ 10 a)))` at a = 0: the `(/ 10 0)` traps (the fold must not drop it by mis-swapping). Pins
+           the trap-safety guard of the mirrored-equality fold.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (if (and (= (/ 10 a) b) (= b (/ 10 a))) 1 0)) (export main)))
+  (call   main (: 0 Int64) (: 5 Int64)) (trap "divide by zero"))
+
 (case "complementary comparisons over different operand pairs do not fold to a tautology"
   (doc    "`(or (< a b) (>= a c))` with b ≠ c is NOT exhaustive — at a=5,b=3,c=9 BOTH disjuncts are false
            (5 ≮ 3, 5 < 9) → 0; at a=5,b=9,c=9 the first holds → 1. A fold matching only the comparison
