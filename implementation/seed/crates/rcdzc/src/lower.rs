@@ -3129,15 +3129,32 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
     // exactly the bytes the kernel decodes, unblocking reducer_publish/git-publish end-to-end.
     let mut b = crate::ast::Builder::new();
     let Some(root) = encode_ast_value(db, ast_val, &disc, &mut b) else {
-        // The operand did not fold to an encodable constant AST. Before the generic decline, const-EVALUATE
-        // it: `Ast.encode` DEMANDS a compile-time constant, so a `trap` reached on the (const-demanded) fold
-        // is a fail-loud authoring error — surface its MESSAGE as the compile error (CDZ0304), not the
-        // generic "runtime AST value" decline. This catches the non-recursive const-fn trap the ordinary
-        // inliner lowers to a textless `Core::Trap` (dropping the message), which `encode_ast_value` then
-        // can't lift. A non-trapping runtime AST still falls through to the honest decline below.
+        // The operand did not fold to an encodable constant AST via `core_of`. Before the generic decline,
+        // const-EVALUATE it — `Ast.encode` DEMANDS a compile-time constant, so the general evaluator is the
+        // demand signal, and it reaches folds `core_of` does not (a Map/Set query, a recursion, or a
+        // composition inside a `const`-param fn whose result is an Ast value):
+        //   - a TAKEN `trap` surfaces its MESSAGE as the compile error CDZ0304 (a fail-loud authoring error,
+        //     not the generic decline — catches the const-fn trap the inliner lowers to a textless `Trap`);
+        //   - a folded Ast VALUE is MATERIALIZED (`cval_to_ast` synthesizes a node whose memoized core IS the
+        //     value) and encoded through the SAME canonical `codec::encode` path — so `Ast.encode` folds ANY
+        //     operand the evaluator can reduce, byte-identical to a direct fold.
+        // A genuinely-runtime AST (the evaluator also declines) falls through to the honest decline below.
         let mut budget: u64 = 1_000_000;
-        if let Some(CVal::Trap(msg)) = const_eval(db, ast_val, &CEnv::default(), &mut budget) {
-            return Core::Poison(Reject::coded(Code::ConstTrap, msg.to_string()));
+        match const_eval(db, ast_val, &CEnv::default(), &mut budget) {
+            Some(CVal::Trap(msg)) => {
+                return Core::Poison(Reject::coded(Code::ConstTrap, msg.to_string()));
+            }
+            Some(cv) => {
+                if let Some(synth) = cval_to_ast(db, &cv) {
+                    let mut b2 = crate::ast::Builder::new();
+                    if let Some(root2) = encode_ast_value(db, synth, &disc, &mut b2) {
+                        let bytes = crate::codec::encode(&b2.finish(root2));
+                        trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a const_eval-reduced AST value to its canonical cdzast bytes");
+                        return Core::ConstBytes(bytes.into());
+                    }
+                }
+            }
+            None => {}
         }
         return Core::Poison(Reject::decline(
             "Ast.encode of a runtime AST value is not yet computed (constant AST values only)",
