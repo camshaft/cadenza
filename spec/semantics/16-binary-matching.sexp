@@ -2340,3 +2340,42 @@
             (export f)))
   (call   f (: 2 Int64)) (output (: 1500 Int64))
   (live-objects 0))
+
+; -- breaker batch 404 (2026-08-26): RUNTIME dependent-size utf8 segment decodes — non-final with
+; trailing field, final position, and the bytes-segment control (cu01-cu03).
+
+(case "cu01 runtime NON-FINAL dependent-size utf8 segment decodes with a trailing field"
+  (input (do
+    (def (main (: x UInt8))
+      (do
+        (def b (Bytes.of (list 2 104 x 7)))
+        (match b
+          ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s))
+          (_ -1))))
+    (export main)))
+  (call main (: 105 UInt8)) (output (: 2 Int64))
+  (call main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "cu02 runtime FINAL dependent-size utf8 segment decodes"
+  (input (do
+    (def (main (: x UInt8))
+      (do
+        (def b (Bytes.of (list 2 104 x)))
+        (match b
+          ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
+          (_ -1))))
+    (export main)))
+  (call main (: 105 UInt8)) (output (: 2 Int64))
+  (call main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "cu03 CONTROL runtime non-final dependent-size BYTES segment"
+  (input (do
+    (def (main (: x UInt8))
+      (do
+        (def b (Bytes.of (list 2 104 x 7)))
+        (match b
+          ((bin (u8 n) (bytes body n) (u8 7)) (Bytes.len body))
+          (_ -1))))
+    (export main)))
+  (call main (: 105 UInt8)) (output (: 2 Int64))
+  (call main (: 99 UInt8)) (output (: 2 Int64)))

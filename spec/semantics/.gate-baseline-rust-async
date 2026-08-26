@@ -7405,3 +7405,18 @@ pass	ch04 a runtime-branch-selected closure applies
 pass	ch08 String.from-bytes of RUNTIME-built bytes validates
 pass	ch01b eta-expanded closure control for prim-as-value
 pass	ch01d bare operator to an UNCURRIED-annotated HOF applied (g a b)
+todo	cr01 TWO exported members in one interface — both callable
+todo	cr02 an export whose body runs an IN-GUEST handled effect
+todo	cr03b let-sequenced: handle FIRST, then host call (same combination, flat nesting)
+todo	cr03c host call INSIDE the handled body
+todo	cr03d combination with s64 host result (no Int64.of) — nested
+todo	cq04c record host-ARG with s64 result (no Int64.of)
+pass	fse3c single grow op, literal float seed, float-mul next-state
+pass	fse3e cancel arm alone — (- s s) self-subtraction in the answer
+pass	fse3f FINITE computed seed (+ 1.0 0.5)
+pass	cx5b CONTROL: pure closure through the same recursive HOF
+pass	cx5c LET-BOUND effectful closure invoked directly (no HOF)
+pass	cu01 runtime NON-FINAL dependent-size utf8 segment decodes with a trailing field
+pass	cu02 runtime FINAL dependent-size utf8 segment decodes
+pass	cu03 CONTROL runtime non-final dependent-size BYTES segment
+pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
