@@ -4643,6 +4643,7 @@ fn collect_used_ops_into_seen(
             out.insert(OP_AST_PRINT);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP); // reclaim the fresh discs buffer + an owned Ast operand (emit_ast_op_with_discs)
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `Ast.encode` (runtime) calls the `ast-encode` heap op (op 93) over its Ast operand. Like
@@ -4652,11 +4653,13 @@ fn collect_used_ops_into_seen(
             out.insert(OP_AST_ENCODE);
             out.insert(OP_BYTES_ALLOC);
             out.insert(OP_BYTES_SET);
+            out.insert(OP_DROP); // reclaim the fresh discs buffer + an owned Ast operand (emit_ast_op_with_discs)
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `Blake3.of` calls the `hash-blake3` heap op (op 91) over its Bytes operand.
         Core::Blake3Of { operand } => {
             out.insert(OP_HASH_BLAKE3);
+            out.insert(OP_DROP); // reclaim an owned Bytes operand after the borrowing hash (Blake3Of emit)
             collect_used_ops_into_seen(db, operand, out, visited);
         }
         // `String.from-bytes` on a runtime Bytes: `str-from-bytes` (→ the String handle, or NULL when the
@@ -9973,6 +9976,67 @@ fn emit_record_arg_marshal(
 /// scratch slots used (so `select_function` declares exactly that many); `scratch_ty` records each
 /// scratch slot's value type (so it is declared at the type it is set with). Exhaustive over `Core`.
 #[allow(clippy::too_many_arguments)]
+/// Emit a runtime `ast-print`/`ast-encode` (op 92/93): push the `Ast` operand, bake the compile-time `discs`
+/// descriptor into a FRESH `Bytes` buffer on top, then call `op` — which BORROWS both the Ast handle and the
+/// discs buffer (the runtime reads them via `op_bytes_get`, dropping neither) and returns a fresh String/Bytes.
+/// RECLAMATION: the always-fresh `discs` buffer, AND an OWNED-temporary Ast operand (a constructed
+/// `(Ast.Int …)` / call result — `(= (Ast.encode a) (Ast.encode b))` leaked both per side), are otherwise
+/// never dropped → leak. Stash the operand (iff owned) and the discs buffer, run the borrowing op, then drop
+/// them. A BORROWED operand (param / kept-local) is left to its owner (dropping it would be a double-free).
+/// The emitted RESULT bytes are byte-identical to the un-reclaimed form — only dead temporaries are freed.
+fn emit_ast_op_with_discs(
+    db: &mut Db,
+    operand: StructId,
+    discs: &[u8],
+    op: &'static str,
+    slots: &HashMap<StructId, u32>,
+    base: u32,
+    high: &mut u32,
+    scratch_ty: &mut HashMap<u32, ValType>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    let reclaim_operand = matches!(
+        heap_operand_ownership(db, operand),
+        Ok(HandleOwnership::Owned)
+    );
+    let ast_slot = base;
+    let discs_slot = base + 1;
+    *high = (*high).max(discs_slot + 1);
+    scratch_ty.insert(ast_slot, ValType::I32);
+    scratch_ty.insert(discs_slot, ValType::I32);
+    emit(
+        db,
+        operand,
+        slots,
+        discs_slot + 1,
+        high,
+        scratch_ty,
+        layout,
+        out,
+    )?; // [ast]
+    if reclaim_operand {
+        out.push(Lir::LocalTee(ast_slot)); // [ast], ast_slot = the owned Ast operand
+    }
+    out.push(Lir::ConstI32(discs.len() as i32));
+    out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [ast, discs-buf]
+    for (j, &byte) in discs.iter().enumerate() {
+        out.push(Lir::ConstI32(j as i32));
+        out.push(Lir::ConstI32(byte as i32));
+        out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
+    }
+    out.push(Lir::LocalTee(discs_slot)); // [ast, discs-buf], discs_slot = the fresh discs buffer
+    out.push(Lir::CallImport(op)); // → [string|bytes] (borrows ast + discs)
+    out.push(Lir::LocalGet(discs_slot)); // [result, discs-buf]
+    out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the always-fresh discs buffer)
+    if reclaim_operand {
+        out.push(Lir::LocalGet(ast_slot)); // [result, ast]
+        out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned Ast operand)
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit(
     db: &mut Db,
     id: StructId,
@@ -12421,6 +12485,26 @@ fn emit(
         // `Blake3.of` — the blake3 content hash. Emit the Bytes operand (leaves its handle), then the
         // `hash-blake3` heap op (op 91): it BORROWS the handle and returns a FRESH 32-byte Bytes leaf.
         Core::Blake3Of { operand } => {
+            // RECLAMATION (mirror `ListLen`): `hash-blake3` BORROWS its Bytes operand (`op_bytes_len`/
+            // `op_bytes_get` reads, no drop) and returns a FRESH digest. A fresh OWNED-TEMPORARY operand
+            // (a `Bytes.of` / concat / another op's result) is otherwise never dropped → leaks one Bytes
+            // per call (`(= (Blake3.of x) (Blake3.of y))` leaked its two owned inputs). Stash it, drop after
+            // the borrowing hash. A BORROWED operand (param / kept-local) is left to its owner.
+            let reclaim = matches!(
+                heap_operand_ownership(db, operand),
+                Ok(HandleOwnership::Owned)
+            );
+            if reclaim {
+                let op_slot = base;
+                *high = (*high).max(op_slot + 1);
+                scratch_ty.insert(op_slot, ValType::I32);
+                emit(db, operand, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+                out.push(Lir::LocalTee(op_slot)); // [bytes], op_slot = the owned operand
+                out.push(Lir::CallImport(OP_HASH_BLAKE3)); // → [digest] (borrows bytes)
+                out.push(Lir::LocalGet(op_slot)); // [digest, bytes]
+                out.push(Lir::CallImport(OP_DROP)); // → [digest] (reclaim the owned temporary)
+                return Ok(());
+            }
             emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::CallImport(OP_HASH_BLAKE3)); // → [digest] (borrows bytes)
             Ok(())
@@ -12431,18 +12515,18 @@ fn emit(
         // the top three, leaving the `Ast` handle beneath), then the `ast-print` heap op (op 92): it BORROWS
         // the `Ast` handle + `discs` and returns a FRESH `String` leaf. `ast-print(handle, discs)` — the stack
         // `[ast, discs-buf]` feeds param0=ast, param1=discs. Byte-identical to the compile-time fold.
-        Core::AstPrint { operand, discs } => {
-            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [ast]
-            out.push(Lir::ConstI32(discs.len() as i32));
-            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [ast, discs-buf]
-            for (j, &byte) in discs.iter().enumerate() {
-                out.push(Lir::ConstI32(j as i32));
-                out.push(Lir::ConstI32(byte as i32));
-                out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
-            }
-            out.push(Lir::CallImport(OP_AST_PRINT)); // → [string] (borrows ast + discs)
-            Ok(())
-        }
+        Core::AstPrint { operand, discs } => emit_ast_op_with_discs(
+            db,
+            operand,
+            &discs,
+            OP_AST_PRINT,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        ),
         // `Ast.encode` (runtime) — serialize the heap `Ast` to its canonical `cdzast` BYTES. Identical shape
         // to `AstPrint`: emit the `Ast` operand (leaves its handle), bake the 9-disc descriptor into a FRESH
         // `Bytes` buffer on top (the operand emit ran on a clean stack, so per-byte `bytes-set` touches only
@@ -12450,18 +12534,18 @@ fn emit(
         // BORROWS the `Ast` handle + `discs` and returns a FRESH OWNED `Bytes` leaf. `ast-encode(handle,
         // discs)` — stack `[ast, discs-buf]` feeds param0=ast, param1=discs. Byte-identical to the
         // compile-time `codec::encode` fold (the op runs the SAME shared codec).
-        Core::AstEncode { operand, discs } => {
-            emit(db, operand, slots, base, high, scratch_ty, layout, out)?; // [ast]
-            out.push(Lir::ConstI32(discs.len() as i32));
-            out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [ast, discs-buf]
-            for (j, &byte) in discs.iter().enumerate() {
-                out.push(Lir::ConstI32(j as i32));
-                out.push(Lir::ConstI32(byte as i32));
-                out.push(Lir::CallImport(OP_BYTES_SET)); // [ast, discs-buf]
-            }
-            out.push(Lir::CallImport(OP_AST_ENCODE)); // → [bytes] (borrows ast + discs)
-            Ok(())
-        }
+        Core::AstEncode { operand, discs } => emit_ast_op_with_discs(
+            db,
+            operand,
+            &discs,
+            OP_AST_ENCODE,
+            slots,
+            base,
+            high,
+            scratch_ty,
+            layout,
+            out,
+        ),
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
         // `str-from-bytes` (CONSUMES it; strict UTF-8 validate → the buffer AS a String handle, or NULL when
         // invalid), then build `Some(handle)` / `None`. The returned handle is already OWNED (str-from-bytes
