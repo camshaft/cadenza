@@ -2111,3 +2111,50 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64)))
+
+; Byte-string-literal pattern WELL-FORMEDNESS edges — the same rules a scalar/String match obeys, keyed
+; per-arm on the pattern's own kind (a byte-string pattern expects `Bytes`, a text pattern expects
+; String/Symbol). These pin the invariants so a future change to the dispatch lowering cannot quietly
+; relax them.
+
+(case "a byte-string pattern over a String scrutinee is a type error"
+  (doc    "A `b\"AB\"` pattern arm over a definitely-`String` scrutinee crosses the Bytes/String boundary
+           → CDZ0201, the byte-string twin of the symbol/string crossing (17-symbols). The pattern's
+           expected type comes from its OWN kind (`Bytes`), not the scrutinee, so a text scrutinee does
+           not excuse a byte-literal arm.")
+  (input  (do
+            (def (classify (: s String)) (match s (b"AB" 1) (_ 0)))
+            (def (main (: k Int64)) (classify (if (= k 0) "AB" "x")))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a String-literal pattern over a Bytes scrutinee is a type error"
+  (doc    "The mirror: a `\"AB\"` String-literal arm over a definitely-`Bytes` scrutinee crosses the
+           boundary → CDZ0201. Pins that the per-arm kind check fires whichever kind the crossing arm
+           carries, so a Bytes scrutinee admits only byte-string / wildcard arms.")
+  (input  (do
+            (def (classify (: b Bytes)) (match b ("AB" 1) (_ 0)))
+            (def (main (: k Int64)) (classify (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 66)))))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a runtime Bytes match without a catch-all is non-exhaustive"
+  (doc    "A Bytes match is never exhausted by literals (an unequal byte sequence always falls through),
+           so `(match b (b\"AB\" …) (b\"CD\" …))` with NO wildcard is non-exhaustive → CDZ0210 — the same
+           rule a scalar/String match obeys (`core-semantics.md #Matching Is Exhaustive Or Rejected`).")
+  (input  (do
+            (def (classify (: b Bytes)) (match b (b"AB" 1) (b"CD" 2)))
+            (def (main (: k Int64)) (classify (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 66)))))
+            (export main)))
+  (error  CDZ0210))
+
+(case "an empty byte-string literal pattern matches the empty Bytes"
+  (doc    "The empty byte-string literal `b\"\"` is a whole-value literal like any other — it matches
+           exactly the empty `Bytes` by content, distinct from a one-byte `b\"A\"`. Pins the zero-length
+           edge of byte-string dispatch (an empty payload is a real value, not a degenerate no-op).")
+  (input  (do
+            (def (classify (: b Bytes)) (match b (b"" 1) (b"A" 2) (_ 0)))
+            (def (main (: k Int64)) (classify (if (= k 0) (Bytes.of (list)) (Bytes.of (list 65)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 2 Int64)))
