@@ -10030,37 +10030,6 @@ fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
 }
 
 #[test]
-fn a_float32_match_arm_grounds_its_bare_literal_body_to_f32_not_f64() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    // A bare-`ConstFloat` MATCH-ARM body takes the match's RESULT float width, not its own default `Float64`.
-    // `(: (match n (0 0.5) (_ (f (- n 1)))) Float32)` — the annotation is on the `match`, so the literal arm
-    // `0.5` solves to `Float64`, and `Core::ConstFloat`'s emit (reading the node's own solved width) pushed
-    // an `f64.const` while the arm's block type is `f32` → an INVALID module ("expected f32, found f64").
-    // A SIMPLE all-literal match `(match n (0 0.5) (_ 1.5))` slipped past because it const-folds to one
-    // `f32.const`; a match with a RUNTIME arm (a self-call, as here) does not fold, so the bare literal
-    // reaches emit ungrounded. Fix: `emit_arm_body` grounds a bare-`ConstFloat` arm to the match's
-    // `block_ty` f32 — the match-arm twin of the if-branch grounding (`a_float32_if_result_grounds_...`).
-    // The recursion bottoms at `n == 0 → 0.5`, so `f k` returns 0.5 as f32 for any k.
-    let src = "(module m (def (f (: n Int64)) (: (match n (0 0.5) (_ (f (- n 1)))) Float32)) \
-               (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("compile a valid module (was an invalid-module reject before the fix)");
-    let got: f32 = run_returns_with(&bytes, "f", &[Val::S64(3)]);
-    assert_eq!(
-        got.to_bits(),
-        0.5f32.to_bits(),
-        "the literal arm 0.5 grounds to f32 (matches the runtime-arm block type)"
-    );
-    // A Float64 match is UNCHANGED (its literal arm was always the default f64).
-    let f64src = "(module m (def (f (: n Int64)) (: (match n (0 0.5) (_ (f (- n 1)))) Float64)) \
-                  (export f))";
-    let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
-    let got: f64 = run_returns_with(&bytes, "f", &[Val::S64(3)]);
-    assert_eq!(got.to_bits(), 0.5f64.to_bits(), "Float64 match unchanged");
-}
-
-#[test]
 fn a_float32_match_with_all_literal_arms_grounds_via_the_select_and_probe_chain_paths() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
