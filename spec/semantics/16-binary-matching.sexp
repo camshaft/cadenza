@@ -1916,6 +1916,47 @@
   (call   main (: 105 UInt8)) (output (: 12 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64)))
 
+(case "a runtime bin match decodes a FINAL DEPENDENT-size utf8 segment"
+  (doc    "The dependent-size companion of the constant-size utf8 pins (:1878/:1899): a `(u8 n)` length
+           prefix SIZES the following `(utf8 s n)` — the string-decoding analogue of the dependent-size
+           `(bytes body n)` case (cu-control below), which already passes, so the runtime length/offset
+           plumbing works and the only new work is the strict-UTF-8 decode at a RUNTIME-computed size.
+           Over `(Bytes.of (list 2 104 x))`: n=2 sizes the two body bytes [104, x] as the utf8 segment,
+           the whole-scrutinee length pins `bytes-len == 1 + n`; x=105 -> \"hi\" (2 scalars); x=255 is an
+           invalid continuation byte -> the utf8 segment does not match -> the `_` arm -> -1. Pins that a
+           dependent-size utf8 reads `n` at run time (a `BinSizedRead` of a `BinIntRead` length) and still
+           validates strict UTF-8 as a totality non-match.")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list 2 104 x)))
+            (match b
+              ((bin (u8 n) (utf8 s n)) (String.scalar-len s))
+              (_ -1))))
+        (export main)))
+  (call   main (: 105 UInt8)) (output (: 2 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "a runtime bin match decodes a NON-FINAL dependent-size utf8 segment before a trailing field"
+  (doc    "The non-final face of the dependent-size utf8 decode: `(bin (u8 n) (utf8 s n) (u8 7))` — the
+           utf8 segment is NOT last, so the trailing `(u8 7)` literal probe reads at the DYNAMIC offset
+           `1 + n` (the utf8's runtime byte length threads into the following segment's `off_plus`, exactly
+           as a dependent `(bytes body n)` does). Over `(Bytes.of (list 2 104 x 7))`: n=2 sizes s = [104, x],
+           the trailing byte 7 sits at offset 1+2=3 and must equal the literal 7; x=105 -> \"hi\" (2 scalars);
+           x=255 is ill-formed utf8 -> non-match -> -1. Pins that a dependent-size utf8 composes with a
+           following segment at a runtime-computed offset (a byte-reversed / stale-offset read would probe
+           the wrong byte for the `7` literal, or the utf8 would decode the wrong window).")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list 2 104 x 7)))
+            (match b
+              ((bin (u8 n) (utf8 s n) (u8 7)) (String.scalar-len s))
+              (_ -1))))
+        (export main)))
+  (call   main (: 105 UInt8)) (output (: 2 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
   (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets
            over [0,1,2,3,4,254,255]: `(u32 n le)` at k=1 assembles [1,2,3,4] least-significant-first ->
