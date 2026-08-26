@@ -7773,3 +7773,10 @@ pass	msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm re
 pass	msr4 a runtime-BUILT Ast scrutinee matched and reduced to a scalar reclaims
 pass	msr5 an owned TUPLE-with-heap-element scrutinee reclaims shell and element
 pass	msr6 a NESTED match — outer list arm rebinds an inner record — reclaims both shells
+pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
+pass	sto3 to-list length + sum are order-independent invariants
+pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
+pass	sto5 a STRING set to-list is lexicographically sorted
+pass	sto6 a 20-element multi-node set to-list starts sorted 1,2,3
+pass	sto7 negatives and gaps — {100,-5,7} to-list is sorted
+pass	sto8 non-prefix string set to-list orders lexicographically ab,b,bb

@@ -3580,3 +3580,89 @@
             (export main)))
   (call   main) (output (: 9 Int64))
   (live-objects 0))
+
+; -- breaker batch 416 (2026-08-26): runtime Set.to-list ORDER semantics (#3747 same-hour probe).
+; The materialized order is the blessed content TOTAL ORDER (sorted), deterministic and
+; backend-UNIFORM: ints incl. negatives/gaps, lexicographic strings, and a 20-element multi-node
+; CHAMP all sort; insertion order is irrelevant (walk-equality twin) and len+sum invariants hold.
+; NOTE for the const lens: the pinned 'const Set materialized to a list declines (order not
+; presumed)' soundness case predates this — the RUNTIME order is in fact canonical-sorted, so the
+; const fold could safely mirror it (observation filed, not changed here).
+
+(case "sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk"
+  (input (do
+    (def (main (: n Int64))
+      (if (= (tuple 1 (Set.to-list (Set.of (list 3 1 2 n)))) (tuple 1 (Set.to-list (Set.of (list n 2 3 1))))) 1 0))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "sto3 to-list length + sum are order-independent invariants"
+  (input (do
+    (def (sum-at (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i)
+        ((Option.Some v) (+ v (sum-at xs (+ i 1))))
+        ((Option.None) 0)))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (Set.of (list n 10 20)))))
+        (+ (* 100 (List.len xs)) (sum-at xs 0))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 333 Int64)))
+
+(case "sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3"
+  (input (do
+    (def (at (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (Set.of (list 3 1 2)))))
+        (+ (* 100 (at xs 0)) (+ (* 10 (at xs 1)) (at xs 2)))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 123 Int64)))
+
+(case "sto5 a STRING set to-list is lexicographically sorted"
+  (input (do
+    (def (at (: xs (List String)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) "?")))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (Set.of (list "b" "a" "c")))))
+        (String.concat (at xs 0) (String.concat (at xs 1) (at xs 2)))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: "abc" String)))
+
+(case "sto6 a 20-element multi-node set to-list starts sorted 1,2,3"
+  (input (do
+    (def (grow (: s (Set Int64)) (: k Int64))
+      (if (= k 0) s (grow (Set.insert s k) (- k 1))))
+    (def (at (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (grow (Set.of (list)) 20))))
+        (+ (* 10000 (at xs 0)) (+ (* 100 (at xs 1)) (at xs 2)))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 10203 Int64)))
+
+(case "sto7 negatives and gaps — {100,-5,7} to-list is sorted"
+  (input (do
+    (def (at (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -999)))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (Set.of (list 100 -5 7)))))
+        (if (= (at xs 0) -5) (if (= (at xs 1) 7) (if (= (at xs 2) 100) 1 -3) -2) -1)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "sto8 non-prefix string set to-list orders lexicographically ab,b,bb"
+  (input (do
+    (def (at (: xs (List String)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) "?")))
+    (def (main (: n Int64))
+      (let ((xs (Set.to-list (Set.of (list "bb" "ab" "b")))))
+        (String.concat (at xs 0) (String.concat "|" (String.concat (at xs 1) (String.concat "|" (at xs 2)))))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: "ab|b|bb" String)))
