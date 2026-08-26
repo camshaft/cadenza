@@ -77,6 +77,12 @@ pub enum Entry {
     /// entry, so without this a checker cannot observe that a reducer invoked `run` — an echo of the payload
     /// is satisfiable without ever calling it (`design/cadenza-platform.md` §9, log-every-host-call).
     Run(RunCall),
+    /// A call to the test-only `arg-probe` host interface (`design/cadenza-platform.md` §9): the arguments a
+    /// guest passed, re-encoded to their canonical Cadenza value form by the host and recorded verbatim, so a
+    /// checker asserts the marshalled ARG VALUES byte-for-byte. This is the one host interface whose point is
+    /// the *received arguments* — it targets a silent arg-marshalling miscompile (a mixed-width variant payload
+    /// coerced to the wrong width) that no output/echo/run-fires check can observe.
+    ArgProbe(ArgProbeCall),
 }
 
 /// A host call rejected at the argument-parse boundary (`design/cadenza-platform.md` §9): its interface and
@@ -110,6 +116,21 @@ pub struct RunCall {
     pub output: Option<Bytes>,
     /// The failure category (`missing-handler`/`faulted`) on a failed run, else `None`.
     pub error: Option<Str>,
+}
+
+/// A call to the test-only `arg-probe` host interface (`design/cadenza-platform.md` §9): the two arguments a
+/// guest passed to `probe(r, items)`, each re-encoded by the host to its canonical Cadenza value form
+/// (`Value.encode`) and carried verbatim as opaque bytes. `record` is the encoded `probe-record` (a variant
+/// field plus a scalar — the register-flatten marshal path); `items` is the encoded `list<narrow>` (a variant
+/// as a list element — the memory marshal path). A checker `Value.decode`s the log, then asserts these against
+/// the same `Value.encode` of the guest's known argument literals: a wrong mixed-width coercion produces
+/// different bytes, so the miscompile becomes observable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArgProbeCall {
+    /// The received `probe-record` argument in its canonical Cadenza value encoding.
+    pub record: Bytes,
+    /// The received `list<narrow>` argument in its canonical Cadenza value encoding.
+    pub items: Bytes,
 }
 
 /// A reducer the harness spawned at the start of a run, and the name the run gave it — the log's record
@@ -651,6 +672,12 @@ impl fmt::Display for Record {
                     Some(o) => format!("ok ({} byte(s))", o.len()),
                     None => format!("err {}", r.error.as_ref().map_or("?", Str::as_str)),
                 }
+            ),
+            Entry::ArgProbe(c) => write!(
+                f,
+                "arg-probe record=({} byte(s)) items=({} byte(s))",
+                c.record.len(),
+                c.items.len()
             ),
         }
     }

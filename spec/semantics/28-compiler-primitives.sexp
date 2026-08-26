@@ -797,3 +797,71 @@
   (doc "Looking up the removed key `1` folds to `Option.None` (the match's absent arm → -1).")
   (input (do (def (main) (const (match (Map.lookup (Map.remove (Map.insert (Map.empty) 1 10) 1) 1) ((Option.Some v) v) ((Option.None) -1)))) (export main)))
   (output (: -1 Int64)))
+
+; --- Primitive 2: const execution — the CHAMP-ORDER SOUNDNESS negative (never materialize a const Map/Set) --
+; A const Map/Set is QUERY-ONLY: `cval_to_core` DECLINES a `CVal::Map`/`CVal::Set`, so an ORDER-EXPOSING use —
+; materializing it to a list via `Map.to-list`/`Set.to-list` — does NOT fold. The runtime collection is a CHAMP
+; whose iteration order the compiler must not presume, so folding a to-list would bake a PRESUMED order (a
+; miscompile if it differs from the runtime's). The query ops (lookup/contains/len/algebra) fold because their
+; results are order-INDEPENDENT; a to-list is not. These pin the soundness NEGATIVE (previously only a comment):
+; a `(const …)` over a Map/Set to-list REJECTS. A future change that materialized a const Map in some order
+; would make these FOLD — and fail the pin, catching the order-presumption regression.
+
+(case "a const Map materialized to a list declines — CHAMP iteration order is not presumed (soundness)"
+  (doc    "`Map.to-list` over a constant map is order-EXPOSING; const_eval never materializes a `CVal::Map`
+           (`cval_to_core` declines it), so `(const (List.len (Map.to-list …)))` REJECTS rather than baking a
+           presumed insertion order. The query ops fold; a to-list does not.")
+  (input  (do (def (main) (const (List.len (Map.to-list (Map.insert (Map.insert (Map.empty) 1 10) 2 20))))) (export main)))
+  (error  CDZ0201 (message "compile-time constant")))
+
+(case "a const Set materialized to a list declines — CHAMP iteration order is not presumed (soundness)"
+  (doc    "The Set twin: `Set.to-list` over a constant set is order-EXPOSING; const_eval never materializes a
+           `CVal::Set`, so `(const (List.len (Set.to-list …)))` REJECTS. Only order-independent Set results
+           (contains/len/algebra) fold.")
+  (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list 1 2 3)))))) (export main)))
+  (error  CDZ0201 (message "compile-time constant")))
+
+;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
+(case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main) (const (handle E 40 ((tick () s (resume s (+ s 1)))) (+ (E.tick) 2))))
+    (export main)))
+  (output (: 42 Int64)))
+
+(case "chk2 a closed handle with STRING state folds under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E "x"
+          ((tick () s (resume (String.byte-len s) (String.concat s "y"))))
+          (+ (* 10 (E.tick)) (E.tick)))))
+    (export main)))
+  (output (: 12 Int64)))
+
+(case "cms1 closed handle with TUPLE state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E (tuple 1 10)
+          ((tick () s
+             (match s
+               ((tuple a b) (resume (+ a b) (tuple (+ a 1) (* b 2)))))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 33 Int64)))
+
+(case "cms2 closed handle with RECORD state under (const ...)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (main)
+      (const
+        (handle E (record (= a 1) (= b 10))
+          ((tick () s
+             (resume (+ (. s a) (. s b))
+                     (record (= a (+ (. s a) 1)) (= b (* (. s b) 2))))))
+          (+ (E.tick) (E.tick)))))
+    (export main)))
+  (output (: 33 Int64)))

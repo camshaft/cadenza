@@ -16981,6 +16981,60 @@
   (call   main (: 500 Int64)) (output (: 49500 Int64))
   (live-objects 0))
 
+(case "Record.project over a runtime record leaves no live heap objects"
+  (doc    "`(Record.project (mk 0) (a c))` keeps fields a,c of a runtime source record; reading `.a` (1),
+           looped 500× -> 500. The owned-temporary source (borrowed by the projections) and the fresh
+           projected result must both be reclaimed after the scalar read — live-objects 0.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.project (mk 0) (a c)) a))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.without over a runtime record leaves no live heap objects"
+  (doc    "`(Record.without (mk 0) (b))` drops field b of a runtime source; reading `.a` (1), looped 500× ->
+           500. Source + fresh result both reclaimed — live-objects 0.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.without (mk 0) (b)) a))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.pop over a runtime record (value, rest) leaves no live heap objects"
+  (doc    "`(Record.pop (mk 0) a)` returns a `(a-value, rest-record)` tuple; reading element 0 (1), looped
+           500× -> 500. The owned source, the fresh rest-record, and the tuple result must all be reclaimed
+           after the scalar read — live-objects 0. Exercises the (value, rest) tuple-result shape.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.pop (mk 0) a) 0))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "Record.merge of two runtime records leaves no live heap objects"
+  (doc    "`(Record.merge (mkA j) (mkB j))` unions {a,b} with {c,d}; reading `.c` (3, from the second source),
+           looped 500× -> 1500. The sources are built from the runtime loop index `j` (so they are genuine
+           owned temporaries, not const-folded — the record value is the same at every `j`). BOTH
+           owned-temporary source records (each borrowed by its projections) and the fresh union result must
+           all be reclaimed — live-objects 0. Exercises the two-source shape.")
+  (input  (do
+            (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1))))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (. (Record.merge (mkA j) (mkB j)) c))) tot))
+            (def (main (: v Int64)) (loop 0 v 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects 0))
+
 (case "a record pattern over a Map-STORED record reads live heap fields after retrieval"
   (doc    "The storage-round-trip face of record matching: a record with a HEAP field (`(xs (list n 2))`,
            plus a `tag` string) is stored as a CHAMP map VALUE, retrieved by `Map.lookup`, and only then
@@ -19022,3 +19076,31 @@
     (export main)))
   (call main (: 1 Int64)) (output (: 2121 Int64))
   (live-objects 0))
+
+(case "a tuple wrapping a runtime list projects both fields and reclaims to no live heap objects"
+  (doc    "H2d Perceus balance: `pair-sum` builds `[0,1,2]` (a recursive List.push loop so it can't
+           const-fold), wraps it in `(tuple list 22)`, projects `List.len` of field 0 (3) + field 1 (22)
+           = 25, then drops the tuple -- which cascades to the list and its boxed elements. A balanced
+           dup/drop discipline nets 0 live heap cells after the round-trip. > 0 = a Perceus leak.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (pair-sum (: a Int64) (: b Int64))
+              (let ((t (tuple (build 0 a (list)) b))) (+ (List.len (. t 0)) (. t 1))))
+            (export pair-sum)))
+  (call   pair-sum (: 3 Int64) (: 22 Int64)) (output (: 25 Int64))
+  (live-objects 0))
+
+(case "a recursive match binder used twice over a heap-list sum payload projects a live field"
+  (doc    "`f` recurses to a base `(Mk (list 0) (list 0))` (heap lists); each recursive arm matches
+           `(f (+ n 1))`, binds `a` (a heap List), and USES IT TWICE in `(Mk a a)`. `main (f -4)` projects
+           `List.len` of the first field. The scrutinee is materialized once per level (the MatchSum wrapper
+           slot); the first field is `(list 0)` (length 1) at every depth. Value-correct and free of
+           use-after-free -- a double-freed twice-used binder would trap before returning 1.")
+  (input  (do
+            (type P (Mk (List Int64) (List Int64)))
+            (def (f (: n Int64)) (if (= n 0) (Mk (list 0) (list 0))
+                (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
+            (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
+            (export main)))
+  (call   main (: -4 Int64)) (output (: 1 Int64)))

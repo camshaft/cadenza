@@ -264,6 +264,7 @@ pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the mini
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
 pass	Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
+pass	Map.to-list over an owned-temporary runtime map reclaims the source, leaving no live heap objects
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	N-suffixed literals compose under BigInt arithmetic
@@ -302,7 +303,10 @@ pass	Record.extend chained onto Record.without of a map-borne record computes, n
 pass	Record.extend widens a map-extracted record and the wide row enters a new map
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.merge carries a CLOSURE field into the union layout and it applies
+pass	Record.merge of two runtime records leaves no live heap objects
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
+pass	Record.pop over a runtime record (value, rest) leaves no live heap objects
+pass	Record.project over a runtime record leaves no live heap objects
 pass	Record.project over runtime field values keeps the named fields and their live values
 pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
 pass	Record.with grows a LIST field by pushing onto the projected old value
@@ -311,6 +315,7 @@ pass	Record.with over a RUNTIME field leaves the original record readable (persi
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
 pass	Record.with over a runtime-produced record leaves no live heap objects
 pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
+pass	Record.without over a runtime record leaves no live heap objects
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Record.without strips a field on a map-extracted record and both maps stay typed
 pass	Result ordering agrees across targets — Ok below Err on the shared declaration order
@@ -363,6 +368,7 @@ pass	Set.to-list over a 100-element trie enumerates strictly increasing end to e
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
+pass	Set.to-list over an owned-temporary runtime set reclaims the source, leaving no live heap objects
 pass	Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order
@@ -1405,8 +1411,14 @@ pass	a checked-add over a RUNTIME operand emits the overflow check: Some when it
 pass	a checked-sub over RUNTIME operands emits the underflow check: Some when it fits, None on underflow
 pass	a checked-add over RUNTIME UInt64 operands emits the unsigned wrap-below check
 pass	a checked-sub over RUNTIME UInt64 operands emits the unsigned underflow check
-pass	a checked-MUL over a RUNTIME operand still declines (the wide-multiply / division-check emit is pending)
-pass	a NARROW-width checked-add over a RUNTIME operand still declines (the width-relative overflow emit is pending)
+pass	a checked-mul over a RUNTIME operand emits the division round-trip: Some when it fits, None on overflow
+pass	a runtime checked-mul hitting Int64.min EXACTLY fits (the naive-magnitude-check killer)
+pass	a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)
+pass	a runtime checked-mul over UInt64 operands emits the unsigned division round-trip
+pass	a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow
+pass	a NARROW-width signed checked-add/sub range-checks BOTH bounds (Int8 over/underflow)
+pass	a NARROW-width checked-sub over a RUNTIME operand range-checks the LOWER bound (Int8 underflow)
+pass	a NARROW-width checked-MUL over a RUNTIME operand still declines (the i64 accumulator does not cover u32×u32)
 pass	a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)
 pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after
@@ -3132,6 +3144,7 @@ pass	a recursive loop performs to TWO handlers per iteration with independent st
 pass	a recursive loop whose CONDITION performs — each iteration RE-dispatches (never hoisted)
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
+pass	a recursive match binder used twice over a heap-list sum payload projects a live field
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
@@ -4022,6 +4035,7 @@ pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
 pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
+pass	a tuple wrapping a runtime list projects both fields and reclaims to no live heap objects
 pass	a tuple-destructuring fn (lambda) parameter binds its parts
 pass	a tuple-of-HEAP state — every dispatch grows BOTH components in one rebuild
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
@@ -4100,6 +4114,10 @@ pass	a typed reducer performing a record-with-a-variant-f64-field host arg emits
 pass	Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)
 pass	Int64.checked-add over a u64 host-op RESULT evaluates the host call ONCE (the overflow formula names the operand)
 pass	a typed reducer performing a record-with-a-variant-scalar-field host arg emits, loads, and runs (via an imposed WIT world)
+pass	a record-with-a-MIXED-WIDTH-variant-field host arg emits, loads, and runs (via an imposed WIT world)
+pass	a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)
+pass	a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)
+pass	a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)
 pass	a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)
 pass	a typed reducer performing a record-with-an-option-scalar-field host arg emits, loads, and runs (via an imposed WIT world)
@@ -7482,3 +7500,25 @@ pass	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 pass	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 pass	cr03 an export combining an IN-GUEST handler AND a host import
 pass	cq04 host IMPORT: RECORD param + scalar result (reverse direction)
+pass	cmul1 runtime checked-mul in range yields Some
+pass	cmul2 runtime checked-mul just past Int64.max yields None (2^31 x 2^32)
+pass	cmul3 runtime checked-mul hitting Int64.min EXACTLY fits (-2^31 x 2^32) — the naive-magnitude-check killer
+pass	cmul4 runtime checked-mul of Int64.min by -1 yields None (the sign-flip overflow)
+pass	cmul5 runtime checked-mul of Int64.min by 1 yields Some Int64.min (identity edge)
+pass	cmu1 runtime UInt64 checked-mul at the exact top: (2^32-1) x (2^32+1) = 2^64-1 fits
+pass	cmu2 runtime UInt64 checked-mul just past the top: 2^32 x 2^32 = 2^64 yields None
+pass	cmu3 runtime UInt64 checked-add wraps None at max, Some just below
+pass	cmu4 runtime UInt64 checked-sub underflows None below zero, Some at exact zero
+pass	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
+pass	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
+pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
+pass	chk2 a closed handle with STRING state folds under (const ...)
+pass	cms1 closed handle with TUPLE state under (const ...)
+pass	cms2 closed handle with RECORD state under (const ...)
+pass	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
+pass	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
+pass	vres3 a NEGATIVE s64 payload through the variant host-result join
+pass	cnw1 runtime UInt8 checked-add at the 255 boundary
+pass	cnw3 runtime Int8 checked-add at the signed 127 boundary
+pass	cnw4 runtime Int8 checked-sub at the signed -128 boundary
+pass	cnw5 runtime UInt16 checked-add at the 65535 top

@@ -26664,27 +26664,274 @@ fn lower_checked_arith(
             }
         }
         // A runtime operand: compose the overflow-detecting Some/None from existing Core — the wrapping
-        // result plus the two's-complement overflow predicate — no new Core variant. Restricted to ADD/SUB
-        // at the full 64-bit width (Int64/UInt64): there the i64 register IS the value, so the sign-bit
-        // overflow test at bit 63 is exact and the unsigned wrap-below test needs no narrow mask. A NARROW
-        // width (whose stored representation makes the sign bit width-relative) and checked-MUL (which needs
-        // a wide multiply or a division-check) are a later increment — they decline cleanly rather than risk
-        // a wrong overflow verdict (a checked op that mis-reported overflow would be a silent miscompile).
+        // result plus the overflow predicate — no new Core variant. Restricted to the full 64-bit width
+        // (Int64/UInt64): there the i64 register IS the value, so ADD/SUB's sign-bit test at bit 63 is exact
+        // and MUL's division round-trip needs no narrowing. A NARROW width (whose stored representation makes
+        // the sign bit width-relative) is a later increment — it declines cleanly rather than risk a wrong
+        // overflow verdict (a checked op that mis-reported overflow would be a silent miscompile).
         _ => {
             let crate::ty::Ty::Int(it) = crate::infer::type_of(db, lhs) else {
                 return Core::Poison(Reject::decline(
                     "checked arithmetic on a runtime non-integer operand has no meaning",
                 ));
             };
-            if it.ground_width() != 64 || matches!(prim, Prim::CheckedMul) {
-                return Core::Poison(Reject::decline(
-                    "a runtime checked add/sub is emitted only at the 64-bit width; a narrow width or a \
-                     runtime checked-mul is not yet emitted (fold constants, or use wrapping arithmetic)",
-                ));
-            }
             let signed = it.ground_signed();
             let int_ty = crate::ty::Ty::Int(it);
             let result_ty = crate::infer::type_of(db, id);
+            // NARROW-WIDTH (8/16/32) checked ADD/SUB: widen both operands to Int64 (value-preserving —
+            // sign/zero extend per the operand's signedness, the same `Wrap` widen `.of` uses), do the op in
+            // Int64 where a narrow add/sub CANNOT overflow (operands are ≤32-bit, the exact sum/difference fits
+            // i64), then RANGE-CHECK the exact result against the NARROW `[tmin,tmax]`: in range → `Some(wrap-
+            // to-narrow)`, out → `None`. This sidesteps the width-relative sign-bit problem (the reason the
+            // narrow path was pinned) by computing exactly in the wide accumulator and checking the narrow
+            // bounds — the same interval the `.of` narrowing checks. Each operand is named ONCE (in its widen),
+            // so no host-operand double-fire. NARROW checked-MUL still declines (a u32×u32 product exceeds i64,
+            // so the exact-in-i64 trick does not cover it uniformly — a later increment).
+            if it.ground_width() < 64 {
+                if matches!(prim, Prim::CheckedMul) {
+                    return Core::Poison(Reject::decline(
+                        "a runtime narrow-width checked-mul is not yet emitted (a u32×u32 product exceeds the \
+                         i64 accumulator; fold constants, or use the 64-bit width)",
+                    ));
+                }
+                let Some((Some(tmin), Some(tmax))) = resolved_int_bounds(it) else {
+                    return Core::Poison(Reject::decline(
+                        "a narrow checked op needs resolved integer bounds",
+                    ));
+                };
+                let i64_ty = crate::ty::Ty::Int(crate::ty::IntTy::fixed(true, 64));
+                // Widen each operand to Int64 (value-preserving), then the exact wrapping op at Int64 (no
+                // overflow for narrow operands).
+                let a64 = synth_core(
+                    db,
+                    Core::Convert {
+                        op: Prim::Wrap,
+                        operand: lhs,
+                    },
+                    i64_ty.clone(),
+                );
+                let b64 = synth_core(
+                    db,
+                    Core::Convert {
+                        op: Prim::Wrap,
+                        operand: rhs,
+                    },
+                    i64_ty.clone(),
+                );
+                let wrap_prim = if matches!(prim, Prim::CheckedAdd) {
+                    Prim::WrappingAdd
+                } else {
+                    Prim::WrappingSub
+                };
+                let s64 = synth_core(
+                    db,
+                    Core::Arith {
+                        op: wrap_prim,
+                        lhs: a64,
+                        rhs: b64,
+                    },
+                    i64_ty.clone(),
+                );
+                // The narrow value the Some arm carries (wrap the in-range exact result to the target width —
+                // value-preserving in range).
+                let narrow_s = synth_core(
+                    db,
+                    Core::Convert {
+                        op: Prim::Wrap,
+                        operand: s64,
+                    },
+                    int_ty.clone(),
+                );
+                let some = synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![narrow_s],
+                    },
+                    result_ty.clone(),
+                );
+                let none = synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    },
+                    result_ty.clone(),
+                );
+                // if s64 > tmax then None else if s64 < tmin then None else Some(narrow_s). The bound consts
+                // + `s64` are Int64, so the `Compare`s are signed (correct: the exact result's true sign).
+                let hi = synth_core(db, Core::ConstInt(IntValue::from_i64(tmax)), i64_ty.clone());
+                let lo = synth_core(db, Core::ConstInt(IntValue::from_i64(tmin)), i64_ty.clone());
+                let over = synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Gt,
+                        lhs: s64,
+                        rhs: hi,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+                let under = synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Lt,
+                        lhs: s64,
+                        rhs: lo,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+                let under_case = synth_core(
+                    db,
+                    Core::If {
+                        cond: under,
+                        then_: none,
+                        else_: some,
+                    },
+                    result_ty.clone(),
+                );
+                trace!(target: "rcdzc::lower", node = id.0, ?prim, signed, width = it.ground_width(), "runtime narrow checked add/sub → widen-to-i64 + range-check the narrow bounds");
+                let if_core = Core::If {
+                    cond: over,
+                    then_: none,
+                    else_: under_case,
+                };
+                // `s64` (the exact wide result) is named in both range-checks AND the Some payload, and its
+                // subtree carries the widened operands — so materialize it ONCE when it reaches a host call
+                // (else that host op fires per reference). A pure `s64` is left inline (a cheap recompute).
+                return materialize_host_operands_once(db, id, &[s64], if_core);
+            }
+            // CHECKED-MUL: detect overflow with a DIVISION round-trip (no 128-bit multiply). `p = a *w b` is
+            // the wraparound product; the true product fits iff — for `a != 0` — `p / a == b`. The signed
+            // `div` (`div_s`) itself traps on its two edges (÷0, `Int64.min / -1`), so both are guarded away
+            // BEFORE the division runs (Core::If evaluates only the taken branch):
+            //   signed:   a==0 -> Some(p);  a==-1 -> (b==Int64.min ? None : Some(p));  else (p/a==b ? Some(p):None)
+            //   unsigned: a==0 -> Some(p);  else (p/a==b ? Some(p):None)
+            // `a==0` gives `p==0` (always in range); `a==-1` is the ONLY case where `p/a` could be
+            // `Int64.min/-1`, so it is decided explicitly (overflow iff `b==Int64.min`, i.e. `-1 * Int64.min
+            // = 2^63` is out of range) — matching the trapping-`*` guard's `div_s` MIN/-1 note. Verified on
+            // breaker's ladder incl. the killer `-2^31 * 2^32 = Int64.min` EXACT-fit (p/a recovers b, so Some).
+            if matches!(prim, Prim::CheckedMul) {
+                let p = synth_core(
+                    db,
+                    Core::Arith {
+                        op: Prim::WrappingMul,
+                        lhs,
+                        rhs,
+                    },
+                    int_ty.clone(),
+                );
+                let some_p = synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_some,
+                        payloads: vec![p],
+                    },
+                    result_ty.clone(),
+                );
+                let none = synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_none,
+                        payloads: Vec::new(),
+                    },
+                    result_ty.clone(),
+                );
+                let zero = synth_core(db, Core::ConstInt(IntValue::from_i64(0)), int_ty.clone());
+                let a_eq_0 = synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Eq,
+                        lhs,
+                        rhs: zero,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+                // else (a != 0): `p / a == b` -> Some(p), else None. `Prim::Div` selects div_s / div_u from
+                // the operand type; the guards above keep it off both trap edges.
+                let pdiv = synth_core(
+                    db,
+                    Core::Arith {
+                        op: Prim::Div,
+                        lhs: p,
+                        rhs: lhs,
+                    },
+                    int_ty.clone(),
+                );
+                let pdiv_eq_b = synth_core(
+                    db,
+                    Core::Compare {
+                        op: Prim::Eq,
+                        lhs: pdiv,
+                        rhs,
+                    },
+                    crate::ty::Ty::Bool,
+                );
+                let div_case = synth_core(
+                    db,
+                    Core::If {
+                        cond: pdiv_eq_b,
+                        then_: some_p,
+                        else_: none,
+                    },
+                    result_ty.clone(),
+                );
+                let else_branch = if signed {
+                    let neg1 =
+                        synth_core(db, Core::ConstInt(IntValue::from_i64(-1)), int_ty.clone());
+                    let a_eq_neg1 = synth_core(
+                        db,
+                        Core::Compare {
+                            op: Prim::Eq,
+                            lhs,
+                            rhs: neg1,
+                        },
+                        crate::ty::Ty::Bool,
+                    );
+                    let min = synth_core(
+                        db,
+                        Core::ConstInt(IntValue::from_i64(i64::MIN)),
+                        int_ty.clone(),
+                    );
+                    let b_eq_min = synth_core(
+                        db,
+                        Core::Compare {
+                            op: Prim::Eq,
+                            lhs: rhs,
+                            rhs: min,
+                        },
+                        crate::ty::Ty::Bool,
+                    );
+                    // a == -1: `-1 * b` overflows iff b == Int64.min; otherwise the product `-b` fits.
+                    let neg1_case = synth_core(
+                        db,
+                        Core::If {
+                            cond: b_eq_min,
+                            then_: none,
+                            else_: some_p,
+                        },
+                        result_ty.clone(),
+                    );
+                    synth_core(
+                        db,
+                        Core::If {
+                            cond: a_eq_neg1,
+                            then_: neg1_case,
+                            else_: div_case,
+                        },
+                        result_ty.clone(),
+                    )
+                } else {
+                    div_case
+                };
+                trace!(target: "rcdzc::lower", node = id.0, signed, "runtime checked-mul → division round-trip (a==0 / a==-1 guards keep div off its trap edges)");
+                let if_core = Core::If {
+                    cond: a_eq_0,
+                    then_: some_p,
+                    else_: else_branch,
+                };
+                // A host-lifted operand is named in the product AND the division/compare — materialize once.
+                return materialize_host_operands_once(db, id, &[lhs, rhs], if_core);
+            }
             // `s` = the two's-complement wraparound result — the value the checked op returns when it does
             // NOT overflow (and the value it discards when it does). `Core::Arith` with a WRAPPING prim
             // selects the raw machine add/sub (no trap); at 64 bits the width-mask is a no-op.

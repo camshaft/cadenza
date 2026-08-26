@@ -14,13 +14,14 @@
 //! emits, or closes with, then defer to the wrapped reducer unchanged.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp, RejectedCall, RunCall,
+    ArgProbeCall, BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ObservationLog, ProvOp,
+    RejectedCall, RunCall,
 };
 use crate::{
-    BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId, KeyRange,
-    KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash, ProgramStore,
-    Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response, RunError,
-    RunSink, SpawnContext, Str,
+    ArgProbeSink, BlobStore, Bytes, ContractId, Delivered, Delivery, Dir, EdgeKind, Hash, HostId,
+    KeyRange, KvKeyScan, KvScan, KvStore, Message, Notification, Origin, Outcome, ProgramHash,
+    ProgramStore, Provenance, Reducer, ReducerGraph, ReducerId, RejectedSink, Request, Response,
+    RunError, RunSink, SpawnContext, Str,
 };
 use async_trait::async_trait;
 use futures_util::FutureExt as _; // catch_unwind — record an uncontrolled fold failure (§10) before it unwinds
@@ -500,6 +501,35 @@ impl RunSink for RecordingRun {
                 input: Bytes::copy_from_slice(input),
                 output,
                 error,
+            }),
+        );
+    }
+}
+
+/// An [`ArgProbeSink`] that records a call to the test-only `arg-probe` host — the two received arguments,
+/// each already canonical-`Value.encode`d to bytes by the host, appended as an [`Entry::ArgProbe`] on the one
+/// shared log (`design/cadenza-platform.md` §9). Constructed per reducer, like [`RecordingRun`]: it attributes
+/// the call to `owner` and stamps each record with `now`. This is what makes a wrong mixed-width arg marshal
+/// observable — a checker asserts the recorded values byte-for-byte.
+pub struct RecordingArgProbe {
+    owner: Origin,
+    log: ObservationLog,
+    now: fn() -> u64,
+}
+impl RecordingArgProbe {
+    /// A sink attributing every `arg-probe.probe` call to `owner`, appending to `log`, stamping with `now`.
+    pub fn new(owner: Origin, log: ObservationLog, now: fn() -> u64) -> Self {
+        Self { owner, log, now }
+    }
+}
+impl ArgProbeSink for RecordingArgProbe {
+    fn record(&self, record: &[u8], items: &[u8]) {
+        self.log.record(
+            (self.now)(),
+            self.owner,
+            Entry::ArgProbe(ArgProbeCall {
+                record: Bytes::copy_from_slice(record),
+                items: Bytes::copy_from_slice(items),
             }),
         );
     }

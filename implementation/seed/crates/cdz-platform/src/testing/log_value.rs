@@ -33,8 +33,8 @@
 //! returns `None`), never a panic.
 
 use super::observation::{
-    BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, RunCall,
-    SpawnInfo,
+    ArgProbeCall, BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall,
+    RunCall, SpawnInfo,
 };
 use crate::contract_value::{
     as_ascribed, ascribe, bare_ctor, bytes_leaf, qctor, read_bytes, read_uint, record,
@@ -137,6 +137,7 @@ fn entry_value(b: &mut Builder, e: &Entry) -> StructId {
         Entry::Spawn(info) => spawn_value(b, info),
         Entry::HostCallRejected(c) => rejected_value(b, c),
         Entry::Run(r) => run_value(b, r),
+        Entry::ArgProbe(c) => arg_probe_value(b, c),
     }
 }
 
@@ -156,6 +157,7 @@ fn read_entry(arenas: &Arenas, id: StructId) -> Option<Entry> {
         "Spawn" => Entry::Spawn(read_spawn(arenas, inner)?),
         "HostCallRejected" => Entry::HostCallRejected(read_rejected(arenas, inner)?),
         "Run" => Entry::Run(read_run(arenas, inner)?),
+        "ArgProbe" => Entry::ArgProbe(read_arg_probe(arenas, inner)?),
         _ => return None,
     })
 }
@@ -822,6 +824,22 @@ fn read_run(arenas: &Arenas, id: StructId) -> Option<RunCall> {
     })
 }
 
+/// An `ArgProbe` as a record `{record, items}` — the two received `probe` arguments each already in their
+/// canonical Cadenza value encoding, carried verbatim as opaque bytes (the checker `Value.decode`s the log and
+/// asserts these against its own `Value.encode` of the expected argument literals).
+fn arg_probe_value(b: &mut Builder, c: &ArgProbeCall) -> StructId {
+    let record = bytes_leaf(b, &c.record);
+    let items = bytes_leaf(b, &c.items);
+    tagged(b, "ArgProbe", vec![("record", record), ("items", items)])
+}
+
+fn read_arg_probe(arenas: &Arenas, id: StructId) -> Option<ArgProbeCall> {
+    Some(ArgProbeCall {
+        record: read_bytes(arenas, field(arenas, id, "record")?)?,
+        items: read_bytes(arenas, field(arenas, id, "items")?)?,
+    })
+}
+
 fn reducer_kind_str(kind: ReducerKind) -> &'static str {
     match kind {
         ReducerKind::Ordinary => "ordinary",
@@ -966,8 +984,8 @@ fn read_hash(arenas: &Arenas, id: StructId) -> Option<Hash> {
 mod tests {
     use super::{deserialize, serialize};
     use crate::testing::observation::{
-        BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record, RejectedCall, RunCall,
-        SpawnInfo,
+        ArgProbeCall, BlobOp, Entry, EventKind, EventOp, GraphOp, KvOp, ProvOp, Record,
+        RejectedCall, RunCall, SpawnInfo,
     };
     use crate::{
         Bytes, ContractId, Dir, EdgeKind, Error, Hash, HashTag, HostId, Origin, ProgramHash,
@@ -1271,6 +1289,13 @@ mod tests {
                     input: Bytes::from_static(b"the-input"),
                     output: None,
                     error: Some(Str::from("missing-handler")),
+                }),
+            ),
+            rec(
+                21,
+                Entry::ArgProbe(ArgProbeCall {
+                    record: Bytes::from_static(b"encoded-probe-record"),
+                    items: Bytes::from_static(b"encoded-list-of-narrow"),
                 }),
             ),
         ];

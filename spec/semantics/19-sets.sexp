@@ -3495,3 +3495,34 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "Map.to-list over an owned-temporary runtime map reclaims the source, leaving no live heap objects"
+  (doc    "`(Map.to-list (build 0 3 Map.empty))` enumerates a FRESH owned-temporary map (built by a
+           recursive loop so it can't const-fold) and `List.len` borrows the result, looped 500x -> 1500
+           (3 entries each). map-to-list only BORROWS its source, so the owned-temporary source map AND
+           the fresh result list must both be reclaimed after the borrow -- net 0 live cells. > 0 = the
+           source (or result) reclaim regressed; a trap = an over-drop double-free.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (List.len (Map.to-list (build 0 3 Map.empty))))) tot))
+            (def (main (: n Int64)) (loop 0 n 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects 0))
+
+(case "Set.to-list over an owned-temporary runtime set reclaims the source, leaving no live heap objects"
+  (doc    "`(Set.to-list (build 0 3 (Set.of (list))))` enumerates a FRESH owned-temporary set (built by a
+           recursive loop so it can't const-fold) and `List.len` borrows the result, looped 500x -> 1500.
+           set-to-list only BORROWS its source, so the owned-temporary source set AND the fresh result
+           list must both be reclaimed after the borrow -- net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n (+ tot (List.len (Set.to-list (build 0 3 (Set.of (list))))))) tot))
+            (def (main (: n Int64)) (loop 0 n 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects 0))
