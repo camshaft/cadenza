@@ -400,6 +400,7 @@ pass	String.from-bytes validates a multi-byte scalar straddling a runtime byte-r
 pass	String.scalar-at over a runtime index declines pending the runtime Char rep
 pass	String.scalar-len of a string selected by a runtime if
 pass	String.scalar-len of a string selected by a runtime match
+pass	String.scalar-len over an owned-temporary runtime rope leaves no live heap objects
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
 pass	String.slice of a Map-looked-up String with perform-threaded start and end folds
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent

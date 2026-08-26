@@ -9024,53 +9024,6 @@ fn runtime_string_ordering_over_a_let_bound_operand_leaves_no_live_objects() {
     );
 }
 
-/// `String.scalar-len` OWNED-temporary reclaim leak balance: `Core::StrScalarLen` walks its string leaf
-/// with borrowing `bytes-len`/`bytes-get` reads and reclaims an OWNED-temporary operand after the walk
-/// (the SAME `heap_operand_ownership==Owned` gate as `Core::BytesLen`/`Core::ListLen`, with which it is
-/// grouped in every classification/emit site). This pins that reclaim directly: `scalar-len` over a
-/// fresh runtime rope must leave NO live heap cells. Without it, `String.scalar-len` — a newly-landed
-/// borrowing op (`809d5a1c1`) that shares the `ListLen`/`BytesLen` arm — had a VALUE test but no
-/// live-objects probe, the exact coverage gap that let the sibling `StrCmp` mis-classification reach
-/// review instead of the gate. Verified DISCRIMINATING: with the reclaim gate forced off this shape
-/// emits 0 body drops (the owned rope leaks); the correct gate emits 1 and nets to 0 — both value-
-/// correct (5), so only the live-object count sees it.
-///
-/// Shape: `main` returns the scalar `scalar-len` of an OWNED runtime rope "hixxx" (built by `rep`, un-
-/// foldable so it genuinely allocates), so the ONLY heap traffic is that rope; after the run
-/// `live-objects` must be 0. `#[ignore]` — needs the debug-counters store (`cargo xtask build`; run with
-/// `-- --ignored`).
-#[test]
-#[ignore]
-fn string_scalar_len_over_an_owned_temporary_rope_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[scalar-len] debug-counters runtime not in the store; skipping balance probe");
-        return;
-    };
-    // `rep` appends "x" three times via `String.concat` → an OWNED rope "hixxx" (5 unicode scalars).
-    // `String.scalar-len` borrows it (bytes-len/bytes-get walk) and must drop the owned rope after.
-    let src = "(module m \
-                 (def (rep (: s String) (: n Int64)) \
-                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
-                 (def (main) ((. String scalar-len) (rep \"hi\" 3))) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(5),
-        "scalar-len of the owned rope 'hixxx' is 5 unicode scalars"
-    );
-    assert_eq!(
-        rt.live_objects(),
-        0,
-        "scalar-len leak: the owned rope operand's heap cells are still live after the borrowing \
-         String.scalar-len walk (expected 0 — the `heap_operand_ownership==Owned` gate must drop the \
-         owned rope after the walk, exactly like Core::BytesLen)"
-    );
-}
-
 /// A BORROWED runtime string ROPE compared with `=` must ALSO be canonicalized. The earlier rope-eq fix
 /// compacted only an OWNED String operand (a fresh `String.concat` result); a rope reaching `=` through a
 /// BORROWED operand — a `Map.lookup`-stored value, a `SumPayload`-extracted payload, or a runtime-rope
