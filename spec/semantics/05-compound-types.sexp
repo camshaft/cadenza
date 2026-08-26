@@ -19517,7 +19517,7 @@
   (output (: 7 Int64))
   (live-objects 0))
 
-(case "msr6 a nested list+record match computes (KNOWN LEAK: 4 cells on the debug runtime — v-runtime fixing; live-objects clause returns with the fix)"
+(case "msr6 a NESTED match — outer list arm rebinds inner records — reclaims both shells (#3778)"
   (input (do
     (def (main (: n Int64))
       (match (if (> n 0) (list (record (= v n)) (record (= v (* n 2)))) (list (record (= v 0))))
@@ -19526,4 +19526,19 @@
         (_ -1)))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 15 Int64)))
+  (output (: 15 Int64))
+  (live-objects 0))
+
+; -- breaker (2026-08-26): the #3778 position-aware reclaim BONUS face — a list-of-LISTS scrutinee
+; matched and read via List.len also reclaims (heap projections in borrow positions no longer block).
+
+(case "lol1 a list-of-LISTS scrutinee matched and read via List.len reclaims (the #3778 bonus)"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list (list n n) (list n n n)) (list (list 9)))
+        ((list a b) (+ (List.len a) (List.len b)))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))
