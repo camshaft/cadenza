@@ -3056,11 +3056,14 @@ pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the f
 pass	a record STATE with a Set field rebuilt per dispatch — dedup observed through the field
 pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
+pass	a record binding pattern admits a wildcard field value
 pass	a record binding pattern binds fields by name, out of order and partial
 pass	a record binding pattern in a let destructures by field
 pass	a record binding pattern in a parameter destructures by field
 pass	a record binding pattern may leave a field's value a wildcard
 pass	a record binding pattern naming an absent field is rejected
+pass	a record binding pattern over a runtime record reads fields at run time
+pass	a record binding pattern's field binders feed a later binding in the same let
 pass	a record carrying a field the annotation does not name is rejected
 pass	a record carrying an Ast-typed field materializes as a WHOLE runtime value and its Ast field is matched
 pass	a record field VALUE referencing the parameter still substitutes

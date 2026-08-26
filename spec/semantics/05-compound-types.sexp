@@ -19339,3 +19339,22 @@
            (y 4)) = 7.")
   (input  (do (def (f (record (x a) (y b))) (+ a b)) (def (main) (f (record (x 3) (y 4)))) (export main)))
   (call   main) (output (: 7 Int64)))
+
+(case "a record binding pattern over a runtime record reads fields at run time"
+  (doc    "The record value is built by a function `(mk 10)` (not a literal), so the field reads are a real
+           heap projection at run time. `(let (((record (x a) (y b)) p)) (+ a b))` over (mk 10) = (record
+           (x 10) (y 11)) -> 21.")
+  (input  (do (def (mk (: n Int64)) (record (x n) (y (+ n 1)))) (def (f (: p (Record (x Int64) (y Int64)))) (let (((record (x a) (y b)) p)) (+ a b))) (def (main) (f (mk 10))) (export main)))
+  (call   main) (output (: 21 Int64)))
+
+(case "a record binding pattern admits a wildcard field value"
+  (doc    "A record field's value sub-pattern may be a WILDCARD `_` (binds nothing). `(let (((record (x a)
+           (y _)) (record (x 7) (y 4)))) a)` binds only a = 7, ignoring y.")
+  (input  (do (def (main) (let (((record (x a) (y _)) (record (x 7) (y 4)))) a)) (export main)))
+  (call   main) (output (: 7 Int64)))
+
+(case "a record binding pattern's field binders feed a later binding in the same let"
+  (doc    "The second let binding reads the field binders the first introduced (in-order let scope):
+           `(let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)` -> 3*4 = 12.")
+  (input  (do (def (main) (let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)) (export main)))
+  (call   main) (output (: 12 Int64)))

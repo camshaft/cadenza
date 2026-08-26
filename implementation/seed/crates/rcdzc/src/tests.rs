@@ -6459,44 +6459,6 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
     );
 }
 
-/// A record binding pattern over a RUNTIME record — the value is a record built by a function `(mk 10)`,
-/// not a literal, so the field reads happen at run time (`Core::Proj` off the runtime handle), not by a
-/// constant fold. `(def (f p) (let (((record (x a) (y b)) p)) (+ a b)))` over `(mk 10)` = `(record (x 10)
-/// (y 11))` → 21. The record companion of `a_destructuring_let_over_a_runtime_value` (tuple) — pins that
-/// the destructure is a real heap read, not only a compile-time projection.
-#[test]
-fn a_record_binding_pattern_over_a_runtime_record_reads_fields_at_run_time() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (def (mk n) (record (x n) (y (+ n 1)))) \
-                 (def (f p) (let (((record (x a) (y b)) p)) (+ a b))) \
-                 (def (main) (f (mk 10))) (export main))";
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(src))).expect("compile runtime-record");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 21);
-}
-
-/// A record field's value sub-pattern may be a WILDCARD `_` (binds nothing) or feed a LATER binding in the
-/// same `let`. `(let (((record (x a) (y _)) (record (x 7) (y 4)))) a)` binds only `a` = 7, ignoring `y`;
-/// and `(let (((record (x a) (y b)) …) (c (* a b))) c)` has the second binding read the field binders the
-/// first introduced (in-order let scope) → 3*4 = 12. Pins the wildcard-field + later-binding-sees-field
-/// behaviors, the record twins of the tuple cases.
-#[test]
-fn a_record_binding_pattern_admits_a_wildcard_field_and_feeds_a_later_binding() {
-    use crate::testkit::parse;
-    let wildcard = "(module m (def (main) \
-                 (let (((record (x a) (y _)) (record (x 7) (y 4)))) a)) (export main))";
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(wildcard))).expect("compile wildcard-field");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-
-    let later = "(module m (def (main) \
-                 (let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)) (export main))";
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(later))).expect("compile later-binding");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 12);
-}
-
 /// A RECORD MATCH pattern (the match twin of the record binding pattern) — `(match r ((record (x a) (y b))
 /// …))` destructures a record scrutinee BY FIELD, binding `a`/`b` to the `x`/`y` fields. A record has no
 /// discriminant (like a tuple), so a record arm imposes no probe; each field binder resolves to a
