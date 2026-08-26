@@ -74574,6 +74574,33 @@ mod stage1 {
     }
 
     #[test]
+    fn equality_on_option_and_variant_values_const_folds() {
+        // GENERALITY (operator: drive const-fold declines to 0): structural `==` over SUM values (an
+        // `Option`, any variant) must const-fold, not just scalars/lists. This is what the P4 self-reflection
+        // library's `Option`-threaded navigation needs — `head-name(g) == Option.Some("type")` gating a fold.
+        // Before, `cval_eq` handled only Int/Bool/Str/Bytes/Unit/List → a `==` on `Option` returned `None`
+        // (decline). `Ast.encode` DEMANDS a compile-time constant, so if the `==` did not fold, the encode
+        // declines with "runtime AST value" and no wasm artifact is produced — this test would then fail.
+        use crate::testkit::parse;
+        // `pick` const-branches on `name-of(form) == Option.Some("x")`; fed a matching `Ast.Name("x")`, the
+        // whole thing must const-fold through `Ast.encode` to constant bytes (the export compiles).
+        let src = "(module m \
+             (def (name-of (const (: form Ast))) \
+               (match form ((Ast.Name n) (Option.Some n)) (_ Option.None))) \
+             (def (pick (const (: form Ast))) \
+               (if (= (name-of form) (Option.Some \"x\")) (Ast.Name \"yes\") (Ast.Name \"no\"))) \
+             (def (enc) (Ast.encode (pick (Ast.Name \"x\")))) \
+             (export enc))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("`==` on Option must const-fold so Ast.encode folds to constant bytes");
+        // The folded encode is non-empty canonical bytes (the encoding of `(Ast.Name \"yes\")`).
+        assert!(
+            run_linked(&bytes, "enc").map(|s| s != "0" && !s.is_empty()) != Some(false),
+            "the const-folded Ast.encode produced bytes"
+        );
+    }
+
+    #[test]
     fn const_params_re_passed_on_a_mixed_match_recursive_arm_do_not_drop() {
         // REGRESSION (v-iterators' filter-map, the const-param-drop bug): a `const` param re-passed on a
         // SELF-RECURSIVE call that sits on a MIXED innermost match arm — a recursive arm BESIDE a

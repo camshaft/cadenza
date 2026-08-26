@@ -24548,12 +24548,37 @@ fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
         (CVal::Str(x), CVal::Str(y)) => Some(x == y),
         (CVal::Bytes(x), CVal::Bytes(y)) => Some(x == y),
         (CVal::Unit, CVal::Unit) => Some(true),
-        (CVal::List(x), CVal::List(y)) => {
+        (CVal::List(x), CVal::List(y)) => cval_seq_eq(x, y),
+        // A SUM value (an `Option`, a user variant, an `Ast` node) — equal iff same discriminant AND
+        // element-wise-equal payloads. This is what lets `head-name(g) == Option.Some("type")`-style
+        // navigation fold: equality on `Option`/variant results, not just scalars. Different disc ⇒ not
+        // equal (no payload compare needed).
+        (
+            CVal::Sum {
+                disc: da,
+                payloads: pa,
+            },
+            CVal::Sum {
+                disc: db,
+                payloads: pb,
+            },
+        ) => {
+            if da != db {
+                return Some(false);
+            }
+            cval_seq_eq(pa, pb)
+        }
+        // A TUPLE — equal iff element-wise equal (a tuple's arity is fixed by its type, so a length
+        // mismatch cannot occur between well-typed operands, but guard anyway).
+        (CVal::Tuple(x), CVal::Tuple(y)) => cval_seq_eq(x, y),
+        // A RECORD — equal iff the SAME keys map to equal values. Both maps are canonically ordered
+        // (`BTreeMap`), so a key-set difference is a length or key mismatch.
+        (CVal::Record(x), CVal::Record(y)) => {
             if x.len() != y.len() {
                 return Some(false);
             }
-            for (p, q) in x.iter().zip(y.iter()) {
-                if !cval_eq(p, q)? {
+            for ((ka, va), (kb, vb)) in x.iter().zip(y.iter()) {
+                if ka != kb || !cval_eq(va, vb)? {
                     return Some(false);
                 }
             }
@@ -24561,6 +24586,21 @@ fn cval_eq(a: &CVal, b: &CVal) -> Option<bool> {
         }
         _ => None,
     }
+}
+
+/// Element-wise structural equality of two constant-value sequences (list elements, sum payloads, tuple
+/// slots): `Some(false)` on a length mismatch, otherwise the conjunction of per-element `cval_eq`
+/// (propagating a `None` from any element this stage cannot compare).
+fn cval_seq_eq(x: &[CVal], y: &[CVal]) -> Option<bool> {
+    if x.len() != y.len() {
+        return Some(false);
+    }
+    for (p, q) in x.iter().zip(y.iter()) {
+        if !cval_eq(p, q)? {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// Whether the match pattern `pat` matches the constant value `v`: `Some(true)`/`Some(false)` for a decided
