@@ -649,3 +649,53 @@
             (def (main) (const (= (mk 2) 0.0)))
             (export main)))
   (output (: true Bool)))
+
+; --- Primitive 2: const execution — a field projection off a NULLARY const fn's record eliminates it ---
+; A nullary def resolves its NAME to a `Ref` straight at its body (no `Lambda` wrapper), so the value-
+; interpreter's `const_eval_apply` — which bound params via `lambda_params_of` (None for a nullary) — could
+; not call it. So `descriptor().id`, where `descriptor()` returns a `contract(Ast.module)`-style record with
+; `Ast`-typed sibling fields, did NOT fold: the whole record MATERIALIZED (its `Ast` fields have no runtime
+; representation) and the component failed to instantiate. Evaluating a nullary def's body directly lets the
+; field read reduce to that field's constant and DROP the unused siblings — so the operator's structured
+; whole-record descriptor form (not just the `Bytes` form) instantiates. (Reported by v-platform.)
+
+(case "a scalar field projected off a nullary const fn's record folds to the field, dropping the record"
+  (doc    "`descriptor()` returns `(record (id 42) (extra (quote …)))`; `(const (. (descriptor) id))` folds to
+           42, the `extra` sibling never materialized. Before, the nullary call declined in the value-
+           interpreter and the record built whole.")
+  (input  (do
+            (def (descriptor) (record (id 42) (extra (quote (a b c)))))
+            (def (main) (const (. (descriptor) id)))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a Bytes field projected off a nullary record with Ast siblings folds byte-exact and eliminates the record"
+  (doc    "The operator's structured descriptor shape: `descriptor()` returns a record whose `id` is a
+           `Blake3.of(Ast.encode …)` Bytes and whose siblings are `Ast` values (no runtime form). Reading
+           `(. (descriptor) id)` — NO `(const …)` block, the ordinary member fold — reduces to the id Bytes
+           (equal to the direct fold) and drops the Ast siblings, so the record never materializes. Before,
+           the whole record built and the component failed to instantiate.")
+  (input  (do
+            (def (descriptor)
+              (record (id (Blake3.of (Ast.encode (quote (contract c Int64 Int64)))))
+                      (input (quote Int64))
+                      (output (quote Int64))))
+            (def (main)
+              (= (. (descriptor) id) (Blake3.of (Ast.encode (quote (contract c Int64 Int64))))))
+            (export main)))
+  (output (: true Bool)))
+
+(case "a field projection off a nullary record whose field came from a RECURSIVE helper folds"
+  (doc    "`descriptor()` builds `(record (id (leaves (quote …))) …)` where `leaves` is a RECURSIVE const fn;
+           `(const (. (descriptor) id))` folds to 3. `descriptor` itself is not in a cycle (the recursion is
+           at the HELPER, not back to `descriptor`), so the nullary-body evaluation fires and the helper folds
+           via the param-recursion path — the shape of the operator's `descriptor() = contract(Ast.module)`,
+           where `contract` recurses over the module forms. (A genuinely self-recursive nullary `(def (f) (f))`
+           is instead declined at the recursion bound, so the fold never overflows the native stack.)")
+  (input  (do
+            (def (leaves (const (: a Ast)))
+              (match a ((Ast.List xs) (List.len xs)) (_ 1)))
+            (def (descriptor) (record (id (leaves (quote (f 1 2)))) (extra (quote z))))
+            (def (main) (const (. (descriptor) id)))
+            (export main)))
+  (output (: 3 Int64)))
