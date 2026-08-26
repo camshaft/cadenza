@@ -441,3 +441,25 @@
            fires on the FORM's arity before any force-eval, never a silent pass-through of the first operand.")
   (input  (const 1 2))
   (error  CDZ0201))
+
+; --- Primitive 0/2: Ast.encode folds ANY operand the const-evaluator can reduce (demand-path) -----------
+; `Ast.encode` DEMANDS a compile-time-constant AST. When `core_of` alone does not fold its operand (a
+; Map/Set query, a composition inside a `const`-param fn), the encode now const-EVALUATES the operand and
+; MATERIALIZES a folded Ast value through the SAME canonical codec — so it folds byte-identical, rather
+; than the generic "runtime AST value" decline. (A genuinely-runtime operand still declines; a taken trap
+; surfaces CDZ0304.)
+
+(case "Ast.encode folds a Map query composed inside a const-param fn (const_eval demand path)"
+  (doc    "`label` (a `const`-param fn) does a `Map.lookup` and wraps the value in `Ast.Int`; `core_of` alone
+           leaves the map query runtime, but `Ast.encode`'s operand const-EVALUATES it to the constant
+           `Ast.Int 9` and encodes it — byte-identical to encoding the literal `(Ast.Int 9)`. Before, this
+           declined ('runtime AST value') even though the value is fully compile-time-known.")
+  (input  (do
+            (def (label (const (: n Int64)))
+              (match (Map.lookup (Map.insert (Map.empty) 1 n) 1)
+                ((Option.Some v) (Ast.Int (BigInt.of v)))
+                ((Option.None) (Ast.Name "none"))))
+            (def (main)
+              (= (Ast.encode (label 9)) (Ast.encode (Ast.Int (BigInt.of 9)))))
+            (export main)))
+  (output (: true Bool)))
