@@ -2189,6 +2189,23 @@
               (handle Bail 0 ((bail (n) s n)) (if (< 3 5) 10 (Bail.bail 99)))) (export main)))
   (output (: 10 Int64)))
 
+(case "a runtime-conditioned if-branch perform distributes the handler per branch"
+  (doc    "A RESUMING handler over an `if` whose condition is a RUNTIME parameter (a genuine PHI, not
+           const-folded): the handle distributes into each branch — `(if (< x 5) (handle … (+ 1 (Amb.flip)))
+           (handle … (* 2 (Amb.flip))))` — and each sub-handle folds against its own continuation. The
+           handler `(flip (u) s (+ 1 (resume 10 s)))` resumes 10 and adds 1 to the continuation result. x=3
+           (< 5) → then-branch continuation `C = (+ 1 □)` → `(+ 1 (+ 1 10))` = 12; x=9 → else-branch `C =
+           (* 2 □)` → `(+ 1 (* 2 10))` = 21. Pins that the condition is evaluated once at run time and only
+           the taken branch's fold runs (no speculation of the other branch's perform).")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s))))
+                (if (< x 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 12 Int64))
+  (call   main (: 9 Int64)) (output (: 21 Int64)))
+
 (case "an abortive perform in the tail of an if branch inside a let body abandons only that branch"
   (doc    "The branch-tail abort composes through a `let`: a `let`'s VALUE is its BODY's value, so a `let`
            body is in the same tail position as the `let` itself. `(let ((k 5)) (if true (Bail.bail 7) k))`
