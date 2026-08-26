@@ -7567,3 +7567,6 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
+pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
+pass	cpp3 partials of a COMPARISON operator select via a HOF

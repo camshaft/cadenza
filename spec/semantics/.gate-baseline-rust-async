@@ -7349,3 +7349,6 @@ todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
 todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c shape)
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
+pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
+pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
+pass	cpp3 partials of a COMPARISON operator select via a HOF
