@@ -6839,19 +6839,18 @@ fn a_constant_multi_payload_variant_match_folds_at_the_right_depth() {
 /// and `a_recursive_runtime_tuple_escapes_to_the_host` (a returned tuple). Shape alone never forces the
 /// heap; escaping-as-a-value does.
 #[test]
-fn a_projection_only_tuple_folds_even_with_a_runtime_element() {
+fn a_projection_only_tuple_folds_importing_no_runtime() {
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     let src = "(module m (def (with-param (: a Int64)) \
                  (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The wasmtime-free structural half: a projection-only tuple folds, importing NO value-heap runtime,
+    // even with a runtime element. The RUN value (with-param 32 → 42) is pinned by the corpus case
+    // "a projection-only tuple over a runtime element folds to the sum of its elements" (05-compound-types).
     assert!(
         cdz_run::required_runtime(&bytes).expect("valid").is_none(),
         "a projection-only tuple folds — no heap — even with a runtime element"
     );
-    // Runs as a plain scalar function: 10 + 32 = 42, folded, no runtime composed in.
-    let got: i64 = run_returns_with(&bytes, "with-param", &[Val::S64(32)]);
-    assert_eq!(got, 42, "folds to (+ 10 a)");
 }
 
 // ── value-heap H2d: the Perceus BALANCE probe (no leak) ──────────────────────────────────────────
