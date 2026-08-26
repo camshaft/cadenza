@@ -1241,10 +1241,37 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
 
 (case "a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary"
   (doc    "Control: a param'd helper `wrap` returns the newtype (the escaping-def value), and main matches it
-           back — the erased scalar crosses the internal call boundary and is deconstructed. wrap(5) then
-           (Mk v)->v = 5. Pins the wrapped-then-matched round-trip alongside the direct escape.")
+           back — the erased scalar crosses the internal call boundary and is deconstructed. A NEGATIVE value
+           (wrap(-9) then (Mk v)->v = -9) exercises sign preservation of the erased scalar across the internal
+           call. Pins the wrapped-then-matched round-trip alongside the direct escape.")
   (input  (do (type W (Mk Int64))
               (def (wrap (: k Int64)) (Mk k))
               (def (main (: k Int64)) (match (wrap k) ((Mk v) v)))
               (export main)))
-  (call   main (: 5 Int64)) (output (: 5 Int64)))
+  (call   main (: -9 Int64)) (output (: -9 Int64)))
+
+(case "the NULLARY scalar-newtype escape renders the nominal (: 5 W), agreeing with the param'd path"
+  (doc    "The nullary counterpart of the param'd escape: `(def (main) (Mk 5))` bakes the constant and returns
+           the newtype. It renders the SAME nominal `(: 5 W)` the param'd export does — pinning that the two
+           escape paths AGREE (the adv-64 regression was the param'd path DIVERGING from the always-nominal
+           nullary path). With the param'd case above, this closes the adv-64 agreement pin.")
+  (input  (do (type W (Mk Int64)) (def (main) (Mk 5)) (export main)))
+  (output (: 5 W)))
+
+(case "a NARROW-inner scalar newtype escape at a NEGATIVE value renders the nominal (: -300 I16)"
+  (doc    "The second width-edge face (paired with the U8 case): `(type I16 (Mk Int16))` at a NEGATIVE value
+           exercises the i32-slot box's SIGN handling across the escape — a wrong (zero- vs sign-) extend would
+           corrupt a negative narrow inner. Escapes+renders the nominal `(: -300 I16)`; a running case proves
+           the module valid, covering the I16 validity face the migrated Rust test checked, in the corpus.")
+  (input  (do (type I16 (Mk Int16)) (def (main (: k Int16)) (Mk k)) (export main)))
+  (call   main (: -300 Int16)) (output (: -300 I16)))
+
+(case "a multi-variant sum box is REAL not erased: (Some k) wrapped then matched round-trips"
+  (doc    "Control: a MULTI-variant sum `(Some k)` is a genuinely boxed value (unlike the erased single-variant
+           newtype), so its box is not erased away. A param'd helper wraps it and main matches it back —
+           wrap(42) then (Some v)->v / (None)->0 = 42. Pins that the single-variant erase-and-escape fix leaves
+           a real multi-variant sum box untouched.")
+  (input  (do (def (wrap (: k Int64)) (Some k))
+              (def (main (: k Int64)) (match (wrap k) ((Some v) v) ((None) 0)))
+              (export main)))
+  (call   main (: 42 Int64)) (output (: 42 Int64)))
