@@ -3545,6 +3545,7 @@ pass	a runtime map shared across two recursive-call operands is not mutated by a
 pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
+pass	a runtime mixed-unit sum emits the scale conversion before the add
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
 pass	a runtime multiplication that overflows traps

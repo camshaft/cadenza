@@ -383,6 +383,21 @@
   (call   main (: 3 Int64)) (output (: 8 Int64))
   (call   main (: 100 Int64)) (output (: 105 Int64)))
 
+(case "a runtime mixed-unit sum emits the scale conversion before the add"
+  (doc    "The mixed-unit companion of the same-unit runtime sum: `(+ (Qty.of v kilometer) (Qty.of 500
+           meter))` with `v` a runtime Int64. The kilometer operand must be scaled to the reference meter
+           by a x1000 multiply, and because `v` is not a constant that scale is EMITTED as real arithmetic
+           (lower_runtime_combine synthesizes `(+ (* v 1000) 500)`) rather than folded. v=1 gives 1 km +
+           500 m = 1500 m; v=2 gives 2500 m — the scale multiply tracks the runtime magnitude. Qty.value
+           recovers the erased sum. Distinct from the same-unit case, which emits no conversion.")
+  (input  (do
+            (def (main (: v Int64))
+              (Qty.value (+ (Qty.of v (Unit.prefix kilo (Unit.base #"meter")))
+                            (Qty.of 500 (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1500 Int64))
+  (call   main (: 2 Int64)) (output (: 2500 Int64)))
+
 (case "a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator"
   (doc    "The COLLECTION face of the same-unit sum above (one binop there; a recursive walk here): a
            fold over a `(List (Qty Int64 meter))` threads a Qty ACCUMULATOR through `(+ acc h)` per step

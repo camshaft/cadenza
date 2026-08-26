@@ -50062,26 +50062,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_runtime_mixed_unit_sum_emits_the_scale_conversion() {
-        // F2-4: `(+ (Qty.of v km) (Qty.of 500 m))` with `v` a RUNTIME Int64 parameter — the km→m scale
-        // multiply (*1000) can't fold (v is not a constant), so it is EMITTED as real arithmetic. Called
-        // with v=1 the program computes 1000 + 500 = 1500 m at run time. Pins the runtime conversion path
-        // (`lower_runtime_combine` synthesizes `(+ (* v 1000) 500)` and lowers it).
-        use wasmtime::component::Val;
-        let src = "(do (def (main (: v Int64)) \
-                   ((. Qty value) (+ ((. Qty of) v ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                                     ((. Qty of) 500 ((. Unit base) #\"meter\"))))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a runtime mixed-unit sum compiles");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[Val::S64(1)]),
-            1500,
-            "1 km + 500 m computed at run time is 1500 m"
-        );
-    }
-
-    #[test]
     fn unit_in_across_dimensions_is_cdz0501() {
         // F2-3: `(Unit.in meter (Qty.of 3.0 second))` asks to convert a time to a length — different
         // dimensions — CDZ0501. Unit.in converts WITHIN a dimension, never across one.
