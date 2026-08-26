@@ -1405,7 +1405,10 @@ pass	a checked-add over a RUNTIME operand emits the overflow check: Some when it
 pass	a checked-sub over RUNTIME operands emits the underflow check: Some when it fits, None on underflow
 pass	a checked-add over RUNTIME UInt64 operands emits the unsigned wrap-below check
 pass	a checked-sub over RUNTIME UInt64 operands emits the unsigned underflow check
-pass	a checked-MUL over a RUNTIME operand still declines (the wide-multiply / division-check emit is pending)
+pass	a checked-mul over a RUNTIME operand emits the division round-trip: Some when it fits, None on overflow
+pass	a runtime checked-mul hitting Int64.min EXACTLY fits (the naive-magnitude-check killer)
+pass	a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)
+pass	a runtime checked-mul over UInt64 operands emits the unsigned division round-trip
 pass	a NARROW-width checked-add over a RUNTIME operand still declines (the width-relative overflow emit is pending)
 pass	a churned-back map IS a CHAMP key equal to the direct build (history-independence as a key)
 pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary

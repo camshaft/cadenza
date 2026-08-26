@@ -5719,15 +5719,48 @@
   (call   main (: 43 UInt64) (: 1 UInt64)) (output (: 42 UInt64))
   (call   main (: 0 UInt64) (: 1 UInt64)) (output (: 0 UInt64)))
 
-(case "a checked-MUL over a RUNTIME operand still declines (the wide-multiply / division-check emit is pending)"
-  (doc    "`(Int64.checked-mul a 2)` with `a` a runtime Int64 has no constant to fold, and the runtime
-           checked-MUL emit — which needs a wide (128-bit) multiply or a division-check `r/a != b` with a
-           zero-guard, distinct from add/sub's single bitwise formula — is not yet built, so it soundly
-           DECLINES rather than emitting a wrong (unchecked) product. Contrast the runtime checked-ADD/SUB
-           above (now emitted) and the folded constant checked-mul cases. Pins the runtime checked-mul
-           boundary so a silent miscompile there is caught.")
-  (input  (do (def (main (: a Int64)) (match (Int64.checked-mul a 2) ((Some v) v) ((None _) -1))) (export main)))
-  (declines))
+; A runtime checked-MUL emits an overflow-detecting Some/None via a DIVISION round-trip (no 128-bit
+; multiply): `p = a *w b` fits iff, for `a != 0`, `p / a == b`. The signed `div` traps on its two edges
+; (÷0, `Int64.min / -1`), so both are guarded BEFORE the division runs — `a==0` -> Some(0), `a==-1` ->
+; overflow iff `b==Int64.min`, else the `p/a==b` round-trip. The `p/a` recovering `b` is what makes the
+; EXACT `-2^31 * 2^32 = Int64.min` fit (a naive magnitude / widening-off-by-one check wrongly rejects it).
+(case "a checked-mul over a RUNTIME operand emits the division round-trip: Some when it fits, None on overflow"
+  (doc    "`(Int64.checked-mul a b)` with `a`,`b` runtime Int64 emits `if a==0 then Some(0) elif a==-1 then
+           (b==Int64.min ? None : Some(-b)) else (p/a==b ? Some(p) : None)`, consumed by the match.
+           `main(6,7)`=42 (fits); `main(2^31, 2^32)` overflows just past Int64.max -> None -> -1. Witnesses
+           the runtime checked-mul emit (the executing upgrade of the former decline). A regression to a
+           wrong (unchecked / mis-guarded) product would change these and be caught.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (match (Int64.checked-mul a b) ((Some v) v) ((None _) -1))) (export main)))
+  (call   main (: 6 Int64) (: 7 Int64)) (output (: 42 Int64))
+  (call   main (: 2147483648 Int64) (: 4294967296 Int64)) (output (: -1 Int64)))
+
+(case "a runtime checked-mul hitting Int64.min EXACTLY fits (the naive-magnitude-check killer)"
+  (doc    "`(Int64.checked-mul -2^31 2^32)` = -2^63 = Int64.min, which FITS exactly, so checked-mul returns
+           `Some(Int64.min)` — NOT None. The division round-trip gets this right: `p = Int64.min`, `p / a =
+           Int64.min / -2^31 = 2^32 = b`, so no overflow. A naive `|a|*|b| <= max` or a widening-off-by-one
+           check wrongly returns None here. The key edge the breaker's ladder targets.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call   main (: -2147483648 Int64) (: 4294967296 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+
+(case "a runtime checked-mul of Int64.min by -1 overflows to None (the sign-flip edge)"
+  (doc    "`(Int64.checked-mul Int64.min -1)` = +2^63, one past Int64.max, so checked-mul reports None. The
+           division round-trip: `p = Int64.min *w -1 = Int64.min`, `p / Int64.min = 1 != -1 = b` -> overflow.
+           (No div_s trap: the divisor is Int64.min, not -1.) The complement `(Int64.checked-mul Int64.min
+           1)` = Some(Int64.min) confirms the a==-1 / b==Int64.min guards do not over-report — the identity
+           multiply fits.")
+  (input  (do (def (main (: a Int64) (: b Int64)) (Int64.checked-mul a b)) (export main)))
+  (call   main (: -9223372036854775808 Int64) (: -1 Int64)) (output (: (None unit) (Option Int64)))
+  (call   main (: -9223372036854775808 Int64) (: 1 Int64)) (output (: (Some -9223372036854775808) (Option Int64))))
+
+(case "a runtime checked-mul over UInt64 operands emits the unsigned division round-trip"
+  (doc    "The UNSIGNED face: `(UInt64.checked-mul a b)` emits `if a==0 then Some(0) else (p/a==b ? Some(p) :
+           None)` — no a==-1 guard (unsigned div_u traps only on ÷0, which a==0 covers). `main(6,7)`=42;
+           `main(2^32, 2^32)` overflows (2^64) -> None -> 0; `main(0, 12345)` = Some 0 (the a==0 guard, which
+           a naive p/a would divide-by-zero-trap on).")
+  (input  (do (def (main (: a UInt64) (: b UInt64)) (match (UInt64.checked-mul a b) ((Some v) v) ((None _) 0))) (export main)))
+  (call   main (: 6 UInt64) (: 7 UInt64)) (output (: 42 UInt64))
+  (call   main (: 4294967296 UInt64) (: 4294967296 UInt64)) (output (: 0 UInt64))
+  (call   main (: 0 UInt64) (: 12345 UInt64)) (output (: 0 UInt64)))
 
 (case "a NARROW-width checked-add over a RUNTIME operand still declines (the width-relative overflow emit is pending)"
   (doc    "`(UInt8.checked-add a (UInt8.wrap 1))` with `a` a runtime UInt8 has no constant to fold, and the
