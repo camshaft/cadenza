@@ -865,3 +865,40 @@
           (+ (E.tick) (E.tick)))))
     (export main)))
   (output (: 33 Int64)))
+
+;; -- fail-loud TIMING is demand-scoped, by design (v-cp ruling): a NON-recursive const fn taken trap stays a RUNTIME trap on the bare call (it may sit under a runtime branch; unconditional CDZ0304 would over-reject) and surfaces CDZ0304 only under an explicit (const ...) demand; recursive const fns surface on both paths (breaker batch 391) --
+(case "cn02a a NON-recursive const fn taken trap is a RUNTIME trap on the bare call (by-design: it may sit under a runtime branch)"
+  (input (do
+    (def (f (const (: n Int64)))
+      (if (= n 0) (trap "cn02a int zero") n))
+    (def (main) (f 0))
+    (export main)))
+  (trap "unreachable"))
+
+(case "cn02b the Option twin — bare-call taken trap stays a runtime trap (by-design)"
+  (input (do
+    (def (f (const (: o (Option Int64))))
+      (match o
+        ((Option.Some k) (if (= k 0) (trap "cn02b zero payload") k))
+        ((Option.None) 0)))
+    (def (main) (f (Option.Some 0)))
+    (export main)))
+  (trap "unreachable"))
+
+(case "cn02c the tuple twin — bare-call taken trap stays a runtime trap (by-design)"
+  (input (do
+    (def (f (const (: t (Tuple Int64 Int64))))
+      (match t ((tuple a b) (if (= a b) (trap "cn02c fields met") a))))
+    (def (main) (f (tuple 3 3)))
+    (export main)))
+  (trap "unreachable"))
+
+(case "cn02d the SAME shape under a (const ...) demand DOES surface CDZ0304 (the explicit fail-loud opt-in)"
+  (input (do
+    (def (f (const (: o (Option Int64))))
+      (match o
+        ((Option.Some k) (if (= k 0) (trap "cn02d zero payload") k))
+        ((Option.None) 0)))
+    (def (main) (const (f (Option.Some 0))))
+    (export main)))
+  (error CDZ0304 (message "cn02d zero payload")))

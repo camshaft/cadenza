@@ -7526,3 +7526,7 @@ pass	cnm3 runtime Int8 checked-mul of -128 by -1 yields None (the narrow sign-fl
 pass	cnm4 runtime UInt16 checked-mul at the 65535 top
 pass	lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects
 pass	lk6 SIBLING handles each with a heap MAP state leave no live objects
+pass	cn02a a NON-recursive const fn taken trap is a RUNTIME trap on the bare call (by-design: it may sit under a runtime branch)
+pass	cn02b the Option twin — bare-call taken trap stays a runtime trap (by-design)
+pass	cn02c the tuple twin — bare-call taken trap stays a runtime trap (by-design)
+pass	cn02d the SAME shape under a (const ...) demand DOES surface CDZ0304 (the explicit fail-loud opt-in)
