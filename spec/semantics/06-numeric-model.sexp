@@ -9321,3 +9321,24 @@
     (export main)))
   (call main (: 257 Int64) (: 255 Int64)) (output (: 2 Int64))
   (call main (: 256 Int64) (: 256 Int64)) (output (: 0 Int64)))
+
+(case "an exported Float64 addition runs over runtime args at IEEE precision"
+  (doc    "An exported `(f (: a Float64) (: b Float64)) (+ a b)` emits f64.add over the runtime params (no
+           fold). A NON-exact pair 0.1 + 0.2 = 0.30000000000000004 (a fold-to-0.3 would be wrong).")
+  (input  (do (def (f (: a Float64) (: b Float64)) (+ a b)) (export f)))
+  (call   f (: 0.1 Float64) (: 0.2 Float64)) (output (: 0.30000000000000004 Float64)))
+
+(case "an exported Float64 multiplication runs over runtime args"
+  (doc    "`(* a b)` emits f64.mul over runtime params: 6.0 * 7.0 = 42.0.")
+  (input  (do (def (f (: a Float64) (: b Float64)) (* a b)) (export f)))
+  (call   f (: 6.0 Float64) (: 7.0 Float64)) (output (: 42.0 Float64)))
+
+(case "an exported Float64 subtraction runs over runtime args"
+  (doc    "`(- a b)` emits f64.sub over runtime params: 5.5 - 2.0 = 3.5.")
+  (input  (do (def (f (: a Float64) (: b Float64)) (- a b)) (export f)))
+  (call   f (: 5.5 Float64) (: 2.0 Float64)) (output (: 3.5 Float64)))
+
+(case "an exported Float64 division runs over runtime args at IEEE precision"
+  (doc    "`(/ a b)` emits f64.div over runtime params: 1.0 / 3.0 = the IEEE quotient.")
+  (input  (do (def (f (: a Float64) (: b Float64)) (/ a b)) (export f)))
+  (call   f (: 1.0 Float64) (: 3.0 Float64)) (output (: 0.3333333333333333 Float64)))
