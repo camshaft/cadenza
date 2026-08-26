@@ -10,9 +10,14 @@
 //   contract-declaration(m) -> Bytes  -- the WHOLE contract, its canonical `(contract …)` declaration
 //     encoded. Runtime-representable + re-inspectable (`Ast.decode`); the id is `0x01 ++ blake3` of it.
 //     Export this alongside `contract-id` to self-describe fully — the id routes, the declaration inspects.
-//   contract(m) -> Record(id, name, input, output, types)  -- the full descriptor as a COMPILE-TIME value.
-//     Its `input`/`output`/`types` are `Ast` (compile-time-only), so it does NOT cross a module import as a
-//     runtime value — use it at compile time, or `contract-declaration` to export the whole contract.
+//   contract(m) -> Record(id, name, input, output, types)  -- the full structured descriptor. The landed
+//     self-describe form (P4, #3413): `def descriptor() = contract(Ast.module)` + `export { descriptor }` in
+//     the contract module; a consumer imports it and PROJECTS a field (`descriptor().id` to route,
+//     `descriptor().name` to inspect). The projection const-folds (v-cp #3543) so the record's `Ast`-typed
+//     `input`/`output`/`types` never materialize at runtime — it instantiates. What does NOT work:
+//     MATERIALIZING the whole record as a runtime value (returning it across the host boundary), since those
+//     `Ast` fields have no runtime representation — project a field, or use `contract-declaration` (Bytes)
+//     for the whole contract as one runtime value.
 //
 // Handles the NATURAL contract-module shape: doc comments nest following forms (peeled per form via
 // `unwrap`), and `def`/`@test`/`export` forms are dropped (only `(type …)` forms collected). The whole
@@ -110,11 +115,14 @@ def contract-name(const forms: List(Ast)) -> String =
   | Option.Some(s) => s
   | Option.None => trap("contract-id: @!contract value is not a string literal")
 
-// The full descriptor: the id plus the structured pieces, as a COMPILE-TIME value. Its `input`/`output`/
-// `types` are `Ast` — compile-time-only, NOT runtime-representable — so this record cannot cross a module
-// import as a runtime value or be carried by an instantiated reducer (a def returning it fails to
-// instantiate). Use it at compile time to read the pieces; to export the whole contract at runtime, export
-// `contract-declaration` (Bytes) and re-inspect via `Ast.decode`.
+// The full structured descriptor: the id plus the structured pieces. The landed self-describe form (P4,
+// #3413) is `def descriptor() = contract(Ast.module)` + `export { descriptor }` in the contract module; a
+// consumer imports it and PROJECTS a field — `descriptor().id` (route) or `descriptor().name` (inspect) —
+// and the projection const-folds (v-cp #3543) so the record's `Ast`-typed `input`/`output`/`types` never
+// materialize at runtime and it instantiates. What does NOT work follows from those fields having no runtime
+// representation: MATERIALIZING the whole record as a runtime value (returning it across the host boundary)
+// fails to instantiate. So project a field (the record folds away), never return the whole record; for the
+// whole contract as one runtime value use `contract-declaration` (Bytes, `Ast.decode`-able).
 def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
   match m with
   | Ast.List(forms) =>
