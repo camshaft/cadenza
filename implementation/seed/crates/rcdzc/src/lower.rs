@@ -14790,6 +14790,38 @@ pub fn is_constant_bytes(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// The BYTE CONTENT of a fully-constant `Bytes` literal at `id` — `Some(bytes)` when [`is_constant_bytes`]
+/// holds (a `Core::BytesOf` whose every element folds to a constant byte in `0..=255`), else `None`. This
+/// is the material the build-once path (`DESIGN-static-data.md` increment 2) needs beyond the boolean
+/// predicate: the byte sequence is BOTH the interning KEY (two literals with identical content share one
+/// module global — the constant-CSE the design calls for) AND the `(data …)` segment PAYLOAD the init
+/// materializes the handle from (the hybrid mechanism for the flat-byte-payload kinds). Returns the same
+/// bytes the inline `Core::BytesOf` emit (`select.rs`) would `bytes-set` into a fresh buffer per call —
+/// so a build-once global reading these bytes is observably identical, just allocated once.
+///
+/// `None` (not a panic) for any node that is not an all-constant `BytesOf`: a bare scalar, a `BytesOf`
+/// with a runtime element, or a non-bytes compound. A byte proven `0..=255` by `is_constant_bytes` fits a
+/// `u8`, so the cast is lossless.
+pub fn constant_bytes_value(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
+    match core_of(db, id) {
+        Core::BytesOf { elems } => {
+            let mut bytes = Vec::with_capacity(elems.len());
+            for &e in elems.iter() {
+                match core_of(db, e) {
+                    Core::ConstInt(v) => match v.to_i64() {
+                        Some(n) if (0..=255).contains(&n) => bytes.push(n as u8),
+                        // A runtime or out-of-range element: not a constant-bytes literal.
+                        _ => return None,
+                    },
+                    _ => return None,
+                }
+            }
+            Some(bytes)
+        }
+        _ => None,
+    }
+}
+
 /// The CANONICAL BINARY VALUE FORM of a fully-constant compound at `id` — the bytes the resource escape
 /// path's `encode()` returns (`DESIGN-value-heap-rcdzc.md` §3a; `contracts/deterministic-value-form.md`).
 /// Reconstructs the s-expression `(: <value> <type>)` as ordinary AST (the value from the constant core,
