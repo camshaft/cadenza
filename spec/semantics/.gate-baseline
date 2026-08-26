@@ -7876,3 +7876,7 @@ pass	rha4 an op ARGUMENT becomes the next STATE — the replaced state reclaims
 pass	nh1 nested handlers with LIST state at BOTH levels — both reclaim
 pass	nh2 the inner arm DELEGATES to the outer with heap state at both levels
 pass	nh3 the inner handle RESULT is a heap value consumed by the outer body
+pass	cle1 a closure capturing a branch-selected list reclaims after invocation
+pass	cle2 TWO closures sharing one captured list both invoke and everything reclaims
+pass	cle3 a heap-capturing closure built but NEVER invoked still reclaims
+pass	cle4 a closure RETURNED from a helper (escaping env) reclaims after invocation
