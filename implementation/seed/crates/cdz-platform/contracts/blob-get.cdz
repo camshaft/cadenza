@@ -1,0 +1,24 @@
+@!contract "cdz-platform.blob.get"
+@!input GetRequest
+@!output GetResult
+
+// The §8 content-addressed store GET contract (design/cadenza-platform.md §8): read the bytes at a content
+// hash. Distinct from cdz-platform.blob.put so a reducer dispatches read-vs-store by CONTRACT-ID — the
+// operator's multi-contract shape. This file is the source of truth for the schema (`cargo xtask codegen`
+// generates src/contracts/blob_get.rs from it) and self-reflects its own id (`blob-get-id`) for guest dispatch.
+
+// The content hash to read (raw Bytes of the hash).
+type GetRequest = | Get(Bytes)
+// The read result: the stored bytes, or Missing if the hash is unknown.
+type GetResult = | Found(Bytes) | Missing
+
+def a-get() -> GetRequest = GetRequest.Get(b"some-hash")
+@test
+def get-conforms() =
+  match a-get() with | GetRequest.Get(h) => if h == b"some-hash" then unit else trap("get hash mismatch")
+
+// Self-reflecting id — the same form as the built-in contracts (effect-id etc.).
+import { contract-id } from "contract-id"
+def blob-get-id() -> Bytes = contract-id(Ast.module)
+
+export { GetRequest.*, GetResult.*, blob-get-id }

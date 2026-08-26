@@ -3,6 +3,8 @@
 //! One `pub mod` per built-in contract, projected from the contract sources so a new
 //! `contracts/<name>.cdz` wires itself in on the next `cargo xtask codegen`.
 
+pub mod blob_get;
+pub mod blob_put;
 pub mod check;
 pub mod deliver;
 pub mod effect;

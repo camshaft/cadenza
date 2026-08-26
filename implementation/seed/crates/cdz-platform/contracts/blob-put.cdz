@@ -1,0 +1,27 @@
+@!contract "cdz-platform.blob.put"
+@!input PutRequest
+@!output PutResult
+
+// The §8 content-addressed store PUT contract (design/cadenza-platform.md §8): store the carried bytes,
+// answered with their content hash. A DISTINCT contract (not a payload sentinel on a shared contract) so a
+// reducer dispatches store-vs-read by CONTRACT-ID — the operator's multi-contract shape. Pairs with
+// cdz-platform.blob.get. This file is the source of truth for the schema (`cargo xtask codegen` generates
+// src/contracts/blob_put.rs from it) and self-reflects its own id so a reducer imports `blob-put-id` and
+// matches `msg.contract == blob-put-id()` — no hardcoded hash.
+
+// The bytes to store.
+type PutRequest = | Put(Bytes)
+// The content hash the store answered with (a Hash crosses as its raw Bytes).
+type PutResult = | Stored(Bytes)
+
+def a-put() -> PutRequest = PutRequest.Put(b"blob-bytes")
+@test
+def put-conforms() =
+  match a-put() with | PutRequest.Put(p) => if p == b"blob-bytes" then unit else trap("put payload mismatch")
+
+// Self-reflecting id — the same form as the built-in contracts (effect-id etc.): `contract-id(Ast.module)`
+// folds THIS module to its content-addressed id, byte-identical to the host `cdz_contract::contract_id`.
+import { contract-id } from "contract-id"
+def blob-put-id() -> Bytes = contract-id(Ast.module)
+
+export { PutRequest.*, PutResult.*, blob-put-id }

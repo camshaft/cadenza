@@ -311,7 +311,12 @@ fn generate_contracts(paths: &Paths, check: bool) {
                 std::process::exit(1);
             })
             .to_string();
-        let out = out_dir.join(format!("{name}.rs"));
+        // The generated file name matches the Rust MODULE name `contracts/mod.rs` declares, which sanitizes
+        // `-` to `_` (a hyphen is invalid in an identifier). So a contract source like `blob-put.cdz` becomes
+        // module `blob_put` in file `blob_put.rs` — without this the file kept the hyphen (`blob-put.rs`) while
+        // `mod.rs` said `pub mod blob_put;`, and the crate failed to compile (E0583 file not found).
+        let module = name.replace('-', "_");
+        let out = out_dir.join(format!("{module}.rs"));
         names.push(name.clone());
 
         // MTIME short-circuit (inner loop ONLY): when the generated file is newer than its source, neither
