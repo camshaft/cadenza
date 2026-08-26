@@ -1819,6 +1819,9 @@ pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a 
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
+pass	a dup-aware let binding consumed in a nested-if then borrowed in the sibling arm reclaims correctly (no live objects)
+pass	a dup-aware let binding consumed twice does not double-free the last-consumed slot ref (no live objects)
+pass	a dup-aware let binding whose consuming use is a captured-then-inlined push reclaims its surviving ref (no live objects)
 pass	a duplicate NESTED-CONSTRUCTOR arm is dead code but the program still runs
 pass	a duplicate TUPLE-shaped arm is dead code but the program still runs
 pass	a duplicate export clause for the same name is rejected
