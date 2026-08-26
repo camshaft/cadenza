@@ -8033,3 +8033,42 @@
   (call main (: 5 Int64))
   (output (: 12 Int64))
   (live-objects 0))
+
+; -- breaker batch 439 (2026-08-26): slice-1 INTEGRATION composites on #3813 — lifted String AND
+; Bytes params feed an effect arm's answer (0-leak); the ORIGINAL ch05 face resurrected (literal
+; string MATCH dispatch on a lifted param — the tick-110 'pattern decline' that was really the
+; entry-param gap, now end-to-end); and the viachain if-chain shape on a lifted param. All
+; live-objects 0 under default enforcement; wasm-only rows.
+
+(case "icp1 lifted String AND Bytes params feed an effect arm's answer"
+  (input (do
+    (effect E (op q (-> Int64)))
+    (def (main (: s String) (: b Bytes))
+      (handle E 0
+        ((q () st (resume (+ (String.byte-len s) (Bytes.len b)) st)))
+        (+ 100 (E.q))))
+    (export main)))
+  (call main (: "abc" String) (: (list 1 2) Bytes))
+  (output (: 105 Int64))
+  (live-objects 0))
+
+(case "icp2 the original ch05 face RESURRECTED — literal string MATCH on a lifted param"
+  (input (do
+    (def (main (: s String))
+      (match s
+        ("alpha" 1)
+        ("beta" 2)
+        (_ 0)))
+    (export main)))
+  (call main (: "beta" String))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "icp3 a lifted String compared and measured through an if-chain (the viachain shape on a param)"
+  (input (do
+    (def (main (: s String))
+      (if (= s "add") 1 (if (= s "sub") 2 (String.byte-len s))))
+    (export main)))
+  (call main (: "other" String))
+  (output (: 5 Int64))
+  (live-objects 0))
