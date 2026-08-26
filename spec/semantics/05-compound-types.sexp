@@ -19358,3 +19358,11 @@
            `(let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)` -> 3*4 = 12.")
   (input  (do (def (main) (let (((record (x a) (y b)) (record (x 3) (y 4))) (c (* a b))) c)) (export main)))
   (call   main) (output (: 12 Int64)))
+
+(case "a projection-only tuple over a runtime element folds to the sum of its elements"
+  (doc    "A tuple used ONLY via projection folds to the elements' own computations -- no heap cell, no
+           runtime import -- even with a runtime element. `(let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))`
+           folds to (+ 10 a); with-param 32 -> 42. (The no-runtime-import structural half stays a slim
+           rcdzc unit test a_projection_only_tuple_folds_importing_no_runtime.)")
+  (input  (do (def (with-param (: a Int64)) (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param)))
+  (call   with-param (: 32 Int64)) (output (: 42 Int64)))
