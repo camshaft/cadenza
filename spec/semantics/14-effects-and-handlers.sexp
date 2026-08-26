@@ -8212,3 +8212,51 @@
   (call main (: 5 Int64))
   (output (: 31 Int64))
   (live-objects 0))
+
+; -- breaker batch 435 (2026-08-26): MULTI-LEVEL handler heap state — nested handlers with LIST
+; state at BOTH levels, inner-arm DELEGATION to the outer with heap state both levels (the
+; both-levels twin of lk5's outermost-only chain), and an inner handle RESULT (a heap list)
+; consumed by the outer body. All live-objects 0; wasm-only rows.
+
+(case "nh1 nested handlers with LIST state at BOTH levels — both reclaim"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (def (main (: n Int64))
+      (handle A (if (> n 0) (list n) (list 9 9))
+        ((a () s (resume (List.len s) (List.prepend s 0))))
+        (handle B (if (> n 0) (list n (+ n 1)) (list 9))
+          ((b () t (resume (List.len t) t)))
+          (+ (A.a) (* 10 (B.b))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
+
+(case "nh2 the inner arm DELEGATES to the outer with heap state at both levels"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (def (main (: n Int64))
+      (handle A (if (> n 0) (list n) (list 9 9))
+        ((a () s (resume (List.len s) (List.prepend s 0))))
+        (handle B (if (> n 0) (list n (+ n 1)) (list 9))
+          ((b () t (resume (+ (A.a) (List.len t)) t)))
+          (B.b))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case "nh3 the inner handle RESULT is a heap value consumed by the outer body"
+  (input (do
+    (effect B (op b (-> Int64)))
+    (def (main (: n Int64))
+      (List.len
+        (handle B n
+          ((b () t (resume t (+ t 1))))
+          (if (> (B.b) 0) (list n (+ n 1) (+ n 2)) (list 9)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
