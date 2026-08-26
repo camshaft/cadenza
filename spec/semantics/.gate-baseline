@@ -7847,3 +7847,6 @@ pass	rh1 an arm resumes with a LIST answer and the body's read reclaims it
 pass	rh2 an arm resumes with an arm-BUILT STRING answer, body measures it
 pass	rh3 heap answers across TWO dispatches both reclaim
 pass	rh4 heap STATE and heap ANSWER together — both reclaim
+pass	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
+pass	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
+pass	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0

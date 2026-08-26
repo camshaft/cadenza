@@ -4134,3 +4134,34 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 429 (2026-08-26): Ast.print RENDERS of the runtime non-finite Float leaves
+; (#3711's tags reach print): +inf -> "inf.0", NaN -> "NaN.0", -inf inside a list -> "-inf.0" —
+; the float-leaf '.' suffix convention applied to non-finites. Deterministic and value-distinct.
+; NOTE: these renders are not re-readable source text (no non-finite literal exists) — the
+; print/read round-trip question is filed with the non-finite surface ruling (v-inference thread).
+; wasm pass / rust todo (runtime print path pending on rust).
+
+(case "nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0"
+  (input (do
+    (def (main (: x Float64))
+      (Ast.print (Ast.Float (/ x 0.0))))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: "inf.0" String)))
+
+(case "nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0"
+  (input (do
+    (def (main (: x Float64))
+      (Ast.print (Ast.Float (- (/ x 0.0) (/ x 0.0)))))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: "NaN.0" String)))
+
+(case "nfp3 Ast.print renders a -inf leaf inside a list as -inf.0"
+  (input (do
+    (def (main (: x Float64))
+      (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Float (/ (- 0.0 x) 0.0))))))
+    (export main)))
+  (call main (: 1.0 Float64))
+  (output (: "(f -inf.0)" String)))
