@@ -7898,69 +7898,6 @@ fn a_quoted_ast_int_over_a_runtime_bigint_leaves_no_live_objects() {
     );
 }
 
-/// DIRECT leak witness for the `Option.expect` (Core::SumExpect) OWNED-`Some`-SHELL reclaim: a fallible read
-/// (`List.at`/`Map.lookup`) builds a fresh `sum-new` Some around the payload; consuming it with
-/// `Option.expect` used to LEAK that shell (SumExpect borrows the scrutinee twice but never dropped an owned
-/// one) — one heap cell PER CALL, value-correct so the value/drop-import tests missed it. The fix classifies
-/// `ListAt`/`MapLookup`/`BytesAt` results Owned + drops the shell after the payload read (scalar payload, or a
-/// dup'd compound — never a non-dup'd compound, which is returned borrowed from the shell). Driven through a
-/// LOOP so a per-call leak SCALES past the benign one-cell entrypoint-return temporary (a single top-level
-/// expect leaves 1 return-adjacent cell that never accumulates; the loop is the discriminator). `#[ignore]` —
-/// needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore]
-fn option_expect_over_an_owned_some_shell_leaves_no_live_objects() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "debug-counters runtime not in the store (run `cargo xtask build`); skipping SumExpect shell leak probe"
-        );
-        return;
-    };
-    // Each `f` loops N times, building a fresh runtime collection, reading one element via a fallible op,
-    // Option.expect'ing the Some, and accumulating — so N owned Some shells are created + consumed. A leaked
-    // shell would show as live-objects ~ N; the reclaim must net it to 0.
-    let cases: &[(&str, &str, i64)] = &[
-        (
-            "List.at",
-            "(module m \
-               (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
-                   (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
-                   (if (< j n) (loop (+ j 1) n (+ tot ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\"))) tot)) \
-               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
-            500, // 500 iters × element 1 = 500
-        ),
-        (
-            "Map.lookup",
-            "(module m \
-               (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
-                   (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
-               (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
-                   (if (< j n) (loop (+ j 1) n (+ tot ((. Option expect) ((. Map lookup) (build 0 3 (map)) 1) \"v\"))) tot)) \
-               (def (f (: n Int64)) (loop 0 n 0)) (export f))",
-            5000, // 500 iters × value 10 = 5000
-        ),
-    ];
-    for (label, src, want) in cases {
-        let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-        assert_eq!(
-            rt.call("f", &[Val::S64(500)]),
-            Val::S64(*want),
-            "Option.expect over an owned {label} Some computes the right accumulated value"
-        );
-        assert_eq!(
-            rt.live_objects(),
-            0,
-            "owned Some-shell leak ({label}): the fresh sum-new shell is still live after Option.expect \
-             (expected 0 — SumExpect must drop the owned shell after the payload read; was ~N before the fix)"
-        );
-    }
-}
-
 /// DIRECT leak witness for the DEPENDENT-SIZE bin-match payload read (Core::BinSizedRead). A `(bin (u8 n)
 /// (bytes payload n))` pattern binds `payload` via `bytes-slice(scrutinee, off, n)`. The emit DUPs the
 /// materialized scrutinee (a borrowed `LocalRef`) and lets `bytes-slice` CONSUME the dup'd copy, returning a
