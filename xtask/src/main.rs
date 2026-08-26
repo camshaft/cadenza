@@ -1131,6 +1131,13 @@ struct Tools {
     /// value codec (`Core::ValueEncode`/`ValueDecode` emit `cadenza_ast::codec::encode`/`decode`). `None`
     /// if the rlib wasn't built.
     cadenza_ast_dir: Option<PathBuf>,
+    /// The committed `DEBUG_RUNTIME_HASH` (parsed from `runtime_abi.rs`'s `None => "…"` default arm) — the
+    /// content address of the CANONICAL debug-counters runtime a `(live-objects N)` case must run on. A
+    /// stale debug runtime in the store reclaims differently (→ a false live-objects pass/fail), so the
+    /// gate verifies the resolved debug runtime against this before asserting balance. `None` if unparsed
+    /// (then the check is skipped — can't verify). The release side gets this for free via the
+    /// self-describing stamped heap import; the debug side must check explicitly.
+    debug_runtime_hash: Option<String>,
 }
 
 /// Build the three pipeline tools once (under `profile`) and return their binary paths — shared by
@@ -1179,6 +1186,10 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
         .join("libcadenza_ast.rlib")
         .exists()
         .then(|| bin.clone());
+    // The committed DEBUG_RUNTIME_HASH — the canonical debug-counters runtime a `(live-objects N)` case
+    // must run on. xtask is compiler-free (no rcdzc dep), so read the value from the codegen'd source
+    // (like the flake's parity check), never via rcdzc; parsed, not hashed — no IFD / no rebuild.
+    let debug_runtime_hash = parse_committed_debug_runtime_hash(&paths.repo);
     Tools {
         syntax: cdz.clone(),
         corpus: bin.join("cdz-corpus"),
@@ -1187,7 +1198,27 @@ fn build_tools(paths: &Paths, profile: &str) -> Tools {
         cdz_rt_dir,
         cdz_num_dir,
         cadenza_ast_dir,
+        debug_runtime_hash,
     }
+}
+
+/// Parse the committed `DEBUG_RUNTIME_HASH` from the codegen'd `runtime_abi.rs` — the `None => "<hash>"`
+/// default arm of `pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
+/// Some(h) => h, None => "<hash>" }`. xtask must NOT depend on the compiler crate, so it reads the
+/// committed value from source (the same value the release side self-verifies via the stamped heap
+/// import). Returns `None` if the file / const / default arm is absent.
+fn parse_committed_debug_runtime_hash(repo: &Path) -> Option<String> {
+    let src = std::fs::read_to_string(
+        repo.join("implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs"),
+    )
+    .ok()?;
+    // Scope to the DEBUG_RUNTIME_HASH const, then take the first quoted string after its `None =>` arm.
+    let after_const = src.split("pub const DEBUG_RUNTIME_HASH").nth(1)?;
+    let after_none = after_const.split("None =>").nth(1)?;
+    let open = after_none.find('"')? + 1;
+    let rest = &after_none[open..];
+    let close = rest.find('"')?;
+    Some(rest[..close].to_string())
 }
 
 /// The outcome of driving one program (sexpr text) through the pipeline.
@@ -1522,6 +1553,24 @@ fn run_program_wasm(
     if live_objects.is_some() {
         match resolve_debug_runtime(store) {
             Some(path) => {
+                // Verify the store's debug runtime is the CANONICAL one (committed DEBUG_RUNTIME_HASH).
+                // A STALE debug runtime reclaims differently, so a live-objects case would silently
+                // pass/fall on the wrong runtime (exactly the mis-baseline class that motivated this).
+                // Decline loudly rather than assert balance on a non-canonical runtime — the release
+                // side gets this for free via the self-describing stamped import; the debug side checks
+                // explicitly here. A `None` committed hash (unparsed) skips the check (can't verify).
+                if let Some(committed) = tools.debug_runtime_hash.as_deref()
+                    && let Some(store_hash) = path.file_stem().and_then(|s| s.to_str())
+                    && store_hash != committed
+                {
+                    return Ran::Declined {
+                        code: None,
+                        message: format!(
+                            "live-objects: STALE debug runtime {store_hash} != committed \
+                             {committed} (run `cargo xtask build`)"
+                        ),
+                    };
+                }
                 // NFC (the runtime's inline dependency) resolves from the store; if the gate passed no
                 // `--store`, point it at the debug runtime's own store dir so NFC + the debug runtime come
                 // from the same build.
