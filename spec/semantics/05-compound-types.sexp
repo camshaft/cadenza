@@ -19104,3 +19104,39 @@
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
   (call   main (: -4 Int64)) (output (: 1 Int64)))
+
+;; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
+(case "lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects"
+  (input (do
+    (effect A (op a (-> Int64)))
+    (effect B (op b (-> Int64)))
+    (effect C (op c (-> Int64)))
+    (effect D (op d (-> Int64)))
+    (effect E (op e (-> Int64)))
+    (def (main (: n Int64))
+      (handle A (list n 2)
+        ((a () s (resume (List.len s) (List.prepend s 9))))
+        (handle B 2 ((b () s (resume (+ s (A.a)) (+ s 1))))
+          (handle C 3 ((c () s (resume (+ s (B.b)) (+ s 1))))
+            (handle D 4 ((d () s (resume (+ s (C.c)) (+ s 1))))
+              (handle E 5 ((e () s (resume (+ s (D.d)) (+ s 1))))
+                (+ (E.e) (E.e))))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 37 Int64))
+  (live-objects 0))
+
+(case "lk6 SIBLING handles each with a heap MAP state leave no live objects"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (rd (: m (Map Int64 Int64)))
+      (match (Map.lookup m 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (+ (handle E (Map.insert (map) 0 n)
+           ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
+           (+ (E.tick) (E.tick)))
+         (* 100 (handle E (Map.insert (map) 0 (* n 2))
+           ((tick () s (resume (rd s) (Map.insert s 0 (+ (rd s) 1)))))
+           (+ (E.tick) (E.tick))))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 1307 Int64))
+  (live-objects 0))

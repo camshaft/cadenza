@@ -7530,3 +7530,5 @@ pass	cnm1 runtime UInt8 checked-mul at the exact 255 top
 pass	cnm2 runtime Int8 checked-mul hitting -128 EXACTLY fits (the signed exact-fit twin)
 pass	cnm3 runtime Int8 checked-mul of -128 by -1 yields None (the narrow sign-flip)
 pass	cnm4 runtime UInt16 checked-mul at the 65535 top
+pass	lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects
+pass	lk6 SIBLING handles each with a heap MAP state leave no live objects
