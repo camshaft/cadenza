@@ -9582,3 +9582,16 @@
   (call   f (: 100 UInt8)) (output (: 200 UInt8))
   (call   f (: 127 UInt8)) (output (: 254 UInt8))
   (call   f (: 128 UInt8)) (trap "integer overflow"))
+
+(case "runtime signed division traps on divide-by-zero and on Int64.min over -1"
+  (doc    "`(/ a b)` uses native i64.div_s: dividing by 0 traps (divide by zero), and Int64.min / -1
+           overflows and traps (integer overflow).")
+  (input  (do (def (f (: a Int64) (: b Int64)) (/ a b)) (export f)))
+  (call   f (: 5 Int64) (: 0 Int64)) (trap "divide by zero")
+  (call   f (: -9223372036854775808 Int64) (: -1 Int64)) (trap "integer overflow"))
+
+(case "runtime signed remainder of Int64.min by -1 is zero, not an overflow"
+  (doc    "`(% a b)` uses i64.rem_s, which forms no quotient: Int64.min % -1 = 0 (does NOT overflow like
+           the division does).")
+  (input  (do (def (f (: a Int64) (: b Int64)) (% a b)) (export f)))
+  (call   f (: -9223372036854775808 Int64) (: -1 Int64)) (output (: 0 Int64)))

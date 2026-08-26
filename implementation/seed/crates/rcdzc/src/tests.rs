@@ -14883,30 +14883,6 @@ mod runtime_ops {
     }
 
     #[test]
-    fn runtime_division_traps_on_zero_and_overflow() {
-        // ÷0 traps (i64.div_s native); MIN/-1 overflows and traps (i64.div_s native). Remainder MIN%-1
-        // does NOT overflow — i64.rem_s yields 0 (it forms no quotient).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(/ a b)",
-            &[Val::S64(5), Val::S64(0)]
-        ));
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(/ a b)",
-            &[Val::S64(i64::MIN), Val::S64(-1)]
-        ));
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(% a b)",
-                &[Val::S64(i64::MIN), Val::S64(-1)]
-            ),
-            0
-        );
-    }
-
-    #[test]
     fn runtime_unsigned_division_is_magnitude() {
         // UInt64 division is unsigned: UInt64.max / 2 = (2^64-1)/2 = 2^63-1, a value a SIGNED div_s would
         // get wrong (it would read the operand as -1). Pins div_u selection off the unsigned type.
