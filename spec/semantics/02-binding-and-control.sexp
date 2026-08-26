@@ -5862,6 +5862,73 @@
 ; (lower.rs) folds `(and a (or a b))` → a and `(or a (and a b))` → a — the result depends ONLY on `a`,
 ; never on `b`. Observed via `(if … 1 0)` on runtime comparison operands (so the connectives are EMITTED,
 ; not const-folded): with `a` = `(> a 0)`, the answer tracks `a` alone regardless of `b`. Both backends.
+(case "a repeated conjunct absorbs to the plain conjunction"
+  (doc    "`(and (and a b) a)` — the repeated `a` is absorbed; the value is just `a && b`. (T,T) → 1,
+           (T,F) → 0, (F,T) → 0.")
+  (input  (do (def (main (: a Bool) (: b Bool)) (if (and (and a b) a) 1 0)) (export main)))
+  (call   main (: true Bool) (: true Bool))  (output (: 1 Int64))
+  (call   main (: true Bool) (: false Bool)) (output (: 0 Int64))
+  (call   main (: false Bool) (: true Bool)) (output (: 0 Int64)))
+
+(case "a repeated disjunct absorbs to the plain disjunction"
+  (doc    "`(or (or a b) b)` — the repeated `b` is absorbed; the value is `a || b`. (T,F) → 1, (F,T) → 1,
+           (F,F) → 0.")
+  (input  (do (def (main (: a Bool) (: b Bool)) (if (or (or a b) b) 1 0)) (export main)))
+  (call   main (: true Bool) (: false Bool))  (output (: 1 Int64))
+  (call   main (: false Bool) (: true Bool))  (output (: 1 Int64))
+  (call   main (: false Bool) (: false Bool)) (output (: 0 Int64)))
+
+(case "the repeated-conjunct absorb keeps a trapping nested operand's trap"
+  (doc    "The nested node is retained, so a trapping operand in it still traps. `(and (and (> (/ 10 n) 0)
+           b) (> (/ 10 n) 0))` at n = 0 traps on the div.")
+  (input  (do (def (main (: n Int64) (: b Bool)) (if (and (and (> (/ 10 n) 0) b) (> (/ 10 n) 0)) 1 0)) (export main)))
+  (call   main (: 0 Int64) (: true Bool)) (trap "divide by zero"))
+
+(case "a comparison pair split across a nested connective reassociates and folds to the interval"
+  (doc    "`(and (and (> x 0) (< x 100)) (> x 5))` — `(> x 0)` is subsumed by `(> x 5)` across the nested
+           `and`, folding to the interval 5 < x < 100. x = 6 → 1, 99 → 1, 5 → 0, 100 → 0, -5 → 0.")
+  (input  (do (def (main (: x Int64)) (if (and (and (> x 0) (< x 100)) (> x 5)) 1 0)) (export main)))
+  (call   main (: 6 Int64))   (output (: 1 Int64))
+  (call   main (: 99 Int64))  (output (: 1 Int64))
+  (call   main (: 5 Int64))   (output (: 0 Int64))
+  (call   main (: 100 Int64)) (output (: 0 Int64))
+  (call   main (: -5 Int64))  (output (: 0 Int64)))
+
+(case "a complementary comparison split across a nested connective folds to false"
+  (doc    "`(and (and (< x y) (> x 0)) (>= x y))` — `(< x y)` and `(>= x y)` are complements reassociated
+           across the nested `and`, so the conjunction is always false: (3,5) → 0, (5,3) → 0, (10,2) → 0.")
+  (input  (do (def (main (: x Int64) (: y Int64)) (if (and (and (< x y) (> x 0)) (>= x y)) 1 0)) (export main)))
+  (call   main (: 3 Int64) (: 5 Int64))  (output (: 0 Int64))
+  (call   main (: 5 Int64) (: 3 Int64))  (output (: 0 Int64))
+  (call   main (: 10 Int64) (: 2 Int64)) (output (: 0 Int64)))
+
+(case "the split-comparison reassociation declines a trapping leaf and keeps its trap"
+  (doc    "The reassociation needs all leaves trap-free, so a trapping leaf declines it, keeping the
+           runtime form. `(and (and (> (/ 10 n) 0) (< x 100)) (> (/ 10 n) 5))` at n = 0 traps.")
+  (input  (do (def (main (: n Int64) (: x Int64)) (if (and (and (> (/ 10 n) 0) (< x 100)) (> (/ 10 n) 5)) 1 0)) (export main)))
+  (call   main (: 0 Int64) (: 50 Int64)) (trap "divide by zero"))
+
+(case "the boolean absorption laws absorb with swapped operand order too"
+  (doc    "The commuted faces of the absorption laws (operand order swapped from the canonical `(and a (or
+           a b))` / `(or a (and a b))` below): `(or (and a b) a)` → a and `(and (or a b) a)` → a. `main`
+           returns `(tuple (if (or (and (> a 0) (> b 0)) (> a 0)) 1 0) (if (and (or (> a 0) (> b 0)) (> a
+           0)) 1 0))` = `(> a 0)` in both, so `b` is irrelevant: (5,-1) → (1,1), (-1,5) → (0,0).")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (tuple (if (or  (and (> a 0) (> b 0)) (> a 0)) 1 0)
+                     (if (and (or  (> a 0) (> b 0)) (> a 0)) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64) (: -1 Int64)) (output (: (tuple 1 1) (Tuple Int64 Int64)))
+  (call   main (: -1 Int64) (: 5 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64))))
+
+(case "the dual-absorption fold keeps a trapping absorbed operand's short-circuit form"
+  (doc    "When the absorbed-away operand carries a trap, the fold's trap-free guard declines, leaving the
+           real short-circuit form. `(and (or a (> (/ 10 n) 0)) a)`: a = false forces the `(or …)` right
+           operand → the trapping `/` fires at n = 0; a = true short-circuits before the trap → 1.")
+  (input  (do (def (main (: a Bool) (: n Int64)) (if (and (or a (> (/ 10 n) 0)) a) 1 0)) (export main)))
+  (call   main (: false Bool) (: 0 Int64)) (trap "divide by zero")
+  (call   main (: true Bool) (: 0 Int64))  (output (: 1 Int64)))
+
 (case "the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a"
   (doc    "`(and a (or a b))` → a and `(or a (and a b))` → a: a boolean combined with the DUAL connective
            of itself-with-anything absorbs to itself, so `b` is irrelevant. `main` returns `(tuple (and (>
