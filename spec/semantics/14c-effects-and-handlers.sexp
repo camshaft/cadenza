@@ -18066,6 +18066,25 @@
   (call main (: 3 Int64))
   (output (: 11 Int64)))
 
+;; -- cx9d: sequential composition — one hop's LET-BOUND answer feeds a second hop's closure. Both hops
+;; perform through the one-shot helper; the first answer is let-bound and read alongside the second hop.
+;; Folds via #3754 (force_structural_resolution over the recovery's rebuilt subtree) exactly as the iso-b
+;; let-bound-answer fix predicted — the let-bound hop answer + a following hop both resolve against the
+;; rebuilt scope. main(3): seed 0; a = (+ 2 (resume 0)) = (+ 2 0) = 2; second hop = (+ 2 (resume 10)) —
+;; the threaded state advances, so a(2) + second(12) = 14. (breaker batch flip-check on #3754.)
+(case "cx9d sequential composition — one hop's answer feeds a second hop's closure"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 2))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((a (ap (fn (x) (+ x (E.tick))))))
+          (+ a (ap (fn (y) (+ y (E.tick))))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 14 Int64)))
+
 ;; -- iso-b (breaker): LET-BINDING the escaped-closure helper-call answer inside the handle body and
 ;; returning the binder is a WELL-FORMED program that folds to 5 (the `let` just names cx5d's answer). The
 ;; escaped-closure recovery's inline rewrite rebuilds the `let` and re-parents the load-time body reference

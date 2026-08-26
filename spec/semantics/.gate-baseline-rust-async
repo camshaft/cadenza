@@ -843,6 +843,7 @@ pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint
 pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
 pass	a NARROW UInt32 checked-mul fits the UInt64 accumulator exactly (the widest narrow product)
+pass	a NARROW-inner scalar newtype escape at a NEGATIVE value renders the nominal (: -300 I16)
 pass	a NARROW-inner scalar newtype escaping a param'd export emits a valid module (i32-slot box)
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
 pass	a NARROW-width checked-add over a RUNTIME operand range-checks the narrow bounds: Some when it fits, None on overflow
@@ -2523,6 +2524,7 @@ pass	a multi-use runtime list do-def escapes an if-select inside a match arm and
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant op arg matched against a sum state with an abortive-and-resumptive arm mix threads per dispatch
+pass	a multi-variant sum box is REAL not erased: (Some k) wrapped then matched round-trips
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
@@ -3576,9 +3578,6 @@ pass	a scalar element is projected from a let-bound runtime tuple
 pass	a scalar export crosses the WIT boundary and returns its argument
 pass	a scalar newtype matched back in place round-trips the erased inner
 pass	a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary
-pass	the NULLARY scalar-newtype escape renders the nominal (: 5 W), agreeing with the param'd path
-pass	a NARROW-inner scalar newtype escape at a NEGATIVE value renders the nominal (: -300 I16)
-pass	a multi-variant sum box is REAL not erased: (Some k) wrapped then matched round-trips
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
@@ -4916,7 +4915,6 @@ pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
-todo	ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
@@ -4924,7 +4922,6 @@ pass	cc1 a closure over the fn PARAM built before the handle, applied twice insi
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
 pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
-todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
 pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
@@ -4991,6 +4988,10 @@ pass	chg1 a BATTERY controller with a protected reserve — charge clamps at one
 pass	chk1 a closed pure handle with SCALAR state folds under (const ...)
 pass	chk2 a closed handle with STRING state folds under (const ...)
 pass	chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole
+pass	ck1 a Char set dedups repeated members
+pass	ck2 Char set membership hits and misses
+pass	ck4 a Map keyed by Char discriminates and looks up
+pass	ck5b Symbol set dedup+membership, in-program strings
 pass	ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
@@ -5179,6 +5180,7 @@ pass	cx8 an effect-performing closure RETURNED from a helper then invoked
 pass	cx9a a performing closure through THREE nested one-shot helper hops folds
 pass	cx9b the one-shot helper carries an EXTRA scalar arg alongside the closure
 pass	cx9c TWO different performing closures through the same helper on separate calls
+pass	cx9d sequential composition — one hop's answer feeds a second hop's closure
 pass	cy1 a CYCLE detector — a bitmask accumulator of seen residues stops the walk on the first repeat
 pass	cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamped to the range answering the landed ratio's tens digit, pedal answers rpm times the ratio over a hundred accumulating distance, the big downshift clamps BOTH runs to the same bottom gear so the tails converge while the opening gears diverge, and the final row reads the odometer
 pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
@@ -5358,6 +5360,10 @@ pass	each literal kind quotes to its own single Ast leaf that escapes and render
 pass	each multi-shot branch OBSERVES its own divergent state via a trailing peek
 pass	each multi-shot branch observes its own heap-lineage length
 pass	each recursion level installs its own handle around a def-bound perform
+pass	ecl1 a let-bound hop answer used TWICE folds
+pass	ecl2 a let CHAIN through the hop answer folds
+pass	ecl3 TWO let-bound hop answers fold
+pass	ecl5 a let INSIDE the performing closure body folds
 pass	ed1 TWO defs each install their OWN handler for one effect — main calls both, seeds and arms fully independent
 pass	ed2 a handled def CALLED from inside another def's handle — the callee's region shadows the caller's mid-body
 pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — the base case draws from the deepest frame's handler
@@ -5732,6 +5738,9 @@ pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log
 pass	ldg1 a LEADING-DIGIT counter — feed strips each value to its leading digit through a recursive divide-down callee, a hit on the seed-wanted digit answers digit*10 plus the running hit count while a miss answers the bare digit, and the two seeds hunt DIFFERENT digits through one shared stream
 pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
+pass	le1 a SINGLE-element const Set.to-list folds
+pass	le2 an EMPTY const Set.to-list folds to the empty list
+pass	le3 a single-entry const Map.to-list reads its lone (k v)
 pass	led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
@@ -5763,6 +5772,9 @@ pass	lk2 a ROLLING-code lock — each successful match advances the key index th
 pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter
 pass	lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does
 pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, the drain reads a middle row's middle element
+pass	lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)
+pass	lnr2 a const Map.to-list with a LONE non-orderable KEY still declines
+pass	lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0
 pass	lo1 THIRTY dispatches in one region — the fold scales past the corpus's usual handful, arithmetic sum exact
 pass	lo2 a NINE-level shadow tower (outer + eight) — one draw per level, the deepest doubling, strides 1-8
 pass	lo3 EIGHT ops in one effect, called in shuffled order — dispatch-table width, one op advancing mid-sequence
@@ -5954,6 +5966,9 @@ pass	nested same-direction shifts by constants combine into one shift by the sum
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption
 pass	ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs the rising thread (+,-,+)
+pass	nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)
+pass	nk2 +inf, -inf, and NaN are THREE distinct set members
+pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
 pass	nl2 the nested-record binder in LIST-ELEMENT pattern position — the head record's field binds, the rest carries full records
 pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
@@ -5977,6 +5992,11 @@ pass	nx2 a 2^62 seed threads exactly — the difference of consecutive draws rec
 pass	nx3 the arm branches on the op arg's SIGN — negation on the negative path, n and -n both exercised
 pass	nx4 an alternating-sign GEOMETRIC stride (*-2) — the sign flips per dispatch and the sum telescopes
 pass	nx5 i64::MIN-adjacent op arguments — the arm's subtraction stays in range and the two dispatches differ by exactly the state stride
+pass	nz1 bare = distinguishes +0.0 from a TRUE runtime -0.0
+pass	nz2 {+0.0, -0.0} are TWO set members
+pass	nz3 -0.0 is NOT a member of {+0.0}
+pass	nz4 a Map discriminates +0.0 and -0.0 keys
+pass	nz5 the zeros compare = only to themselves yet BEHAVE differently under division
 pass	oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out in a match arm homes correctly
 pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
 pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
@@ -6680,6 +6700,8 @@ pass	st3 the SHADOWING frame's arm draws the SAME effect — its dispatch escape
 pass	stacked line comments on a top-level form are all seen through
 pass	stg1 a STONE-TAKING game — take removes up to k stones clamped at the pile answering pile-times-ten plus whose turn it was, the player landing the pile at zero answers a hundred-plus-their-id, and the smaller pile ends three moves early so its tail is drained-pile wins for alternating players
 pass	stk2 a STICKY-ERR Result state — pushes accumulate while Ok, the over-20 sum flips the state to an absorbing Err whose pushes answer the negated code, reset reports-and-restores
+pass	stl1 Set.to-list folds under the Ast.encode const-param demand path
+pass	stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block
 pass	sto2 insertion-order INSENSITIVITY — {3,1,2} vs {2,3,1} to-list equality via tuple walk
 pass	sto3 to-list length + sum are order-independent invariants
 pass	sto4 Set.to-list of a 3-1-2 built set is the SORTED 1,2,3
@@ -6791,6 +6813,7 @@ pass	the JOSEPHUS survivor agrees between the modular recurrence and a list elim
 pass	the LAST Map.to-list entry over runtime String keys is the byte-largest
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the LUHN checksum doubles alternate digits from the right with the nine-fold correction
+pass	the NULLARY scalar-newtype escape renders the nominal (: 5 W), agreeing with the param'd path
 pass	the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)
 pass	the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)
 pass	the OR short-circuits on a true first operand — the second perform must NOT fire
@@ -7450,6 +7473,8 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	bo1 bare order over two runtime encode results compares content-lexicographically
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
+todo	ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold
+todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
 todo	cj03 Ast.print of a RUNTIME AST value renders
@@ -7506,27 +7531,3 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
-pass	ecl1 a let-bound hop answer used TWICE folds
-pass	ecl2 a let CHAIN through the hop answer folds
-pass	ecl3 TWO let-bound hop answers fold
-pass	ecl5 a let INSIDE the performing closure body folds
-pass	nz2 {+0.0, -0.0} are TWO set members
-pass	nz3 -0.0 is NOT a member of {+0.0}
-pass	nz4 a Map discriminates +0.0 and -0.0 keys
-pass	nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)
-pass	nk2 +inf, -inf, and NaN are THREE distinct set members
-pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
-pass	nz1 bare = distinguishes +0.0 from a TRUE runtime -0.0
-pass	nz5 the zeros compare = only to themselves yet BEHAVE differently under division
-pass	ck1 a Char set dedups repeated members
-pass	ck2 Char set membership hits and misses
-pass	ck4 a Map keyed by Char discriminates and looks up
-pass	ck5b Symbol set dedup+membership, in-program strings
-pass	stl1 Set.to-list folds under the Ast.encode const-param demand path
-pass	stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block
-pass	le1 a SINGLE-element const Set.to-list folds
-pass	le2 an EMPTY const Set.to-list folds to the empty list
-pass	le3 a single-entry const Map.to-list reads its lone (k v)
-pass	lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)
-pass	lnr2 a const Map.to-list with a LONE non-orderable KEY still declines
-pass	lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0
