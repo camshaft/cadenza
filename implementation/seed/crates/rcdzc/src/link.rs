@@ -1139,12 +1139,12 @@ mod tests {
         crate::compile(&inputs, &[Target::Wasm])
     }
 
-    /// Compile a two-file package whose APP file is authored in the ML SURFACE (`.cdz`), driven through
+    /// Compile a package whose ENTRY (`app`) file is authored in the ML SURFACE (`.cdz`), driven through
     /// the real front-end `cadenza_syntax::parser::read_ml` → cadenza-syntax codec → rcdzc decode — the
-    /// same seam the CLI uses. The `lib` stays s-expr (its surface is not under test). This exercises an
-    /// ML-surface linking feature (like the alias import) END-TO-END rather than hand-feeding the arena.
-    fn compile_package_ml_app(lib_src: &str, app_ml: &str) -> crate::abi::CompileOutput {
-        let lib = crate::codec::encode(&arena_of(lib_src));
+    /// same seam the CLI uses. Each `libs` entry is `(artifact-name, s-expr source)` (a lib's surface is
+    /// not under test, so it stays s-expr); the entry imports them by name. This exercises an ML-surface
+    /// linking feature (like the alias import) END-TO-END rather than hand-feeding the arena.
+    fn compile_package_ml_app(libs: &[(&str, &str)], app_ml: &str) -> crate::abi::CompileOutput {
         let parsed = cadenza_syntax::parser::read_ml(app_ml);
         assert!(
             parsed.ok(),
@@ -1154,12 +1154,22 @@ mod tests {
         let app_bytes = cadenza_syntax::codec::encode(&parsed.arenas);
         let app_arena = crate::codec::decode(&app_bytes)
             .unwrap_or_else(|| panic!("cadenza-syntax bytes failed rcdzc decode: {app_ml}"));
-        let app = crate::codec::encode(&app_arena);
-        let inputs = vec![
-            Artifact::new(Artifact::KIND_AST, "lib", lib),
-            Artifact::new(Artifact::KIND_AST, "app", app),
-            Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()),
-        ];
+        let mut inputs: Vec<Artifact> = libs
+            .iter()
+            .map(|&(name, src)| {
+                Artifact::new(
+                    Artifact::KIND_AST,
+                    name,
+                    crate::codec::encode(&arena_of(src)),
+                )
+            })
+            .collect();
+        inputs.push(Artifact::new(
+            Artifact::KIND_AST,
+            "app",
+            crate::codec::encode(&app_arena),
+        ));
+        inputs.push(Artifact::new(KIND_ENTRY, "entry", b"app".to_vec()));
         crate::compile(&inputs, &[Target::Wasm])
     }
 
@@ -1376,12 +1386,40 @@ mod tests {
     #[test]
     fn the_ml_surface_alias_import_resolves_and_projects() {
         let out = compile_package_ml_app(
-            "(do (def (helper) 40) (export helper))",
+            &[("lib", "(do (def (helper) 40) (export helper))")],
             "import \"lib\" as lib\ndef main() = lib.helper\nexport { main }",
         );
         assert!(
             !out.has_error(),
             "the ML-surface alias import must resolve + project a member; got {:?}",
+            out.diagnostics
+        );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
+    }
+
+    /// The COLLISION-AVOIDANCE core of the alias import, through the ML SURFACE — the exact §8 shape the
+    /// conformance dispatcher authors: TWO modules that each export the SAME name (`descriptor`), imported
+    /// under distinct aliases (`a`/`b`), each projected to ITS OWN module's export. A plain named-list
+    /// `import { descriptor } from …` twice would COLLIDE (CDZ0201); the alias is the collision-free path
+    /// (#3656). This pins that the two same-named exports RESOLVE DISTINCTLY (no collision error) when
+    /// authored in a `.cdz` — the composition (`the_ml_surface_alias_import_resolves_and_projects` covers a
+    /// single alias; `11-modules.sexp` covers collision in s-expr; neither covers ML-surface collision).
+    #[test]
+    fn ml_surface_aliases_disambiguate_a_uniformly_named_export_from_two_modules() {
+        let out = compile_package_ml_app(
+            &[
+                ("liba", "(do (def (descriptor) 30) (export descriptor))"),
+                ("libb", "(do (def (descriptor) 12) (export descriptor))"),
+            ],
+            "import \"liba\" as a\n\
+             import \"libb\" as b\n\
+             def from-a() = a.descriptor\n\
+             def from-b() = b.descriptor\n\
+             export { from-a, from-b }",
+        );
+        assert!(
+            !out.has_error(),
+            "two aliased modules exporting the same name must resolve distinctly (no CDZ0201); got {:?}",
             out.diagnostics
         );
         assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
