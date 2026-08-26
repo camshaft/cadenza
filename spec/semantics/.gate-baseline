@@ -7843,3 +7843,7 @@ pass	abx1 two-op effect, BOTH arms resuming (control)
 pass	abx2 two-op effect, one resuming one ABORTIVE (scalar state)
 pass	abx4 mixed arms, list state, abort arm IGNORES the state
 pass	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
+pass	rh1 an arm resumes with a LIST answer and the body's read reclaims it
+pass	rh2 an arm resumes with an arm-BUILT STRING answer, body measures it
+pass	rh3 heap answers across TWO dispatches both reclaim
+pass	rh4 heap STATE and heap ANSWER together — both reclaim

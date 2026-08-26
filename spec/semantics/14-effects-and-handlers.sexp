@@ -8106,3 +8106,56 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 101 Int64)))
+
+; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
+; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
+; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427
+; abort-path faces; wasm-only rows per the live-objects convention.
+
+(case "rh1 an arm resumes with a LIST answer and the body's read reclaims it"
+  (input (do
+    (effect E (op draw (-> (List Int64))))
+    (def (main (: n Int64))
+      (handle E n
+        ((draw () s (resume (if (> s 0) (list s (+ s 1)) (list 9)) (+ s 1))))
+        (List.len (E.draw))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "rh2 an arm resumes with an arm-BUILT STRING answer, body measures it"
+  (input (do
+    (effect E (op name (-> String)))
+    (def (main (: n Int64))
+      (handle E n
+        ((name () s (resume (String.concat "ab" (if (> s 0) "c" "de")) s)))
+        (String.byte-len (E.name))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case "rh3 heap answers across TWO dispatches both reclaim"
+  (input (do
+    (effect E (op draw (-> (List Int64))))
+    (def (main (: n Int64))
+      (handle E n
+        ((draw () s (resume (if (> s 0) (list s) (list 9 9)) (+ s 1))))
+        (+ (List.len (E.draw)) (* 10 (List.len (E.draw))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects 0))
+
+(case "rh4 heap STATE and heap ANSWER together — both reclaim"
+  (input (do
+    (effect E (op draw (-> String)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n (+ n 1)) (list 9))
+        ((draw () s (resume (String.concat "x" (if (= (List.len s) 2) "y" "zz")) s)))
+        (String.byte-len (E.draw))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
