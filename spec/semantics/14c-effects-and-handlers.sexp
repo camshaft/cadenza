@@ -17183,6 +17183,23 @@
   (call   main (: 10 Int64)) (output (: 251000005 Int64))
   (call   main (: 0 Int64)) (output (: 250255004 Int64)))
 
+;; pyu8a1: a bare NARROW-int (UInt8) OP-RESULT whose resume answer applies UInt8.of (the CHECKED narrowing
+;; conversion, range-check + trap) to the Int64 state, then wraps it. Once the checked narrowing T.of emits
+;; (range-check + trap; landed generally in #3537), the fold threads it like any op-result answer: each tick
+;; answers UInt8.wrapping-add(250, UInt8.of s) over the growing state (in-range here, no trap) and the three
+;; widened reads pack. CONTRAST pyu8r1 (UInt8.WRAP answer — truncating, always emitted): this pins the
+;; CHECKED (.of) narrowing face in the answer. (breaker pyu8a1 / narrowint-answer.)
+(case "pyu8a1 a checked-narrowing UInt8.of of the state in the resume answer folds — three widened reads pack after the .of range-check emits"
+  (input (do
+  (effect E (op tick (-> UInt8)))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (UInt8.wrapping-add (: 250 UInt8) (UInt8.of s)) (+ s 1))))
+      (+ (* 1000 (Int64.of (E.tick))) (+ (* 100 (Int64.of (E.tick))) (Int64.of (E.tick))))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 276453 Int64))
+  (call   main (: 0 Int64)) (output (: 275352 Int64)))
+
 ;; -- pyif1 conditional resume both if-arms + pymt2 three-way data-dependent resume + pyhc1 recursive-helper resume answer (breaker batch 363) --
 (case "pyif1 probe: the arm branches on state parity and RESUMES in BOTH if-branches with DIFFERENT answer and next-state — even s resumes (* s 100) threading (+ s 1), odd s resumes (* s 10) threading (+ s 3); three dispatches follow a data-dependent path through the two resume sites, so the tail fold must handle two distinct resume calls that reconverge (each its own answer AND its own state advance)"
   (input (do
