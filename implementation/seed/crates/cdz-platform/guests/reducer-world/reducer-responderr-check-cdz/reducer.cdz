@@ -1,0 +1,27 @@
+// The §4 RUNTIME-FAILURE response-fold checker (design/cadenza-platform.md §4/§9). The paired run injects THREE
+// runtime-failure responses to the reducer-under-test — Err(MissingHandler), Err(SchemaViolation), Err(Faulted)
+// — and its on-response is expected to fold EACH into a distinct recovery marker. This checker asserts, log-only
+// and guest-agnostic, that ALL THREE markers were emitted, proving the reducer distinguished and folded each
+// failure arm (not merely that some response arrived, and not conflating the three).
+//
+// NON-VACUOUS: a reducer that ignored a response, or matched the wrong arm, drops that arm's marker and the
+// check fails. Each marker is guest-controlled and distinct from the injected response payload (there is none —
+// the answer is an Err tag), so none can be echoed vacuously.
+//
+// Round-3 checker-lib form: three field predicates + any-record; respond() owns the decode + verdict emit.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def emitted-missing-handler(rec) = match rec.entry with | Entry.Emitted(e) => e.payload == b"err-missing-handler" | _ => false
+def emitted-schema-violation(rec) = match rec.entry with | Entry.Emitted(e) => e.payload == b"err-schema-violation" | _ => false
+def emitted-faulted(rec) = match rec.entry with | Entry.Emitted(e) => e.payload == b"err-faulted" | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, emitted-missing-handler)) then fail("no Emitted b\"err-missing-handler\": the reducer did not fold the Err(MissingHandler) response")
+  else if not(any-record(records, emitted-schema-violation)) then fail("no Emitted b\"err-schema-violation\": the reducer did not fold the Err(SchemaViolation) response")
+  else if not(any-record(records, emitted-faulted)) then fail("no Emitted b\"err-faulted\": the reducer did not fold the Err(Faulted) response")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }

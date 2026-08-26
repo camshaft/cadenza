@@ -1,0 +1,29 @@
+// The §4 RUNTIME-FAILURE response fold (design/cadenza-platform.md §4). A dispatched request can come back not
+// as a value but as a runtime failure the reducer must fold: Err(MissingHandler) (no handler for the contract),
+// Err(SchemaViolation) (the answer did not decode against the schema), Err(Faulted) (the responder crashed). Like
+// the anti-stuck Err(Timeout) path (reducer-timeout-cdz, #3591), these are ordinary results a reducer recovers
+// from, not stuck sessions — this reducer exercises the fold side for the three NON-timeout failures.
+//
+// Its on-response matches each Error arm and emits a distinct recovery marker (b"err-missing-handler" /
+// b"err-schema-violation" / b"err-faulted"), the observable that it woke to that specific failure and can react;
+// on an Ok answer or a timeout it is inert (timeout is reducer-timeout-cdz's cover). The harness injects each
+// failure via `answer = Err("missing-handler" | "schema-violation" | "faulted")` (spec.rs read_error_tag).
+//
+// Keeps its OWN on-response (it reacts); on-message / on-notification are the inert reducer-lib re-exports.
+// `Error` (the runtime message-fold error sum) comes from reducer-lib.
+import { Outcome, Error, on-notification } from "reducer-lib"
+
+def on-message(_msg) = { requests = [], outcome = Outcome.Continue }
+
+def recover(resp, marker) =
+  { requests = [{ contract = resp.contract, payload = marker, token = resp.token, deadlineNanos = None }],
+    outcome = Outcome.Continue }
+
+def on-response(resp) =
+  match resp.answer with
+  | Err(Error.MissingHandler) => recover(resp, b"err-missing-handler")
+  | Err(Error.SchemaViolation) => recover(resp, b"err-schema-violation")
+  | Err(Error.Faulted) => recover(resp, b"err-faulted")
+  | _ => { requests = [], outcome = Outcome.Continue }
+
+export { on-message, on-response, on-notification }
