@@ -264,6 +264,7 @@ pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the mini
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
 pass	Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
+pass	Map.to-list over an owned-temporary runtime map reclaims the source, leaving no live heap objects
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	N-suffixed literals compose under BigInt arithmetic
@@ -367,6 +368,7 @@ pass	Set.to-list over a 100-element trie enumerates strictly increasing end to e
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
+pass	Set.to-list over an owned-temporary runtime set reclaims the source, leaving no live heap objects
 pass	Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order
