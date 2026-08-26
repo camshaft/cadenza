@@ -87,13 +87,31 @@ fn flatten_record_field_abi(f: &crate::backend::wasm::host::RecordFieldAbi, out:
             out.push(wasm_abi::CORE_I32); // the discriminant
             flatten_record_field_abi(payload, out);
         }
-        // A general `variant` flattens (canonical variant flatten) to `(disc:i32, join(case payloads))`. This
-        // increment scopes payloads to a UNIFORM single scalar, so the join is that one scalar slot (the first
-        // payload case's core byte; the detector guarantees ≥1 payload case, all sharing the valtype).
+        // A general `variant` flattens (canonical variant flatten) to `(disc:i32, join(case payloads))`. The
+        // payload join slot is the widest core int (i64 if any payload case is a 64-bit int, else i32 for
+        // int/bool/char) or the uniform float core — MATCHING `wit_ctype::flatten_variant` (the import's
+        // component type) and the guest marshal's pushed valtype (`select::variant_register_join_vt`); a
+        // mixed int/float payload is excluded by the detector. Using the FIRST case's width here (a bug for a
+        // mixed-width variant) would declare a core sig the guest push disagrees with → an invalid module.
         RecordFieldAbi::Variant(cases) => {
             out.push(wasm_abi::CORE_I32); // the discriminant
-            if let Some(pv) = cases.iter().find_map(|(_, p)| *p) {
-                out.push(pv.core_byte());
+            let mut join: Option<u8> = None;
+            for pv in cases.iter().filter_map(|(_, p)| *p) {
+                let cb = pv.core_byte();
+                join = Some(match join {
+                    None => cb,
+                    Some(prev) if prev == cb => cb,
+                    Some(a)
+                        if (a == wasm_abi::CORE_I32 && cb == wasm_abi::CORE_I64)
+                            || (a == wasm_abi::CORE_I64 && cb == wasm_abi::CORE_I32) =>
+                    {
+                        wasm_abi::CORE_I64
+                    }
+                    Some(_) => cb, // a float mix is excluded by the detector; keep last defensively
+                });
+            }
+            if let Some(cb) = join {
+                out.push(cb);
             }
         }
     }
