@@ -3105,42 +3105,37 @@ impl<'a> Parser<'a> {
         self.list(vec![head, effects_list, body], span)
     }
 
-    /// Two import surfaces, disambiguated by the token right after `import`:
+    /// Two import surfaces, both ending `from "path"`, disambiguated by the SPEC after `import`:
     ///   * `import { name, … } from "path"` -> `(import "path" (name …))` — brings a sibling module's
     ///     named exports FLAT into scope (third arena element a name-LIST);
-    ///   * `import "path" as alias` -> `(import "path" alias)` — binds the WHOLE module under a local
+    ///   * `import alias from "path"` -> `(import "path" alias)` — binds the WHOLE module under a local
     ///     `alias` (a record of its exports), reached by projection `alias.member` (third arena element
     ///     a bare NAME). The `alias` avoids a collision when two modules export the same name.
     ///
     /// The arena is the corpus's path-first shape in both cases (a path string then either a name-list
     /// or a bare-name alias), so the surfaces agree with the sexpr surface and the linker's discriminant
-    /// (list-third-element = named imports; atom-third-element = module alias).
+    /// (list-third-element = named imports; atom-third-element = module alias). Both reuse the `from`
+    /// keyword — a whole-module bind is just a BARE name where the named form has a `{ … }` list.
     fn import_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("import", start);
         self.bump(); // `import`
-        // ALIAS form: `import "path" as alias`. A string right after `import` (rather than `{`) is the
-        // whole-module alias; the named-list form always opens with `{`.
-        if self.at(Kind::Str) {
-            let path_span = self.cur_span();
-            let t = self.bump().unwrap();
-            let path = self.atom(literal::unescape_string_token(self.text(t)), path_span);
-            self.expect_keyword(Keyword::As, "`as`");
-            let alias = self.binder();
-            let span = start.merge(self.prev_span());
-            // Path-first, with the alias as a BARE NAME third element (the linker's alias discriminant).
-            return self.list(vec![head, path, alias], span);
-        }
-        let names_start = self.cur_span();
-        let names = self.brace_name_list();
-        let names_span = names_start.merge(self.prev_span());
-        let name_list = self.list(names, names_span);
+        // The import SPEC: a brace name-list `{ a, b }` (named imports) OR a bare NAME (whole-module
+        // alias). Both then take `from "path"`; the `{` vs bare-name opener is the sole discriminant.
+        let spec = if self.at(Kind::LBrace) {
+            let names_start = self.cur_span();
+            let names = self.brace_name_list();
+            let names_span = names_start.merge(self.prev_span());
+            self.list(names, names_span)
+        } else {
+            self.binder()
+        };
         // `from` is a CONTEXTUAL keyword — an ordinary identifier `from` in this one position, not a
         // globally-reserved word (so `from` stays usable as a variable name elsewhere).
         if self.at(Kind::Ident) && self.cur_text() == "from" {
             self.bump();
         } else {
-            self.error("expected `from` after the import name list");
+            self.error("expected `from` after the import spec");
         }
         // The module path: a string literal.
         let path = if self.at(Kind::Str) {
@@ -3152,8 +3147,8 @@ impl<'a> Parser<'a> {
             self.error_node(self.cur_span())
         };
         let span = start.merge(self.prev_span());
-        // Arena order is path-first: `(import "path" (name…))`.
-        self.list(vec![head, path, name_list], span)
+        // Arena order is path-first: `(import "path" <spec>)` (spec = name-LIST or bare-NAME alias).
+        self.list(vec![head, path, spec], span)
     }
 
     /// A brace-delimited comma-separated name list `{ a, b, … }` -> the vector of name occurrences.
