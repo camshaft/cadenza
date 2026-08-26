@@ -1803,6 +1803,38 @@
   (call   main) (output (: 1 Int64))
   (live-objects 0))
 
+(case "reading a Rational numerator drops the owned rational and leaves no live heap objects"
+  (doc    "`(Int64.of (Rational.numerator (Rational.of n 4)))` — `Rational.numerator` (an owned BigInt
+           result) BORROWS its owned `(Rational.of n 4)` operand and hands out a fresh owned BigInt,
+           narrowed by `Int64.of`. At n=6, 6/4 reduces to 3/2 -> numerator 3. The owned Rational node (and
+           its two BigInt components) plus the owned numerator BigInt must all be dropped after the
+           borrowing reads — live-objects 0.")
+  (input  (do (def (main (: n Int64)) (Int64.of (Rational.numerator (Rational.of n 4)))) (export main)))
+  (call   main (: 6 Int64)) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "a Rational sum's numerator drops every owned handle and leaves no live heap objects"
+  (doc    "A Rational sum of two owned operands, its numerator read out: `(Int64.of (Rational.numerator (+
+           (Rational.of n 4) (Rational.of n 4))))`. At n=1, 1/4 + 1/4 = 1/2 -> numerator 1. `+` borrows both
+           operands and returns a fresh owned Rational; `numerator` borrows it and returns a fresh BigInt;
+           `Int64.of` borrows and drops. Every fresh Rational/BigInt handle must be dropped — live-objects 0.")
+  (input  (do (def (main (: n Int64)) (Int64.of (Rational.numerator (+ (Rational.of n 4) (Rational.of n 4))))) (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "a let-bound Rational borrowed by two reads is dropped once and leaves no live heap objects"
+  (doc    "`(let ((r (Rational.of n 4))) (+ (Int64.of (Rational.numerator r)) (Int64.of (Rational.denominator
+           r))))` — `r` is borrowed by both reads (each returns a fresh owned BigInt its `Int64.of` drops)
+           and reclaimed by the `let` exactly once. At n=6, 6/4 = 3/2, numerator 3 + denominator 2 = 5. The
+           let-bound Rational is neither leaked nor double-freed — live-objects 0.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((r (Rational.of n 4)))
+                (+ (Int64.of (Rational.numerator r)) (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 5 Int64))
+  (live-objects 0))
+
 ; The multiply case above pins ONE multi-limb product's value. This pins that ARITHMETIC over a multi-limb
 ; BigInt carries and borrows exactly across the 64-bit limb boundary — the low-level limb-library
 ; correctness: from a ~2^126 value (Int64.max², 2 limbs), +1 then −1 round-trips (carry then borrow across

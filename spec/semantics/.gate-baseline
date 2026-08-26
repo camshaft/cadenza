@@ -984,6 +984,7 @@ pass	a Rational leaf in a tuple orders by exact value with canonical-form ties f
 pass	a Rational map from a Rational sum key and a Rational.of-over-arithmetic key has both entries
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements
+pass	a Rational sum's numerator drops every owned handle and leaves no live heap objects
 pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 pass	a Rational-annotated literal composes with exact rational arithmetic
 pass	a Rational-inner quantity Map key matches an equal value written with a different spelling
@@ -2192,6 +2193,7 @@ pass	a let tuple pattern destructures a helper CALL's runtime tuple result
 pass	a let-bound Ast splices into a template
 pass	a let-bound Bytes.compact result read twice (eq then order-compare) computes without an OOB fault
 pass	a let-bound Bytes.concat result is read three ways (len, index, order-compare)
+pass	a let-bound Rational borrowed by two reads is dropped once and leaves no live heap objects
 pass	a let-bound handle with a runtime seed composes with arithmetic after the let
 pass	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
@@ -3334,6 +3336,7 @@ pass	a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-ma
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin ENCODE lays out le and signed fields byte-exactly
+pass	a runtime bin construction borrowed by Bytes.len leaves no live heap objects
 pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
@@ -3347,6 +3350,7 @@ pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
 pass	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
+pass	a runtime bit-field bin construction borrowed by Bytes.len leaves no live heap objects
 pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
 pass	a runtime bit-field run spans two bytes and composes with an int segment
@@ -6296,6 +6300,7 @@ pass	read of a bare b token is an Ast.Name, not a byte-literal
 pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
 pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
 pass	read of the empty string declines
+pass	reading a Rational numerator drops the owned rational and leaves no live heap objects
 pass	reading a byte from a sequence built with a RUNTIME element widens it to the Option payload
 pass	reading a field of a record built from runtime elements folds to the field
 pass	reading a member from an if-of-records resolves each branch's field by its own sorted order
