@@ -648,3 +648,65 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.base (: 1000 UInt64)))
   (host-calls (call cadenza:demo/hosti.base))
   (output (: 1001 Int64)))
+
+;; -- host-u64 checked-conversion end-to-end: intact-compare control, T.of over a host response, handler x host x conversion, record-arg x value-result x conversion (breaker batch 382; the #3537->#3572 wrong-trap arc witnesses) --
+(case "u64h1 the u64 host response compared WITHOUT T.of arrives intact"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (if (= (hosti.base unit) (UInt64.wrap 1000)) 7 8)))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 7 Int64)))
+
+(case "u64h2 T.of over the u64 host response (isolated, in-range 1000)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (Int64.of (hosti.base unit))))
+    (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1000 Int64)))
+
+(case "cr03 an export combining an IN-GUEST handler AND a host import"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member base (func (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect Cnt (op tick (-> Int64)))
+    (effect hosti (op base (-> Unit UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti)
+        (+ (Int64.of (hosti.base unit))
+           (handle Cnt (. m x)
+             ((tick () s (resume (* s 10) (+ s 1))))
+             (+ (Cnt.tick) (Cnt.tick))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.base (: 1000 UInt64)))
+  (host-calls (call cadenza:demo/hosti.base))
+  (output (: 1070 Int64)))
+
+(case "cq04 host IMPORT: RECORD param + scalar result (reverse direction)"
+  (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
+               (import cadenza:demo/hosti (member put (func (param v ("record" (a (s64)) (b (s64)))) (result (u64)))))))
+  (component-name "cadenza:demo/iface")
+  (input (do
+    (effect hosti (op put (-> (Record (: a Int64) (: b Int64)) UInt64)))
+    (def (f (: m (Record (: x Int64))))
+      (host (hosti) (Int64.of (hosti.put (record (= a (. m x)) (= b 9))))))
+    (export f)))
+  (call f (: (record (= x 3)) (Record (: x Int64))))
+  (host-responses (respond hosti.put (: 42 UInt64)))
+  (host-calls (call cadenza:demo/hosti.put))
+  (output (: 42 Int64)))

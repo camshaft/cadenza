@@ -7478,3 +7478,7 @@ pass	lk1 divergent update aliases leave no live heap objects after the run
 pass	lk2b a closure capturing a BRANCH-SELECTED list across an interleaved update leaves no live heap objects
 pass	lk3 a persistent update inside a handler ARM plus continuation read leaves no live heap objects
 pass	lk4 shared Map and Set operands across inserts leave no live heap objects
+pass	u64h1 the u64 host response compared WITHOUT T.of arrives intact
+pass	u64h2 T.of over the u64 host response (isolated, in-range 1000)
+pass	cr03 an export combining an IN-GUEST handler AND a host import
+pass	cq04 host IMPORT: RECORD param + scalar result (reverse direction)
