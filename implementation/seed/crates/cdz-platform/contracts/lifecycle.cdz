@@ -53,10 +53,9 @@ def crashed-event-conforms() =
   | Event.Crashed(e) => if e.reducer == b"reducer" then unit else trap("crashed reducer mismatch")
   | _ => trap("expected an Event.Crashed")
 
-// Self-reflect this contract's own id (design §1, P4): `contract-id(Ast.module)` folds THIS
-// module to its content-addressed id, byte-identical to the host `cdz_contract::contract_id`.
-// Exported so a reducer can import it to route on (`msg.contract == lifecycle-id()`) without a
-// hardcoded hash. Inert for the Rust codegen (which reads the schema, not this def/export).
-import { contract-id } from "contract-id"
-def lifecycle-id() -> Bytes = contract-id(Ast.module)
-export { lifecycle-id }
+// Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
+// contract-descriptor(Ast.module) — a reducer imports it and routes on descriptor().id.
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
+export { descriptor }

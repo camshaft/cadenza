@@ -49,7 +49,8 @@ def check-conforms() =
 // constructor in scope. The `.*` exports every constructor (a bare `Envelope` would expose only the opaque
 // type handle, and the value could not be matched). Inert for the Rust codegen (which reads the schema, not
 // the export clause) and for a single-file compile.
-import { contract-id } from "contract-id"
-def check-id() -> Bytes = contract-id(Ast.module)
+import { contract-descriptor } from "contract-id"
+def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+  contract-descriptor(Ast.module)
 
-export { Envelope.*, Ack.*, check-id }
+export { Envelope.*, Ack.*, descriptor }
