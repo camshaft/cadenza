@@ -1,0 +1,12 @@
+// The §7 SELF-EXIT CHILD (design/cadenza-platform.md §3/§7). On its trigger message this reducer ends ITSELF
+// by returning a Break — a reducer ends itself through the Outcome it returns, not through an effect (§7) —
+// carrying a typed reason b"child-done". Its parent holds a `parent_watches_child` supervision link, so once
+// this session's tail is terminal the runtime delivers the exit to the parent as an `Exited` lifecycle event.
+// The observation log records the exit both as this reducer's Closed entry and (because it is watched) as a
+// Delivered notification to the parent. on-response/on-notification inert (reducer-lib).
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"child-done" }) }
+
+export { on-message, on-response, on-notification }

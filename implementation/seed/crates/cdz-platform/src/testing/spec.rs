@@ -64,8 +64,12 @@
 //!   (= name   "root")        ; the task's handle in the log
 //!   (= blob   "greeter")     ; a blob name declared above
 //!   (= parent "root")        ; optional — a task spawned earlier; absent ⇒ a root
-//!   (= kind   "event"))      ; optional — "ordinary" (default) or "event" (a privileged event reducer)
+//!   (= kind   "event")       ; optional — "ordinary" (default) or "event" (a privileged event reducer)
+//!   (= links  ("record" (= parentWatchesChild 1))))  ; optional — supervision links to the parent (§7)
 //! ```
+//! The `links` sub-record carries two `0`/`1` flags — `parentWatchesChild` and `childWatchesParent` — each of
+//! which, when set, establishes a `watch_exit` edge so the runtime delivers one reducer's lifecycle event
+//! (`Exited`/`Crashed`) to the other. Absent flags default to false (no supervision).
 //!
 //! Both the list head `("list" …)` and the bare name head `(list …)` are accepted, as they denote the same
 //! construct. Every field is read by name, so order is not load-bearing. A malformed description is a
@@ -76,8 +80,8 @@ use crate::contract_value::{
     bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
-    Bytes, ContractId, Delivered, Error, Hash, HostId, Message, Notification, Origin, ProgramHash,
-    ReducerId, ReducerKind, Response,
+    Bytes, ContractId, Delivered, Error, Hash, HostId, Links, Message, Notification, Origin,
+    ProgramHash, ReducerId, ReducerKind, Response,
 };
 use cadenza_ast::ast::{Arenas, Builder, Leaf, Struct, StructId};
 use cadenza_ast::codec;
@@ -808,8 +812,9 @@ fn blob_to_ast(b: &mut Builder, blob: &BlobSpec) -> StructId {
     record(b, vec![("name", name), source])
 }
 
-/// The `("record" (= name …) (= blob …) (= parent …)? (= kind …)?)` node for one spawn — the inverse of
-/// [`read_spawn`]. A root parent and an ordinary kind are the decode defaults, so they are omitted.
+/// The `("record" (= name …) (= blob …) (= parent …)? (= kind …)? (= links …)?)` node for one spawn — the
+/// inverse of [`read_spawn`]. A root parent, an ordinary kind, and no supervision links are the decode
+/// defaults, so they are omitted; only a `true` link flag is written, so a round-trip recovers the same links.
 fn spawn_to_ast(b: &mut Builder, spawn: &SpawnSpec) -> StructId {
     let name = str_leaf(b, spawn.task_name());
     let blob = str_leaf(b, spawn.blob_name());
@@ -821,6 +826,18 @@ fn spawn_to_ast(b: &mut Builder, spawn: &SpawnSpec) -> StructId {
     if spawn.reducer_kind() == ReducerKind::Event {
         let kind = str_leaf(b, "event");
         fields.push(("kind", kind));
+    }
+    let links = spawn.supervision();
+    if links != Links::NONE {
+        let mut flags: Vec<(&str, StructId)> = Vec::new();
+        if links.parent_watches_child {
+            flags.push(("parentWatchesChild", uint_leaf(b, 1)));
+        }
+        if links.child_watches_parent {
+            flags.push(("childWatchesParent", uint_leaf(b, 1)));
+        }
+        let links = record(b, flags);
+        fields.push(("links", links));
     }
     record(b, fields)
 }
@@ -852,6 +869,22 @@ fn str_field<'a>(
         Some(id) => arenas.as_str(id).map(Some).ok_or(SpecError::WrongType {
             field,
             want: "a string",
+        }),
+    }
+}
+
+/// A record's field read as a `u64`, if present. `Ok(None)` when the field is absent; a present-but-not-a-
+/// uint field is a [`SpecError::WrongType`].
+fn uint_field(
+    arenas: &Arenas,
+    record: StructId,
+    field: &'static str,
+) -> Result<Option<u64>, SpecError> {
+    match record_field(arenas, record, field) {
+        None => Ok(None),
+        Some(id) => read_uint(arenas, id).map(Some).ok_or(SpecError::WrongType {
+            field,
+            want: "a uint",
         }),
     }
 }
@@ -914,6 +947,24 @@ fn read_spawn(arenas: &Arenas, id: StructId) -> Result<SpawnSpec, SpecError> {
                     kind: other.to_string(),
                 });
             }
+        });
+    }
+    // Optional supervision links (§7): a `links` sub-record whose two flags say which lifecycle events flow
+    // between this task and its parent. Each true flag becomes a `watch_exit` edge the system reads on exit to
+    // deliver a peer's `Exited`/`Crashed` event. A flag is a `0`/`1` uint (the log's flag convention); absent ⇒
+    // false, so a spawn with no `links` field keeps the default of no supervision in either direction.
+    if let Some(links_id) = record_field(arenas, id, "links") {
+        if !is_record(arenas, links_id) {
+            return Err(SpecError::WrongType {
+                field: "links",
+                want: "a (record …) of supervision flags",
+            });
+        }
+        spec = spec.links(Links {
+            parent_watches_child: uint_field(arenas, links_id, "parentWatchesChild")?.unwrap_or(0)
+                != 0,
+            child_watches_parent: uint_field(arenas, links_id, "childWatchesParent")?.unwrap_or(0)
+                != 0,
         });
     }
     Ok(spec)
@@ -1406,7 +1457,9 @@ mod tests {
     use crate::contract_value::bare_ctor;
     use crate::contract_value::{bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
-    use crate::{Bytes, ContractId, Error, HostId, Origin, ProgramHash, ReducerId, ReducerKind};
+    use crate::{
+        Bytes, ContractId, Error, HostId, Links, Origin, ProgramHash, ReducerId, ReducerKind,
+    };
     use cadenza_ast::ast::{Arenas, Builder, Leaf, StructId};
     use cadenza_ast::codec;
     use std::sync::Arc;
@@ -2184,6 +2237,43 @@ mod tests {
             }],
         };
         assert_eq!(HarnessSpec::decode(&spec.encode()), Ok(spec));
+    }
+
+    #[test]
+    fn a_spawn_with_supervision_links_round_trips() {
+        // A spawn's supervision links (§7) survive encode→decode. Only the true flag is written, so a
+        // one-directional link recovers exactly (parent watches child, child does not watch parent), while a
+        // spawn with no links keeps the SpawnSpec::new default of none.
+        let spec = HarnessSpec {
+            run_for: None,
+            blobs: vec![],
+            spawns: vec![
+                SpawnSpec::new("watcher", "watcher"),
+                SpawnSpec::new("child", "child").child_of("watcher").links(Links {
+                    parent_watches_child: true,
+                    child_watches_parent: false,
+                }),
+            ],
+            deliveries: vec![],
+            checker: None,
+            pure_run: None,
+            deps: Vec::new(),
+            registry: RegistrySpec {
+                default: "sys".to_string(),
+                handlers: vec![],
+            },
+            edges: vec![],
+        };
+        let decoded = HarnessSpec::decode(&spec.encode()).expect("decode");
+        assert_eq!(decoded, spec);
+        assert_eq!(
+            decoded.spawns[1].supervision(),
+            Links {
+                parent_watches_child: true,
+                child_watches_parent: false,
+            }
+        );
+        assert_eq!(decoded.spawns[0].supervision(), Links::NONE);
     }
 
     #[test]
