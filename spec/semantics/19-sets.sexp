@@ -3526,3 +3526,47 @@
             (export main)))
   (call   main (: 500 Int64)) (output (: 1500 Int64))
   (live-objects 0))
+
+(case "Set.union over two owned-temporary runtime sets reclaims both operands and the result (no live objects)"
+  (doc    "`build` recurses inserting the runtime loop counter so each set is a genuine opaque runtime value
+           (no const-fold). {0,1,2} u {2,3,4} = {0,1,2,3,4}, Set.len -> 5. The union CONSUMES both owned
+           operands; the fresh owned union result is borrowed then dropped by Set.len -- net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main) (Set.len (Set.union (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (export main)))
+  (call   main) (output (: 5 Int64))
+  (live-objects 0))
+
+(case "Set.intersection over two owned-temporary runtime sets reclaims both operands and the result (no live objects)"
+  (doc    "{0,1,2} n {2,3,4} = {2}, Set.len -> 1. Both owned operand sets (consumed by the intersection) and
+           the fresh owned result must all be reclaimed after the borrowing length read -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main) (Set.len (Set.intersection (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects 0))
+
+(case "Set.difference over two owned-temporary runtime sets reclaims both operands and the result (no live objects)"
+  (doc    "{0,1,2} \\ {2,3,4} = {0,1}, Set.len -> 2. Both owned operand sets and the fresh owned difference
+           result must all be reclaimed after the borrowing length read -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main) (Set.len (Set.difference (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list))))))
+            (export main)))
+  (call   main) (output (: 2 Int64))
+  (live-objects 0))
+
+(case "a let-bound set shared across a consuming Set.union and a later read is dup'd and reclaimed once (no live objects)"
+  (doc    "Set.union CONSUMES both operands, so a let-bound `s` reused AFTER the union must be dup'd by the
+           Perceus retain BEFORE the union consumes it, or the later Set.len s reads a freed set. s={0,1,2};
+           (Set.len (Set.union s {5,6,7})) + (Set.len s) = 6 + 3 = 9. The union result is dropped by its
+           Set.len; the dup'd s is reclaimed by the enclosing let exactly once -- net 0, neither UAF nor
+           double-free.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64))) (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main) (let ((s (build 0 3 (Set.of (list))))) (+ (Set.len (Set.union s (build 5 8 (Set.of (list))))) (Set.len s))))
+            (export main)))
+  (call   main) (output (: 9 Int64))
+  (live-objects 0))
