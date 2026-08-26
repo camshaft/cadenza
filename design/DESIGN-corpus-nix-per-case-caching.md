@@ -157,8 +157,14 @@ change must know which reflects a local (uncommitted) source edit:
   cargo-built binary (verified: a bogus `CDZ_COMPILE_BIN` is ignored by the standalone `cdz`). So the gate
   never uses the nix / content-addressed compiler, and a `cargo build -p cdz` recompiles `rcdzc` into `cdz`.
 - **`nix build .#checks.<sys>.corpus-*`** (this pipeline) — builds the compiler in a content-addressed nix
-  derivation from COMMITTED source. An UNCOMMITTED local edit is invisible here until committed; once
-  committed, the CA build reruns only for the cases whose emit changed (that is the whole point).
+  derivation from the FLAKE source. For a local flake this is the git working tree, so a dirty edit to a
+  TRACKED `rcdzc` file IS picked up (verified: touching a tracked compiler-crate file changes the
+  `corpus-*` derivation hash → the compiler rebuilds → the cases whose emit changed re-run; a byte-identical
+  emit CA-cache-hits and re-runs nothing). Two ways an edit is NOT seen here: (a) an UNTRACKED new file —
+  nix excludes untracked files from the flake source, so a newly-added source file must be `git add`ed
+  before any nix build sees it; (b) a change that does not alter the EMITTED bytes for the cases you run —
+  the content-addressed exec serves a cache hit (by design). Neither path silently ignores a tracked,
+  emit-changing local edit.
 
 So the sanctioned loop for a `rcdzc` emit edit — no commit needed:
 
