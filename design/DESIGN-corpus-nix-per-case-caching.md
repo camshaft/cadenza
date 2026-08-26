@@ -144,6 +144,34 @@ three gaps remain:
 8. **Cutover**: once 6+7 land and the nix `corpus` (wasm+rust+rust-async) is proven equivalent on the
    full corpus, DELETE `xtask gate`, `.gate-baseline*`, and the gate/grader code from `xtask/src/main.rs`.
 
+## Local-emit test loop (which path picks up a LOCAL rcdzc edit)
+
+Two grade paths exist; they build the compiler DIFFERENTLY, so an agent iterating on a `rcdzc` emit
+change must know which reflects a local (uncommitted) source edit:
+
+- **`cargo xtask gate` / `cargo xtask emit`** — DO reflect a local `rcdzc` edit. Both call `build_tools()`,
+  which runs `cargo build --profile release-debug -p cdz …` from LOCAL source and then shells that
+  freshly-built `target/release-debug/cdz` (`tools.rcdzc = cdz`). `cdz`'s default features include
+  `standalone`, so `cdz compile` runs the compiler IN-PROCESS (`compiler_cli::run`); the `delegate` module
+  and its `CDZ_COMPILE_BIN` env read are `#[cfg(not(feature = "standalone"))]` — compiled OUT of the
+  cargo-built binary (verified: a bogus `CDZ_COMPILE_BIN` is ignored by the standalone `cdz`). So the gate
+  never uses the nix / content-addressed compiler, and a `cargo build -p cdz` recompiles `rcdzc` into `cdz`.
+- **`nix build .#checks.<sys>.corpus-*`** (this pipeline) — builds the compiler in a content-addressed nix
+  derivation from COMMITTED source. An UNCOMMITTED local edit is invisible here until committed; once
+  committed, the CA build reruns only for the cases whose emit changed (that is the whole point).
+
+So the sanctioned loop for a `rcdzc` emit edit — no commit needed:
+
+1. SEE the emit: `cargo xtask emit <file.sexp>` (or `cdz convert <f> -t binary | cdz compile - --target rust -o -`).
+2. GRADE it: `cargo xtask gate --target rust --files <file>` (whole file), or
+   `cargo xtask gate --target rust --case <needle>` (single-case debug loop: prints program/expected/actual).
+
+Run from the SAME worktree the edit lives in. NOTE: a full `xtask gate` run prints only a pass/fail tally
+and captures per-case compiler stderr (surfaced only on a decline/reject as the diagnostic; discarded on a
+clean compile), so an instrumentation `eprintln!` on the SUCCESS path fires but is not shown — use `--case`
+or `xtask emit` to see per-case detail. The rust gate is also DIFFERENTIAL (grades the rust emit against the
+wasm oracle), so a correctness-preserving emit fix will not flip a verdict.
+
 ## Open/handled decisions
 
 - Grading placement: fold into `cdz-run` (`--expect`) so exec is one bin (operator leans smaller bins;
