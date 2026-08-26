@@ -52,6 +52,38 @@
   (call   main (: 1000 Int64))
   (output (: 4000 Int64)))
 
+(case "a runtime String.at result compares by content in a recursive scan"
+  (doc    "The char-by-char lexer idiom: a recursive scan reading each scalar with String.at at a runtime
+           index and comparing its content, (= (String.at s i) \"a\"). String.at returns Some of a rope
+           slice (an offset into the source), so its content-equality once compared by rope OFFSET and never
+           matched a flat twin, making count-a of \"banana\" return 0 (a silent wrong value) and blocking a
+           lexer over a runtime string. The fix compacts the fresh slice to an independent flat leaf at the
+           producer, so it compares by content everywhere. \"banana\" has three a's, so 3.")
+  (input  (do
+            (def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
+            (def (cnt (: s String) (: i Int64) (: acc Int64))
+              (if (= i (String.byte-len s)) acc
+                  (cnt s (+ i 1) (if (= (at s i) "a") (+ acc 1) acc))))
+            (def (main) (cnt "banana" 0 0))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "a String.at result then reuse of the source does not double-free"
+  (doc    "The String.at slice-compaction plus borrow-dup fix must not double-free the source: reading a
+           char with String.at and then reusing the same string afterwards must run to the correct value.
+           The Some-branch dups the borrowed source before the consuming bytes-slice, so the slice owns an
+           independent reference and the source survives its later use; a missing dup would free the source
+           under the slice (a use-after-free). rep builds an owned runtime rope so String.at reaches its
+           real producer path. Char 0 of \"hixxx\" is \"h\" (matches, +1) and byte-len is 5, so 1 + 5 = 6.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (rd (: s String))
+              (+ (if (= (Option.expect (String.at s 0) "x") "h") 1 0) (String.byte-len s)))
+            (def (main) (rd (rep "hi" 3)))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
   (doc    "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
            first-flag threaded through the fold) — [\"alpha\", rope-\"beta\", \"gamma\"] joined by \",\"

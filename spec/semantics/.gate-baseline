@@ -1128,6 +1128,7 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform
 pass	a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back
+pass	a String.at result then reuse of the source does not double-free
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
@@ -3433,6 +3434,7 @@ pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT 
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime String ordering compare over a let-bound rope operand leaves no live heap objects
 pass	a runtime String rope compares equal to its flat twin and leaves no live heap objects
+pass	a runtime String.at result compares by content in a recursive scan
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
