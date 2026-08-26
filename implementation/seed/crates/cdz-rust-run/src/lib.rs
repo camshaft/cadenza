@@ -5,12 +5,14 @@
 //! (`design/DESIGN-corpus-nix-per-case-caching.md`), one of the gaps to close before the `xtask gate`
 //! can be retired.
 //!
-//! Built up incrementally. This increment lands the PURE, process-free foundation — parsing the emitted
-//! Rust function signatures (`sig`) — which the driver generation + call marshalling depend on. Later
-//! increments add: driver generation (export call + host-response shims + closure/factory application),
-//! the `rustc` invocation (linking the pre-built `cdz_rt`/`cdz_num`/`cadenza_ast` rlibs), the run, and the
-//! outcome grade.
+//! The pieces: signature analysis (`sig`), driver generation (`driver` — export call + host-response
+//! shims), the `rustc` compile+run (`run` — linking the pre-built `cdz_rt`/`cdz_num`/`cadenza_ast` rlibs),
+//! and the outcome grade (`grade` — reusing the shared backend-independent `cdz-corpus-grade` compare, run
+//! through a rust trial-runner). The `cdz-rust-run` bin (`main.rs`) is the `--grade` entry the nix per-case
+//! rust exec layer shells out to. Deferred: the host-closure factory/consumer application + the async
+//! `block_on` harness (the small closure/async corpus subset).
 
 pub mod driver;
+pub mod grade;
 pub mod run;
 pub mod sig;
