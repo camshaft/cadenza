@@ -2243,6 +2243,7 @@ pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound record with an extra field capturing a let-local is projected and applied
 pass	a let-bound record's projected capturing closure applied twice folds each application
 pass	a let-bound returned closure applied twice folds each application independently
+pass	a let-bound runtime tuple inside a parameterized function projects element 0
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound runtime-if map is looked up with valid wasm
 pass	a let-bound set shared across a consuming Set.union and a later read is dup'd and reclaimed once (no live objects)
@@ -3056,6 +3057,8 @@ pass	a record STATE with a Set field rebuilt per dispatch — dedup observed thr
 pass	a record TYPE with a duplicate field name is a type error
 pass	a record annotated with the wrong field type is rejected
 pass	a record binding pattern binds fields by name, out of order and partial
+pass	a record binding pattern in a let destructures by field
+pass	a record binding pattern in a parameter destructures by field
 pass	a record binding pattern may leave a field's value a wildcard
 pass	a record binding pattern naming an absent field is rejected
 pass	a record carrying a field the annotation does not name is rejected
