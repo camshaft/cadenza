@@ -2249,10 +2249,12 @@ mod tests {
             blobs: vec![],
             spawns: vec![
                 SpawnSpec::new("watcher", "watcher"),
-                SpawnSpec::new("child", "child").child_of("watcher").links(Links {
-                    parent_watches_child: true,
-                    child_watches_parent: false,
-                }),
+                SpawnSpec::new("child", "child")
+                    .child_of("watcher")
+                    .links(Links {
+                        parent_watches_child: true,
+                        child_watches_parent: false,
+                    }),
             ],
             deliveries: vec![],
             checker: None,
