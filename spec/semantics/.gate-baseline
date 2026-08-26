@@ -717,9 +717,15 @@ pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not 
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float32 NaN map key is found by a differently-produced NaN
+pass	a Float32 add whose operand is an if of two bare literals grounds to f32
+pass	a Float32 add with a bare LEFT literal grounds it to f32 (position-independent)
+pass	a Float32 add with a bare right literal grounds the literal to f32
+pass	a Float32 divide with a bare right literal grounds the literal to f32
 pass	a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer
+pass	a Float32 multiply with a bare right literal grounds the literal to f32
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a Float32 set dedups NaN elements and keeps zero signs distinct
+pass	a Float32 subtract with a bare right literal grounds the literal to f32
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
 pass	a Float32-overflowing literal in a Result Err payload is rejected
 pass	a Float32-overflowing literal in a Result Ok payload is rejected

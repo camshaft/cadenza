@@ -9342,3 +9342,35 @@
   (doc    "`(/ a b)` emits f64.div over runtime params: 1.0 / 3.0 = the IEEE quotient.")
   (input  (do (def (f (: a Float64) (: b Float64)) (/ a b)) (export f)))
   (call   f (: 1.0 Float64) (: 3.0 Float64)) (output (: 0.3333333333333333 Float64)))
+
+(case "a Float32 add with a bare right literal grounds the literal to f32"
+  (doc    "A Float32 arith op with a bare float literal must materialize the literal at f32 (not its f64
+           default -> invalid wasm). `(+ x 1.0)` over Float32 x=2.5 -> 3.5.")
+  (input  (do (def (f (: x Float32)) (+ x 1.0)) (export f)))
+  (call   f (: 2.5 Float32)) (output (: 3.5 Float32)))
+
+(case "a Float32 subtract with a bare right literal grounds the literal to f32"
+  (doc    "`(- x 2.0)` over Float32 x=5.5 -> 3.5, the literal grounded to f32.")
+  (input  (do (def (f (: x Float32)) (- x 2.0)) (export f)))
+  (call   f (: 5.5 Float32)) (output (: 3.5 Float32)))
+
+(case "a Float32 multiply with a bare right literal grounds the literal to f32"
+  (doc    "`(* x 2.0)` over Float32 x=3.5 -> 7.0, the literal grounded to f32.")
+  (input  (do (def (f (: x Float32)) (* x 2.0)) (export f)))
+  (call   f (: 3.5 Float32)) (output (: 7.0 Float32)))
+
+(case "a Float32 divide with a bare right literal grounds the literal to f32"
+  (doc    "`(/ x 2.0)` over Float32 x=7.0 -> 3.5, the literal grounded to f32.")
+  (input  (do (def (f (: x Float32)) (/ x 2.0)) (export f)))
+  (call   f (: 7.0 Float32)) (output (: 3.5 Float32)))
+
+(case "a Float32 add with a bare LEFT literal grounds it to f32 (position-independent)"
+  (doc    "`(+ 1.0 x)` over Float32 x=2.5 -> 3.5 — the literal grounds to f32 on the left too.")
+  (input  (do (def (f (: x Float32)) (+ 1.0 x)) (export f)))
+  (call   f (: 2.5 Float32)) (output (: 3.5 Float32)))
+
+(case "a Float32 add whose operand is an if of two bare literals grounds to f32"
+  (doc    "A control-flow operand (an if of two bare literals) also grounds to the op width. `(+ x (if c
+           1.0 2.0))` with c=true, x=1.0 -> 2.0.")
+  (input  (do (def (f (: c Bool) (: x Float32)) (+ x (if c 1.0 2.0))) (export f)))
+  (call   f (: true Bool) (: 1.0 Float32)) (output (: 2.0 Float32)))
