@@ -15741,42 +15741,90 @@ fn list_shell_reclaim_slot(
     .then_some(slot)
 }
 
-/// Whether the expression at `id` READS a heap sub-value OUT of a compound AS A LIVE HANDLE — a borrowing
-/// projection (`arr-get`/`vec-get`/`sum-payload`) whose result is itself a heap handle, which for a
-/// `MatchList` arm may alias into the owned scrutinee shell and thus outlive it (see `list_shell_reclaim_slot`).
-/// Conservative over-approximation: ANY heap-typed borrowing read anywhere in the subtree returns `true`
-/// (declining the shell reclaim — a leak, never a double-free), even one off an unrelated fresh value. A
-/// `RestFrom` tail is EXCLUDED: `vec-drop` mints a FRESH owned sublist (net-zero on the scrutinee), not a
-/// borrow into it. A read bottoming in a SCALAR (`get-int`/`get-bool`, so the node's own type is scalar)
-/// copies out and holds no handle → not counted. Sharing-aware node-id `seen` set (idempotent — presence
-/// only), same rationale as `collect_shell_reclaim_child_dups`.
+/// Whether some arm reads a heap sub-value OUT of a compound AS A LIVE HANDLE that could OUTLIVE the
+/// post-match shell deep-drop — a borrowing projection (`arr-get`/`vec-get`/`sum-payload`) whose result is a
+/// heap handle, appearing in a CONSUME/RESULT position (returned, a call/constructor argument) rather than a
+/// pure borrow. Such a handle may alias into the owned scrutinee shell, so dropping the shell would free a
+/// still-referenced value (see [`list_shell_reclaim_slot`]).
+///
+/// POSITION-AWARE, mirroring [`binding_escapes`]'s borrow threading: a heap projection is HARMLESS when it is
+/// only BORROWED — the immediate SCRUTINEE of an enclosing `Match`/`MatchSum`/`MatchList` (the dispatch reads
+/// its disc/payload without transferring ownership; after the match it is dead), or the operand of another
+/// borrowing projection reading DEEPER into it. That is exactly the `msr6` shape `(list r1 r2) → (match r1 …
+/// (match r2 … (+ a b)))`: the record elements `r1`/`r2` are inner-match scrutinees (borrows, `vec-get` never
+/// bumps their rc), fully consumed by the dispatch before the arm's scalar result, so the outer shell deep-
+/// drop reclaims them (rc 1, shell-owned) with no live alias. A heap projection ANYWHERE ELSE — returned as
+/// the result, threaded into a call/constructor, an inner match's heap payload flowing out — ESCAPES and
+/// blocks the reclaim (a leak, never a double-free).
+///
+/// SAFE-BY-DEFAULT: only two positions relax to `borrowed = true` (a match SCRUTINEE, a projection OPERAND —
+/// both genuine reads); every other node recurses its children as CONSUMING (`borrowed = false`), so an
+/// unhandled shape can only over-decline (leak), never wrongly permit a reclaim (UAF). A `RestFrom` tail is
+/// never a shell borrow (`vec-drop` mints a FRESH owned sublist). A read bottoming in a SCALAR
+/// (`get-int`/`get-bool`) holds no handle. `seen` is keyed by `(id, borrowed)` so a shared node reached in
+/// BOTH positions is still checked in its consuming one (never a missed escape).
 fn arm_borrows_heap_subvalue(db: &mut Db, id: StructId) -> bool {
     let mut seen = HashSet::new();
-    arm_borrows_heap_subvalue_seen(db, id, &mut seen)
+    arm_borrows_heap_subvalue_seen(db, id, false, &mut seen)
 }
 
-fn arm_borrows_heap_subvalue_seen(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
-    if !seen.insert(id) {
+fn arm_borrows_heap_subvalue_seen(
+    db: &mut Db,
+    id: StructId,
+    borrowed: bool,
+    seen: &mut HashSet<(StructId, bool)>,
+) -> bool {
+    if !seen.insert((id, borrowed)) {
         return false;
     }
+    // Does THIS node materialize a heap sub-value handle out of a compound?
     let is_heap_borrow = match core_of(db, id) {
-        // A tuple/record field read, or an `Option.expect` payload read — a borrowing `arr-get`/`sum-payload`.
-        // If THIS node's own result is a heap handle, it materializes a live borrow (of a field / payload).
         Core::Proj { .. } | Core::SumExpect { .. } => is_heap_type(&type_of(db, id)),
-        // A pattern payload/element read. A `RestFrom` tail is a fresh OWNED sublist (not a borrow) → exclude;
-        // any other final step (`Elem`/`Payload`) is a borrowing read. Heap result ⇒ a live handle borrow.
         Core::SumPayload { ref path, .. } => {
             !matches!(path.last(), Some(crate::core::PathStep::RestFrom(_)))
                 && is_heap_type(&type_of(db, id))
         }
         _ => false,
     };
-    if is_heap_borrow {
+    // In a CONSUME/RESULT position such a handle escapes and blocks the reclaim; in a BORROW position it is
+    // only read (an enclosing match/projection consumes it in place) and is fine — but keep descending, since
+    // a deeper sub-read may still escape.
+    if is_heap_borrow && !borrowed {
         return true;
     }
-    core_child_ids(db, id)
-        .into_iter()
-        .any(|c| arm_borrows_heap_subvalue_seen(db, c, seen))
+    match core_of(db, id) {
+        // A match BORROWS its scrutinee (reads disc / length / payload) and does not transfer it out; its
+        // arm bodies are RESULT positions (consuming). So the scrutinee relaxes to `borrowed = true`, every
+        // other child (arm bodies, guards, the sum decision tree) stays consuming.
+        Core::Match { scrutinee, .. }
+        | Core::MatchSum { scrutinee, .. }
+        | Core::MatchList { scrutinee, .. } => {
+            if arm_borrows_heap_subvalue_seen(db, scrutinee, true, seen) {
+                return true;
+            }
+            core_child_ids(db, id)
+                .into_iter()
+                .any(|c| c != scrutinee && arm_borrows_heap_subvalue_seen(db, c, false, seen))
+        }
+        // A borrowing projection / read reads DEEPER into its operand: the operand is itself borrowed, so a
+        // (nested) heap projection there is still just a read. (`SumExpect`/`Proj`/`SumPayload` operand, and
+        // the scalar-returning borrow ops.)
+        Core::Proj { operand, .. }
+        | Core::SumExpect {
+            scrutinee: operand, ..
+        }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand } => arm_borrows_heap_subvalue_seen(db, operand, true, seen),
+        Core::SumPayload { scrutinee, .. } => {
+            arm_borrows_heap_subvalue_seen(db, scrutinee, true, seen)
+        }
+        // Every other node kind (calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
+        // children carry no borrow relaxation. SAFE-BY-DEFAULT: an unhandled shape can only over-decline.
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .any(|c| arm_borrows_heap_subvalue_seen(db, c, false, seen)),
+    }
 }
 
 /// Whether the handle an expression's emit leaves on the stack is a NEW OWNED reference the current
