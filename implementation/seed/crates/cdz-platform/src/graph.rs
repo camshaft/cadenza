@@ -287,12 +287,28 @@ fn drop_edge(
     }
 }
 
+/// A reverse in-edge parked for a not-yet-joined target: the `(kind, weight, from)` to add to the target's
+/// `.into` when it joins (an entry in [`InMemoryReducerGraph::pending`]).
+type OwedReverse = (EdgeKind, u32, ReducerId);
+
+/// Reverse in-edges owed to not-yet-joined targets, keyed by target — [`InMemoryReducerGraph::pending`].
+type PendingReverses = HashMap<ReducerId, BTreeSet<OwedReverse>>;
+
 /// An in-memory [`ReducerGraph`] — the active graph as a local adjacency map. For tests and single-process
 /// use; a distributed build tracks the same edges in a replicated structure. Interior mutability (a
 /// `Mutex`), since the system records and drops edges behind a shared `Arc`.
 #[derive(Debug, Default)]
 pub struct InMemoryReducerGraph {
     nodes: Mutex<HashMap<ReducerId, Node>>,
+    /// Reverse in-edges owed to a not-yet-joined target: `target -> {(kind, weight, from)}`. `set_edges` may
+    /// name a chain target that is not yet in the active set; it records the forward out-edge but cannot add
+    /// the target's reverse in-edge, so it parks the owed reverse here and [`insert`](ReducerGraph::insert)
+    /// materializes it when the target joins — fulfilling `set_edges`'s contract that such a target "gains
+    /// no reverse edge until it joins". Without this, a target that joined after being named would stay blind
+    /// to the chain (`contracts_for`) and its later [`remove`](ReducerGraph::remove) would not clean the
+    /// `from -> target` out-edge, leaking a stale edge to a dead reducer. Holds only outstanding
+    /// absent-target chain edges (small). Locked AFTER `nodes` — the single lock order — when both are held.
+    pending: Mutex<PendingReverses>,
 }
 
 impl InMemoryReducerGraph {
@@ -311,6 +327,17 @@ impl ReducerGraph for InMemoryReducerGraph {
             return false;
         }
         nodes.insert(node, Node::default());
+        // A `set_edges` may have named this node as a chain target before it joined, parking the reverse
+        // in-edges it could not yet add (nodes-then-pending lock order). Materialize them now, so the joining
+        // node's in-edges — and thus `contracts_for` and `remove`'s reverse-edge cleanup — see the chain it
+        // is part of. `remove` purges a source's parked reverses, so every parked `from` here is still live.
+        let mut pending = self.pending.lock().expect("graph pending lock");
+        if let Some(owed) = pending.remove(&node) {
+            let n = nodes.get_mut(&node).expect("just inserted");
+            for (kind, weight, from) in owed {
+                n.into.entry(kind).or_default().insert((weight, from));
+            }
+        }
         true
     }
 
@@ -362,6 +389,17 @@ impl ReducerGraph for InMemoryReducerGraph {
                 }
             }
         }
+        // Purge parked reverse edges tied to this node (nodes-then-pending lock order): any this node OWED an
+        // absent target (it was the `from` of a `set_edges` out-edge to a not-yet-joined target — the forward
+        // edge just vanished with `node`), plus any still owed TO this node (only if it never joined, so
+        // normally none — `insert` drained them). Without the former, a target joining later would resurrect a
+        // reverse edge to a dead source.
+        let mut pending = self.pending.lock().expect("graph pending lock");
+        pending.remove(&node);
+        pending.retain(|_target, owed| {
+            owed.retain(|(_, _, from)| *from != node);
+            !owed.is_empty()
+        });
         true
     }
 
@@ -403,13 +441,21 @@ impl ReducerGraph for InMemoryReducerGraph {
             .remove(&kind)
             .map(|set| set.into_iter().collect())
             .unwrap_or_default();
+        let mut pending = self.pending.lock().expect("graph pending lock");
         for (weight, target) in &prior {
             if let Some(t) = nodes.get_mut(target) {
                 drop_edge(&mut t.into, kind, (*weight, from));
+            } else if let Some(owed) = pending.get_mut(target) {
+                // The prior target never joined: its reverse was parked, not on the target — drop it there.
+                owed.remove(&(kind, *weight, from));
+                if owed.is_empty() {
+                    pending.remove(target);
+                }
             }
         }
         // Link the new chain, each target at its position; a target present in the active set also gets the
-        // reverse edge (so `contracts_for` and `remove` see it).
+        // reverse edge (so `contracts_for` and `remove` see it). A target not yet in the active set gets its
+        // forward out-edge now and its reverse in-edge PARKED, materialized when it joins (`insert`).
         for (i, target) in targets.iter().enumerate() {
             let weight = i as u32;
             nodes
@@ -421,6 +467,11 @@ impl ReducerGraph for InMemoryReducerGraph {
                 .insert((weight, *target));
             if let Some(t) = nodes.get_mut(target) {
                 t.into.entry(kind).or_default().insert((weight, from));
+            } else {
+                pending
+                    .entry(*target)
+                    .or_default()
+                    .insert((kind, weight, from));
             }
         }
         prior.into_iter().map(|(_, peer)| peer).collect()
@@ -794,5 +845,51 @@ mod tests {
             .primary()
             .spawn();
         });
+    }
+
+    #[tokio::test]
+    async fn a_target_named_before_it_joins_gains_its_reverse_edge_on_join() {
+        // `set_edges` may name a chain target not yet in the active set (handler registration need not precede
+        // it). The forward out-edge is recorded immediately; the target's reverse in-edge is PARKED and must
+        // materialize when the target joins — so it sees the chain it answers (`contracts_for`) and its later
+        // `remove` cleans the `from -> target` out-edge. Regression for the stale-out-edge leak: without the
+        // parked-reverse mechanism the target joined blind and `remove` left `from` pointing at a dead reducer.
+        let g = InMemoryReducerGraph::new();
+        let kind = EdgeKind::for_contract(c("k"));
+        g.insert(r("owner")).await;
+        // Configure the chain BEFORE the handler joins.
+        g.set_edges(r("owner"), kind, vec![r("handler")]).await;
+        assert_eq!(
+            g.neighbors(r("owner"), kind, Dir::Out).await,
+            vec![r("handler")]
+        );
+        // The absent target has no reverse edge yet.
+        assert!(g.neighbors(r("handler"), kind, Dir::In).await.is_empty());
+        // It joins: the parked reverse in-edge materializes.
+        g.insert(r("handler")).await;
+        assert_eq!(
+            g.neighbors(r("handler"), kind, Dir::In).await,
+            vec![r("owner")]
+        );
+        assert_eq!(g.contracts_for(r("handler")).await, vec![c("k")]);
+        // Removing it cleans the owner's out-edge — no stale edge to a dead reducer.
+        assert!(g.remove(r("handler")).await);
+        assert!(g.neighbors(r("owner"), kind, Dir::Out).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn removing_the_source_purges_a_parked_reverse_so_a_later_join_does_not_resurrect_it() {
+        // The dual: a parked reverse is owed BY `owner` to a not-yet-joined `handler`. If `owner` is removed
+        // first, that parked reverse is stale (its forward out-edge vanished with `owner`) and must be purged
+        // — else a later `handler` join would resurrect a reverse in-edge pointing at a dead source.
+        let g = InMemoryReducerGraph::new();
+        let kind = EdgeKind::for_contract(c("k"));
+        g.insert(r("owner")).await;
+        g.set_edges(r("owner"), kind, vec![r("handler")]).await;
+        assert!(g.remove(r("owner")).await);
+        // handler joins after its source is gone: no reverse in-edge should appear.
+        g.insert(r("handler")).await;
+        assert!(g.neighbors(r("handler"), kind, Dir::In).await.is_empty());
+        assert!(g.contracts_for(r("handler")).await.is_empty());
     }
 }
