@@ -1,0 +1,31 @@
+// The §7 P3 state-dispatcher GET-MISSING checker (design/cadenza-platform.md §4/§7/§9). The happy-path run
+// (reducer-statedispatch-cdz-run) only exercises get-AFTER-set (a hit, emitting GetResult.Found). This pins the
+// negative-read arm: a get on a key that was NEVER set. The dispatcher's state.get arm reads state.get(k) = None
+// and emits the contract's declared GetResult.Missing variant — the DISTINCT nullary tag that replaced the old
+// b"MISS" sentinel (v-platform review: a stored value can never collide with it). Without a run here, that arm
+// (the whole point of the sentinel fix) was unwitnessed.
+//
+// This checker asserts BOTH the read side-effect and the emitted variant:
+//   (1) KvGet(key = K, not hit) — the get arm dispatched + read, and the key was genuinely absent (a MISS).
+//   (2) Emitted a payload that Value.decodes to GetResult.Missing — the dispatcher folded the miss into the
+//       declared @!output variant (a real tag, not a raw sentinel), decoded type-directed against GetResult.
+// NON-VACUOUS: a dispatcher that emitted a Found (or a raw b"MISS") drops the decoded Missing; a hit (if the key
+// were somehow present) drops the not-hit KvGet; a guest that fails to instantiate reads nothing.
+import { LogRecord, Entry } from "log-schema"
+import { GetResult } from "state-get"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def kvget-miss(rec) = match rec.entry with | Entry.KvGet(g) => (g.key == b"ABSENT") and not(g.hit) | _ => false
+def emitted-missing(rec) =
+  match rec.entry with
+  | Entry.Emitted(e) => (match (Value.decode(e.payload) : Option(GetResult)) with | Some(GetResult.Missing) => true | _ => false)
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, kvget-miss)) then fail("no KvGet(ABSENT, miss): the state.get arm did not dispatch/read, or the key was unexpectedly present")
+  else if not(any-record(records, emitted-missing)) then fail("get did not emit GetResult.Missing: the dispatcher did not fold the absent-key read into the declared Missing variant (regressed to Found or a raw sentinel)")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
