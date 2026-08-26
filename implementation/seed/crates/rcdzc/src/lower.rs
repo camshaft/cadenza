@@ -3204,9 +3204,14 @@ fn lower_ast_encode(db: &mut Db, id: StructId, ast_val: StructId) -> Core {
             }
             None => {}
         }
-        return Core::Poison(Reject::decline(
-            "Ast.encode of a runtime AST value is not yet computed (constant AST values only)",
-        ));
+        // A genuinely-RUNTIME Ast (neither `core_of` nor `const_eval` reduced it to a constant): serialize it
+        // at run time via the value-heap `ast-encode` op (heap index 93) over the heap Ast handle, guided by
+        // the baked 9-disc descriptor. Byte-identical to the compile-time `codec::encode` fold (the op runs
+        // the SAME shared codec). (Was a decline; v-runtime #3634.)
+        return Core::AstEncode {
+            operand: ast_val,
+            discs: bake_ast_discs_9(&disc),
+        };
     };
     let bytes = crate::codec::encode(&b.finish(root));
     trace!(target: "rcdzc::fold", node = id.0, len = bytes.len(), "Ast.encode folds a constant AST to its canonical cdzast bytes");
@@ -3300,6 +3305,28 @@ fn bake_ast_discs(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
     let mut bytes = Vec::new();
     for d in [
         disc.int, disc.float, disc.bool, disc.str, disc.name, disc.bytes, disc.list,
+    ] {
+        crate::leb128::write_u64(&mut bytes, d as u64);
+    }
+    bytes.into()
+}
+
+/// Bake the descriptor for the runtime `ast-encode`/`ast-decode` ops — NINE ULEB `u32` discs in the fixed
+/// slot order `[int, float, bool, str, name, list, bytes, char, symbol]` (the `AstDiscs` struct field order,
+/// matching the runtime's `read_ast_discs` for ops 93/94). Two more than the 7-disc `ast-print` descriptor:
+/// encode/decode round-trip EVERY variant, including `char` and `symbol`. Same by-name lookup + LEB layout.
+fn bake_ast_discs_9(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
+    let mut bytes = Vec::new();
+    for d in [
+        disc.int,
+        disc.float,
+        disc.bool,
+        disc.str,
+        disc.name,
+        disc.list,
+        disc.bytes,
+        disc.char,
+        disc.symbol,
     ] {
         crate::leb128::write_u64(&mut bytes, d as u64);
     }
