@@ -5695,6 +5695,28 @@
   (call   main (: 0 Int64)) (trap "divide by zero")
   (call   main (: 2 Int64)) (output (: 1 Int64)))
 
+(case "a short-circuit and of a boolean and its negation folds to false"
+  (doc    "BOOLEAN COMPLEMENT LAW: `(and a (not a))` → false — a boolean and its negation are exclusive,
+           so the conjunction is always false regardless of `a`. true → 0, false → 0.")
+  (input  (do (def (main (: a Bool)) (if (and a (not a)) 1 0)) (export main)))
+  (call   main (: true Bool))  (output (: 0 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
+(case "a short-circuit or of a boolean and its negation folds to true"
+  (doc    "The exhaustive complement law: `(or a (not a))` → true — a boolean and its negation are
+           exhaustive. true → 1, false → 1.")
+  (input  (do (def (main (: a Bool)) (if (or a (not a)) 1 0)) (export main)))
+  (call   main (: true Bool))  (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 1 Int64)))
+
+(case "the boolean complement-law fold keeps a trapping operand's trap"
+  (doc    "The complement-law fold discards both operands (it answers a constant), so it is gated on
+           trap-freedom — a trapping operand keeps the runtime form and traps. `(and (> (/ 10 n) 0) (not
+           (> (/ 10 n) 0)))` at n = 0 traps on the div; n = 2 → 0 (the conjunction is false).")
+  (input  (do (def (main (: n Int64)) (if (and (> (/ 10 n) 0) (not (> (/ 10 n) 0))) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (trap "divide by zero")
+  (call   main (: 2 Int64)) (output (: 0 Int64)))
+
 (case "an absorbed conjunction composes as a live disjunction's operand"
   (doc    "`(or (and (> n 0) false) (> m 0))` — the inner conjunction folds to constant false, which
            is the DISJUNCTION's neutral element, so the whole expression folds to `(> m 0)`: m decides
