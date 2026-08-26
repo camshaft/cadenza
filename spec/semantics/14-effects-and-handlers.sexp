@@ -6748,20 +6748,20 @@
   (call   main (: 7 Int64))
   (output (: 17 Int64)))
 
-(case "a BARE-param escaping closure capturing a handled value declines cleanly (annotated-param twin folds)"
-  (doc    "The BARE-parameter twin of the escaping-closure-captures-handled-value case above (v-effects
-           self-probe 2026-08-04). The SAME sound shape — a closure capturing a `let`-bound in-extent perform
-           result `v`, escaping the handle, applied outside — but the closure's parameter is BARE `(fn (x) (+
-           x v))` instead of annotated `(fn ((: x Int64)) …)`. The annotated twin (the case above) FOLDS to
-           17; the bare-param version DECLINES with `parameter reference has no local slot` (select.rs:10382,
-           the Core::Param no-slot arm) on all 3 backends. A CLEAN decline (compile-time, never a wrong value)
-           — the escaping-closure lift (`lambda_of`/env-snapshot) slots an ANNOTATED closure param but not a
-           BARE one when the closure captures a handler-computed value, so the bare param's reference reaches
-           emit un-slotted. A completeness gap in the closure-capture-escape family (NOT a miscompile): the
-           bare-param lift needs the same slot allocation the annotated path gets. Pinned as a decline-witness
-           to lock the bare-vs-annotated boundary; flips to 17 PASS when the bare-param escaping-closure lift
-           slots the param. Related to the sibling-closures-sharing-outer-capture-scope decline (same no-slot
-           arm, different trigger).")
+(case "a BARE-param escaping closure capturing a handled value FOLDS to 17 (matches the annotated-param twin)"
+  (doc    "The BARE-parameter twin of the escaping-closure-captures-handled-value case above. The SAME sound
+           shape — a closure capturing a `let`-bound in-extent perform result `v`, escaping the handle,
+           applied outside — but the closure's parameter is BARE `(fn (x) (+ x v))` instead of annotated
+           `(fn ((: x Int64)) …)`. Both now FOLD to 17 on all 3 backends. This BARE case previously DECLINED
+           `parameter reference has no local slot` because the discharge copy FRESHENED the closure's bare
+           head binder but SHARED its pinned body-refs (still resolving to the original head), so
+           `apply_lambda` keyed substitution on the fresh head while the body referenced the original
+           (count_refs 0 → the arg was never spliced → a slot-less `Core::Param`). The annotated twin was
+           consistent-by-accident: `param_name_occ` peels `(: x T)` to the inner name occ, the same shared
+           node the body-refs point at, so freshening the `(: …)` wrapper preserved the identity. FIXED by
+           v-inference #3811 (99f63b7f5): a PINNED bare binder-occurrence is now SHARED (not freshened) in
+           `beta_reduce`, matching the annotated path and the body-refs — scoped to pinned binders only
+           (partial-app/mono copies still freshen). (Root-cause v-effects; fix v-inference.)")
   (input  (do
             (effect St (op get (-> Unit Int64)))
             (def (main)
