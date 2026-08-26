@@ -64,6 +64,31 @@ temp files, spawn `cdz-compile -o <tmpdir>`, read the result artifact file back,
 node-id→span mapping in-process (the span tables never leave `cdz`). This is mechanical but touches
 a lot of call sites in `main.rs` + `lsp.rs`.
 
+### Sidecar request encoding — UNIFIED onto the binary AST (operator ruling, 2026-08-26)
+
+The `KIND_SIDECAR` **request** was historically a bespoke tag+LEB128 format (a small RPC command
+vocabulary: `Emit(target)` + `Query` selectors). The operator ruled it must instead be a **binary-AST
+value** ("The sidecar absolutely needs to use the binary AST. I didn't realize it wasn't!"). So the
+request is encoded as a small `cdzast` tree — e.g. `(query type-at 42)` — with the SAME binary-AST
+codec every other artifact already uses (`KIND_AST` is `codec::encode` of the program arena; the query
+RESULT artifacts are plain UTF-8 text; only this request blob was bespoke). No second wire format, no
+tag table.
+
+This **replaces** the earlier plan to extract the bespoke wire types into a shared `cdz-sidecar-wire`
+crate (PR #3422, now closed): that would have been a third copy of the contract. Instead:
+
+- **`rcdzc::sidecar`** keeps `Request`/`Query` as the in-memory types; only `encode`/`decode` change
+  (tag-bytes → a `cdzast` tree built/parsed with rcdzc's OWN `crate::ast` + `crate::codec` — the
+  COPIES it already carries, preserving *copy-don't-depend*, NOT a `cadenza-syntax` dep). Owned by
+  **v-inference** (the active sidecar owner; concierge-routed).
+- **`cdz`** (the delegating driver) builds the same request tree via its already-linked
+  `cadenza-syntax` codec (byte-identical copy) — so under `!standalone` it needs **no** `rcdzc` and
+  **no** bespoke crate. This is the delegation-encode side, owned here.
+
+The only shared thing is the request-AST **schema** (the tree shape per `Request`/`Query` variant) — a
+data contract, agreed between the two sides, not a code dependency. rcdzc's existing
+`decode(encode(rs)) == rs` round-trip tests remain the byte-guard.
+
 ## Locating `cdz-compile`
 
 Reuse the established sibling-passthrough convention (`cdz smith` / `cdz cad`):
@@ -122,18 +147,25 @@ code landing, else the nix build breaks. Also: the `delegate.rs` unit tests only
    `dispatch_compile_*`. Landed as PR #3397 (first under an opt-in `delegate-compile` flag, then
    **inverted to the `standalone` polarity** per the operator's ruling). `cdz run`/`test`'s in-memory
    compile-to-bytes path untouched.
-2. **Query delegation** — route the sidecar-driven queries (`type-at`/`def`/`scope`/`uses`/`check`/
-   `fix`/`doc-module`) through `cdz-compile` under `!standalone`; keep node-id→span mapping in-process.
-   The `!standalone` arms must reference **no** `rcdzc` types (so slice 4's flip is clean).
-3. **LSP delegation** — same for `lsp.rs`.
-4. **`cdz run`/`test` in-memory compile** — delegate `compile_project_component_bytes*` (read the
+2. **Sidecar request → binary AST** (PREREQUISITE for query delegation, per the operator ruling above).
+   `rcdzc::sidecar`'s `encode`/`decode` change from tag-bytes to a `cdzast` request tree (rcdzc's own
+   `crate::ast`/`crate::codec`); **v-inference** drives this rcdzc-internal redesign + defines the
+   request-AST **schema**. Behavior-preserving (round-trip tests stay green). The abandoned
+   `cdz-sidecar-wire` extraction (#3397-era slice "2a", PR #3422) is CLOSED — superseded by this.
+3. **Query delegation** — route the sidecar-driven queries (`type-at`/`def`/`scope`/`uses`/`check`/
+   `fix`/`doc-module`) through `cdz-compile` under `!standalone`: build the request tree via
+   `cadenza-syntax` (per the agreed schema), write `ast`/`spans`/sidecar temp files, spawn
+   `cdz-compile -o <tmpdir>`, read the result artifact, map node-ids→spans in-process. The
+   `!standalone` arms reference **no** `rcdzc` types (so slice 5's flip is clean). Gated on slice 2.
+4. **LSP delegation** — same for `lsp.rs`.
+5. **`cdz run`/`test` in-memory compile** — delegate `compile_project_component_bytes*` (read the
    emitted wasm from a temp `-o`), the last in-process rcdzc caller.
-5. **Flip `rcdzc` optional** — `rcdzc = { optional = true }`, `standalone = ["dep:rcdzc"]`; assert a
+6. **Flip `rcdzc` optional** — `rcdzc = { optional = true }`, `standalone = ["dep:rcdzc"]`; assert a
    `--no-default-features` build has no `rcdzc` in its closure (`cargo tree`). Realizes the caching win.
-6. **Nix** — v-nix lands the `CDZ_COMPILE_BIN` wrapper hunk (+ a `--no-default-features` cdz test job).
+7. **Nix** — v-nix lands the `CDZ_COMPILE_BIN` wrapper hunk (+ a `--no-default-features` cdz test job).
 
 (Each slice keeps the DEFAULT (`standalone`) build byte-identical to today, so `main` stays green
-throughout; the `!standalone` build is progressively made rcdzc-free, culminating in slice 5.)
+throughout; the `!standalone` build is progressively made rcdzc-free, culminating in slice 6.)
 
 ## Invariants to pin in the gate
 
@@ -141,5 +173,5 @@ throughout; the `!standalone` build is progressively made rcdzc-free, culminatin
   single-file, multi-file package (`--entry`), and imposed-world (`--component-name`) cases.
 - Located diagnostics (`path:line:col`) are byte-identical across the boundary (guaranteed by
   passing `spans` artifacts through, but pinned by a reject-case test).
-- A feature-on build's dependency closure excludes `rcdzc` (slice 4 — a `cargo tree` assertion in
+- A `!standalone` build's dependency closure excludes `rcdzc` (slice 6 — a `cargo tree` assertion in
   `cargo xtask check`).
