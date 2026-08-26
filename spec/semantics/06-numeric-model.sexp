@@ -9374,3 +9374,10 @@
            1.0 2.0))` with c=true, x=1.0 -> 2.0.")
   (input  (do (def (f (: c Bool) (: x Float32)) (+ x (if c 1.0 2.0))) (export f)))
   (call   f (: true Bool) (: 1.0 Float32)) (output (: 2.0 Float32)))
+
+(case "a Float32 match arm with a bare literal body grounds it to f32 (runtime arm, no fold)"
+  (doc    "A bare-ConstFloat match-arm body takes the match's RESULT float width, not its default Float64.
+           `(: (match n (0 0.5) (_ (f (- n 1)))) Float32)` — the recursive arm prevents folding, so the
+           literal arm 0.5 must ground to f32 (an f64.const under an f32 block was invalid wasm). f(3)=0.5.")
+  (input  (do (def (f (: n Int64)) (: (match n (0 0.5) (_ (f (- n 1)))) Float32)) (export f)))
+  (call   f (: 3 Int64)) (output (: 0.5 Float32)))
