@@ -19366,3 +19366,65 @@
            rcdzc unit test a_projection_only_tuple_folds_importing_no_runtime.)")
   (input  (do (def (with-param (: a Int64)) (let ((t (tuple 10 a))) (+ (. t 0) (. t 1)))) (export with-param)))
   (call   with-param (: 32 Int64)) (output (: 42 Int64)))
+
+; -- breaker batch 410 (2026-08-26): owned-temporary list-match scrutinee RECLAIM witnesses
+; (#3726 same-hour probe; the dominant-systemic-leak fix). Branch-selected scrutinees (a fully
+; scalarizable list never materializes, so live-objects would reject the case): inline build,
+; helper-built across the call, nested list-of-tuples, rest-binder tail, and the fall-through
+; wildcard arm all leave live-objects 0. wasm-only rows (live-objects = debug-counters runtime).
+
+(case "lm1 a branch-selected owned list scrutinee is reclaimed after the match"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list n (+ n 1) (+ n 2)) (list 9))
+        ((list a _ c) (+ a c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
+
+(case "lm2 a helper-built branch-selected list scrutinee reclaims across the call"
+  (input (do
+    (def (mk (: n Int64)) (if (> n 0) (list n (* n 2)) (list 0 0 0)))
+    (def (main (: n Int64))
+      (match (mk n)
+        ((list a b) (- b a))
+        (_ -1)))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case "lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list (tuple n 1) (tuple (+ n 1) 2)) (list (tuple 0 0)))
+        ((list (tuple a _) (tuple b _)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects 0))
+
+(case "lm5 a rest-binder match reclaims the branch-selected scrutinee and its tail"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list n (+ n 1) (+ n 2) (+ n 3)) (list 9))
+        ((list _ .. r) (List.len r))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects 0))
+
+(case "lm6 a fall-through wildcard arm reclaims the unmatched branch-selected list"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (list n) (list n n))
+        ((list _ _) -1)
+        (_ 9)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
