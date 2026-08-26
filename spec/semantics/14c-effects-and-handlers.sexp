@@ -17204,3 +17204,45 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 3006 Int64))
   (call   main (: 0 Int64)) (output (: 1003 Int64)))
+
+;; -- pyrd1 recursive-driver performs + pymr2 mutually-recursive performers + pyrp1 recursive product-of-answers (breaker batch 364) --
+(case "pyrd1 probe: the handled body calls a RECURSIVE DRIVER (loop k acc) that performs E.tick once per recursion level and accumulates — 4 dispatches originate from successive recursive frames of loop, not lexically in the handle body, and each must route to the handler and thread its state (s0..s0+3) so the accumulation sums the per-dispatch answers (s*10) in call order"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (loop (: k Int64) (: acc Int64))
+    (if (<= k (: 0 Int64)) acc
+        (loop (- k (: 1 Int64)) (+ acc (E.tick)))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume (* s 10) (+ s 1))))
+      (loop (: 4 Int64) (: 0 Int64))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 100 Int64))
+  (call   main (: 0 Int64)) (output (: 60 Int64)))
+
+(case "pymr2 probe: MUTUALLY-RECURSIVE driver functions each perform the effect — evn k = (E.tick) + odd(k-1), odd k = 100*(E.tick) + evn(k-1); starting evn(4) alternates evn/odd frames, so four E.tick dispatches originate from a mutual-recursion call chain and must route to the handler and thread state s0..s0+3 in call order (evn's tick weighted 1, odd's tick weighted 100)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (evn (: k Int64)) (if (<= k (: 0 Int64)) (: 0 Int64) (+ (E.tick) (odd (- k (: 1 Int64))))))
+  (def (odd (: k Int64)) (if (<= k (: 0 Int64)) (: 0 Int64) (+ (* 100 (E.tick)) (evn (- k (: 1 Int64))))))
+  (def (main (: n Int64))
+    (handle E (% n 3)
+      ((tick () s (resume s (+ s 1))))
+      (evn (: 4 Int64))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 604 Int64))
+  (call   main (: 0 Int64)) (output (: 402 Int64)))
+
+(case "pyrp1 probe: a recursive driver MULTIPLIES the per-dispatch answers — prod k acc = prod(k-1, acc * (E.tick)); tick answers (+ s 1) threading (+ s 1), seed (n%3)+1, so three dispatches yield (s0+1)*(s0+2)*(s0+3) as a running product (distinct from the additive pyrd1 accumulator; exercises multiplicative accumulation over threaded state)"
+  (input (do
+  (effect E (op tick (-> Int64)))
+  (def (prod (: k Int64) (: acc Int64))
+    (if (<= k (: 0 Int64)) acc
+        (prod (- k (: 1 Int64)) (* acc (E.tick)))))
+  (def (main (: n Int64))
+    (handle E (+ (% n 3) (: 1 Int64))
+      ((tick () s (resume (+ s 1) (+ s 1))))
+      (prod (: 3 Int64) (: 1 Int64))))
+  (export main)))
+  (call   main (: 10 Int64)) (output (: 60 Int64))
+  (call   main (: 0 Int64)) (output (: 24 Int64)))
