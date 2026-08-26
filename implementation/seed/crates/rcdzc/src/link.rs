@@ -1323,24 +1323,23 @@ mod tests {
         );
     }
 
-    /// The ALIAS form `(import "path" alias)` is a later phase — it declines for now (§2/§7).
+    /// The WHOLE-MODULE ALIAS form `(import "path" alias)` binds the module under `alias`, reached by
+    /// qualified projection `(. alias member)` — the collision-free path for a uniformly-named export
+    /// imported from 2+ modules (the descriptor-collision realization, #3600). `lib` exports `helper`
+    /// (→ 40); the entry aliases `lib` and projects `(. lib helper)` = 40, compiling clean. (Formerly the
+    /// negative `the_alias_import_form_declines` — the "realize a feature, update its negative test" flip.)
     #[test]
-    fn the_alias_import_form_declines() {
+    fn the_alias_import_form_resolves_and_projects() {
         let out = compile_package(
             "(do (def (helper) 40) (export helper))",
-            "(do (import \"lib\" lib) (def (main) 1) (export main))",
+            "(do (import \"lib\" lib) (def (main) (. lib helper)) (export main))",
         );
         assert!(
-            out.has_error(),
-            "the alias import form must decline for now"
-        );
-        assert!(
-            out.diagnostics
-                .iter()
-                .any(|d| d.message.contains("qualified import")),
-            "expected a 'qualified import' decline; got {:?}",
+            !out.has_error(),
+            "the alias import form must resolve + project a member; got {:?}",
             out.diagnostics
         );
+        assert!(out.artifact(Target::Wasm.artifact_kind()).is_some());
     }
 
     /// β-COPY HYGIENE (`DESIGN-package-linking.md` §4 note): `app` imports `pub-helper` from `lib`;
