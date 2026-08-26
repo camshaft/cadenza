@@ -9520,7 +9520,7 @@ fn record_fields_rebuild(
 /// more than one export, a compound param other than String/Bytes, a unit param, or a non-scalar/unit
 /// result. Widened to List/Option/BigInt/Rational/Symbol (and multi-export) in later slices.
 fn try_bare_entry_param_component(
-    db: &Db,
+    db: &mut Db,
     layout: &Layout,
     funcs: &[SelectedFunc],
     imports: &[&runtime_abi::RtOp],
@@ -9531,25 +9531,31 @@ fn try_bare_entry_param_component(
     if layout.exports.len() != 1 {
         return None;
     }
-    let e = &layout.exports[0];
+    let body = layout.exports[0].body;
+    let name = layout.exports[0].name.clone();
+    let def = layout.exports[0].def;
+    let result_ty = layout.exports[0].result.clone();
+    let params: Vec<(crate::ast::StructId, Ty)> = layout.exports[0].params.clone();
     let mut param_vts: Vec<u8> = Vec::new();
-    let mut mem_leaf_params: Vec<Option<serialize::MemLeafKind>> = Vec::new();
+    let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
     let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
-    let mut needs_str = false;
-    for (i, (_, gty)) in e.params.iter().enumerate() {
+    for (i, (binder, gty)) in params.iter().enumerate() {
         let wit = crate::wit_world::ty_natural_wit(gty)?;
         match gty {
-            Ty::String => {
-                // string flattens to (ptr, len); the wrapper lifts it via mem_leaf_params.
+            Ty::String | Ty::Bytes => {
+                // string/list<u8> flattens to (ptr, len); the wrapper lifts it via mem_leaf_params. The def
+                // OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len, compare, field read)
+                // is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does not escape.
+                let drop_after =
+                    !crate::backend::wasm::select::param_escapes_body(db, body, *binder);
                 param_vts.push(ValType::I32.byte());
                 param_vts.push(ValType::I32.byte());
-                mem_leaf_params.push(Some(serialize::MemLeafKind::Str));
-                needs_str = true;
-            }
-            Ty::Bytes => {
-                param_vts.push(ValType::I32.byte());
-                param_vts.push(ValType::I32.byte());
-                mem_leaf_params.push(Some(serialize::MemLeafKind::Bytes));
+                let kind = if matches!(gty, Ty::String) {
+                    serialize::MemLeafKind::Str
+                } else {
+                    serialize::MemLeafKind::Bytes
+                };
+                mem_leaf_params.push(Some((kind, drop_after)));
             }
             Ty::Int(_) | Ty::Bool | Ty::Float(_) => {
                 param_vts.push(valtype_of(gty)?.byte());
@@ -9563,8 +9569,20 @@ fn try_bare_entry_param_component(
     if !mem_leaf_params.iter().any(Option::is_some) {
         return None;
     }
+    // SLICE 1 = BORROWED memory-bearing params only. A param the def only borrows is reclaimed by the wrapper
+    // (its owner) after the call — a guaranteed 0-leak lift. A param that ESCAPES (is consumed: passed to a
+    // consuming op like `Symbol.of`, threaded into a recursive self-call, or moved into the result) needs a
+    // consuming-param lift whose reclaim the wrapper cannot guarantee here (the consumer, or a looped-param
+    // reclaim, must own it) — decline it to the existing todo, a later slice. Prevents a boundary leak (the
+    // #3808 default-enforced live-objects check reds a lifted-but-unreclaimed escaping param).
+    if mem_leaf_params.iter().any(|m| matches!(m, Some((_, false)))) {
+        return None;
+    }
+    let any_drop = mem_leaf_params
+        .iter()
+        .any(|m| matches!(m, Some((_, true))));
     // RESULT: a scalar the def returns raw (Passthrough) or unit; a compound result is a later slice.
-    let (result_vts, wit_result) = match &e.result {
+    let (result_vts, wit_result) = match &result_ty {
         Ty::Unit => (Vec::new(), None),
         r @ (Ty::Int(_) | Ty::Bool | Ty::Float(_)) => (
             vec![valtype_of(r)?.byte()],
@@ -9574,30 +9592,33 @@ fn try_bare_entry_param_component(
     };
     // Augment the runtime-import set with the lift ops (dedup, APPENDED so the def's op indices — a prefix —
     // are preserved). The added count bumps `import_base` so the def's + wrapper's core func indices line up.
+    // `drop` is added only when some borrowed param needs the wrapper reclaim (else byte-identical).
     let mut entry_imports: Vec<&runtime_abi::RtOp> = imports.to_vec();
-    let _ = needs_str; // String and Bytes share the byte-leaf lift (no str-from-bytes); kept for readability
-    let lift_ops = ["bytes-alloc", "bytes-set"];
-    for name in lift_ops {
-        if !entry_imports.iter().any(|o| o.name == name) {
-            let op = runtime_abi::RUNTIME_OPS.iter().find(|o| o.name == name)?;
+    let mut lift_ops = vec!["bytes-alloc", "bytes-set"];
+    if any_drop {
+        lift_ops.push("drop");
+    }
+    for op_name in lift_ops {
+        if !entry_imports.iter().any(|o| o.name == op_name) {
+            let op = runtime_abi::RUNTIME_OPS.iter().find(|o| o.name == op_name)?;
             entry_imports.push(op);
         }
     }
     let added = (entry_imports.len() - imports.len()) as u32;
     let entry_layout = layout.with_import_base(layout.import_base + added);
-    let def_abs = entry_layout.abs(e.def)?;
+    let def_abs = entry_layout.abs(def)?;
     let wrapper = serialize::WrapperDesc {
-        name: e.name.clone(),
+        name: name.clone(),
         param_vts,
         result_vts,
-        params: vec![None; e.params.len()],
-        param_slots: vec![None; e.params.len()],
+        params: vec![None; params.len()],
+        param_slots: vec![None; params.len()],
         mem_leaf_params,
         def_abs,
         result: serialize::ResultLower::Passthrough,
     };
     let typed_func = envelope::TypedFunc {
-        name: e.name.clone(),
+        name,
         params: wit_params,
         result: wit_result,
     };
@@ -9611,7 +9632,6 @@ fn try_bare_entry_param_component(
         Ok(c) => c,
         Err(e) => return Some(Err(Reject::decline(e))),
     };
-    let _ = db; // reserved for a future named-type / spans hook
     let import_name = runtime_import_name();
     Some(Ok(envelope::assemble_bare_typed_with_runtime(
         &wrapped_core,

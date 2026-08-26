@@ -7794,7 +7794,7 @@ todo	a List entry argument is marshalled as a vec!
 pass	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 todo	a Rational entry argument is marshalled through Rational::new
-pass	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
+todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 todo	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
 todo	a Symbol entry parameter compares to an interned constant
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
@@ -7805,7 +7805,7 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
-pass	a recursive scalar-walk classifies characters across a multibyte String entry arg
+todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 pass	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
@@ -7851,10 +7851,10 @@ pass	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
 pass	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 pass	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
-pass	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
+todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 pass	chm1 a const Map with CHAR keys to-lists key-sorted
 pass	chm2 the sorted Char head surfaces a taken trap under the const demand (CDZ0304)
-pass	ep1 TWO String entry params concat in declaration order
+todo	ep1 TWO String entry params concat in declaration order
 pass	ep2 a String param BETWEEN two scalars keeps positional correctness
 pass	ep3 one String param used TWICE (byte-len and content compare)
 pass	ep4 an EMPTY String entry arg has byte-len zero (the ptr,0 edge)
