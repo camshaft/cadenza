@@ -7327,3 +7327,7 @@ pass	cnw1 runtime UInt8 checked-add at the 255 boundary
 pass	cnw3 runtime Int8 checked-add at the signed 127 boundary
 pass	cnw4 runtime Int8 checked-sub at the signed -128 boundary
 pass	cnw5 runtime UInt16 checked-add at the 65535 top
+pass	cnm1 runtime UInt8 checked-mul at the exact 255 top
+pass	cnm2 runtime Int8 checked-mul hitting -128 EXACTLY fits (the signed exact-fit twin)
+pass	cnm3 runtime Int8 checked-mul of -128 by -1 yields None (the narrow sign-flip)
+pass	cnm4 runtime UInt16 checked-mul at the 65535 top
