@@ -1663,8 +1663,16 @@
         # whose dirs it names, and each per-case derivation globs its own `<idx>-*` dir out of the shred.
         corpusCaseCount = file:
           let
-            txt = builtins.readFile file;
-            caps = builtins.filter builtins.isList (builtins.split ''\(case[[:space:]]+"'' txt);
+            # LINE-ANCHORED count: a top-level `(case "…"` starts at column 0, so match a `(case "` preceded
+            # by a NEWLINE. A naive `\(case "` (match anywhere) over-counts — a `(case "` embedded in a
+            # COMMENT or in program DATA (e.g. 12-metaprogramming's quasiquote examples: `; … (case "…"`)
+            # is not a real top-level case but the parser (shred) doesn't emit a dir for it, so the extra
+            # index had "no shred dir" and the per-case build failed. Prepend a newline so a case on the
+            # very first line is still anchored. `[[:space:]]` here matches only the spaces AFTER `case` (the
+            # anchor is the literal newline), so an inline `… (case "` in a comment is excluded. Nix POSIX
+            # regex rejects `\n`, so the pattern carries a LITERAL newline (double-quoted `\n`).
+            txt = "\n" + builtins.readFile file;
+            caps = builtins.filter builtins.isList (builtins.split "\n\\(case[[:space:]]+\"" txt);
           in
           builtins.length caps;
 
