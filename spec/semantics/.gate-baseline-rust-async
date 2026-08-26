@@ -1102,6 +1102,7 @@ pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform
 pass	a String-to-String transformer op — a rope argument crosses in, a wrapped rope crosses back
+pass	a String.at result then reuse of the source does not double-free
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
 pass	a Symbol entry parameter compares to an interned constant
@@ -1163,6 +1164,7 @@ pass	a Tuple ARG with a Bool field between Int64 fields crosses the direct-call 
 pass	a Type.eq width dispatcher answers per WRITTEN type at two call sites in one body
 pass	a UInt32 addition that overflows the 32-bit width is rejected at compile time
 pass	a UInt32 holds a wasm section size at the width boundary
+pass	a UInt48 wrap-multiply traps on a storage-slot wrap, not just a type-overflow
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
 pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
@@ -1905,6 +1907,8 @@ pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
+pass	a full-width add overflow names the integer overflow trap reason
+pass	a full-width const-multiplier bound check traps at the exact boundary
 pass	a function applied to an argument
 pass	a function argument is applied through a recursive higher-order function
 pass	a function binding the same parameter name twice is rejected
@@ -2560,6 +2564,7 @@ pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-wildcard guard binder over a string binds in both the guard and the body
 pass	a narrow addition reconciles a constant LEFT operand to the variable's width
 pass	a narrow comparison reconciles a constant LEFT operand to the variable's width
+pass	a narrow const-multiplier bound check keeps both bounds (Int8 a*3)
 pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow newtype boxed as a map value round-trips through lookup at the widened cell
@@ -2572,6 +2577,7 @@ pass	a narrow-width Int quantity add that fits the inner width runs normally
 pass	a narrow-width Int quantity add that overflows the inner width traps at compile time
 pass	a narrow-width Int quantity stored as a map value round-trips through Map.lookup
 pass	a narrow-width accumulator that never changes threads through the recursion
+pass	a narrow-width add overflow names the integer overflow trap reason
 pass	a narrow-width newtype boxed as a list element matches by its literal payload
 pass	a narrow-width newtype boxed as a sum payload matches by its literal payload
 pass	a narrow-width newtype boxed as a tuple element falls through on a non-matching payload
@@ -2593,6 +2599,7 @@ pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
 pass	a negated zero equality composes with the negation fold
 pass	a negative and its positive twin encode to distinct bytes
+pass	a negative const-multiplier bound check traps at the exact boundary
 pass	a negative constant BigInt crosses the boundary with its sign
 pass	a negative constant argument to an unsigned parameter is rejected, not laundered
 pass	a negative decimal literal annotated Rational normalizes its sign onto the numerator
@@ -2667,6 +2674,7 @@ pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 no
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
 pass	a nested quote pattern matches a compound-within-a-compound two levels deep
+pass	a nested runtime checked multiply composes and traps in the inner add
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
@@ -3279,6 +3287,7 @@ pass	a runtime Result constructed from a condition selects its Ok or Err arm
 pass	a runtime SIGNED nibble truncation sign-extends from the top kept bit
 pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
+pass	a runtime String.at result compares by content in a recursive scan
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
@@ -3387,6 +3396,7 @@ pass	a runtime map shared across two recursive-call operands is not mutated by a
 pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
 pass	a runtime mixed-unit sum emits the scale conversion (Int)
+pass	a runtime mixed-unit sum emits the scale conversion before the add
 pass	a runtime modulo of the minimum integer by -1 is zero on every backend
 pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
 pass	a runtime multiplication that overflows traps
@@ -4100,6 +4110,7 @@ pass	a zero rational canonicalizes to zero over one however it was constructed
 pass	a zero rational produced by arithmetic is the same canonical zero
 pass	a zero-Duration sleep files at the current instant — pop-min then reinsert keeps order
 pass	a zero-arm match on an empty-sum scrutinee is exhaustive
+pass	a zero-arm match on an inhabited scrutinee is non-exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
@@ -4515,6 +4526,7 @@ pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER'
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an exported entry with a String parameter is called with a string argument
+pass	an exported signed comparison runs over runtime args with signed order
 pass	an expression INTERPRETER threads a Map environment through Let-shadowing scopes
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
@@ -5363,6 +5375,7 @@ pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both
 pass	equality over a partly-un-built sum with a free Err type compiles on every backend
 pass	equality over a runtime float in a SUM payload compares by the float leaf
+pass	equality with zero selects eqz and computes correctly for both operand orders
 pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
 pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
@@ -6842,6 +6855,7 @@ pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the event queue pops the earliest-Instant entry first (pop-min)
 pass	the exact Float32 finite max fits in a runtime branch
+pass	the excluded C=-1 multiplier keeps the div_s guard and MIN*-1 still traps
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
