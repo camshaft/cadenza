@@ -870,6 +870,7 @@ pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result t
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+pass	a NON-FINAL dependent-size bin-match with a dynamic-offset rest read reclaims every slice (no live objects)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
@@ -1766,6 +1767,7 @@ pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match
+pass	a dependent-size bin-match payload read reclaims its slice across a loop (no live objects)
 pass	a dependent-size body over a runtime-start slice re-bases its size arithmetic per call
 pass	a dependent-size body re-matches under a second bin pattern
 pass	a dependent-size body straddling a rope seam stitches, and an oversize count fails the match
