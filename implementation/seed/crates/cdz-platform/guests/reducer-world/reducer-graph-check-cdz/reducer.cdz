@@ -20,12 +20,8 @@
 // INDEX RECURSION idiom (the guest List module is at/len/push-only: List.at returns Option, terminating the
 // walk). `Entry` and `LogRecord` are IMPORTED sums (variant count invisible to the matcher), so each match has
 // a catch-all `_ =>` arm; inner matches are paren-wrapped.
-import { Envelope } from "check"
-import { Verdict } from "verdict"
 import { LogRecord, Entry } from "log-schema"
-
-type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
-type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
+import { respond, on-response, on-notification, pass, fail } from "checker-lib"
 
 // Is the list empty? (a chain with no configured transforms.) Mirrors the at-None idiom rather than List.len.
 def chain-is-empty(targets: List(Bytes)) =
@@ -63,29 +59,8 @@ def reject-holds(records: List(LogRecord), i: Int64) =
 // The verdict payload for a decoded log: pass with no messages, else fail with one diagnostic message.
 def verdict-payload(records: List(LogRecord)) =
   if reject-holds(records, 0)
-  then Value.encode(Verdict.Verdict({ pass = true, messages = [] }))
-  else Value.encode(Verdict.Verdict({ pass = false,
-                                      messages = ["no Routed(error) matched a GraphNeighbors(empty) of the same contract: the default handler did not reject an unconfigured contract after reading its empty chain"] }))
+  then pass()
+  else fail("no Routed(error) matched a GraphNeighbors(empty) of the same contract: the default handler did not reject an unconfigured contract after reading its empty chain")
 
-// A verdict request on the contract-id the harness passed in the envelope (no hardcoded hash). The verdict
-// token is irrelevant (the harness reads the verdict by scanning Emitted on the verdict contract), so b"".
-def verdict-req(verdict-contract: Bytes, payload: Bytes) =
-  { contract = verdict-contract, payload = payload, token = b"", deadlineNanos = None }
-
-def on-message(msg) =
-  match (Value.decode(msg.payload) : Option(Envelope)) with
-  | Some(Envelope.Check(c)) =>
-      (match (Value.decode(c.log) : Option(List(LogRecord))) with
-       | Some(records) =>
-           { requests = [verdict-req(c.verdict, verdict-payload(records))], outcome = Outcome.Continue }
-       | None =>
-           { requests = [verdict-req(c.verdict,
-                                     Value.encode(Verdict.Verdict({ pass = false,
-                                                                    messages = ["observation log did not decode"] })))],
-             outcome = Outcome.Continue })
-  | None =>
-      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
-
-def on-response(_resp) = { requests = [], outcome = Outcome.Continue }
-def on-notification(_note) = { requests = [], outcome = Outcome.Continue }
+def on-message(msg) = respond(msg, verdict-payload)
 export { on-message, on-response, on-notification }
