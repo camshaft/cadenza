@@ -16203,6 +16203,21 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         Core::Closure { .. } => Ok(HandleOwnership::Owned),
         // A reference to a parameter or a kept `let`-binding — the owner elsewhere reclaims it.
         Core::Param { .. } | Core::LocalRef { .. } => Ok(HandleOwnership::Borrowed),
+        // A list REST-BINDER read (`(list _ .. r)` → a `SumPayload` whose path's SOLE/final step is a
+        // `RestFrom`) is the EXCEPTION: its emit is `dup(scrutinee); vec-drop(k)`, and `vec-drop` CONSUMES
+        // the dup'd copy and hands back a NEW owned tail vector (the scrutinee's own count nets to zero —
+        // see the `RestFrom` emit). So the extracted rest is a FRESH OWNED temporary, exactly like a
+        // `ListConcat`/`ListUpdate` producer — NOT a borrow. A borrowing consumer (`List.len r`) must
+        // therefore reclaim it after the borrow (else the fresh tail LEAKS one vector + its shared leaf per
+        // read — the lm5 live-objects find), and as an arm RESULT it transfers out (Owned). Each reference
+        // re-emits its own `dup`+`vec-drop` (an inline `SumPayload`, one per occurrence), so classifying it
+        // Owned drops exactly one fresh vector per emit — never a double-free. Any OTHER path (a plain
+        // `Payload`/`Elem` read) still BORROWS, as below.
+        Core::SumPayload { path, .. }
+            if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) =>
+        {
+            Ok(HandleOwnership::Owned)
+        }
         // A payload/element READ (`sum-payload`/`arr-get`) BORROWS its operand — the enclosing compound
         // owns the sub-value, so the read yields a borrowed handle the `value-eq` emit must NOT drop
         // (`sum-payload`/`arr-get` read without transferring ownership; see `binding_escapes`). This is
