@@ -3212,6 +3212,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Blake3Of { .. } => Err(crate::diag::Reject::decline(
             "Blake3.of on a runtime Bytes is not yet emitted on the rust backend (wasm heap op 91 only)",
         )),
+        Core::AstPrint { .. } => Err(crate::diag::Reject::decline(
+            "Ast.print on a runtime Ast is not yet emitted on the rust backend (wasm heap op 92 only)",
+        )),
         // `String.at`/`String.scalar-at` on a RUNTIME string → the i-th UNICODE SCALAR, fallibly, as a
         // one-scalar `(Option String)`. `.chars()` iterates by scalar value (matching the spec's
         // scalar-value addressing — NOT bytes), `.nth(i)` picks it, `.map(to_string)` wraps the scalar as

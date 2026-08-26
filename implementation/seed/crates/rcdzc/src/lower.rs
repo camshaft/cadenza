@@ -3263,11 +3263,30 @@ fn lower_print(db: &mut Db, ast_val: StructId) -> Core {
     };
     let mut text = String::new();
     if print_ast_value(db, ast_val, &disc, &mut text).is_none() {
-        return Core::Poison(Reject::decline(
-            "print of a runtime AST value is not yet computed (constant AST values only)",
-        ));
+        // A RUNTIME `Ast` (no compile-time-visible `Core::SumNew`): render at run time via the value-heap
+        // `ast-print` op (heap index 92) over the heap `Ast` handle, guided by a baked disc descriptor. The
+        // op mirrors `print_ast_value` byte-for-byte, so runtime print == compile-time print. (Was a decline.)
+        return Core::AstPrint {
+            operand: ast_val,
+            discs: bake_ast_discs(&disc),
+        };
     }
     Core::ConstStr(text.into())
+}
+
+/// Bake the `Ast` variant discriminants into a `Core::ConstBytes` OPERAND for the runtime `ast-print` (and,
+/// later, `ast-encode`/`ast-decode`) heap ops — 7 unsigned-LEB `u32` discs in the fixed slot order
+/// `[int, float, bool, str, name, bytes, list]` the runtime reads (`crate::leb128`, the same LEB the runtime's
+/// `doc_read_leb` decodes). The runtime classifies heap-`Ast` variants by these discs (looked up BY NAME here,
+/// never hardcoded runtime-side), so a reordered `Ast` decl stays correct. A small, constant descriptor.
+fn bake_ast_discs(disc: &AstDiscs) -> std::rc::Rc<[u8]> {
+    let mut bytes = Vec::new();
+    for d in [
+        disc.int, disc.float, disc.bool, disc.str, disc.name, disc.bytes, disc.list,
+    ] {
+        crate::leb128::write_u64(&mut bytes, d as u64);
+    }
+    bytes.into()
 }
 
 /// Render a compile-time-visible `Ast` value (a `Core::SumNew` at an Int/Name/List disc) as canonical

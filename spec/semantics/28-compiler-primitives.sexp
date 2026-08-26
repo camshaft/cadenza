@@ -902,3 +902,37 @@
     (def (main) (const (f (Option.Some 0))))
     (export main)))
   (error CDZ0304 (message "cn02d zero payload")))
+
+; --- Primitive: RUNTIME Ast.print (heap op 92) — render a runtime Ast to canonical s-expr text ------------
+; A COMPILE-TIME-visible Ast folds to a `Core::ConstStr` (`lower_print`); a RUNTIME Ast (built from a runtime
+; input) lowers to `Core::AstPrint {operand, discs}` → the value-heap `ast-print` op (heap index 92), which
+; walks the heap Ast and renders it BYTE-IDENTICAL to the compile-time `print_ast_value` fold. `discs` is a
+; baked descriptor of the 7 Ast variant discs (LEB [int,float,bool,str,name,bytes,list]) the op reads to
+; classify variants by name. Runtime print == compile-time print — pinned end-to-end (the op runs).
+
+(case "runtime Ast.print renders a top-level Ast.Int to its decimal text"
+  (doc    "`n` is a runtime entry param, so `(Ast.Int (BigInt.of n))` is a RUNTIME Ast → `Ast.print` lowers to
+           the `ast-print` heap op (op 92). `(run 42)` renders \"42\" — identical to the compile-time fold.")
+  (input  (do (def (run (: n Int64)) (Ast.print (Ast.Int (BigInt.of n)))) (export run)))
+  (call   run 42)
+  (output (: "42" String)))
+
+(case "runtime Ast.print renders a nested Ast.List byte-identical to the compile-time fold"
+  (doc    "The nested case (#3621: the op reads list elements via vec-get): `(Ast.List (list (Ast.Name \"f\")
+           (Ast.Int (BigInt.of n))))` at runtime renders `(f 2)` — parens, space-separated, each element
+           recursively, identical to `print_ast_value`.")
+  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))))) (export run)))
+  (call   run 2)
+  (output (: "(f 2)" String)))
+
+(case "runtime Ast.print renders a doubly-nested Ast.List"
+  (doc    "A list-of-list — `((f 2))` — pins the recursive vec-get walk to depth 2.")
+  (input  (do (def (run (: n Int64)) (Ast.print (Ast.List (list (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of n)))))))) (export run)))
+  (call   run 2)
+  (output (: "((f 2))" String)))
+
+(case "compile-time Ast.print of the same Ast folds to the identical text"
+  (doc    "The compile-time control: a CONSTANT `Ast.Int` folds to the `Core::ConstStr` \"42\" via
+           `print_ast_value` — the same text the runtime op produces, witnessing runtime==compile-time.")
+  (input  (do (def (main) (Ast.print (Ast.Int (BigInt.of 42)))) (export main)))
+  (output (: "42" String)))
