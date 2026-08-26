@@ -1026,12 +1026,42 @@
   (call   run 2)
   (output (: true Bool)))
 
-(case "a const Set.to-list of a NON-orderable element (nested tuple) still declines"
-  (doc    "An element the canonical order cannot rank as a constant — a nested tuple — keeps the runtime op, so
-           `(const … Set.to-list …)` over it still REJECTS (matching the runtime op's own non-orderable decline).
-           Pins that the fold is scoped to canonically-orderable scalar elements (int/string/bool), not compounds.")
+(case "a const Set.to-list of a TUPLE element keeps the runtime op (const-fold CAPABILITY gap, not soundness)"
+  (doc    "A tuple element DOES have a runtime canonical order (19-sets pins tuple Set.to-list lexicographic),
+           but the compiler's `const_key_order` does not yet rank compound values, so `(const … Set.to-list …)`
+           over a tuple set keeps the runtime op → REJECTS under the const demand. This is a fold-CAPABILITY
+           gap (a later increment could add compound ordering), NOT a soundness necessity. Scalar + Bytes
+           elements fold (below); compounds defer.")
   (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))))) (export main)))
   (error  CDZ0201 (message "compile-time constant")))
+
+; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
+; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
+; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
+; `[u8]: Ord`), so a const Set/Map of Bytes materializes its to-list byte-matching the runtime op.
+
+(case "a const Set.to-list of BYTES elements folds, dedup'd, in unsigned byte order"
+  (doc    "`{0x80, 0x05, 0x7f}` (single-byte Bytes) enumerates UNSIGNED as [5, 127, 128]: the head byte is 5 and
+           the last is 128 (0x80 is 128 unsigned, NOT signed −128). Pins Bytes const-fold + the unsigned order
+           matching 19-sets' runtime pin; also dedups (the len is 3 distinct).")
+  (input  (do (def (main)
+                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127)))))))
+                          (match (List.at (Set.to-list (Set.of (list (Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127))))) 2)
+                            ((Option.Some h) (match (Bytes.at h 0) ((Option.Some v) v) ((Option.None) -1)))
+                            ((Option.None) -2)))))
+              (export main)))
+  (output (: 3128 Int64)))
+
+(case "a const Set.to-list of BYTES elements byte-matches the RUNTIME set-to-list (cross-check)"
+  (doc    "The soundness cross-check: a RUNTIME Bytes Set.to-list (built via a runtime Set.insert) equals the
+           COMPILE-TIME fold of the same set — both order the single-byte Bytes {5, 9} identically. Pins that
+           `const_key_order`'s Bytes arm (Rust [u8] cmp) agrees with the runtime's unsigned-byte order.")
+  (input  (do (def (run (: n Int64))
+                (= (Set.to-list (Set.insert (Set.of (list (Bytes.of (list 5)))) (Bytes.of (list (UInt8.wrap n)))))
+                   (const (Set.to-list (Set.of (list (Bytes.of (list 5)) (Bytes.of (list 9))))))))
+              (export run)))
+  (call   run 9)
+  (output (: true Bool)))
 
 ; --- Primitive 2: const Set.to-list folds through the RECURSIVE engine + a const-param consumer -------------
 ; #3765 folds `Set.to-list` on a syntactic `Core::SetOf` (the `core_of` path). This extends the SAME
