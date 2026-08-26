@@ -7826,3 +7826,9 @@ pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 pass	xf5 a handler threads a SET state and the final answer materializes its sorted head
 pass	sar1 a recursion-built set accumulator to-list reads its sorted head under the trap detector (CDZ0304)
 pass	sar2 a recursive const walk SUMS a folded Set.to-list
+pass	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
+pass	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	aeq1 bare equality over two runtime Ast.encode results
+pass	aeq2 bare equality of String.to-bytes twins
+pass	aeq3 arena Bytes laundered through fn params bare-compare equal
+pass	aeq4 a slice VIEW bare-compares equal to its flat twin

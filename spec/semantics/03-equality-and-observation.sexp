@@ -3068,3 +3068,42 @@
   (input  (do (def (f (: n Int64)) (= (list (record (= a n))) (list (record (= a n))))) (export f)))
   (call   f 4)
   (output (: true Bool)))
+
+; -- breaker batch 425 (2026-08-26): bare Bytes equality over NON-FLAT operands on #3786 — encode
+; results, String.to-bytes twins, param-laundered arena bytes, and a slice VIEW vs its flat twin all
+; compare correctly (the former flat-operands-only gate is closed). OUTPUT-ONLY pins pending the
+; borrowing-op owned-operand reclaim follow-up.
+
+(case "aeq1 bare equality over two runtime Ast.encode results"
+  (input (do
+    (def (f (: n Int64))
+      (if (= (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n)))) 1 0))
+    (export f)))
+  (call f (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "aeq2 bare equality of String.to-bytes twins"
+  (input (do
+    (def (main (: n Int64))
+      (let ((s (if (= n 1) "hi" "yo")))
+        (if (= (String.to-bytes s) (String.to-bytes s)) 1 0)))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "aeq3 arena Bytes laundered through fn params bare-compare equal"
+  (input (do
+    (def (cmp (: a Bytes) (: b Bytes)) (if (= a b) 1 0))
+    (def (f (: n Int64)) (cmp (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n)))))
+    (export f)))
+  (call f (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "aeq4 a slice VIEW bare-compares equal to its flat twin"
+  (input (do
+    (def (f (: n Int64))
+      (if (= (Option.expect (Bytes.slice (Bytes.of (list 9 (UInt8.wrap n) 2 7)) 1 2) "in bounds")
+             (Bytes.of (list (UInt8.wrap n) 2))) 1 0))
+    (export f)))
+  (call f (: 5 Int64))
+  (output (: 1 Int64)))
