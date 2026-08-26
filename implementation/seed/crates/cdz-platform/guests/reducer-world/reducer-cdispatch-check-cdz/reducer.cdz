@@ -1,0 +1,23 @@
+// Checker for the contract-dispatch pilot (design/cadenza-platform.md §1/§4/§9). The paired reducer dispatches
+// on descriptor().id: the run delivers on cdz-platform.effect (recognized -> emits b"effect-dispatched") then
+// on cdz-platform.timer (unrecognized -> Close(unknown-contract)). This checker asserts BOTH: the effect
+// emit (proves the guest's descriptor().id == the harness-delivered effect id, byte-identity, AND that
+// dispatch routed to the effect arm) AND the unknown-contract close (proves the id GUARD is real — a reducer
+// operating on assumptions would have acted on the timer message too). Log-only, guest-agnostic.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def emitted-effect-marker(rec) =
+  match rec.entry with | Entry.Emitted(e) => e.payload == b"effect-dispatched" | _ => false
+
+def closed-unknown(rec) =
+  match rec.entry with | Entry.Closed(c) => c.reason == b"unknown-contract" | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, emitted-effect-marker)) then fail("no Emitted b\"effect-dispatched\": the reducer did not match msg.contract == descriptor().id (dispatch or byte-identity failed)")
+  else if not(any-record(records, closed-unknown)) then fail("no Closed b\"unknown-contract\": the reducer did not reject the unrecognized contract (the id guard is not real)")
+  else pass()
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
