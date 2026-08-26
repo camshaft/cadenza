@@ -104,8 +104,37 @@ on the full corpus.
 3. **`cdz-run` grade mode** — run-emitted + compare to expect → pass/fail.
 4. **flake module**: `mkCorpusCase` (shred→build→exec) over ONE corpus file (01-literals) + aggregate;
    prove (a) compiler-comment change ⇒ exec 100% cache-hit, (b) one-case edit ⇒ only that case reruns.
-5. Generalize to all 33 files; wire an aggregate `corpus` check into the flake.
-6. (later) rust backend parallel exec layer; retire/relegate the monolithic xtask corpus path.
+   DONE (#3407): per-case shred → content-addressed build → compiler-free exec; CA store; (a) PROVEN.
+5. Generalize to all 33 files; wire an aggregate `corpus` check into the flake. DONE (#3407): top-level
+   `corpus` + per-file `corpus-<file>`; the exec grader now reproduces the gate for the wasm target,
+   including exact error-code/message + `warns` + host-call sequence (#3418).
+
+## Retiring the `xtask gate` — the three remaining parity gaps
+
+The nix `corpus` check is now a faithful WASM-target replacement (value/trap/host-calls/error-code/warns,
+Todo-on-declined-value-case like the gate). To DELETE `xtask gate` + `.gate-baseline*` + the gate code,
+three gaps remain:
+
+6. **Rust + rust-async exec layer** (the biggest — the gate runs every case through `rust`/`rust-async`
+   too, each its own ~7200-case baseline; the nix graph is wasm-only). Shape (from `xtask`
+   `run_program_rust`): emit `.rs` (`cdz-compile -t rust[-async]`, already supported) → generate a DRIVER
+   (export call + type-aware arg marshal incl. `cdz_num::Big`, host-response shim fns, factory/closure
+   application) → `rustc` linking the pre-built rlibs (`cdz_rt` for the async `CdzEnv`, `cdz_num` for
+   `Big`, `cadenza_ast` for native R2; via `-L dependency=<dir> --extern <crate>=<rlib>`) → run → grade.
+   That driver-gen + rustc-run logic lives ONLY in `xtask` today (which is bloated) — so EXTRACT it into a
+   DEDICATED CRATE `cdz-rust-run` (operator 2026-08-26: "make a dedicated crate for the rust runners; the
+   xtask is just getting so bloated"): the crate holds the rust driver-gen + rustc-invoke + run + grade
+   (reusing the ported `cdz-run` grade logic for the outcome compare), exposes a `cdz-rust-run` bin the
+   nix per-case rust exec layer invokes, and xtask's `run_program_rust` becomes a thin call into it (so the
+   logic has ONE home and xtask sheds weight). Plus a nix derivation that pre-builds the rlibs ONCE (CA) +
+   a per-case rust build+exec layer mirroring the wasm one. Multi-tick.
+7. **Regression detection (baseline-diff)**: the gate diffs each case's verdict against `.gate-baseline`
+   (7225 pass + 40 todo + 0 fail), so a `Pass→Todo/Fail` REGRESSION fails it; the nix graph only catches
+   an outright Fail (a declined value-case is Todo, exit 0). Options: (a) port a committed per-case
+   baseline the exec diffs against, or (b) encode the expected-Todo set in the corpus SOURCE (a `(todo)`
+   annotation on the ~40 known-incomplete cases) so unmarked cases MUST pass — no separate baseline file.
+8. **Cutover**: once 6+7 land and the nix `corpus` (wasm+rust+rust-async) is proven equivalent on the
+   full corpus, DELETE `xtask gate`, `.gate-baseline*`, and the gate/grader code from `xtask/src/main.rs`.
 
 ## Open/handled decisions
 
