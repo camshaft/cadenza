@@ -3105,14 +3105,32 @@ impl<'a> Parser<'a> {
         self.list(vec![head, effects_list, body], span)
     }
 
-    /// `import { name, … } from "path"`  ->  `(import "path" (name …))`. Brings a sibling module's
-    /// public names into scope. The surface orders names-then-source for readability; the arena is the
-    /// corpus's path-first shape `(import "path" (name …))` (a path string then a name-LIST), so both
-    /// surfaces agree. (The qualified/alias form is a later phase.)
+    /// Two import surfaces, disambiguated by the token right after `import`:
+    ///   * `import { name, … } from "path"` -> `(import "path" (name …))` — brings a sibling module's
+    ///     named exports FLAT into scope (third arena element a name-LIST);
+    ///   * `import "path" as alias` -> `(import "path" alias)` — binds the WHOLE module under a local
+    ///     `alias` (a record of its exports), reached by projection `alias.member` (third arena element
+    ///     a bare NAME). The `alias` avoids a collision when two modules export the same name.
+    ///
+    /// The arena is the corpus's path-first shape in both cases (a path string then either a name-list
+    /// or a bare-name alias), so the surfaces agree with the sexpr surface and the linker's discriminant
+    /// (list-third-element = named imports; atom-third-element = module alias).
     fn import_expr(&mut self) -> StructId {
         let start = self.cur_span();
         let head = self.keyword_head("import", start);
         self.bump(); // `import`
+        // ALIAS form: `import "path" as alias`. A string right after `import` (rather than `{`) is the
+        // whole-module alias; the named-list form always opens with `{`.
+        if self.at(Kind::Str) {
+            let path_span = self.cur_span();
+            let t = self.bump().unwrap();
+            let path = self.atom(literal::unescape_string_token(self.text(t)), path_span);
+            self.expect_keyword(Keyword::As, "`as`");
+            let alias = self.binder();
+            let span = start.merge(self.prev_span());
+            // Path-first, with the alias as a BARE NAME third element (the linker's alias discriminant).
+            return self.list(vec![head, path, alias], span);
+        }
         let names_start = self.cur_span();
         let names = self.brace_name_list();
         let names_span = names_start.merge(self.prev_span());

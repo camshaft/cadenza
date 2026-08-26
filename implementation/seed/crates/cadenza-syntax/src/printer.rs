@@ -679,7 +679,9 @@ impl<'a> Printer<'a> {
                 "host" if self.is_host_shape(args) => return self.print_host(args, parent_prec),
                 "module" if self.is_module_shape(args) => return self.print_module(args),
                 "export" if self.is_export_shape(args) => return self.print_export(args),
-                "import" if self.is_import_shape(args) => return self.print_import(args),
+                "import" if self.is_import_shape(args) || self.is_import_alias_shape(args) => {
+                    return self.print_import(args);
+                }
                 // The compound-value literals (`list`/`tuple`/`record`/`map`) are STRING-headed now and
                 // handled by the `head_ctor` dispatch above — a NAME head of the same spelling is an
                 // ordinary application of the shadowable alias (or a user binding), rendered as a call.
@@ -3107,6 +3109,15 @@ impl<'a> Printer<'a> {
     /// `import { name, … } from "path"` — brings a sibling module's public names into scope. `args`
     /// is `["path" (name…)]` (per `is_import_shape`): the path string then the name-list occurrence.
     fn print_import(&mut self, args: &[StructId]) {
+        // Alias form: `(import "path" alias)` (bare-name third element) -> `import "path" as alias`.
+        if self.a.as_name(args[1]).is_some() {
+            self.doc.word("import ");
+            self.expr(args[0], 0); // the path string literal
+            self.doc.word(" as ");
+            self.expr(args[1], 0); // the alias name
+            return;
+        }
+        // Named-list form: `(import "path" (name…))` -> `import { name, … } from "path"`.
         let names = match self.a.get(args[1]) {
             Struct::List(items) => items.clone(),
             _ => return,
@@ -3148,13 +3159,20 @@ impl<'a> Printer<'a> {
     }
 
     /// An `(import "path" (name…))` the `import { … } from "path"` surface handles: a string path, a
-    /// name-LIST of bare names. Any other shape (e.g. the alias form `(import "path" alias)`) falls
-    /// back to the generic call form so it still round-trips.
+    /// name-LIST of bare names. The alias form `(import "path" alias)` is handled by
+    /// [`Self::is_import_alias_shape`]; any other shape falls back to the generic call form.
     fn is_import_shape(&self, args: &[StructId]) -> bool {
         args.len() == 2
             && self.is_string(args[0])
             && matches!(self.a.get(args[1]), Struct::List(names)
                 if !names.is_empty() && names.iter().all(|&n| self.a.as_name(n).is_some()))
+    }
+
+    /// The whole-module ALIAS import `(import "path" alias)` -> `import "path" as alias`: a string path
+    /// then a bare NAME (the local alias the linker binds the module's exports record under). Distinct
+    /// from the named-list `is_import_shape` by the third element being a NAME, not a LIST.
+    fn is_import_alias_shape(&self, args: &[StructId]) -> bool {
+        args.len() == 2 && self.is_string(args[0]) && self.a.as_name(args[1]).is_some()
     }
 
     /// `#{ key = v, … }`, with an optional `.. rest` spread (`#{ 1 = v, .. rest }`).
@@ -4901,6 +4919,36 @@ mod tests {
             sexp.contains("((const x))"),
             "const param modifier survives the ML surface as `(const x)` in param position, \
              got ml={ml:?} sexp={sexp}"
+        );
+    }
+
+    #[test]
+    fn import_alias_and_named_list_forms_round_trip() {
+        // The whole-module ALIAS import `import "path" as alias` -> `(import "path" alias)` (bare-name
+        // third element — the linker's module-alias discriminant), distinct from the named-list
+        // `import { a, b } from "path"` -> `(import "path" (a b))` (list third element). Both round-trip
+        // through the ML surface, and the alias composes with member projection `alias.member` — the
+        // shape a multi-contract guest uses to disambiguate two modules that export the same name.
+        assert_roundtrip("import \"kv-put\" as kv-put", 80);
+        assert_roundtrip("import \"blob-put\" as bput", 80);
+        assert_roundtrip("import { get, put } from \"kv\"", 80);
+        let full = "import \"blob-put\" as bput\n\nimport \"blob-get\" as bget\n\n\
+                    def main() = bput.descriptor().id == bget.descriptor().id\n\nexport { main }";
+        assert_roundtrip(full, 80);
+        // The alias lowers to the bare-NAME third element; the named-list to a LIST — the two forms the
+        // linker (resolve/link) tells apart.
+        let alias = parser::read_ml("import \"kv-put\" as kv");
+        assert!(alias.ok(), "parse alias import: {:?}", alias.errors);
+        assert!(
+            sexpr::print(&alias.arenas).contains("(import \"kv-put\" kv)"),
+            "alias import lowers to a bare-name third element, got: {}",
+            sexpr::print(&alias.arenas)
+        );
+        let named = parser::read_ml("import { a, b } from \"m\"");
+        assert!(
+            sexpr::print(&named.arenas).contains("(import \"m\" (a b))"),
+            "named-list import lowers to a name-list third element, got: {}",
+            sexpr::print(&named.arenas)
         );
     }
 
