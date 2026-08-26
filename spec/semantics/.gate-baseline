@@ -368,6 +368,7 @@ pass	Set.to-list canonical order is SIGNED at the integer extremes
 pass	Set.to-list canonical order is independent of insertion order
 pass	Set.to-list enumerates the FULL interior order, not just the smallest element
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
+pass	Set.to-list length is the deduped distinct-element count
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
 pass	Set.to-list of the state crosses resume ORDERED — the body reads elements positionally
