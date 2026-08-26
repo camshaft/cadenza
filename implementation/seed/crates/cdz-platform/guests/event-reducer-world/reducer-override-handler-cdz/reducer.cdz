@@ -1,0 +1,13 @@
+// The OVERRIDE event handler for the §4 registry-override conformance run (design/cadenza-platform.md §4).
+// Registered as a PER-CONTRACT override (registry.handlers): when an effect on the overridden contract is
+// routed here — instead of the registry's DEFAULT handler — this handler CLOSES with a distinct marker
+// reason, so the observation log proves the OVERRIDE handler (not the default) governed the contract. It
+// CLOSES rather than emits: emitting back on the same (overridden) contract would route the effect to itself
+// again and loop forever (the platform faithfully re-routes each emit to the override, so a self-emit is a
+// runaway). A close is the observable "I handled it" with no re-routing. on-response/on-notification inert.
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"override-handled" }) }
+
+export { on-message, on-response, on-notification }
