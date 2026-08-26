@@ -18968,3 +18968,57 @@
     (export main)))
   (call main (: 1 Int64))
   (output (: 43 Int64)))
+
+;; -- leak-freedom over the adversarial shared-heap faces: divergent aliases, closure capture, handler-arm update, Map/Set operands all balance to zero live objects (breaker batch 381; live-objects cases are wasm-baselined per the migration convention) --
+(case "lk1 divergent update aliases leave no live heap objects after the run"
+  (input (do
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (let ((a (List.update xs 0 100)))
+          (let ((b (List.update xs 1 200)))
+            (+ (rd a 1) (+ (rd b 0) (* 100 (rd xs 0))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 709 Int64))
+  (live-objects 0))
+
+(case "lk2b a closure capturing a BRANCH-SELECTED list across an interleaved update leaves no live heap objects"
+  (input (do
+    (def (rd (: xs (List Int64)))
+      (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n 2 3) (list 9))))
+        (let ((g (fn (u) (rd xs))))
+          (let ((first (g 0)))
+            (let ((ys (List.update xs 0 99)))
+              (+ (* 100 first) (+ (rd ys) (g 0))))))))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 806 Int64))
+  (live-objects 0))
+
+(case "lk3 a persistent update inside a handler ARM plus continuation read leaves no live heap objects"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (rd (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (list n 2 3)))
+        (handle E 0
+          ((tick () s (resume (rd (List.update xs 0 500) 0) s)))
+          (+ (E.tick) (rd xs 0)))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 503 Int64))
+  (live-objects 0))
+
+(case "lk4 shared Map and Set operands across inserts leave no live heap objects"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert (map) n 10)))
+        (let ((m2 (Map.insert m (+ n 1) 20)))
+          (let ((s (Set.of (list n))))
+            (let ((s2 (Set.insert s (+ n 1))))
+              (+ (Map.len m) (+ (* 10 (Map.len m2)) (+ (* 100 (Set.len s)) (* 1000 (Set.len s2))))))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 2121 Int64))
+  (live-objects 0))
