@@ -8189,65 +8189,6 @@ fn a_concat_built_list_map_key_is_found_by_a_push_built_equal_key() {
     );
 }
 
-/// The SET twin of the list-key false-miss fix, at the EMPTY-collection element type. A concat-built list
-/// element inserted into a set (via an empty `Set.of (list)`, whose element type is an undetermined `Var`
-/// in the `SetInsert`/`SetContains` node field) must be FOUND by a push-built equal element at n≥33 — the
-/// same RRB shape-independence the Map-key case pins, on the Set element path. Before the fix here the Set
-/// path DECLINED to compile ("list-key canonicalization: key type has no bakeable shape descriptor"): the
-/// `key_needs_canonicalize` guard said YES from the element NODE's resolved `type_of` (`List Int64`), but
-/// `emit_key_canonicalize` baked the descriptor from the `Var` `elem_ty` FIELD and found no shape — the
-/// `box_op_for`-vs-`box_op_ty` node-aware family. The fix falls back to the node's resolved `type_of` in
-/// `emit_key_canonicalize` before declining, so the empty-`Set.of (list)` element canonicalizes exactly
-/// like a Map key or a pinned-type set element (the Map path already worked because `Map.empty`'s key type
-/// resolves through inference). `#[ignore]` — needs the debug-counters store (`cargo xtask build`/`codegen`).
-#[test]
-#[ignore]
-fn a_concat_built_list_set_element_is_found_by_a_push_built_equal_element() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[set-list-key] debug-counters runtime not in the store; skipping");
-        return;
-    };
-    // ELEMENT = concat(mk 1..20, mk 21..40) (RELAXED RRB, n=40); QUERY = mk 1..40 (STRICT). Inserted into an
-    // EMPTY `Set.of (list)` (Var-typed element field), queried by `Set.contains` → 42 when found, -1 when not.
-    let src = "(module m \
-                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
-                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
-                 (def (elem) (List.concat (mk 1 20 (list)) (mk 21 40 (list)))) \
-                 (def (query) (mk 1 40 (list))) \
-                 (def (main) \
-                    (if (Set.contains (Set.insert (Set.of (list)) (elem)) (query)) 42 (- 0 1))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(42),
-        "a concat-built (relaxed RRB) list SET element must be found by a push-built equal element at n=40, \
-         even into an empty Set.of(list) (Var elem_ty) — the emit falls back to the node's resolved type to \
-         bake the descriptor (was a compile DECLINE: no bakeable shape for the Var elem field)"
-    );
-    // NEGATIVE control: a genuinely DIFFERENT list ([2..41] vs [1..40]) must be ABSENT — the fallback
-    // canonicalizes by ELEMENTS-in-order, it does not collapse distinct lists.
-    let neg_src = "(module m \
-                 (def (mk (: lo Int64) (: hi Int64) (: acc (List Int64))) \
-                    (if (< hi lo) acc (mk lo (- hi 1) (List.concat (list hi) acc)))) \
-                 (def (elem) (List.concat (mk 1 20 (list)) (mk 21 40 (list)))) \
-                 (def (other) (mk 2 41 (list))) \
-                 (def (main) \
-                    (if (Set.contains (Set.insert (Set.of (list)) (elem)) (other)) 42 (- 0 1))) \
-                 (export main))";
-    let neg = compile_component(&crate::codec::encode(&parse(neg_src))).expect("compile");
-    let mut rt_neg = ComposedRuntime::new(&neg, &runtime_bytes);
-    assert_eq!(
-        rt_neg.call("main", &[]),
-        Val::S64(-1),
-        "a different list element must NOT be found — canonicalize compares by elements, not over-match"
-    );
-}
-
 /// A RUNTIME STRING ROPE used as a MAP KEY is canonicalized (`bytes-compact`) at the insert/lookup CHAMP
 /// sites, so a rope key is found by its flat twin — the map/set KEY remainder of the value-eq rope fix.
 /// `Map.insert`/`Map.lookup` hash+compare the key with `champ_hash`/`champ_eq` (PHYSICAL bytes); a

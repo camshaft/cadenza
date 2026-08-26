@@ -799,6 +799,7 @@ pass	a MODULE-exported NON-recursive performer is homed by the importer's handle
 pass	a MODULE-exported recursive callee performing per step is homed by the importer's handler
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
+pass	a MULTI-LEVEL concat-built list SET element does not over-match a genuinely different element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
 pass	a MULTI-PAYLOAD variant with a nested same-sum variant reads the right payload depth (known outer disc)
 pass	a MULTI-argument op mixing a heap list and two scalars — the arm consumes all three
