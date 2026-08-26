@@ -1966,6 +1966,7 @@ pass	a genuinely-narrow op with a wrapped-down MATCH-operand yields the exact va
 pass	a genuinely-narrow op with a wrapped-down if-operand still traps on overflow
 pass	a genuinely-narrow op with a wrapped-down if-operand yields the exact value when in range
 pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
+pass	a genuinely-runtime NARROW-width negation returns the negation and traps at the narrow minimum
 pass	a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation
 pass	a genuinely-runtime UNARY negation returns the negation and traps at the minimum integer
 pass	a genuinely-runtime addition overflow traps on the emitted operation
@@ -5856,8 +5857,10 @@ pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
 pass	multiplication- and division-REACHED runtime Rationals equal the constructed canonical form
+pass	multiply-by-negative-one strength reduction keeps its operand's own trap
 pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
 pass	multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm
+pass	multiplying a runtime integer by negative one is checked negation in both operand orders
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
