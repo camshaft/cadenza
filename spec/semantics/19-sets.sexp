@@ -3787,3 +3787,47 @@
 (case "stl2 a (const Set.to-list) result is consumed by runtime List.len outside the block"
   (input (do (def (main) (List.len (const (Set.to-list (Set.of (list 1 2)))))) (export main)))
   (output (: 2 Int64)))
+
+; -- breaker batch 423 (2026-08-26): CROSS-FEATURE seam pins over the day's fixes — an
+; escaped-closure hop answer indexes a const-folded Set.to-list (recovery x fold); two identical
+; runtime encodes DEDUP as one set member (construction-side hash/eq admits arena Bytes; xf2 is
+; wasm-only — the rust encode path is pending); and a handler threading a SET state materializes a
+; sorted head from its answers. Filed refinement: Set.contains / Map.lookup with an ARENA-sourced
+; Bytes PROBE decline (the flat-operands query-entry gate) while construction dedups fine.
+
+(case "xf1 an escaped-closure hop answer indexes a const-folded Set.to-list"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 1))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (match (List.at (const (Set.to-list (Set.of (list 30 10 20)))) (ap (fn (x) (+ x (E.tick)))))
+          ((Option.Some v) v)
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 20 Int64)))
+
+(case "xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)"
+  (input (do
+    (def (main (: n Int64))
+      (Set.len (Set.of (list (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of n))) (Ast.encode (Ast.Int (BigInt.of (+ n 1))))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 2 Int64)))
+
+(case "xf5 a handler threads a SET state and the final answer materializes its sorted head"
+  (input (do
+    (effect E (op put (-> Int64)))
+    (def (main (: n Int64))
+      (handle E (Set.of (list n))
+        ((put () s (resume (Set.len s) (Set.insert s (* n 2)))))
+        (let ((a (E.put)))
+          (let ((b (E.put)))
+            (match (List.at (Set.to-list (Set.of (list (* 10 a) b))) 0)
+              ((Option.Some v) v)
+              ((Option.None) -1))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 2 Int64)))

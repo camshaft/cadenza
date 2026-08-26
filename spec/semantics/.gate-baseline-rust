@@ -7531,3 +7531,6 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
+pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
+todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
+pass	xf5 a handler threads a SET state and the final answer materializes its sorted head

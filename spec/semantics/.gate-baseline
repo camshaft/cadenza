@@ -7821,3 +7821,6 @@ todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
 pass	lol1 a list-of-LISTS scrutinee matched and read via List.len reclaims (the #3778 bonus)
+pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
+pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
+pass	xf5 a handler threads a SET state and the final answer materializes its sorted head
