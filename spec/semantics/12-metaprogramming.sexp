@@ -4034,3 +4034,19 @@
             (def (main) (match Ast.module ((Ast.List _) true) (_ false)))
             (export main)))
   (output (: true Bool)))
+
+;; -- runtime Ast.print: a RUNTIME AST value renders to canonical s-expr text — scalar + NESTED list (breaker batch 393; the #3560/#3621/#3627 op-92 arc acceptance pair) --
+(case "cj03r Ast.print of a RUNTIME AST value renders"
+  (input (do
+    (def (main (: k Int64))
+      (String.byte-len (Ast.print (Ast.Int (BigInt.of k)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1 Int64)))
+(case "cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text"
+  (input (do
+    (def (main (: k Int64))
+      (String.byte-len (Ast.print (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of k)))))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 5 Int64)))
