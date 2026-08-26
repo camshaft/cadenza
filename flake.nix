@@ -1246,6 +1246,58 @@
             witWorld = "${worldArtifacts}/${world}.bin";
             witWorldName = world;
           };
+        # ── transitive lib auto-resolution (a contract's own imports flow into a dependent guest's lib set) ──
+        # A guest's `libs` manifest lists the modules it DIRECTLY imports, but those modules import further
+        # modules (e.g. a contract's `descriptor` imports `contract-id`). Rather than every manifest re-listing
+        # each transitive lib — churn that grows as descriptor-on-every-contract spreads `import … from
+        # "contract-id"` into every contract — we CLOSE the manifest over the `import { … } from "<stem>"`
+        # graph. Over-inclusion is safe (an unused staged source only adds a file; only UNDER-inclusion breaks
+        # the compile, CDZ0201), so the parse is deliberately liberal and the closure only ever ADDS libs.
+        #
+        # stem (module basename sans `.cdz`, the name an `import … from "<stem>"` resolves) → repo-relative
+        # source path, over every contract + guest library module.
+        libStemToPath =
+          let
+            # Every *.cdz UNDER a dir, RECURSING into subdirs — contracts are split across
+            # contracts/kernel/ + contracts/userspace/, so a contract lives at contracts/<sub>/<x>.cdz. This is
+            # layout-agnostic: on a flat dir it just finds the top-level files; on a nested one it descends.
+            recurseCdz = d: builtins.concatMap
+              (name:
+                let sub = "${d}/${name}"; in
+                if (builtins.readDir (./. + "/${d}")).${name} == "directory" then recurseCdz sub
+                else if pkgs.lib.hasSuffix ".cdz" name
+                then [ { name = pkgs.lib.removeSuffix ".cdz" name; value = sub; } ]
+                else [ ])
+              (builtins.attrNames (builtins.readDir (./. + "/${d}")));
+            # Only the TOP-LEVEL *.cdz of a dir — for guests/, whose shared library modules (reducer-lib,
+            # checker-lib, log-schema, contract-id) sit at the top level while its subdirs are guest PACKAGES
+            # (each a reducer.cdz), which are NOT importable libs and must not enter the stem registry.
+            topCdz = d: map
+              (f: { name = pkgs.lib.removeSuffix ".cdz" f; value = "${d}/${f}"; })
+              (builtins.filter
+                (f: pkgs.lib.hasSuffix ".cdz" f
+                  && (builtins.readDir (./. + "/${d}")).${f} == "regular")
+                (builtins.attrNames (builtins.readDir (./. + "/${d}"))));
+          in
+          builtins.listToAttrs (
+            recurseCdz "implementation/seed/crates/cdz-platform/contracts"
+            ++ topCdz "implementation/seed/crates/cdz-platform/guests");
+        # The library stems a source file imports — every `from "<stem>"` occurrence (liberal: a match not in
+        # libStemToPath, e.g. a stray docstring mention, is filtered out by the closure operator below).
+        importStemsOf = relPath:
+          let
+            content = builtins.readFile (./. + "/${relPath}");
+            tails = pkgs.lib.drop 1 (pkgs.lib.splitString "from \"" content);
+          in
+          map (seg: builtins.head (pkgs.lib.splitString "\"" seg)) tails;
+        # Close a manifest's DIRECT lib paths over the import graph → the full transitive set of source paths.
+        closeLibs = relPaths:
+          map (e: ./. + "/${e.key}") (builtins.genericClosure {
+            startSet = map (p: { key = p; }) relPaths;
+            operator = { key }: map (stem: { key = libStemToPath.${stem}; })
+              (builtins.filter (stem: libStemToPath ? ${stem}) (importStemsOf key));
+          });
+
         # { <reducer-dir-name> = <compiled guest>; } over every guests/<world>/<reducer>/reducer.cdz.
         cadenzaGuests = builtins.foldl'
           (acc: world:
@@ -1268,7 +1320,9 @@
                       (pkgs.lib.splitString "\n" (builtins.readFile libsFile)));
                   # entry names the boundary file by its clean stem; required once libs add >1 source.
                   multiFileArgs = pkgs.lib.optionalAttrs (libLines != [ ]) {
-                    libs = map (p: ./. + "/${p}") libLines;
+                    # Transitively close the manifest over the import graph (a listed contract pulls in the
+                    # libs IT imports, e.g. contract-id), so a manifest need only list its DIRECT imports.
+                    libs = closeLibs libLines;
                     entry = pkgs.lib.removeSuffix ".cdz" (baseNameOf (guestDir + "/reducer.cdz"));
                   };
                 in
