@@ -40,8 +40,11 @@
 //! effect folded through `on_message`) or a `notification` (a control-plane event folded through
 //! `on_notification`). Both carry a `contract` (a contract-id) and a `payload`; a message also
 //! takes an optional `token` (the caller's continuation token, default empty). A message `payload` is either
-//! opaque bytes, or a resolve reference to a named blob — `BlobBytes(<name>)` (its content bytes) or
-//! `BlobHash(<name>)` (its content hash) — that resolves at build from the run's blob table (so a reducer can
+//! opaque bytes, a `Value("<Type>", <value>)` reference (the given Cadenza value encoded to the canonical
+//! binary form a guest `Value.decode`s type-directed against `<Type>` — a STRUCTURED payload a reducer decodes
+//! and dispatches on by schema, not opaque bytes), or a resolve reference to a named blob — `BlobBytes(<name>)`
+//! (its content bytes) or `BlobHash(<name>)` (its content hash) — that resolves at build from the run's blob
+//! table (so a reducer can
 //! be handed another program's hash to `run` it, or a shared blob's bytes, by name; §3/§8). A `contract` is
 //! written either
 //! as its raw 33 tagged bytes, or as a **base62** string (the §8 text form) — the string form is what a
@@ -77,7 +80,7 @@
 
 use super::harness::{Harness, Parent, SpawnSpec};
 use crate::contract_value::{
-    bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
+    ascribe, bare_ctor, bytes_leaf, read_bytes, read_uint, record, record_field, uint_leaf,
 };
 use crate::{
     Bytes, ContractId, Delivered, Error, Hash, HostId, Links, Message, Notification, Origin,
@@ -1338,6 +1341,35 @@ fn rewrite_references(
     match old.get(id) {
         Struct::Atom(leaf) => Ok(b.atom_leaf(old.leaf(*leaf).clone())),
         Struct::List(children) => {
+            // `Value("<Type>", <value>)` — encode the given Cadenza value to the canonical binary form a guest
+            // `Value.decode`s (a message/notification `payload` that is a STRUCTURED value, not opaque bytes),
+            // so a reducer can decode + dispatch on it by schema (§3/§4). Resolves like the blob references
+            // (WHEREVER it appears): the value is ascribed with `<Type>` at the encode boundary — the root
+            // ascription `Value.decode` requires — and any nested blob reference in the value resolves first.
+            // `<value>` must be written in the CANONICAL value form the codec uses: a single-constructor sum
+            // ELIDES its constructor (write the payload directly — `Value("Effect", b"x")`, not
+            // `Value("Effect", Perform(b"x"))`, since `Effect = | Perform(Bytes)`); a multi-constructor sum
+            // keeps its constructor head (`Value("T", SomeCtor(...))`). The type token is the schema type name.
+            if let Some((&head, args)) = children.split_first()
+                && old.as_name(head) == Some("Value")
+            {
+                let [type_id, value_id] =
+                    <[StructId; 2]>::try_from(args).map_err(|_| SpecError::WrongType {
+                        field: "Value reference",
+                        want: "a type name and a value: Value(\"<Type>\", <value>)",
+                    })?;
+                let ty = old.as_str(type_id).ok_or(SpecError::WrongType {
+                    field: "Value reference",
+                    want: "a type-name string as the first arg of Value(\"<Type>\", <value>)",
+                })?;
+                // Encode the value subtree standalone: copy+resolve it into a fresh arena, ascribe it with the
+                // type, and encode — the bytes a guest `Value.decode`s type-directed against `<Type>`.
+                let mut vb = Builder::new();
+                let inner = rewrite_references(old, value_id, table, &mut vb)?;
+                let ascribed = ascribe(&mut vb, inner, ty);
+                let bytes = codec::encode(&vb.finish(ascribed));
+                return Ok(bytes_leaf(b, &bytes));
+            }
             if let Some((&head, args)) = children.split_first()
                 && let Some(ctor @ ("BlobBytes" | "BlobHash")) = old.as_name(head)
             {
@@ -1455,7 +1487,7 @@ mod tests {
         SpecError, read_bytes, record_field, resolve_references,
     };
     use crate::contract_value::bare_ctor;
-    use crate::contract_value::{bytes_leaf, record, uint_leaf};
+    use crate::contract_value::{ascribe, bytes_leaf, record, uint_leaf};
     use crate::testing::SpawnSpec;
     use crate::{
         Bytes, ContractId, Error, HostId, Links, Origin, ProgramHash, ReducerId, ReducerKind,
@@ -2582,6 +2614,48 @@ mod tests {
             resolve_references(&arenas, |_| None).expect("resolve the BlobHash reference");
         let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
         let want = Bytes::copy_from_slice(ProgramHash::of(sub).hash().as_bytes());
+        match &spec.deliveries[0].1 {
+            DeliveryEvent::Message { payload, .. } => assert_eq!(*payload, want),
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    /// A `Value("<Type>", <value>)` payload resolves to the canonical binary encoding a guest `Value.decode`s:
+    /// the value ascribed with the type, `(: <value> <Type>)`, run through the codec — so a run can deliver a
+    /// STRUCTURED payload a reducer decodes by schema, not opaque bytes.
+    #[test]
+    fn resolve_references_encodes_a_value_payload() {
+        let arenas = built(|b| {
+            let ty = s(b, "Effect");
+            let deep = bytes_leaf(b, b"DEEP");
+            let inner = bare_ctor(b, "Perform", vec![deep]);
+            let vref = bare_ctor(b, "Value", vec![ty, inner]);
+            let contract = bytes_leaf(b, ContractId::of(b"c").hash().as_bytes());
+            let msg = record(b, vec![("contract", contract), ("payload", vref)]);
+            let target = s(b, "root");
+            let delivery = record(b, vec![("target", target), ("message", msg)]);
+            let deliver = list(b, vec![delivery]);
+            let blobs = list(b, vec![]);
+            let registry = reg(b, "sys");
+            record(
+                b,
+                vec![
+                    ("registry", registry),
+                    ("blobs", blobs),
+                    ("deliver", deliver),
+                ],
+            )
+        });
+        let resolved = resolve_references(&arenas, |_| None).expect("resolve the Value reference");
+        let spec = HarnessSpec::read(&resolved, resolved.root).expect("read the resolved spec");
+        // The bytes a guest gets: codec-encoding of the value ascribed with its type — `(: (Perform b"DEEP") Effect)`.
+        let want = {
+            let mut vb = Builder::new();
+            let deep = bytes_leaf(&mut vb, b"DEEP");
+            let inner = bare_ctor(&mut vb, "Perform", vec![deep]);
+            let root = ascribe(&mut vb, inner, "Effect");
+            Bytes::from(codec::encode(&vb.finish(root)))
+        };
         match &spec.deliveries[0].1 {
             DeliveryEvent::Message { payload, .. } => assert_eq!(*payload, want),
             other => panic!("expected a message, got {other:?}"),

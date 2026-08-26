@@ -1,0 +1,20 @@
+// The §3/§4 STRUCTURED-PAYLOAD DECODE guest (design/cadenza-platform.md §3/§4). A reducer that operates on
+// the contract's SCHEMA, not opaque bytes: it Value.decodes the delivered payload against the Effect schema
+// and acts on the decoded value (emits the inner payload the effect carried). The paired run delivers a
+// STRUCTURED payload via the harness `Value("Effect", Perform(b"..."))` form (the canonical binary a guest
+// Value.decodes), so this proves the decode-by-schema path end-to-end. A payload that does not decode as an
+// Effect closes with a typed reason (the reducer never acts on an undecodable payload). This is the
+// enabling half of the contract-dispatch track — a reducer decodes its input by the contract's schema.
+// on-response/on-notification inert (reducer-lib).
+import { Effect } from "effect"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  match (Value.decode(msg.payload) : Option(Effect)) with
+  | Some(Effect.Perform(p)) =>
+      { requests = [{ contract = msg.contract, payload = p, token = b"", deadlineNanos = None }],
+        outcome = Outcome.Continue }
+  | None =>
+      { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"value-decode-failed" }) }
+
+export { on-message, on-response, on-notification }

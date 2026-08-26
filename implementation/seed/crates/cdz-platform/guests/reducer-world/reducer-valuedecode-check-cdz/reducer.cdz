@@ -1,0 +1,22 @@
+// Checker for the structured-payload decode run (design/cadenza-platform.md §3/§4/§9). The paired guest
+// Value.decodes a delivered Effect value and emits its inner payload; this checker asserts, log-only, that the
+// decoded inner bytes (b"DEEP") were emitted — proving the reducer decoded the STRUCTURED payload by schema,
+// not treated it as opaque bytes. NON-VACUOUS: a payload that failed to decode closes (no emit), and the raw
+// encoded value (with its ascription framing) is NOT equal to the bare inner b"DEEP", so an echo of the raw
+// payload would not match. Round-3 checker-lib form.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def emitted-decoded-inner(rec) =
+  match rec.entry with
+  | Entry.Emitted(e) => e.payload == b"DEEP"
+  | _ => false
+
+def verdict-payload(records: List(LogRecord)) =
+  if any-record(records, emitted-decoded-inner)
+  then pass()
+  else fail("no Emitted carried the decoded inner payload b\"DEEP\": the reducer did not Value.decode the structured Effect payload by schema")
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }
