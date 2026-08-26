@@ -5244,6 +5244,21 @@ fn prune_baseline_text(
 /// title-set-agreeing (the `baseline_titles_agree` lint). Absent baseline files are skipped.
 fn prune_baselines(paths: &Paths, profile: &str, check: bool) {
     let corpus = corpus_titles(paths, profile);
+    // SAFETY GUARD: an EMPTY corpus title set is a broken read (no `.sexp` files found, a wrong CWD, or
+    // `cdz-corpus` emitting nothing) — NOT a legitimate "every case vanished". Pruning against it would
+    // treat EVERY baseline entry as unreferenced and DELETE the entire regression baseline, silently
+    // destroying fleet-wide coverage. There is never a real reason to prune against an empty corpus (the
+    // corpus always defines cases), so REFUSE rather than mass-prune. `--check` refuses too — a preview
+    // that reports "prune everything" is the same broken signal.
+    if corpus.is_empty() {
+        eprintln!(
+            "prune-baselines: REFUSING — the corpus title set is EMPTY (cdz-corpus produced no cases from \
+             spec/semantics). That is a broken read (wrong dir / no .sexp / build issue), not a reason to \
+             prune every baseline entry — doing so would wipe the whole regression baseline. Fix the \
+             corpus read and re-run."
+        );
+        std::process::exit(2);
+    }
     let mut report: Vec<String> = Vec::new();
     let mut total_pruned = 0usize;
     for path in all_baseline_paths(paths) {
@@ -8942,6 +8957,27 @@ mod trap_grading_tests {
         assert_eq!(
             out, "# h\nno-tab structure line\n",
             "the tab-less line is kept; only the identified data line is dropped"
+        );
+    }
+
+    #[test]
+    fn prune_baseline_text_with_empty_corpus_prunes_everything_which_is_why_the_driver_guards() {
+        // WHY `prune_baselines` REFUSES an empty corpus title set: the pure core has no way to know an
+        // empty corpus is a BROKEN READ rather than "every case vanished", so with no referenced titles
+        // EVERY data line is unreferenced and gets dropped — wiping the baseline down to its header. The
+        // empty-corpus guard lives in the driver precisely to prevent this destructive outcome; this test
+        // pins the behavior that motivates it, so removing the guard without noticing this would be caught.
+        let text = "# gate baseline\npass\ta\ntodo\tb\nfail\tc\n";
+        let empty = std::collections::BTreeSet::new();
+        let (out, pruned) = prune_baseline_text(text, &empty);
+        assert_eq!(
+            pruned,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "an empty corpus makes every entry unreferenced"
+        );
+        assert_eq!(
+            out, "# gate baseline\n",
+            "only the header would survive — the whole-baseline wipe the driver's empty-corpus guard prevents"
         );
     }
 
