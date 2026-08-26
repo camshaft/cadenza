@@ -327,6 +327,14 @@ pub enum Core {
     /// `f64::NAN.to_bits()` — the one canonical quiet NaN. Folds in `=`; does not yet cross the boundary
     /// (no written value form) — the escape/emit paths decline, like a runtime float.
     ConstFloatNan,
+    /// The positive-INFINITY Float constant (`Infinity`) — a `Ty::Float` value distinct from any
+    /// `ConstFloat` (`Decimal` holds only finite values, so +∞ cannot be a `ConstFloat`). Unlike NaN it
+    /// is fully ORDERED under IEEE comparison: `+∞ = +∞`, `+∞ > x` for every finite `x`, and `+∞ ≠ x` for
+    /// every finite `x` (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte Form).
+    /// Its bit pattern is `f64::INFINITY.to_bits()`. Folds in `=`/ordering; like `ConstFloatNan` it has no
+    /// written value form yet — the escape/emit paths and `Ast.Float` reification decline (a non-canonical
+    /// AST float, consistent with NaN and the pre-existing `(Ast.Float (/ 1.0 0.0))` decline).
+    ConstFloatInf,
     /// The unit value.
     Unit,
     /// A record value — a fixed set of named fields, each field's value referenced by its AST

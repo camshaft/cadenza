@@ -208,6 +208,13 @@ pub enum Prim {
     //= spec/contracts/determinism-and-fuel.md#floating-point-emission-is-determinism-constrained
     //# The compiler MUST emit floating-point operations such that a not-a-number result has a canonical bit pattern rather than a runtime-dependent one.
     FloatNan,
+    /// `Infinity` — the positive-INFINITY Float VALUE (a bare prelude name, like `nan`). NOT a literal
+    /// (`Decimal` holds only finite values); it resolves to this prim and lowers to `Core::ConstFloatInf`,
+    /// the canonical `f64::INFINITY` byte form. Unlike NaN it is fully ORDERED: `+∞ = +∞`, `+∞ > x` and
+    /// `+∞ ≠ x` for every finite `x` — the fold compares by `to_f64_bits` for `=` and by IEEE order for
+    /// `<`/`>`. Types as `Ty::Float` (a bare `Infinity` grounds to Float64; the float modules annotate it
+    /// to their width, exactly as `nan`).
+    FloatInf,
     /// `-> : (Type, Type) → Type` — the function-type constructor.
     FnCtor,
     /// `Tuple : (Type…) → Type` — the tuple-type constructor, VARIADIC over its element types. `(Tuple
@@ -875,6 +882,7 @@ impl Prim {
             "Float" => Some(Prim::FloatCtor),
             "float-of-int" => Some(Prim::FloatOfInt),
             "float-nan" => Some(Prim::FloatNan),
+            "float-inf" => Some(Prim::FloatInf),
             "float-of" => Some(Prim::FloatOf),
             "->" => Some(Prim::FnCtor),
             "Tuple" => Some(Prim::TupleCtor),

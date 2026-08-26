@@ -1596,6 +1596,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         | Core::ConstChar(_)
         | Core::ConstFloat(_)
         | Core::ConstFloatNan
+        | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
         | Core::Param { .. }
