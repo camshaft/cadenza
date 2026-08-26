@@ -24206,6 +24206,21 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
             None
         };
     }
+    // A NULLARY VARIANT used as a bare VALUE (`Option.None`, a `(. Sum V)` member form, a bare-name variant):
+    // it carries a `(meta variant)` discriminant and DENOTES the empty-payload sum value, WHATEVER its
+    // resolved shape. Handle it BEFORE the `match` — the `Member`/`Ref` arms would otherwise try to PROJECT
+    // `None` off the `Option` operand (a record projection that declines) or follow the reference through to
+    // the bare `(intrinsic sum-new)` constructor head (a non-value this interpreter declines). The taken
+    // `_ => Option.None` arm of an Option-threaded AST-navigation helper is exactly this shape, so this is
+    // what lets the operator's clean (no-sentinel) self-reflection transform const-fold. An APPLIED variant
+    // (`Option.Some x`, `Ast.Name n`) is a `Resolved::Apply` whose node carries no variant meta, so it is
+    // unaffected — its payloads fold through `const_eval_apply`'s variant arm.
+    if let Some(disc) = crate::eval::variant_disc_of(db, node) {
+        return Some(CVal::Sum {
+            disc,
+            payloads: Vec::new(),
+        });
+    }
     match resolved_of(db, node) {
         Resolved::Int(v) => Some(CVal::Int(v)),
         Resolved::Bool(b) => Some(CVal::Bool(b)),
@@ -24309,15 +24324,9 @@ fn const_eval(db: &mut Db, node: StructId, env: &CEnv, budget: &mut u64) -> Opti
         // compile-time-only annotation, erased at runtime). Notably the `([] : List T)` empty-list base arm.
         Resolved::Annot { expr, .. } => const_eval(db, expr, env, budget),
         Resolved::Apply { head, args } => const_eval_apply(db, node, head, &args, env, budget),
-        // A NULLARY variant constructor used as a bare value (`Option.None`, a payload-less user variant):
-        // it carries a `(meta variant)` discriminant and constructs its (empty-payload) sum value directly.
-        _ if crate::eval::variant_disc_of(db, node).is_some() => {
-            let disc = crate::eval::variant_disc_of(db, node)?;
-            Some(CVal::Sum {
-                disc,
-                payloads: Vec::new(),
-            })
-        }
+        // (A NULLARY variant used as a bare value — `Option.None`, a payload-less user variant — is folded
+        // to its empty-payload sum by the `variant_disc_of` guard ABOVE the match, before the Member/Ref
+        // arms can shadow it.)
         // A node this stage does not interpret STRUCTURALLY, but which `core_of` already folds to a constant
         // — notably `Ast.module` (the reflected module `Ast`, built as a `Core::SumNew` tree) and a `quote`.
         // Convert that constant `Core` into a `CVal` so it flows as a value into the surrounding recursion/

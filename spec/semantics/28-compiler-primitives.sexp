@@ -157,3 +157,29 @@
             (def (g) (Ast.encode (Ast.Int (BigInt.of (f 0)))))
             (export g)))
   (error  CDZ0304 (message "const trap under Ast.encode")))
+
+; --- Primitive 2: const execution — Option-threaded navigation folds (nullary variant, no sentinel) --
+; The operator-directed clean form of a self-reflection transform threads `Option` (not sentinel Name/""
+; values) through its AST navigation: a helper returns `Option.None` on a non-match. When that `_ =>
+; Option.None` arm is TAKEN on the const-folded path, the const-evaluator must FOLD the nullary variant to
+; its empty-payload sum value — NOT decline (a bare `Option.None` resolves through a `(. Option None)`
+; member / the `(intrinsic sum-new)` constructor head, which the evaluator must recognize as the value the
+; variant denotes). This is what lets the no-sentinel contract-id library const-fold (design D-clean-form).
+
+(case "const execution folds a TAKEN nullary variant (Option.None) in Option-threaded AST navigation"
+  (doc    "`name-of` returns `Option.None` for a non-`Ast.Name` form; `label` matches that Option and, on
+           the `Option.None` branch, builds `(Ast.Name \"none\")`. Fed a non-Name `(Ast.Int 5)`, the `_ =>
+           Option.None` arm is TAKEN, so folding `label` requires const-EVALUATING the nullary `Option.None`
+           value. `Ast.encode` DEMANDS a compile-time constant, so if the taken `Option.None` did not fold the
+           encode would decline (\"runtime AST value\") and this equality could not be computed. Folds to
+           `Ast.encode (Ast.Name \"none\")`, equal to the RHS — witnessing the nullary-variant const-fold that
+           the Option-threaded (no-sentinel) navigation depends on.")
+  (input  (do
+            (def (name-of (const (: form Ast)))
+              (match form ((Ast.Name n) (Option.Some n)) (_ Option.None)))
+            (def (label (const (: form Ast)))
+              (match (name-of form) ((Option.None) (Ast.Name "none")) ((Option.Some n) (Ast.Name n))))
+            (def (run)
+              (= (Ast.encode (label (Ast.Int (BigInt.of 5)))) (Ast.encode (Ast.Name "none"))))
+            (export run)))
+  (output (: true Bool)))
