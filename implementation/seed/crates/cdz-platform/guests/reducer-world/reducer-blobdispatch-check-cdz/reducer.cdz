@@ -1,0 +1,42 @@
+// Checker for the §8 multi-contract dispatch run (design/cadenza-platform.md §1/§4/§8/§9). The paired reducer
+// responds to TWO distinct contracts dispatched by descriptor id: blob.put (store) + blob.get (read). The run
+// delivers blob.put(SAME bytes) TWICE + blob.get(nonexistent). This checker asserts, log-only:
+//  (1) the PUT arm dispatched — an Emitted b"put-dispatched" (proves msg.contract == blob-put descriptor id),
+//  (2) the GET arm dispatched — an Emitted b"get-missing" (proves the blob-get id matched + the Missing path),
+//  (3) CONTENT-ADDRESSING dedup — the two identical-content puts produced the SAME hash: exactly two BlobPut
+//      records share the first put's hash (the §8 invariant, reintroduced from the withdrawn single-contract
+//      #3603 in the operator's multi-contract shape).
+// NON-VACUOUS: an assumption-based reducer (ignoring msg.contract) or a broken dispatch drops an arm's marker;
+// a fresh-id-per-put store makes the two BlobPut hashes differ (count 1). No hardcoded id/hash.
+import { LogRecord, Entry } from "log-schema"
+import { respond, on-response, on-notification, pass, fail, any-record } from "checker-lib"
+
+def emitted(rec, want) = match rec.entry with | Entry.Emitted(e) => e.payload == want | _ => false
+def put-dispatched(rec) = emitted(rec, b"put-dispatched")
+def get-missing(rec) = emitted(rec, b"get-missing")
+
+// The first BlobPut's hash, or None if there is no put.
+def first-put-hash(records: List(LogRecord), i: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => (None : Option(Bytes))
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      (match rec.entry with | Entry.BlobPut(p) => Some(p.hash) | _ => first-put-hash(records, i + 1))
+
+def count-put-with-hash(records: List(LogRecord), i: Int64, h: Bytes, acc: Int64) =
+  match List.at(records, i) with
+  | Option.None(_) => acc
+  | Option.Some(LogRecord.LogRecord(rec)) =>
+      count-put-with-hash(records, i + 1, h,
+        (match rec.entry with | Entry.BlobPut(p) => if p.hash == h then acc + 1 else acc | _ => acc))
+
+def verdict-payload(records: List(LogRecord)) =
+  if not(any-record(records, put-dispatched)) then fail("no Emitted b\"put-dispatched\": the blob.put arm did not dispatch (contract-id mismatch or wrong routing)")
+  else if not(any-record(records, get-missing)) then fail("no Emitted b\"get-missing\": the blob.get arm did not dispatch")
+  else (match first-put-hash(records, 0) with
+        | None => fail("no BlobPut recorded: the put arm never stored")
+        | Some(h) => if count-put-with-hash(records, 0, h, 0) == 2 then pass()
+                     else fail("the two identical-content puts did not share a hash: content-addressing/dedup broken"))
+
+def on-message(msg) = respond(msg, verdict-payload)
+
+export { on-message, on-response, on-notification }

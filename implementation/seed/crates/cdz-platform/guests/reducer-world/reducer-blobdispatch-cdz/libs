@@ -1,0 +1,4 @@
+implementation/seed/crates/cdz-platform/guests/reducer-lib.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/blob-put.cdz
+implementation/seed/crates/cdz-platform/contracts/userspace/blob-get.cdz
+implementation/seed/crates/cdz-platform/guests/contract-id.cdz
