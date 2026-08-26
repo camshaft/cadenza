@@ -2009,12 +2009,19 @@ fn send(
     no_wake: bool,
     force: bool,
 ) {
-    // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it
-    // from the current worktree's branch (`fleet/<agent>` → `<agent>`). The derivation is the key
+    // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it —
+    // first from the current worktree's BRANCH (`fleet/<agent>` → `<agent>`), then, if that fails, from
+    // the current worktree's PATH via the registry (worktree → agent). The derivation is the key
     // hardening: an agent that forgets `--from` (and whose env lacks FLEET_AGENT) still sends under its
     // real name, instead of `from=unknown` — which dead-letters pr-sync's merged/reject reply and
     // silently loses the sender's knowledge that its MR landed/bounced (a confirmed fleet-wide drop
-    // amplifier). Only if NONE of those resolve do we fall to `unknown`.
+    // amplifier). The worktree-PATH fallback specifically covers an agent checked out on a FEATURE/PR
+    // branch (e.g. a platform-lane `<agent>/<slice>` off origin/main) rather than its canonical
+    // `fleet/<agent>`: `sender_from_branch` returns `None` for such a branch, which used to drop the
+    // sender to `unknown` — silently corrupting the coordination audit trail for every platform-lane
+    // agent that coordinates while on a PR branch (v-effects issue 2026-08-26). The registry's
+    // `worktree` field is the durable source of truth for which agent owns this checkout, so it
+    // resolves correctly regardless of the branch. Only if NONE of those resolve do we fall to `unknown`.
     let from = from
         .filter(|s| !s.trim().is_empty())
         .or_else(|| {
@@ -2023,6 +2030,7 @@ fn send(
                 .filter(|s| !s.trim().is_empty())
         })
         .or_else(|| sender_from_branch(fleet))
+        .or_else(|| sender_from_worktree(fleet))
         .unwrap_or_else(|| "unknown".to_string());
     // The resolved `from` becomes the RECIPIENT of any reply pr-sync sends back (it addresses the
     // reply to `mr.from`), and `deliver` validates the recipient name. So an INVALID `from` — e.g.
@@ -7267,6 +7275,39 @@ fn sender_from_branch_name(branch: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Derive the sender agent from the CURRENT WORKTREE PATH via the registry (worktree → agent) — the
+/// branch-INDEPENDENT fallback `send` consults when `sender_from_branch` fails (the agent is on a
+/// feature/PR branch, not its canonical `fleet/<agent>`). The current worktree root is
+/// `fleet.src.parent()` (`fleet.src` is `<worktree>/fleet`); we match it against each registry entry's
+/// `worktree`, CANONICALIZING both so a symlinked or `..`-relative path still matches. Returns the
+/// matching entry's name if it is a valid agent name, else `None` (caller then falls to `unknown`).
+fn sender_from_worktree(fleet: &Fleet) -> Option<String> {
+    let here = fleet.src.parent()?;
+    let here = std::fs::canonicalize(here).unwrap_or_else(|_| here.to_path_buf());
+    let reg = fleet.load();
+    let resolved: Vec<(&str, PathBuf)> = reg
+        .agents
+        .iter()
+        .map(|a| {
+            let wt =
+                std::fs::canonicalize(&a.worktree).unwrap_or_else(|_| PathBuf::from(&a.worktree));
+            (a.name.as_str(), wt)
+        })
+        .collect();
+    agent_for_worktree_path(&resolved, &here)
+}
+
+/// The PURE worktree-path → agent match (kept separate from `sender_from_worktree`'s filesystem
+/// canonicalize so it is unit-testable without a real checkout): the `(name, worktree)` entry whose
+/// worktree equals `here`, if its name passes the agent-name charset (so a garbage registry name never
+/// resolves a sender). First match wins; `None` if nothing matches.
+fn agent_for_worktree_path(agents: &[(&str, PathBuf)], here: &Path) -> Option<String> {
+    agents
+        .iter()
+        .find(|(_, wt)| wt.as_path() == here)
+        .and_then(|(name, _)| validate_agent_name(name).ok().map(|()| name.to_string()))
 }
 
 /// Derive the intended recipient from a reply's subject. pr-sync writes `<kind>: fleet/<agent>` (e.g.
@@ -14151,6 +14192,26 @@ mod tests {
         assert!(sender_from_branch_name("fleet/../etc").is_none());
         assert!(sender_from_branch_name("fleet/").is_none());
         assert!(sender_from_branch_name("fleet/a b").is_none());
+    }
+
+    #[test]
+    fn agent_for_worktree_path_matches_the_registry_entry_owning_this_checkout() {
+        // The branch-INDEPENDENT fallback (v-effects PR-branch bug): a sender on a feature branch that
+        // `sender_from_branch` can't map still resolves by its worktree PATH via the registry.
+        let agents = [
+            ("v-effects", PathBuf::from("/wt/v-effects")),
+            ("v-fleet-tooling", PathBuf::from("/wt/v-fleet-tooling")),
+        ];
+        assert_eq!(
+            agent_for_worktree_path(&agents, Path::new("/wt/v-effects")).as_deref(),
+            Some("v-effects"),
+            "the worktree owning this checkout names the sender, regardless of the branch"
+        );
+        // A path that no registry entry owns → None (caller falls to `unknown`).
+        assert!(agent_for_worktree_path(&agents, Path::new("/wt/not-an-agent")).is_none());
+        // A garbage registry name must NOT resolve a sender (same charset guard as the branch path).
+        let garbage = [("../etc", PathBuf::from("/wt/x"))];
+        assert!(agent_for_worktree_path(&garbage, Path::new("/wt/x")).is_none());
     }
 
     #[test]
