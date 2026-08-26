@@ -2458,6 +2458,9 @@ pass	a match over a statically-known constructor with a runtime payload elides t
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
 pass	a match over an if-selected sum folds each branch's constructor to its arm body
+pass	a match over an owned None shell from an out-of-range List.at reclaims it across a loop (no live objects)
+pass	a match over an owned all-scalar-payload Some shell from List.at reclaims it across a loop (no live objects)
+pass	a match over an owned all-scalar-payload Some shell from Map.lookup reclaims it across a loop (no live objects)
 pass	a match over bytes with only a bin arm and no catch-all is non-exhaustive
 pass	a match over multiple nullary constructors with uniform patterns
 pass	a match pattern naming a non-existent variant is a coded rejection

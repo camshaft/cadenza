@@ -19255,3 +19255,39 @@
             (export f)))
   (call   f (: 500 Int64)) (output (: 5000 Int64))
   (live-objects 0))
+
+(case "a match over an owned all-scalar-payload Some shell from List.at reclaims it across a loop (no live objects)"
+  (doc    "Each iteration reads element 1 of a fresh runtime list via List.at (a fresh Some shell, all-scalar
+           payload) and matches Some/None to a scalar -> 500 x element 1 = 500. MatchSum must drop the owned
+           all-scalar-payload shell after the match; a leaked shell scales to ~N -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 (list)) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (f (: n Int64)) (loop 0 n 0))
+            (export f)))
+  (call   f (: 500 Int64)) (output (: 500 Int64))
+  (live-objects 0))
+
+(case "a match over an owned None shell from an out-of-range List.at reclaims it across a loop (no live objects)"
+  (doc    "Each iteration reads element 99 (out of range) of a fresh runtime list via List.at (a fresh None
+           shell) and the None arm returns 7 -> 500 x 7 = 3500. The owned shell must be reclaimed after the
+           match -- net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (List.at (build 0 3 (list)) 99) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (f (: n Int64)) (loop 0 n 0))
+            (export f)))
+  (call   f (: 500 Int64)) (output (: 3500 Int64))
+  (live-objects 0))
+
+(case "a match over an owned all-scalar-payload Some shell from Map.lookup reclaims it across a loop (no live objects)"
+  (doc    "Each iteration looks up key 1 of a fresh runtime map via Map.lookup (a fresh Some shell) and the
+           Some arm reads the value -> 500 x 10 = 5000. The owned shell must be reclaimed after the match --
+           net 0.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
+            (def (loop (: j Int64) (: n Int64) (: tot Int64)) (if (< j n) (loop (+ j 1) n (+ tot (match (Map.lookup (build 0 3 (map)) 1) ((Option.Some v) v) ((Option.None _) 7)))) tot))
+            (def (f (: n Int64)) (loop 0 n 0))
+            (export f)))
+  (call   f (: 500 Int64)) (output (: 5000 Int64))
+  (live-objects 0))
