@@ -5,6 +5,10 @@
 //! Reads are total: a truncated or over-long varint returns `None` rather than panicking, because
 //! decode operates on untrusted external bytes.
 
+// `alloc`-sourced `Vec` so this file compiles under BOTH std (rcdzc) and `#![no_std]` (cdz-runtime,
+// which `include!`s it for the shared canonical serializer). `alloc::vec::Vec` == `std::vec::Vec`.
+use alloc::vec::Vec;
+
 /// Append the unsigned LEB128 encoding of `value` to `out`.
 pub fn write_u64(out: &mut Vec<u8>, mut value: u64) {
     loop {

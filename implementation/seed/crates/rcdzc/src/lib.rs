@@ -2,6 +2,13 @@
 //! architecture (`spec/architecture/*.md`). See `Cargo.toml` for the two shaping directives
 //! (copy-don't-depend; Cadenza-in-Rust style). This is the Stage-0 skeleton.
 
+// Name the `alloc` sysroot crate so the shared codec-core modules (`ast`/`codec`/`leb128`) can import
+// `alloc::{vec::Vec, string::String, boxed::Box}` + `hashbrown::HashMap` — imports valid in BOTH this std
+// crate AND the `#![no_std]` `cdz-runtime` that `include!`s these same source files (the runtime
+// `ast-encode` op reuses ONE serializer for byte-identity; cdz-num↔bigint.rs precedent). Benign in std
+// (alloc types ARE std's — `alloc::vec::Vec` == `std::vec::Vec`); required for the no_std include.
+extern crate alloc;
+
 // The copied-in syntax foundation (verbatim from `cadenza-syntax`, minus its external deps): the
 // two-arena leaf-pool AST, the total binary codec, and the leb128 primitives it rides on.
 pub mod ast;

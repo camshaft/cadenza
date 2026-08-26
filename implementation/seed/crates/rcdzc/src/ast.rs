@@ -18,7 +18,8 @@
 //! *name*, never a change to this frozen shape. This is what keeps the AST stable and macro
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
-use std::collections::HashMap;
+use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -27,7 +28,7 @@ use std::collections::HashMap;
 /// or precision is never a well-formedness ceiling, and the concrete machine width (`Int64`,
 /// `(Int N)`, `f32`, `f64`, …) is a *type* decision made downstream, not a representation choice
 /// made here. `nan`/`inf`/`-inf` are ordinary `Name`s, so a `Float` only ever holds a finite value.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum Leaf {
     /// An integer literal: its exact value plus the base its text used. The base is display-only
     /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
@@ -37,7 +38,7 @@ pub enum Leaf {
         radix: Radix,
     },
     Float(Decimal),
-    Str(std::rc::Rc<str>),
+    Str(alloc::rc::Rc<str>),
     /// A CHAR literal (`#\a`, `#\u+00E9`) — a single Unicode scalar value, the element type of a string's
     /// scalar sequence (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). A `char` is a
     /// scalar by construction, so this only ever holds a valid scalar; a literal spelling a NON-scalar
@@ -56,9 +57,9 @@ pub enum Leaf {
     /// units-of-measure layer a base dimension is named by such a symbol (`(Unit.base #"meter")`) — this
     /// is the minimal symbol-literal slice that unblocks the units corpus surface; the full `Symbol`
     /// TYPE + intern table arrive with the symbols vertical.
-    Sym(std::rc::Rc<str>),
+    Sym(alloc::rc::Rc<str>),
     /// An identifier: a name reference, a construct head, a variant, or a qualified name segment.
-    Name(std::rc::Rc<str>),
+    Name(alloc::rc::Rc<str>),
     /// A string literal carrying an UNRECOGNIZED ESCAPE (`"\q"`) — a reader-detected lexical defect that
     /// the front-end cannot report through the artifact channel, so it rides the binary AST as a MARKER.
     /// Resolving it is a `CDZ0001` rejection (`collections-and-text.md` §A String Literal's Escapes Are A
@@ -67,7 +68,7 @@ pub enum Leaf {
     /// A CHAR literal naming a NON-scalar code point (`#\u+D800`, a surrogate) — a reader-detected lexical
     /// defect riding the binary AST as a MARKER. Resolving it is a `CDZ0002` rejection
     /// (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). Holds the literal's text.
-    BadChar(std::rc::Rc<str>),
+    BadChar(alloc::rc::Rc<str>),
 }
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of
@@ -87,7 +88,7 @@ pub enum Leaf {
 /// one encoding — its serialized byte form depends only on the value, never on how it was computed.
 //= spec/contracts/deterministic-value-form.md#numeric-values-serialize-deterministically
 //# An exact numeric value MUST serialize to a byte form that is independent of how the value was computed.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct IntValue {
     pub negative: bool,
     /// Big-endian magnitude bytes (most-significant first). Empty represents zero.
@@ -399,7 +400,7 @@ impl IntValue {
 
     /// Compare two MAGNITUDES (unsigned) — big-endian byte vectors, ignoring leading zeros. `Less`/
     /// `Equal`/`Greater` on the numeric magnitude.
-    fn cmp_mag(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    fn cmp_mag(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
         let trim = |m: &[u8]| {
             let mut i = 0;
             while i < m.len() && m[i] == 0 {
@@ -520,7 +521,7 @@ impl IntValue {
             m.len() - i
         };
         let a_sig = sig(a);
-        if a_sig == 0 || IntValue::cmp_mag(a, b) == std::cmp::Ordering::Less {
+        if a_sig == 0 || IntValue::cmp_mag(a, b) == core::cmp::Ordering::Less {
             // a < b → quotient 0, remainder a (canonicalized).
             return (Vec::new(), IntValue::sub_mag(a, &[]));
         }
@@ -549,7 +550,7 @@ impl IntValue {
                     rem[last] |= 1;
                 }
             }
-            if IntValue::cmp_mag(&rem, b) != std::cmp::Ordering::Less {
+            if IntValue::cmp_mag(&rem, b) != core::cmp::Ordering::Less {
                 rem = IntValue::sub_mag(&rem, b);
                 quo_bits.push(1);
             } else {
@@ -611,7 +612,7 @@ impl IntValue {
         let mut out = Vec::new();
         let mut cur = 0u8;
         let mut count = 0usize;
-        for &b in std::iter::repeat_n(&0u8, pad).chain(sig.iter()) {
+        for &b in core::iter::repeat_n(&0u8, pad).chain(sig.iter()) {
             cur = (cur << 1) | b;
             count += 1;
             if count == 8 {
@@ -665,8 +666,8 @@ impl IntValue {
             }
             // Both x and y are now odd; subtract the smaller from the larger (the difference is even and
             // handled by the halving at the loop top). Keep x ≤ y so x holds the running gcd core.
-            if IntValue::cmp_mag(&x, &y) == std::cmp::Ordering::Greater {
-                std::mem::swap(&mut x, &mut y);
+            if IntValue::cmp_mag(&x, &y) == core::cmp::Ordering::Greater {
+                core::mem::swap(&mut x, &mut y);
             }
             y = IntValue::sub_mag(&y, &x);
         }
@@ -681,8 +682,8 @@ impl IntValue {
     /// derived field order (`Ord` on the struct would compare `negative` then the raw magnitude bytes,
     /// getting negatives and non-canonical magnitudes wrong), so this is a named method, not an `Ord` impl.
     #[allow(clippy::should_implement_trait)]
-    pub fn cmp(&self, other: &IntValue) -> std::cmp::Ordering {
-        use std::cmp::Ordering::*;
+    pub fn cmp(&self, other: &IntValue) -> core::cmp::Ordering {
+        use core::cmp::Ordering::*;
         let (za, zb) = (self.is_zero(), other.is_zero());
         match (za, zb) {
             (true, true) => return Equal,
@@ -709,12 +710,12 @@ impl IntValue {
         } else {
             // Opposite signs: subtract the smaller magnitude from the larger; sign of the larger.
             match IntValue::cmp_mag(&self.magnitude, &other.magnitude) {
-                std::cmp::Ordering::Equal => IntValue::zero(),
-                std::cmp::Ordering::Greater => IntValue::normalize(
+                core::cmp::Ordering::Equal => IntValue::zero(),
+                core::cmp::Ordering::Greater => IntValue::normalize(
                     self.negative,
                     IntValue::sub_mag(&self.magnitude, &other.magnitude),
                 ),
-                std::cmp::Ordering::Less => IntValue::normalize(
+                core::cmp::Ordering::Less => IntValue::normalize(
                     other.negative,
                     IntValue::sub_mag(&other.magnitude, &self.magnitude),
                 ),
@@ -788,7 +789,7 @@ impl IntValue {
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub enum Radix {
     Dec,
     Hex,
@@ -819,7 +820,7 @@ pub struct StructId(pub u32);
 /// that `-0.0` (negative, empty significand) is preserved distinctly from `0.0`. This captures a
 /// source float literal EXACTLY (no `f64` rounding), so a later type-directed rounding to a chosen
 /// width happens once, from the exact value.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Decimal {
     pub negative: bool,
     /// Big-endian non-negative magnitude of the significand. Empty represents zero.
@@ -971,7 +972,7 @@ pub struct Arenas {
 #[derive(Default)]
 pub struct Builder {
     leaves: Vec<Leaf>,
-    leaf_index: HashMap<Leaf, LeafId>,
+    leaf_index: BTreeMap<Leaf, LeafId>,
     structure: Vec<Struct>,
 }
 
@@ -1018,7 +1019,7 @@ impl Builder {
     }
 
     /// Convenience: an atom occurrence of a `Name`.
-    pub fn name(&mut self, name: impl Into<std::rc::Rc<str>>) -> StructId {
+    pub fn name(&mut self, name: impl Into<alloc::rc::Rc<str>>) -> StructId {
         self.atom_leaf(Leaf::Name(name.into()))
     }
 
