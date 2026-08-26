@@ -95133,3 +95133,65 @@ fn copied_wit_builders_match_cadenza_ast_by_logical_tree_and_through_canon() {
          A mismatch here means the effect schema-hash would split even after canonicalization."
     );
 }
+
+/// §2d STATIC bytes (`DESIGN-static-data.md` increment 1 — constancy detection, byte-neutral).
+/// Pins [`crate::lower::is_constant_bytes`]: a `Core::BytesOf` whose every element folds to a
+/// constant byte is a static-once candidate (true); a single RUNTIME element (a `UInt8` built from a
+/// param) disqualifies the whole literal (false); the empty bytes literal is vacuously constant
+/// (true); and a non-`BytesOf` node is never a constant-bytes candidate (false). This is the
+/// classification the build-once GLOBAL/START emit (increment 2) keys on; a regression here would
+/// either route a runtime-varying literal to a wrongly-shared global (a miscompile) or fail to hoist
+/// a genuinely-constant one.
+#[test]
+fn is_constant_bytes_flags_all_constant_byte_literals_only() {
+    use crate::db::Db;
+    use crate::lower::is_constant_bytes;
+    // Lower a named def's body and ask whether it is a constant-bytes static-once candidate.
+    let is_const_bytes = |src: &str, def: &str| -> bool {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let body = db.defs[d].body.expect("body");
+        is_constant_bytes(&mut db, body)
+    };
+    // A fully-constant bytes literal → a static-once candidate.
+    assert!(
+        is_const_bytes(
+            "(module m (def (main) (Bytes.of (list 1 2 3))) (export main))",
+            "main"
+        ),
+        "an all-constant `(Bytes.of (list 1 2 3))` must be a constant-bytes static-once candidate"
+    );
+    // The EMPTY bytes literal is vacuously constant (no runtime element).
+    assert!(
+        is_const_bytes(
+            "(module m (def (main) (Bytes.of (list))) (export main))",
+            "main"
+        ),
+        "the empty bytes literal `(Bytes.of (list))` must be a constant-bytes candidate (vacuous)"
+    );
+    // A single RUNTIME element (a `UInt8` built from a param) disqualifies the whole literal.
+    assert!(
+        !is_const_bytes(
+            "(module m (def (f (: n Int64)) (Bytes.of (list (UInt8.wrap n)))) \
+             (def (main) 0) (export main))",
+            "f"
+        ),
+        "a `(Bytes.of (list (UInt8.wrap n)))` with a runtime element must NOT be a constant candidate"
+    );
+    // A MIXED literal (constant bytes plus one runtime element) is also not constant — one runtime
+    // element disqualifies the whole value.
+    assert!(
+        !is_const_bytes(
+            "(module m (def (f (: n Int64)) (Bytes.of (list 1 (UInt8.wrap n) 3))) \
+             (def (main) 0) (export main))",
+            "f"
+        ),
+        "a mixed constant/runtime `Bytes.of` must NOT be a constant-bytes candidate (one runtime elem)"
+    );
+    // A non-`BytesOf` node (a bare scalar) is never a constant-bytes candidate — the predicate is
+    // narrow to the `Core::BytesOf` shape, not "any constant".
+    assert!(
+        !is_const_bytes("(module m (def (main) 42) (export main))", "main"),
+        "a scalar constant `42` is not a `Core::BytesOf`, so not a constant-bytes candidate"
+    );
+}

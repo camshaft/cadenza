@@ -14762,6 +14762,34 @@ pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a fully COMPILE-TIME-CONSTANT `Bytes` literal — a `Core::BytesOf`
+/// whose every element folds to a constant byte (`Core::ConstInt` in `0..=255`). This is the
+/// static-once CANDIDATE predicate for §2d STATIC bytes (`DESIGN-static-data.md` increment 1): such
+/// a value never varies across evaluations, so once the build-once machinery is active (increment 2:
+/// the GLOBAL + START sections) it is materialized ONCE into a module global and read with
+/// `global.get` at each use — rather than the per-call `bytes-alloc` + a `bytes-set` per byte the
+/// backend emits today (`select.rs` `Core::BytesOf`). A `BytesOf` with even one RUNTIME element (a
+/// `UInt8` param, `(UInt8.wrap n)`) is NOT constant — it must build per call — so a single runtime
+/// element disqualifies the whole literal.
+///
+/// Kept DELIBERATELY SEPARATE from [`is_constant_compound`] rather than folded into it: recognizing
+/// bytes there would flip the `Core::Tuple` short-circuit in `is_runtime_computation` (a tuple
+/// holding only a constant bytes literal would stop being kept as a `Core::Let` binding, so each
+/// projection would re-emit the `BytesOf` construction — a behavior change AND a pessimization until
+/// the build-once global actually exists). This predicate only CLASSIFIES; it changes no emission on
+/// its own (increment 1 is byte-neutral — detection is wired into build-once emit in increment 2).
+pub fn is_constant_bytes(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::BytesOf { elems } => elems.iter().all(|&e| {
+            matches!(
+                core_of(db, e),
+                Core::ConstInt(v) if v.to_i64().is_some_and(|n| (0..=255).contains(&n))
+            )
+        }),
+        _ => false,
+    }
+}
+
 /// The CANONICAL BINARY VALUE FORM of a fully-constant compound at `id` — the bytes the resource escape
 /// path's `encode()` returns (`DESIGN-value-heap-rcdzc.md` §3a; `contracts/deterministic-value-form.md`).
 /// Reconstructs the s-expression `(: <value> <type>)` as ordinary AST (the value from the constant core,
