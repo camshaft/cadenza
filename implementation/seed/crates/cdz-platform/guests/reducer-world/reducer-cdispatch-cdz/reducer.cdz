@@ -1,0 +1,22 @@
+// The CONTRACT-DISPATCH pilot (design/cadenza-platform.md §1/§4, operator directive 2026-08-26). A reducer
+// that operates on the CONTRACT-ID, not assumptions: it dispatches by comparing msg.contract against a
+// contract's own self-reflected id — descriptor().id, read from the uniform contract descriptor the contract
+// module exports (import { descriptor } from "effect"). On the recognized contract it emits a marker; on any
+// UNRECOGNIZED contract it closes with a typed reason. This is the pattern-setter for the reducer refactor:
+// route on the contract-id (no hardcoded hash literal, no payload sentinel), reject what you do not handle.
+//
+// It also CONFIRMS byte-identity e2e: the run delivers on cdz-platform.effect BY NAME (the harness resolves
+// the name to the host contract-id), and the match fires only if that delivered id equals effect's
+// descriptor().id (guest-side self-reflected id) — so a passing match proves the two derivations agree.
+// on-response/on-notification inert (reducer-lib).
+import { descriptor } from "effect"
+import { Outcome, on-response, on-notification } from "reducer-lib"
+
+def on-message(msg) =
+  if msg.contract == descriptor().id then
+    { requests = [{ contract = msg.contract, payload = b"effect-dispatched", token = b"", deadlineNanos = None }],
+      outcome = Outcome.Continue }
+  else
+    { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"unknown-contract" }) }
+
+export { on-message, on-response, on-notification }
