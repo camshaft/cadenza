@@ -12531,6 +12531,19 @@
             (def (main) (+ (val (classify 0)) (val (classify 7)))) (export main)))
   (output (: 8 Int64)))
 
+(case "a definition named like a variant shadows the bare-variant constructor"
+  (doc    "Scope-first resolution: a bare variant name resolves AFTER the lexical scope + top-level
+           defs (before the prelude), so a top-level `def`/`let`/param of the same name SHADOWS the
+           variant constructor. Here a `(def (NLit x) (+ x 100))` is named like the `Node` variant
+           `NLit`, so `(NLit 5)` calls the DEFINITION (→ 105), not the constructor. Pins that the
+           bare-variant binding does not privilege a variant name over an ordinary binding — the
+           negative companion of the bare-nullary construct+match case above.")
+  (input  (do
+            (type Node (NLit Int64) NNil)
+            (def (NLit x) (+ x 100))
+            (def (main) (NLit 5)) (export main)))
+  (output (: 105 Int64)))
+
 (case "a match arm building a fresh runtime compound infers its shape"
   (doc    "A non-recursive `emit` dispatches on a sum variant and each arm BUILDS a fresh runtime
            compound (a Bytes value) — `((Expr.Lit n) (Bytes.of (list 66))) / ((Expr.Neg n) (Bytes.of
