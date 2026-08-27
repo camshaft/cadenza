@@ -42712,28 +42712,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_variant_tuple_payload_is_destructured_by_a_nested_pattern() {
-        // core-semantics.md §Patterns Compose: a tagged value carrying a TUPLE of sub-values is
-        // destructured in ONE arm by a nested tuple pattern — `(Pair.Both (tuple a b))` binds `a`/`b` to
-        // the payload tuple's elements (path `[Payload, Elem(0/1)]`). Over a CONSTANT scrutinee it folds:
-        // `(Pair.Both (tuple 3 4))` → the `Both` arm binds a=3, b=4 → 7. The nullary `Neither` arm is
-        // covered too (exhaustive). No runtime (the fold erases the heap sum + tuple).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Pair (Both (Tuple Int64 Int64)) Neither) \
-                       (def (main) (match (Pair.Both (tuple 3 4)) \
-                          ((Pair.Both (tuple a b)) (+ a b)) \
-                          (Pair.Neither 0))) \
-                       (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
-    }
-
-    #[test]
     fn a_variant_tuple_payload_destructure_runs_at_runtime() {
         // The runtime heap walk: `(mk n)` builds `(Both (tuple n (+ n 1)))` for n>0 else `Neither`, and
         // `classify` destructures the tuple payload — `(Both (tuple a b))` → `(+ a b)` reads the payload
@@ -68477,30 +68455,6 @@ mod stage1 {
         assert!(
             msg.contains("non-exhaustive") || msg.contains("cover every variant"),
             "got: {msg}"
-        );
-    }
-
-    #[test]
-    fn a_nested_sum_match_folds_over_a_constant() {
-        // A constant nested scrutinee FOLDS to the selected arm through both switch levels — no runtime
-        // match. Over monomorphic `Box`/`Inner`, `(Full (Pos 7))` folds outer `Full` then inner `Pos`,
-        // binds `x = 7`, and the whole match reduces to the constant 7 (a plain scalar, no heap sum).
-        let src = "(module m \
-                     (type Inner (Pos Int64) (Neg Int64)) \
-                     (type Box (Full Inner) Empty) \
-                     (def (main) \
-                        (match (Box.Full (Inner.Pos 7)) \
-                          ((Box.Full (Inner.Pos x)) x) \
-                          ((Box.Full (Inner.Neg y)) y) \
-                          (Box.Empty -1))) \
-                     (export main))";
-        use crate::testkit::parse;
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                "main"
-            ),
-            7
         );
     }
 

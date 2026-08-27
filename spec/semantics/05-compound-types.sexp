@@ -9817,6 +9817,22 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "a constant variant carrying a tuple payload destructures by a nested tuple pattern and folds"
+  (doc    "core-semantics.md §Patterns Compose: a tagged value whose single payload is a TUPLE is
+           destructured in one arm by a nested tuple pattern — `(Pair.Both (tuple a b))` binds `a`/`b` to
+           the payload tuple's elements (path [Payload, Elem 0/1]). Over a CONSTANT scrutinee it FOLDS:
+           `(Pair.Both (tuple 3 4))` selects the `Both` arm binding a=3, b=4 → 7; the nullary `Neither`
+           arm keeps the match exhaustive. The const-fold companion of the runtime tuple-payload
+           destructure (a recursive `ev` over `(Node.NAdd (tuple a b))`); here the whole match reduces to
+           the constant 7 with no runtime heap sum or tuple.")
+  (input  (do
+            (type Pair (Both (Tuple Int64 Int64)) Neither)
+            (def (main) (match (Pair.Both (tuple 3 4))
+                          ((Pair.Both (tuple a b)) (+ a b))
+                          (Pair.Neither 0)))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a literal-refined recursive-sum arm folds under a statically-known discriminant"
   (doc    "A recursive-sum match with a LITERAL-REFINED payload arm (`((L.Cons 0 t) …)`) over a scrutinee
            whose DISCRIMINANT is statically known but whose payload is RUNTIME: `(L.Cons x (L.Nil))` — the
