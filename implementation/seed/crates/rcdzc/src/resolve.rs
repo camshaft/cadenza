@@ -248,6 +248,32 @@ pub fn forget_subtree(db: &mut Db, id: StructId) {
     }
 }
 
+/// [`forget_subtree`] that PRESERVES pinned subtrees — a node in [`Db::resolved_subtrees`] (and everything
+/// under it) keeps its memoized resolution and walk-guard untouched. Used by the escaped-closure recovery,
+/// whose rewritten body mixes two kinds of node. A freshly re-parented ref (`push_list` rebuilt it, or its
+/// pre-copy scope memo is now stale) MUST recompute against the rebuilt structure — it is NOT pinned, so
+/// this forgets it exactly as [`forget_subtree`] would. A PINNED capture occurrence — a free variable the
+/// escaping closure captured, which `pin_free_vars` resolved (via [`resolve_subtree`]) to its real binder
+/// and `apply_lambda` then SHARED (not copied) into the reduced body — carries a STALE parent pointer (still
+/// into the dead ORIGINAL closure subtree), so forgetting its memo and re-resolving it structurally would
+/// scope-walk that dead chain into an orphan → a spurious CDZ0101 (breaker sk4c). Its memoized resolution is
+/// already CORRECT (pinned before the re-parent), so preserving it is exactly right — the same "arguments
+/// resolve in the caller's scope" invariant `resolve_subtree` exists to protect. A pinned node's
+/// `resolved_of` returns its memo before any scope walk, so a later `force_structural_resolution_subtree`
+/// over the same tree cannot override it.
+pub fn forget_subtree_keep_pinned(db: &mut Db, id: StructId) {
+    if db.resolved_subtrees.contains(&id) {
+        return;
+    }
+    db.resolved.forget(id);
+    db.typeval.forget(id);
+    if let Struct::List(children) = db.ast.get(id) {
+        for c in children.clone() {
+            forget_subtree_keep_pinned(db, c);
+        }
+    }
+}
+
 /// RE-ANCHOR every `let`-body reference in the subtree at `id` that resolves to the binding initializer
 /// `old_init` so it instead resolves to `new_init` — an alpha-consistency repair for a COPIED `let`.
 ///

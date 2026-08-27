@@ -30584,6 +30584,26 @@ mod tests {
     }
 
     #[test]
+    fn an_escaped_closure_capturing_an_outer_let_binder_folds() {
+        // breaker sk4c: a closure through the one-shot helper that CAPTURES an outer `let` binder —
+        // `(handle E s (arms) (let ((a 7)) (ap (fn (y) (+ (+ y a) (E.tick))))))`. The recovery inlines `ap`
+        // so the closure applies inline; `pin_free_vars` correctly SHARES the capture `a` into the reduced
+        // body, but the shared node kept a STALE parent (the dead original closure), so the recovery's
+        // `forget_subtree` + `force_structural_resolution_subtree` re-resolved `a` via that dead chain → a
+        // false CDZ0101. `forget_subtree_keep_pinned` now preserves the pinned capture's correct memo, so it
+        // folds — NOT a poison. Guards the pinned-capture-vs-force-structural interaction.
+        let ast = crate::testkit::parse(
+            "(module m (effect E (op tick (-> Int64))) (def (ap (: g (-> Int64 Int64))) (g 5)) (def (main (: n Int64)) (handle E (% n 3) ((tick () s (resume (* s 10) (+ s 1)))) (let ((a 7)) (ap (fn (y) (+ (+ y a) (E.tick))))))) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let body = db.defs[db.def_by_name("main").unwrap()].body.unwrap();
+        assert!(
+            !matches!(core_of(&mut db, body), Core::Poison(_)),
+            "an escaped closure capturing an outer let binder must FOLD (pinned-capture memo preserved), not mis-reject CDZ0101"
+        );
+    }
+
+    #[test]
     fn a_mixed_arm_abort_reading_growing_list_state_declines_honestly_not_cdz0101() {
         // breaker abx3: a handler with mixed resume(step)+abortive(bail) arms over a GROWING list state,
         // whose ABORT arm READS the state — `(handle E … ((step () s (resume (List.len s) (List.prepend s 0)))

@@ -3325,10 +3325,15 @@ pub fn inline_escaped_one_shot_perform_call(
     let (rewritten, changed) = inline_escaped_worker(db, body, &arm_ops);
     if changed {
         // `apply_lambda` copies the callee body (a copied binder ref keeps a stale memoized resolution) and
-        // the `push_list` rebuild produces fresh unresolved parents — forget the whole subtree so the
-        // re-run `reduce_handle`'s `resolved_of` recomputes every ref against the inlined structure (the same
-        // re-resolve hygiene `reduce_arm_deferred_resume` applies per inlined call).
-        crate::resolve::forget_subtree(db, rewritten);
+        // the `push_list` rebuild produces fresh unresolved parents — forget the subtree so the re-run
+        // `reduce_handle`'s `resolved_of` recomputes every ref against the inlined structure (the same
+        // re-resolve hygiene `reduce_arm_deferred_resume` applies per inlined call). KEEP-PINNED: a capture
+        // the escaping closure carries (a free var `pin_free_vars` resolved + `apply_lambda` SHARED into the
+        // reduced body — e.g. an outer `let ((a 7))` the closure reads) is a shared node with a STALE parent
+        // (the dead original closure), so forgetting + force-structural-re-resolving it walks that dead chain
+        // into an orphan → a spurious CDZ0101 (breaker sk4c). Its pinned memo is already correct, so preserve
+        // it; only the freshly re-parented (non-pinned) refs need recompute.
+        crate::resolve::forget_subtree_keep_pinned(db, rewritten);
         // A LOAD-TIME reference re-parented by the rebuild (e.g. a `let`-body ref when the inlined helper
         // call sat in the binding-init) keeps its stale load-time `scope_skip` entry, so the fast-path would
         // resolve it against its ORIGINAL scope (the pre-rebuild init) rather than the rebuilt one — leaving

@@ -18283,11 +18283,30 @@
   (call main (: 3 Int64))
   (output (: 5 Int64)))
 
+; -- sk4c: a closure through the one-shot helper CAPTURING an outer LET binder (`a`) folds. The recovery
+; β-inlines the helper so the closure applies inline; `pin_free_vars` correctly SHARES the capture `a`
+; (bound by the enclosing `(let ((a 7)) …)`) into the reduced body, but the shared node kept a STALE parent
+; (the dead original closure), so the recovery's `forget_subtree` + `force_structural_resolution_subtree`
+; (added for iso-b) re-resolved `a` via that dead chain → a false CDZ0101 (v-inference root-cause).
+; FIXED by preserving the pinned capture's memo across the forget (`forget_subtree_keep_pinned`): a pinned
+; node's correct resolution survives, only the freshly re-parented refs recompute. main(3): seed 0; ap
+; applies the closure to 5, `a`=7, so (+ (+ 5 7) (E.tick)); the tick resumes (* 0 10)=0 → 12.
+(case "sk4c a closure through the one-shot helper capturing an outer let binder folds via the escaped-closure recovery (pinned-capture memo preserved)"
+  (input (do
+    (effect E (op tick (-> Int64)))
+    (def (ap (: g (-> Int64 Int64))) (g 5))
+    (def (main (: n Int64))
+      (handle E (% n 3)
+        ((tick () s (resume (* s 10) (+ s 1))))
+        (let ((a 7)) (ap (fn (y) (+ (+ y a) (E.tick)))))))
+    (export main)))
+  (call main (: 3 Int64))
+  (output (: 12 Int64)))
+
 ; -- breaker batch 417 (2026-08-26): #3754 structural-resolution EDGE pins — let shapes around the
 ; escaped-closure recovery all fold: the hop answer used twice, a let chain, TWO let-bound hop
-; answers, and a let INSIDE the performing closure body. Filed adjacent (same class as iso-b, one
-; scope over): a closure through the helper CAPTURING an outer LET binder mis-rejects CDZ0101
-; (scalar let + performing closure = minimal; pure twin and fn-PARAM capture both pass).
+; answers, and a let INSIDE the performing closure body. (The adjacent outer-LET-capture case, sk4c
+; above, now folds too — the pinned-capture-memo-preservation fix.)
 
 (case "ecl1 a let-bound hop answer used TWICE folds"
   (input (do
