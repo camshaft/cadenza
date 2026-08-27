@@ -4155,6 +4155,16 @@
   (input  (do (def (main (: a UInt8) (: b UInt8)) (>> a b)) (export main)))
   (call   main (: 255 UInt8) (: 1 UInt8)) (output (: 127 UInt8)))
 
+(case "a runtime UInt8 left shift range-checks the count and the result"
+  (doc    "`(<< a b)` over runtime UInt8: 1 << 7 = 128 fits. Two distinct trap kinds bound it — a shift
+           COUNT at or beyond the type width N=8 (1 << 8) is out of range and traps unreachable (the count
+           bound is the TYPE width, not the 32-bit slot); and an in-range count whose shifted RESULT exceeds
+           the width (3 << 7 = 384 > 255) traps on the narrow overflow range-check.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (<< a b)) (export main)))
+  (call   main (: 1 UInt8) (: 7 UInt8)) (output (: 128 UInt8))
+  (call   main (: 1 UInt8) (: 8 UInt8)) (trap   "unreachable")
+  (call   main (: 3 UInt8) (: 7 UInt8)) (trap   "overflow"))
+
 (case "a runtime full-width Int32 addition traps on carry overflow"
   (doc    "Int32 is a FULL i32-slot width (N == slot bits), so the machine i32 add carry guard is what
            traps, not a narrow range-check: 20 + 22 = 42 in range, but Int32.max + 1 overflows the 32-bit

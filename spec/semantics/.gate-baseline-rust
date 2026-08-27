@@ -3440,6 +3440,7 @@ pass	a runtime String.from-bytes result is read twice and both reads see the dec
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
+pass	a runtime UInt8 left shift range-checks the count and the result
 pass	a runtime UInt8 subtraction underflowing below zero traps
 pass	a runtime UInt8 unsigned right shift is logical
 pass	a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-masked to width)
