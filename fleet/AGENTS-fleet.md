@@ -248,6 +248,13 @@ pre-sends with the NARROW checks only:
   case(s) your slice touches.
 - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
+**🚫 NEVER run native `cargo test --workspace` (or `cargo xtask test`).** It is UNCACHED + full-workspace
++ fleet-hostile: it shares nothing across the fleet, cold-rebuilds, and fans test threads out to every
+core (the `[build] jobs=4` cap bounds COMPILE jobs, NOT test-thread execution) — it caused an
+operator-flagged host load spike (~57). `cargo xtask test` is a guardrail that REFUSES and points here.
+Use the nix-cached `dev-gate` (above) for your inner loop; if you truly need a native run, SCOPE it to
+one crate (`cargo test -p <crate>`) — never the whole workspace on the shared host.
+
 **🔒 A HEAVY nix build MUST go through `cargo xtask fleet with-lease` — a RAW `nix build .#…` escapes the
 concurrency cap.** `CDZ_CHECK_LEASE_MAX` (+ `fleet with-lease`) exists so heavy nix builds don't all run
 at once and thrash the single big-nix-lock (the load-deadlock that makes EVERYONE's gates crawl —
