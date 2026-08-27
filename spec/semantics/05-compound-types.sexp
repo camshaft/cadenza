@@ -22296,3 +22296,22 @@
              (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 (list)) 0))) tot))
              (def (main) (drive 0 5000 0)) (export main)))
   (call main) (output (: 30000 Int64)) (live-objects 0))
+
+; -- a projected list consumed then re-projected is retained, not mutated (migrated from rcdzc
+; a_projected_list_consumed_then_reprojected_is_retained_not_mutated + the doubly-nested face): the shared
+; value is a nested-compound PROJECTION of a let-bound tuple; consuming it with List.push must NOT mutate
+; the child a later re-projection reads (a broken retain reads the grown list = 8). The value is the witness.
+(case "pjr1 a consuming projection of a let-bound tuple's list child is retained (re-projection reads original)"
+  (doc    "`t = (build …) : (Tuple (List Int64) Int64)` with t.0 = [0,1,2]; `(+ (List.len (List.push (. t 0)
+           99)) (List.len (. t 0)))` = 4 + 3 = 7 — the consuming projection dups the child so the push takes
+           the persistent path and the re-projection reads the original length 3.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 (tuple (list) 0)))) (+ ((. List len) ((. List push) (. t 0) 99)) ((. List len) (. t 0))))) (export main)))
+  (call main) (output (: 7 Int64)) (live-objects known-leak 11))
+
+(case "pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)"
+  (doc    "The list lives two projections deep `(. (. t 0) 0)` in a (Tuple (Tuple (List Int64) Int64) Int64);
+           the consuming Proj-of-Proj dups the innermost child so the push does not mutate it: 4 + 3 = 7.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) ((. List len) (. (. t 0) 0))))) (export main)))
+  (call main) (output (: 7 Int64)) (live-objects known-leak 15))
