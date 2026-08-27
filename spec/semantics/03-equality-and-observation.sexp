@@ -3503,3 +3503,20 @@
   (call main (: 1 Int64))
   (output (: 1 Int64))
   (live-objects 0))
+
+(case "sy1 a RUNTIME-built symbol (Symbol.of of a computed string) is intern-consistent with the compile-time literal: eq, Map-key hit, Set contains (+ the miss control)"
+  (doc    "The interning identity cell: a symbol built at runtime from a concat-computed string must be
+           the SAME key as the #\"foo\" literal everywhere — equality, champ lookup, set membership —
+           or runtime-symbol code silently misses literal-keyed tables. The n=0 trial derives \"fox\"
+           and must miss on all three. Fixed 1-cell residue (the runtime string), both trials.")
+  (input (do (def (main (: n Int64))
+  (let ((rs (Symbol.of (String.concat "fo" (if (> n 0) "o" "x")))))
+    (+ (if (= rs #"foo") 1 0)
+       (+ (* 10 (match (Map.lookup (Map.insert (Map.empty) #"foo" 42) rs) ((Some v) v) ((None u) -1)))
+          (if (Set.contains (Set.insert (Set.of (list)) rs) #"foo") 1000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1421 Int64))
+  (call main (: 0 Int64))
+  (output (: -10 Int64))
+  (live-objects known-leak 1))
