@@ -9990,3 +9990,45 @@
     (export main)))
   (call main (: 0.0 Float64))
   (output (: 1 Int64)))
+
+; -- breaker batch 502 (2026-08-27): the #4048/#4040 ordering folds, fresh-surface verified by
+; FOLD-VS-RUNTIME consistency (each program compares its folded result against the runtime twin).
+; String (incl. prefix + empty edges) and Bool agree (olf1/olf2); List ordering agrees const and
+; runtime, inlined and let-bound (olf3). EDGE FILED: a BARE empty list in an ordering compare
+; rejects with the misleading float/set/map no-total-order message — the unresolved element Var
+; hits the orderability check before unifying with the sibling's Int64 (wrong-diagnostic #11 +
+; an inference-ordering question); the ASCRIBED empty list works (olf4 pins the workaround-free
+; expectation as a todo rung: flips when the bare form unifies-then-checks).
+
+(case "olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (> n 0) "abc" "zz")) (b (if (> n 0) "abd" "aa")))
+      (+ (if (= (< "abc" "abd") (< a b)) 1 0)
+         (+ (* 10 (if (= (< "a" "ab") (< (if (> n 0) "a" "q") (if (> n 0) "ab" "p"))) 1 0))
+            (* 100 (if (= (< "" "a") (< (if (> n 0) "" "q") (if (> n 0) "a" "p"))) 1 0))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 111 Int64)))
+
+(case "olf2 Bool ordering folds agree with their runtime twins"
+  (input (do (def (main (: n Int64))
+    (let ((t (> n 0)) (f (< n 0)))
+      (+ (if (= (< false true) (< f t)) 1 0)
+         (* 10 (if (= (<= true true) (<= t t)) 1 0)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "olf3 List ordering agrees const and runtime, inlined and let-bound"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (> n 0) (list 1 2) (list 9))) (b (if (> n 0) (list 1 3) (list 0))))
+      (+ (if (= (< (list 1 2) (list 1 3)) (< a b)) 1 0)
+         (* 10 (if (< (: (list) (List Int64)) (list 1)) 1 0)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check"
+  (input (do (def (main (: n Int64)) (if (< (list) (list 1)) 1 0)) (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
