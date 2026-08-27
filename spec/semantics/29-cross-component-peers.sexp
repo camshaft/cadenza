@@ -590,3 +590,17 @@
               (def (main (: x Int64)) (host (D) (match (D.safediv x) ((Ok q) q) ((Err e) (- 0 e))))) (export main)))
   (call   main (: 0 Int64))
   (output (: -1 Int64)))
+
+(case "a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time"
+  (doc    "An A→B→C chain where the MIDDLE peer B (cadenza:mid/api) binds A's `base` as 2-arg, but A
+           (cadenza:base/api) exports `base` as 1-arg. When the harness wires A into B (the transitive
+           dependency), the compose-time signature check catches B's mismatched binding of `base` — a
+           signature mismatch naming the base op — rather than an opaque runtime trap. (The valid chain is
+           covered by the A→B→C middle-peer case; this is its reject face across the transitive edge.)")
+  (peer   "cadenza:base/api" (do (def (base (: x Int64)) (* x 2)) (export base)))
+  (peer   "cadenza:mid/api" (do (effect Base (op base (-> Int64 Int64 Int64))) (bind Base "cadenza:base/api")
+                                 (def (mid (: x Int64)) (host (Base) (Base.base x x))) (export mid)))
+  (input  (do (effect Mid (op mid (-> Int64 Int64))) (bind Mid "cadenza:mid/api")
+              (def (main (: x Int64)) (host (Mid) (Mid.mid x))) (export main)))
+  (call   main (: 5 Int64))
+  (trap   "signature mismatch"))
