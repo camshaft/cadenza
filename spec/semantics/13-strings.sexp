@@ -53,6 +53,24 @@
   (call   main (: 1000 Int64))
   (output (: 4000 Int64)))
 
+(case "a String param threaded UNCHANGED to a self-call AND consumed by String.concat each step is retained"
+  (doc    "The simultaneously-live retain for a heap STRING (the String analogue of the threaded-List-arg
+           retain): `build(s, n, acc) = build(s, n-1, (String.concat acc s))` passes `s` UNCHANGED to the
+           self-call AND consumes it in `String.concat` each step, so `s` must be `dup`'d before the consuming
+           concat — else the shared rope is freed while still referenced and the rope walk reads OUT OF BOUNDS
+           past a depth threshold (was an OOB memory-access TRAP at n>=4; `cdz check`/`compile` clean, only a
+           RUN caught it). ROOT was `is_heap_type` gating the Perceus retain-candidate on `Bytes` but not
+           `String`/`Symbol` (a String is a heap rope exactly as Bytes is). `build \"x\" n \"\"` appends one
+           byte per step -> byte-len n; n=4 and n=8 both run (the trap threshold and beyond).")
+  (input  (do
+            (def (build (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (build s (- n 1) (String.concat acc s))))
+            (def (main (: n Int64)) (String.byte-len (build "x" n "")))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 8 Int64)) (output (: 8 Int64))
+  (live-objects 0))
+
 (case "a runtime String.at result compares by content in a recursive scan"
   (doc    "The char-by-char lexer idiom: a recursive scan reading each scalar with String.at at a runtime
            index and comparing its content, (= (String.at s i) \"a\"). String.at returns Some of a rope
