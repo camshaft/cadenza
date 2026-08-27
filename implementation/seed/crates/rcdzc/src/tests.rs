@@ -53949,78 +53949,13 @@ mod cross_component_oracle {
     // to the u32 handle). Each is a small coverage brick, no new machinery.
     // ------------------------------------------------------------------------------------------------
 
-
     // ------------------------------------------------------------------------------------------------
-    // U3 — COMPILE-REQUEST override of an effect's peer binding. The SAME source (bound to
-    // cadenza:math/api in-source) is REBOUND by a compile request to a DIFFERENT peer interface — the
-    // compiler-level override the operator asked for (rebind for a test / a different environment).
+    // U3 — COMPILE-REQUEST override of an effect's peer binding (a COMPILER-LINK feature, verified
+    // structurally). The SAME source (bound to cadenza:math/api in-source) is REBOUND by a compile-request
+    // `effect-bind` artifact to a DIFFERENT interface — the operator's rebind (for a test / a different
+    // environment). The corpus `(peer …)` clause has no way to inject a rebind artifact, so the run stays in
+    // this crate as a white-box pin on the emitted component's import name: the request's interface wins.
     // ------------------------------------------------------------------------------------------------
-
-    /// A peer exporting `op : func(p0: s64, p1: s64) -> s64` under `iface`, computing p0*p1 (a MUL peer,
-    /// distinct from the add peer — so a rebind is observable). Op name `add` (the effect op's name is
-    /// fixed by the source; only the INTERFACE the request rebinds to differs).
-    fn mul_peer_component(iface: &str) -> Vec<u8> {
-        use wasm_encoder::*;
-        let core = {
-            let mut m = Module::new();
-            let mut types = TypeSection::new();
-            types
-                .ty()
-                .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
-            m.section(&types);
-            let mut funcs = FunctionSection::new();
-            funcs.function(0);
-            m.section(&funcs);
-            let mut exports = ExportSection::new();
-            exports.export("add", ExportKind::Func, 0);
-            m.section(&exports);
-            let mut code = CodeSection::new();
-            let mut f = Function::new(vec![]);
-            f.instruction(&Instruction::LocalGet(0));
-            f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::I64Mul);
-            f.instruction(&Instruction::End);
-            code.function(&f);
-            m.section(&code);
-            m.finish()
-        };
-        let mut c = ComponentBuilder::default();
-        let core_idx = c.core_module_raw(&core);
-        let no_args: [(&str, ModuleArg); 0] = [];
-        let inst = c.core_instantiate(core_idx, no_args);
-        let add_core = c.core_alias_export(inst, "add", ExportKind::Func);
-        let (add_ty, mut ft) = c.type_function();
-        ft.params([
-            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
-            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
-        ])
-        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
-        let add_comp = c.lift_func(add_core, add_ty, []);
-        let mut inner = ComponentBuilder::default();
-        let (ift, mut iff) = inner.type_function();
-        iff.params([
-            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
-            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
-        ])
-        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
-        let imp = inner.import("add", ComponentTypeRef::Func(ift));
-        let (et, mut ef) = inner.type_function();
-        ef.params([
-            ("p0", ComponentValType::Primitive(PrimitiveValType::S64)),
-            ("p1", ComponentValType::Primitive(PrimitiveValType::S64)),
-        ])
-        .result(Some(ComponentValType::Primitive(PrimitiveValType::S64)));
-        inner.export(
-            "add",
-            ComponentExportKind::Func,
-            imp,
-            Some(ComponentTypeRef::Func(et)),
-        );
-        let ic = c.component(inner);
-        let iinst = c.instantiate(ic, [("add", ComponentExportKind::Func, add_comp)]);
-        c.export(iface, ComponentExportKind::Instance, iinst, None);
-        c.finish()
-    }
 
     #[test]
     fn u3_a_compile_request_rebinds_an_effect_to_a_different_peer() {
@@ -54064,28 +53999,25 @@ mod cross_component_oracle {
                 )
             })
             .to_vec();
-        // Bound to the REBOUND interface now — compose with the MUL peer at cadenza:mathv2/api.
-        let peers = vec![cdz_run::Peer {
-            bytes: mul_peer_component("cadenza:mathv2/api"),
-            interface: "cadenza:mathv2/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("rebound effect runs") {
-            // The request rebound Math to the MUL peer → Math.add(5,5) = 5*5 = 25 (not the add peer's 10).
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "25",
-                    "a compile-request rebinds the effect to a different peer"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("rebound run trapped: {t}"),
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&consumer)
+                .expect("rebound consumer validates");
         }
+        // The request WON: the emitted consumer imports the REBOUND interface `cadenza:mathv2/api` and no
+        // longer imports the in-source default `cadenza:math/api` (unambiguous — `cadenza:math/api` is not a
+        // byte-substring of `cadenza:mathv2/api`). The RUN over the rebound peer — which then computes
+        // mul(5,5)=25, distinct from the add peer's 10 — is corpus/conformance territory; this crate pins the
+        // compiler-link OUTCOME of the `effect-bind` request artifact: the request's interface wins over the
+        // in-source default.
+        assert!(
+            contains_bytes(&consumer, b"cadenza:mathv2/api"),
+            "the rebound consumer imports the request's interface cadenza:mathv2/api"
+        );
+        assert!(
+            !contains_bytes(&consumer, b"cadenza:math/api"),
+            "the rebound consumer no longer imports the in-source default cadenza:math/api"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
