@@ -164,6 +164,7 @@ pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
+pass	Int8.wrap of a constant with the sign bit set reinterprets as negative
 pass	Int8.wrap of all-ones-byte is negative one
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
@@ -492,6 +493,8 @@ pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
 pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
+pass	UInt8.wrap of a constant past the byte boundary truncates to the low byte
+pass	UInt8.wrap of a negative constant reads the low byte as unsigned
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
@@ -1909,6 +1912,7 @@ pass	a float-field RECORD as a SET element dedups by content including the float
 pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
+pass	a fold composes through a nested arithmetic tree
 pass	a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold
 pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
@@ -4815,6 +4819,7 @@ pass	arithmetic between a char and a BigInt is rejected with a working two-step 
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
 pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
+pass	arithmetic is generic over the integer type, sharing a built-in bound with itself
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic on a let binding whose initializer diverges traps
 pass	arithmetic on an unusual UNSIGNED width enforces its own range at compile time
@@ -4935,6 +4940,8 @@ pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
+pass	ca1c a closure over a performing nested-let-init capture folds via the capture-once hoist
+pass	ca1m a capture-once closure applied TWICE shares the single draw across both applications
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
@@ -5210,6 +5217,7 @@ pass	cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamp
 pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
 pass	d1 two-arm sum match where the FIRST ctor is disc 0 — the eqz leg of the branchless select, both orders
 pass	d2 three None-producing built-in reads in one expression — List.at in and out of range plus Map.lookup hit and miss
+pass	d5 a USER sum with a list payload destructured to scalars deforests completely
 pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
 pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
 pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
@@ -5270,6 +5278,9 @@ pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
+pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
+pass	df3 the SAME generic sum at a scalar payload deforests completely
+pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
 pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
 pass	dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits
 pass	dgr1 a DIGITAL-ROOT arm — nested fixed-point recursion (repeat digit-sum until single digit) runs wholly inside each dispatch, the accumulator's low digit rides along in the answer
@@ -5366,6 +5377,7 @@ pass	dropping a rope built OVER a survivor must not free the shared child node
 pass	dropping a set derived by insert must not free members shared with the survivor
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
+pass	drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely
 pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discarded dispatch still advances the thread
 pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
@@ -5411,6 +5423,9 @@ pass	elc5 the capturing closure crosses a higher-order call boundary and answers
 pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
 pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
 pass	ele3 the lifted List entry param SEEDS the handler state
+pass	eln1 an EMPTY nested-list entry param has outer length zero
+pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
+pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -5628,9 +5643,6 @@ pass	grx1 the entry List param flows through a two-deep non-recursive helper cha
 pass	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 pass	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
-pass	eln1 an EMPTY nested-list entry param has outer length zero
-pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
-pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
@@ -5947,6 +5959,7 @@ pass	modulo of two floats rejects — the operator is integer-only, not merely p
 pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
 pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
+pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
 pass	mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed
 pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
 pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
@@ -6932,6 +6945,9 @@ pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
+pass	the constructor-built width module carries the same wrap as the named width
+pass	the constructor-built width module projects the same max bound as the named width
+pass	the constructor-built width module projects the same min bound as the named width
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
@@ -7032,10 +7048,13 @@ pass	the manifest is DERIVED from what entrypoints delegate, not from effect dec
 pass	the mark op's dup-flag RESULT counts repeats while the set state dedupes
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
+pass	the maximum signed 64-bit value is a folding constant
+pass	the maximum signed 8-bit value is its per-width bound
 pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the maximum valid scalar U+10FFFF round-trips through to-int
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum integer scrutinee misses a zero-based jump table
+pass	the minimum signed 64-bit value is a folding constant
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the mirror per-arm mix — a crossing #sym sibling over a String scrutinee — is rejected
 pass	the mirrored subtract-then-add chain computes at both boundaries without a spurious trap
@@ -7552,7 +7571,6 @@ todo	bk4 a Map keyed by a runtime digest is findable by a fresh recompute
 todo	bk5 Blake3-of-encode runtime composition compares equal across recomputation
 todo	bo1 bare order over two runtime encode results compares content-lexicographically
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
-todo	ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
@@ -7613,24 +7631,7 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
+todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	d5 a USER sum with a list payload destructured to scalars deforests completely
-pass	drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely
-pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
-pass	df3 the SAME generic sum at a scalar payload deforests completely
-pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
-pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
-todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	a fold composes through a nested arithmetic tree
-pass	arithmetic is generic over the integer type, sharing a built-in bound with itself
-pass	the maximum signed 64-bit value is a folding constant
-pass	the minimum signed 64-bit value is a folding constant
-pass	the maximum signed 8-bit value is its per-width bound
-pass	UInt8.wrap of a constant past the byte boundary truncates to the low byte
-pass	UInt8.wrap of a negative constant reads the low byte as unsigned
-pass	Int8.wrap of a constant with the sign bit set reinterprets as negative
-pass	the constructor-built width module carries the same wrap as the named width
-pass	the constructor-built width module projects the same max bound as the named width
-pass	the constructor-built width module projects the same min bound as the named width
