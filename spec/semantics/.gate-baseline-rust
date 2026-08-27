@@ -8338,6 +8338,7 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
+todo	a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)
 todo	a peer missing a bound op is rejected naming the op
 todo	a peer op arity mismatch is rejected at compose time, not a trap
 todo	a peer op returning a tuple result is projected to a scalar over the shared runtime

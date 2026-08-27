@@ -3236,6 +3236,7 @@ pass	a payload op arg feeds BOTH the resume value and the next-state through DIF
 pass	a payload sum type declared inside a do block resolves and matches its payload
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)
 pass	a peer missing a bound op is rejected naming the op
 pass	a peer op arity mismatch is rejected at compose time, not a trap
 pass	a peer op returning a tuple result is projected to a scalar over the shared runtime
