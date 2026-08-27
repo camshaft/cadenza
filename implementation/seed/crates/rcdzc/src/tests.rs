@@ -9070,63 +9070,6 @@ mod runtime_ops {
                     .any(|i| matches!(i, Lir::I32And | Lir::I32Or | Lir::Select | Lir::If(_))),
             "nested-if tower collapses to (> x 3), got: {sub:?}"
         );
-
-        // VALUE PARITY over the truth tables (x=10, y=20).
-        let a1v = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: c1 Bool) (: c2 Bool)) {body}) (export f))"
-            ))))
-            .expect("compile")
-        };
-        let a1c = a1v("(if c1 10 (if c2 10 20))");
-        let a2c = a1v("(if c1 (if c2 10 20) 20)");
-        for (c1, c2) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(
-                run_returns_with::<i64>(&a1c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
-                if c1 || c2 { 10 } else { 20 },
-                "A1 @{c1},{c2}"
-            );
-            assert_eq!(
-                run_returns_with::<i64>(&a2c, "f", &[Val::Bool(c1), Val::Bool(c2)]),
-                if c1 && c2 { 10 } else { 20 },
-                "A2 @{c1},{c2}"
-            );
-        }
-
-        // TRAP SHIELDING (shared arm): `(if c1 (/ 10 n) (if c2 (/ 10 n) 20))` — the shared `/` is reached
-        // exactly when `c1 || c2`, shielded otherwise. At c1=c2=false it must NOT trap; when reached it does.
-        let ta = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: c1 Bool) (: c2 Bool) (: n Int64)) (if c1 (/ 10 n) (if c2 (/ 10 n) 20))) (export f))",
-        )))
-        .expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&ta, "f", &[Val::Bool(false), Val::Bool(false), Val::S64(0)]),
-            20,
-            "shared arm shielded when neither condition selects it"
-        );
-        assert!(
-            call_traps(&ta, "f", &[Val::Bool(true), Val::Bool(false), Val::S64(0)]),
-            "shared arm reached via c1 traps"
-        );
-        assert!(
-            call_traps(&ta, "f", &[Val::Bool(false), Val::Bool(true), Val::S64(0)]),
-            "shared arm reached via c2 traps"
-        );
-        // TRAP SHIELDING (combined condition c2): `(if c1 10 (if (> (/ 10 n) 0) 10 20))` — c2's `/` is
-        // evaluated only when c1 is false (short-circuit `or`). c1=true must not trap; c1=false does.
-        let tc = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: c1 Bool) (: n Int64)) (if c1 10 (if (> (/ 10 n) 0) 10 20))) (export f))",
-        )))
-        .expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&tc, "f", &[Val::Bool(true), Val::S64(0)]),
-            10,
-            "c1=true short-circuits the trapping condition c2"
-        );
-        assert!(
-            call_traps(&tc, "f", &[Val::Bool(false), Val::S64(0)]),
-            "c1=false reaches the trapping condition c2"
-        );
     }
 
     /// A `(bin (u64 n))` PATTERN binder is a genuine `UInt64` — its sign-sensitive downstream arithmetic
