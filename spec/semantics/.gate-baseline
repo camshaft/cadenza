@@ -3233,6 +3233,7 @@ pass	a payload-in-payload nested list pattern dispatches through two recorded ty
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a peer missing a bound op is rejected naming the op
 pass	a peer op arity mismatch is rejected at compose time, not a trap
+pass	a peer op returning a tuple result is projected to a scalar over the shared runtime
 pass	a peer op type mismatch is rejected at compose time (same arity, different type)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
@@ -5631,6 +5632,9 @@ pass	bcn1 a BEACON whose sweep answer is a LET CHAIN INSIDE the resume's argumen
 pass	bcp1 Bytes.compact of the EFFECT-GROWN rope inside the arm — the compacted flat rep reads exactly at a computed index and re-threads
 pass	bd1 the arm CLASSIFIES its state into a tri-band SUM — the body matches Lo/Mid/Hi per dispatch as the thread climbs through the bands
 pass	bd2 the scoring CLOSURE captures a DRAW — the weight itself comes from the thread before the classified reads
+pass	bdr1 a 50-concat deep Bytes rope's len walks the tree and the rope reclaims clean
+pass	bdr2 a byte-scan with Bytes.at across every seam of a 50-concat rope counts exactly (scalar reads; fixed 1-cell residue)
+pass	bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)
 pass	bf1 a growing BYTES FRAME as handler state — each op appends a u8 record, the final op bin-decodes head + rest length
 pass	bf2 the frame grows by u16 BE records — dump decodes the SECOND record through a fixed-width first segment
 pass	bf3 tagged-record round-trip — arms ENCODE (tag,val) u8 pairs into the frame state, the body decodes the REPLAYED frame
@@ -8961,6 +8965,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	bdr1 a 50-concat deep Bytes rope's len walks the tree and the rope reclaims clean
-pass	bdr2 a byte-scan with Bytes.at across every seam of a 50-concat rope counts exactly (scalar reads; fixed 1-cell residue)
-pass	bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)

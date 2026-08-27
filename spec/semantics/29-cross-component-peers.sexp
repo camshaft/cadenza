@@ -544,3 +544,14 @@
   (call main (: 50 Int64))
   (output (: 1425 Int64))
   (live-objects 0))
+
+(case "a peer op returning a tuple result is projected to a scalar over the shared runtime"
+  (doc    "Both sides from source: a provider `(def (pair (: x Int64)) (tuple x x))` published as
+           cadenza:pairs/api returns a RUNTIME tuple; the consumer binds it, performs `P.pair`, and projects
+           element 0. The tuple crosses as a handle over the shared value-heap runtime and `(. (P.pair x) 0)`
+           reads it: pair(9) = (9,9), element 0 = 9. The single-interface compound-result-projection pin.")
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
+              (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
