@@ -6971,25 +6971,6 @@ fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_des
     }
 }
 
-/// The wasmtime run for the empty-set fold: `(List.len (Set.to-list (Set.of (list))))` is 0, and the fold
-/// sees through an inlined nullary `(def (es) (Set.of (list)))` — the exact seed shape. Because the whole
-/// expression const-folds to `0`, the program imports NO runtime (`run_returns`, not `ComposedRuntime`),
-/// so no store is needed and this need not be `#[ignore]`.
-#[test]
-fn set_to_list_of_an_empty_set_runs_to_the_empty_list() {
-    use crate::testkit::parse;
-    // Through an inlined nullary call whose element type is undetermined — the exact seed shape.
-    let src = "(module m (def (es) (Set.of (list))) \
-               (def (main) (List.len (Set.to-list (es)))) (export main))";
-    let comp =
-        compile_component(&crate::codec::encode(&parse(src))).expect("empty Set.to-list compiles");
-    assert_eq!(
-        run_returns::<i64>(&comp, "main"),
-        0,
-        "Set.to-list of an empty set is the empty list — length 0"
-    );
-}
-
 /// The MAP twin of the empty-set fold: `Map.to-list` of an empty `Map.empty` (key/value types
 /// undetermined) folds to the empty `Core::ListNew` — no ordering descriptor needed. Before this fold the
 /// type-checker ACCEPTED `Map.to-list(Map.empty)` while the backend DECLINED at emit ("Map.to-list

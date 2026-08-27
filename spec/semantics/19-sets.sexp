@@ -1955,6 +1955,18 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "Set.to-list of a CONSTANT empty set through an inlined nullary is the empty list"
+  (doc    "The constant-empty companion of the runtime-empty case above: a bare `(Set.of (list))` built by
+           an inlined nullary `(es)` — its element type is UNDETERMINED (no elements pin it), the exact
+           empty-collection shape a self-hosting compiler's fresh free-variable / visited set takes at
+           seed. `(List.len (Set.to-list (es)))` is 0. Pins that an element-typeless constant empty set
+           enumerates to the empty list (length 0), distinct from the runtime-emptied `Set.remove` path.")
+  (input  (do
+            (def (es) (Set.of (list)))
+            (def (main) (List.len (Set.to-list (es))))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "insert-order does not leak into Set.to-list enumeration order"
   (doc    "{3, 1, 2} built by inserts IN THAT ORDER enumerates [1, 2, 3] — element 0 is 1 and element
            2 is 3 -> 103. Insertion HISTORY is unobservable (canonical order); a cursor walking
