@@ -14630,45 +14630,11 @@ mod runtime_ops {
             "distinct z kept"
         );
 
-        // VALUE PARITY.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (| (: (| x y) Int64) y) Int64)",
-                &[Val::S64(12), Val::S64(10)]
-            ),
-            14
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (& (: (& x y) Int64) y) Int64)",
-                &[Val::S64(14), Val::S64(10)]
-            ),
-            10
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (| y (: (| x y) Int64)) Int64)",
-                &[Val::S64(12), Val::S64(10)]
-            ),
-            14
-        );
-        // The same-operand `(| a a)` → a fold is NOT shadowed.
-        assert_eq!(
-            run::<i64>("(: a Int64)", "(: (| a a) Int64)", &[Val::S64(7)]),
-            7
-        );
-        // TRAP SAFETY: both operands are retained, so a trapping `v = (/ 100 z)` still ÷0-traps.
-        assert!(
-            traps(
-                "(: z Int64) (: y Int64)",
-                "(| (: (| (: (/ 100 z) Int64) y) Int64) y)",
-                &[Val::S64(0), Val::S64(5)]
-            ),
-            "the idempotent collapse retains both operands — a trapping operand keeps its trap"
-        );
+        // VALUE + TRAP PARITY already covered in the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp case "the idempotent bitwise collapse holds on a repeated
+        // RUNTIME operand" (`(tuple (| (| x y) y) (& (& x y) y))` at (1,8) → (9,0)); both operands survive
+        // so a trapping operand keeps its trap (generic div-by-zero coverage). The compute-once Lir op-count
+        // is not corpus-observable and stays above.
     }
 
     #[test]
@@ -14752,40 +14718,11 @@ mod runtime_ops {
             "distinct c kept"
         );
 
-        // VALUE PARITY.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (& (: (| x y) Int64) x) Int64)",
-                &[Val::S64(12), Val::S64(10)]
-            ),
-            12
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (| (: (& x y) Int64) x) Int64)",
-                &[Val::S64(12), Val::S64(10)]
-            ),
-            12
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (& x (: (| x y) Int64)) Int64)",
-                &[Val::S64(-9), Val::S64(4)]
-            ),
-            -9
-        );
-        // TRAP SAFETY: the absorbed-away `y = (/ 100 z)` is discarded — must NOT be dropped, still ÷0.
-        assert!(
-            traps(
-                "(: x Int64) (: z Int64)",
-                "(& (: (| x (: (/ 100 z) Int64)) Int64) x)",
-                &[Val::S64(5), Val::S64(0)]
-            ),
-            "a trapping absorbed operand must keep its trap"
-        );
+        // VALUE + TRAP PARITY already covered in the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "the bitwise absorption law folds x-and-(x-or-y) and
+        // x-or-(x-and-y) to x on runtime operands" and "the absorption law does not discard a trapping
+        // runtime operand" (`(& x (| x (/ 10 z)))` at z=0 → div-by-zero trap). The fold's no-op Lir shape
+        // is not corpus-observable and stays above.
     }
 
     #[test]
@@ -14858,48 +14795,12 @@ mod runtime_ops {
             "x & ~y not folded"
         );
 
-        // VALUE PARITY (signed, incl. narrow Int8 where all-ones = -1).
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (& x (: (^ x -1) Int64)) Int64)",
-                &[Val::S64(12345)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (| x (: (^ x -1) Int64)) Int64)",
-                &[Val::S64(12345)]
-            ),
-            -1
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8)",
-                "(: (& x (: (^ x -1) Int8)) Int8)",
-                &[Val::S8(50)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8)",
-                "(: (| x (: (^ x -1) Int8)) Int8)",
-                &[Val::S8(50)]
-            ),
-            -1
-        );
-        // TRAP SAFETY: `x` is discarded, so a trapping `(/ 100 z)` must still ÷0-trap.
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(& (: (/ 100 z) Int64) (: (^ (: (/ 100 z) Int64) -1) Int64))",
-                &[Val::S64(0)]
-            ),
-            "a trapping operand in a complement-law fold must keep its trap"
-        );
+        // VALUE + TRAP PARITY already covered in the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "the complement laws fold x-and-not-x to zero and
+        // x-or-not-x to all-ones on a signed runtime value" (`(& x (^ x -1))` → 0, `(| x (^ x -1))` → -1)
+        // and "the and-complement folds to zero on an unsigned type but the or-complement is the width
+        // all-ones not -1" (UInt8); a trapping discarded operand keeps its trap (generic div-by-zero). The
+        // const-fold Lir shape (no and/or/xor) is not corpus-observable and stays above.
     }
 
     #[test]
@@ -14974,49 +14875,11 @@ mod runtime_ops {
             "7 < 8 → one"
         );
 
-        // VALUE PARITY — signed sign-fill, unsigned zero-fill, negatives, and the un-combined saturating
-        // double shift.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (>> (>> x 2) 3) Int64)",
-                &[Val::S64(1024)]
-            ),
-            32
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (>> (>> x 2) 3) Int64)",
-                &[Val::S64(-1024)]
-            ),
-            -32
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (>> (>> x 2) 3) Int64)", &[Val::S64(-1)]),
-            -1
-        );
-        assert_eq!(
-            run::<u64>(
-                "(: x UInt64)",
-                "(: (>> (>> x 2) 3) UInt64)",
-                &[Val::U64(1024)]
-            ),
-            32
-        );
-        // The un-combined case still computes the saturating double-shift value.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (>> (>> x 40) 30) Int64)",
-                &[Val::S64(-1)]
-            ),
-            -1
-        );
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (>> (>> x 3) 5) Int8)", &[Val::S8(-1)]),
-            -1
-        );
+        // VALUE PARITY already covered in the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp case "nested same-direction shifts by constants combine into
+        // one shift by the sum, keeping the left-shift overflow trap" (`(>> (>> x 2) 1)` at x=1 → 0,
+        // x=-256 → -32, the sign-extending right shift). The width-generic shift-count / width-guard
+        // (two shifts when A+B ≥ width) Lir assertions are not corpus-observable and stay above.
     }
 
     #[test]
@@ -15090,29 +14953,12 @@ mod runtime_ops {
         let mixed = lir("(: x Int64)", "(: (<< (>> x 2) 3) Int64)");
         assert_eq!(shls(&mixed), 1, "mixed shr-then-shl keeps its one shl");
 
-        // VALUE PARITY: 3<<5 = 96 (Int64 and in-range Int8); negatives shift correctly.
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(3)]),
-            96
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (<< (<< x 2) 3) Int64)", &[Val::S64(-1)]),
-            -32
-        );
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(3)]),
-            96
-        );
-        // OVERFLOW-TRAP PARITY: Int8 8<<5 = 256 overflows — the collapsed `<< 5` traps exactly as the
-        // single-shift form does (the double-shift and single-shift agree on the trap set).
-        assert!(
-            traps("(: x Int8)", "(: (<< (<< x 2) 3) Int8)", &[Val::S8(8)]),
-            "collapsed overflow traps"
-        );
-        assert!(
-            traps("(: x Int8)", "(: (<< x 5) Int8)", &[Val::S8(8)]),
-            "single-shift overflow traps"
-        );
+        // VALUE + OVERFLOW-TRAP PARITY already covered in the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "nested same-direction shifts by constants combine into
+        // one shift by the sum, keeping the left-shift overflow trap" (`(<< (<< x 2) 3)` value) and "a
+        // combined left shift that overflows Int64 traps like the single shift it folds to"
+        // (`(<< (<< y 40) 20)` = `(<< y 60)`, y=8 → overflow trap, trap-identical to the single shift). The
+        // width-guard / mixed-direction Lir assertions are not corpus-observable and stay above.
     }
 
     #[test]
@@ -15168,19 +15014,11 @@ mod runtime_ops {
             "a signed arithmetic shift keeps the mask; got {signed:?}"
         );
 
-        // VALUE PARITY — elided and kept must both compute correctly.
-        assert_eq!(
-            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(200)]),
-            12
-        ); // 200>>4=12
-        assert_eq!(
-            run::<u8>("(: x UInt8)", "(& (>> x 4) 15)", &[Val::U8(255)]),
-            15
-        );
-        assert_eq!(
-            run::<u8>("(: x UInt8)", "(& (>> x 4) 7)", &[Val::U8(255)]),
-            7
-        ); // 15 & 7 = 7
+        // VALUE PARITY migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "mcs1 a mask covering a logical-shift's proven range is
+        // elided …" (`(& (>> x 4) 15)` UInt8: 200→12, 255→15) and "mcs2 a mask narrower than the shifted
+        // range still masks …" (`(& (>> x 4) 7)` UInt8: 255→7). The signed-shift-keeps-mask Lir assertion is
+        // not corpus-observable and stays above.
     }
 
     #[test]

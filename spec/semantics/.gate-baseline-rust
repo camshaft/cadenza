@@ -2147,6 +2147,7 @@ pass	a handler arm forwarding an effect its enclosing scope does not hold is rej
 pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
 pass	a handler arm resumes with a CLOSURE (in a tuple) capturing the op param and state
+pass	a handler arm resuming per if-branch over the op arg folds
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution
@@ -3220,6 +3221,7 @@ pass	a recursive parameter used only as a call argument infers from the callee's
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
 pass	a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance
 pass	a recursive performer whose recursion result feeds a HELPER call folds — no slot-less spec-body param
+pass	a recursive performer whose recursion result is fed DIRECTLY to a helper arg folds
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
 pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)
@@ -3971,6 +3973,7 @@ pass	a tagged-template tag returning a non-canonical Ast.Float declines (the gua
 pass	a tail list fold reads its scrutinee handle from its own parameter slot
 pass	a tail loop threading a projected boxed-sum accumulator and a projected cursor decodes correctly
 pass	a tail loop threads a boxed-sum accumulator and a cursor projected from one builder tuple
+pass	a tail mutual-recursive group where both partners perform folds
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tail-recursive accumulator loop runs to a large runtime N in constant stack
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
@@ -4813,6 +4816,7 @@ pass	an odd-width signed division overflow traps above the i32 slot too (Int48 m
 pass	an odd-width signed division overflow traps at the declared width (Int24 min / -1)
 pass	an odd-width unsigned shift result exceeding the declared width traps (UInt4: 3<<3)
 pass	an offered ordering is total and deterministic
+pass	an op-arg match outer with a state-match inner reading the payload computes per dispatch
 pass	an open sum nested as another sum's payload matches with an inner wildcard
 pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
@@ -6070,6 +6074,8 @@ pass	matching on a sliced string selects the literal arm
 pass	matching on a string produced by an expression
 pass	matching on integer literals
 pass	matching on string literals
+pass	mcs1 a mask covering a logical-shift's proven range is elided (value parity)
+pass	mcs2 a mask narrower than the shifted range still masks (not elided)
 pass	md1 a MODULAR ring state — the thread walks a size-7 ring with stride 3, entry point reduced mod 7 at the seed
 pass	md2 the arm DRAINS a Map entry per dispatch — Map.remove keyed by the op arg, a re-take of the same key routes to the miss path
 pass	md3 the drained value RE-FILES under a shifted key — the third take HITS the re-filed entry, the final take finds it moved on
@@ -7906,7 +7912,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a recursive performer whose recursion result is fed DIRECTLY to a helper arg folds
-pass	a tail mutual-recursive group where both partners perform folds
-pass	an op-arg match outer with a state-match inner reading the payload computes per dispatch
-pass	a handler arm resuming per if-branch over the op arg folds
