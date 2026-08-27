@@ -22001,3 +22001,32 @@
   (call main)
   (output (: 40 Int64))
   (live-objects known-leak 1))
+
+; -- list-vehicle Perceus retain/reclaim (migrated from rcdzc list reclaim/retain heap tests): a runtime
+; list built by a push-loop exercises the real vec-* heap; a shared binding/param consumed by List.push in
+; one operand and re-read in a sibling must be RETAINED (the push builds a new list, not mutate the shared
+; one in place) — the value is the witness (a broken retain reads the grown list = 6). live-objects pins
+; the heap balance.
+(case "lrx1 a runtime List.push extends and its length counts"
+  (doc    "`build 0 3 (list)` = [0,1,2] at run time (so List.push sees a runtime handle, not a fold);
+           push 9 then List.len = 4.")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) ((. List len) ((. List push) (build 0 3 (list)) 9))) (export main)))
+  (call main) (output (: 4 Int64)))
+
+(case "lrx2 a shared list binding consumed then re-read is retained, not mutated"
+  (doc    "`e = [0,1]`; `(+ (List.len (List.push e 9)) (List.len e))` — the left push must NOT mutate the
+           shared `e`, so the right read sees the original length 2: 3 + 2 = 5 (a broken retain would grow
+           e in place and read 6).")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) (let ((e (build 0 2 (list)))) (+ ((. List len) ((. List push) e 9)) ((. List len) e)))) (export main)))
+  (call main) (output (: 5 Int64)))
+
+(case "lrx3 a shared list param consumed then passed to a self-call sibling is retained"
+  (doc    "`f 1 [0,1]` = `len(push [0,1] 9)` (3) + `f 0 [0,1]` (= `len [0,1]` = 2) = 5 — the push retains the
+           param shared with the self-recursive call so it sees the original list (broken retain → 6).")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (f n xs) (if (= n 0) ((. List len) xs) (+ ((. List len) ((. List push) xs 9)) (f 0 xs))))
+             (def (main) (f 1 (build 0 2 (list)))) (export main)))
+  (call main) (output (: 5 Int64))
+  (live-objects known-leak 2))
