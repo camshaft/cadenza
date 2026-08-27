@@ -6656,6 +6656,8 @@ pass	lol1 a list-of-LISTS scrutinee matched and read via List.len reclaims (the 
 pass	looking up an absent key yields None
 pass	lp1 a LIST handler state — each feed pushes and returns the pre-push length, a summing walk reads the final list
 pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max
+pass	lps1 a non-matching literal payload falls through to the same-variant binder
+pass	lps2 a literal-only sum arm with no binder fall-through is non-exhaustive
 pass	lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS
 pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
 pass	lsb1 a bounded value shifted by a bounded count computes the masked result
