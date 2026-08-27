@@ -5557,6 +5557,15 @@
   (output (: -1 Int64))
   (live-objects 0))
 
+(case "a signed narrow-width newtype boxed as a tuple element matches by its literal payload"
+  (doc    "The SIGNED narrow-width (Int32) companion of the UInt8 tuple-box case above: `(match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))` with `W = (Wrap Int32)`. The box-widen (`is_narrow_int` + `strip_nominal`) is width-general — a signed narrow newtype must i32→i64 extend before `box-int` just as the unsigned one does; without the widen the boxed cell is malformed and the read-back emits an INVALID component. Pairs the tuple-box position (covered for UInt8 above) with the signed narrow width (covered bare below): n=0 → 5 (hit), n=9 ≠ 0 → -1 (miss), combined `10*5 + (-1)` = 49.")
+  (input  (do (type W (Wrap Int32))
+              (def (f (: n Int32)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1)))
+              (def (main) (+ (* 10 (f 0)) (f 9))) (export main)))
+  (call   main)
+  (output (: 49 Int64))
+  (live-objects 0))
+
 (case "a narrow-width newtype boxed as a list element matches by its literal payload"
   (doc    "The LIST position: `(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))`, `W = (Wrap
            UInt8)`, n=0 → 100. The narrow newtype is boxed as a vector element and read back by the
