@@ -1526,7 +1526,31 @@
         contractSourcesDir = ./implementation/seed/crates/cdz-platform/contracts;
         contractHashes = pkgs.runCommand "cdz-contract-hashes"
           { nativeBuildInputs = [ contractHasher seedCompiler ]; } ''
-          cdz-contract hash ${contractSourcesDir} --cdz ${seedCompiler}/bin/cdz --out "$out"
+          # `cdz-contract hash` now COMPILES+EXECUTES each contract's `descriptor()` to derive the id (the
+          # operator's pragma-deprecation: identity flows through the guest's own self-reflection, no
+          # `@!contract`/`@!input`/`@!output`). So this derivation gains two inputs beyond the old parse:
+          #   --lib : the `contract-id` library the platform contracts `import … from "contract-id"` (it
+          #           lives under guests/, not the hashed contracts/ dir) — passed through to `cdz compile`.
+          #   CDZ_STORE : the value-heap runtime STORE, so the in-memory `cdz run --format binary-ast` step
+          #           (which executes descriptor()) resolves the runtime the compiled contract imports by
+          #           content address. `cdz run` inherits it from the ambient env (no --store flag). Same
+          #           store mkCorpusExec runs against; descriptor() needs ONLY the value-heap runtime (no
+          #           host imports/caps/world), so the store alone suffices.
+          #   CDZ_COMPILE_BIN : the `--no-default-features` seedCompiler DELEGATES `cdz compile` to the
+          #           external `cdz-compile` CLI (v-cdz-delegate #3397), so the `cdz compile` step needs it
+          #           reachable — point at the content-addressed `cdzCompile`, exactly as seedCompiler's own
+          #           env does (flake.nix ~L665/728). Without it: `cdz: cdz-compile not found`.
+          export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+          export CDZ_STORE="${componentStore}"
+          export CDZ_COMPILE_BIN="${cdzCompile}/bin/cdz-compile"
+          # Stage the lib under its CLEAN name: `cdz compile` derives a package-file's module name from the
+          # input's FILE STEM, and the import is `from "contract-id"`, so the input must be named
+          # `contract-id.cdz`. The raw store path is `<hash>-contract-id.cdz` (stem `<hash>-contract-id`) →
+          # CDZ0201 "unknown package file `contract-id`". Copy to a clean-named temp file and pass that.
+          cp ${./implementation/seed/crates/cdz-platform/guests/contract-id.cdz} "$TMPDIR/contract-id.cdz"
+          cdz-contract hash ${contractSourcesDir} \
+            --lib "$TMPDIR/contract-id.cdz" \
+            --cdz ${seedCompiler}/bin/cdz --out "$out"
         '';
 
         # The program names a run references — every `program = "<name>"` field in the ML spec. This is

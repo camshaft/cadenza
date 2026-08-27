@@ -1,7 +1,3 @@
-@!contract "cdz-platform.state.delete"
-@!input DeleteRequest
-@!output DeleteResult
-
 // The §7 session-state DELETE contract (design/cadenza-platform.md §7): remove the value at a key from the
 // session's key-value state, answered with the state root hash after the change (§7: "a root hash after each
 // change"). A DISTINCT contract so a reducer dispatches delete-vs-set-vs-get by CONTRACT-ID. Deleting an
@@ -15,5 +11,5 @@ def delete-conforms() =
   match a-delete() with | DeleteRequest.Delete(k) => if k == b"k" then unit else trap("delete key mismatch")
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.state.delete", "DeleteRequest", "DeleteResult")
 export { DeleteRequest.*, DeleteResult.*, descriptor }

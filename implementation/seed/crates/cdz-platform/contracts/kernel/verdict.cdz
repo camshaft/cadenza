@@ -1,7 +1,3 @@
-@!contract "cdz-platform.verdict"
-@!input Verdict
-@!output Ack
-
 // The verdict contract — what the end-of-run CHECKER emits to report the run's pass/fail
 // (design/cadenza-platform.md section 9). The checker (a reducer-shaped guest delivered the observation log
 // via the `check` contract) emits a `verdict` request; the harness — a driver, not a reducer, so it cannot
@@ -44,6 +40,6 @@ def fail-conforms() =
 // the Rust codegen (which reads the schema, not the export clause) and for a single-file compile.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.verdict", "Verdict", "Ack")
 
 export { Verdict.*, Ack.*, descriptor }

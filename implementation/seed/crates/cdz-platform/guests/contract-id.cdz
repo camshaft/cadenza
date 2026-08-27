@@ -1,19 +1,25 @@
 // The shared self-reflection contract-id library (design/cadenza-platform.md §1/§4, P4). A contract module
-// self-reflects via `Ast.module` and calls this to obtain its own content-addressed contract-id —
-// `0x01 (Contract tag) ++ blake3(canonical (contract <name> (types <type>…) <input> <output>))` — byte-
-// identical to the host (`cdz_platform::Contract` / `cdz_contract::contract_id_from_module`). So a guest
+// self-reflects via `Ast.module` (for its type declarations) and passes its identity — the contract NAME, its
+// INPUT type name, and its OUTPUT type name — EXPLICITLY to these functions, which fold the content-addressed
+// contract-id at compile time: `0x01 (Contract tag) ++ blake3(canonical (contract <name> (types <type>…)
+// <input> <output>))` — byte-identical to the host (`cdz_platform::Contract` / `cdz_contract`). So a guest
 // (e.g. a reducer) can match `msg.contract` against a contract's id WITHOUT a hardcoded hash literal.
 //
+// The identity used to be carried in `@!contract`/`@!input`/`@!output` module pragmas and read back by
+// self-reflection; now that const eval folds an explicit call, a contract states its name/input/output
+// DIRECTLY as string-literal arguments (operator 2026-08-27, deprecating those pragmas). The `(types …)`
+// set is still collected from the passed `Ast.module`; only the name/input/output references move to args.
+//
 // Entry points (all fold at compile time; import under a name DISTINCT from any record field, e.g.
-// `def cid() = contract-id(Ast.module)`, so the nullary projecting def folds + crosses module imports):
-//   contract-id(m)          -> Bytes  -- just the id (the routing key). Runtime-representable.
-//   contract-declaration(m) -> Bytes  -- the WHOLE contract, its canonical `(contract …)` declaration
-//     encoded. Runtime-representable + re-inspectable (`Ast.decode`); the id is `0x01 ++ blake3` of it.
+// `def cid() = contract-id(Ast.module, …)`, so the nullary projecting def folds + crosses module imports):
+//   contract-id(m, name, input, output)          -> Bytes  -- just the id (the routing key). Runtime-representable.
+//   contract-declaration(m, name, input, output) -> Bytes  -- the WHOLE contract, its canonical `(contract …)`
+//     declaration encoded. Runtime-representable + re-inspectable (`Ast.decode`); the id is `0x01 ++ blake3` of it.
 //     Export this alongside `contract-id` to self-describe fully — the id routes, the declaration inspects.
-//   contract(m) -> Record(id, name, input, output, types)  -- the full structured descriptor. The landed
-//     self-describe form (P4, #3413): `def descriptor() = contract(Ast.module)` + `export { descriptor }` in
-//     the contract module; a consumer imports it and PROJECTS a field (`descriptor().id` to route,
-//     `descriptor().name` to inspect). The projection const-folds (v-cp #3543). The WHOLE record also
+//   contract(m, name, input, output) -> Record(id, name, input, output, types)  -- the full structured descriptor.
+//     The landed self-describe form (P4, #3413): `def descriptor() = contract(Ast.module, …)` + `export
+//     { descriptor }` in the contract module; a consumer imports it and PROJECTS a field (`descriptor().id` to
+//     route, `descriptor().name` to inspect). The projection const-folds (v-cp #3543). The WHOLE record also
 //     materializes as a runtime value now — an `Ast` value is runtime-representable (an ordinary sum the
 //     runtime holds and `match` reads), so returning the whole descriptor (even across the host boundary)
 //     instantiates and runs; it need not survive only via a projection fold. (The one thing still
@@ -38,12 +44,6 @@ def name-of(const form: Ast) -> Option(String) =
   | Ast.Name(n) => Option.Some(n)
   | _ => Option.None
 
-// The text a Str form carries — `None` for any other form.
-def str-of(const form: Ast) -> Option(String) =
-  match form with
-  | Ast.Str(s) => Option.Some(s)
-  | _ => Option.None
-
 // The Name symbol of the i-th child, if that child is a Name.
 def child-name(const form: Ast, i: Int64) -> Option(String) =
   match child(form, i) with
@@ -61,7 +61,7 @@ def unwrap(const form: Ast) -> Ast =
        | Option.None => form
   else form
 
-// Collect the `(type …)` declarations in order, peeling comments, dropping pragmas / def / @test / export.
+// Collect the `(type …)` declarations in order, peeling comments, dropping def / @test / export.
 def collect-types(const forms: List(Ast)) -> List(Ast) =
   match forms with
   | [] => ([] : List(Ast))
@@ -70,37 +70,26 @@ def collect-types(const forms: List(Ast)) -> List(Ast) =
       let tail = collect-types(rest) in
       if head-name(g) == Option.Some("type") then List.prepend(tail, g) else tail
 
-// Find a `(pragma <key> <value>)` and return <value> (peeling comments). TRAPS if a REQUIRED pragma is
-// absent (a malformed contract module) — a genuine error, so the const-fold fails rather than emit a wrong id.
-def find-pragma(const forms: List(Ast), const key: String) -> Ast =
-  match forms with
-  | [] => trap(String.concat("contract-id: contract module is missing a required pragma: ", key))
-  | [f, .. rest] =>
-      let g = unwrap(f) in
-      if (head-name(g) == Option.Some("pragma")) and (child-name(g, 1) == Option.Some(key))
-      then match child(g, 2) with
-           | Option.Some(value) => value
-           | Option.None => trap(String.concat("contract-id: pragma has no value: ", key))
-      else find-pragma(rest, key)
-
 // The `(types …)` node — every declared type, in order.
 def types-of(const forms: List(Ast)) -> Ast =
   Ast.List(List.prepend(collect-types(forms), Ast.Name("types")))
 
-// The canonical declaration `(contract <name> (types …) <input> <output>)` the host hashes.
-def declaration(const m: Ast) -> Ast =
+// The canonical declaration `(contract <name> (types …) <input> <output>)` the host hashes. The name is a
+// string literal, and input/output are the declared type names — passed EXPLICITLY (no longer read from
+// pragmas), reconstructed here as the same `Ast.Str`/`Ast.Name` nodes the encoded declaration carries.
+def declaration(const m: Ast, const name: String, const input: String, const output: String) -> Ast =
   match m with
   | Ast.List(forms) =>
       Ast.List([Ast.Name("contract"),
-                find-pragma(forms, "contract"),
+                Ast.Str(name),
                 types-of(forms),
-                find-pragma(forms, "input"),
-                find-pragma(forms, "output")])
+                Ast.Name(input),
+                Ast.Name(output)])
   | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
 // The contract-id: 0x01 Contract tag ++ blake3 of the canonical declaration's encoding.
-def contract-id(const m: Ast) -> Bytes =
-  Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m))))
+def contract-id(const m: Ast, const name: String, const input: String, const output: String) -> Bytes =
+  Bytes.concat(b"\x01", Blake3.of(Ast.encode(declaration(m, name, input, output))))
 
 // The WHOLE contract as its canonical declaration `(contract <name> (types …) <input> <output>)` run
 // through `Ast.encode` — Bytes, so it is runtime-representable (crosses module imports + reducer
@@ -108,17 +97,11 @@ def contract-id(const m: Ast) -> Bytes =
 // re-inspectable: a consumer `Ast.decode`s it to read the name / types / input / output, and the id is
 // exactly `0x01 ++ blake3` of it. This is the self-describing "whole contract" a module should export
 // alongside its `contract-id` — the id for routing, the declaration for inspection.
-def contract-declaration(const m: Ast) -> Bytes = Ast.encode(declaration(m))
-
-// The contract name from `@!contract`. TRAPS if that pragma's value is not a string literal (a malformed
-// contract module) — a genuine error, so the fold fails rather than yield an empty name.
-def contract-name(const forms: List(Ast)) -> String =
-  match str-of(find-pragma(forms, "contract")) with
-  | Option.Some(s) => s
-  | Option.None => trap("contract-id: @!contract value is not a string literal")
+def contract-declaration(const m: Ast, const name: String, const input: String, const output: String) -> Bytes =
+  Ast.encode(declaration(m, name, input, output))
 
 // The full structured descriptor: the id plus the structured pieces. The landed self-describe form (P4,
-// #3413) is `def descriptor() = contract(Ast.module)` + `export { descriptor }` in the contract module; a
+// #3413) is `def descriptor() = contract(Ast.module, …)` + `export { descriptor }` in the contract module; a
 // consumer imports it and PROJECTS a field — `descriptor().id` (route) or `descriptor().name` (inspect) —
 // and the projection const-folds (v-cp #3543). Returning the WHOLE record as a runtime value also works: an
 // `Ast` value is runtime-representable (an ordinary sum the runtime holds and `match` reads), so the whole
@@ -128,34 +111,35 @@ def contract-name(const forms: List(Ast)) -> String =
 // contract as one already-serialized runtime value, `contract-declaration` (Bytes, `Ast.decode`-able) avoids
 // re-encoding the `Ast` fields. (The `Ast` fields here are `Ast.encode`d from the CONST module AST, which
 // folds; `Ast.encode` of a genuinely-runtime `Ast` value is the separate v-cp/v-runtime op-93 arc in flight.)
-def contract(const m: Ast) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
+def contract(const m: Ast, const name: String, const input: String, const output: String) -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) =
   match m with
   | Ast.List(forms) =>
-      { id = contract-id(m),
-        name = contract-name(forms),
-        input = find-pragma(forms, "input"),
-        output = find-pragma(forms, "output"),
+      { id = contract-id(m, name, input, output),
+        name = name,
+        input = Ast.Name(input),
+        output = Ast.Name(output),
         types = types-of(forms) }
   | _ => trap("contract-id: not a contract module — expected a (do …) module AST")
 
 // The UNIFORM contract descriptor (operator shape, §1): one record of the SAME SHAPE for every contract, all
-// fields runtime-representable (Bytes/String) via self-reflection over `Ast.module` — the id, the name, the
-// ENCODED input type, the ENCODED output type, and the fully ENCODED module AST. A contract exports it as
-// `def descriptor() = contract-descriptor(Ast.module); export { descriptor }`; a reducer imports it and reads
-// `descriptor().id` to route (or `.name`/`.input`/`.output`/`.ast` to inspect). All fields fold at compile
-// time (the operands derive from the const `Ast.module`), so the record is a constant — no runtime `Ast.encode`.
-def contract-descriptor(const m: Ast) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
+// fields runtime-representable (Bytes/String) — the id, the name, the ENCODED input type, the ENCODED output
+// type, and the fully ENCODED module AST. A contract exports it as `def descriptor() =
+// contract-descriptor(Ast.module, <name>, <input>, <output>); export { descriptor }`; a reducer imports it and
+// reads `descriptor().id` to route (or `.name`/`.input`/`.output`/`.ast` to inspect). All fields fold at
+// compile time (the operands are the const `Ast.module` + the const string args), so the record is a constant —
+// no runtime `Ast.encode`.
+def contract-descriptor(const m: Ast, const name: String, const input: String, const output: String) -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
   // The const block wraps the WHOLE `match m` (not just the record it produces), so calling
   // `contract-descriptor` directly returns the record with ZERO runtime computation — the match DISPATCH and
-  // every field both fold at compile time (all derive from the const `m` = a contract's `Ast.module`). Any
-  // future non-const step becomes a compile error rather than a silent runtime build. Wrapped ONCE here in the
-  // library, not per consumer.
+  // every field both fold at compile time (all derive from the const `m` = a contract's `Ast.module` — and the
+  // const name/input/output string args). Any future non-const step becomes a compile error rather than a
+  // silent runtime build. Wrapped ONCE here in the library, not per consumer.
   const(match m with
-        | Ast.List(forms) =>
-            { id = contract-id(m),
-              name = contract-name(forms),
-              input = Ast.encode(find-pragma(forms, "input")),
-              output = Ast.encode(find-pragma(forms, "output")),
+        | Ast.List(_) =>
+            { id = contract-id(m, name, input, output),
+              name = name,
+              input = Ast.encode(Ast.Name(input)),
+              output = Ast.encode(Ast.Name(output)),
               ast = Ast.encode(m) }
         | _ => trap("contract-id: not a contract module — expected a (do …) module AST"))
 

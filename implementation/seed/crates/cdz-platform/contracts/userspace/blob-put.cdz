@@ -1,7 +1,3 @@
-@!contract "cdz-platform.blob.put"
-@!input PutRequest
-@!output PutResult
-
 // The §8 content-addressed store PUT contract (design/cadenza-platform.md §8): store the carried bytes,
 // answered with their content hash. A DISTINCT contract so a reducer dispatches store-vs-read by CONTRACT-ID.
 // Userspace (this dir): a Cadenza reducer consumes it via self-reflection; no Rust binding is generated.
@@ -13,5 +9,5 @@ def put-conforms() =
   match a-put() with | PutRequest.Put(p) => if p == b"blob-bytes" then unit else trap("put payload mismatch")
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.blob.put", "PutRequest", "PutResult")
 export { PutRequest.*, PutResult.*, descriptor }

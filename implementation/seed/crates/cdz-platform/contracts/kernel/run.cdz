@@ -1,7 +1,3 @@
-@!contract "cdz-platform.run"
-@!input Request
-@!output Output
-
 // The run contract — the pure-function invocation primitive as an EFFECT (design/cadenza-platform.md
 // section 3). run(program, contract, input) -> output instantiates `program` with an empty capability set
 // and a null birth, folds `input` (delivered against `contract`), and returns its output. As this contract,
@@ -43,8 +39,8 @@ def output-conforms() =
   | Output.Output(o) => if o == b"result" then unit else trap("run output mismatch")
 
 // Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
-// contract-descriptor(Ast.module) — a reducer imports it and routes on descriptor().id.
+// contract-descriptor(Ast.module, <name>, <input>, <output>) — a reducer imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.run", "Request", "Output")
 export { descriptor }

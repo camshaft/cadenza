@@ -1,7 +1,3 @@
-@!contract "cdz-platform.spawned"
-@!input Event
-@!output Ack
-
 // The spawned contract — the schema of the birth notification the system delivers to a reducer as its
 // very first event (design/cadenza-platform.md section 7). Before any message reaches it, a reducer is
 // told who it is: its own id and its parent's id. This file is the source of truth for that notification's
@@ -37,8 +33,8 @@ def spawned-event-conforms() =
   | Event.Spawned(e) => if e.parent == b"parent" then unit else trap("spawned parent mismatch")
 
 // Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
-// contract-descriptor(Ast.module) — a reducer imports it and routes on descriptor().id.
+// contract-descriptor(Ast.module, <name>, <input>, <output>) — a reducer imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.spawned", "Event", "Ack")
 export { descriptor }

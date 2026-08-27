@@ -1,7 +1,7 @@
 // P4 SELF-REFLECTION ROUTING (design/cadenza-platform.md §1/§4). This reducer decides whether to act on a
 // delivered message by comparing the message's contract-id against the id its OWN embedded contract module
 // (temp-celsius) self-reflects — NO hardcoded hash literal. temp-celsius exposes its WHOLE contract as a
-// STRUCTURED descriptor `descriptor()` (Record(id, name, input, output, types) from `contract(Ast.module)`);
+// STRUCTURED descriptor `descriptor()` (Record(id, name, input, output, types) from `contract(Ast.module, …)`);
 // this reducer imports it and projects `descriptor().id`, which const-folds cross-module to the temp.celsius
 // routing key (byte-identical to the host contract-id; the projection folds the record away so its Ast fields
 // never materialize at runtime — v-cp #3543). On a match the reducer emits one request BACK on that same
