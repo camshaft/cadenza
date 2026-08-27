@@ -144,14 +144,26 @@ pub async fn outbound_loop(cfg: Arc<Config>, tokens: SlackTokens) {
     let bot = SlackApiToken::new(tokens.bot_token.clone().into());
     let channel_id: SlackChannelId = channel.into();
 
-    // Per-message CONTENT-failure counts (inbox filename → count) for the relay, so a deterministically
-    // un-postable message escalates degrade→quarantine across ticks WITHOUT blocking the queue. In-memory:
-    // a restart resets it, which is fine — the message re-drains and re-clears in a bounded number of ticks
-    // (never forever, the ~11h wedge this fixes). Lives here so it persists across `outbound_tick` calls.
+    // Per-message CONTENT-failure counts (inbox/mirror key → count) so a deterministically un-postable
+    // message escalates degrade→quarantine (relay) / degrade→give-up (mirror) across ticks WITHOUT blocking
+    // the queue. In-memory: a restart resets them, which is fine — the message re-drains and re-clears in a
+    // bounded number of ticks (never forever, the ~11h wedge this fixes). Live here so they persist across
+    // `outbound_tick` calls. `relay_failures` keys the bridge's own inbox; `mirror_failures` keys concierge
+    // asks being mirrored.
     let mut relay_failures: HashMap<String, u32> = HashMap::new();
+    let mut mirror_failures: HashMap<String, u32> = HashMap::new();
 
     loop {
-        if let Err(e) = outbound_tick(&cfg, &client, &bot, &channel_id, &mut relay_failures).await {
+        if let Err(e) = outbound_tick(
+            &cfg,
+            &client,
+            &bot,
+            &channel_id,
+            &mut relay_failures,
+            &mut mirror_failures,
+        )
+        .await
+        {
             tracing::warn!(error = %e, "outbound tick error (will retry)");
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -177,36 +189,63 @@ async fn outbound_tick(
     bot: &SlackApiToken,
     channel: &SlackChannelId,
     relay_failures: &mut HashMap<String, u32>,
+    mirror_failures: &mut HashMap<String, u32>,
 ) -> Result<(), BoxErr> {
     let session = client.open_session(bot);
 
-    // (1) Mirror new concierge asks/backlog.
+    // (1) Mirror new concierge asks/backlog. Same head-of-line-block guard as the relay below: a transport/
+    // transient fault retries the batch next tick, but a CONTENT-class failure escalates PER-ITEM (degrade to
+    // a plain variant, then give up and mark the ask un-mirrorable so it stops being re-selected) and we SKIP
+    // PAST it — one poison ask must not block mirroring every later ask.
     let mut map = ThreadMap::load(&cfg.fleet_dir);
     let pending = drain(&cfg.fleet_dir, &cfg.default_to)?; // watch, don't consume: no mark_processed
     let to_post = sidecar::select_to_mirror(&pending, &map);
     for item in to_post {
-        let text = render_fleet_message(&item.msg);
+        let ask = MirroredAsk {
+            asker: item.msg.from.clone(),
+            kind: item.msg.kind.clone(),
+            subject: item.msg.subject.clone(),
+        };
+        let fails = mirror_failures.get(&item.key).copied().unwrap_or(0);
+        let plan = relay_plan(fails);
+        if plan == RelayPlan::Quarantine {
+            tracing::warn!(
+                key = %item.key, asker = %item.msg.from, content_failures = fails,
+                "mirror: giving up on un-postable ask — marking unmirrorable so it stops re-selecting; operator still sees it in the concierge tmux"
+            );
+            map.mark_unmirrorable(item.key.clone(), ask);
+            map.save(&cfg.fleet_dir)?;
+            mirror_failures.remove(&item.key);
+            continue;
+        }
+        let text = if plan == RelayPlan::Degraded {
+            render_fleet_message_plain(&item.msg)
+        } else {
+            render_fleet_message(&item.msg)
+        };
         let req = SlackApiChatPostMessageRequest::new(
             channel.clone(),
             SlackMessageContent::new().with_text(text),
         );
         match session.chat_post_message(&req).await {
             Ok(resp) => {
-                map.record(
-                    resp.ts.to_string(),
-                    item.key.clone(),
-                    MirroredAsk {
-                        asker: item.msg.from.clone(),
-                        kind: item.msg.kind.clone(),
-                        subject: item.msg.subject.clone(),
-                    },
-                );
+                map.record(resp.ts.to_string(), item.key.clone(), ask);
                 map.save(&cfg.fleet_dir)?;
+                mirror_failures.remove(&item.key);
                 tracing::info!(asker = %item.msg.from, kind = %item.msg.kind, "mirrored to slack");
             }
+            Err(e) if is_content_post_error(&e) => {
+                let n = fails + 1;
+                mirror_failures.insert(item.key.clone(), n);
+                tracing::warn!(
+                    key = %item.key, attempt = n, ?plan, error = %e,
+                    "mirror: content post error — skipping past this ask (will degrade then give up), rest continue"
+                );
+                continue; // do NOT block mirroring of later asks on a poison one
+            }
             Err(e) => {
-                // Leave it un-recorded so it retries next tick rather than being lost.
-                tracing::warn!(error = %e, "failed to post mirror; will retry");
+                // Transport/transient (outage, rate limit): leave un-recorded so the batch retries next tick.
+                tracing::warn!(error = %e, "failed to post mirror (transient — will retry)");
                 break;
             }
         }
