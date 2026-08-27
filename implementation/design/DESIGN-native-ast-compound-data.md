@@ -420,3 +420,33 @@ holds only through M2→M3; nothing legacy survives M3.
   compound re-readers (§5) migrate under M1.
 - **v-rust-backend / v-compiler-ml** own their emit/consumer arms (a new `Core`/`Resolved` variant —
   `Resolved::Set` — needs a Rust-backend arm per the standing rcdzc rule).
+
+## 10. Landed migration state (2026-08-27)
+
+Layer-1 (typed-tag recognition, representation-agnostic) is substantially LANDED on `main`:
+
+- **The typed `CompoundCtor` tag** exists in BOTH `Arenas` (`rcdzc` + `cadenza-ast`), with str-primitive
+  (`compound_ctor`), accept-both (`compound_ctor_either`), and tag+children (`compound_form_of`)
+  recognizers. The central resolver dispatch, `node_eq` head-normalization, and **all 54 dual-accept
+  `as_form/as_ctor_form(…).or_else(…)` sites across rcdzc** route through the tag — 0 dual-accept idioms
+  remain in the crate.
+- **The `(= key value)` FieldPair is consolidated** behind `Arenas::field_pair` (read) +
+  `Builder::field_pair` / `Db::push_field_pair` (emit); `read_record_fields` and the record-field emit
+  sites route through them.
+- **Maps and records are UNIFIED on `(= key value)`** (operator ruling: prefer `=`, author it
+  explicitly, verbatim reader with no phantom insertion, hard-fail on a missing `=` post-migration).
+  `resolve_map` + infer's `MapNew` branch accept the canonical `(= k v)` entry (via `field_pair`) and
+  dual-read legacy raw `(k v)`; corpus migrates `(map (k v))` → `(map (= k v))` at M3, then raw `(k v)`
+  becomes an error. Records already emit `(= name value)`. (v-syntax owns the `#word(…)` surface —
+  `#record((= x 1))` / `#map((= k v))` explicit-`=`; v-spec-oracle owns the §265/§269 pin, extended to
+  map entries.)
+
+**Still open:**
+- **`#set` / first-class set (D2):** `#set(e…)` → `("set" e…)` isn't recognized yet. Design fork
+  (desugar to `(Set.of (list …))` vs a compiler-level `Resolved::Set` → `Core::SetOf`, ~26-site ripple)
+  surfaced to the operator. Set value render stays `(Set.of (list …sorted))`.
+- **M2:** promote the reserved heads to distinct per-collection LEAF KINDS (`list`/`tuple`/`record`/
+  `map`/`set` + `=` FieldPair + `.` Member) in both codecs + wire the `#word(…)` reader/printer; gated
+  by the `cdzast\x00\x01` byte-stability invariant.
+- **M3:** migrate the corpus to the new forms; delete the string/name-head recognition, the dual-accept
+  idiom, and the head-collapse helpers; hard-fail on legacy forms. No back-compat carried through.
