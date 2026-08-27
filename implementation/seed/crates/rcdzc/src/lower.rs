@@ -21417,7 +21417,20 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
         // yields `None` from `const_key_order` and then reaches the `is_orderable_compound`/float declines
         // below exactly as before. The scalar arms above take precedence (match order), preserving their
         // i64-range / NaN-partial semantics.
-        _ if is_const_value(db, lhs) && is_const_value(db, rhs) => const_key_order(db, lhs, rhs),
+        //
+        // ORDERABILITY: fold ONLY a compound the RUNTIME `Core::ValueCmp` walk also orders —
+        // `is_orderable_compound` (Int/Bool/String/Bytes + nested; NOT Char/Float). `const_key_order` is more
+        // permissive (it orders a Char leaf, for baking a Set/Map to-list — an enumeration order that never
+        // calls a runtime op), but a Char/Float-leaf compound `Ordering.of` DECLINES at runtime (03-equality),
+        // so folding it here would diverge from the runtime path (§331). Gating on `is_orderable_compound`
+        // makes such a compound yield `None` and fall through to the runtime `ValueCmp`/float declines below.
+        _ if is_const_value(db, lhs) && is_const_value(db, rhs) && {
+            let ty = crate::infer::type_of(db, lhs);
+            is_orderable_compound(db, &ty)
+        } =>
+        {
+            const_key_order(db, lhs, rhs)
+        }
         _ => None,
     };
     match ord {
@@ -21905,6 +21918,39 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
             {
                 trace!(target: "rcdzc::fold", result = eq, "folded constant compound equality (structural)");
                 return Core::ConstBool(eq);
+            }
+            // CONSTANT COMPOUND ORDERING (`<`/`<=`/`>`/`>=`) — the §331 companion of the `=` fold just above
+            // and of the three-way `Ordering.of` compound fold (`lower_compare`): two fully-constant compounds
+            // order through the shared `const_key_order` canonical value order, the SAME order
+            // `Set.to-list`/`Map.to-list`/equality use, which mirrors the runtime `value_cmp_shaped` the
+            // compound `Core::ValueCmp { op }` walk below uses — so the constant fold and the runtime walk
+            // report the SAME relation (the boolean ops and the three-way compare surface one total order two
+            // ways that cannot disagree). GUARD: fold only when BOTH operands are fully-constant values. This
+            // fold DISCARDS the operands, so a non-constant subterm — e.g. `(Some (/ 1 k))`, whose construction
+            // can TRAP or perform — must not be dropped; `const_key_order` can decide the order from an early
+            // differing DISCRIMINANT/field WITHOUT reading a deeper payload, so its `Some` is not proof the
+            // operands are effect-free (the same effect-safety guard `lower_compare` uses). A float/set/map leaf
+            // yields `None` and falls through to the runtime `ValueCmp` walk / float decline below unchanged.
+            //
+            // ORDERABILITY: fold ONLY a compound the RUNTIME compound walk also orders — `is_orderable_compound`
+            // (the blessed leaf vocabulary: Int/Bool/String/Bytes + nested; NOT Char/Float). `const_key_order`
+            // is MORE permissive (it orders a Char leaf, for baking a Set/Map to-list at compile time — an
+            // enumeration order that never calls a runtime op). But `<`/`Ordering.of` on a Char/Float-leaf
+            // compound DECLINES at runtime (03-equality: "a tuple with a Char leaf declines compound ordering"),
+            // so folding it here would answer where the runtime refuses — a §331 divergence. Gating on
+            // `is_orderable_compound` makes a Char/Float-leaf compound fall through to that decline unchanged.
+            if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge)
+                && is_const_value(db, args[0])
+                && is_const_value(db, args[1])
+                && {
+                    let ty = crate::infer::type_of(db, args[0]);
+                    is_orderable_compound(db, &ty)
+                }
+                && let Some(ord) = const_key_order(db, args[0], args[1])
+            {
+                let r = compare_ord(op, ord);
+                trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant compound ordering (canonical value order)");
+                return Core::ConstBool(r);
             }
             // BOOL-INT EQUALITY: `(= (if c 1 0) K)` / `(= (if c 0 1) K)` with `K` ∈ {0,1} — the `if` is a
             // bool coerced to an int (0/1), so comparing it to 0/1 is just the condition or its negation:
