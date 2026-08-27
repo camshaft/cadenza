@@ -2857,6 +2857,7 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a nested match on a recursive sum with a statically-known outer disc reads the inner payload at the right depth
 pass	a nested match on a runtime scrutinee
 pass	a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm
 pass	a nested module and a sibling def in the same outer module both stay reachable
