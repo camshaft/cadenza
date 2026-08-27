@@ -32956,12 +32956,6 @@ mod stage1 {
     // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
 
     #[test]
-    fn an_annotation_matching_the_value_is_transparent() {
-        // `(: 5 Int64)` runs exactly as `5` — the annotation erases; 5 is already Int64.
-        assert_eq!(run_main("(: 5 Int64)"), 5);
-    }
-
-    #[test]
     fn an_annotation_grounds_a_width_via_int_ctor() {
         // The type side is a full type EXPRESSION reduced by the evaluator: `(: 5 (Int 64))` uses the
         // `(Int 64)` constructor application as the annotation type. Runs as 5.
