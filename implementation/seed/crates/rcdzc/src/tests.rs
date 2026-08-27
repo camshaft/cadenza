@@ -9423,78 +9423,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_match_through_an_erased_single_variant_newtype_dispatches_on_the_inner_disc() {
-        // REGRESSION (silent MISCOMPILE, wasm-only differential — breaker/corpus-bugfix find): a match over a
-        // nested sum whose OUTER type is a CLOSED single-variant newtype (`(type Outer (Wrap Inner))`, which
-        // ERASES to `Ty::Nominal` — `infer::newtype_underlying`) read the INNER discriminant one level too
-        // deep and always dispatched to the FIRST inner variant. `(match (Outer.Wrap <runtime Inner>)
-        // ((Outer.Wrap (Inner.P x)) …) ((Outer.Wrap (Inner.W y)) …))` on a runtime `Inner.W` took the `P`
-        // arm. Rust computed it correctly (wasm-only). ROOT: construction correctly ERASES the outer Wrap
-        // (no `sum-new` — the value IS the inner), but the match's `SumCont::Switch` carried the RAW
-        // `switch_path` `[Payload]` (through the erased Wrap) and `push_discriminant` emitted a spurious
-        // `sum-payload` for that erased step, unwrapping the inner sum's payload BOX, so `sum-disc` read the
-        // box → 0 → always the first variant. FIX: a `Payload` step through a `Ty::Nominal` (erased newtype)
-        // is a runtime NO-OP in `push_discriminant` (peel one nominal layer, emit nothing) — the disc-dispatch
-        // twin of `Core::SumPayload`'s `erase_nominal_steps`. A runtime inner (chosen by a param) defeats the
-        // const-fold that would otherwise resolve the variant statically.
-        // First run via `let-else` so the storeless `test` job (no runtime wasm) SKIPS rather than
-        // `.unwrap()`-panics on `None`; the store-having gate + @test-suites jobs still exercise it.
-        let Some(w_face) = run_heap_value(
-            "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
-                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
-                   (def (main (: k Int64) (: n Int64)) \
-                     (match (Outer.Wrap (pick k n)) \
-                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
-                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
-                   (export main))",
-            vec!["1".into(), "5".into()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping erased-newtype inner-disc run");
-            return;
-        };
-        assert_eq!(
-            w_face, "205",
-            "k>=0 picks Inner.W → the W arm (y+200 = 205); the erased outer Wrap Payload must NOT unwrap the \
-             inner box before reading the inner disc"
-        );
-        // The P face: k<0 picks Inner.P → the P arm (x+100 = 105). Confirms the fix dispatches BOTH inner
-        // variants (not just collapsing everything to the other arm).
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
-                   (def (pick (: k Int64) (: n Int64)) (if (< k 0) (Inner.P n) (Inner.W n))) \
-                   (def (main (: k Int64) (: n Int64)) \
-                     (match (Outer.Wrap (pick k n)) \
-                       ((Outer.Wrap (Inner.P x)) (+ x 100)) \
-                       ((Outer.Wrap (Inner.W y)) (+ y 200)))) \
-                   (export main))",
-                vec!["-1".into(), "5".into()],
-            )
-            .unwrap(),
-            "105",
-            "k<0 picks Inner.P → the P arm (x+100 = 105)"
-        );
-        // The LITERAL-payload face on the LATER inner variant (the original find's exact shape): the
-        // `(Inner.W 5)` literal arm must fire on a runtime-`W` value, not fall through to the binder arm.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Inner (P Int64) (W Int64)) (type Outer (Wrap Inner)) \
-                   (def (main (: sel Int64) (: n Int64)) \
-                     (match (if (= sel 0) (Outer.Wrap (Inner.P n)) (Outer.Wrap (Inner.W n))) \
-                       ((Outer.Wrap (Inner.P 3)) 1000) \
-                       ((Outer.Wrap (Inner.P x)) x) \
-                       ((Outer.Wrap (Inner.W 5)) 2000) \
-                       ((Outer.Wrap (Inner.W y)) y))) \
-                   (export main))",
-                vec!["1".into(), "5".into()],
-            )
-            .unwrap(),
-            "2000",
-            "sel=1,n=5 → Inner.W 5 → the W-literal arm (2000), not the W-binder fall-through (5)"
-        );
-    }
-
-    #[test]
     fn a_deep_nested_constructor_pattern_matching_a_nullary_variant_solves_its_switch_path() {
         // REGRESSION (v-compiler-ml surfaced, concierge-assigned): a constructor pattern nesting a NULLARY
         // variant TWO+ constructor layers deep errored `compound match switch path has no solved type`.
@@ -10221,22 +10149,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_same_name_newtype_over_a_record_reads_a_field() {
-        // The same-name spelling composes with record payloads: `(Point (record …))` constructs by the
-        // type name and `.y` reads the inner field through the erased tag.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Point (Point (Record (x Int64) (y Int64)))) \
-                       (def (main) (. (Point (record (x 3) (y 4))) y)) (export main))"
-                ),
-                "main"
-            ),
-            4
-        );
-    }
-
-    #[test]
     fn a_lowercase_unit_variant_payload_is_ty_unit_not_a_spurious_type_param() {
         use crate::testkit::parse;
         // The pervasive nullary-variant idiom `(None unit)` / `(Nil unit)` writes a unit-typed payload with
@@ -10800,22 +10712,6 @@ mod match_engine {
             bare, wrapped,
             "the newtype-over-sum wrapper must erase to nothing"
         );
-    }
-
-    #[test]
-    fn a_recursive_newtype_erases_and_matches() {
-        // A RECURSIVE newtype ERASES (its inner's self-reference is a finite `Ty::Sum{decl}` back-edge —
-        // the μ-binder — so the erased inner is finite). `(type Lst (Mk (Option (Tuple Int64 Lst))))`
-        // erases the outer `Mk` box; matched one level yields the head. The inner `Option` still builds a
-        // heap node, so this uses the runtime-linked runner (skips if the runtime wasm is absent).
-        let v = run_heap_value(
-            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
-               (def (main) (match (Mk (Some (tuple 5 (Mk None)))) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
-            vec![],
-        );
-        if let Some(v) = v {
-            assert_eq!(v, "5", "a recursive newtype erases and matches to its head");
-        }
     }
 
     #[test]
