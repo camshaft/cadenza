@@ -1381,6 +1381,7 @@ pass	a branch condition refines a variable's range so a dead underflow guard is 
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branch refinement elides a redundant AND-mask covering the refined range (value parity)
+pass	a branch refinement folds a comparison of two disjoint refined ranges (value parity)
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
 pass	a branch-divergent next-state under a multi-perform body folds to 18
 pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
@@ -4947,6 +4948,7 @@ pass	an unsatisfiable equality still traps on a divide-by-zero operand
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
+pass	an unsigned equality guard pins the exact value so a then-branch arith sheds its guard (value parity)
 pass	an unsigned pattern segment reads the same byte as a non-negative integer
 pass	an unsigned right shift fills with zeros, not the sign bit
 pass	an unsigned runtime value is not accepted by a signed segment of the same width
