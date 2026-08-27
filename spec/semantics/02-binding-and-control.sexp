@@ -1251,6 +1251,17 @@
   (input  (do (def (main) (let ((record (fn (a b) (+ a b)))) (record 3 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "the string primitive tuple constructor is not shadowed by a same-named binding"
+  (doc    "The converse of the alias-shadowing cases above: the primitive tuple constructor is the
+           UNSPELLABLE symbol, and the STRING literal `\"tuple\"` names it directly — a distinct leaf kind
+           from the shadowable NAME alias `tuple`. So even when the name `tuple` is shadowed by a binding,
+           the string primitive `\"tuple\"` still builds a tuple: `(let ((tuple (fn (a b) (+ a b)))) (. (\"tuple\"
+           7 8) 0))` = 7 (the first element of the built tuple), NOT the bound function. A binding shadows
+           the alias name, never the string primitive (core-semantics.md §A Compound Value Has A Symbol
+           Constructor And A Shadowable Alias — the string spelling reaches the symbol constructor itself).")
+  (input  (do (def (main) (let ((tuple (fn (a b) (+ a b)))) (. ("tuple" 7 8) 0))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a parameter named tuple is applied as the bound function"
   (doc    "The parameter companion: `(def (f tuple) (tuple 3 4))` — the formal `tuple` is the nearest
            binding, so applying it calls the argument function. `(f (fn (a b) (* a b)))` = 12. Pins that

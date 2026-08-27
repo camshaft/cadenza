@@ -7769,6 +7769,7 @@ pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
 pass	the stacked contract's PRE fires through the @ensures layer BEFORE the perform (abortive observer)
 pass	the state-SWAP idiom — the op argument becomes the state and the OLD state returns
+pass	the string primitive tuple constructor is not shadowed by a same-named binding
 pass	the swap and take value-yielding forms agree with insert and remove on the resulting map
 pass	the taken arm's checked add still overflows under the operator hoist
 pass	the tautology fold keeps a trapping shared operand

@@ -8755,11 +8755,7 @@ fn sum_shell_reclaim_ok(
 /// re-match) and, when the scrutinee is a `Param`/`LocalRef`, its BINDER (a distinct-node same-binder
 /// re-match). Used by [`sum_shell_reclaim_ok`] to SUPPRESS the enclosing shell-reclaim so the innermost
 /// match's reclaim is the sole drop of the shared owned scrutinee (no double-free).
-fn cont_rematches_scrutinee(
-    db: &mut Db,
-    scrutinee: StructId,
-    root: &crate::core::SumCont,
-) -> bool {
+fn cont_rematches_scrutinee(db: &mut Db, scrutinee: StructId, root: &crate::core::SumCont) -> bool {
     let tgt_binder = match core_of(db, scrutinee) {
         Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
         _ => None,

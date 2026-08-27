@@ -33142,18 +33142,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_string_primitive_head_is_not_shadowable_by_a_same_named_binding() {
-        // The primitive is a STRING, the alias a NAME — distinct leaf kinds. So even when the NAME
-        // `tuple` is shadowed by a binding, the STRING primitive `"tuple"` still builds a tuple: the
-        // binding shadows the alias name, never the unspellable string. `(. ("tuple" 7 8) 0)` = 7 even
-        // under `(let ((tuple …)) …)`.
-        assert_eq!(
-            run_main("(let ((tuple (fn (a b) (+ a b)))) (. (\"tuple\" 7 8) 0))"),
-            7
-        );
-    }
-
-    #[test]
     fn an_unrealized_builtin_field_declines() {
         // `(. (Int 100) max)` — the field EXISTS (present as a poison: a >64-bit width's bounds are not
         // yet realized, `int_bounds` returns `None`), so projecting it declines "not yet realized" rather
