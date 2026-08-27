@@ -2413,3 +2413,8 @@
 (case "a runtime Bytes.compact preserves the content length"
   (input (do (def (mk n) (Bytes.of (list n 20 30))) (def (main) (Bytes.len (Bytes.compact (mk 10)))) (export main)))
   (call main) (output (: 3 Int64)))
+
+(case "a runtime if-produced Bytes is length-measured with valid wasm"
+  (input (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main)))
+  (call main (: 5 Int64))  (output (: 3 Int64))
+  (call main (: -1 Int64)) (output (: 2 Int64)))

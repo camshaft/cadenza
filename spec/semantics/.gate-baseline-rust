@@ -3499,6 +3499,11 @@ pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
 pass	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
+pass	a runtime bin-match binds a dependent-size bytes segment named by an earlier binder
+pass	a runtime bin-match binds a final rest bytes segment (tail length)
+pass	a runtime bin-match final rest after a 2-byte header binds the tail
+pass	a runtime bin-match final rest is empty when the scrutinee is exactly the header
+pass	a runtime bin-match too short for the fixed prefix falls through
 pass	a runtime bit-field literal tag that does not match falls through
 pass	a runtime bit-field packs a runtime value into a nibble
 pass	a runtime bit-field run spans two bytes and composes with an int segment
@@ -3561,6 +3566,7 @@ pass	a runtime function value is manually eta-wrapped and applied through nested
 pass	a runtime greater-than compares by signed order
 pass	a runtime greater-than-or-equal holds at the equal-operand boundary
 pass	a runtime hole woven into a compound Ast is read back by a nested match
+pass	a runtime if-produced Bytes is length-measured with valid wasm
 pass	a runtime increment traps exactly at the maximum integer
 pass	a runtime infinity in an indeterminate op yields nan (inf minus inf, inf times zero)
 pass	a runtime integer converts to a float with the machine convert
