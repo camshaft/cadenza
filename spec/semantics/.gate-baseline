@@ -4937,6 +4937,7 @@ pass	an equality point fact decides a DIFFERENT equality test in the then branch
 pass	an equality point fact folds an inner range comparison, both directions — the point-fact analogue of the ordering fold
 pass	an equality point fact sheds a then-branch arithmetic overflow guard, but the trap survives unguarded
 pass	an erased newtype over a sum reads the inner payload, not the whole wrapper
+pass	an erased single-variant newtype literal-payload match arm dispatches correctly at each scalar width
 pass	an erased single-variant newtype wrapping a sum matches through the inner variants
 pass	an erased-newtype nested-sum match with binder-only arms dispatches on the inner discriminant
 pass	an erased-newtype's list payload split across empty and rest arms dispatches with vec-get
