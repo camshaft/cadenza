@@ -5858,9 +5858,6 @@ fn a_parameter_inside_a_synthesized_scope_form_resolves() {
 #[test]
 fn a_narrowing_wrap_of_a_wider_wrap_elides_the_inner_wrap() {
     use crate::testkit::parse;
-    // Value parity (Int32 → Int16 → Int8 folds to Int8.wrap x; 70000 -> 112, 128 -> -128, etc.) migrated to
-    // the corpus (run via cdz-run): case "a narrowing wrap of a wider wrap elides the inner wrap" in
-    // spec/semantics/06-numeric-model.sexp. The inner-wrap elision itself stays a white-box Lir assertion.
     // Lir: exactly ONE sign-extend sequence (a single pair of shl/shr_s) — the inner wrap is gone.
     {
         use crate::backend::wasm::lir::Lir;
@@ -7316,9 +7313,6 @@ fn a_possibly_trapping_if_arm_is_not_select_ified() {
         trap_free.contains(&Lir::Select) && !trap_free.iter().any(|i| matches!(i, Lir::If(_))),
         "a trap-free `(& a 7)` arm select-ifies (no `if`), got: {trap_free:?}"
     );
-    // The VALUE + TRAP PARITY half (only the taken arm evaluates: c=false,b=0 does not trap; c=true,b=0
-    // does) is the corpus case "a possibly-trapping if arm evaluates only the taken branch" in
-    // 28-compiler-primitives — this stays a white-box Lir check of the select-ification decision.
 }
 
 /// CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition: within a branch the enclosing condition is
@@ -7548,11 +7542,6 @@ fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
         2,
         "both multiplies become shifts, got: {code:?}"
     );
-
-    // The VALUE + OVERFLOW-TRAP PARITY half (x*8 at Int64 and Int8; 2^61 overflows Int64; Int8 x=20 outer
-    // and x=100 inner overflows both trap) is the corpus cases "a nested (* (* x 2) 4) strength-reduces …
-    // Int64 overflow-trap parity" and "the narrow Int8 nested (* (* x 2) 4) traps on BOTH …" in
-    // 28-compiler-primitives — this stays a white-box Lir shl-count / no-mul-div_s check of the reduction.
 }
 
 /// A CONSTANT unsigned comparison whose operand exceeds `i64` range folds by the TRUE numeric value at
@@ -8788,11 +8777,6 @@ mod runtime_ops {
             s.iter().any(|i| matches!(i, Lir::I64LtS)),
             "signed (< x 0) keeps lt_s (not folded); got {s:?}"
         );
-
-        // The VALUE PARITY over runtime unsigned inputs (the folds agree with the true comparison, both
-        // operand orders) is the corpus case "unsigned comparisons against zero simplify and agree with
-        // the true comparison" in spec/semantics/06-numeric-model.sexp — this stays a white-box Lir fold
-        // check.
     }
 
     #[test]
@@ -8857,11 +8841,6 @@ mod runtime_ops {
             trapping.iter().any(|i| matches!(i, Lir::I64DivS)),
             "a trapping self-comparison keeps its operand's div; got {trapping:?}"
         );
-
-        // The VALUE + TRAP parity (x<x/x>x → false, x<=x/x>=x/x=x → true; a trapping `(< (/ a b) (/ a b))`
-        // still traps at b=0 and is false otherwise) is the corpus cases "a self-comparison of a scalar
-        // folds to a constant (value parity)" and "a self-comparison keeps a trapping operand (b=0 still
-        // traps)" in spec/semantics/06-numeric-model.sexp — this stays a white-box Lir no-compare check.
     }
 
     #[test]
@@ -8939,8 +8918,6 @@ mod runtime_ops {
             f64max.contains(&Lir::ConstI32(1)) && no_cmp(&f64max),
             "Int64 (<= x MAX) → true; got {f64max:?}"
         );
-
-        // The VALUE parity (Int8/UInt8 comparison against the type's own bound folds to a constant) is the corpus cases "an Int8 comparison against its own type bound ..." and "a UInt8 ..." in 06-numeric-model.
     }
 
     #[test]
@@ -8985,9 +8962,6 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::I32Eq | Lir::I64Eq | Lir::I64ExtendI32U)),
             "the materialize-then-compare is folded away, got: {c:?}"
         );
-        // The VALUE PARITY (the four shapes + the non-0/1 constant) is the corpus case "a bool-materialized
-        // (if c 1 0) compared to 0 or 1 folds to the condition" in 06-numeric-model — this stays a
-        // white-box Lir fold check.
     }
 
     #[test]
@@ -9049,8 +9023,6 @@ mod runtime_ops {
             "(= (if c 0 1) (if d 0 1)) → (= c d), got: {both:?}"
         );
 
-        // The VALUE PARITY (every polarity over the full truth table) is the corpus case "two
-        // bool-materialized ints compared fold to a boolean equality" in 06-numeric-model.
         // NON-fold guards: a non-0/1 branch pair keeps a real `if`/`select` (both compares run); a bool-int
         // vs a genuine runtime int is not this fold.
         let kept = lir(
@@ -9118,9 +9090,6 @@ mod runtime_ops {
                 "{body} drops the const+eq, got: {code:?}"
             );
         }
-        // The VALUE PARITY (full truth table, all four operand orders) is the corpus case "a boolean
-        // compared to a true/false literal folds to the boolean or its negation (both orders)" in
-        // 06-numeric-model.
         // A DERIVED bool operand composes: `(= (< x 0) true)` → `(< x 0)`, `(= (< x 0) false)` → `(>= x 0)`
         // (the negation folds into the complementary comparison — one compare, no eq/eqz).
         let dt = lir("(: x Int64)", "(= (< x 0) true)");
@@ -9139,8 +9108,6 @@ mod runtime_ops {
                     .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
             "(= (< x 0) false) → (>= x 0), got: {df:?}"
         );
-        // The DERIVED-operand value parity is the corpus case "a derived boolean compared to a literal
-        // composes into the complementary comparison" in 06-numeric-model.
     }
 
     #[test]
@@ -9203,8 +9170,6 @@ mod runtime_ops {
             inside.iter().any(|i| matches!(i, Lir::I64LtS)),
             "a constant inside the range keeps the compare; got {inside:?}"
         );
-
-        // The VALUE parity (masked-range comparisons fold or stay per the range) is the corpus case "a comparison against a derived (masked) range bound folds or stays per the range" in 06-numeric-model.
     }
 
     #[test]
@@ -9270,8 +9235,6 @@ mod runtime_ops {
             eqs(&lir("(: x Int64)", "(= (: (& x 15) Int64) 8)")) >= 1,
             "in-range equality stays runtime"
         );
-
-        // The VALUE + TRAP parity (outside-range equality folds to false; in-range runtime; unsatisfiable eq keeps a div-by-zero operand) is the corpus cases "an equality against a value outside the operand's range ..." and "an unsatisfiable equality still traps ..." in 06-numeric-model.
     }
 
     #[test]
@@ -9805,8 +9768,6 @@ mod runtime_ops {
         );
         // A non-power-of-two signed divide keeps div_s.
         assert!(lir("(: a Int64)", "(/ a 3)").contains(&Lir::I64DivS));
-
-        // The VALUE parity (unsigned + signed power-of-two div/rem, magnitude, truncate-toward-zero, narrow) is the corpus cases "unsigned power-of-two div/rem strength-reduces ...", "signed power-of-two div/rem truncates toward zero ...", and siblings in 06-numeric-model.
     }
 
     #[test]
@@ -9876,8 +9837,6 @@ mod runtime_ops {
             1,
             "hi 15 !< 15 → keep rem"
         );
-
-        // The VALUE + TRAP parity (mod-identity/div-zero when dividend<divisor; derived-range remainder; trapping dividend kept) is the corpus cases "a dividend provably below its divisor ..." and "a derived-range remainder ..." and "a dividend-below-divisor div fold keeps a trapping dividend's trap" in 06-numeric-model.
     }
 
     #[test]
@@ -9940,8 +9899,6 @@ mod runtime_ops {
             1,
             "10 | 10 → one rem"
         );
-
-        // The VALUE + TRAP parity (nested-modulo collapse across signs; non-dividing no-collapse; trapping operand) is the corpus cases "a nested modulo by a dividing constant collapses ..." and "... does NOT collapse ..." in 06-numeric-model.
     }
 
     #[test]
@@ -10948,13 +10905,6 @@ mod runtime_ops {
             guards(&lir("(: x Int64)", "(let ((y (+ x 1))) (+ y y))")) > 0,
             "full-range binding keeps guard"
         );
-
-        // VALUE PARITY (the guard-elided `(+ y y)` and `(* y y)` over the masked binding compute exactly
-        // 2·(x&255) and (x&255)² — e.g. x=200→400, x=-1→510, x=20→400) is the corpus cases "a kept
-        // let-binding carries its masked initializer's range and the guard-elided doubling computes
-        // correctly (value parity)" and "a kept let-binding's masked range lets a guard-elided multiply
-        // compute correctly (value parity)" in 28-compiler-primitives — this stays a white-box Lir
-        // guard-elision check.
     }
 
     #[test]
@@ -11521,10 +11471,6 @@ mod runtime_ops {
             1,
             "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}"
         );
-
-        // VALUE PARITY (full: x=200→200/0→0/1000→1000 out-of-range; part: x=200→8) is the corpus case
-        // "a branch refinement elides a redundant AND-mask covering the refined range" in
-        // 02-binding-and-control — this stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -11590,10 +11536,6 @@ mod runtime_ops {
             1,
             "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}"
         );
-
-        // VALUE + TRAP parity (sat: x=200→255/0→255/1000→1000; part: x=200→207; a trapping discarded
-        // operand still ÷0-traps) is the corpus case "a saturating OR-mask over a refined range folds to
-        // the constant" in 02-binding-and-control — this stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -11658,11 +11600,6 @@ mod runtime_ops {
             2,
             "C2 ⊄ C1 → kept"
         );
-
-        // VALUE + TRAP parity (`(& (| v 15) 15)`→15 for any v; a trapping discarded operand still ÷0-traps)
-        // is the corpus cases "OR-then-mask absorption folds to the mask constant on a runtime operand" and
-        // "OR-then-mask absorption does not discard a trapping runtime operand" in 06-numeric-model — this
-        // stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -11742,10 +11679,6 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an or in the THEN branch gives no single-variable bound — guard MUST be kept, got: {or_then:?}"
         );
-        // VALUE + TRAP parity (asub: 50→49; aadd: 99→100; oelse: 50→49; two-var and: (5,3)→6; the
-        // wrong-polarity or still traps at MIN) is the corpus case "a conjunction/disjunction range
-        // condition refines both bounds so guards are elided" in 02-binding-and-control — this stays a
-        // white-box Lir guard-count check.
     }
 
     #[test]
@@ -11885,9 +11818,6 @@ mod runtime_ops {
             2,
             "`x>=5` must NOT decide `x>5` (x=5 is in range) — both compares stay, got: {ge_edge:?}"
         );
-        // VALUE parity (fold: x=5→1/3→1/10→3; edge: x=5→2 at the boundary; edge-ge: x=5→2) is the corpus
-        // case "an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it"
-        // in 02-binding-and-control — this stays a white-box Lir compare-count check.
     }
 
     #[test]
@@ -11968,9 +11898,6 @@ mod runtime_ops {
             !lo.contains(&Lir::ConstI64(1)),
             "the dead inner branch `1` is eliminated by the point-fact fold, got: {lo:?}"
         );
-        // VALUE parity (hi: x=5→1/4→0; lo: x=5→2/9→0) is the corpus case "an equality point fact folds an
-        // inner range comparison, both directions" in 02-binding-and-control — this stays a white-box Lir
-        // compare-count check.
     }
 
     #[test]
@@ -12045,9 +11972,6 @@ mod runtime_ops {
             !anded.contains(&Lir::ConstI64(1)),
             "the `and`-squeeze also reaches [5,5] and folds the inner `> 5` (1-arm dead), got: {anded:?}"
         );
-        // VALUE parity (nested: x=5→2/4→4/9→3; anded: x=5→2/6→3) is the corpus case "a two-sided squeeze
-        // refines to an exact point and folds an inner comparison" in 02-binding-and-control — this stays a
-        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -12115,9 +12039,6 @@ mod runtime_ops {
             !pinned.contains(&Lir::ConstI64(2)),
             "the repeated `= 5`'s `2` arm is dead under the [5,5] point, got: {pinned:?}"
         );
-        // VALUE parity (outside: x=5→2/3→0; pinned: x=5→1/7→0) is the corpus case "an equality point fact
-        // decides a DIFFERENT equality test in the then branch" in 02-binding-and-control — this stays a
-        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -12193,9 +12114,6 @@ mod runtime_ops {
             !below.contains(&Lir::ConstI64(1)),
             "the `> -1` true-arm `1` is dead under the [-3,-3] point (signed, not magnitude), got: {below:?}"
         );
-        // VALUE parity (above: x=-3→1/-2→0; below: x=-3→2/0→0) is the corpus case "a NEGATIVE-constant point
-        // fact folds an inner comparison with the correct SIGN" in 02-binding-and-control — this stays a
-        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -12242,8 +12160,6 @@ mod runtime_ops {
             !code.contains(&Lir::ConstI64(2)),
             "the point fact flows n->y through the let+arith, folding `> y 3` true and killing the `2` arm, got: {code:?}"
         );
-        // VALUE parity (n=5→1, n=4→0) is the corpus case "a point fact flows through a let binding into a
-        // compare fold" in 02-binding-and-control — this stays a white-box Lir compare-check.
     }
 
     #[test]
@@ -12453,11 +12369,6 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::If(_) | Lir::Select)),
             "unequal branches keep a branch/select, got: {kept:?}"
         );
-        // The VALUE + TRAP-SAFETY parity (collapsed form = 7 for every x; the negative form = 7/9; a
-        // trapping `(> (/ 10 n) 0)` condition blocks the collapse and traps at n=0) is the corpus cases
-        // "an if whose branches refine to the same constant collapses …", "… do NOT refine …", and "a
-        // trapping condition blocks the equal-branch collapse and still traps" in 28-compiler-primitives —
-        // this stays a white-box Lir collapse/no-compare check.
     }
 
     #[test]
@@ -16155,10 +16066,6 @@ mod recursion {
             shl_inside, 0,
             "no `(* n 2)` shift remains inside the loop body: {code:?}"
         );
-        // Value parity of the hoisted bound is the corpus case "a loop-invariant multiply in the loop
-        // condition preserves the value" (spec/semantics/09-functions.sexp): f(3)=15, f(0)=0 run via
-        // cdz-run. The 0-iteration trapping-overflow case is gate-verified in binding-and-control.sexp —
-        // the hoisted trapping multiply still traps on the entry condition check, as it would in the loop.
     }
 
     #[test]
@@ -16265,9 +16172,6 @@ mod recursion {
             0,
             "no `(* n 2)` remains inside the loop body (the body copy reads the hoisted slot): {code:?}"
         );
-        // Value parity — the single hoisted `(* n 2)` feeds both the condition and the body correctly —
-        // is the corpus case "a loop-invariant used in both the condition and the body is hoisted once
-        // with the same value" (spec/semantics/09-functions.sexp): f(3) = 6 * (3*2) = 36, run via cdz-run.
     }
 
     #[test]
