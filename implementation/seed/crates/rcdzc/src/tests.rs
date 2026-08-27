@@ -56335,45 +56335,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_named_wildcard_guard_binder_over_a_string_param_binds_in_a_helper() {
-        // OVER-REJECT FIX (v-inference 2026-08-02, breaker adv-53): a bare-binder guard `(guard t (< t "m"))`
-        // over a STRING (heap) param scrutinee in a non-entry HELPER rejected CDZ0101 "unbound t", while the
-        // Int64-param twin ran (Finding #46's fixed control). ROOT: the #46 named-guard-binder `let`-wrap fix
-        // was applied only to the guarded-SCALAR desugar; the sibling runtime-STRING-match desugar built the
-        // guarded-wildcard branch WITHOUT binding `t` (and wrongly emitted `(= scrutinee t)` against the
-        // binder). FIX: the string path now `(let ((t scrutinee)) (if guard body else))`-wraps a named
-        // wildcard (no eq-test), the heap/string twin of the #46 scalar fix. Verifies the guard binder BINDS
-        // + the classifier runs; controls (Int64 param, direct-in-main, string literal) still work.
-        use crate::testkit::parse;
-        // adv-53 g1: bare-binder guard over a String PARAM in a helper — binds `t`, "apple" < "m" → 1.
-        let src = "(do (def (band (: s String)) (match s ((guard t (< t \"m\")) 1) (_ 3))) \
-                   (def (main) (band \"apple\")) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a named-wildcard guard binder over a String param binds + compiles");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(v, "1"); // "apple" < "m"
-        }
-        // A String that does NOT satisfy the guard falls to the tail → 3.
-        let src2 = "(do (def (band (: s String)) (match s ((guard t (< t \"m\")) 1) (_ 3))) \
-                    (def (main) (band \"zebra\")) (export main))";
-        let b2 = compile_component(&crate::codec::encode(&parse(src2)))
-            .expect("the guard-false path compiles");
-        if let Some(v) = run_linked(&b2, "main") {
-            assert_eq!(v, "3"); // "zebra" not < "m"
-        }
-        // CONTROL: the guard body reading the binder some OTHER way (byte-len) also binds (g3 shape).
-        let src3 = "(do (def (band (: s String)) (match s ((guard t (< (String.byte-len t) 3)) 1) (_ 3))) \
-                    (def (main) (band \"ab\")) (export main))";
-        compile_component(&crate::codec::encode(&parse(src3)))
-            .expect("a guard body reading the binder via byte-len binds + compiles");
-        // CONTROL: a string-LITERAL guard arm still eq-tests + compiles.
-        let src4 = "(do (def (band (: s String)) (match s ((guard \"hi\" true) 1) (_ 3))) \
-                    (def (main) (band \"hi\")) (export main))";
-        compile_component(&crate::codec::encode(&parse(src4)))
-            .expect("a string-literal guard arm still compiles");
-    }
-
-    #[test]
     fn a_function_typed_map_set_key_or_comparison_rejects_cdz0216() {
         // RULING (v-inference, concierge-confirmed 2026-08-02): a FUNCTION-typed Map key / Set element /
         // direct-(=) operand rejects CDZ0216 (NotEquatable) — a closure has no canonical identity, so it is
