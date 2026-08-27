@@ -493,7 +493,7 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
             "__b.atom_leaf(cadenza_ast::ast::Leaf::Bool({val_expr}))"
         )),
         Ty::Int(_) => Ok(format!(
-            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: num_bigint::BigInt::from(({val_expr}) as i64), radix: cadenza_ast::ast::Radix::Dec }})"
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: cadenza_ast::ast::IntValue::from_i64(({val_expr}) as i64), radix: cadenza_ast::ast::Radix::Dec }})"
         )),
         // A CHAR is a native `char`; String/Symbol are `String`; Bytes is `Vec<u8>` — each a single leaf
         // (std-only, no external type beyond `Arc`). `Arc::from(&str)`/`Arc::from(&[u8])` build the leaf's
@@ -524,11 +524,12 @@ fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Rejec
             ))
         }
         // A BIGINT is a `cdz_num::Big` → a KIND_INT `Leaf::Int` (byte-identical to a fixed Int's int-body:
-        // the runtime BigInt leaf IS a KIND_INT leaf), framed `(: <int> BigInt)`. Convert the runtime bignum
-        // to `num_bigint::BigInt` (what `cadenza_ast::Leaf::Int` holds) via its exact decimal string —
-        // `parse_bytes(.., 10)` never fails on `to_decimal_string`'s output.
+        // the runtime BigInt leaf IS a KIND_INT leaf), framed `(: <int> BigInt)`. `cadenza_ast::Leaf::Int`
+        // now holds an `IntValue` (the dependency-light rep, #3926); build it from the runtime bignum's exact
+        // decimal string via `num_bigint` (a linked extern) → `IntValue::from_bigint` — `parse_bytes(.., 10)`
+        // never fails on `to_decimal_string`'s output.
         Ty::BigInt => Ok(format!(
-            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: num_bigint::BigInt::parse_bytes(({val_expr}).to_decimal_string().as_bytes(), 10).unwrap(), radix: cadenza_ast::ast::Radix::Dec }})"
+            "__b.atom_leaf(cadenza_ast::ast::Leaf::Int {{ value: cadenza_ast::ast::IntValue::from_bigint(&num_bigint::BigInt::parse_bytes(({val_expr}).to_decimal_string().as_bytes(), 10).unwrap()), radix: cadenza_ast::ast::Radix::Dec }})"
         )),
         // A RATIONAL is a `cdz_num::Rational` → a single NAME leaf whose text is `num/den` (normalized:
         // lowest terms, sign on num, den>0), framed `(: <num>/<den> Rational)` — NOT a record and NOT the
@@ -725,7 +726,7 @@ fn emit_value_reconstruct(
         Ty::Int(_) => Ok(decode_leaf(
             arenas,
             node,
-            "cadenza_ast::ast::Leaf::Int { value, .. } => i64::try_from(value).ok()",
+            "cadenza_ast::ast::Leaf::Int { value, .. } => value.to_i64()",
         )),
         // The leaf-scalar inverses of the `emit_value_form` Char/String/Bytes arms.
         Ty::Char => Ok(decode_leaf(
@@ -744,9 +745,11 @@ fn emit_value_reconstruct(
             "cadenza_ast::ast::Leaf::Bytes(__b) => Some(__b.to_vec())",
         )),
         // A FLOAT leaf inverse: reconstruct the f64/f32 EXACTLY from the `Decimal` by rebuilding its
-        // `<sig>e<exp>` scientific text (sign + BigInt significand + base-10 exponent) and re-parsing —
-        // `parse(from_f64(f)) == f` bit-exact (the shortest decimal round-trips). `.ok()` → None on the
-        // (unreachable-for-a-valid-leaf) parse failure. Float32 parses as `f32` (its own shortest form).
+        // `<sig>e<exp>` scientific text (sign + significand + base-10 exponent) and re-parsing. `Decimal`'s
+        // significand is now a big-endian byte magnitude (`Vec<u8>`, #3926 — no `Display`), so render it as a
+        // decimal via `num_bigint` (a linked extern): `BigInt::from_bytes_be(Plus, &significand)` (non-negative;
+        // the sign is `__d.negative`). `parse(from_f64(f)) == f` bit-exact (the shortest decimal round-trips).
+        // `.ok()` → None on the (unreachable-for-a-valid-leaf) parse failure. Float32 parses as `f32`.
         Ty::Float(ft) => {
             let parse_ty = if ft.ground_width() == 32 {
                 "f32"
@@ -757,17 +760,18 @@ fn emit_value_reconstruct(
                 arenas,
                 node,
                 &format!(
-                    "cadenza_ast::ast::Leaf::Float(__d) => format!(\"{{}}{{}}e{{}}\", if __d.negative {{ \"-\" }} else {{ \"\" }}, __d.significand, __d.exponent).parse::<{parse_ty}>().ok()"
+                    "cadenza_ast::ast::Leaf::Float(__d) => format!(\"{{}}{{}}e{{}}\", if __d.negative {{ \"-\" }} else {{ \"\" }}, num_bigint::BigInt::from_bytes_be(num_bigint::Sign::Plus, &__d.significand), __d.exponent).parse::<{parse_ty}>().ok()"
                 ),
             ))
         }
-        // A BIGINT leaf inverse: read the `Leaf::Int` num_bigint value and rebuild `cdz_num::Big` from its
-        // little-endian base-2^32 limbs (`to_u32_digits` → the exact `mag` layout, trailing-zero-stripped;
+        // A BIGINT leaf inverse: read the `Leaf::Int` value (now an `IntValue`, #3926) and rebuild
+        // `cdz_num::Big` from its little-endian base-2^32 limbs. Bridge through `num_bigint` (a linked extern)
+        // via `IntValue::to_bigint`, then `to_u32_digits` → the exact `mag` layout (trailing-zero-stripped;
         // sign maps to `Big.neg`). Exact, no i64 clamp.
         Ty::BigInt => Ok(decode_leaf(
             arenas,
             node,
-            "cadenza_ast::ast::Leaf::Int { value, .. } => { let (__sg, __mag) = value.to_u32_digits(); Some(cdz_num::Big { neg: __sg == num_bigint::Sign::Minus, mag: __mag }) }",
+            "cadenza_ast::ast::Leaf::Int { value, .. } => { let (__sg, __mag) = value.to_bigint().to_u32_digits(); Some(cdz_num::Big { neg: __sg == num_bigint::Sign::Minus, mag: __mag }) }",
         )),
         // A RATIONAL leaf inverse: read the `num/den` NAME text, split on `/`, parse each half into a
         // `cdz_num::Big` (num_bigint parse → LE u32 limbs, exact) and rebuild via `Rational::new` (which
