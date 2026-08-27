@@ -422,3 +422,52 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
 Each increment lands as a gh PR (base origin/main, admin-merge on 0-regressed LOCAL gate + the rc-leak
 probe family — CI is starved, local green is merge-truth), reviewed by v-runtime against the acceptance/
 fence set on the debug runtime `052KQzQP` before merge, with the marker flip in the same PR (per v-nix).
+
+---
+
+## §4 THE UNIFYING GENERAL PASS: a binding-global consuming analysis (scoped 2026-08-27, operator-cleared, circulated to v-runtime — NO emit yet)
+
+The reclaimability audit (tick 27n) + the adv54b UAF routing converge on ONE root cause and ONE fix. Four
+open problems are all the SAME machinery mis-deciding **consuming vs borrow per binder occurrence**, then
+placing dup/drop LOCALLY without binding-global knowledge:
+
+- **dqe dual-use leak** — a binding used in a deep tuple-index projection (scalar leaf) + a walker (value-eq/
+  ordering) is ALL-BORROW, but the Proj arm marks a SPURIOUS dup at the leaf (never released) → leak. Needs:
+  do NOT dup when the binder is never genuinely consumed.
+- **adv54b UAF** (operator-routed to me, 2-lane) — a match-binder used in TWO consuming `StrToBytes`/
+  `BytesCompact` positions feeding one `Bytes.concat`: the 2nd consuming use's dup is MISSED → double-free.
+  Needs: DO dup the Nth consuming use. (Mirror of dqe.)
+- **ZIP loop-exit** (deferred #4304) — a loop-carried OWNED param (split-tail chain) not dropped at the
+  loop-exit arm. Needs: drop a dead owned binding at each exit that doesn't consume it.
+- **audit residual** (~10k objs: spines/tries/tables/lists, all build→process→SCALAR) — dead structures not
+  dropped after their last borrow. Needs: drop a dead owned binding after its last (borrowing) use.
+
+### The single analysis
+For each binder, compute — GLOBALLY over its scope, not locally per occurrence — the multiset of its uses
+classified precisely as **consume** (ownership transfers out: ctor element, call/closure arg, `StrToBytes`/
+`BytesCompact`/consume-op operand, a `RestFrom` tail-slice, a nested-compound projection whose CHILD escapes)
+vs **borrow** (read-without-retain: scalar-leaf projection chain, length, `value-eq`/ordering walk, match
+dispatch, `SumPayload` scrutinee read). Then:
+1. **dup placement** = one dup per consuming use AFTER the first that has a later live use (the Nth-consume
+   rule) — fixes adv54b (2nd consume dup'd) and does NOT fire for an all-borrow binder — fixes dqe.
+2. **drop placement** = a binder with ≥1 borrow-only survivor at end-of-scope / loop-exit gets exactly one
+   drop of its surviving reference — fixes ZIP + the audit residual + the dqe survivor.
+The current passes (`binding_escapes_dup_aware` + `mark_binder_dups`) already compute a LOCAL approximation;
+the fix is to make the consume/borrow classification AGREE between them and be driven by the binding-global
+consume count, so a local Proj/StrToBytes arm no longer over- or under-marks (the 36/43 regressions were
+local tweaks fighting the global truth).
+
+### adv54b two-lane (lands FIRST, together with v-runtime)
+- **MINE (compiler):** in `binding_escapes_dup_aware`/`mark_binder_dups`, dup a binding used in ≥2 consuming
+  `StrToBytes`/`BytesCompact` positions (the missed-2nd-consume). Same class as the L2767 single-use fix.
+- **v-runtime:** `op_bytes_compact`→`bytes_flatten` (cdz-runtime lib.rs:3649) mutates in place with NO rc==1
+  guard; making it rc-aware (path-copy when shared) is theirs. BOTH needed: without the dup, concat double-
+  frees; with the dup but no rc-guard, in-place flatten still corrupts a shared node. Land together.
+- **UAF oracle:** v-runtime's detector branch `3c935c5a9`; v-runtime peer-verifies.
+
+### Acceptance / guards (every increment)
+whole-corpus `--check` 0-regressed + the UAF detector (`3c935c5a9`) clean + flap-detect (run-to-run live-
+objects deterministic) + value-wrong-grep. Increment order: (1) adv54b 2-lane (UAF, correctness — FIRST);
+(2) dqe dual-use (the spurious-dup mirror, ~27 objs); (3) ZIP loop-exit (deferred spec §2c.4); (4) the
+audit residual spine/dead-binding drops. Single-writer (me) on select.rs's dup/escape/loop-drop machinery;
+circulate each to v-runtime BEFORE emit. NO emit in this design tick.
