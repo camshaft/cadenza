@@ -7660,6 +7660,46 @@ fn hoist_performing_capture_closure(
                 continue;
             }
             let (binder, value) = (kv[0], kv[1]);
+            // FORM D (branch-selected capture, cpc1) — value is `(if C X Y)` where a branch is a
+            // performing-capture creation-wrapper closure `(let ((a <perform>)…) LAMBDA)`. Hoisting the draw
+            // unconditionally would be UNSOUND (the other branch does not draw), so instead DISTRIBUTE the
+            // let-over-if into an if-over-lets: `(let (…(f (if C X Y))…) BODY)` → `(if C (let (…(f X)…) BODY)
+            // (let (…(f Y)…) BODY))`. Each branch is then a plain `(let ((f <closure>)) BODY)` the next
+            // fixpoint iteration's FORM A folds (a performing branch hoists its draw; a pure branch folds
+            // directly), and the while-loop's `deep_fresh_copy` gives the duplicated BODY coherent parents.
+            // Sound: exactly one branch runs, so BODY executes once and the draw fires only in the taken
+            // branch. Gated on a branch actually being a performing creation-wrapper (else no distribution).
+            if let Some(iff) = db.ast.as_form(value, "if").map(|t| t.to_vec())
+                && iff.len() == 3
+                && {
+                    let branch_is_perf_wrapper = |db: &mut Db, b: StructId| {
+                        db.ast.as_form(b, "let").map(|t| t.to_vec()).is_some_and(|inner| {
+                            inner.len() == 2
+                                && body_returns_lambda(db, inner[1])
+                                && matches!(db.ast.get(inner[0]).clone(), Struct::List(ps) if ps.iter().any(|&ip| match db.ast.get(ip).clone() {
+                                    Struct::List(kv2) if kv2.len() == 2 =>
+                                        subtree_reaches_discharged_op(db, kv2[1], ctx) || body_reaches_foreign_perform(db, kv2[1], ctx),
+                                    _ => false,
+                                }))
+                        })
+                    };
+                    branch_is_perf_wrapper(db, iff[1]) || branch_is_perf_wrapper(db, iff[2])
+                }
+            {
+                let (cond, then_v, else_v) = (iff[0], iff[1], iff[2]);
+                let mk_branch = |db: &mut Db, bval: StructId| {
+                    let bpair = db.push_list(vec![binder, bval]);
+                    let mut bp = pairs.clone();
+                    bp[i] = bpair;
+                    let bp_list = db.push_list(bp);
+                    let lh = db.push_name("let");
+                    db.push_list(vec![lh, bp_list, form[1]])
+                };
+                let then_let = mk_branch(db, then_v);
+                let else_let = mk_branch(db, else_v);
+                let if_head = db.push_name("if");
+                return Some(db.push_list(vec![if_head, cond, then_let, else_let]));
+            }
             // FORM B (arg'd FACTORY, cc3) — value is `(mk perf-arg…)`: a non-recursive factory whose body
             // returns a lambda, with ≥1 arg reaching a discharged/foreign perform. The performing arg's draw
             // re-runs per application. HOIST each performing arg to a fresh `#cap` wrapping the binding, then

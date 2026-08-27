@@ -8813,7 +8813,13 @@
 ; lands. Declines on ALL targets today (shared-frontend fold, no rust runtime fallback for this
 ; shape) — the 50 oracle is derivation-from-adjudicated-semantics, confirmed on flip.
 
-(case "cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist"
+(case "cpc1 a conditionally-selected performing capture folds via the branch-aware distribution"
+  (doc    "A closure bound to an `if` whose branches select between a performing capture-once closure and a
+           pure one — `(let ((f (if (> n 0) (let ((a (St.next))) (fn (x) (* a x))) (fn (x) x)))) (f 10))`.
+           FOLDS: the branch-aware distribution rewrites `(let ((f (if C X Y))) BODY)` → `(if C (let ((f X))
+           BODY) (let ((f Y)) BODY))`, so the performing branch becomes a plain capture-once closure the
+           #3894 hoist threads once (draw fires only in the taken branch) and the pure branch folds directly.
+           At n=5 the then-branch is taken: a = St.next = 5 captured once, (f 10) = 5*10 = 50.")
   (input (do
     (effect St (op next (-> Int64)))
     (def (main (: n Int64))
