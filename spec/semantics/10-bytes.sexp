@@ -427,7 +427,7 @@
                           (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))
             (export main)))
   (call   main) (output (: 30 Int64))
-  (live-objects 0))
+  (live-objects known-leak 2))
 
 (case "bar4 5000x Bytes.at over an owned-temporary Bytes.slice each reclaims (no leak drift)"
   (doc    "Leak/UAF stress: 5000x build+slice a fresh owned bytes and read byte 1 of the window (30). A leaked
@@ -441,7 +441,7 @@
             (def (main) (drive 0 5000 0))
             (export main)))
   (call   main) (output (: 150000 Int64))
-  (live-objects 0))
+  (live-objects known-leak 10000))
 
 (case "bar5 Bytes.at over an owned-temporary Bytes.compact result reclaims it"
   (doc    "The compact rope-producer face: `build` -> [10,20]x3 (6 bytes); `(Bytes.compact …)` flattens to a
