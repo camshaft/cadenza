@@ -210,6 +210,31 @@ representation is uniform at every depth. No arity or depth limits.
   rule) — their canonical byte form orders entries/elements by a member-derived key, as records order
   by field key. The tag change is orthogonal to this ordering, but the byte-stability gate covers both.
 
+### 3.6 The tag family extends to `=` (field-pair) and `.` (member access) — RULED BY OPERATOR (2026-08-27)
+
+The operator extended the scheme beyond the five collection constructors to the two other *pervasive
+value-structural heads*, each of which is recognized by head text today and would otherwise be
+string-matched everywhere:
+- **`=` — the record field-pair marker** `(= key value)`. It is a distinct node so the ML printer can
+  attach a comment to a field; making it a **dedicated payloadless leaf kind** keeps that while removing
+  the text dispatch. **Disambiguation win:** if the field-pair `=` shares its spelling with the equality
+  operator `(= a b)` (to verify — likely, given the corpus uses `=` for both), a dedicated field-pair
+  tag *separates the two structurally* instead of relying on position/context. (`FieldPair` tag.)
+- **`.` — member access / projection** `(. obj key)`. Ubiquitous; same treatment — a dedicated leaf
+  kind (`Member`/`Dot` tag), dispatched by kind, not by matching the `.` head text.
+
+These are **not** compound-VALUE constructors (they don't join `CompoundCtor`); they are sibling reserved
+structural tags. They ride the same migration mechanism (M0 recognizer → M1 dual-read → M2 leaf kind +
+surface → M3 delete text dispatch), the same no-backward-compat end state, and the same leaf-kind codec
+addition. The s-expr surface for `=`/`.` is TBD at the reader-design increment (they are not `#word(…)`
+literals — they appear *inside* forms; e.g. a field pair inside `#record(…)`).
+
+**D-SCOPE (open, low-stakes):** this wave = **7 tags** — `list`/`tuple`/`record`/`map`/`set` + `=` +
+`.`. Whether to also promote the remaining reserved grammar heads (`if`/`let`/`match`/`:`/`fn`/`quote`/…)
+to leaf tags — converging on the frozen contract's "every node names its kind by a prelude symbol"
+endgame — is deferred to a follow-on pass. **Recommendation: land the seven pervasive value-structural
+tags now; sweep the rest later.**
+
 ## 4. Emitters that must produce the tag
 
 Grouped by the two current spellings. Under Layer 1 these are unchanged; under Layer 2 (2b) each is
