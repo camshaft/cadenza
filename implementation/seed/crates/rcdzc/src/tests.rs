@@ -41833,47 +41833,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_block_wrapped_branch_perform_in_a_let_init_folds_through_the_block() {
-        // adv-69 through-block fold (v-effects, the commuting-conversion arc). A branch-performing conditional
-        // wrapped in a BLOCK inside a `let`-init — `(let ((v (let ((b true)) (if b (St.get) 99)))) (+ (* 10 v)
-        // (St.get)))`. Historically this DECLINED as a safe floor (the alternative was DROPPING the branch
-        // perform's state advance at the block boundary: seeded 3 the trailing `(St.get)` read the block-ENTRY
-        // state → 33, where 34 is correct). The hoist's Site 4 lifts a conditional DIRECTLY a `let`-init, but a
-        // `let`-wrapped one was opaque to it. Site 6 (the through-block commuting conversion) now FLOATS the
-        // pure wrapper binding `b` out into the enclosing `let` (`(let ((b true) (v (if b (St.get) 99))) …)`),
-        // making the conditional a DIRECT init that Site 4 then distributes — so the branch's advance threads
-        // and the trailing `(St.get)` reads 4 → 10*3 + 4 = 34.
-        let src = "(do (effect St (op get (-> Unit Int64))) \
-                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
-                     (let ((v (let ((b true)) (if b (St.get) 99)))) (+ (* 10 v) (St.get))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a block-wrapped branch perform in a let-init folds through the block"),
-                "main"
-            ),
-            34,
-            "the through-block fold must thread the branch advance → 34 (was the safe-floor decline / silent 33)"
-        );
-        // The direct-init shape (no block wrapper) the hoist ALWAYS lifted must still fold to 34 (Site 6 does
-        // not perturb the working Site-4 path).
-        let direct = "(do (effect St (op get (-> Unit Int64))) \
-                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
-                     (let ((v (if true (St.get) 99))) (+ (* 10 v) (St.get))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(direct)))
-                    .expect("a direct-init branch perform in a let-init folds"),
-                "main"
-            ),
-            34,
-            "the direct-init branch perform must still fold to 34 (no over-decline of the Site-4 hoist path)"
-        );
-    }
-
-    #[test]
     fn a_block_wrapped_branch_perform_in_a_nested_arm_resume_value_declines_not_miscompiles() {
         // adv-69 a3 sub-face (breaker probe-a3, block-outstate battery). The SAME block-boundary out-state
         // drop as the let-init floor, but at a NESTED handler's arm RESUME-VALUE performing the OUTER op:
@@ -41904,54 +41863,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(direct))).is_err(),
             "a direct branch perform in a nested arm resume-value must decline too, not miscompile to 33"
-        );
-    }
-
-    #[test]
-    fn a_block_wrapped_branch_perform_in_a_scrutinee_or_statement_declines_not_miscompiles() {
-        // adv-69 g3 + c3 sub-faces (breaker probe-g3/c3, block-outstate battery). Same block-boundary
-        // out-state drop as the let-init floor, at two more positions the hoist doesn't reach when the
-        // conditional is BLOCK-wrapped.
-        // g3 — MATCH-SCRUTINEE: `(match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get))))`. Site 5
-        // lifts a DIRECT branch-performing scrutinee; the block-wrapped one now FOLDS via the Site 6 through-
-        // block commuting conversion (floats `b` out, exposing the direct conditional) → 34 (was safe-floor / 33).
-        let g3 = "(do (effect St (op get (-> Unit Int64))) \
-                   (def (main) (handle St 3 ((get (u) s (resume s (+ s 1)))) \
-                     (match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get)))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(g3))).expect(
-                    "a block-wrapped match-scrutinee branch perform folds through the block"
-                ),
-                "main"
-            ),
-            34,
-            "the through-block fold threads the scrutinee branch advance → 34"
-        );
-        // c3 — non-tail DO-STATEMENT: `(do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))` — Site
-        // 1 hoists a DIRECT non-last branch-performing item, but a block wrapper drops the `put` advance → 33/73.
-        let c3 = "(do (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
-                   (def (main (: x Int64)) (handle St x ((get (u) s (resume s s)) (put (v) _s (resume unit v))) \
-                     (do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x)))) \
-                   (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(c3))).is_err(),
-            "a block-wrapped branch perform in a non-tail do-statement must decline, not miscompile to 33"
-        );
-        // c3-nested (v-effects self-probe): the SAME do-statement drop, but the block-wrapped perform is of the
-        // OUTER effect and sits in a `do`-statement INSIDE a nested inner handler's body — the outer reduction's
-        // scrutinee/statement scanner previously STOPPED at the nested `Handle` and missed it (33 vs 73). The
-        // fix descends into a nested handle's body keeping the outer ctx (ctx-keyed, so no over-decline of the
-        // inner handler's own shapes). Mirrors the a4 let-init nested-body fix for the do-statement scanner.
-        let c3_nested = "(do (effect A (op ga (-> Unit Int64)) (op pa (-> Int64 Unit))) (effect B (op gb (-> Unit Int64))) \
-                   (def (main (: x Int64)) (handle A x ((ga (u) s (resume s s)) (pa (v) _s (resume unit v))) \
-                     (handle B 100 ((gb (u) t (resume t t))) \
-                       (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x))))) \
-                   (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(c3_nested))).is_err(),
-            "a block-wrapped outer-perform in a do-statement inside a nested handle body must decline, not miscompile to 33"
         );
     }
 

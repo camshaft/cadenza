@@ -310,6 +310,45 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)"
+  (doc    "The match-scrutinee face of the through-block fold: `(match (let ((b true)) (if b (St.get) 99)) (v
+           (+ (* 10 v) (St.get))))`. Site 6 floats the pure wrapper `b` out, exposing the direct conditional
+           scrutinee Site 5 lifts, so the branch advance threads → the trailing `(St.get)` reads 4 → 10*3 + 4
+           = 34 (was the safe-floor decline / silent 33).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s (+ s 1))))
+                (match (let ((b true)) (if b (St.get) 99)) (v (+ (* 10 v) (St.get))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
+(case "a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)"
+  (doc    "A block-wrapped branch-performing conditional as a non-tail `do`-statement: `(do (let ((x true))
+           (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))`. Site 1 hoists a DIRECT non-last branch-performing
+           item, but a block wrapper hides it, so the `put` advance would be dropped — the fold declines
+           cleanly (a safe floor) rather than miscompile.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (main (: x Int64))
+              (handle St x ((get (u) s (resume s s)) (put (v) _s (resume unit v)))
+                (do (let ((x true)) (if x (St.put 7) unit)) (+ (* 10 (St.get)) x))))
+            (export main)))
+  (declines))
+
+(case "a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)"
+  (doc    "The c3 do-statement drop where the block-wrapped perform is of the OUTER effect and sits in a
+           `do`-statement INSIDE a nested inner handler's body: the outer reduction's statement scanner would
+           miss it past the nested `Handle`, so the fold declines cleanly rather than drop the advance.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64)) (op pa (-> Int64 Unit))) (effect B (op gb (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle A x ((ga (u) s (resume s s)) (pa (v) _s (resume unit v)))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (do (let ((k true)) (if k (A.pa 7) unit)) (+ (* 10 (A.ga)) x)))))
+            (export main)))
+  (declines))
+
 (case "a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)"
   (doc    "The heap-state face: the block-wrapped branch performs a HEAP-accumulating effect — a `Log.add`
            that `List.push`es onto the handler's list state — in the let-init `(let ((v (let ((b true)) (if b
