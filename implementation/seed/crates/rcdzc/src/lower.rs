@@ -1047,7 +1047,15 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     trace!(target: "rcdzc::lower", node = id.0, "(if c (op …p) (op …q)) → (op …(if c pᵢ qᵢ)) — common-operator hoist");
                     core
                 }
-                _ => Core::If { cond, then_, else_ },
+                // A plain runtime `if`. Both branches are CONDITIONALLY reached (guarded by `cond`), so a
+                // branch that const-folded to a provable ConstTrap DEMOTES to a runtime `Core::Trap` — it traps
+                // only when taken, not at compile time (cn02 / operator ruling). An unconditional trap on the
+                // strict spine is not here, so it still surfaces CDZ0304.
+                _ => {
+                    let then_ = demote_conditional_trap(db, then_);
+                    let else_ = demote_conditional_trap(db, else_);
+                    Core::If { cond, then_, else_ }
+                }
             }
         }
         // A SHORT-CIRCUITING connective. Delegated to `fold_short_circuit`, which also serves the
@@ -5687,7 +5695,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         scrutinee,
         arms: probes
             .into_iter()
-            .map(|(probe, guard, body)| crate::core::MatchArm { probe, guard, body })
+            .map(|(probe, guard, body)| crate::core::MatchArm {
+                probe,
+                guard,
+                // An arm body is CONDITIONALLY reached (only when its probe matches), so a provable ConstTrap
+                // there demotes to a runtime `Core::Trap` — traps when the arm is taken, not at compile time
+                // (cn02 / operator ruling), the match twin of the runtime-`if` branch demote.
+                body: demote_conditional_trap(db, body),
+            })
             .collect(),
     }
 }
@@ -21353,6 +21368,30 @@ fn ordering_discs(db: &mut Db, id: StructId) -> Option<(u32, u32, u32)> {
         }
     }
     Some((lt?, eq?, gt?))
+}
+
+/// A branch/arm occurrence placed in a CONDITIONALLY-reached position — an `if` branch, a `match` arm body.
+/// If it const-folded to a PROVABLE `ConstTrap` (a compile-visible divide-by-zero / overflow / out-of-bounds),
+/// DEMOTE it to a runtime `Core::Trap`: the trap fires only when the branch is actually TAKEN, matching strict
+/// branch-lazy evaluation and the cn02 precedent (operator ruling 2026-08-27: "if branch reachability depends on
+/// a runtime value we should absolutely not error out and should trap at runtime"). `(if (> n 0) 7 (/ 1 0))` at
+/// n>0 must return 7, not compile-error.
+///
+/// ONLY a `ConstTrap` is demoted — a NON-trap poison (an ill-FORMED branch: an unbound name, a type fault) stays
+/// a poison, a static well-formedness fault the program is rejected for regardless of reachability. An
+/// UNCONDITIONAL `ConstTrap` (on the strict spine, NOT a guarded branch) is never routed here, so it still
+/// surfaces CDZ0304 via `collect_reached_poisons` / emit — the "statically-unconditional trap" carve-out the
+/// ruling keeps. A `(const ...)` demand likewise still surfaces CDZ0304 (its ConstTrap path / `const_eval`).
+/// `Core::Trap` is stack-polymorphic (an `unreachable`), so it validates in the branch's result position.
+fn demote_conditional_trap(db: &mut Db, branch: StructId) -> StructId {
+    if let Core::Poison(r) = core_of(db, branch)
+        && r.code == Some(Code::ConstTrap)
+    {
+        let ty = crate::infer::type_of(db, branch);
+        trace!(target: "rcdzc::lower", branch = branch.0, "demote a provable ConstTrap in a conditionally-reached branch to a runtime Core::Trap (cn02 / operator ruling)");
+        return synth_core(db, Core::Trap, ty);
+    }
+    branch
 }
 
 /// The type to use for a comparison's compound-ORDERABILITY check (and the `ValueCmp` descriptor). The type

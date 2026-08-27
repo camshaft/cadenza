@@ -2210,6 +2210,44 @@
   (output (: 1 Int64))
   (live-objects 0))
 
+; --- Primitive 2: a compile-provable arith TRAP under a RUNTIME branch traps at RUNTIME, not at compile ------
+; Operator ruling 2026-08-27 (per cn02): "if branch reachability depends on a runtime value we should absolutely
+; not error out and should trap at runtime." A `(/ 1 0)` (or any provable overflow/OOB) in an `if` branch / `match`
+; arm is CONDITIONALLY reached, so it DEMOTES to a runtime trap (fires only when taken) rather than hard-erroring at
+; compile. CDZ0304 is kept ONLY under a `(const ...)` demand (cn02d / cdv2) or a STATICALLY-UNCONDITIONAL trap.
+
+(case "dzb1 a const divide-by-zero in an UNTAKEN if-branch does NOT compile-error; the taken branch returns its value"
+  (doc    "`(if (> n 0) 7 (/ 1 0))` — the `(/ 1 0)` is a compile-provable trap, but it sits in the else-branch under a
+           RUNTIME condition. At n>0 the else is never taken, so the program returns 7 (it must NOT hard-error at
+           compile, per the operator ruling). Pins the demote: the ConstTrap branch became a runtime trap, so the `if`
+           compiles and the taken branch computes.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 7 Int64)))
+
+(case "dzb2 the SAME divide-by-zero branch traps at RUNTIME when the condition takes it"
+  (doc    "The runtime face of dzb1: at n≤0 the else-branch IS taken, so the demoted trap fires at RUNTIME — a bare
+           `unreachable` (the demote target is `Core::Trap`, exactly as a taken `(trap ...)` lowers; cf. cn02a's
+           `(trap \"unreachable\")`). Pins that the demote PRESERVES the trap — deferred to runtime, not dropped.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "unreachable"))
+
+(case "dzb3 a const divide-by-zero in a MATCH arm traps at runtime, not at compile (the match twin)"
+  (doc    "`(match n (0 (/ 1 0)) (_ 7))` — the `(/ 1 0)` arm is conditionally reached (only at n=0), so it demotes to
+           a runtime trap: the match COMPILES (no CDZ0304), and taking the trapping arm at n=0 traps at runtime (a
+           bare `unreachable`). Pins the match-arm demote alongside the `if`-branch one.")
+  (input  (do (def (main (: n Int64)) (match n (0 (/ 1 0)) (_ 7))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "unreachable"))
+
+(case "dzb4 a STATICALLY-UNCONDITIONAL const divide-by-zero is STILL fail-loud CDZ0304 (the carve-out holds)"
+  (doc    "The other half of the ruling: a provable trap NOT guarded by a runtime branch is statically-unconditional,
+           so it stays a compile error. `(def (main) (/ 1 0))` always traps on every run → CDZ0304, unchanged. Pins
+           that the demote is scoped to conditionally-reached (guarded) positions, not the unconditional spine.")
+  (input  (do (def (main) (/ 1 0)) (export main)))
+  (error  CDZ0304 (message "divide by zero")))
+
 ; -- breaker batch 431 (2026-08-26): #3799 complement pins — a const Map with CHAR keys to-lists
 ; key-sorted (the Set face is owner-pinned), and the sorted Char head surfaces a taken trap as
 ; CDZ0304 under the const demand (the fail-loud discipline through the Char fold). Both targets
