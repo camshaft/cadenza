@@ -263,3 +263,17 @@
               (def (main (: x Int64)) (host (Math) (Math.dbl x))) (export main)))
   (call   main (: 6 Int64))
   (output (: 12 Int64)))
+
+(case "a consumer bound to two scalar peer interfaces runs with no runtime"
+  (doc    "Two SEPARATELY-compiled scalar providers on DISTINCT interfaces (cadenza:math/api exporting neg,
+           cadenza:succ/api exporting inc); the consumer binds BOTH and touches NO value-heap runtime, taking
+           the peer-ONLY multi-interface envelope (g=2). main(4) = neg(4) + inc(4) = -4 + 5 = 1 — a value from
+           EACH of two distinct peer interfaces in one body. Two (peer …) clauses compose in one case.
+           Relocated from rcdzc u9c_two_scalar_peer_interfaces_no_runtime.")
+  (peer   "cadenza:math/api" (do (def (neg (: x Int64)) (- 0 x)) (export neg)))
+  (peer   "cadenza:succ/api" (do (def (inc (: x Int64)) (+ x 1)) (export inc)))
+  (input  (do (effect M (op neg (-> Int64 Int64))) (effect S (op inc (-> Int64 Int64)))
+              (bind M "cadenza:math/api") (bind S "cadenza:succ/api")
+              (def (main (: x Int64)) (host (M) (host (S) (+ (M.neg x) (S.inc x))))) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 1 Int64)))

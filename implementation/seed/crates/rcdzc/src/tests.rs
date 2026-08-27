@@ -57497,68 +57497,6 @@ mod cross_component_oracle {
     }
 
     #[test]
-    fn u9c_two_scalar_peer_interfaces_no_runtime() {
-        use crate::testkit::parse;
-        // Two SCALAR providers, distinct interfaces + op names — the consumer touches NO runtime, so it
-        // takes the PEER-ONLY multi-interface envelope (`assemble_extern`, g=2, no `"heap"`). Locks in the
-        // boundary-lift component-type index `g+j` (not `1+j`) for g≥2 in the peer-only path.
-        let math = compile_provider(
-            "(do (def (neg (: x Int64)) (- 0 x)) (export neg))",
-            "cadenza:math/api",
-        );
-        let succ = compile_provider(
-            "(do (def (inc (: x Int64)) (+ x 1)) (export inc))",
-            "cadenza:succ/api",
-        );
-        // main(4) = neg(4) + inc(4) = -4 + 5 = 1.
-        let src = "(do \
-            (effect M (op neg (-> Int64 Int64))) \
-            (effect S (op inc (-> Int64 Int64))) \
-            (bind M \"cadenza:math/api\") \
-            (bind S \"cadenza:succ/api\") \
-            (def (main (: x Int64)) (host (M) (host (S) (+ (M.neg x) (S.inc x))))) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| {
-                panic!(
-                    "two-scalar-interface consumer compiles: {} [{:?}]",
-                    d.message, d.code
-                )
-            });
-        {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&consumer)
-                .expect("two-scalar-interface consumer validates");
-        }
-        let peers = vec![
-            cdz_run::Peer {
-                bytes: math,
-                interface: "cadenza:math/api".to_string(),
-            },
-            cdz_run::Peer {
-                bytes: succ,
-                interface: "cadenza:succ/api".to_string(),
-            },
-        ];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["4".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a consumer bound to two scalar peer interfaces runs")
-        {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "1",
-                "neg(4) + inc(4) = 1 through the peer-only two-interface envelope"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("two-scalar-interface run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn u9b_two_peer_interfaces_offering_the_same_op_name_declines() {
         use crate::testkit::parse;
         // Two bound interfaces BOTH offering an op named `f` — the one merged `"peer"` core instance would
