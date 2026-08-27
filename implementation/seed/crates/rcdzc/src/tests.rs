@@ -14014,18 +14014,6 @@ mod runtime_ops {
             )),
             "equal refined-constant branches collapse to the bare constant, got: {collapsed:?}"
         );
-        // VALUE PARITY: the collapsed form equals the original — `7` for every `x`.
-        for x in [-100, 0, 5, 6, 10, 11, 50] {
-            assert_eq!(
-                run::<i64>(
-                    "(: x Int64)",
-                    "(if (> x 10) (if (> x 5) 7 8) 7)",
-                    &[Val::S64(x)]
-                ),
-                7,
-                "collapsed value @{x}"
-            );
-        }
         // NEGATIVE: branches that DON'T refine to the same constant keep the `if` (then→7, else→9).
         let kept = select(
             "(module m (def (f (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 9)) (def (main) 0) (export main))",
@@ -14035,33 +14023,11 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::If(_) | Lir::Select)),
             "unequal branches keep a branch/select, got: {kept:?}"
         );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (> x 10) (if (> x 5) 7 8) 9)",
-                &[Val::S64(20)]
-            ),
-            7
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (> x 10) (if (> x 5) 7 8) 9)",
-                &[Val::S64(0)]
-            ),
-            9
-        );
-        // TRAP SAFETY: a trapping condition must NOT be dropped — the collapse requires a trap-free cond.
-        // `(> (/ 10 n) 0)` has a trapping `/`, so the `if` is kept and traps at n=0.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: n Int64)) (if (> (/ 10 n) 0) (if (> (/ 10 n) 0) 7 8) 7)) (export f))",
-        )))
-        .expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "a trapping condition is preserved (collapse declined)"
-        );
-        assert_eq!(run_returns_with::<i64>(&tb, "f", &[Val::S64(5)]), 7);
+        // The VALUE + TRAP-SAFETY parity (collapsed form = 7 for every x; the negative form = 7/9; a
+        // trapping `(> (/ 10 n) 0)` condition blocks the collapse and traps at n=0) is the corpus cases
+        // "an if whose branches refine to the same constant collapses …", "… do NOT refine …", and "a
+        // trapping condition blocks the equal-branch collapse and still traps" in 28-compiler-primitives —
+        // this stays a white-box Lir collapse/no-compare check.
     }
 
     #[test]

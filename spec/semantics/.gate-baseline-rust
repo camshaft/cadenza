@@ -3983,6 +3983,7 @@ pass	a transitive re-export reaches the base module's function through the middl
 pass	a trap message that is not a String is rejected
 pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a trap raised on a consumed closure's result surfaces through the consumer as a trap
+pass	a trapping condition blocks the equal-branch collapse and still traps
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
@@ -4665,6 +4666,8 @@ pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if returning false/true folds to the negation of a runtime condition
 pass	an if returning true/false folds to the runtime condition itself
 pass	an if whose both branches diverge is Never and always traps
+pass	an if whose branches do NOT refine to the same constant keeps both values
+pass	an if whose branches refine to the same constant collapses to that constant (value parity)
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
@@ -6200,6 +6203,9 @@ pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -
 pass	odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count
 pass	odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows
 pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes
+pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
+pass	olf2 Bool ordering folds agree with their runtime twins
+pass	olf3 List ordering agrees const and runtime, inlined and let-bound
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one RRB list shared as two map VALUES diverges by List.update without cross-talk
@@ -7766,6 +7772,7 @@ todo	nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonic
 todo	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
 todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
+todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
 todo	read of malformed text is a coded reject, not a wrong value
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)
@@ -7789,7 +7796,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
-pass	olf2 Bool ordering folds agree with their runtime twins
-pass	olf3 List ordering agrees const and runtime, inlined and let-bound
-todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check

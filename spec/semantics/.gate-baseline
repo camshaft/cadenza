@@ -4167,6 +4167,7 @@ pass	a trap message that is not a String is rejected
 pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a trap raised on a consumed closure's result surfaces through the consumer as a trap
 pass	a trap-init let in one handler branch short-circuits while the sibling threads state
+pass	a trapping condition blocks the equal-branch collapse and still traps
 pass	a trapping condition of a same-constructor if traps before either arm
 pass	a trapping condition preempts the hoisted operator's trap
 pass	a trapping element in the taken arm of a same-length list if still traps
@@ -4895,6 +4896,8 @@ pass	an if over two trap-free bitwise arms selects branchlessly — then arm
 pass	an if returning false/true folds to the negation of a runtime condition
 pass	an if returning true/false folds to the runtime condition itself
 pass	an if whose both branches diverge is Never and always traps
+pass	an if whose branches do NOT refine to the same constant keeps both values
+pass	an if whose branches refine to the same constant collapses to that constant (value parity)
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
@@ -6542,6 +6545,9 @@ pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -
 pass	odf1 a TOKEN-BUCKET rate limiter with overdraft penalties — spend succeeds only when the bucket covers it (else a penalty tick and a 0 answer), refill saturates at the cap, and the final draw reads the accumulated penalty count
 pass	odo1 a BASE-100 ODOMETER — the list of wheels absorbs each tick with a CASCADING CARRY that rebuilds cells by List.update and GROWS the list when the top wheel overflows
 pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, push initializes-or-appends, take scores and RESETS to None, a later push re-initializes
+pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
+pass	olf2 Bool ordering folds agree with their runtime twins
+pass	olf3 List ordering agrees const and runtime, inlined and let-bound
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one RRB list shared as two map VALUES diverges by List.update without cross-talk
@@ -8178,6 +8184,7 @@ todo	grx1 the entry List param flows through a two-deep non-recursive helper cha
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
+todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
@@ -8192,7 +8199,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
-pass	olf2 Bool ordering folds agree with their runtime twins
-pass	olf3 List ordering agrees const and runtime, inlined and let-bound
-todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check

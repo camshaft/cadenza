@@ -2260,3 +2260,33 @@
   (call main (: 15 Int8))  (output (: 120 Int8))
   (call main (: 20 Int8))  (trap "overflow")
   (call main (: 100 Int8)) (trap "overflow"))
+
+; -- flow-sensitive equal-branch collapse parity (behavioral half migrated from rcdzc
+; an_if_whose_branches_refine_to_the_same_constant_collapses, 2026-08-27; the white-box Lir collapse /
+; no-compare inspection stays a wasmtime-free rcdzc unit test): when both branches reduce to the SAME
+; constant under their branch refinements and the condition is trap-free, the whole `if` is that
+; constant; a trapping condition blocks the collapse and still traps.
+
+(case "an if whose branches refine to the same constant collapses to that constant (value parity)"
+  (doc    "Flow-sensitive collapse: under x>10 the inner `(> x 5)` is decided true so the then-branch is
+           7, matching the else 7 — so `(if (> x 10) (if (> x 5) 7 8) 7)` is 7 for every x.")
+  (input (do (def (main (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 7)) (export main)))
+  (call main (: -100 Int64)) (output (: 7 Int64))
+  (call main (: 0 Int64))    (output (: 7 Int64))
+  (call main (: 6 Int64))    (output (: 7 Int64))
+  (call main (: 11 Int64))   (output (: 7 Int64))
+  (call main (: 50 Int64))   (output (: 7 Int64)))
+
+(case "an if whose branches do NOT refine to the same constant keeps both values"
+  (doc    "The negative twin: `(if (> x 10) (if (> x 5) 7 8) 9)` does not collapse — x=20 → 7 (x>10,
+           inner x>5 true), x=0 → 9 (else).")
+  (input (do (def (main (: x Int64)) (if (> x 10) (if (> x 5) 7 8) 9)) (export main)))
+  (call main (: 20 Int64)) (output (: 7 Int64))
+  (call main (: 0 Int64))  (output (: 9 Int64)))
+
+(case "a trapping condition blocks the equal-branch collapse and still traps"
+  (doc    "The collapse requires a trap-free condition. `(> (/ 10 n) 0)` has a trapping `/`, so the `if`
+           is kept and traps at n=0 (the trapping condition is not dropped); n=5 → 7.")
+  (input (do (def (main (: n Int64)) (if (> (/ 10 n) 0) (if (> (/ 10 n) 0) 7 8) 7)) (export main)))
+  (call main (: 5 Int64)) (output (: 7 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
