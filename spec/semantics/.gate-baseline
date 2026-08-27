@@ -1765,6 +1765,7 @@ pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-lhs and whose right operand aborts desugars and folds to the arm value
 pass	a constant-on-the-left +1 add is commutative and traps only at Int64.max
 pass	a constant-returning closure threads through a recursive-generic HOF
+pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a constant-try helper folds and its result feeds a handler arm's resume
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
@@ -2556,6 +2557,7 @@ pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map as a map value: a nested lookup queries the inner map through the outer lookup
 pass	a map built at run time escapes to the host as its value form
+pass	a map built at run time with list values escapes with its nested value type
 pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has both entries
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
@@ -5315,6 +5317,7 @@ pass	an underscore-prefixed match-arm binder is a usable binding, not a wildcard
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
+pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
 pass	an unimported sibling definition is not in scope
 pass	an unknown member name is rejected with a did-you-mean (CDZ0201)
 pass	an unknown module operation too far for a confident typo lists the module's operations
@@ -8543,5 +8546,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
-pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds
