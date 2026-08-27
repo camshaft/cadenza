@@ -3104,6 +3104,7 @@ pass	a nominal record compared to a plain record of the same shape is a type err
 pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
 pass	a non-admitted float width in a type-declaration payload is rejected
+pass	a non-aliased-width result crosses the boundary widened to the next aliased width
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
 pass	a non-capturing closure stored and also called directly emits a valid artifact
 pass	a non-constructor type applied to arguments in type position is rejected
@@ -4745,6 +4746,8 @@ pass	a variant carrying a structural-record payload in the (: name type) field s
 pass	a variant carrying an EMPTY-sum payload lays out and its dead arm zero-arm-matches
 pass	a variant guard reads the payload binder AND an enclosing binding
 pass	a variant named Bool shadows the prelude Bool within its declaring module
+pass	a variant named like a Result DATA constructor (Ok) is reachable bare in its declaring module
+pass	a variant named like a prelude DATA constructor is reachable BARE and builds the local variant
 pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	a variant pattern over a scalar scrutinee is a type error
@@ -8920,5 +8923,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a variant named like a prelude DATA constructor is reachable BARE and builds the local variant
-pass	a variant named like a Result DATA constructor (Ok) is reachable bare in its declaring module
