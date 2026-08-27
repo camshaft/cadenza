@@ -5643,6 +5643,9 @@ pass	capture-avoiding substitution renames a Forall binder to avoid capture (log
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
+pass	cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)
+pass	cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)
+pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
@@ -7521,6 +7524,7 @@ pass	rlyB single-use arm-perform control (answer only, state untouched) — B's 
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
+pass	rnc1 a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)
 pass	rop2 recursive const (Option Int64) param recursion on the value path folds to 99
 pass	rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)
@@ -7810,6 +7814,7 @@ pass	sp4 SCALAR param + bare option result
 pass	sp5 SCALAR param + list result
 pass	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 pass	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
+pass	spj1 a single-use projected list consume stays on the FBIP fast path
 pass	splice flattens where unquote nests
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing an integer literal directly is a type error
@@ -8784,6 +8789,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)
-pass	cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)
-pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean
