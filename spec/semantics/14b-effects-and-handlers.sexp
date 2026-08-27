@@ -3711,6 +3711,86 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
+; The task-#15 caller-observed-out-state fix (the bare-do-item core case above) has adversarial companions
+; over the SAME `run-ops` cross-function recursive list fold, each pinning a distinct facet: the out-state
+; is observed by a READ-OUT op (not only a state-advancing one), TWO successive folds each thread their
+; out-state to the next spine item, and — the negative control — a fold whose out-state is NOT observed
+; stays single-return (the caller-side mark must not over-fire). A fourth pins the observer INSIDE the
+; fold's base case (a per-element counter read back at the end).
+
+(case "a cross-function fold's out-state is observed by a read-out op in the continuation"
+  (doc    "The read-out companion of the caller-observed out-state: `(do (run-ops [1 2 3]) (Prim.total))` —
+           `total` resumes with the state UNCHANGED (`resume s s`), so it READS the 3 the cross-fn recursion
+           accumulated. Any perform observes the out-state, so multi-value specialization fires and the
+           read-out op sees 3 (a single-return path would read the pre-recursion 0).")
+  (input  (do
+            (effect Prim (op run (-> Int64 Int64)) (op total (-> Int64)))
+            (def (run-ops (: ops (List Int64)))
+              (match ops
+                ((list h .. rest) (do (Prim.run h) (run-ops rest)))
+                (_ 0)))
+            (def (main)
+              (handle Prim 0 ((run (tag) s (resume s (+ s 1))) (total () s (resume s s)))
+                (do (run-ops (list 1 2 3)) (Prim.total))))
+            (export main)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
+
+(case "two successive cross-function folds thread out-state left-to-right in the continuation"
+  (doc    "Two `run-ops` cross-fn folds in the caller's `do` must EACH thread their out-state to the next
+           spine item: `(do (run-ops [1 2 3]) (run-ops [1 2]) (Prim.run 0))` — the first advances 0->3, the
+           second continues 3->5, and the trailing `(Prim.run 0)` reads 5. A state RESET on the second fold
+           would give 2; pins the caller-side mark records BOTH callees and the `do` carries state between
+           them.")
+  (input  (do
+            (effect Prim (op run (-> Int64 Int64)))
+            (def (run-ops (: ops (List Int64)))
+              (match ops
+                ((list h .. rest) (do (Prim.run h) (run-ops rest)))
+                (_ 0)))
+            (def (main)
+              (handle Prim 0 ((run (tag) s (resume s (+ s 1))))
+                (do (run-ops (list 1 2 3)) (run-ops (list 1 2)) (Prim.run 0))))
+            (export main)))
+  (output (: 5 Int64))
+  (live-objects known-leak 12))
+
+(case "a cross-function fold whose out-state is NOT observed stays single-return"
+  (doc    "The negative control: `(handle Prim 0 (...) (run-ops [1 2 3]))` — the handle value is the fold's
+           VALUE (the base-case 0) and no later spine item performs, so the out-state is UNOBSERVED.
+           Multi-value must NOT be forced (the caller-side mark must not over-fire); the single-return path
+           folds it correctly to 0. Pins the mark's precision alongside the positive companions.")
+  (input  (do
+            (effect Prim (op run (-> Int64 Int64)))
+            (def (run-ops (: ops (List Int64)))
+              (match ops
+                ((list h .. rest) (do (Prim.run h) (run-ops rest)))
+                (_ 0)))
+            (def (main)
+              (handle Prim 0 ((run (tag) s (resume s (+ s 1))))
+                (run-ops (list 1 2 3))))
+            (export main)))
+  (output (: 0 Int64))
+  (live-objects known-leak 7))
+
+(case "a per-element perform in a cross-function fold threads to a read-out in the base case"
+  (doc    "The observer sits INSIDE the fold's base case: `run-ops` performs `Prim.run` per element then its
+           `(_ (Prim.total 0))` base case reads the accumulated state. All three per-element performs advance
+           0->3 and the base-case `total` reads it → 3 (proving the performs both ran AND threaded through the
+           cross-function recursion, not silently dropped).")
+  (input  (do
+            (effect Prim (op run (-> Int64 Int64)) (op total (-> Int64 Int64)))
+            (def (run-ops (: ops (List Int64)))
+              (match ops
+                ((list head .. rest) (do (Prim.run head) (run-ops rest)))
+                (_ (Prim.total 0))))
+            (def (main)
+              (handle Prim 0 ((run (tag) s (resume s (+ s 1))) (total (u) s (resume s s)))
+                (run-ops (list 1 2 3))))
+            (export main)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))
+
 (case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
   (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
            merged-context signature. The INNER handler `Tools` re-threads its OWN bound state in the arm

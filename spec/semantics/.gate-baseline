@@ -1745,6 +1745,8 @@ pass	a contradictory arrow annotation on a function in a runtime Map value is re
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle
+pass	a cross-function fold whose out-state is NOT observed stays single-return
+pass	a cross-function fold's out-state is observed by a read-out op in the continuation
 pass	a cross-function perform is discharged by the caller's handler
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm folds under nested handlers (nv1f)
@@ -2980,6 +2982,7 @@ pass	a payload-in-payload nested list pattern dispatches through two recorded ty
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
+pass	a per-element perform in a cross-function fold threads to a read-out in the base case
 pass	a perform BETWEEN two `?`s advances state that survives the second's cut
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
@@ -7857,6 +7860,7 @@ pass	two slices of one parent both read after the parent is dead
 pass	two specializations of one driver on different closures do not collide in the spec memo
 pass	two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant
 pass	two structural values of the same shape are equal
+pass	two successive cross-function folds thread out-state left-to-right in the continuation
 pass	two successive self-recursive folds thread state between them
 pass	two sum arms with textually identical bodies still bind their own variant's payload
 pass	two sum types whose names differ only by punctuation stay DISTINCT types
