@@ -248,6 +248,14 @@ pre-sends with the NARROW checks only:
   case(s) your slice touches.
 - `cargo test -p <your-crate> --lib` for a specific test `dev-gate` isn't surfacing.
 
+**🔒 A HEAVY nix build MUST go through `cargo xtask fleet with-lease` — a RAW `nix build .#…` escapes the
+concurrency cap.** `CDZ_CHECK_LEASE_MAX` (+ `fleet with-lease`) exists so heavy nix builds don't all run
+at once and thrash the single big-nix-lock (the load-deadlock that makes EVERYONE's gates crawl —
+observed with 8+ concurrent heavy builds serializing, a 1h31m aggregate starved at 0.2% CPU). `cargo xtask
+check` acquires the lease itself, but a **raw `nix build .#checks.…` / `.#<heavy-attr>` you run directly
+BYPASSES the cap.** So wrap any heavy raw nix build: `cargo xtask fleet with-lease nix build .#…` (not a
+bare `nix build`). This is fleet-wide courtesy — one escapee crawls every peer's required gate too.
+
 **Do NOT run the full `cargo xtask gate` (whole corpus × 3 backends) or `cargo xtask check` (whole
 workspace) yourself** — not per iteration, not "once before send." A green `dev-gate` + scoped spot-check
 is your send bar; pr-sync's full-battery re-gate is the authoritative backstop, so a rare scoped-miss
