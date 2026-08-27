@@ -20245,3 +20245,46 @@
   (call main (: 5 Int64))
   (output (: 6 Int64))
   (live-objects 0))
+
+; -- breaker batch 459 (2026-08-27): the retained-extract gap family BREADTH (extends lar1/lar2).
+; The unbalanced retain is the Option-SHELL-mediated compound EXTRACTION itself: Map.lookup shows
+; the identical leak (mlr1 — the fix must cover every (Option compound)-returning extraction op,
+; not just List.at), and the leak survives downstream CONSUMPTION too (mlr2 — concat consuming the
+; extracted vec still leaks 3, so the extraction's retain is never paired with a drop regardless of
+; borrow/consume). Tuple projection (mlr3 — no Option shell, no retain) is clean, consistent with
+; the projections-vs-rebuilds line. Directly-constructed (Option compound) matches reclaim fine
+; (d6), so the gap is specific to extraction OPS' returned Options.
+
+(case "mlr1 a Map.lookup-extracted INNER LIST bound by Some and only borrowed leaks the inner vec"
+  (input (do
+    (def (main (: n Int64))
+      (let ((m (Map.insert Map.empty n (list n (+ n 1)))))
+        (match (Map.lookup m n)
+          ((Option.Some inner) (List.len inner))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak 3))
+
+(case "mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (match (List.at xs 1)
+          ((Option.Some inner) (List.len (List.concat inner (list 7))))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
+
+(case "mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)"
+  (input (do
+    (def (main (: n Int64))
+      (let ((p (if (> n 0) (tuple (list n (+ n 1)) 100) (tuple (list 9) 5))))
+        (+ (List.len (. p 0)) (. p 1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 102 Int64))
+  (live-objects 0))
