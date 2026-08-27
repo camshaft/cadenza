@@ -195,6 +195,14 @@ A value of a sum type MUST be constructed through one of its variants.
 
 A value of a sum type MUST be deconstructed only through a match that the exhaustiveness rule governs.
 
+### A Single-Variant Single-Field Sum Is A Nominal Type Over Its Payload
+
+A sum type with exactly one variant carrying exactly one payload field MUST be a nominal type over that field's type, so that declaring `(type T (V U))` names the structural type `U` nominally (§"Nominal Is An Orthogonal Modifier Over Any Structural Type") rather than introducing a distinct tagged representation.
+
+The runtime value of such a single-variant single-field sum MUST be its payload value itself, carrying only the compile-time nominal tag and nothing at runtime, consistent with the nominal rule that the tag adds nothing to the value's runtime representation: constructing `(V u)` yields the value `u`, matching the single variant `(V binder)` binds `u` directly, and the value's observable canonical form is that of `u` ascribed with the nominal type's name `T`.
+
+A sum type with more than one variant, or whose variant is nullary, or whose variant carries more than one payload field MUST retain its variant tag in the value — its value is the tagged variant, not an erased payload — so that only the single-variant single-field form is a nominal newtype and every other sum is a genuine tagged union whose value carries its variant.
+
 ### A Match Is Exhaustive Against The Sum Type's Variant Set
 
 The exhaustiveness rule governing a match MUST be checked against the scrutinee sum type's variant set, so that a match covering fewer than all variants is a compile-time rejection determined by that variant set rather than a runtime outcome.
