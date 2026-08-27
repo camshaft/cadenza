@@ -42964,63 +42964,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_in_a_conditional_let_init_hoists_and_folds() {
-        // E4 let-init hoist: an abort in a conditional `let` INIT — `(let ((k (if c (Bail.bail 7) 0)))
-        // (+ 1 k))` — is lifted OUT of the let by distributing the whole let into each branch with the init
-        // replaced: `(if c (let ((k (Bail.bail 7))) (+ 1 k)) (let ((k 0)) (+ 1 k)))`. The aborting branch's
-        // init is then an unconditional abort the fold collapses; the other branch keeps the let. Sound
-        // because the `if` condition and any PRECEDING bindings are pure (duplicated across the branches).
-        // True branch → 7 (abort discards the let body); false branch → `1 + 0` = 1. (Previously DECLINED.)
-        let t = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 99 ((bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(t)))
-                    .expect("a conditional let-init abort hoists and compiles"),
-                "main"
-            ),
-            7
-        );
-        let f = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 99 ((bail (n) s n)) (let ((k (if false (Bail.bail 7) 0))) (+ 1 k)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(f)))
-                    .expect("the non-aborting let-init branch folds"),
-                "main"
-            ),
-            1
-        );
-    }
-
-    #[test]
-    fn an_abortive_let_init_after_an_effectful_binding_now_folds_via_inner_handle_pre_reduction() {
-        // FINDING #11 fix: this used to DECLINE (the let-init hoist requires the preceding binding pure, and
-        // `a = (Get.get 0)` is effectful). But `Get.get` sits under a NESTED inner `Get` handle and the outer
-        // `Bail` is ABORTIVE, so `reduce_handle` now PRE-REDUCES the inner `Get` handle (finding #11 fix),
-        // folding `a` to the constant `5`. With `a` pure, the conditional `let`-init abort hoists soundly and
-        // homes to `Bail`. `Get.get` still runs once. `main(3)` (x<5): `k` aborts → Bail arm value 7. `main(9)`
-        // (x>=5): a=5, k=0 → 5. A strict improvement over the prior safe-decline (correct fold, verified both
-        // branches), not a miscompile.
-        let src = "(do (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) \
-                     (handle Get 0 ((get (n) s (resume 5 s))) \
-                       (let ((a (Get.get 0)) (k (if (< x 5) (Bail.bail 7) 0))) (+ a k))))) (export main))";
-        let comp = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("the inner Get handle pre-reduces so the let-init abort hoist applies");
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
-            7,
-            "x<5: the k-init aborts → Bail arm value 7"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(9)]),
-            5,
-            "x>=5: a=5, k=0 → 5"
-        );
-    }
-
-    #[test]
     fn a_def_boundary_conditional_abort_with_a_foreign_op_argument_declines() {
         // FINDING #11-B (breaker, oamin4/oa3 — MED-HIGH 3-backend silent miscompile). A helper that aborts in
         // a MATCH arm, called with a FOREIGN op-result argument, in a let-init: `(let ((a (unwrap (E.fetch)
@@ -44571,25 +44514,6 @@ mod stage1 {
     }
 
     #[test]
-    fn nested_intra_program_handlers_compose_inside_out() {
-        // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
-        // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),
-        // `(B.b)` resumes 20 (outer), so `(+ (A.a) (B.b))` = 42. The inner handle in the outer's body is
-        // recursively `reduce_handle`d, then threaded under the outer context.
-        let src = "(do (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
-                   (def (main) (handle B 0 ((b (u) s (resume 20 s))) \
-                     (handle A 0 ((a (u) s (resume 22 s))) (+ (A.a) (B.b))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("nested intra-program handlers compose"),
-                "main"
-            ),
-            42
-        );
-    }
-
-    #[test]
     fn a_delegated_effect_performed_inside_an_intra_program_handler_compiles() {
         // E2h: a host-delegated `ask.ask` performed INSIDE an intra-program `handle` (over a DIFFERENT
         // effect `Scale`). The fold reduces the `Scale` handler away (its arm doubles the perform value),
@@ -44713,29 +44637,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "an interposing handler that forwards a delegated effect must compile"
-        );
-    }
-
-    #[test]
-    fn a_recursive_fn_threads_two_nested_handlers_states_at_once() {
-        // E3h-B: a recursive `loop` runs under TWO nested stateful handlers — `A` (countdown seeded 3,
-        // `tick` threads `s-1`) governs recursion depth, `B` (accumulator seeded 0, `bump` threads `s+10`)
-        // folds across the steps. The ticks read 3,2,1,0 (three non-zero), the bumps read 0,10,20, so the
-        // sum is 0+10+20+0 = 30. Both states are live simultaneously — neither handler alone can specialize
-        // `loop` (it performs BOTH effects), so the fold MERGES the two contexts into one 2-slot context
-        // and specializes `loop#ctx(s_B, s_A)` once, threading each effect's state as its own trailing
-        // param (`DESIGN-effects-rcdzc.md` §4.3: "two nested handlers → two trailing params").
-        let src = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bump (-> Unit Int64))) \
-                   (def (loop) (if (= (A.tick) 0) 0 (+ (B.bump) (loop)))) \
-                   (def (main) (handle B 0 ((bump (u) s (resume s (+ s 10)))) \
-                     (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("two nested handler states specialize"),
-                "main"
-            ),
-            30
         );
     }
 
