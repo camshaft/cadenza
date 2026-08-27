@@ -8961,3 +8961,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	bdr1 a 50-concat deep Bytes rope's len walks the tree and the rope reclaims clean
+pass	bdr2 a byte-scan with Bytes.at across every seam of a 50-concat rope counts exactly (scalar reads; fixed 1-cell residue)
+pass	bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)
