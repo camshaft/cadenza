@@ -44,3 +44,26 @@ Run: `cdz run repro.wasm --arg 1 --runtime <DEBUG>.wasm --report-live-objects`.
 (flat dual-use / eq-only / unequal) that must STAY 0 through any fix (an over-fix that
 over-drops corrupts the projection reads — the values are the fence), and two known-leak
 calibration rows (one-side 3, both-sides 6) that flip to 0 on the fix. Zero post-landing pinning.
+
+## GENERALIZATION (breaker, tick 296, 2026-08-27) — NOT value-eq-specific: projection + ANY heap-walking consumer
+
+Second-consumer sweep on the same depth-3 runtime-tuple shapes (values correct in every cell):
+
+| second consumer alongside the projection chain | census |
+|---|---|
+| `(= a b)` (value-eq) | 3 (the original finding) |
+| `(< a b)` (blessed lexicographic order walk) | **3** |
+| `(Map.lookup (Map.insert (Map.empty) a 42) b)` (champ key hash+eq descent) | **3** |
+| `(Set.contains (Set.of (list a)) b)` (set membership descent) | **3** |
+| CONTROL: `(< a b)` alone, no projection | 0 |
+| CONTROL: `(= a b)` AND `(< a b)` — TWO walkers, no projection | **0** |
+
+Refined model: the walkers are innocent (any number of them borrow cleanly). The leak needs a
+PROJECTION chain plus at least one walking consumer of the same nested binding — the dup
+materialized for that combination is never released, leaking the operand's full tree (per
+dual-used side). The fix is in the generic dup/drop placement for projected-and-walked nested
+compounds, NOT in the value-eq emit specifically — fixing eq alone would leave order/champ/set
+leaking (dqe6-8 pin those cells; dqe9 pins the two-walker clean control).
+
+Pinned acceptance extended (batch 523): `dqe6`/`dqe7`/`dqe8` known-leak 3 → 0 on fix;
+`dqe9` two-walker control stays 0.
