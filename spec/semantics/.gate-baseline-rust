@@ -6277,6 +6277,8 @@ pass	knt1 a KNIGHT walker on an eight-by-eight board — hop attempts the L-move
 pass	lae1 a list annotation with a conflicting element type is rejected (CDZ0203)
 pass	lae2 a matching list annotation is transparent
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
+pass	lao1 List.at over an owned temporary list reclaims it (no leak)
+pass	lao2 a borrowed list read by List.at is not freed early (owner reclaims)
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
@@ -6329,6 +6331,8 @@ pass	lk2 a ROLLING-code lock — each successful match advances the key index th
 pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter
 pass	lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does
 pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, the drain reads a middle row's middle element
+pass	llo1 List.len over an owned temporary list reclaims it (no leak)
+pass	llo2 a borrowed list read by List.len is not freed early (owner reclaims)
 pass	llt1 a list length >= 0 is a tautology (folds to the then-branch value)
 pass	llt2 a match on a list length never hits a negative arm
 pass	lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)
@@ -7330,6 +7334,8 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves
+pass	spr1 a sum payload heap child consumed while the scrutinee is live is retained
+pass	spr2 a threaded sum's payload consumed per-iteration is retained (no drift)
 pass	spx1 a Bool entry param selects a branch
 pass	spx3 a UInt64 entry param increments in its own width
 pass	spx4 Int8 and Int16 entry params sign-extend and sum
@@ -8261,7 +8267,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	llo1 List.len over an owned temporary list reclaims it (no leak)
-pass	llo2 a borrowed list read by List.len is not freed early (owner reclaims)
-pass	lao1 List.at over an owned temporary list reclaims it (no leak)
-pass	lao2 a borrowed list read by List.at is not freed early (owner reclaims)

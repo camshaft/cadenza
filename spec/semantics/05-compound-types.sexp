@@ -22068,3 +22068,26 @@
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
              (def (main) (let ((xs (build 0 3 (list)))) (+ ((. Option expect) ((. List at) xs 1) "v") ((. List len) xs)))) (export main)))
   (call main) (output (: 4 Int64)))
+
+; -- sum/Option-payload Perceus retain (migrated from rcdzc compound reclaim/retain heap tests): a sum-match
+; payload binder (or Option.expect) lowers to a BORROW of the scrutinee's heap payload (no rc++). Consuming
+; that heap child (List.push) WHILE the scrutinee is still live (matched again / threaded to a self-call)
+; must be RETAINED — else it FBIP-mutates the shared payload in place and the still-live scrutinee reads the
+; grown value (drift). The value is the witness; live-objects pins the heap balance. (The rcdzc tests also
+; carry a component_imports_op(...,'dup') FBIP dup-absence bench guard, a backend-shape witness the corpus
+; cannot express — that stays in a slimmed rcdzc test.)
+(case "spr1 a sum payload heap child consumed while the scrutinee is live is retained"
+  (doc    "`bx = (B [0,1])`; `(+ (List.len (List.push (match bx ((B xs) xs)) 99)) (List.len (match bx ((B ys) ys))))` — the left push consumes the payload borrowed from `bx` while `bx` is matched AGAIN on the right, so the push must retain (build a new list) not mutate the shared payload: 3 + 2 = 5 (a broken retain grows the shared payload in place → 6). Also pins `is_heap_type` counts a `Ty::Nominal` (a single-variant newtype erases to its heap inner, so `bx : Box` is a retain candidate).")
+  (input (do (type Box (B (List Int64)))
+             (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) (let ((bx (B (mb 0 2 (list))))) (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) ((. List len) (match bx ((B ys) ys)))))) (export main)))
+  (call main) (output (: 5 Int64)))
+
+(case "spr2 a threaded sum's payload consumed per-iteration is retained (no drift)"
+  (doc    "The loop form of spr1: `bx` is threaded UNCHANGED to the self-call, and its payload is consumed each iteration via `(List.push (match bx ((B xs) xs)) 99)` → len 3 each of 4 iters = 12. A borrowed payload FBIP-mutated at rc==1 would grow the threaded scrutinee and drift (per-iter 3,4,5,6 → 18 not 12).")
+  (input (do (type Box (B (List Int64)))
+             (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc))
+             (def (loop j m bx tot) (if (< j m) (loop (+ j 1) m bx (+ tot ((. List len) ((. List push) (match bx ((B xs) xs)) 99)))) tot))
+             (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main)))
+  (call main) (output (: 12 Int64))
+  (live-objects known-leak 2))
