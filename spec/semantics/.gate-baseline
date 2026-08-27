@@ -4282,6 +4282,7 @@ pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
 pass	a sign-changing wrap still sign-extends the low bits
+pass	a signature mismatch in ONE of several bound peers is rejected at compose time
 pass	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time
 pass	a signature mixing a plain parameter and a tuple-pattern parameter binds both
 pass	a signed dependent size that reads negative falls through, not a backward read
@@ -8099,6 +8100,7 @@ pass	swd1 a SLIDING-WINDOW dedup state — the last-three list slides via push-a
 pass	swm1 a SLIDING-WINDOW maximum of width 3 — each push appends and evicts the oldest element once the window is full, answering the max scanned from the LIVE window, and the seeds disagree on which pushes set new maxima
 pass	swp1 an ATOMIC slot swap — the swap dispatch exchanges both tuple fields in one transition, reads before and after pin the exchange
 pass	swt1 VALUE-YIELDING map ops in the arm — Map.swap answers the PRIOR value it replaced and Map.take answers the value it removed, both tuple-projected in the arm with absent-key sentinels
+pass	sy1 a RUNTIME-built symbol (Symbol.of of a computed string) is intern-consistent with the compile-time literal: eq, Map-key hit, Set contains (+ the miss control)
 pass	sy2 a SYMBOL toggle state — equality routes the resume value while the arm flips fast/slow per dispatch
 pass	sy3 the SYMBOL state is a MAP KEY per dispatch — the a→b→c walk ends at a missing key
 pass	sy4 sequential draws written into record FIELDS via Record.with symbol selectors — chained functional updates
@@ -8973,4 +8975,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a signature mismatch in ONE of several bound peers is rejected at compose time
