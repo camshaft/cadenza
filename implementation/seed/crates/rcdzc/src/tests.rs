@@ -20016,7 +20016,6 @@ mod match_engine {
         );
     }
 
-
     #[test]
     fn a_guard_on_a_nested_list_in_list_element_reads_the_inner_binder() {
         // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a NESTED LIST,
