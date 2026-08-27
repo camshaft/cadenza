@@ -11,8 +11,9 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use cadenza_syntax::ast::{Builder, Leaf, StructId};
+use cadenza_syntax::ast::{Arenas, Builder, Leaf, StructId};
 use cadenza_syntax::codec;
+use cadenza_syntax::sexpr;
 
 use crate::{Expect, Record};
 
@@ -157,6 +158,14 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
             // compiler-free exec derivation from having to link a decoder). Derived from the first trial.
             std::fs::write(cdir.join("expect-kind"), expect_kind(rec))
                 .map_err(|e| format!("{path} case {i} expect-kind: {e}"))?;
+            // The ORACLE-TRIAL artifact — the same trials as `test-run.ast`, but with each VALUE (arg,
+            // expected output, host-response) parsed to BINARY AST (not an opaque string leaf), so the
+            // Lean differential oracle reads binary AST and never re-parses s-expr text. Additive: a
+            // SIBLING file, so `test-run.ast` stays byte-identical (cdz-run --grade + the corpus gate
+            // untouched); only the oracle-check consumer reads it. (Operator: emitted by the normal
+            // shred, not a separate command.)
+            write_bytes(&cdir.join("oracle-trial.ast"), &oracle_trials_ast(rec))
+                .map_err(|e| format!("{path} case {i} oracle-trial: {e}"))?;
             manifest.push_str(&case);
             manifest.push('\n');
         }
@@ -164,6 +173,109 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
             .map_err(|e| format!("writing {}/manifest: {e}", dir.display()))?;
     }
     Ok(())
+}
+
+/// The ORACLE-TRIAL artifact — a case's trials as BINARY AST for the Lean oracle. Unlike `test_run_ast`
+/// (which stores each value as an opaque string LEAF for a text-reparsing runner), each trial VALUE
+/// (arg, expected output, host-response) is PARSED from its value-form text into its binary-AST subtree
+/// (`sexpr::read`, grafted) so the oracle reads values as binary AST and never re-parses s-expr text.
+/// The expected outcome is carried too (the oracle asserts it internally). Shape:
+///   (oracle-trials (trials (trial (call <export>)? (arg <value-ast>)*
+///       (expect-value <value-ast> | expect-trap <reason> | expect-error <code> | expect-declines)) …)
+///     (host-responses (response <op> <value-ast>) …)? )
+fn oracle_trials_ast(rec: &Record) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("oracle-trials");
+    let mut kids = vec![head];
+
+    let trials_head = b.name("trials");
+    let mut trials = vec![trials_head];
+    for t in &rec.trials {
+        let mut tk = vec![b.name("trial")];
+        if let Some(c) = &t.call {
+            let ex = str_leaf(&mut b, &c.export);
+            tk.push(form(&mut b, "call", vec![ex]));
+            for a in &c.args {
+                let av = parse_value_ast(&mut b, a);
+                tk.push(form(&mut b, "arg", vec![av]));
+            }
+        }
+        let e = match &t.expect {
+            Expect::Output(v) => {
+                let av = parse_value_ast(&mut b, v);
+                form(&mut b, "expect-value", vec![av])
+            }
+            Expect::Trap(reason) => {
+                let r = str_leaf(&mut b, reason);
+                form(&mut b, "expect-trap", vec![r])
+            }
+            Expect::Error(code, _) => {
+                let cl = str_leaf(&mut b, code);
+                form(&mut b, "expect-error", vec![cl])
+            }
+            Expect::Declines(_) => form(&mut b, "expect-declines", vec![]),
+        };
+        tk.push(e);
+        trials.push(b.list(tk));
+    }
+    kids.push(b.list(trials));
+
+    if !rec.host_responses.is_empty() {
+        let mut hk = vec![b.name("host-responses")];
+        for (op, v) in &rec.host_responses {
+            let ol = str_leaf(&mut b, op);
+            let vv = parse_value_ast(&mut b, v);
+            hk.push(form(&mut b, "response", vec![ol, vv]));
+        }
+        kids.push(b.list(hk));
+    }
+
+    let root = b.list(kids);
+    codec::encode(&b.finish(root))
+}
+
+/// Parse a value-form text (e.g. `41`, `(: 5 Int64)`, `(Some 5)`) into its binary-AST subtree, grafted
+/// into `b`. On a parse failure (a value-form the s-expr reader can't take) FALL BACK to an opaque
+/// string leaf, so the artifact still emits and the oracle marks that trial `Unsupported` rather than
+/// the whole file's derivation failing.
+fn parse_value_ast(b: &mut Builder, text: &str) -> StructId {
+    match sexpr::read(text) {
+        Ok(arena) => graft_value(b, &arena, arena.root),
+        Err(_) => str_leaf(b, text),
+    }
+}
+
+/// Copy the subtree rooted at `id` of `src` INTO builder `b`, returning its new root. Iterative
+/// post-order (explicit stack) so a deep value can't overflow the native stack; leaves interned by
+/// value. Mirrors `cadenza_syntax::doc_item::graft_subtree`.
+fn graft_value(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
+    enum Job {
+        Visit(StructId),
+        EmitList(usize),
+    }
+    let mut jobs = vec![Job::Visit(id)];
+    let mut results: Vec<StructId> = Vec::new();
+    while let Some(job) = jobs.pop() {
+        match job {
+            Job::Visit(sid) => match src.get(sid) {
+                cadenza_syntax::ast::Struct::Atom(lid) => {
+                    let leaf = src.leaf(*lid).clone();
+                    results.push(b.atom_leaf(leaf));
+                }
+                cadenza_syntax::ast::Struct::List(kids) => {
+                    jobs.push(Job::EmitList(kids.len()));
+                    for &k in kids.iter().rev() {
+                        jobs.push(Job::Visit(k));
+                    }
+                }
+            },
+            Job::EmitList(n) => {
+                let kids = results.split_off(results.len() - n);
+                results.push(b.list(kids));
+            }
+        }
+    }
+    results.pop().expect("graft_value leaves a root")
 }
 
 /// Write a per-case binary-AST artifact (bytes the reader already built, or `test_run_ast` here) to disk.
@@ -410,6 +522,38 @@ mod tests {
         );
         let run_tr = sexpr::print(&codec::decode(&test_run_ast(&recs[2])).unwrap());
         assert!(run_tr.contains("main"), "call export in test-run: {run_tr}");
+    }
+
+    /// `oracle-trials` emits each trial's VALUES as BINARY AST (parsed from value-form text, not opaque
+    /// string leaves like `test_run_ast`): the expected output `(: 42 Int64)` is the PARSED ascription
+    /// AST, the arg value is a parsed int, the error is a code leaf. Every artifact decodes.
+    #[test]
+    fn oracle_trial_ast_carries_values_as_binary_ast() {
+        let recs = crate::read(
+            r#"(case "out" (input 42) (output (: 42 Int64)))
+               (case "err" (input 1_) (error CDZ0201 (message "separator")))
+               (case "run" (input (do (def (main (: x Int64)) (+ x 1)) (export main)))
+                     (call main 41) (output (: 42 Int64)))"#,
+        )
+        .unwrap();
+        // `out`: the expected value is the PARSED ascription AST `(: 42 Int64)`, NOT a string leaf.
+        let out = sexpr::print(&codec::decode(&oracle_trials_ast(&recs[0])).unwrap());
+        assert!(
+            out.contains("expect-value") && out.contains("(: 42 Int64)"),
+            "expected value as parsed AST: {out}"
+        );
+        // `err`: the diagnostic code as a leaf under expect-error.
+        let err = sexpr::print(&codec::decode(&oracle_trials_ast(&recs[1])).unwrap());
+        assert!(
+            err.contains("expect-error") && err.contains("CDZ0201"),
+            "expect-error code: {err}"
+        );
+        // `run`: the call export + the arg value PARSED to an int AST (bare `41`, not a string).
+        let run = sexpr::print(&codec::decode(&oracle_trials_ast(&recs[2])).unwrap());
+        assert!(
+            run.contains("call") && run.contains("(arg 41)"),
+            "call + parsed arg AST: {run}"
+        );
     }
 
     /// A `(live-objects N)` case's `test-run.ast` carries the balance as a `(live-objects <N>)` form (the
