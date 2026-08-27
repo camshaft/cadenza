@@ -21622,7 +21622,9 @@ mod match_engine {
         // the index is provably NON-NEGATIVE (a masked value `(& i 3)`, a length, an unsigned type), the
         // `index >= 0` half is a compile-time `true` — drop it, test only `index < len`. Pins the elision
         // at the Lir level (a masked index emits NO `index >= 0` sub-check) AND that a PLAIN (possibly
-        // negative) index keeps it; runtime value parity confirms the upper bound still catches OOB.
+        // negative) index keeps it. The runtime value parity (the upper bound still catches OOB over a
+        // heap-built list at a masked/negative index) is corpus-covered by 05 lbe1/lbe2/lbe3; this keeps
+        // only the Lir elision witness the corpus cannot express.
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
         let select = |src: &str, name: &str| {
@@ -21673,38 +21675,6 @@ mod match_engine {
             has_lower_check(&plain),
             "a plain (possibly-negative) index KEEPS the `index >= 0` check, got: {plain:?}"
         );
-
-        // RUNTIME VALUE PARITY: the upper bound still catches OOB; the elision does not change results.
-        // The list is RUNTIME-BUILT via a push-loop (`build 0 3 (list)` = [0 1 2]) so `List.at` genuinely
-        // runs on the value heap (never folds — `run_on_heap` asserts the runtime import). A masked nonneg
-        // index in bounds → the element; a masked index past the end → None; a plain negative index → None.
-        let cases = [
-            (
-                "(match (List.at xs (& n 3)) ((Some x) x) (None -1))",
-                "1",
-                "1",
-            ), // (&1 3)=1 → xs[1]=1
-            (
-                "(match (List.at xs (& n 15)) ((Some x) x) (None -1))",
-                "7",
-                "-1",
-            ), // (&7 15)=7 >= len 3 → None
-            ("(match (List.at xs n) ((Some x) x) (None -1))", "-1", "-1"), // negative → None
-        ];
-        for (body, arg, want) in cases {
-            let Some(out) = run_on_heap(&format!(
-                "(module m \
-                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (main) (let ((xs (build 0 3 (list))) (n {arg})) {body})) (export main))"
-            )) else {
-                eprintln!("runtime wasm not found; skipping bounds-elision run");
-                return;
-            };
-            assert_eq!(
-                out, want,
-                "List.at bounds elision parity for {body} @ n={arg}"
-            );
-        }
     }
 
     // NOTE: the self-hosting arg-walk idiom (corpus §'a list built by a recursive push-loop is then
