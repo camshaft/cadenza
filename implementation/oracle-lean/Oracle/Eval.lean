@@ -269,6 +269,45 @@ def operandTy? (m : Module) (i : Nat) : Option IntTy :=
     | none => none
   | _ => none
 
+/-- Surface a deferred element outcome (poison) as an evaluator `Outcome`. -/
+def deferredToOutcome : Deferred → Outcome
+  | .trap k => .trap k
+  | .diverges => .diverges
+  | .unsupported r => .unsupported r
+
+/-- Store a non-value element outcome as a `poison` (deferred); a value passes through. Used at compound
+CONSTRUCTION so an UNOBSERVED element (never projected, never flowed to the result) never surfaces its
+trap/divergence/unmodeled outcome — matching cadenza (spec core-semantics.md #A Trap Occurs When
+Observed). -/
+def outcomeToValue : Outcome → Value
+  | .value v => v
+  | .trap k => .poison (.trap k)
+  | .diverges => .poison .diverges
+  | .unsupported r => .poison (.unsupported r)
+
+/-- SHALLOW observation (a projection reads one field/element): a TOP-LEVEL poison surfaces its
+outcome; any other value is returned as-is — a nested compound's inner poisons stay deferred until they
+are themselves observed. -/
+def observeShallow : Value → Outcome
+  | .poison d => deferredToOutcome d
+  | v => .value v
+
+/-- DEEP observation (a value flows to the program result / a host call / an equality-or-ordering
+comparison that inspects it fully): the FIRST poison anywhere in the value surfaces its outcome; else
+the value unchanged. -/
+partial def observeDeep (v : Value) : Outcome :=
+  match v with
+  | .poison d => deferredToOutcome d
+  | .some x | .ok x | .err x =>
+    match observeDeep x with | .value _ => .value v | other => other
+  | .tuple es | .list es =>
+    match es.findSome? (fun e => match observeDeep e with | .value _ => Option.none | o => Option.some o) with
+    | Option.some o => o | Option.none => .value v
+  | .record fs =>
+    match fs.findSome? (fun kv => match observeDeep kv.2 with | .value _ => Option.none | o => Option.some o) with
+    | Option.some o => o | Option.none => .value v
+  | _ => .value v
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -307,6 +346,8 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "None".toUTF8 then Outcome.value Value.none
         else if h == "tuple".toUTF8 then evalSeqCtor m env fuel children Value.tuple
         else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
+        else if h == "record".toUTF8 then evalRecord m env fuel children
+        else if h == ".".toUTF8 then evalProject m env fuel children
         else match String.fromUTF8? h with
              | some hs => if arithOps.contains hs then evalArith m env ty fuel hs children
                           else if hs == "=" then evalEq m env fuel children
@@ -407,18 +448,17 @@ partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Arra
     | other => other
   | none => .unsupported "eval: malformed unary constructor"
 
-/-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element left-to-right (a
-non-value element propagates), wrap the collected values. -/
+/-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element, storing a non-value
+element as a `poison` (deferred) rather than propagating it — an element that is never observed
+(projected, or flowed to the result) never surfaces its trap. Construction itself always yields a
+value. -/
 partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array Nat)
     (wrap : Array Value → Value) : Outcome :=
-  let rec go (js : List Nat) (acc : Array Value) : Outcome :=
+  let rec go (js : List Nat) (acc : Array Value) : Array Value :=
     match js with
-    | [] => .value (wrap acc)
-    | j :: rest =>
-      match evalNode m env defaultIntTy fuel j with
-      | .value v => go rest (acc.push v)
-      | other => other
-  go (children.extract 1 children.size).toList #[]
+    | [] => acc
+    | j :: rest => go rest (acc.push (outcomeToValue (evalNode m env defaultIntTy fuel j)))
+  .value (wrap (go (children.extract 1 children.size).toList #[]))
 
 /-- Evaluate two operands, propagating a non-value outcome by precedence unsupported > diverges > trap
 > value (an unmodeled sibling keeps a case a coverage-gap, never a spurious result); on two values,
@@ -434,7 +474,14 @@ partial def evalBinValues (m : Module) (env : Env) (fuel : Nat) (aId bId : Nat)
   | _, .diverges => .diverges
   | .trap t, _ => .trap t
   | _, .trap t => .trap t
-  | .value va, .value vb => k va vb
+  | .value va, .value vb =>
+    -- comparing INSPECTS both operands fully → observe deeply so a deferred poison (a trapping compound
+    -- element) surfaces its trap rather than being compared as data (spec observation rule).
+    match observeDeep va with
+    | .value fa => match observeDeep vb with
+                   | .value fb => k fa fb
+                   | other => other
+    | other => other
 
 /-- `(= a b)` — structural equality (spec §Equality Is Structural: value equality agrees with the
 canonical byte form). Modeled by the `Value` domain's structural `BEq`, which is byte-canonical by
@@ -489,6 +536,53 @@ partial def evalAndOr (m : Module) (env : Env) (fuel : Nat) (children : Array Na
          | .value _ => .unsupported "eval: and/or left operand is non-boolean"
          | other => other
   | _, _ => .unsupported "eval: malformed and/or"
+
+/-- A record-construction field entry `(= key val)` (equality-shaped) or `(key val)` (bare) → its key
+name + value node id. -/
+partial def recordField? (m : Module) (fid : Nat) : Option (ByteArray × Nat) :=
+  match m.nodes[fid]? with
+  | some (Node.list fc) =>
+    match m.headName? (Node.list fc) with
+    | some h =>
+      if h == "=".toUTF8 && fc.size == 3 then (nameOf? m fc[1]!).map (fun k => (k, fc[2]!))
+      else if fc.size == 2 then (nameOf? m fc[0]!).map (fun k => (k, fc[1]!))
+      else none
+    | none => none
+  | _ => none
+
+/-- `(record (= k v)… )` / `(record (k v)… )` — evaluate each field's value (a non-value stored as a
+deferred `poison`, like a tuple element), collect keyed fields, then SORT by key so the record's
+canonical form is order-insensitive (deterministic-value-form.md: a record's canonical byte form sorts
+its fields by key) and structural `BEq` compares by field SET. -/
+partial def evalRecord (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  let rec go (js : List Nat) (acc : Array (ByteArray × Value)) : Except String (Array (ByteArray × Value)) :=
+    match js with
+    | [] => .ok acc
+    | j :: rest =>
+      match recordField? m j with
+      | some (k, vId) => go rest (acc.push (k, outcomeToValue (evalNode m env defaultIntTy fuel vId)))
+      | none => .error "eval: malformed record field"
+  match go (children.extract 1 children.size).toList #[] with
+  | .ok fields => .value (.record (fields.qsort (fun a b => cmpBytes a.1 b.1 == .lt)))
+  | .error e => .unsupported e
+
+/-- `(. recExpr field)` — project a named field from a record value (spec §Member Access): observe the
+projected field SHALLOWLY (its top-level poison surfaces; a nested compound stays lazy). A non-record
+operand or a non-name field key (tuple positional access, etc.) is not modeled → skip. -/
+partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]? with
+  | some recId, some fieldId =>
+    match evalNode m env defaultIntTy fuel recId with
+    | .value (.record fields) =>
+      match nameOf? m fieldId with
+      | some key =>
+        match (fields.find? (fun kv => kv.1 == key)).map (·.2) with
+        | some fv => observeShallow fv
+        | none => .unsupported "eval: record has no such field (typecheck not modeled)"
+      | none => .unsupported "eval: projection key is not a field name"
+    | .value _ => .unsupported "eval: projection operand is not a record (tuple/other access not modeled)"
+    | other => other
+  | _, _ => .unsupported "eval: malformed projection"
 end
 
 /-- Evaluate the program's `main` body, or `unsupported` if the program shape is not the modeled
@@ -516,7 +610,11 @@ def execute (m : Ast.Module) (args : Array Value) : Outcome :=
       if bindings.size != specs.size then
         .unsupported "execute: a parameter spec is malformed"
       else
-        Eval.evalNode m bindings.toList Eval.defaultIntTy Eval.defaultFuel bodyId
+        -- the result flows to the program output → observe it DEEPLY, so a deferred poison (a trapping
+        -- element of a returned compound) surfaces its trap at the output boundary.
+        match Eval.evalNode m bindings.toList Eval.defaultIntTy Eval.defaultFuel bodyId with
+        | .value v => Eval.observeDeep v
+        | other => other
   | none => .unsupported "execute: program is not a (do (def (main …) BODY) (export main)) form"
 
 /-- STAGE 1 — const-evaluate a closed program to its minimal form (grades a bare `(input E)` case).
