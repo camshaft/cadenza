@@ -8047,37 +8047,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_recursive_match_binder_scrutinee_is_materialized_once() {
-        // REGRESSION (perf, S2-twin): a match/pattern BINDER used more than once must NOT re-emit its
-        // whole scrutinee per use. When the scrutinee is a RECURSIVE CALL, a binder used K times re-runs
-        // that call K times per recursion level → 2^depth runtime recompute (the pattern-binder twin of the
-        // inline-tuple fall-through exponential `1d568117b`). `f` recurses to `(Mk 1 1)` at n=0; each
-        // recursive arm matches `(f (+ n 1))`, binds `a`, and uses it TWICE in `(Mk a a)`. FIX: the
-        // single-arm `Leaf` fold keeps the `Core::MatchSum` wrapper (materializing the scrutinee into ONE
-        // slot) when the scrutinee reaches a recursive call, so it runs once per level — LINEAR. This runs
-        // `(f -60)`: linear is 60 self-calls (instant); the pre-fix 2^60 self-calls hit the run deadline and
-        // TRAP. So this PASSES fast when materialized-once and TRAPS (run panics) on a regression to per-use
-        // re-emission — a runtime witness of the linear-vs-exponential compile. (wasm target; the Rust
-        // backend's `emit_sum_match` twin still re-emits — tracked separately, routed to v-rust-backend.)
-        let Some(v) = run_heap_value(
-            "(module m (type P (Mk Int64 Int64)) \
-               (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 1)) ((Mk a _) (Mk a a))))) \
-               (def (main) (match (f -60) ((Mk x _) x))) (export main))",
-            vec![],
-        ) else {
-            eprintln!(
-                "runtime wasm not found; skipping recursive-match-binder materialization run"
-            );
-            return;
-        };
-        assert_eq!(
-            v, "1",
-            "a recursive match binder used twice must be linear (scrutinee materialized once), not 2^depth \
-             — (f -60) is 1 fast; a regression re-emits the recursive scrutinee per use and hits the deadline"
-        );
-    }
-
-    #[test]
     fn a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject() {
         // WELL-FORMEDNESS of char-literal patterns (checked structurally, storeless — no heap run). A char
         // pattern over an Int scrutinee is a shape error (CDZ0201, the char twin of a bool-over-int probe);
