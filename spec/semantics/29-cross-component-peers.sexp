@@ -363,3 +363,38 @@
               (def (main (: x Int64)) (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) (export main)))
   (call   main (: 5 Int64))
   (output (: 9 Int64)))
+
+
+; ── map/set/record ARG crossings (INBOUND): the consumer builds a compound and passes it TO a peer op ──
+; (the arg-direction twin of the result cases above). The consumer builds a Map/Set/Record locally and hands
+; it in as a peer op argument; the provider reads it over the shared runtime.
+(case "pca1 a map argument crosses INBOUND to a peer and its length is read there"
+  (doc    "The ARG (inbound) direction: the CONSUMER builds a (Map Int64 Int64) and passes it INTO the peer
+           op, which reads Map.len over the shared runtime. PROVIDER `msz` takes a map arg and returns its
+           length; consumer builds {1:x, 2:x+1} and hands it in: msz({1:7, 2:8}) → 2 (the map crossed as a
+           shared handle, read by the provider — the arg twin of the map-result cases).")
+  (peer   "cadenza:ma/api" (do (def (msz (: m (Map Int64 Int64))) (Map.len m)) (export msz)))
+  (input  (do (effect M (op msz (-> (Map Int64 Int64) Int64))) (bind M "cadenza:ma/api")
+              (def (main (: x Int64)) (host (M) (M.msz (Map.insert (Map.insert (Map.empty) 1 x) 2 (+ x 1))))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 2 Int64)))
+
+(case "pca2 a set argument crosses INBOUND to a peer and its length is read there"
+  (doc    "The set arg twin: the consumer builds a (Set Int64) {x, x+1} and passes it into the peer op, which
+           reads Set.len over the shared runtime: ssz({7, 8}) → 2 (the crossed CHAMP is read by the provider).")
+  (peer   "cadenza:sa/api" (do (def (ssz (: s (Set Int64))) (Set.len s)) (export ssz)))
+  (input  (do (effect S (op ssz (-> (Set Int64) Int64))) (bind S "cadenza:sa/api")
+              (def (main (: x Int64)) (host (S) (S.ssz (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 2 Int64)))
+
+(case "pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there"
+  (doc    "A RECORD carrying a HEAP (String) field beside a scalar crosses inbound: the consumer builds
+           `(record (msg \"hi\") (n 4))` and passes it to the peer op, which reads BOTH fields —
+           String.byte-len of msg (2) plus n (4) = 6. Pins that a record with a heap field crosses as a
+           handle and its fields are read by the provider (the record analogue of the compound-arg crossing).")
+  (peer   "cadenza:ra/api" (do (def (req (: r (Record (: msg String) (: n Int64)))) (+ (String.byte-len (. r msg)) (. r n))) (export req)))
+  (input  (do (effect R (op req (-> (Record (: msg String) (: n Int64)) Int64))) (bind R "cadenza:ra/api")
+              (def (main) (host (R) (R.req (record (msg "hi") (n 4))))) (export main)))
+  (call   main)
+  (output (: 6 Int64)))
