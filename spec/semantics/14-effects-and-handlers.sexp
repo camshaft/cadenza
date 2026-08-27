@@ -1151,6 +1151,28 @@
   (call   main (: 10000 Int64))
   (output (: 49995000 Int64)))
 
+(case "an OBSERVED performing tail loop of 20k iterations keeps constant stack (repackage-tail-call)"
+  (doc    "The observed-out-state scale face (breaker #16). `grow` is a source-tail-recursive PERFORMER whose
+           out-state is OBSERVED after the recursion (`(+ g (Acc.size))`), so it is multi-value-upgraded to
+           return `(value, out-state)` and its tail self-call is rewritten into `(let ((t (grow …))) (tuple
+           (. t 0) (. t 1)))` — the call moves into the let INIT and the body re-packages `t`. That
+           identity-repackage IS a tail call; the wasm loop transform must recognize it
+           (multivalue_repackage_tail_call) or the upgraded def recurses one wasm frame per iteration and
+           traps `call stack exhausted` (observed ~5-8k). 20000 iterations is well beyond that naive-frame
+           limit, so passing PROVES the loop transform fired (constant stack). Each `push` advances the state
+           by 1 (resume s ; s+1), so after 20k pushes the state is 20000; `grow` returns 0 at the base, and
+           `(+ g (Acc.size))` = 0 + 20000 = 20000.")
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)) (op size (-> Int64)))
+            (def (grow (: n Int64)) (if (< n 1) 0 (match (Acc.push n) (_ (grow (- n 1))))))
+            (def (main)
+              (handle Acc 0
+                ((push (v) s (resume s (+ s 1))) (size () s (resume s s)))
+                (let ((g (grow 20000))) (+ g (Acc.size)))))
+            (export main)))
+  (call   main)
+  (output (: 20000 Int64)))
+
 (case "an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact"
   (doc    "A heap VIEW as the resume value: the arm builds a `Bytes.slice` window and resumes with it;
            the body indexes the escaped view (byte 0 of (20,30) = 20, +22 = 42). The view's re-based
