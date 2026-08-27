@@ -249,6 +249,7 @@ pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	MUTUALLY recursive helpers BOTH perform against the same handler
 pass	MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler
+pass	Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
 pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove by a slice-view key drops the flat-keyed entry
@@ -3008,6 +3009,7 @@ pass	a non-tail conditional abort hoists out of a strict operand and folds per b
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
 pass	a non-tail cross-function conditional abort declines cleanly
 pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail recursive abort declines rather than miscompiles
@@ -3782,6 +3784,7 @@ pass	a runtime map drained by remove equals the EMPTY map literal
 pass	a runtime map match binds a present key's value
 pass	a runtime map match falls through when the named key is absent
 pass	a runtime map match fires a two-key arm only when both keys are present
+pass	a runtime map match's rest binder reads the map minus the named key
 pass	a runtime map match's two-key arm falls through when one key is missing
 pass	a runtime map reached VIA insert-then-remove equals the directly-built map
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
@@ -4261,6 +4264,7 @@ pass	a tail-recursive accumulator loop runs to a large runtime N in constant sta
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a tail-recursive list fold over a large runtime list runs in constant stack
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail
 pass	a tail-resumptive perform BEFORE an abort on the same spine abandons the pending continuation
@@ -8427,5 +8431,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold
-pass	a runtime map match's rest binder reads the map minus the named key

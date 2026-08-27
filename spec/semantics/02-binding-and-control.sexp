@@ -1938,6 +1938,48 @@
               (def (main (: n Int64)) (go n)) (export main)))
   (call   main (: 100000 Int64)) (output (: 100000 Int64)))
 
+(case "a tail-recursive list fold over a large runtime list runs in constant stack"
+  (doc    "The LIST-CONSUMING face of the loop transform: `(sa xs acc) = (match xs ((list) acc) ((list x ..
+           rest) (sa rest (+ acc x))))` is a self-tail-call inside a `MatchList` CONS arm (the loop transform
+           threads tail position through list-match arms, not only scalar `if`s). The list is built at run
+           time by a push-loop so the fold walks a genuine heap list. Summing [0,100000) = 4999950000 (also
+           pins the Int64 accumulator, exceeding Int32) COMPLETES without a stack overflow — a recursive
+           `call` at 100000 deep would blow the wasm stack — proving the MatchList tail-call became a
+           constant-stack loop. [0,100) = 4950 is the small control. Relocated (RUN half) from rcdzc
+           `a_tail_recursive_list_fold_compiles_to_a_constant_stack_loop`; its Lir `loop`/no-self-call witness
+           stays in rcdzc.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (sa (: xs (List Int64)) (: acc Int64))
+              (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x)))))
+            (def (main (: n Int64)) (sa (build 0 n (list)) 0))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 4950 Int64))
+  (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
+  (live-objects known-leak 1))
+
+(case "a non-tail list fold over a large runtime list is accumulator-transformed to constant stack"
+  (doc    "The user's natural non-tail list sum: `(sum xs) = (match xs ((list) 0) ((list x .. rest) (+ x
+           (sum rest))))` — the self-call `(sum rest)` sits in a `+` OPERAND, so it is NOT a tail call and
+           would grow the stack. The backend's accumulator introduction recognizes the list-fold shape (empty
+           arm = the `+` identity, cons arm = combine, self-call threading `rest` through the scrutinee) and
+           rewrites it to a tail accumulator, which the MatchList loop transform then compiles to a loop. Over
+           a runtime list of [0,100000) it returns 4999950000 without a stack overflow — proving the non-tail
+           list fold became O(1) stack. [0,100) = 4950 is the control. Relocated (RUN half) from rcdzc
+           `a_non_tail_list_fold_is_accumulator_transformed_into_a_constant_stack_loop`; its `sum$acc`
+           synthesis + Lir `loop` witness stays in rcdzc.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (sum (: xs (List Int64)))
+              (match xs ((list) 0) ((list x .. rest) (+ x (sum rest)))))
+            (def (main (: n Int64)) (sum (build 0 n (list))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 4950 Int64))
+  (call   main (: 100000 Int64)) (output (: 4999950000 Int64))
+  (live-objects known-leak 1))
+
 (case "a nullary do-local def followed by a use of it computes over its result"
   (doc    "The `def helper … then use it` idiom: `main`'s body is a do-block with a nullary do-local
            `(def (a) 10)` followed by `(+ (a) 5)` = 15. Pins the intended semantics of a def-body sequence
