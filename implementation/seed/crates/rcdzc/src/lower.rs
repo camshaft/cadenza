@@ -23356,7 +23356,24 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
             Some(xb.cmp(&yb))
         }
         (Core::Unit, Core::Unit) => Some(std::cmp::Ordering::Equal),
-        // A nested-compound or runtime key has no compile-time canonical order here — decline.
+        // Tuples order ELEMENT-WISE lexicographically (position 0, then 1, …), recursing via THIS canonical
+        // order — the runtime to-list tuple order (19-sets pins tuple Set.to-list lexicographic; the operator
+        // wants full generality across ALL shapes). A homogeneous Set/Map holds same-arity tuples; a
+        // non-orderable element (float / another nested collection / a runtime element) declines the whole
+        // compare (`?`), keeping the fold sound + matching the runtime's own non-orderable decline.
+        (Core::Tuple { elems: xe }, Core::Tuple { elems: ye }) => {
+            if xe.len() != ye.len() {
+                return None;
+            }
+            for (&xi, &yi) in xe.iter().zip(ye.iter()) {
+                match const_key_order(db, xi, yi)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
+        // A runtime key, or a nested-compound this stage does not yet rank (record / sum), declines.
         _ => None,
     }
 }
@@ -23377,6 +23394,21 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
         // Bytes: UNSIGNED byte-lexicographic (Rust `[u8]: Ord`) = the runtime to-list Bytes order (19-sets).
         (CVal::Bytes(x), CVal::Bytes(y)) => Some(x.cmp(y)),
         (CVal::Unit, CVal::Unit) => Some(std::cmp::Ordering::Equal),
+        // Tuples order ELEMENT-WISE lexicographically, recursing via this canonical order — the const_eval
+        // twin of `const_key_order`'s Tuple arm (runtime tuple to-list order, 19-sets). A non-orderable
+        // element declines.
+        (CVal::Tuple(xe), CVal::Tuple(ye)) => {
+            if xe.len() != ye.len() {
+                return None;
+            }
+            for (xi, yi) in xe.iter().zip(ye.iter()) {
+                match cval_key_order(xi, yi)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         _ => None,
     }
 }
