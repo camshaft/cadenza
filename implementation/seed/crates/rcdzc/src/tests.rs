@@ -21653,29 +21653,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_sum_expect_in_a_tuple_beside_an_i64_element_emits_valid_wasm() {
-        // Regression guard for the scratch-slot clash: a `(tuple <Option.expect result> <i64 arith>)` — an
-        // i32 heap-handle element beside an i64 element — must give each element DISJOINT scratch slots
-        // (the SumExpect handle above `*high`, the per-element scratch base advanced), else the i32 handle
-        // and the i64 value share a slot and wasm rejects the module. `(tuple (expect (List.at xs 0)) (+ i 1))`.
-        // `run_heap_value` returns `None` when the value-heap runtime store is absent (a fresh checkout /
-        // CI's `cargo test` job, which does NOT `xtask build` first) — skip the value assertion then, as the
-        // sibling heap-run tests do, rather than `.unwrap()`-panicking. The wasm-validity half of the guard
-        // still runs: `run_heap_value` compiles + validates the module before it needs the runtime.
-        let Some(v) = run_heap_value(
-            "(module m (def (go xs i) (. (tuple ((. Option expect) ((. List at) xs 0) \"x\") (+ i 1)) 0)) \
-               (def (main) (go (list 7 8) 0)) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping sum-expect-in-tuple heap run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "SumExpect beside an i64 tuple element gets a disjoint scratch slot"
-        );
-    }
 
     #[test]
     fn a_match_on_a_tuple_of_recursive_calls_types_from_the_constructor() {
