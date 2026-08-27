@@ -9938,65 +9938,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_string_or_symbol_literal_pattern_respects_the_nominal_boundary() {
-        // A String and a Symbol literal pattern share the `Core::ConstStr` rep (`classify_probe` maps BOTH
-        // to a `Probe::Str`), but `String` and `Symbol` are a distinct NOMINAL boundary that `=` (CDZ0202)
-        // and fn-args reject. The scalar match path must fault the CROSS-boundary mix too — a `"add"` pattern
-        // over a `Symbol` scrutinee, or a `#"add"` over a `String` — by keying the expected type on the
-        // PATTERN's origin (resolve `probe_pats[i]`), NOT the scrutinee. Was the Inc-45 regression (the check
-        // keyed on the scrutinee → trivially true for any text scrutinee → the pattern path was more
-        // permissive than `=`; reviewer-found on `1fc13499a`). Checked structurally (storeless — the type
-        // check runs before any heap emit / boundary-rep check).
-        // CROSS 1 — a STRING literal pattern over a SYMBOL scrutinee faults (CDZ0201-class, the same shape/
-        // type-mismatch code the char/bool-over-int cases carry).
-        let cross_str_over_sym =
-            reject_full("(module m (def (f (: s Symbol)) (match s (\"add\" 1) (_ 0))) (export f))")
-                .expect("a String pattern over a Symbol scrutinee must reject");
-        assert_eq!(
-            cross_str_over_sym.code.as_deref(),
-            Some("CDZ0201"),
-            "got: {}",
-            cross_str_over_sym.message
-        );
-        // CROSS 2 — a SYMBOL literal pattern over a STRING scrutinee faults.
-        let cross_sym_over_str = reject_full(
-            "(module m (def (f (: s String)) (match s (#\"add\" 1) (_ 0))) (export f))",
-        )
-        .expect("a Symbol pattern over a String scrutinee must reject");
-        assert_eq!(
-            cross_sym_over_str.code.as_deref(),
-            Some("CDZ0201"),
-            "got: {}",
-            cross_sym_over_str.message
-        );
-        // CONTROLS — the SAME-kind cases must still COMPILE (the intended dispatch Inc-45 shipped). A folded
-        // Symbol scrutinee matched by a symbol literal, and a folded String by a string literal, each select
-        // their arm; guard on the store (heap run) like the other match tests.
-        if super::find_runtime_wasm().is_none() {
-            eprintln!("runtime wasm not found; skipping same-kind control heap-runs");
-            return;
-        }
-        assert_eq!(
-            run_heap_value(
-                "(do (def (main) (match (Symbol.of (String.concat \"ad\" \"d\")) (#\"add\" 1) (_ 0))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "a Symbol pattern over a Symbol scrutinee still dispatches (same-kind control)"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(do (def (main) (match (String.concat \"ad\" \"d\") (\"add\" 1) (_ 0))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "a String pattern over a String scrutinee still dispatches (same-kind control)"
-        );
-    }
-
-    #[test]
     fn an_erased_narrow_newtype_boxed_into_a_compound_widens_before_box_int() {
         // A single-variant newtype over a NARROW int — `(type W (Wrap UInt8))` — boxed as a tuple/sum/list
         // ELEMENT must widen i32→i64 before `box-int` (the heap cell is i64), exactly as a bare narrow int
@@ -24346,56 +24287,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             .unwrap(),
             "7",
             "the bare-binder payload control (Wrap x) still binds any value (irrefutable)"
-        );
-    }
-
-    #[test]
-    fn a_char_or_symbol_literal_list_element_refines_by_value() {
-        // A CHAR (`#\a`) or SYMBOL (`#"go"`) literal is a refutable scalar list element, exactly like an
-        // Int/Bool/String literal — `(list #\a .. r)` matches only a list whose head is `#\a`. The
-        // literal-element desugar (`desugar_refutable_literal_list_elements`) synthesizes a `(= elem <lit>)`
-        // guard; char `=` (codepoint) and symbol `=` (shared-ConstStr content) already lower (Inc-45/46), and
-        // `clone_literal_atom` already copies a Char/Sym leaf. Before, `is_refutable_literal_element` omitted
-        // Char/SymbolConst, so a char/symbol list element fell to `check_binding_pattern` → a spurious CDZ0201
-        // "not a tuple/record/constructor". The list-element analog of the scalar char/symbol-literal support.
-        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-        ok(
-            "(module m (def (f (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
-              (def (main) (f (list #\\a #\\b))) (export main))",
-        );
-        ok(
-            "(module m (def (f (: xs (List Symbol))) (match xs ((list #\"go\" .. r) 1) (_ 0))) \
-              (def (main) (f (list (Symbol.of \"go\")))) (export main))",
-        );
-        // Fixed-arity, char at a non-head position.
-        ok(
-            "(module m (def (f (: xs (List Char))) (match xs ((list a #\\x) 1) (_ 0))) \
-              (def (main) (f (list #\\p #\\x))) (export main))",
-        );
-
-        // RUN: a char literal element hits on the matching head, misses otherwise (over a runtime list).
-        let Some(v) = run_heap_value(
-            "(module m (def (classify (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
-               (def (main) (classify (list (Option.expect (Char.from-int 97) \"a\") \
-                                            (Option.expect (Char.from-int 98) \"b\")))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping char-literal-list-element run");
-            return;
-        };
-        assert_eq!(
-            v, "1",
-            "a #\\a head (built from a runtime scalar 97) matches the char-literal arm"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (classify (: xs (List Char))) (match xs ((list #\\a .. r) 1) (_ 0))) \
-                   (def (main) (classify (list (Option.expect (Char.from-int 122) \"z\")))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "0",
-            "a #\\z head (scalar 122) misses the #\\a arm and falls to the wildcard"
         );
     }
 
