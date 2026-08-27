@@ -8210,3 +8210,7 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	a >= Int64.min tautology keeps a trapping div operand (still traps at z=0, folds otherwise)
+pass	a derived-range < 16 tautology keeps a trapping div operand
+pass	a >= Int64.min tautology keeps an overflowing operand (checked-add traps at z=MAX)
+pass	no over-conservatism: a trap-free masked operand still folds the tautology
