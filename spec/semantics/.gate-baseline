@@ -5045,6 +5045,7 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation on a nested generic-call argument grounds the self-nested producer and it runs
+pass	an annotation on an arithmetic operand is transparent
 pass	an annotation that contradicts the value is rejected
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
