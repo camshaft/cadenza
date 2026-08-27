@@ -7130,6 +7130,7 @@ pass	pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch adv
 pass	pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order
 pass	pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state
 pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm
+pass	pak1 a peer op returning a (List of a user sum) crosses and its length is read
 pass	pal1 PARITY-ALTERNATING two-effect draws — one recursive driver picks which effect to draw per hop, both threads advance interleaved
 pass	parsing a length-framed message and rebuilding it yields the original bytes
 pass	partial application captures a let-bound value in the residual lambda
@@ -7191,6 +7192,7 @@ pass	pjr1 a consuming projection of a let-bound tuple's list child is retained (
 pass	pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
 pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
+pass	pla1 a list argument crosses inbound to a peer and is read by the peer op
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
 pass	pop1 a POPCORN kettle — each heat raises the temperature five degrees answering how many NEW kernels popped (thresholds every three degrees from the seed base, the count derived by differencing the running total), bowl reads the total, and the cool kettle pops a single late kernel while the hot one accelerates through five
@@ -8468,6 +8470,7 @@ pass	two distinct names bound to the same value key the same map entry
 pass	two distinct-named modules in one scope coexist
 pass	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 pass	two do-local function declarations are mutually recursive
+pass	two effects bound to the same interface share one peer instance (both ops run)
 pass	two effects declared with the same name are distinct, not one merged effect
 pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
@@ -8811,5 +8814,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	pla1 a list argument crosses inbound to a peer and is read by the peer op
-pass	pak1 a peer op returning a (List of a user sum) crosses and its length is read

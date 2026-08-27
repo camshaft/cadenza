@@ -56806,32 +56806,11 @@ mod cross_component_oracle {
             x_y_imports, 1,
             "two effects bound to one interface must merge into a SINGLE instance import, not collide"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[two-effects-one-iface] runtime wasm not found; skipping the run");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:x/y".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("two effects sharing one peer interface run")
-        {
-            // main = A.fa(1) + B.fb(2) = (1+10) + (2+20) = 11 + 22 = 33. Both effects routed to the ONE
-            // shared provider instance and each op returned its own result.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "33",
-                "two effects on one peer interface each route to their op (fa(1)=11 + fb(2)=22 = 33)"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("two-effects-one-iface run trapped: {t}"),
-        }
+        // The RUN half (compose the two-op provider + this consumer, `main = A.fa(1)+B.fb(2) = 33`) is
+        // covered by corpus `spec/semantics/29-cross-component-peers.sexp` — "two effects bound to the same
+        // interface share one peer instance (both ops run)". This in-crate test now pins the WHITE-BOX
+        // structural claim only: the two effects merge onto EXACTLY ONE `cadenza:x/y` instance import (the
+        // multi-effect→single-instance merge), which the corpus run confirms behaviorally.
     }
 
     #[test]
