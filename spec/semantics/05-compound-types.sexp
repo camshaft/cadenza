@@ -20241,6 +20241,48 @@
   (output (: 111 Int64))
   (live-objects known-leak 4))
 
+; -- v-rust-backend (2026-08-27): dmp2/dmp3 complete the container-kind matrix for `elem_field_ty` — the
+; SAME fix's Record and Tuple-with-list arms. dmp1 pins the direct-LIST field; here the nested list sits one
+; level deeper, INSIDE a record field (dmp2) or a tuple element (dmp3). Reading it needs the intervening
+; Elem into the record/tuple to resolve `cur` to the container type (not `Ty::Any`) so the list read picks
+; `vec-get`. mpf2's tuple was scalar-only, so it never exercised the Tuple arm's list resolution; these do.
+; Both value-correct via the fix (a reset-to-`Any` default would mis-pick `arr-get` on the inner RRB vec ->
+; garbage/trap); both leak the extra shells (generic-sum x heap-payload reclaim gap, v-runtime territory).
+
+(case "dmp2 a multi-payload ctor's RECORD field holding a list resolves the list read to vec-get"
+  (doc    "The Record arm of `elem_field_ty`: field 0 of `(Both <rec> c)` is a record `(record (= xs ...))`
+           whose `xs` field is a list. The walk is `[Payload, Elem(0)->record, Elem(xs-idx)->list, ...]`; the
+           record's list field must resolve from the record's SORTED-field type so `List.len ys` picks
+           `vec-get`, not `arr-get` on the RRB vec. Value 102; leaks the shells (v-runtime reclaim gap).")
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (record (= xs (list n (+ n 1)))) 100) (GNil unit))
+                (GPair (Record (: xs (List Int64))) Int64))
+        ((Both (record (= xs ys)) c) (+ (List.len ys) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 102 Int64))
+  (live-objects known-leak 5))
+
+(case "dmp3 a multi-payload ctor's TUPLE field whose first element is a list resolves to vec-get"
+  (doc    "The Tuple arm of `elem_field_ty` for a LIST element (mpf2's tuple was scalar-only): field 0 of
+           `(Both <tuple> c)` is `(tuple (list ...) 7)`. The walk `[Payload, Elem(0)->tuple, Elem(0)->list,
+           ...]` must resolve the tuple's first element to its List type so `List.len ys` picks `vec-get`.
+           Value 109; leaks the shells (v-runtime reclaim gap).")
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (tuple (list n (+ n 1)) 7) 100) (GNil unit))
+                (GPair (Tuple (List Int64) Int64) Int64))
+        ((Both (tuple ys k) c) (+ (+ (List.len ys) k) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 109 Int64))
+  (live-objects known-leak 5))
+
 ; -- breaker batch 458 (2026-08-27): the DEF-side reclaim gap BLOCKING the nested-list entry slice,
 ; reproduced with NO boundary lift. v-rust-backend's nested lift emit was proven value-correct but
 ; reverted: a List.at-extracted COMPOUND element (the Some-bound inner vec) is RETAINED by List.at
