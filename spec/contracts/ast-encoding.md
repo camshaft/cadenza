@@ -8,20 +8,26 @@
 > and [Core Principle X](../../constitution.md) and trace to [overview §3](../overview.md).
 >
 > RFC-2119 key words are normative. Each requirement is a single self-contained sentence under a
-> stable heading. This contract states the encoding's properties; the concrete byte format is pinned
-> at the declared-default location.
+> stable heading. This contract states the encoding's abstract properties; the concrete byte format
+> that realizes them is pinned in [ast-binary-format.md](./ast-binary-format.md).
 
 ## Purpose And Scope
 
 A Cadenza program's canonical representation is a homoiconic abstract syntax tree. For that tree to
 be a durable, hashable, third-party-checkable artifact independent of any surface syntax, its stored
 form must be fixed. This contract pins that the canonical stored form is a binary serialization of
-the AST, that a node names its kind by referencing a symbol in a prelude the file itself carries so
-that the file is self-contained, that the serialization is a bijection with one canonical byte form
-per tree, that it carries everything a program means to preserve — including comments — and that
-textual syntaxes are conversions to and from it rather than the stored form itself. It does not pin
-the concrete byte format, which is a declared-default choice, nor the meaning of the symbols a node
-references, which the capability specifications and the executable semantics govern.
+the AST, that a node names its kind by referencing a leaf in a self-contained leaf pool the file itself
+carries, that the serialization is a bijection with one canonical byte form per tree, that it carries
+everything a program means to preserve — including comments — and that textual syntaxes are conversions
+to and from it rather than the stored form itself. The concrete byte format
+that realizes these properties is pinned in [ast-binary-format.md](./ast-binary-format.md); this
+contract does not restate those bytes, nor the meaning of the symbols a node references, which the
+capability specifications and the executable semantics govern.
+
+The reference implementation realizes the self-contained prelude as a LEAF POOL: the file carries a pool
+of every leaf its nodes reference, a construct names its kind by an atom node referencing a `Name` leaf
+in that pool by index, and the pool is in a canonical order; the prelude requirements below are written
+against that realization.
 
 ## The Canonical Stored Form
 
@@ -53,39 +59,27 @@ The addition of a new node kind MUST be expressible as a new symbol without chan
 
 ### The File Carries Its Own Symbol Prelude
 
-A stored binary AST MUST carry a prelude that lists every symbol its nodes reference, so that the file is self-contained and readable without an external registry.
+A stored binary AST MUST carry, as a leaf pool, every leaf its nodes reference — including every `Name` leaf a construct uses as its kind — so that the file is self-contained and readable without an external registry; this leaf pool is the prelude this contract requires, and the `Name` leaves in it are the symbols nodes reference.
 
-A node MUST name its kind by referencing a symbol in the prelude by index rather than by carrying the symbol inline.
-
-### A Prelude Symbol Is Namespaced And May Be Versioned
-
-Each prelude symbol MUST carry the namespace it belongs to, so that a symbol defined by the language and a symbol introduced by a macro cannot collide.
-
-Each prelude symbol MAY carry a version, so that the meaning of a construct can evolve while a file that references an earlier version continues to denote it.
+A node MUST name its kind by an atom node that references, by index into the leaf pool, the `Name` leaf spelling that kind, rather than by carrying the spelling inline at the node.
 
 ### The Prelude Order Is Canonical
 
-The order of symbols in the prelude MUST be a deterministic function of the set of symbols referenced, independent of the order in which nodes were constructed or discovered.
+The order of leaves in the pool MUST be a deterministic function of the tree alone, independent of the order in which nodes were constructed or discovered; [ast-binary-format.md](./ast-binary-format.md) pins that concrete order (first-encounter under a pre-order walk, deduplicated by value).
 
-Two abstract syntax trees that reference the same set of symbols MUST produce identical preludes.
+Two abstract syntax trees that are equal MUST produce identical leaf pools, so that the leaf pool participates in the one-canonical-byte-form-per-tree bijection.
 
 ## What The Tree Carries
 
 ### The Tree Carries Comments And Documentation
+
+A comment and a documentation string are ORDINARY nodes of the tree — a construct in the general head-and-children form, encoded and decoded by the same rules as every other node, not a special-cased kind; the requirements below state that ordinary carriage, and nothing about a comment or documentation node is handled specially by the encoding.
 
 The abstract syntax tree MUST be able to carry a comment as a node of the tree, attached to the node it annotates, so that a comment is preserved in the stored binary form rather than only in a textual rendering.
 
 The abstract syntax tree MUST be able to carry documentation attached to a definition, as required by the agent-authoring capability.
 
 A comment or documentation carried by the tree MUST survive encoding and decoding unchanged.
-
-### An Identifier May Carry A Scope Set For Hygiene
-
-An identifier node MUST be able to carry a set of scopes, so that macro hygiene can resolve a name by its scope set rather than by its spelling alone (metaprogramming.md §Macros Are Hygienic).
-
-An identifier that carries no scope set MUST decode identically to the same identifier before scope sets were expressible, so that the scope-set annotation is additive and a program written without it is unchanged.
-
-A scope set carried by an identifier MUST survive encoding and decoding unchanged, so that hygiene information is preserved in the stored binary form.
 
 ## Textual Syntaxes Are Conversions
 
@@ -111,9 +105,9 @@ A reader MUST refuse a binary AST whose container encoding version it does not i
 
 ### New Constructs Do Not Bump The Encoding Version
 
-The introduction of a new construct MUST be expressed as a new prelude symbol rather than as a change to the container encoding version.
+The introduction of a new construct MUST be expressed as a new `Name` leaf in the pool rather than as a change to the container encoding version.
 
-A file that references a symbol or symbol version a reader does not understand MUST be refused by that reader rather than misinterpreted, without requiring a change to the container encoding version.
+A reader that does not understand a construct a file references MUST refuse it rather than misinterpret it, without requiring a change to the container encoding version; because a `Name` leaf is well-formed bytes the codec always decodes, this refusal is enforced by the semantic layer (the capability specifications) that gives the construct meaning, not by the container decode.
 
 ## Additive Evolution
 
