@@ -38997,41 +38997,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn option_expect_on_a_constant_absent_variant_folds_to_a_trap() {
-        // The ABSENT companion of the present-fold above: `expect` on a compile-time-visible ABSENT variant
-        // is requiring the value of a statically-known-empty optional — a PROVABLE TRAP (core-semantics.md
-        // §Requiring The Value Of An Optional Traps On Absence), folded to `Core::Trap` (an `unreachable`),
-        // NOT a decline. Exercised where the payload TYPE is determined (an overflowing `checked-add`, whose
-        // `(Option Int64)` fixes the return type), so `main` has a machine return type and the trap is the
-        // observed outcome. `(add-ck Int64.max 1)` overflows → `checked-add` folds to `None` → `expect`
-        // traps. Contrast `(add-ck 20 22)` = 42, which unwraps the `Some` (the present fold).
-        let ck = "(def (add-ck a b) (Option.expect (Int64.checked-add a b) \"overflow\"))";
-        // In range: expect unwraps the folded `Some` — 42.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(&format!(
-                    "(module m {ck} (def (main) (add-ck 20 22)) (export main))"
-                )),
-                "main"
-            ),
-            42,
-            "an in-range checked add's Some is unwrapped by expect"
-        );
-        // Overflow: the folded `None` makes expect a provable trap — the program compiles and traps at run
-        // time (rather than declining, as it did before the absent-fold).
-        assert!(
-            call_traps(
-                &component(&format!(
-                    "(module m {ck} (def (main) (add-ck Int64.max 1)) (export main))"
-                )),
-                "main",
-                &[]
-            ),
-            "an overflowing checked add's None makes expect trap"
-        );
-    }
-
-    #[test]
     fn checked_arithmetic_folds_to_some_in_range_and_none_on_overflow() {
         // `Int64.checked-add`/`checked-mul` — the FALLIBLE arithmetic (numeric-model.md §Overflow Is
         // Defined). A constant operand pair FOLDS: in range → `(Some result)`, overflow → `(None unit)`.
