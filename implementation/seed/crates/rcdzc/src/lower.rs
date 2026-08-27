@@ -23401,7 +23401,31 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
             }
             ord => Some(ord),
         },
-        // A runtime key, or a nested-compound this stage does not yet rank (record), declines.
+        // Records order FIELD-WISE in the canonical (name-lexicographic) field order — the runtime
+        // `value_cmp_shaped` Record order. A record's runtime rep is a `tuple` arr in the descriptor's field
+        // order, documented as "the same canonical order equality/encode use"; that descriptor order IS
+        // name-lexicographic (`Symbol` orders by (namespace, name), `resolved.rs`), which is EXACTLY the
+        // iteration order of `Core::Record`'s `BTreeMap<Symbol, _>`. So walk both maps in lockstep: a differing
+        // field NAME (a different record type — impossible for a homogeneous Set/Map, but defensive) declines;
+        // matching names compare their VALUES via this canonical order, deciding at the first non-equal field. A
+        // non-orderable field value declines (`?`). This is the LAST shape — with it a const Set/Map of records
+        // folds its to-list (operator: full generality across every shape).
+        (Core::Record { fields: fx }, Core::Record { fields: fy }) => {
+            if fx.len() != fy.len() {
+                return None;
+            }
+            for ((kx, &vx), (ky, &vy)) in fx.iter().zip(fy.iter()) {
+                if kx != ky {
+                    return None;
+                }
+                match const_key_order(db, vx, vy)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
+        // A runtime key this stage cannot rank declines.
         _ => None,
     }
 }
@@ -23463,6 +23487,25 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
             }
             ord => Some(ord),
         },
+        // Records: FIELD-WISE in canonical (name-lexicographic) field order — the const_eval twin of
+        // `const_key_order`'s Record arm (runtime `value_cmp_shaped` Record order). `CVal::Record` is a
+        // `BTreeMap<Symbol, CVal>` in that same canonical order; walk both in lockstep, a differing field name
+        // declines, matching names compare their values. A non-orderable field declines.
+        (CVal::Record(fx), CVal::Record(fy)) => {
+            if fx.len() != fy.len() {
+                return None;
+            }
+            for ((kx, vx), (ky, vy)) in fx.iter().zip(fy.iter()) {
+                if kx != ky {
+                    return None;
+                }
+                match cval_key_order(vx, vy)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(std::cmp::Ordering::Equal)
+        }
         _ => None,
     }
 }
