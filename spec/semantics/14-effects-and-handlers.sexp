@@ -8716,3 +8716,30 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 50 Int64)))
+
+; -- breaker batch 489 (2026-08-27): two composition pairs nothing else exercises. hfr1 = the
+; handler FOLD's compound result crossing the RETURN boundary — two sequential draws thread (seed,
+; seed+1) into a returned list; census 2 = the reachable return cells (the crr contract: NOT a
+; leak, flips to 0 with the reachability driver). hwp1 = a per-width (UInt8) list entry param read
+; inside a handle body — #3852's width lift composed with the fold, 0-leak.
+
+(case "hfr1 a handler fold's list result crosses the return boundary (two threaded draws, two reachable cells)"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (list (St.next) (St.next))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (list 5 6) (List Int64)))
+  (live-objects 2))
+
+(case "hwp1 a UInt8-width list entry param read inside a handle body composes with the fold"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: xs (List UInt8)))
+      (handle St 3 ((get (u) s (resume s s)))
+        (+ (St.get) (List.len xs))))
+    (export main)))
+  (call main (: (list 1 2 3) (List UInt8)))
+  (output (: 6 Int64)))
