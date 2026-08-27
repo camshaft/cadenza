@@ -11569,10 +11569,11 @@ mod runtime_ops {
             !redundant.contains(&Lir::ConstI32(2)),
             "the dead inner branch `2` is eliminated by the unsigned refinement: {redundant:?}"
         );
-        // VALUE PARITY: x<8 takes both truthy → 1; x>=8 → outer else → 3.
-        let same = "(if (< x 8) (if (< x 8) 1 2) 3)";
-        assert_eq!(run::<i64>("(: x UInt32)", same, &[Val::U32(3)]), 1);
-        assert_eq!(run::<i64>("(: x UInt32)", same, &[Val::U32(50)]), 3);
+        // VALUE PARITY (same: x=3→1/50→3; implied: 2→1/6→3; undecided twin: 2→1/6→2; and the UInt64
+        // ceiling soundness x=2^63→1/100→2) is the corpus cases "an UNSIGNED branch refinement decides a
+        // nested comparison and its soundness twin must not over-refine" and "an UNSIGNED lower-bound
+        // refinement must not fabricate an i64::MAX ceiling for a UInt64 above it" in 02-binding-and-control
+        // — this stays a white-box Lir compare-count check.
         // IMPLIED: `x < 4 ⇒ x < 8` true → inner folds, one compare, dead `2` gone.
         let implied = select(
             "(module m (def (g (: x UInt32)) (if (< x 4) (if (< x 8) 1 2) 3)) (def (main) 0) (export main))",
@@ -11582,22 +11583,6 @@ mod runtime_ops {
             implied.iter().filter(|i| matches!(i, Lir::I32LtU)).count(),
             1,
             "an implied unsigned inner test folds: {implied:?}"
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt32)",
-                "(if (< x 4) (if (< x 8) 1 2) 3)",
-                &[Val::U32(2)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt32)",
-                "(if (< x 4) (if (< x 8) 1 2) 3)",
-                &[Val::U32(6)]
-            ),
-            3
         );
         // SOUNDNESS TWIN / over-refine guard: `x < 8` does NOT decide `x < 4` — the value can be 0..3 or
         // 4..7 — so both unsigned compares MUST remain (an over-refinement here would be a miscompile).
@@ -11612,47 +11597,6 @@ mod runtime_ops {
                 .count(),
             2,
             "an undecided unsigned inner comparison must NOT be folded: {undecided:?}"
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt32)",
-                "(if (< x 8) (if (< x 4) 1 2) 3)",
-                &[Val::U32(2)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt32)",
-                "(if (< x 8) (if (< x 4) 1 2) 3)",
-                &[Val::U32(6)]
-            ),
-            2
-        );
-        // UInt64 CEILING SOUNDNESS: a lower-bound refinement (`x > 8`) must NOT fabricate an UPPER ceiling
-        // of i64::MAX — a UInt64 value can legitimately exceed i64::MAX (up to 2^64-1). The refinement seeds
-        // its interval from the var's DECLARED-TYPE bounds (resolved_int_bounds → (0, None) for UInt64), NOT
-        // a hardcoded (i64::MIN, i64::MAX). The load-bearing case: the boundary constant i64::MAX
-        // (9223372036854775807) IS i64-representable, so `(> x i64::MAX)` CAN fold — a fabricated ceiling
-        // would fold it to FALSE. But x = 2^63 (= i64::MAX+1, a valid UInt64 > 8) makes `x > i64::MAX` TRUE
-        // → 1, NOT 2. This exact program returned 2 (the miscompile) before the seed fix.
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt64)",
-                "(if (> x 8) (if (> x 9223372036854775807) 1 2) 0)",
-                &[Val::U64(9223372036854775808)]
-            ),
-            1,
-            "under (> x 8), (> x i64::MAX) must NOT fold to false — a UInt64 can exceed i64::MAX"
-        );
-        // The ordinary in-i64-range value still computes (x = 100 → x > i64::MAX false → 2).
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt64)",
-                "(if (> x 8) (if (> x 9223372036854775807) 1 2) 0)",
-                &[Val::U64(100)]
-            ),
-            2
         );
     }
 
@@ -12001,42 +11945,10 @@ mod runtime_ops {
             wild.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the wildcard arm's (- n 1) sees no refinement — guard MUST be kept, got: {wild:?}"
         );
-        // VALUE + TRAP parity.
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(5)]),
-            4
-        );
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(match n (5 (- n 1)) (_ 0))", &[Val::S64(3)]),
-            0
-        );
-        // Multiple literal arms each refine their own body.
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
-                &[Val::S64(5)]
-            ),
-            4
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(match n (5 (- n 1)) (10 (+ n 1)) (_ 0))",
-                &[Val::S64(10)]
-            ),
-            11
-        );
-        // The un-refined wildcard body still TRAPS at the real underflow (n = MIN).
-        assert!(traps(
-            "(: n Int64)",
-            "(match n (5 0) (_ (- n 1)))",
-            &[Val::S64(i64::MIN)]
-        ));
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(3)]),
-            2
-        );
+        // VALUE + TRAP parity (the (5 …) arm's guard-elided `(± n 1)` computes correctly; the un-refined
+        // wildcard `(- n 1)` still traps at MIN) is the corpus case "a literal match arm pins the scrutinee
+        // to a point, folding an arm-body compare and shedding an arith guard" in 02-binding-and-control —
+        // this stays a white-box Lir guard-count check.
     }
 
     #[test]
@@ -12613,18 +12525,10 @@ mod runtime_ops {
             !implied.contains(&Lir::ConstI64(2)),
             "the dead inner branch `2` is eliminated by the refinement fold, got: {implied:?}"
         );
-        // VALUE parity across all three shapes and both branch outcomes.
-        let same = "(if (> n 0) (if (> n 0) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", same, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", same, &[Val::S64(0)]), 3);
-        let imp = "(if (>= n 5) (if (> n 0) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(10)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", imp, &[Val::S64(3)]), 3);
-        let fls = "(if (< n 0) (if (> n 10) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(-1)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(0)]), 3);
-        assert_eq!(run::<i64>("(: n Int64)", fls, &[Val::S64(20)]), 3);
+        // VALUE parity across all three shapes (same: n=5→1/0→3; implied: 10→1/5→1/3→3; made-false:
+        // -1→2/0→3/20→3) is the corpus flagship case "a redundant relational check inside its own truthy
+        // branch is known-true and its dead branch is eliminated" in 02-binding-and-control — this stays a
+        // white-box Lir compare-count check.
         // A comparison the refinement does NOT decide (constant strictly inside the range) is UNCHANGED —
         // `n >= 5` does not decide `n > 8`, so both compares stay. This guards against over-folding.
         let undecided = select(
@@ -12638,22 +12542,6 @@ mod runtime_ops {
                 .count(),
             2,
             "an undecided inner comparison must NOT be folded, got: {undecided:?}"
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (>= n 5) (if (> n 8) 1 2) 3)",
-                &[Val::S64(6)]
-            ),
-            2
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (>= n 5) (if (> n 8) 1 2) 3)",
-                &[Val::S64(9)]
-            ),
-            1
         );
     }
 
@@ -12906,55 +12794,10 @@ mod runtime_ops {
             overflow_capable.contains(&Lir::ConstI64(2)),
             "an overflow-capable (+ x 1) (x>0, no upper bound) must NOT fold — the trap must survive, the `2` stays: {overflow_capable:?}"
         );
-        // VALUE PARITY across all three shapes.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
-                &[Val::S64(5)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
-                &[Val::S64(9)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
-                &[Val::S64(20)]
-            ),
-            3
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 5) 1 2) 3)",
-                &[Val::S64(3)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 5) 1 2) 3)",
-                &[Val::S64(5)]
-            ),
-            2
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (> x 0) (if (< (+ x 1) 11) 1 2) 3)",
-                &[Val::S64(5)]
-            ),
-            1
-        );
+        // VALUE PARITY across the three shapes (folds: x=5/9→1, x=20→3; undecided: x=3→1, x=5→2;
+        // overflow-capable: x=5→1) is the corpus case "a flow refinement folds a compare over a no-overflow
+        // arith operand, but the trap survives when overflow is possible" in 02-binding-and-control — this
+        // stays a white-box Lir dead-branch-elision check.
     }
 
     #[test]
