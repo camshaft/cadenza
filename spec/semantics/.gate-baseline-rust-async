@@ -1465,6 +1465,7 @@ pass	a closure captures its environment by value at creation, unaffected by a la
 pass	a closure captures the binding in scope where it was created
 pass	a closure captures the param generation BEFORE a shadow and applies after
 pass	a closure captures the result of a build-time host op called with an argument
+pass	a closure captures two inner-handled results across nested lets
 pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
@@ -1473,7 +1474,9 @@ pass	a closure capturing a handler-computed VALUE escapes the handle and applies
 pass	a closure capturing a heap map is applied twice and the map is read once more after
 pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure capturing a value computed under a handler may escape the handle applied directly
+pass	a closure capturing an inner-handled perform result closes over the value under an outer handler
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
+pass	a closure capturing an inner-handled perform result needs no outer handler
 pass	a closure capturing perform results escapes to NO handler at all and applies pure
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
@@ -1700,6 +1703,7 @@ pass	a ctl-style arm that reads the STATE binder AROUND its continuation applica
 pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a cube dimension renders as Unit.^ with exponent 3
+pass	a curried closure capturing an inner-handled result closes over the value across both applications
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a curried lambda stored in a tuple is projected and applied through both levels
@@ -5195,6 +5199,7 @@ pass	converting a unit to another unit of the same dimension is an exact rationa
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
+pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
 pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
@@ -5457,6 +5462,11 @@ pass	end-to-end: a property run finds a failing input, then the shrinker converg
 pass	eo1 an Option entry param delivers its Some payload
 pass	eo2 an Option entry param takes the None arm
 pass	eo3 an Option param BETWEEN scalars keeps positions
+pass	eoc1 an Option entry param captured by a local closure applied twice
+pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
+pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)
+pass	eop1 an Option entry param read inside a handle body composes with the fold
+pass	eop2 an Option-of-list entry param measures its Some payload
 pass	ep1 TWO String entry params concat in declaration order
 pass	ep2 a String param BETWEEN two scalars keeps positional correctness
 pass	ep3 one String param used TWICE (byte-len and content compare)
@@ -5485,6 +5495,7 @@ pass	equality over a partly-un-built sum with a free Err type compiles on every 
 pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	equality with zero selects eqz and computes correctly for both operand orders
 pass	er1 a Rational entry param in exact arithmetic
+pass	erp1 a Result entry param delivers its Ok payload
 pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
 pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
@@ -7608,8 +7619,6 @@ todo	bk5 Blake3-of-encode runtime composition compares equal across recomputatio
 todo	bo1 bare order over two runtime encode results compares content-lexicographically
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
-todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
-pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
 todo	cj03 Ast.print of a RUNTIME AST value renders
@@ -7617,6 +7626,7 @@ todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
+todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
 todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
 todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
 todo	cq02c host IMPORT: NULLARY + LIST result, called once
@@ -7673,9 +7683,3 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	eop1 an Option entry param read inside a handle body composes with the fold
-pass	erp1 a Result entry param delivers its Ok payload
-pass	eop2 an Option-of-list entry param measures its Some payload
-pass	eoc1 an Option entry param captured by a local closure applied twice
-pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
-pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)

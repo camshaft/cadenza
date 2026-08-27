@@ -1502,6 +1502,7 @@ pass	a closure captures its environment by value at creation, unaffected by a la
 pass	a closure captures the binding in scope where it was created
 pass	a closure captures the param generation BEFORE a shadow and applies after
 pass	a closure captures the result of a build-time host op called with an argument
+pass	a closure captures two inner-handled results across nested lets
 pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
@@ -1510,7 +1511,9 @@ pass	a closure capturing a handler-computed VALUE escapes the handle and applies
 pass	a closure capturing a heap map is applied twice and the map is read once more after
 pass	a closure capturing a runtime String ROPE reads its byte length at call time
 pass	a closure capturing a value computed under a handler may escape the handle applied directly
+pass	a closure capturing an inner-handled perform result closes over the value under an outer handler
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
+pass	a closure capturing an inner-handled perform result needs no outer handler
 pass	a closure capturing perform results escapes to NO handler at all and applies pure
 pass	a closure capturing two enclosing bindings folds through nested arithmetic
 pass	a closure capturing two enclosing bindings threads a multi-slot environment through a recursive HOF
@@ -1753,6 +1756,7 @@ pass	a ctl-style arm that reads the STATE binder AROUND its continuation applica
 pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
 pass	a cube dimension renders as Unit.^ with exponent 3
+pass	a curried closure capturing an inner-handled result closes over the value across both applications
 pass	a curried function can be partially applied
 pass	a curried function-type annotation checks its inner result type against the argument
 pass	a curried lambda stored in a tuple is projected and applied through both levels
@@ -5451,6 +5455,7 @@ pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
+pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
 pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
@@ -5746,6 +5751,13 @@ pass	encoding and decoding an Ast.Bool round-trips to an equal value
 pass	encoding and decoding an Ast.Float round-trips to an equal value
 pass	encoding and decoding an Ast.Str round-trips to an equal value
 pass	end-to-end: a property run finds a failing input, then the shrinker converges to the minimal failing value
+pass	eo1 an Option entry param delivers its Some payload
+pass	eo2 an Option entry param takes the None arm
+pass	eo3 an Option param BETWEEN scalars keeps positions
+pass	eoc1 an Option entry param captured by a local closure applied twice
+pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
+pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)
+pass	eop1 an Option entry param read inside a handle body composes with the fold
 pass	ep2 a String param BETWEEN two scalars keeps positional correctness
 pass	ep3 one String param used TWICE (byte-len and content compare)
 pass	ep4 an EMPTY String entry arg has byte-len zero (the ptr,0 edge)
@@ -8031,10 +8043,9 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
-todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
-pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
+todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
@@ -8044,11 +8055,10 @@ todo	elc4 List.concat consumes two lifted List entry params into one measured li
 todo	eln1 an EMPTY nested-list entry param has outer length zero
 todo	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
 todo	eln3 a THREE-level nested-list entry param reads a leaf through two descents
-pass	eo1 an Option entry param delivers its Some payload
-pass	eo2 an Option entry param takes the None arm
-pass	eo3 an Option param BETWEEN scalars keeps positions
+todo	eop2 an Option-of-list entry param measures its Some payload
 todo	ep1 TWO String entry params concat in declaration order
 todo	er1 a Rational entry param in exact arithmetic
+todo	erp1 a Result entry param delivers its Ok payload
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
@@ -8064,9 +8074,3 @@ todo	trm5 an export with a scalar param returning a CONSTANT Symbol declines (re
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	eop1 an Option entry param read inside a handle body composes with the fold
-todo	erp1 a Result entry param delivers its Ok payload
-todo	eop2 an Option-of-list entry param measures its Some payload
-pass	eoc1 an Option entry param captured by a local closure applied twice
-pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
-pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)

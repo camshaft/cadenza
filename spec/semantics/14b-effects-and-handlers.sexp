@@ -1336,6 +1336,77 @@
   (call   main (: 4 Int64))
   (output (: 45 Int64)))
 
+; A closure returned from a handle that captures a perform result RESOLVED BY THAT INNER HANDLE closes over
+; the VALUE, not the perform expression — applying it later must reuse the captured value, never re-perform
+; (which the enclosing handler would re-home, giving a wrong answer). `base` is bound to `(Ctr.tick)` under
+; an inner `handle Ctr 50`, so `base = 50`; the returned `(fn (x) (+ x base))` applied as `(f 3)` is 53 —
+; whether or not an outer `handle Ctr 5` wraps the application. These pin capture-the-value across the four
+; shapes: a direct closure under an outer handler, the no-outer-handler twin, two captures across nested
+; lets, and a curried closure.
+
+(case "a closure capturing an inner-handled perform result closes over the value under an outer handler"
+  (doc    "`base` = `(Ctr.tick)` under the INNER `handle Ctr 50` is 50, captured by the returned `(fn (x)
+           (+ x base))`. Applied `(f 3)` under an OUTER `handle Ctr 5`, the result is 3 + 50 = 53 — the
+           capture is the inner-handled VALUE 50, not the perform expression (which the outer handler would
+           re-home to 5, giving a wrong 8). Pins that a closure over an inner-handled result carries the
+           value across the handle boundary.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5 ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1))))
+                           (let ((base (Ctr.tick))) (fn ((: x Int64)) (+ x base))))))
+                  (f 3))))
+            (export main)))
+  (call   main) (output (: 53 Int64)))
+
+(case "a closure capturing an inner-handled perform result needs no outer handler"
+  (doc    "The no-outer-handler twin: the same inner-handled captured closure applied with NO enclosing
+           handler. Discharging the inner handle closes the closure over `base = 50`, so `(f 3)` = 53 with
+           no outer handler needed (an unhomed inner perform would over-decline CDZ0401). Pins that the
+           inner handle fully resolves the captured result.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1))))
+                         (let ((base (Ctr.tick))) (fn ((: x Int64)) (+ x base))))))
+                (f 3)))
+            (export main)))
+  (call   main) (output (: 53 Int64)))
+
+(case "a closure captures two inner-handled results across nested lets"
+  (doc    "The nested-let sibling: a closure buried at the end of NESTED lets captures TWO inner-handled
+           perform results — `(let ((a (Ctr.tick))) (let ((b (Ctr.tick))) (fn (x) (+ x (+ a b)))))`. Under
+           the inner `handle Ctr 50`, a = 50 and b = 51 (threaded), so the closure is `(fn (x) (+ x 101))`;
+           applied `(f 3)` under an outer `handle Ctr 5` = 104. Pins that captures across a let-chain (the
+           outer capture referenced by a closure inside the inner let) close over their values.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5 ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1))))
+                           (let ((a (Ctr.tick)))
+                             (let ((b (Ctr.tick))) (fn ((: x Int64)) (+ x (+ a b))))))))
+                  (f 3))))
+            (export main)))
+  (call   main) (output (: 104 Int64)))
+
+(case "a curried closure capturing an inner-handled result closes over the value across both applications"
+  (doc    "The curry sibling: the inner handle returns `(fn (a) (fn (b) (+ (+ a b) base)))` capturing the
+           inner-handled `base = (Ctr.tick) = 50`. Applied `((f 3) 4)` under an outer `handle Ctr 5`, the
+           capture stays the value 50 across BOTH the partial application and the residual, never
+           re-performed: 3 + 4 + 50 = 57. Pins the value-capture composes with currying.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main)
+              (handle Ctr 5 ((tick (u) s (resume s (+ s 1))))
+                (let ((f (handle Ctr 50 ((tick (u) s (resume s (+ s 1))))
+                           (let ((base (Ctr.tick)))
+                             (fn ((: a Int64)) (fn ((: b Int64)) (+ (+ a b) base)))))))
+                  ((f 3) 4))))
+            (export main)))
+  (call   main) (output (: 57 Int64)))
+
 (case "the heap list a handle BUILDS escapes the handle and is consumed outside it"
   (doc    "The handle's VALUE is a heap list, and it flows OUT of the handle into the enclosing scope. Unlike
            the case above (which reads `List.len` INSIDE the handle body), here the `handle` expression is
