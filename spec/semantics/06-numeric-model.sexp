@@ -11565,3 +11565,43 @@
   (call main (: 50 Int64))
   (output (: 17 Int64))
   (live-objects 0))
+
+(case "fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)"
+  (doc    "Non-finite RUNTIME float semantics (the const-fold path rejects non-finite results with an
+           honest decline — a fold reaching 0.0/0.0 errors 'has no value form yet'; these cells keep the
+           operands runtime so the IEEE semantics execute). fi3/fi4 pin that runtime-PRODUCED NaNs are
+           CANONICALIZED: byte-equal to the Float64.nan literal, self-equal under canonical-byte =, and
+           found in a Set by the literal probe — the collection/eq contract holds for every NaN source.")
+  (input (do (def (main (: n Int64))
+  (let ((x (/ (Float64.of-int n) 0.0)))
+    (+ (if (> x 1000000.0) 1 0) (+ (if (= x x) 10 0) (if (< 0.0 x) 100 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 111 Int64)))
+
+(case "fi2 runtime float division of a negative by zero produces -infinity (self-equal)"
+  (input (do (def (main (: n Int64))
+  (let ((x (/ (Float64.of-int (- 0 n)) 0.0)))
+    (+ (if (< x -1000000.0) 1 0) (if (= x x) 10 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 11 Int64)))
+
+(case "fi3 a runtime 0.0/0.0 NaN is CANONICAL: byte-equal to the literal, self-equal, Set-findable"
+  (input (do (def (main (: n Int64))
+  (let ((x (/ (Float64.of-int (- n 1)) 0.0)))
+    (+ (if (= x Float64.nan) 1 0)
+       (+ (if (= x x) 10 0)
+          (if (Set.contains (Set.insert (Set.of (list)) x) Float64.nan) 100 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 111 Int64))
+  (live-objects 0))
+
+(case "fi4 a runtime infinity-minus-infinity NaN is canonical (byte-equal to the literal)"
+  (input (do (def (main (: n Int64))
+  (let ((i (/ (Float64.of-int n) 0.0)))
+    (if (= (- i i) Float64.nan) 1 0)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
