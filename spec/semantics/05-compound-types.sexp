@@ -20969,3 +20969,25 @@
   (input (do (def (main (: n Int64)) (match (if (> n 0) (Some n) None) ((Some x) x) (None -1))) (export main)))
   (call main (: 7 Int64)) (output (: 7 Int64))
   (call main (: 0 Int64)) (output (: -1 Int64)))
+; -- list-length range folds (migrated from rcdzc runtime_ops a_collection_length_is_known_nonnegative_
+; and_folds_range_comparisons; the Lir "no compare / no length-call" shape assertions were optimization-
+; firing checks, dropped per the shrink rule — these pin the runtime VALUE): a List.len is a non-negative
+; Int64, so a `>= 0` comparison is a tautology and a `match` on it can never hit a negative arm.
+(case "llt1 a list length >= 0 is a tautology (folds to the then-branch value)"
+  (doc    "`(>= (List.len xs) 0)` is always true (a length is non-negative), so the if takes the then-branch
+           regardless of the runtime-built list; `(< (List.len xs) 0)` is impossible → the else-branch.")
+  (input (do (def (main (: n Int64))
+    (+ (if (>= (List.len (if (> n 0) (list 1 2 3) (list 4 5))) 0) 111 0)
+       (if (< (List.len (if (> n 0) (list 1 2 3) (list 4 5))) 0) 0 222)))
+    (export main)))
+  (call main (: 5 Int64))  (output (: 333 Int64))
+  (call main (: -1 Int64)) (output (: 333 Int64)))
+
+(case "llt2 a match on a list length never hits a negative arm"
+  (doc    "`(match (List.len xs) (-1 999) (0 111) (_ 222))` — a length is non-negative so the -1 arm is
+           dead; a runtime-built empty list hits the 0 arm (111), a one-element list the wildcard (222).")
+  (input (do (def (main (: n Int64))
+    (match (List.len (if (> n 0) (list) (list 5))) (-1 999) (0 111) (_ 222)))
+    (export main)))
+  (call main (: 5 Int64))  (output (: 111 Int64))
+  (call main (: -1 Int64)) (output (: 222 Int64)))

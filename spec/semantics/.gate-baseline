@@ -6417,6 +6417,8 @@ pass	lk5 a FIVE-level delegation chain with a heap LIST state at the outermost l
 pass	lk6 SIBLING handles each with a heap MAP state leave no live objects
 pass	lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does
 pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, the drain reads a middle row's middle element
+pass	llt1 a list length >= 0 is a tautology (folds to the then-branch value)
+pass	llt2 a match on a list length never hits a negative arm
 pass	lm1 a branch-selected owned list scrutinee is reclaimed after the match
 pass	lm2 a helper-built branch-selected list scrutinee reclaims across the call
 pass	lm3 a branch-selected list-of-tuples scrutinee reclaims shell and element shells (#3770)
