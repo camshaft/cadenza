@@ -8181,7 +8181,7 @@ todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> hand
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
-todo	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
+pass	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
