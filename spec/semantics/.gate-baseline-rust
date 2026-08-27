@@ -7828,6 +7828,10 @@ pass	tie1 a TWO-POINTER merge of IMPLICIT arithmetic streams — the heads bind 
 pass	tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees
 pass	tk1 a Map state with TUPLE keys built from consecutive draws — record twice, query a hit and a miss
 pass	tk3 an UNASCRIBED empty-Map seed with tuple keys solved in one arm, read in siblings — cross-arm element propagation (3 arms)
+pass	tkp1 a TAKEN conditionally-demoted const divide-by-zero names its kind (not unreachable)
+pass	tkp2 a TAKEN conditionally-demoted const Int64.min/-1 names the overflow kind
+pass	tkp3 a TAKEN const rem-by-zero in a MATCH arm names the divide kind
+pass	tkp4 a const-demoted expect-on-None and its runtime twin trap IDENTICALLY (divergence fence)
 pass	tl1 THREE live handlers, each drawn in one expression — every draw dispatches past the two inner frames to its own
 pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
