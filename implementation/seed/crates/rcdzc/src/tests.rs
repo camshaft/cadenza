@@ -7297,23 +7297,9 @@ fn a_possibly_trapping_if_arm_is_not_select_ified() {
         trap_free.contains(&Lir::Select) && !trap_free.iter().any(|i| matches!(i, Lir::If(_))),
         "a trap-free `(& a 7)` arm select-ifies (no `if`), got: {trap_free:?}"
     );
-    // VALUE + TRAP PARITY: the `if` form evaluates only the taken arm — `c=false` must NOT trap on `b=0`.
-    use wasmtime::component::Val;
-    let src = "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if c (/ a b) a)) (export f))";
-    let bytes =
-        compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(4)]),
-        5
-    ); // c=true → 20/4=5
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::S64(20), Val::S64(0)]),
-        20
-    ); // c=false → a=20; the untaken (/ a 0) must NOT be evaluated (no trap)
-    assert!(
-        call_traps(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(0)]),
-        "c=true with b=0: the TAKEN (/ a 0) divides by zero → must trap"
-    );
+    // The VALUE + TRAP PARITY half (only the taken arm evaluates: c=false,b=0 does not trap; c=true,b=0
+    // does) is the corpus case "a possibly-trapping if arm evaluates only the taken branch" in
+    // 28-compiler-primitives — this stays a white-box Lir check of the select-ification decision.
 }
 
 /// CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition: within a branch the enclosing condition is

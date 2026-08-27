@@ -2947,6 +2947,7 @@ pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constru
 pass	a plural family-unit spelling names the same unit as its singular
 pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
 pass	a positional tuple access out of the tuple's static arity is a type error
+pass	a possibly-trapping if arm evaluates only the taken branch (no eager trap on the untaken arm)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)
 pass	a post-order labeling walk returns a labeled tree (heap result, id drawn after children)
 pass	a pre-abort HOST call inside a NESTED strict operand is ISSUED before the abort abandons
@@ -3056,6 +3057,7 @@ pass	a rational's numerator and denominator are read as BigInt from the normaliz
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
+pass	a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply
 pass	a read result destructures through nested Ast patterns — the analyze path computes
 pass	a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged
 pass	a reader literal carries a qualified name with a dot
@@ -7783,4 +7785,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply
