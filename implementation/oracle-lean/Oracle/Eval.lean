@@ -795,6 +795,20 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
               .value (.bytes (ByteArray.mk (es.map (fun e => match e with | .int n => UInt8.ofNat n.toNat | _ => 0))))
             else .unsupported "Bytes.of: element is not a 0..255 byte"
           | some (.value _) => .unsupported "Bytes.of: not a list" | some o => o | none => .unsupported "Bytes.of arity")
+  else if is "String" "at" then
+    -- indexed CHARACTER access (by Unicode SCALAR, matching Lean's String.data) → Option single-char
+    -- String: `Some s[i]` when 0 ≤ i < char-count, else `None`. (`"café"[3]="é"`, `"😀b"[1]="b"`.)
+    some (match a1, a2 with
+          | some (.value (.str bytes)), some (.value (.int i)) =>
+            (match String.fromUTF8? bytes with
+             | some s => let cs := s.data
+                         if 0 ≤ i && i < Int.ofNat cs.length then .value (.some (.str (String.toUTF8 (cs[i.toNat]!).toString)))
+                         else .value .none
+             | none => .unsupported "String.at: invalid UTF-8")
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "String.at: operand")
   else if is "Bytes" "at" then
     -- indexed BYTE access → Option Int: `Some b[i]` when 0 ≤ i < len, else `None`.
     some (match a1, a2 with
