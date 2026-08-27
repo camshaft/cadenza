@@ -3193,3 +3193,60 @@
                   (match (Ordering.of "b" "b") ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1))))
              (export main)))
   (output (: -10 Int64)))
+
+; ── breaker batch 522: the DUAL-USE (projection + value-eq) nested-compound leak family
+; (issues/BUG-nested-compound-dual-use-projection-plus-value-eq-leaks-operand-tree, routed
+; v-memory-safety). A nested compound BOTH projected-into and eq'd leaks its whole node tree per
+; dual-used side; flat dual-use, eq-only, and unequal walks are all clean (pinned as 0-controls —
+; they must STAY 0 through the fix, and the VALUES fence an over-drop that would corrupt the
+; projection reads). dqe4/dqe5 flip to 0 when the eq-operand dup is released.
+
+(case "dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n 2))
+        (b (tuple n 2)))
+    (+ (. a 0) (+ (. b 1) (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100003 Int64))
+  (live-objects 0))
+
+(case "dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (if (= a b) 100000 0) (if (= b a) 10000 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 110000 Int64))
+  (live-objects 0))
+
+(case "dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n (+ n 1))))))
+    (if (= a b) 100000 1)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case "dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (. (. (. a 1) 1) 1)) (if (= a b) 100000 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 101000 Int64))
+  (live-objects known-leak 3))
+
+(case "dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (. (. (. a 1) 1) 1)) (+ (. (. b 1) 0) (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 101001 Int64))
+  (live-objects known-leak 6))
