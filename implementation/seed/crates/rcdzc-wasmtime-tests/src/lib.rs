@@ -18,3 +18,4 @@
 
 mod common;
 mod smoke;
+mod traps;
