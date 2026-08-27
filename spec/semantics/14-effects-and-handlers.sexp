@@ -768,6 +768,20 @@
             (def (main) (handle A 5 ((a () s k (use-k k))) (+ (A.a) (A.a)))) (export main)))
   (output (: 20 Int64)))
 
+(case "a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply"
+  (doc    "The `do`-body variant of the escaping-`k` reinstall above (the DES scheduler's body shape): the
+           handle body is a `(do (A.a) (A.a))` SEQUENCE rather than an arithmetic `(+ (A.a) (A.a))`. After
+           the leading `(A.a)`, the continuation `C = (do □ (A.a))` re-performs, so `k` reifies as the
+           self-re-installing handler-wrapped closure `k = (fn (kv) (handle A 5 (arm) (do kv (A.a))))`.
+           `use-k` applies it to 7: the re-installed handle folds the inner `(A.a)` → `(k 7)` = 7, and the
+           `do` yields its last item → 7. Pins that the re-perform reinstall folds over a `do`-sequenced
+           continuation (not only an arithmetic one) — never a 'value is not applyable' decline.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (def (use-k (: k (-> Int64 Int64))) (k 7))
+            (def (main) (handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation"
   (doc    "E5 step-3 (the DES scheduler's `sleep`/`now` step-3 shape, contract-A1). The escaping continuation
            is a DEFERRED RESUME-THUNK: the `set` arm hands `(fn (_u) (resume w w))` to `run-thunk`, which

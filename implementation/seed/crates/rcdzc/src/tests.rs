@@ -61893,33 +61893,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_do_sequenced_re_performing_escaping_k_folds_via_handler_reinstall() {
-        // E5 STEP-3 INC-2b (FACE-1 B2, `do`-spine slice): the re-performing escaping-k reify over a handle
-        // body that is a `(do …)` SEQUENCE (the DES scheduler's body shape). `do` is a raw AST form that
-        // collapses to its last item's `Ref` under `resolved_of`, so the escaping-k block finds the leading
-        // hole via `escaping_k_leading_hole` (a `do`-aware, B2-SCOPED copy of `leading_strict_hole` — scoped
-        // so the two-hole / thread / match-peel paths, which already fold multi-perform `do`-bodies, are
-        // untouched), and the re-installed handle's do-bodied continuation folds via `pure_hole`'s `do`-arm
-        // (which returns `Impure` for a multi-perform `do`, leaving those to the thread path). Without this
-        // the reify produced `(use-k (fn (#kv) (handle A 5 (arm) (do #kv (A.a)))))` whose inner do-handle
-        // did not fold → "value is not applyable". Now: `(handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))`,
-        // use-k applies (k 7); apply(k,7) → (handle A 5 (arm) (do 7 (A.a))) → inner (A.a) folds → (k 7)=7 →
-        // (do 7 7) = 7. Regression pins the DES-shaped `do`-bodied handler folds CLEANLY, never "not
-        // applyable"; the cross-op + op-arg-seed DES gate (→5e9) is the next slice.
-        let src = "(do (effect A (op a (-> Unit Int64))) \
-                   (def (use-k (: k (-> Int64 Int64))) (k 7)) \
-                   (def (main) (handle A 5 ((a (u) s k (use-k k))) (do (A.a) (A.a)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a do-sequenced re-performing escaping-k must fold cleanly (do-spine), not 'not applyable'");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "7",
-                "apply(k,7) re-installs A around (do 7 (A.a)); the inner (A.a) folds to (k 7)=7 → (do 7 7) = 7"
-            );
-        }
-    }
-
-    #[test]
     fn ty_cont_variant_is_reserved_and_its_predicates_recurse() {
         // E5 STEP 3 increment 1 (gate-neutral): the `Ty::Cont { resume, answer }` variant EXISTS + every
         // exhaustive `Ty` match has an arm. Nothing CONSTRUCTS one yet (an escaping-k arm still declines to
