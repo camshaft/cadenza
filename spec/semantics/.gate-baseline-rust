@@ -4337,6 +4337,8 @@ pass	a tuple mixing an int, a runtime ROPE, and a FLOAT compares whole by per-ki
 pass	a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
+pass	a tuple of two bools enumerated as all four explicit combinations is exhaustive and dispatches
+pass	a tuple of two bools missing one combination is non-exhaustive
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
 pass	a tuple of two rest-lists binds each leading head (two rest markers in one arm are linear)
 pass	a tuple of two sums is exhaustive when every variant×variant combination is covered

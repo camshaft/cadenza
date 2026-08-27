@@ -7478,6 +7478,32 @@
             (def (main) (f (tuple false true))) (export main)))
   (output (: 2 Int64)))
 
+(case "a tuple of two bools enumerated as all four explicit combinations is exhaustive and dispatches"
+  (doc    "The 4-EXPLICIT-combination form of the tuple-of-bools exhaustiveness above: each of `(tuple true true)`/`(tuple true false)`/`(tuple false true)`/`(tuple false false)` is a leaf where BOTH columns are `Bool` value TESTS closed by finiteness (not the binder-in-the-second-column form). All four leaves present → exhaustive WITHOUT a `_`, and each dispatches to its own arm. Runtime `x`/`y` (nothing folds): (t,t)→1, (t,f)→2, (f,t)→3, (f,f)→4.")
+  (input  (do
+            (def (f (: t (Tuple Bool Bool)))
+              (match t
+                ((tuple true true)   1)
+                ((tuple true false)  2)
+                ((tuple false true)  3)
+                ((tuple false false) 4)))
+            (def (main (: x Bool) (: y Bool)) (f (tuple x y))) (export main)))
+  (call   main (: true Bool)  (: true Bool))  (output (: 1 Int64))
+  (call   main (: true Bool)  (: false Bool)) (output (: 2 Int64))
+  (call   main (: false Bool) (: true Bool))  (output (: 3 Int64))
+  (call   main (: false Bool) (: false Bool)) (output (: 4 Int64)))
+
+(case "a tuple of two bools missing one combination is non-exhaustive"
+  (doc    "SOUNDNESS the other way: the bool-else-refinement closes a finite column ONLY when it is fully enumerated. Three of the four `(tuple Bool Bool)` leaves with no `_` — `(tuple true true)`/`(tuple true false)`/`(tuple false true)`, missing `(tuple false false)` — is NON-exhaustive → CDZ0210. Pins that the finiteness-refinement does not OVER-accept a partly-covered product.")
+  (input  (do
+            (def (f (: t (Tuple Bool Bool)))
+              (match t
+                ((tuple true true)  1)
+                ((tuple true false) 2)
+                ((tuple false true) 3)))
+            (def (main) (f (tuple true true))) (export main)))
+  (error  CDZ0210))
+
 (case "a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered"
   (doc    "EXHAUSTIVENESS over a product where the two finite factors are covered by DIFFERENT mechanisms:
            `(match t ((tuple true (R)) …) ((tuple true (G)) …) ((tuple false (R)) …) ((tuple false (G)) …))`
