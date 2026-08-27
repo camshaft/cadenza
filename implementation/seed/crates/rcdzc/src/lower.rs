@@ -25945,6 +25945,20 @@ fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
         (Prim::Gt, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a > b)),
         (Prim::Le, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a <= b)),
         (Prim::Ge, [CVal::Char(a), CVal::Char(b)]) => Some(CVal::Bool(a >= b)),
+        // STRING ordering — lexicographic by Unicode scalar sequence (`str: Ord` compares UTF-8 bytes, whose
+        // order coincides with scalar-value order — the NFC form the reader normalized to). The recursive-engine
+        // twin of `core_of`'s `ConstStr` comparison arm (`lower_comparison`); a String threaded through a
+        // recursion (a const sort / linear-scan lookup by String key) needs it to fold instead of declining.
+        (Prim::Lt, [CVal::Str(a), CVal::Str(b)]) => Some(CVal::Bool(a < b)),
+        (Prim::Gt, [CVal::Str(a), CVal::Str(b)]) => Some(CVal::Bool(a > b)),
+        (Prim::Le, [CVal::Str(a), CVal::Str(b)]) => Some(CVal::Bool(a <= b)),
+        (Prim::Ge, [CVal::Str(a), CVal::Str(b)]) => Some(CVal::Bool(a >= b)),
+        // BOOL ordering — `false < true` (Rust `bool: Ord`), matching `core_of`'s `ConstBool` comparison arm and
+        // core-semantics §"the Bool type MUST offer a total order in which false is less than true".
+        (Prim::Lt, [CVal::Bool(a), CVal::Bool(b)]) => Some(CVal::Bool(a < b)),
+        (Prim::Gt, [CVal::Bool(a), CVal::Bool(b)]) => Some(CVal::Bool(a > b)),
+        (Prim::Le, [CVal::Bool(a), CVal::Bool(b)]) => Some(CVal::Bool(a <= b)),
+        (Prim::Ge, [CVal::Bool(a), CVal::Bool(b)]) => Some(CVal::Bool(a >= b)),
         (Prim::ListNew, elems) => Some(CVal::List(elems.to_vec())),
         (Prim::ListLen, [CVal::List(xs)]) => {
             Some(CVal::Int(crate::ast::IntValue::from_i64(xs.len() as i64)))

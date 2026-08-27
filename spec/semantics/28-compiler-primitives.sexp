@@ -1443,6 +1443,34 @@
             (export main)))
   (output (: 20 Int64)))
 
+(case "csc1 a STRING comparison threaded through a const recursion folds (const_eval scalar-ordering arm)"
+  (doc    "The recursive-engine (const_eval) twin of the scalar String `<` fold: `core_of` folds a
+           direct `(< \"b\" \"m\")`, but a String comparison INSIDE a recursion routes through the
+           general evaluator's `apply_const_prim`, which handled Lt/Gt only for Int/Char — a String
+           operand declined, so the whole `(const ...)` recursion rejected. Now it folds. `grow` threads
+           a `(Set Int64)` accumulator (un-materializable → forces whole-expression const_eval) and gates
+           each insert on `(< \"b\" hi)`: with `hi = \"m\"` the compare is TRUE each step, so it inserts
+           {3,2,1} and `Set.len` reads 3. Was a REJECT (String Lt returned None → the fold declined).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)) (const (: hi String)))
+              (if (= k 0) s
+                  (grow (Set.insert s (if (< "b" hi) k (- 0 k))) (- k 1) hi)))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3 "m"))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "csc2 a BOOL comparison threaded through a const recursion folds (const_eval scalar-ordering arm)"
+  (doc    "The Bool twin of csc1: `false < true`, so `(< low hi)` with `low = false`, `hi = true` is TRUE
+           each step. The recursion threads a `(Set Int64)` accumulator (forces const_eval) and gates each
+           insert on the Bool compare; folds `Set.len` to 3. Pins `apply_const_prim`'s new Bool ordering arm.")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)) (const (: low Bool)) (const (: hi Bool)))
+              (if (= k 0) s
+                  (grow (Set.insert s (if (< low hi) k (- 0 k))) (- k 1) low hi)))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3 false true))))
+            (export main)))
+  (output (: 3 Int64)))
+
 ;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
 (case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
   (input (do
