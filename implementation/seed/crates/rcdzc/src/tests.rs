@@ -79481,53 +79481,18 @@ mod closure_host_resource {
     /// mixed-export envelope (the hand-emitted production path is the next increment).
     #[test]
     fn a_closure_export_and_a_plain_export_coexist_and_the_host_drives_both() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_mixed_component(&mixed_closure_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("mixed-export component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-
-        // The plain `two` is a TOP-LEVEL func export (not inside the closure interface).
-        let two_idx = instance
-            .get_export_index(&mut store, None, "two")
-            .expect("two export");
-        let two = instance.get_func(&mut store, two_idx).expect("two func");
-        let mut out = [Val::Bool(false)];
-        two.call(&mut store, &[], &mut out).expect("two()");
-        two.post_return(&mut store).expect("post_return");
-        assert_eq!(out[0], Val::S64(2), "the plain export two() = 2");
-
-        // The closure interface still works alongside it.
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-        let mut h = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut h).expect("make");
-        make.post_return(&mut store).expect("post_return");
-        let mut cout = [Val::Bool(false)];
-        call.call(&mut store, &[h[0].clone(), Val::S64(5)], &mut cout)
-            .expect("call");
-        call.post_return(&mut store).expect("post_return");
-        assert_eq!(cout[0], Val::S64(6), "the closure (+ x 1) applied to 5 = 6");
+        // The RUN behavior (the plain top-level export two() = 2 AND the closure interface make/call(5) = 6
+        // coexisting + both driven in ONE component) is now covered by spec/semantics/21-host-closures.sexp
+        // ("a closure export alongside a plain scalar export -- the plain export runs" + "-- the closure
+        // runs"). Per the wasmtime dev-dep drop (v-wasmtime-migration), this keeps only the STRUCTURAL
+        // oracle-validity check (wasmparser, no wasmtime) — proving the closure envelope + the plain boundary
+        // compose in one valid component.
     }
 
     /// DISTINCT-SIGNATURE oracle core (the byte anchor for the N-resource-type multi-export): TWO closures
