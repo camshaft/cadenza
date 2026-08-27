@@ -3474,3 +3474,32 @@
   (call main (: 1 Int64))
   (output (: 5 Int64))
   (live-objects 0))
+
+; ── breaker batch 558: ORDERING walks at depth (eq-at-depth is fenced by itf; order was not).
+; od1 = lexicographic < through an immortal 33-trie vs a runtime twin differing at the LAST
+; element (both directions + the shorter-prefix rule); od2 = rope order across 50 concat seams
+; discriminating at the final char. Single-use walkers — census 0 (no dqe dual-use trip).
+
+(case "od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)"
+  (input (do
+(def (bldx (: i Int64) (: x Int64)) (if (= i 0) (list) (List.push (bldx (- i 1) x) (if (= i 33) x i))))
+(def (main (: n Int64))
+  (+ (if (< (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bldx 33 (+ n 33))) 1 0)
+     (+ (if (< (bldx 33 (+ n 33)) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 10 0)
+        (if (< (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) 100 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 101 Int64))
+  (live-objects 0))
+
+(case "od2 string order across fifty rope seams discriminates at the final divergent char"
+  (input (do
+(def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
+(def (main (: n Int64))
+  (let ((a (grow (if (> n 0) "abc" "z") 50))
+        (b (String.concat (grow (if (> n 0) "abc" "z") 49) "y")))
+    (+ (if (< a b) 1 0) (if (< b a) 10 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))

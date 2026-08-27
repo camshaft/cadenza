@@ -8965,3 +8965,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)
+pass	od2 string order across fifty rope seams discriminates at the final divergent char
