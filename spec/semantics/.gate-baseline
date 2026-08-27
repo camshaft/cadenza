@@ -1811,6 +1811,7 @@ pass	a consumed heap param on a self-recursive loop's non-tail spine is not doub
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
+pass	a consumer calls a scalar op across a source peer provider
 pass	a consumer returns a different type than the closure it applies
 pass	a consumer takes the handed-back closure as its SECOND parameter
 pass	a consuming op inside a hoisted list element respects a still-live binding
@@ -3084,6 +3085,7 @@ pass	a non-final unquote-splice in a quote pattern is ill-formed
 pass	a non-final unsized bytes segment is ill-formed
 pass	a non-first field is projected from a record returned across a call boundary
 pass	a non-integer exponent in a Unit.^ power is rejected
+pass	a non-kebab (camelCase) peer op name agrees across both sides and runs
 pass	a non-linear tuple binding pattern is rejected
 pass	a non-matching literal inside a constructor pattern binds the runtime payload
 pass	a non-power-of-two float width is rejected
@@ -4710,6 +4712,7 @@ pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a variant-with-a-COMPOUND-PAYLOAD host RESULT is lifted (bytes payload case) (via an imposed WIT world)
 pass	a velocity multiplied by a time recovers the distance dimension
+pass	a versioned interface name agrees across both sides and runs
 pass	a view-interned Symbol participates in Set.to-list content order
 pass	a violated @requires traps BEFORE the body's abortive perform can fire
 pass	a well-formed annotation still checks and accepts a matching type (the control)
