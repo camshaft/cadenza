@@ -235,6 +235,19 @@
             (def (main) (f 20)) (export main)))
   (output (: 42 Int64)))
 
+(case "a local let binding shadows a same-named top-level definition"
+  (doc    "A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent of
+           its scope: name resolution consults the lexical scope FIRST and the top-level def index only on
+           a scope miss, so the body's `f` is the local 7, not the def's 99. Pins that resolution keys on
+           the OCCURRENCE + its scope, never on the flat name index alone — same-named bindings at
+           different scopes resolve independently (the invariant a nested-module / import rework must
+           preserve).")
+  (input  (do
+            (def (f) 99)
+            (def (main) (let ((f 7)) f))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a let binding whose value references a parameter compiles under a call"
   (doc    "`(def (g n) (let ((x (+ n 1))) (+ x x)))` — the `let` value USES the parameter `n` (not a
            shadow). Calling `(g 10)` inlines g's body; the reduction must substitute `n`→`10` in the
@@ -1800,6 +1813,30 @@
                     (fac x)))
               (def (main) (+ (helper 5) (helper 3))) (export main)))
   (output (: 126 Int64)))
+
+(case "mutually-recursive do-local functions nested in an inlined helper recurse"
+  (doc    "The mutual-recursion face of the inlined-helper cases above: `helper` carries a do-local
+           `ev`/`od` pair that call each other; `(helper 10)` inlines `helper`, β-copying both — so each
+           copied function must lower to a runtime call and reach its sibling copy. ev(10) is true → 1.
+           Pins that a whole EACH-OTHER call group (not only a single self-recursive function) survives the
+           β-copy of its enclosing helper.")
+  (input  (do (def (helper x)
+                (do (def (ev n) (if (= n 0) true (od (- n 1))))
+                    (def (od n) (if (= n 0) false (ev (- n 1))))
+                    (if (ev x) 1 0)))
+              (def (main) (helper 10)) (export main)))
+  (output (: 1 Int64)))
+
+(case "recursion is detected through a nested do around the self-call"
+  (doc    "A self-call inside a nested `(do …)` is a real recursion edge. A `do` collapses to its last
+           form (intermediates discarded as pure), which would hide a self-call in a do item from the
+           recursion walk — so the callee walk must descend every do item by raw AST. `(do 7 (+ n (sum-to
+           (- n 1))))` puts the self-call as the do's last item after a discarded intermediate; a walk
+           that read the collapsed `do` as non-recursive would inline `sum-to` without end (a hang) or
+           miscompile it. sum-to(3) = 3+2+1+0 = 6.")
+  (input  (do (def (sum-to n) (if (= n 0) 0 (do 7 (+ n (sum-to (- n 1))))))
+              (def (main) (sum-to 3)) (export main)))
+  (output (: 6 Int64)))
 
 ; The recursive cases above run at a small CONSTANT depth (fac(5)), which the compiler may fold. A
 ; self-hosted compiler instead recurses over the SIZE of the program it compiles — a depth decided at run

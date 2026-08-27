@@ -36795,97 +36795,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_do_local_function_survives_inlining_of_its_helper() {
-        // 02-binding-and-control "a recursive do-local function nested in an inlined helper recurses": a
-        // do-local recursive `fac` inside `helper`'s body must still recurse when `(helper 5)` INLINES
-        // `helper` — β-reduction COPIES the body, so the copied `(fac (- n 1))` self-call resolves to the
-        // COPY's lambda, whose body is registered as an emittable function at reduction time
-        // (`Db::register_reduced_callables`, the copy-time twin of the load-time do-local registration) so
-        // the call lowers to a `Core::Call`. Without it the copied call declined "needs runtime
-        // specialization". fac(5) = 120.
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            run_returns::<i64>(&bytes, "main")
-        };
-        assert_eq!(
-            run(
-                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
-                   (def (main) (helper 5)) (export main))"
-            ),
-            120
-        );
-        // The helper inlined TWICE — each β-copy registers its OWN copy of `fac` (one call site's copy is
-        // not confused for another's, and neither is a spurious "defined more than once"). 120 + 6 = 126.
-        assert_eq!(
-            run(
-                "(module m (def (helper x) (do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac x))) \
-                   (def (main) (+ (helper 5) (helper 3))) (export main))"
-            ),
-            126
-        );
-        // MUTUAL recursion nested in an inlined helper — both copied functions lower and call each other.
-        assert_eq!(
-            run(
-                "(module m (def (helper x) (do (def (ev n) (if (= n 0) true (od (- n 1)))) \
-                     (def (od n) (if (= n 0) false (ev (- n 1)))) (if (ev x) 1 0))) \
-                   (def (main) (helper 10)) (export main))"
-            ),
-            1
-        );
-    }
-
-    #[test]
-    fn a_do_local_fn_capturing_a_runtime_computed_sibling_local_survives_inlining() {
-        // corpus-bugfix FINDING #19: a do-local / let-local fn that CAPTURES a RUNTIME-COMPUTED sibling
-        // local, when its enclosing def is inlined, spuriously rejected CDZ0101 "unbound name". β-reduction
-        // copies the `do`/`let`, making the sibling binding's VALUE-RHS a SYNTH node; `pin_free_vars`'s
-        // `is_user_node` gate then SKIPPED the capture (a synth binder) → the copied reference re-resolved
-        // against the orphan → unbound. FIX: `is_synth_captured_value_binder` also pins a synth do-local
-        // `(def x V)` / `let` `(x V)` value binder (like the module-record capture). `cdz check` was CLEAN
-        // (gated on `is_user_node`) while `compile` declined — the check≡compile discrepancy the coded
-        // path closes. A PARAM capture (c2) and a CONST-local capture (c3) always worked; only a
-        // runtime-computed value binder slipped through.
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-                "a do-local fn capturing a runtime-computed sibling must compile, not CDZ0101",
-            );
-            run_returns::<i64>(&bytes, "main")
-        };
-        // c4: do-local `(def m (* n 3))` captured by `inner`, `outer` inlined → 5 + 5*3 = 20.
-        assert_eq!(
-            run("(module m (def (outer (: n Int64)) \
-                   (do (def m (* n 3)) (def (inner (: x Int64)) (+ x m)) (inner n))) \
-                   (def (main) (outer 5)) (export main))"),
-            20,
-            "c4: do-local runtime-computed sibling capture"
-        );
-        // c5: the `let`-binding twin — `(let ((mm (* n 3))) …)` captured by `inner` → 20.
-        assert_eq!(
-            run("(module m (def (outer (: n Int64)) \
-                   (let ((mm (* n 3))) (do (def (inner (: x Int64)) (+ x mm)) (inner n)))) \
-                   (def (main) (outer 5)) (export main))"),
-            20,
-            "c5: let-local runtime-computed sibling capture"
-        );
-        // c2 (param capture) + c3 (const-local capture) — always worked, guard against regression.
-        assert_eq!(
-            run(
-                "(module m (def (outer (: n Int64)) (do (def (inner (: x Int64)) (+ x n)) (inner 10))) \
-                   (def (main) (outer 5)) (export main))"
-            ),
-            15,
-            "c2: param capture (regression guard)"
-        );
-        assert_eq!(
-            run("(module m (def (outer (: n Int64)) \
-                   (do (def m 3) (def (inner (: x Int64)) (+ x m)) (inner n))) \
-                   (def (main) (outer 5)) (export main))"),
-            8,
-            "c3: const-local capture (regression guard)"
-        );
-    }
-
-    #[test]
     fn a_multi_use_escaping_heap_do_def_is_kept_not_copy_propagated_no_uaf() {
         use crate::testkit::parse;
         // FINDING#20 (wasm UAF, corpus-bugfix/v-memory-safety/v-wasm-opt root-caused): a VALUE do-def
@@ -37242,20 +37151,6 @@ mod stage1 {
             1,
             "the @param site is skipped but a real discarded `(+ 1 2)` still warns once: {ws:?}"
         );
-    }
-
-    #[test]
-    fn a_local_binding_shadows_a_same_named_top_level_def() {
-        // A `let` binding named `f` shadows a top-level `(def (f) …)` of the same name for the extent
-        // of its scope: `resolve_name` consults the lexical scope FIRST and the top-level def index
-        // (`def_by_name`) only on a scope miss. So the body's `f` is the local `7`, not the def's `99`.
-        // This pins that resolution keys on the OCCURRENCE + its scope, never on the flat name index
-        // alone — the invariant the O(1) `def_name_index` accelerator must not disturb (and the property
-        // a future nested-module / import rework must preserve: same-named bindings at different scopes
-        // resolve independently). Runs end-to-end so it checks the emitted component, not just resolve.
-        let src = "(module m (def (f) 99) (def (main) (let ((f 7)) f)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
     }
 
     #[test]
@@ -44183,27 +44078,6 @@ mod stage1 {
              per-node whole-subtree `subtree_performs` re-walk; now memoized per `(node, ctx.key)`): width \
              200→400 grew un-cached `subtree_performs` computations {ratio:.1}× (n200={n200}, n400={n400}); \
              linear is ~2×, the old re-walk was ~4×"
-        );
-    }
-
-    #[test]
-    fn recursion_is_detected_through_a_nested_do() {
-        // A self-call inside a nested `(do …)` is a real recursion edge. `resolve_do` collapses a `do` to
-        // `Ref{last}` (intermediates discarded as pure), which would hide a self-call in a `do` item from
-        // `is_recursive`'s callee walk — so `collect_callees` reads a `do` by raw AST and descends every
-        // item. Without this, `sum-to` here would read as NON-recursive and inline without end (a hang) or
-        // miscompile. `(do 0 (sum-to (- n 1)))` puts the self-call as the last item, and `(do (dummy) …)`
-        // shape (a discarded intermediate then the recursive tail) is exactly the effect-walk shape. This
-        // pins recursion detection through `do` at the plain (non-effect) level. `sum-to 3` = 3+2+1+0 = 6.
-        let src = "(module m (def (sum-to n) (if (= n 0) 0 (do 7 (+ n (sum-to (- n 1)))))) \
-                   (def (main) (sum-to 3)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("recursion through a nested do is detected and compiles"),
-                "main"
-            ),
-            6
         );
     }
 

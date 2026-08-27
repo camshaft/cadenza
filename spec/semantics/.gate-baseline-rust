@@ -8115,3 +8115,6 @@ pass	a pure one-hole locates the hole NESTED several operators deep
 pass	a perform threads through a NOT / boolean one-operand form
 pass	a perform threads through a tuple PROJECTION one-operand form
 pass	a short-circuit connective with a perform in the RHS preserves short-circuit (rhs not run)
+pass	mutually-recursive do-local functions nested in an inlined helper recurse
+pass	recursion is detected through a nested do around the self-call
+pass	a local let binding shadows a same-named top-level definition
