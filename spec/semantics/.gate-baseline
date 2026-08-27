@@ -8544,6 +8544,7 @@ pass	two fallible reads of one collection parameter share its resident handle sl
 pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
 pass	two functions with the same body-solved arrow but different bodies reflect equal types
+pass	two guarded list-match arms over the same length classify by the head's sign
 pass	two heap-list accumulators swap slots through every tail call
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator

@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -627,6 +628,7 @@ pass	a BigInt-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a BigInt-inner quantity grows past Int64.max without trapping
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a BigInt-inner quantity stored in a List reads back through List.at
+pass	a Bool annotation on a Bool value is transparent
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
@@ -2659,6 +2661,7 @@ pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversio
 pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a mixed-width float tuple with a computed f32 NaN dedupes against the canonical spelling
+pass	a mixed-width mutual-recursion SCC emits valid wasm (per-member scratch floor)
 pass	a mode-REPLACING arm swaps the Symbol state; a conditional-value arm reads it
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module declaration binds its name in the enclosing scope
@@ -4827,6 +4830,7 @@ pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation on a nested generic-call argument grounds the self-nested producer and it runs
 pass	an annotation on an arithmetic operand is transparent
 pass	an annotation that contradicts the value is rejected
+pass	an annotation whose type is a reduced (Int 64) constructor grounds the value
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
 pass	an apply-site-homed lambda's perform result composes in the caller's arithmetic
@@ -6320,6 +6324,9 @@ pass	lao2 a borrowed list read by List.at is not freed early (owner reclaims)
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
+pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
+pass	lbe2 List.at over a runtime list at a masked index past the end yields None
+pass	lbe3 List.at over a runtime list at a plain negative index yields None
 pass	lbr1 a List entry param relayed to a helper def that only borrows its length
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
@@ -7996,6 +8003,7 @@ pass	two fallible reads of one collection parameter share its resident handle sl
 pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
 pass	two functions with the same body-solved arrow but different bodies reflect equal types
+pass	two guarded list-match arms over the same length classify by the head's sign
 pass	two heap-list accumulators swap slots through every tail call
 pass	two host calls consume their responses in order
 pass	two host responses combine in call order through a non-commutative operator
@@ -8289,7 +8297,6 @@ todo	bo1 bare order over two runtime encode results compares content-lexicograph
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
-fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	cj03 Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
@@ -8380,9 +8387,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a Bool annotation on a Bool value is transparent
-pass	an annotation whose type is a reduced (Int 64) constructor grounds the value
-pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
-pass	lbe2 List.at over a runtime list at a masked index past the end yields None
-pass	lbe3 List.at over a runtime list at a plain negative index yields None
-pass	a mixed-width mutual-recursion SCC emits valid wasm (per-member scratch floor)
