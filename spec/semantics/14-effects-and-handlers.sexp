@@ -2929,7 +2929,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "two sequential lookups on the same Map with perform-threaded keys stay independent"
   (doc    "The map/key same-base emit witnessed clean (see the sibling pin above for the fixed

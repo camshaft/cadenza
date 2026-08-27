@@ -569,6 +569,8 @@ pub fn emit(
         // aren't in any body when the only map use is hoisted).
         used.insert("map-empty");
         used.insert("map-insert");
+        used.insert("set-empty");
+        used.insert("set-insert");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -1534,6 +1536,7 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
             if crate::lower::is_markable_constant_compound(db, id)
                 || crate::lower::is_markable_constant_list(db, id)
                 || crate::lower::is_markable_constant_map(db, id)
+                || crate::lower::is_markable_constant_set(db, id)
             {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested
@@ -10357,6 +10360,8 @@ fn emit_bytes_provider_member(
             "mark-immortal-deep",
             "map-empty",
             "map-insert",
+            "set-empty",
+            "set-insert",
         ] {
             used.insert(op);
         }

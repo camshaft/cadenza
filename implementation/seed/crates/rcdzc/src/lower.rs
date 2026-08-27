@@ -14858,6 +14858,22 @@ pub fn is_markable_constant_map(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a fully-constant `Core::SetOf` that can hoist as a build-once immortal
+/// static — the set analogue of [`is_markable_constant_map`] (a CHAMP-minus-value-column). NON-empty, every
+/// element per-node-buildable via [`is_markable_constant_elem`]. Built once (`set-empty` + per-element
+/// `set-insert`, which CONSUMES set+element — moves in, no copy) then `mark-immortal-DEEP` on the root, which
+/// transitively marks the whole HAMT + element handles. EMPTY excluded (`set-empty` shared singleton); a
+/// nested `List`/`Map`/`Set` element is (conservatively) NOT markable yet (the element builder handles only
+/// scalar / `Bytes` / `String` / `Tuple` / `Record`).
+pub fn is_markable_constant_set(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::SetOf { elems, .. } => {
+            !elems.is_empty() && elems.iter().all(|&e| is_markable_constant_elem(db, e))
+        }
+        _ => false,
+    }
+}
+
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
