@@ -8677,3 +8677,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
+pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
+pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie

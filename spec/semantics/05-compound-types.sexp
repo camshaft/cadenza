@@ -21818,3 +21818,43 @@
   (input (do (type T (Mk Int64 Int64))
     (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
   (call main) (output (: 10 Int64)))
+
+; ── breaker batch 529: immortal-trie WALKER-interaction fences (post-#4330 deep-mark). An
+; immortal >32 trie now flows into the walker paths — these pin that the walks are correct AND
+; the runtime-built sides reclaim while the immortal is census-excluded. itf3's consumer needs a
+; RUNTIME index: List.len/at over a constant-prefix concat const-folds to a scalar program (two
+; earlier drafts emitted <210-byte wasm with no census line — the no-runtime-import vacuity trap).
+
+(case "itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims"
+  (input (do
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (if (= (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (bld (+ n 32))) 100000 1))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100000 Int64))
+  (live-objects 0))
+
+(case "itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims"
+  (input (do
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (match (Map.lookup (Map.insert (Map.empty) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) 42) (bld (+ n 32)))
+    ((Some v) v) ((None u) -1)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (live-objects 0))
+
+(case "itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((r (List.concat (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list k))))
+        (+ (match (List.at r (% k 34)) ((Option.Some v) v) ((Option.None) -1))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 746 Int64))
+  (live-objects 0))
