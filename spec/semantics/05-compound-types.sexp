@@ -8234,7 +8234,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 3))
 
 (case "SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused"
   (doc    "The 0/1 counting DP — the coin-change below REUSES coins freely (its inner loop reads the
@@ -8603,7 +8603,7 @@
             (export main)))
   (call   main (: 5 Int64) (: 3 Int64) (: 7 Int64))
   (output (: 2111 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 9))
 
 (case "a list of maps: a runtime index then looks a runtime key up in the found map"
   (doc    "`(List.at [{1↦100}, {2↦200}] i)` returns a MAP value (present) or None; the returned map handle is
@@ -8767,7 +8767,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 103752099 Int64))
   (call   main (: -100 Int64)) (output (: 752099 Int64))
-  (live-objects known-leak 95))
+  (live-objects known-leak 59))
 
 (case "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
   (doc    "The map-of-maps rows above store DISTINCT inner maps; this pins the SHARED-value face: one
@@ -8790,7 +8790,7 @@
                    (match (Map.lookup bumped 2) ((Some m2) (Map.len m2)) ((None _u) -1)))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 4140 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 13))
 
 (case "one RRB list shared as two map VALUES diverges by List.update without cross-talk"
   (doc    "The vector twin of the shared-inner-map case above: one 50-element list is stored as the
@@ -8817,7 +8817,7 @@
                      ((None _u) -1)))))
             (export main)))
   (call   main (: 50 Int64)) (output (: 11 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 9))
 
 (case "a shared inner map retrieved through BOTH outer keys stays ONE canonical value for keying"
   (doc    "The keying witness of the shared-value pins above: one 40-entry inner map stored under both
@@ -18701,7 +18701,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 91527 Int64))
-  (live-objects known-leak 48))
+  (live-objects known-leak 42))
 
 (case "an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators"
   (doc    "Set dedup is canonical-order everywhere; keep-first-occurrence dedup preserves WRITTEN order by threading TWO collection accumulators through one recursion (contains->skip / insert+push). The runtime k lands both faces and the digit-encode verifies ORDER, not membership.")
@@ -19114,7 +19114,7 @@
                       (Map.len m0)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 212 Int64))
-  (live-objects known-leak 31))
+  (live-objects known-leak 4))
 
 ; pr1 (breaker): prepend onto a CONCAT-merged RRB vector — the new front element and the
 ; original seam-adjacent elements all read back correctly through the merged trie.
@@ -20432,7 +20432,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)"
   (input (do

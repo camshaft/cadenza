@@ -2708,7 +2708,7 @@
            (export main)))
   (call main (: 1 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime slice probes a Set of flat Bytes by content"
   (input (do

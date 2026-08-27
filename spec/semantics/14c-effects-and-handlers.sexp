@@ -8466,7 +8466,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11216060 Int64))
   (call   main (: 7 Int64)) (output (: 11224140 Int64))
-  (live-objects known-leak 61))
+  (live-objects known-leak 21))
 
 (case "mk21 a scalar-map handler whose second put uses a COMPUTED key — the checked-add scratch and the Option-handle slot stay width-partitioned"
   (input  (do
@@ -9925,7 +9925,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 150724121 Int64))
   (call   main (: 0 Int64)) (output (: 80010051 Int64))
-  (live-objects known-leak 41))
+  (live-objects known-leak 39))
 
 (case "rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot"
   (input  (do

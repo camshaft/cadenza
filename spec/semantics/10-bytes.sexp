@@ -295,7 +295,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime slice VIEW crosses a helper-function boundary intact"
   (doc    "The escape face: the slice is passed to a helper `(first-byte b)` whose body indexes its Bytes
