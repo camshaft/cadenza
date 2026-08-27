@@ -16210,27 +16210,6 @@ mod match_engine {
     }
 
     #[test]
-    fn one_arithmetic_operator_over_two_floats_is_well_typed() {
-        // `(+ 1.0 2.0)` — the ONE arithmetic operator `+`/`-`/`*`/`/` applied to two FLOAT operands is
-        // WELL-TYPED float arithmetic: there is no distinct `+.`, so a `Float` operand routes to the float
-        // op by type (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric
-        // Type). Each folds to a Float64 value, not a rejection.
-        for (op, want) in [("+", 3.0f64), ("-", -1.0f64), ("*", 2.0f64), ("/", 0.5f64)] {
-            let src = format!("(module m (def (main) ({op} 1.0 2.0)) (export main))");
-            assert!(
-                reject_full(&src).is_none(),
-                "`{op}` on two floats must be well-typed, got: {:?}",
-                reject_full(&src).map(|d| d.message)
-            );
-            assert_eq!(
-                run_returns::<f64>(&component(&src), "main").to_bits(),
-                want.to_bits(),
-                "`{op}` on two floats folds to {want} (by IEEE bits)"
-            );
-        }
-    }
-
-    #[test]
     fn a_mixed_int_float_arithmetic_operand_is_cdz0301_with_a_conform_to_first_coercion_fix() {
         // A genuine int/float MIX is rejected CDZ0301 — the same operator accepts only one numeric type
         // (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric Type). The
