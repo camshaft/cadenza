@@ -19859,6 +19859,45 @@ mod tests {
         );
     }
 
+    /// The EMBEDDING sharp-edge (v-static-data increment 6): a hoisted IMMORTAL constant embedded as a CHILD
+    /// of a RUNTIME compound survives when that runtime parent is recursively dropped — `op_drop`'s cascade
+    /// NO-OPS on the immortal child (never decrementing/freeing it), so a `(tuple <static> 42)` built at
+    /// runtime and dropped leaves the static intact + readable + census-neutral (no UAF).
+    #[test]
+    fn immortal_embedded_in_dropped_runtime_compound_survives() {
+        let base = LIVE_NODES.with(|n| n.get());
+        let stat = op_mark_immortal(bytes_leaf(&[7, 8]));
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "the hoisted immortal is census-excluded"
+        );
+        let tup = op_arr_alloc(2);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base + 1,
+            "the runtime tuple shell is one live node"
+        );
+        op_arr_set(tup, 0, stat); // embed the immortal child (moved into the slot, rc untouched)
+        op_arr_set(tup, 1, op_box_int(42)); // a scalar sibling (immediate — no node)
+        op_drop(tup); // recursively drop the runtime parent
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "the tuple shell is freed; the immortal child is NOT (census back to base)"
+        );
+        assert_eq!(
+            node_rc(stat),
+            IMMORTAL,
+            "the embedded immortal's rc is untouched by the parent's drop cascade"
+        );
+        assert_eq!(
+            bytes_to_vec(stat),
+            vec![7, 8],
+            "the embedded immortal Bytes is readable intact after the parent drop (no UAF)"
+        );
+    }
+
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
     /// leaf, a ROPE (which must flatten first), and the empty input. This pins the RUNTIME half of the
     /// design's §9 byte-identity invariant (DESIGN-compiler-primitives.md): the compile-time `Blake3.of`
