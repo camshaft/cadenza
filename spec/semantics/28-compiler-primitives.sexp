@@ -2292,7 +2292,7 @@
            PRESERVES both the trap AND its kind — deferred to runtime, not dropped, not kind-erased.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "div-by-zero")
+  (trap   "CDZ0701")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb3 a const divide-by-zero in a MATCH arm traps at runtime, not at compile (the match twin)"
@@ -2301,7 +2301,7 @@
            the PRESERVED `divide by zero` kind (`Core::TrapDivZero`, the match twin of dzb2's `if`-branch demote).")
   (input  (do (def (main (: n Int64)) (match n (0 (/ 1 0)) (_ 7))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "div-by-zero")
+  (trap   "CDZ0701")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzw1 an EXPLICIT user (trap …) in a runtime branch does NOT warn CDZ0309 (only const-fold-origin traps warn)"
@@ -2328,7 +2328,7 @@
            arm of the kind-preserving demote, not just Div. At n=0 the else is taken → traps 'divide by zero'.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (% 1 0))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "div-by-zero")
+  (trap   "CDZ0701")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 ; -- overflow-demote family (operator 2026-08-27: "add a dedicated overflow core op as well … we should
@@ -2355,7 +2355,7 @@
            bare 'unreachable' a plain `Core::Trap` would report). Pins the overflow twin of dzb2's div-by-zero demote.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "overflow")
+  (trap   "CDZ0703")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "ovb3 a shift-COUNT-out-of-range branch stays the kind-less 'unreachable' (the discrimination)"
@@ -2366,7 +2366,7 @@
            overflow kind. (Still a fold-synthesized reachable trap → CDZ0309.)")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (<< 1 100))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "unreachable")
+  (trap   "CDZ0704")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "ovb4 the OTHER Div overflow — Int64.min / -1 — demotes to the overflow kind (not divide-by-zero)"
@@ -2376,7 +2376,7 @@
            two Div traps are discriminated by kind at the demote. At n=0 the else is taken → traps 'integer overflow'.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ -9223372036854775808 -1))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "overflow")
+  (trap   "CDZ0703")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 ; -- breaker batch 431 (2026-08-26): #3799 complement pins — a const Map with CHAR keys to-lists

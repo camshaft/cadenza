@@ -4891,25 +4891,27 @@ enum TrapCode {
 }
 
 impl TrapCode {
-    /// The STABLE id token — the canonical `(trap "<id>")` spelling, and the [`TrapCode::from_id`] inverse.
+    /// The STABLE `CDZ07xx` id — the canonical `(trap "CDZ07xx")` spelling, and the [`TrapCode::from_id`]
+    /// inverse (operator ruling 2026-08-27: CDZxxxx codes for trap reasons). `CDZ07xx` is the runtime-trap
+    /// block, distinct from `rcdzc::diag::Code`'s compile-diagnostic ranges. MIRROR of `cdz_corpus_grade`.
     fn code(self) -> &'static str {
         match self {
-            TrapCode::DivByZero => "div-by-zero",
-            TrapCode::OutOfBounds => "out-of-bounds",
-            TrapCode::Overflow => "overflow",
-            TrapCode::Unreachable => "unreachable",
+            TrapCode::DivByZero => "CDZ0701",
+            TrapCode::OutOfBounds => "CDZ0702",
+            TrapCode::Overflow => "CDZ0703",
+            TrapCode::Unreachable => "CDZ0704",
         }
     }
 
     /// Parse a corpus `(trap "…")` token as an explicit trap CODE id. `None` if not a code id — the grader
     /// falls back to [`classify`] for a legacy English reason (so old `(trap "divide by zero")` cases keep
-    /// grading while new cases use the stable `(trap "div-by-zero")`).
+    /// grading while new cases use the stable `(trap "CDZ0701")`).
     fn from_id(token: &str) -> Option<TrapCode> {
         match token.trim() {
-            "div-by-zero" => Some(TrapCode::DivByZero),
-            "out-of-bounds" => Some(TrapCode::OutOfBounds),
-            "overflow" => Some(TrapCode::Overflow),
-            "unreachable" => Some(TrapCode::Unreachable),
+            "CDZ0701" => Some(TrapCode::DivByZero),
+            "CDZ0702" => Some(TrapCode::OutOfBounds),
+            "CDZ0703" => Some(TrapCode::Overflow),
+            "CDZ0704" => Some(TrapCode::Unreachable),
             _ => None,
         }
     }
