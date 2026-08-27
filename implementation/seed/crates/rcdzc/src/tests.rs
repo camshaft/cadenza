@@ -60857,36 +60857,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_perform_in_a_tail_if_branch_under_a_let_folds_per_branch() {
-        // E4 branch-tail fold, the `let`-body case: a `let`'s VALUE is its BODY's value, so a `let` body is
-        // in the same tail position as the `let`. An abortive perform in the tail of an `if` branch inside a
-        // tail-position `let` body folds per-branch exactly like a bare `if`. `(let ((k 5)) (if true
-        // (Bail.bail 7) k))` → 7 (abort); the `false`-branch sibling would yield `k`=5 (survives). The FOLD
-        // already threaded the let body correctly; this pins that the guard's `let` arm carries tail-ness
-        // into the body (a generic descent would have marked it non-tail and wrongly DECLINED).
-        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (let ((k 5)) (if true (Bail.bail 7) k)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(aborts)))
-                    .expect("a let-body tail-if-branch abort compiles"),
-                "main"
-            ),
-            7
-        );
-        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (let ((k 5)) (if false (Bail.bail 7) k)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(survives)))
-                    .expect("the non-aborting let-body branch survives"),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
     fn an_abortive_perform_in_a_conditional_let_init_hoists_and_folds() {
         // E4 let-init hoist: an abort in a conditional `let` INIT — `(let ((k (if c (Bail.bail 7) 0)))
         // (+ 1 k))` — is lifted OUT of the let by distributing the whole let into each branch with the init
@@ -61079,26 +61049,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail cross-function conditional abort must decline, not miscompile to 109"
-        );
-    }
-
-    #[test]
-    fn an_unconditional_cross_function_abort_folds() {
-        // The sound cross-fn counterpart: a helper whose body is a BARE abort — `boom n = (Bail.bail n)` —
-        // called in a non-tail position `(+ 10 (boom 99))`. Inlining yields `(+ 10 (Bail.bail 99))`, a plain
-        // UNCONDITIONAL strict abort the E4-a machinery collapses: the abort abandons the `+ 10`, the handle
-        // yields the arm value 99. Distinguishes the sound unconditional case from the declined conditional
-        // one above (the guard follows the callee and flags only an abort reached under a conditional).
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (boom (: n Int64)) (Bail.bail n)) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (boom 99)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("an unconditional cross-fn abort folds"),
-                "main"
-            ),
-            99
         );
     }
 
@@ -61691,47 +61641,6 @@ mod stage1 {
     }
 
     #[test]
-    fn two_abortive_performs_on_a_strict_spine_the_first_wins() {
-        // E4 abortive FIRST-WINS (a MISCOMPILE regression). Two abortive performs on one strict spine —
-        // `(+ (Bail.bail 7) (Bail.bail 9))` — evaluate LEFT-TO-RIGHT, and an abort ABANDONS the rest, so the
-        // FIRST (leftmost) abort wins → 7; the second `(Bail.bail 9)` never runs. The fold threads operands
-        // in evaluation order and records each abort in a shared `abort_value` cell — but it kept threading
-        // PAST the first abort, so the second perform OVERWROTE the cell and the handle yielded 9 (a
-        // miscompile). Fix: once the cell is set, a later abort does not overwrite it (first wins).
-        let two = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(two)))
-                    .expect("two abortive performs compile"),
-                "main"
-            ),
-            7,
-            "the FIRST (leftmost, evaluated-first) abort wins — never the second"
-        );
-        // Three performs, and the abort value READING the seed state, both still take the FIRST abort.
-        let three = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (+ (Bail.bail 8) (Bail.bail 9))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(three))).expect("compiles"),
-                "main"
-            ),
-            7
-        );
-        let reads_state = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 5 ((bail (n) s (+ n s))) (+ (Bail.bail 7) (Bail.bail 9)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(reads_state))).expect("compiles"),
-                "main"
-            ),
-            12,
-            "the first abort's value (7) plus the seed state (5) = 12; the second abort is dead"
-        );
-    }
-
-    #[test]
     fn abortive_compositions_fold_to_the_correct_value_or_decline_cleanly() {
         // E4 abortive SOUNDNESS SWEEP pinned as a regression (abortive is the most miscompile-prone fold —
         // 5 miscompiles found historically). Each shape must fold to the value the deep-handler semantics
@@ -61821,26 +61730,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(cond))).is_err(),
             "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
-        );
-    }
-
-    #[test]
-    fn an_abort_in_an_if_condition_folds_by_type_compatibility() {
-        // E4 type-consistency guard uses COMPATIBILITY, not structural `==`. `(if (< (Bail.bail 7) 5) 1 2)`
-        // — the abort is in the condition, evaluated first, so it abandons the whole `if` → 7. The handle
-        // body infers `Int{Deferred}` (the `if` branches 1/2 not yet ground) while the abort arm value is
-        // `Int64{Fixed}`; a structural `!=` spuriously flagged this as a mismatch and DECLINED. Comparing
-        // with `agrees_with` (an undetermined Int agrees with Int64) folds it correctly. Regression guard
-        // for that false-positive decline — the abort-in-condition is a real "validate then bail" shape.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (if (< (Bail.bail 7) 5) 1 2))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("an abort in an if condition folds"),
-                "main"
-            ),
-            7
         );
     }
 

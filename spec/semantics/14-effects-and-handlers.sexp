@@ -2373,6 +2373,42 @@
               (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (Bail.bail 9)))) (export main)))
   (output (: 7 Int64)))
 
+(case "with three abortive performs on a strict spine the leftmost still wins"
+  (doc    "The deeper form of the first-wins rule (a regression pin against a shared-abort-cell that kept
+           threading past the first abort and let a later one overwrite it). `(+ (Bail.bail 7) (+ (Bail.bail
+           8) (Bail.bail 9)))` evaluates left-to-right, so the leftmost `(Bail.bail 7)` fires first and
+           abandons everything → 7; neither `(Bail.bail 8)` nor `(Bail.bail 9)` runs. Pins that once the
+           abort value is set, a later abort at any nesting depth does NOT overwrite it.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail 7) (+ (Bail.bail 8) (Bail.bail 9))))) (export main)))
+  (output (: 7 Int64)))
+
+(case "the winning abort's value reads the op arg and the seed state"
+  (doc    "The first-wins rule with an abort arm that READS both the op arg and the handler state:
+           `(bail (n) s (+ n s))` seeded 5, body `(+ (Bail.bail 7) (Bail.bail 9))`. The leftmost
+           `(Bail.bail 7)` fires first, its arm value `(+ 7 5)` = 12 becomes the handle value; the second
+           abort is dead. Pins that the winning abort's value is computed from its own op arg and the live
+           seed state, and the loser never perturbs it.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 5 ((bail (n) s (+ n s))) (+ (Bail.bail 7) (Bail.bail 9)))) (export main)))
+  (output (: 12 Int64)))
+
+(case "an unconditional cross-function abort folds via inline"
+  (doc    "A helper whose body is a BARE abort — `(def (boom n) (Bail.bail n))` — called in a non-tail
+           strict position `(+ 10 (boom 99))`. Inlining `boom` yields `(+ 10 (Bail.bail 99))`, a plain
+           unconditional strict abort that abandons the enclosing `+ 10`, so the handle yields the arm value
+           99. Pins that an UNCONDITIONAL cross-function abort folds via inline (distinct from a CONDITIONAL
+           cross-function abort, which declines pending the non-local-exit convention).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (boom (: n Int64)) (Bail.bail n))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (boom 99)))) (export main)))
+  (output (: 99 Int64)))
+
 (case "an abortive perform in the tail of an if branch abandons only that branch"
   (doc    "Refines the abortive class for a CONDITIONAL early-exit. `Bail.bail` is abortive (its arm never
            resumes). The handle body is `(if true (Bail.bail 7) 99)` — the `if` IS the handle's value, so an
