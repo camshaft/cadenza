@@ -58,9 +58,12 @@ runs:
     # Connection reset by peer" (fleet-wide non-hermetic red; the cache-action SHA + nix-installer were
     # IDENTICAL green-vs-red — only the runner image changed). Chowning the DB back to root:root lets the
     # daemon own its DB and restart cleanly; `nix store ping` fail-fasts if it still can't; journalctl on a
-    # restart failure surfaces WHY. NOTE the SAVE step (main only) re-chowns to runner for its own write, so
-    # this build-phase root ownership does not persist across the save. Linux-only (every consumer is
-    # ubuntu-latest / ubuntu-24.04-arm); RUNNER_OS-guarded so a non-Linux adopter no-ops.
+    # restart failure surfaces WHY. The main-only SAVE post-step is SAFE with (in fact REQUIRES) a
+    # root-owned DB: its gc-max-store-size GC-before-pack runs through the ROOT daemon (a runner-owned DB
+    # would break that GC with the same reset), and the pack is `sudo tar` reading root-owned files fine —
+    # so root ownership is correct for BOTH the build and save paths, no pre-save re-chown needed (v-nix
+    # vetted the composite). Linux-only (every consumer is ubuntu-latest / ubuntu-24.04-arm); RUNNER_OS-
+    # guarded so a non-Linux adopter no-ops.
     - name: reconnect nix-daemon after store-cache restore
       shell: bash
       run: |
