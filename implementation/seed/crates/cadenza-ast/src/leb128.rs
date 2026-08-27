@@ -8,6 +8,9 @@
 //! form per value — so the codec built on it inherits its "one canonical byte form" contract
 //! (`ast-encoding.md` §The Encoding Is A Bijection With One Canonical Byte Form).
 
+// `alloc` (not std's prelude) so this file compiles under the `#![no_std]` minimal core.
+use alloc::vec::Vec;
+
 /// Why a classified varint read failed — the distinction a streaming/log consumer needs to tell a
 /// benign TORN write (the input simply ended mid-varint) from genuine CORRUPTION (a fully-present but
 /// non-canonical / over-64-bit varint). [`Reader::read_varu64`] collapses both to `None`;

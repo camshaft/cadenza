@@ -19,9 +19,21 @@
 //! `cadenza-syntax`'s text/s-expr readers) live in `cadenza-syntax`'s integration tests, since this
 //! crate sits BELOW those surfaces.
 
+// The minimal codec core is `no_std` + `alloc`: `cdz-runtime` (`#![no_std]`, frozen-hash) builds this
+// crate with `--no-default-features`. The `std` default feature turns std back on for the full surface.
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
 pub mod ast;
-pub mod canon;
 pub mod codec;
-pub mod dict;
-pub mod fxhash;
 pub mod leb128;
+
+// The full surface — canonicalization, the dict transport plane, and the FxHash maps they use — is
+// std-only (`HashMap`/`num-bigint`/NFC). Gated behind `std`; compiled out of the no_std minimal core.
+#[cfg(feature = "std")]
+pub mod canon;
+#[cfg(feature = "std")]
+pub mod dict;
+#[cfg(feature = "std")]
+pub mod fxhash;

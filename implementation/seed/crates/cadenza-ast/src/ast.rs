@@ -18,8 +18,17 @@
 //! *name*, never a change to this frozen shape. This is what keeps the AST stable and macro
 //! pre-expansion (rewriting uniform `(head child…)` structure) easy.
 
+// `alloc` (not std's prelude) so this file compiles under the `#![no_std]` minimal core as well as
+// under std; `alloc::string::String` == `std::string::String`, etc.
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+
+// The `IntValue` <-> `num_bigint::BigInt` bridge is a std-only convenience — the no_std minimal core
+// carries no num-bigint (the #459 lesson); `Leaf::Int` is always the dependency-light `IntValue`.
+#[cfg(feature = "std")]
 use num_bigint::BigInt;
-use std::sync::Arc;
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -30,7 +39,7 @@ use std::sync::Arc;
 /// made here. `Float` always holds a FINITE decimal; a non-finite float VALUE (NaN, ±∞) — e.g. the
 /// result of `Ast.encode` of a computed float — is a dedicated payloadless leaf ([`Leaf::FloatNan`] /
 /// [`Leaf::FloatInf`]), since a decimal cannot represent it.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Leaf {
     /// An integer literal: its exact value plus the base its text used. The base is display-only
     /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
@@ -104,7 +113,7 @@ pub enum Leaf {
 
 /// The numeric body a type suffix decorates — an exact integer (with its display radix) or an exact
 /// width-free decimal, the same two shapes the bare `Int`/`Float` leaves carry.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum SuffixBody {
     Int { value: IntValue, radix: Radix },
     Float(Decimal),
@@ -135,7 +144,7 @@ impl WitDir {
 
 /// The type a numeric literal suffix selects: `N` → `BigInt` (unbounded integer), `R` → `Rational`
 /// (exact rational). A closed set — the lexer accepts only these two suffix letters.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum SuffixKind {
     /// `N` — an arbitrary-precision `BigInt`.
     BigInt,
@@ -175,7 +184,7 @@ impl SuffixKind {
 }
 
 /// The base an integer literal's text used. Display-only — it does not change the value.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Radix {
     Dec,
     Hex,
@@ -205,7 +214,7 @@ pub struct StructId(pub u32);
 /// so that `-0.0` (negative, zero significand) is preserved distinctly from `0.0`. This captures a
 /// source float literal EXACTLY (no `f64` rounding), so a later type-directed rounding to a chosen
 /// width happens once, from the exact value.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct Decimal {
     pub negative: bool,
     /// Big-endian non-negative magnitude of the significand (empty = zero) — a dependency-light byte
@@ -921,10 +930,13 @@ impl IntValue {
     }
 }
 
+/// The `IntValue` <-> `num_bigint::BigInt` bridge — a std-only convenience the all-std front-end uses to
+/// keep num-bigint internal (arbitrary-precision arithmetic / decimal parsing), converting only at the
+/// `Leaf`/`Decimal` boundary. Absent from the no_std minimal core, which carries no num-bigint.
+#[cfg(feature = "std")]
 impl IntValue {
-    /// Convert to `num_bigint::BigInt` — the bridge used while the front-end still holds some values as
-    /// `BigInt` (arbitrary-precision arithmetic / parsing). Sign + big-endian magnitude map directly
-    /// onto `BigInt::from_bytes_be`. (Will be `std`-feature-gated when num-bigint becomes optional.)
+    /// Convert to `num_bigint::BigInt`. Sign + big-endian magnitude map directly onto
+    /// `BigInt::from_bytes_be`.
     pub fn to_bigint(&self) -> num_bigint::BigInt {
         use num_bigint::Sign;
         let sign = if self.magnitude.is_empty() {
@@ -957,6 +969,10 @@ impl IntValue {
     }
 }
 
+/// `Decimal` construction from a native float — a std-only front-end path (the decimal->binary
+/// conversion parses via num-bigint). The no_std minimal core builds Float leaves through the runtime's
+/// own byte-magnitude path (rcdzc `ast::Decimal::from_f64`), not this one.
+#[cfg(feature = "std")]
 impl Decimal {
     /// The EXACT shortest-decimal `Decimal` for an `f64` — the value-form `Leaf::Float` a native float
     /// value encodes to. Mirrors rcdzc's `ast::Decimal::from_f64` and the cdz-runtime `float_leaf` so all
@@ -1031,23 +1047,30 @@ pub struct Arenas {
     pub root: StructId,
 }
 
+/// The Builder's dedup index. FxHashMap under `std` (the hot front-end intern path — the dedup key is
+/// the program's own leaf, never untrusted input, and `leaf` runs once per token during parse, so
+/// SipHash is pure overhead; see `crate::fxhash`). BTreeMap in the no_std minimal core, so intern needs
+/// no external hasher (`Leaf`/`String` derive `Ord`); the map is lookup-only and ids are
+/// insertion-ordered, so the arena — and thus the encoded bytes — are identical regardless of map kind.
+#[cfg(feature = "std")]
+type InternMap<K, V> = crate::fxhash::FxHashMap<K, V>;
+#[cfg(not(feature = "std"))]
+type InternMap<K, V> = alloc::collections::BTreeMap<K, V>;
+
 /// Builds `Arenas`: interns leaves on insert (dedup), appends structure occurrences (no dedup, so
 /// each call is a distinct occurrence and spans stay 1:1). `root` is set once the top occurrence
 /// is known via [`Builder::finish`].
 #[derive(Default)]
 pub struct Builder {
     leaves: Vec<Leaf>,
-    // FxHash (not SipHash): the dedup key is the program's own leaf (a short identifier or literal),
-    // never untrusted input, and `leaf` runs once per token during parse — SipHash's `hash_one` was
-    // ~a quarter of front-end time. See `crate::fxhash`.
-    leaf_index: crate::fxhash::FxHashMap<Leaf, LeafId>,
+    leaf_index: InternMap<Leaf, LeafId>,
     // A SEPARATE dedup index for NAME leaves, keyed by the name STRING. `Name` is by far the most
     // common leaf (every identifier + construct head + qualified segment), and each occurrence arrives
     // as a `&str` slice of the source. Keying by `String` lets `leaf_name` look it up with a `&str`
     // (`String: Borrow<str>`) and allocate the owned `String` ONLY on a genuine cache miss — so a
     // repeated name (the norm in real code) costs zero allocation, instead of the old path that built a
     // `Leaf::Name(text.into())` for EVERY occurrence and discarded it on a dedup hit.
-    name_index: crate::fxhash::FxHashMap<String, LeafId>,
+    name_index: InternMap<String, LeafId>,
     structure: Vec<Struct>,
 }
 
@@ -1085,21 +1108,24 @@ impl Builder {
     /// majority) is ALWAYS already NFC, so `is_ascii()` — one cheap byte scan, no allocation — short-circuits
     /// to the original zero-alloc `&str` dedup path; only a non-ASCII name pays the `is_nfc`/`.nfc()` cost.
     pub fn leaf_name(&mut self, name: &str) -> LeafId {
-        // ASCII fast path: ASCII is always NFC, so a pure-ASCII name (the common case) keeps the original
-        // allocation-free `&str` dedup — no normalization work.
-        if name.is_ascii() {
-            return self.leaf_name_normalized(name);
+        // Non-ASCII (std only): normalize to NFC first so canonically-equal spellings share a key.
+        // `is_nfc_quick` avoids the `.nfc()` allocation when the name is already normalized (usual case).
+        // ASCII is always NFC, so the pure-ASCII common case keeps the allocation-free `&str` dedup and
+        // skips this entirely. The no_std minimal core has no NFC (unicode-normalization is std-only) —
+        // it never builds names from unnormalized text (decode constructs `Leaf::Name` directly, not via
+        // this intern), so canonical inputs are unaffected.
+        #[cfg(feature = "std")]
+        if !name.is_ascii() {
+            use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+            return match is_nfc_quick(name.chars()) {
+                IsNormalized::Yes => self.leaf_name_normalized(name),
+                _ => {
+                    let normalized: String = name.nfc().collect();
+                    self.leaf_name_normalized(&normalized)
+                }
+            };
         }
-        // Non-ASCII: normalize to NFC first so canonically-equal spellings share a key. `is_nfc_quick`
-        // avoids the `.nfc()` allocation when the name is already normalized (the usual case).
-        use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
-        match is_nfc_quick(name.chars()) {
-            IsNormalized::Yes => self.leaf_name_normalized(name),
-            _ => {
-                let normalized: String = name.nfc().collect();
-                self.leaf_name_normalized(&normalized)
-            }
-        }
+        self.leaf_name_normalized(name)
     }
 
     /// The core intern — `name` is ALREADY NFC (an ASCII name, or the caller normalized it). Allocates
