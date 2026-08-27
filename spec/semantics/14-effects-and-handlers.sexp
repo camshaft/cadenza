@@ -7069,6 +7069,41 @@
               (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main)))
   (output (: true Bool)))
 
+(case "a pure one-hole continuation folds with pure siblings around the hole"
+  (doc    "The pure one-hole context may have PURE siblings around the hole inside a nested strict operator
+           tree. `(- (* 2 (Amb.flip)) 3)` has `C = (- (* 2 []) 3)`, effect-free; the arm `(+ 1 (resume 10
+           s))` → `(+ 1 (- (* 2 10) 3))` = `(+ 1 17)` = 18. Pins that the hole is located correctly and the
+           pure siblings (`2`, `3`) are preserved in the spliced continuation.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- (* 2 (Amb.flip)) 3))) (export main)))
+  (output (: 18 Int64)))
+
+(case "a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value"
+  (doc    "The match-scrutinee one-hole fold where the RESUME value selects a NON-wildcard arm. `C = (match
+           [] (0 100) (_ 2))`; the arm resumes 0, so `C[0]` selects the literal `0` arm → 100, and the arm
+           `(+ 1 (resume 0 s))` = `(+ 1 100)` = 101 (contrast a resume of 10, which selects the `_` arm →
+           2 → 3). Pins that the re-reduced scrutinee dispatches to the matching arm, not always the
+           wildcard.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 0 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main)))
+  (output (: 101 Int64)))
+
+(case "a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail"
+  (doc    "Adversarial: the pure one-hole block must NOT hijack a TAIL-resumptive arm. The arm body
+           `(resume s (+ s 1))` IS a tail resume, so the ordinary state-threading path runs, not the
+           pure-continuation fold. `(+ 100 (Get.next))` seed 0: `Get.next` reads state 0 (the resume value
+           is `s`) and threads `s+1` forward → `(+ 100 0)` = 100. Pins that a non-tail perform in the body
+           does not tempt the one-hole fold when the arm is tail-resumptive.")
+  (input  (do
+            (effect Get (op next (-> Unit Int64)))
+            (def (main)
+              (handle Get 0 ((next (u) s (resume s (+ s 1)))) (+ 100 (Get.next)))) (export main)))
+  (output (: 100 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in a let init"
   (doc    "The pure one-hole continuation extends into a `let` INIT — a `let` runs its inits and its body
            UNCONDITIONALLY, in sequence, so an init is a strict-spine position and the continuation

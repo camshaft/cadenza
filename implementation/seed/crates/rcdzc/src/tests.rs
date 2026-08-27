@@ -6539,7 +6539,6 @@ impl ComposedRuntime {
             .expect("instantiate program");
         ComposedRuntime { store, program }
     }
-
 }
 
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
@@ -61205,108 +61204,6 @@ mod stage1 {
             err.message.contains("more than one host effect"),
             "the multi-host-effect bytes-resource decline must name the cause: {}",
             err.message
-        );
-    }
-
-    #[test]
-    fn two_performs_across_a_let_fold_via_the_one_shot_refold() {
-        // E5 TWO-HOLE across a `let`: a hole in a let INIT and another in the BODY. The one-shot refold
-        // (`leading_strict_hole` descends the `let`'s inits then body) folds it: leading flip in the INIT →
-        // `C = (let ((x □)) (+ x (Amb.flip)))`; `(resume 10 s)` re-reduces `C[10] = (let ((x 10)) (+ x
-        // (Amb.flip)))` (x=10, body has the second flip in a pure one-hole context) → `(+ 1 (+ 10 10))` = 21;
-        // the outer arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22. (Was a clean decline before the refold.)
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x (Amb.flip))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a one-shot two-hole across a let folds via the refold"),
-                "main"
-            ),
-            22
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_in_a_match_scrutinee_folds() {
-        // The perform may sit in a `match` SCRUTINEE — a STRICT, always-evaluated-first position (like an
-        // `if` condition), so its continuation `C = (match [] (0 100) (_ 2))` is uniform (the arms run only
-        // AFTER the scrutinee and are pure). `(resume 10 s)` → `C[10]` = the `_` arm → 2, arm
-        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3; a resume of 0 selects the literal arm → 100 → `(+ 1 100)`
-        // = 101. Every arm body must be strongly pure (copied into `C`, duplicated by a multi-shot resume).
-        let wild = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(wild)))
-                    .expect("a hole in a match scrutinee folds"),
-                "main"
-            ),
-            3
-        );
-        let literal = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 0 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(literal)))
-                    .expect("the resume value selects the matching arm"),
-                "main"
-            ),
-            101
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_in_an_and_lhs_folds() {
-        // The perform may sit in a short-circuit connective's LHS — a STRICT, always-evaluated-first
-        // position. `C = (and (< □ 5) true)`, arm `(not (resume 10 s))` produces Bool: `(resume 10 s)` →
-        // `(and (< 10 5) true)` = false, `(not false)` = true. The rhs `true` is pure (copied into `C`).
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< (Amb.flip) 5) true))) (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a hole in an and lhs folds"),
-                "main"
-            ),
-            "resume 10 → (and (< 10 5) true)=false → (not false)=true"
-        );
-    }
-
-    #[test]
-    fn a_tail_resumptive_arm_with_a_non_tail_perform_body_still_threads() {
-        // ADVERSARIAL: the pure one-hole block must NOT hijack a TAIL-resumptive arm. Here the arm body
-        // `(resume s (+ s 1))` IS a tail resume, so `tail_resume` is `Some` and the block is skipped — the
-        // ordinary state-threading path runs. `(+ 100 (Get.next))` seed 0: `Get.next` reads state 0 (the
-        // resume value is `s`), threads `s+1` forward → `(+ 100 0)` = 100. Pins that a non-tail perform in
-        // the body does not tempt the pure-continuation fold when the arm is tail-resumptive.
-        let src = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (+ 100 (Get.next)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a tail-resumptive arm threads even with a non-tail perform body"),
-                "main"
-            ),
-            100
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_continuation_with_a_pure_sibling_folds() {
-        // The pure one-hole context may have PURE siblings around the hole — `(- (* 2 (Amb.flip)) 3)` has
-        // `C = (- (* 2 □) 3)`, effect-free. arm `(+ 1 (resume 10 s))` → `(+ 1 (- (* 2 10) 3))` = `(+ 1 17)`
-        // = 18. Pins that the hole is located correctly inside a nested strict operator tree and the pure
-        // siblings (`2`, `3`) are preserved in the spliced continuation.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- (* 2 (Amb.flip)) 3))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a pure one-hole continuation with pure siblings folds"),
-                "main"
-            ),
-            18
         );
     }
 
