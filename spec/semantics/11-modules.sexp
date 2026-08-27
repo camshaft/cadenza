@@ -545,6 +545,63 @@
             (def (main) answer) (export main)))
   (output (: 42 Int64)))
 
+(case "a function definition may carry a leading doc, ignored for the computation"
+  (doc    "The function-def face of the leading-doc affordance (companion to the value-def case above): a
+           `(doc …)` right after the signature documents `dbl` and is not part of its body, so `dbl(3)` =
+           6. Pins the symmetry a definition form requires — the doc affordance cannot depend on the def
+           kind.")
+  (input  (do
+            (def (dbl x) (doc "doubles x") (* x 2))
+            (def (main) (dbl 3)) (export main)))
+  (output (: 6 Int64)))
+
+(case "a documented value definition binding a record is projected by a sibling"
+  (doc    "The compiler-table idiom the leading-doc affordance is load-bearing for: a documented value def
+           binds a record (`(def op (doc \"opcode bytes\") (record …))`), projected by a sibling — the doc
+           is stripped so `(. op sub)` reads the real record field, 2.")
+  (input  (do
+            (def op (doc "opcode bytes") (record (add 1) (sub 2)))
+            (def (main) (. op sub)) (export main)))
+  (output (: 2 Int64)))
+
+(case "a type declaration may carry a leading doc, ignored for the variants"
+  (doc    "A `(doc …)` right after the type NAME documents the type and is NOT a variant — the type
+           analogue of a def's leading doc (a `///` doc-comment on a `type`). The doc is skipped, so the
+           variant set is `Red Green Blue` and `Color.Green` matches its arm — 1. A reader that mis-reads
+           the doc AS a variant rejects the type (a spurious duplicate/extra variant).")
+  (input  (do
+            (type Color (doc "an RGB channel tag") Red Green Blue)
+            (def (main) (match Color.Green ((Color.Red) 0) ((Color.Green) 1) ((Color.Blue) 2)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a documented payload sum keeps its variant discriminants"
+  (doc    "A PAYLOAD-carrying documented sum: the leading `(doc …)` does not shift the variant
+           discriminants, so `(Box.Mk 7)` matches `((Box.Mk n) n)` binding n = 7. Pins that the doc-skip is
+           positional-safe for payload variants, not only nullary ones.")
+  (input  (do
+            (type Box (doc "a one-field wrapper") (Mk Int64))
+            (def (main) (match (Box.Mk 7) ((Box.Mk n) n)))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an in-definition doc clause is valid and the definition computes"
+  (doc    "The CANONICAL placement of a `(doc …)`: INSIDE the definition, right after the signature — the
+           shape a `///` doc-comment renders to. `(def (main) (doc \"the main fn\") 42)` documents `main`
+           and computes 42, the doc ignored for the value.")
+  (input  (do
+            (def (main) (doc "the main fn") 42) (export main)))
+  (output (: 42 Int64)))
+
+(case "a doc wrapping a definition from outside names the in-definition placement"
+  (doc    "Unlike a `//` COMMENT (peeled as a wrapper), a `(doc …)` documents a definition from INSIDE it,
+           not as a top-level wrapper. A user who WRAPS a def in `(doc \"…\" (def …))` (a natural guess
+           from the comment behavior) used to get a generic unbound-name `doc` plus a misleading
+           export-names-no-definition cascade; the diagnosis now names the real placement instead.")
+  (input  (do
+            (doc "the main fn" (def (main) 1)) (export main)))
+  (declines (message "documents a definition from INSIDE it")))
+
 (case "a line comment wrapping a top-level form does not hide it"
   (doc    "A leading `//` line comment on a top-level form reifies (by the reader) to `(comment \"<text>\"
            <form>)` wrapping the WHOLE form — the comment companion of the leading `(doc …)` above. The
