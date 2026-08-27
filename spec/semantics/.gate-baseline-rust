@@ -7789,3 +7789,7 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
+pass	olf2 Bool ordering folds agree with their runtime twins
+pass	olf3 List ordering agrees const and runtime, inlined and let-bound
+todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
