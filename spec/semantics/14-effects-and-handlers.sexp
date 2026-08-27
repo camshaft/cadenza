@@ -8773,6 +8773,72 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 2000 Int64)))
 
+(case "a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)"
+  (doc    "breaker sr5 (HIGH silent-miscompile, restore-safe-decline). The ABORTIVE-arm sibling of the sr4
+           control: a recursive loop of same-effect `(Acc.put)` performs each advance the state, then a LATER
+           same-effect `(Acc.fin)` whose arm is ABORTIVE (`(fin (u) s s)`, no resume) reads it. The
+           caller-observed-out-state machinery threads the advance to a RESUMING observer (sr4 -> 2), but the
+           abort collapse used to materialize fin's value against the PRE-recursion seed slot, silently
+           returning 0 instead of the advanced 2 on both backends. The compiler now DECLINES this shape
+           (a clean Todo) rather than emit the wrong value; the correct abort-collapse-reads-the-threaded-
+           out-state fold is a later increment. main(2) intends 2 (put ran twice -> state 2 -> fin reads 2);
+           until the fold lands this DECLINES (tracked as a todo). The pin guards that it is NEVER the silent
+           0 — a regression that folds it to 0 flips this todo to a FAIL against the recorded 2.")
+  (input  (do
+            (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64)))
+            (def (grow (: n Int64)) (if (= n 0) 0 (+ (Acc.put) (grow (- n 1)))))
+            (def (main (: k Int64))
+              (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s s))
+                (do (def _g (grow k)) (Acc.fin))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64)))
+
+(case "a resuming observer of a recursive same-effect advance reads the advanced state (sr4)"
+  (doc    "breaker sr5-family CONTROL (sr4): a recursive loop of same-effect `(Acc.put)` performs each advance
+           the handler state; a LATER same-effect `(Acc.fin)` whose arm RESUMES `(resume s s)` reads that
+           advanced state. The caller-observed-out-state machinery threads the recursion's advance to the
+           resuming observer. `(grow k)` puts k times (state 0->k), then `(Acc.fin)` reads k. main(2): put ran
+           twice -> state 2 -> fin reads 2. (Contrast the ABORTIVE fin of the same shape, which declines
+           cleanly rather than miscompile — a compiler-side decline pin, not corpus-expressible.)")
+  (input  (do
+            (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64)))
+            (def (grow (: n Int64)) (if (= n 0) 0 (+ (Acc.put) (grow (- n 1)))))
+            (def (main (: k Int64))
+              (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s (resume s s)))
+                (do (def _g (grow k)) (Acc.fin))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64)))
+
+(case "a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)"
+  (doc    "breaker sr5-family CONTROL: a same-effect ABORT arm (`(fin (u) s s)`, no resume) with NO recursion
+           before it — two INLINE `(Acc.put)` performs advance the state 0->2, then `(Acc.fin)` reads 2. With
+           no recursive advance the abort-collapse reads the state correctly, so this FOLDS (the sr5 guard
+           keys on a RECURSIVE advance before a same-effect abort, so an inline-only shape is not swept).")
+  (input  (do
+            (effect Acc (op put (-> Unit Int64)) (op fin (-> Unit Int64)))
+            (def (main)
+              (handle Acc 0 ((put (u) s (resume 0 (+ s 1))) (fin (u) s s))
+                (do (def _a (Acc.put)) (def _b (Acc.put)) (Acc.fin))))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)"
+  (doc    "breaker sr5-family CONTROL (cx1): a recursive INNER `(B.put)` loop advances B's state, then an
+           OUTER-effect `(A.fin)` ABORT reads A's state. A's state was NEVER recursion-advanced (a DIFFERENT
+           effect), so the abort correctly reads A's seed 700. The sr5 guard keys on THIS handler's abortive
+           arms, so an abort of a DIFFERENT effect after the recursion is not swept — it folds. Pins the
+           guard's effect-scoping: the live silent-wrong band is same-effect only.")
+  (input  (do
+            (effect A (op fin (-> Unit Int64)))
+            (effect B (op put (-> Unit Int64)))
+            (def (grow (: n Int64)) (if (= n 0) 0 (+ (B.put) (grow (- n 1)))))
+            (def (main (: k Int64))
+              (handle A 700 ((fin (u) s s))
+                (handle B 0 ((put (u) s (resume 0 (+ s 1))))
+                  (do (def _g (grow k)) (A.fin)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 700 Int64)))
+
 (case "an abortive arm that READS a heap-typed (List) handler state folds — the List face"
   (doc    "The List face of the heap-abort-state fix above (breaker sk2g): same shape with a `(list)` seed and
            `(List.len s)` in the abort arm. `(list)` is a heap seed → `#seed` let-bound → the abort value's
