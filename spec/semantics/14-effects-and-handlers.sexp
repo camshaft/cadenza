@@ -859,6 +859,33 @@
                 (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
   (output (: 5000000000 Int64)))
 
+(case "a two-entry directly-built pqueue pops the HEAD continuation, not the tail"
+  (doc    "The multi-TASK scheduler shape: the pqueue holds TWO entries and the pop must bind the HEAD
+           entry's continuation, ignoring the tail. `sched-step` matches `(PQCons (tuple wake kb rest))`
+           and applies the head's `kb` — a `KBox` boxing `(fn (_u) (resume unit wake))` — while the tail
+           entry (waketime 9, its own resume-thunk) is never reached. Seeded 0, `(Sim.sleep 5e9)` files the
+           head thunk that resumes the clock to the head's wake 5e9; `(Sim.now)` then reads 5e9. If the pop
+           bound the tail instead, the clock would read 9. Pins head-entry selection on a multi-entry
+           directly-built pqueue (the pop-min shape whole), distinct from the single-entry pop-apply above.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (sched-step (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s
+                    (sched-step (PQ.PQCons (tuple wake (KBox.KBox (fn (_u) (resume unit wake)))
+                      (PQ.PQCons (tuple (Instant.Instant 9) (KBox.KBox (fn (_v) (resume unit (Instant.Instant 9)))) (PQ.PQNil ()))))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
+  (output (: 5000000000 Int64)))
+
 (case "a performing closure passed to a function that applies it UNDER a handler is homed at the apply site"
   (doc    "The `handler runs a passed-in closure` idiom: `with-seed(body) = handle Rand … (body unit)` runs
            its `body` PARAM under the `Rand` handler, and `main` passes `(fn (u) (Rand.roll))`. The lambda's

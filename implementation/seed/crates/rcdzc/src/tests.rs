@@ -8882,48 +8882,6 @@ fn a_multiarg_nonrecursive_helper_filing_a_resume_thunk_folds_through_arm_a_prim
     }
 }
 
-/// A DIRECTLY-constructed TWO-entry pqueue (depth-2 `PQCons`, NO recursion, NO helper), popped at the HEAD:
-/// `(sched-step (PQCons (tuple wake kb0) (PQCons (tuple 9 kb1) PQNil)))`. The multi-payload pop fold must
-/// select the HEAD entry's continuation `kb0` (which resumes `wake`) and IGNORE the tail entry `kb1` (which
-/// would resume 9), so the `now` arm reads the wake-seeded clock → 5e9, NOT 9. Pins that the 2-level pop
-/// `(match kb ((KBox k) (k unit)))` binds the HEAD tuple's `kb`, discarding the `rest` sub-queue — a real
-/// multi-task DES pop shape (the queue holds >1 entry) that the SINGLE-entry corpus cases and the
-/// helper-built (`mk1`/`mk2`) pins do not cover. Distinct from the parked recursive-`pins` reach: here the
-/// queue is built inline (fold-visible), so no recursion-unfold is needed — it exercises the pop's
-/// tuple-binder selection at depth-2. A regression that folded the WRONG entry (bound `rest`'s head, or
-/// leaked the tail's `kb`) would return 9; a fold that declined would todo→fail. Both backends agree.
-#[test]
-fn a_two_entry_directly_built_pqueue_pops_the_head_continuation_not_the_tail() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (type Instant (Instant UInt64)) \
-        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
-        (type KBox (KBox (-> Unit Unit))) \
-        (type PQ PQNil (PQCons (Tuple Instant KBox PQ))) \
-        (def (sched-step (: q PQ)) \
-          (match q \
-            ((PQ.PQNil _) unit) \
-            ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit)))))) \
-        (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
-        (def (main) \
-          (handle Sim (Instant.Instant 0) \
-            ( (now (u) s (resume s s)) \
-              (sleep (wake) s \
-                (sched-step (PQ.PQCons (tuple wake (KBox.KBox (fn (_u) (resume unit wake))) \
-                  (PQ.PQCons (tuple (Instant.Instant 9) (KBox.KBox (fn (_v) (resume unit (Instant.Instant 9)))) (PQ.PQNil ())))))))) \
-            (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("a directly-built 2-entry pqueue pop must fold (multi-payload head selection)");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(
-            v, "5000000000",
-            "the pop binds the HEAD entry's kb (resumes wake=5e9), ignoring the tail entry (would be 9) — \
-             the multi-task DES pop-min shape"
-        );
-    }
-}
-
 /// A deferred resume-thunk filed into a pqueue entry by a NON-RECURSIVE helper `mk1`, then popped+applied by
 /// `sched-step` — the direct-helper (non-recursive) companion of the recursive-`pins` reach. `main` performs
 /// `(sched-step (mk1 wake (KBox (fn (_u) (resume unit wake)))))`: the fold reduces the outer `sched-step`

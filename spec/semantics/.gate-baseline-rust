@@ -3694,7 +3694,9 @@ pass	a select between a base map and its derived generation frees the loser but 
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-call and a sibling perform as direct list-push operands thread out-state via multi-value return
 pass	a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return
+pass	a self-comparison keeps a trapping operand (b=0 still traps)
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
+pass	a self-comparison of a scalar folds to a constant (value parity)
 pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
@@ -4081,6 +4083,7 @@ pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-constructor-element list arm falls through when the second tag differs
+pass	a two-entry directly-built pqueue pops the HEAD continuation, not the tail
 pass	a two-hole perform in a match scrutinee AND an arm folds via the one-shot refold
 pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a two-level index reads an inner element of a list of lists
@@ -5498,6 +5501,7 @@ pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the
 pass	dv1 truncated division and dividend-sign modulo over DRAWS — negative dividends exercise the toward-zero rule through dispatch
 pass	dv2 the DIVISOR comes from the arm with a state-dependent sign — quotient and remainder track the alternating divisor exactly
 pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN range, the MIN draw guarded to its own branch
+pass	dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation
 pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
 pass	dxb1 modular exponentiation with the EXPONENT BITS drawn from the handler — the body's square-and-multiply loop consumes the bit stream LSB-first while the arm peels the threaded exponent
 pass	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
@@ -7362,6 +7366,9 @@ pass	tl1 THREE live handlers, each drawn in one expression — every draw dispat
 pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
+pass	tlf1 Set.to-list of TUPLE elements orders identically const and runtime
+pass	tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)
+pass	tlf3 Map.to-list with SUM keys orders identically const and runtime
 pass	tm2 a THREE-function mutual SCC — two tail legs route by value, the third combines the cycle result with a post-put draw
 pass	tmb1 the RESUME VALUE DISCARDED in a do sequence — each arm resumes for EFFECT ONLY then answers a tombstone keyed to its own dispatch state, the body's positional fold and the inner frame's tombstone are both thrown away so only the FIRST dispatch's tombstone survives the unwind, and the seed is visible solely through that first frame's captured state
 pass	tmb2 a SILENT POST-RESUME LEVY — each inner arm replays the tail then levies the outer handler DISCARDING the levy's value and answers a tombstone, the levies are observable ONLY through the outer audit read after the inner handle completes, and a dead-code elision that drops the valueless levy (its answer feeds nothing) shifts the audit by ten while leaving the inner result untouched
@@ -7796,9 +7803,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	tlf1 Set.to-list of TUPLE elements orders identically const and runtime
-pass	tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)
-pass	tlf3 Map.to-list with SUM keys orders identically const and runtime
-pass	a self-comparison of a scalar folds to a constant (value parity)
-pass	a self-comparison keeps a trapping operand (b=0 still traps)
-pass	dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation
