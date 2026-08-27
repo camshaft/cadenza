@@ -22580,3 +22580,47 @@
   (call main (: 3 Int64))
   (output (: 2999 Int64))
   (live-objects 0))
+
+; ── nested-list-element patterns dispatch by the INNER list's length (core-semantics.md §145: an element
+;    MAY itself be a nested element pattern). The binder resolution descends a nested `(list …)` element;
+;    a leading-element inner pattern is inner-length-REFUTABLE and dispatches (guard) rather than trapping.
+(case "a zero-leading nested rest-list element binds the empty inner list (len 0)"
+  (doc    "`(list (list .. r1) .. r2)` — the inner `(list .. r1)` is a zero-leading rest that matches EVERY
+           inner list (RestFrom(0) reads the whole inner list, safe even when empty), so it is irrefutable
+           and its inner rest binder `r1` resolves. Over `(list (list))` the inner list is empty → List.len r1
+           = 0, no trap.")
+  (input  (do (def (f (: xs (List (List Int64)))) (match xs ((list (list .. r1) .. r2) (List.len r1)) (_ -1)))
+              (def (main) (f (list (list)))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a leading nested-list element binds the inner head on a non-empty inner list"
+  (doc    "`(list (list a .. r1) .. r2)` is inner-length-REFUTABLE (misses the empty inner list); it desugars
+           to a fresh binder + an inner-length guard `(>= (List.len _) 1)` + a body re-match binding `a`. Over
+           `(list (list k 9) (list 8))` the first inner list is non-empty → binds its head `a` = k.")
+  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss ((list (list a .. r1) .. r2) a) (_ -1)))
+              (def (main (: k Int64)) (first-head (list (list k 9) (list 8)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a leading nested-list element with an empty inner list falls through the inner-length guard"
+  (doc    "The refutation face of the case above: over `(list (list) (list 8))` the FIRST inner list is empty,
+           so the inner-length guard fails and the match FALLS THROUGH to the catch-all → -1 (NOT a trap — the
+           whole point of the guard).")
+  (input  (do (def (first-head (: xss (List (List Int64)))) (match xss ((list (list a .. r1) .. r2) a) (_ -1)))
+              (def (main) (first-head (list (list) (list 8)))) (export main)))
+  (output (: -1 Int64)))
+
+(case "a fixed-arity nested-list element binds when the inner length matches exactly"
+  (doc    "`(list (list a b) .. r2)` dispatches on the EXACT inner length (=2): over `(list (list x 4))` the
+           length-2 inner list binds a,b → (+ a b) = x+4. With x=3 → 7.")
+  (input  (do (def (pair (: xss (List (List Int64)))) (match xss ((list (list a b) .. r2) (+ a b)) (_ -1)))
+              (def (main (: x Int64)) (pair (list (list x 4)))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: 7 Int64)))
+
+(case "a fixed-arity nested-list element falls through on a longer inner list"
+  (doc    "The refutation face: `(list (list a b) .. r2)` requires the inner length be EXACTLY 2, so a length-3
+           inner list `(list 1 2 3)` fails the exact-length guard and falls through to the catch-all → -1.")
+  (input  (do (def (pair (: xss (List (List Int64)))) (match xss ((list (list a b) .. r2) (+ a b)) (_ -1)))
+              (def (main) (pair (list (list 1 2 3)))) (export main)))
+  (output (: -1 Int64)))

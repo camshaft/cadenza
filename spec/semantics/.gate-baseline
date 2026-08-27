@@ -2080,6 +2080,8 @@ pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a five-arm match consumed in non-tail position yields into the enclosing expression
 pass	a fixed-arity list binding pattern is refutable and rejected
+pass	a fixed-arity nested-list element binds when the inner length matches exactly
+pass	a fixed-arity nested-list element falls through on a longer inner list
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -2426,7 +2428,9 @@ pass	a later let binding sees an earlier record pattern's field binders
 pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a leading literal bit-field tag that misses falls through to the catch-all
+pass	a leading nested-list element binds the inner head on a non-empty inner list
 pass	a leading nested-list element dispatches on the inner list's length
+pass	a leading nested-list element with an empty inner list falls through the inner-length guard
 pass	a leading-element list rest pattern in a def parameter is refutable and rejected
 pass	a leading-element list rest pattern in a let binder is refutable and rejected
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
@@ -4764,6 +4768,7 @@ pass	a zero-arm match on an inhabited scrutinee is non-exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
+pass	a zero-leading nested rest-list element binds the empty inner list (len 0)
 pass	a zero-length slice is the empty byte sequence
 pass	a2p1 the abort VALUE is a three-op chain — every hop advances the enclosing thread before the region tears down
 pass	aa1 the resume VALUE is a deep pure expression over the op arg AND state — (v+s)^2 - v*s per dispatch
@@ -6400,6 +6405,9 @@ pass	ffs1 a FIRST-FREE-SLOT allocator over an Int64 bitmask — alloc scans for 
 pass	fib1 the FIBONACCI recurrence as a state transition — (a,b) becomes (b,a+b) per dispatch, five draws walk the sequence
 pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
 pass	first-match-wins holds with a duplicate string-literal arm
+pass	fk1 a -0.0 Map key misses a 0.0 probe and hits a -0.0 probe (lookup agrees with canonical-byte equality)
+pass	fk2 canonical NaN self-contains as a Set element
+pass	fk3 canonical NaN round-trips as a Map key
 pass	fl1 a Float64 handler state through a two-site arm (threshold on the magnitude)
 pass	float <= is NOT (< or =): they diverge on NaN because canonical-byte equality says nan = nan
 pass	float >= is NOT (> or =): the same NaN divergence mirrors on the greater-or-equal side
@@ -8875,6 +8883,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	fk1 a -0.0 Map key misses a 0.0 probe and hits a -0.0 probe (lookup agrees with canonical-byte equality)
-pass	fk2 canonical NaN self-contains as a Set element
-pass	fk3 canonical NaN round-trips as a Map key
