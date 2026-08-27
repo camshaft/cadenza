@@ -8784,3 +8784,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)
+pass	cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)
+pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean

@@ -22351,3 +22351,50 @@
   (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
              (def (main) (let ((xs (build 0 3 (list)))) (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) (export main)))
   (call main) (output (: -1 Int64)))
+
+; ── breaker batch 540: the Class-B UAF boundary (nested same-scrutinee match — the 3 latent UAFs
+; #4425 left open, now source-reachable and detector-confirmed). A LIST scrutinee re-matched
+; NESTED inside its own match arm traps the #4475 debug detector (destructure NOT required; the
+; release runtime silently computes correct values — a live latent UAF). These pin the CLEAN
+; boundary: sequential re-match, nested Option re-match, nested tuple re-match — all must stay
+; clean through the fix. The trapping nested-list cells become pinnable witnesses when it lands.
+
+(case "cbm1 a SEQUENTIAL double match on the same runtime list scrutinee is clean (the nested form traps the UAF detector)"
+  (input (do
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (f (: xs (List Int64)))
+  (+ (match xs ((list) 0) ((list h .. t) (* 100 h)))
+     (match xs ((list) -1) ((list h2 .. t2) (+ h2 (List.len t2))))))
+(def (main (: n Int64)) (f (bld (+ n 2))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 103 Int64))
+  (live-objects 0))
+
+(case "cbm2 a nested same-scrutinee match on an OPTION is clean (the list-scrutinee sibling traps)"
+  (input (do
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (g (: o (Option (List Int64))))
+  (match o
+    ((Option.None) 0)
+    ((Option.Some xs)
+      (match o
+        ((Option.None) -1)
+        ((Option.Some ys) (+ (* 100 (List.len xs)) (List.len ys)))))))
+(def (main (: n Int64)) (g (Option.Some (bld (+ n 1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 202 Int64))
+  (live-objects 0))
+
+(case "cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is clean"
+  (input (do
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (h (: p (Tuple Int64 (List Int64))))
+  (+ (match p ((tuple a q) (match p ((tuple b r) (+ (* 100 a) (+ b (List.len r)))))))
+     (match p ((tuple c s) (+ c (List.len s))))))
+(def (main (: n Int64)) (h (tuple n (bld (+ n 1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 106 Int64))
+  (live-objects 0))
