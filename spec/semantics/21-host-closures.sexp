@@ -574,6 +574,40 @@
   (call   apply-it (: 100 Int64) (: 7 Int64))
   (output (: 107 Int64)))
 
+; A round-trip consumer's closure param need not be FIRST — it can sit at any source position, interleaved
+; with scalars. The driver walks the consumer's params in source order, threading the produced handle into
+; the CLOSURE slot(s) and the `(call …)` scalar args into the scalar slots. Here `app`'s closure param is
+; SECOND (a scalar precedes it): `make-adder(1)` mints a closure `(+ y 1)`, then `app(5, handle)` = 6. The
+; arg list is producer-args (make-adder's `k`) then the consumer's scalar (`x`).
+
+(case "a round-trip consumer takes the produced closure in a NON-LEADING param position"
+  (doc    "`(def (app (: x Int64) (: g (-> Int64 Int64))) (g x))` takes its closure param SECOND. The host
+           produces a handle from `make-adder(1)` (a closure `(+ y 1)`), then calls `app(5, handle)` — the
+           handle threaded into the SECOND slot, the scalar 5 into the first — = 5 + 1 = 6. Pins that a
+           consumer's closure param is placed by its source position, not hardcoded leading.")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: y Int64)) (+ y k)))
+              (def (app (: x Int64) (: g (-> Int64 Int64))) (g x))
+              (export make-adder) (export app)))
+  (call   app (: 1 Int64) (: 5 Int64))
+  (output (: 6 Int64)))
+
+; A round-trip consumer may take SEVERAL closure params (all the same signature → the one resource type).
+; Each gets its OWN fresh handle from the producer, from its own slice of the leading producer args. Here
+; `app2(f, g, x)` takes TWO closures: `make-adder(1)` → `f = (+ y 1)`, `make-adder(2)` → `g = (+ y 2)`,
+; then `app2(f, g, 5)` = (5+1) + (5+2) = 13. Arg list: producer-args for `f` (1), producer-args for `g`
+; (2), then the consumer scalar (5).
+
+(case "a round-trip consumer takes TWO produced closure params"
+  (doc    "`(def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x)))` takes two
+           closures of the same signature. The host mints TWO distinct handles — `make-adder(1)` (`f`) and
+           `make-adder(2)` (`g`) — and threads both into their slots: `app2(f, g, 5)` = (5+1) + (5+2) = 13.
+           Pins that several same-signature closure params each get their own handle, placed by position.")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: y Int64)) (+ y k)))
+              (def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x)))
+              (export make-adder) (export app2)))
+  (call   app2 (: 1 Int64) (: 2 Int64) (: 5 Int64))
+  (output (: 13 Int64)))
+
 ; A consumer that does MORE than apply the closure once — it applies it and adds a constant — showing the
 ; consumer body is ordinary Cadenza code with the handed-back closure as a first-class value in it.
 
