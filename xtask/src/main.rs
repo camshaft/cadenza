@@ -4470,6 +4470,18 @@ fn gate_one_case(
                     } if is_ice_signature(message) => {
                         format!("ICE — compiler bug, declined with no diagnostic code: {message}")
                     }
+                    // A code-less HONEST decline: SHOW its message so a NEW ICE-flavored signature not yet in
+                    // `is_ice_signature` is DISCOVERABLE in the output (breaker's B2 — the label used to DROP
+                    // the message, hiding candidate signatures). A truly silent decline (empty message) keeps
+                    // the generic phrasing.
+                    Ran::Declined {
+                        code: None,
+                        message,
+                    } if !message.is_empty() => {
+                        format!(
+                            "declined, no diagnostic code (compiler can't compile it yet): {message}"
+                        )
+                    }
                     Ran::Declined { code: None, .. } => {
                         "declined (compiler can't compile it yet)".to_string()
                     }
