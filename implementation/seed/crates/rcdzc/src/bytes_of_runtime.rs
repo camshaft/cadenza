@@ -32,7 +32,7 @@
 //! `UInt8`), so the synthesized fold has a single instantiation — there is NO multi-element-type
 //! limitation.
 
-use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Def;
 use crate::prelude::{push_atom, push_list};
 
@@ -64,12 +64,7 @@ fn is_bytes_of_head(ast: &Arenas, id: StructId) -> bool {
 /// rewritten into the runtime fold (which broke compiler-ml self-host — `Bytes.of([…])`'s list arrives
 /// string-headed).
 fn is_list_literal(ast: &Arenas, id: StructId) -> bool {
-    match ast.get(id) {
-        Struct::List(items) => items
-            .first()
-            .is_some_and(|&h| ast.as_name(h) == Some("list") || ast.as_str(h) == Some("list")),
-        _ => false,
-    }
+    ast.compound_ctor_either(id) == Some(CompoundCtor::List)
 }
 
 /// A `(Bytes.of ARG)` application whose ARG is not a `(list …)` literal — a runtime-list construction this

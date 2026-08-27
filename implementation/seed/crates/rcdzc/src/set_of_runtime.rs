@@ -37,7 +37,7 @@
 //! in one program — formerly a CDZ0201 decline). A single-site program is byte-identical to the earlier
 //! one-def form; the cost of multi-site programs is one small fold def per occurrence (rare).
 
-use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Def;
 use crate::prelude::{push_atom, push_list};
 
@@ -71,12 +71,7 @@ fn is_set_of_head(ast: &Arenas, id: StructId) -> bool {
 /// be wrongly rewritten into the runtime fold (which broke compiler-ml self-host — `Bytes.of([…])`'s list
 /// arrives string-headed).
 fn is_list_literal(ast: &Arenas, id: StructId) -> bool {
-    match ast.get(id) {
-        Struct::List(items) => items
-            .first()
-            .is_some_and(|&h| ast.as_name(h) == Some("list") || ast.as_str(h) == Some("list")),
-        _ => false,
-    }
+    ast.compound_ctor_either(id) == Some(CompoundCtor::List)
 }
 
 /// A `(Set.of ARG)` application whose ARG is not a `(list …)` literal — i.e. a runtime-list construction
