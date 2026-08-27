@@ -2385,3 +2385,31 @@
       ((None _u) -1)))) (export main)))
   (call main (: 0 Int64)) (output (: 200 Int64))
   (live-objects known-leak 1))
+
+; -- runtime Bytes.at / concat / slice / compact behavior (migration from rcdzc bytes cdz-run tests, 2026-08-27):
+; each threads a byte sequence through a fn param so the op runs (not a fold) and reads a scalar out.
+
+(case "a runtime Bytes.at byte-sum reads each byte and terminates on the out-of-bounds None"
+  (input (do (def (sum bs i) (match (Bytes.at bs i) ((Some b) (+ b (sum bs (+ i 1)))) ((None _) 0)))
+             (def (main) (sum (Bytes.of (list 10 20 30)) 0)) (export main)))
+  (call main) (output (: 60 Int64)))
+
+(case "a runtime-element Bytes.at read widens the byte to the Int64 Option payload"
+  (input (do (def (main (: n UInt8)) (match (Bytes.at (Bytes.of (list n)) 0) ((Some x) x) ((None _) -1))) (export main)))
+  (call main (: 5 UInt8)) (output (: 5 Int64)))
+
+(case "a runtime Bytes.concat length is the sum of operand lengths"
+  (input (do (def (mk n) (Bytes.of (list n 20 30))) (def (main) (Bytes.len (Bytes.concat (mk 10) (mk 40)))) (export main)))
+  (call main) (output (: 6 Int64)))
+
+(case "a runtime Bytes.slice in bounds yields Some of the sub-length"
+  (input (do (def (mk n) (Bytes.of (list n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 1 2) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
+  (call main) (output (: 2 Int64)))
+
+(case "a runtime Bytes.slice out of bounds is None"
+  (input (do (def (mk n) (Bytes.of (list n 20 30 40))) (def (main) (match (Bytes.slice (mk 10) 3 5) ((Some s) (Bytes.len s)) ((None _) -1))) (export main)))
+  (call main) (output (: -1 Int64)))
+
+(case "a runtime Bytes.compact preserves the content length"
+  (input (do (def (mk n) (Bytes.of (list n 20 30))) (def (main) (Bytes.len (Bytes.compact (mk 10)))) (export main)))
+  (call main) (output (: 3 Int64)))

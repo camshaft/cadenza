@@ -3567,7 +3567,12 @@ pass	a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)
 pass	a runtime Bytes value exposes a repeatable is-empty member (call-method)
 pass	a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)
 pass	a runtime Bytes value's encode member still renders after other member calls (call-method)
+pass	a runtime Bytes.at byte-sum reads each byte and terminates on the out-of-bounds None
+pass	a runtime Bytes.compact preserves the content length
+pass	a runtime Bytes.concat length is the sum of operand lengths
 pass	a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)
+pass	a runtime Bytes.slice in bounds yields Some of the sub-length
+pass	a runtime Bytes.slice out of bounds is None
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
 pass	a runtime Float32 addition emits the f32 machine add
@@ -3855,6 +3860,7 @@ pass	a runtime-computed Rational crosses the host boundary as its exact value
 pass	a runtime-conditioned abortive branch and its fall-through both read an enclosing parameter
 pass	a runtime-conditioned if-branch perform distributes the handler per branch
 pass	a runtime-constructed Ast equals its quoted twin by structural content
+pass	a runtime-element Bytes.at read widens the byte to the Int64 Option payload
 pass	a runtime-element set compares equal to the constant set of the same elements
 pass	a runtime-element set equals itself
 pass	a runtime-element set's equality is independent of written order
