@@ -7147,7 +7147,9 @@ pass	pcl2 a peer op returning a tuple with a variable-length list element crosse
 pass	pcl3 an element of a peer-returned list is read and used
 pass	pcm1 a peer op returning a map crosses as a handle and its length is read
 pass	pcm2 a value of a peer-returned map is read by key and used
+pass	pcm3 a peer-returned map enumerates via Map.to-list and its values fold to a sum
 pass	pcs1 a peer op returning a set crosses as a handle and its length is read
+pass	pcs2 membership of a peer-returned set is queried for a present and an absent element
 pass	pd1 a list shared into a RECORD field survives an update through the original binding
 pass	pd10 a shared BYTES operand survives a concat — both views keep their own len
 pass	pd11 a shared STRING operand survives a concat — both views keep their own byte-len
