@@ -4067,6 +4067,43 @@ fn a_bare_export_param_without_a_world_is_still_ambiguous() {
     );
 }
 
+/// A RECORD/TUPLE entry param on the plain scalar-result export declines with a message naming the PARAM,
+/// not the result. Before, `export_result_valtype` (shared by result AND param positions) surfaced its
+/// RESULT-phrased error ("returning a (Record …) on the multi-export boundary") for a record PARAM — doubly
+/// wrong (it is a parameter; there is one export). Pins the truthful param-constraint message. (Admitting
+/// fixed-shape scalar record/tuple params — the make-forwarding compound-param rebuild the resource-escape
+/// path already does — is a later feature slice; this only corrects the diagnostic.)
+#[test]
+fn a_record_entry_param_declines_naming_the_param_not_a_bogus_multi_export_return() {
+    use crate::testkit::parse;
+    let src = "(do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (. r x) (. r y))) (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a record entry param declines on this export path"
+    );
+    let msgs: Vec<&str> = out.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| m.contains("returning a") || m.contains("multi-export boundary")),
+        "must NOT surface the result-phrased multi-export message for a PARAM: {msgs:?}"
+    );
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("has no scalar boundary representation") && m.contains("parameter")),
+        "must name the PARAM constraint truthfully: {msgs:?}"
+    );
+}
+
 /// MAX-FLAT-PARAMS boundary: an export whose params flatten to MORE than the canonical-ABI limit (16 core
 /// values) needs the MEMORY-INDIRECT calling convention (params spilled to a linear-memory area, passed by
 /// pointer), which this backend does not yet emit. Emitting the flat form regardless past 16 produced an
