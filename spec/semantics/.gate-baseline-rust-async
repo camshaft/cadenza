@@ -5398,6 +5398,10 @@ pass	el5 a List-of-UInt8 entry param measures and reads an element
 pass	el6 a List-of-Int32 entry param measures and reads an element
 pass	el7 a List-of-Float64 entry param measures and compares an element
 pass	el8 a nested List-of-List entry param measures both levels
+pass	elc1 a local closure captures the lifted List entry param and is invoked twice
+pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
+pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
+pass	elc4 List.concat consumes two lifted List entry params into one measured list
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
