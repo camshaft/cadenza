@@ -5396,6 +5396,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 then_args: Vec::new(),
                 drop_handle: false,
                 call_member: None,
+                format: cdz_run::cli::OutputFormat::Sexp,
                 runtime: None,
                 store: store.clone(),
                 host_responses: Vec::new(),

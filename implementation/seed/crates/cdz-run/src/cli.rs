@@ -14,6 +14,20 @@ use crate::{
     run_with_peers,
 };
 
+/// How `cdz run` encodes the run RESULT on stdout. `Sexp` (the historical default) pretty-prints the value
+/// form as a human-readable s-expression; `BinaryAst` writes the RAW canonical binary value form — the
+/// universal `cadenza-ast` codec bytes — so a downstream tool decodes it with `cadenza_ast::codec::decode`
+/// (a dependency it already has) and navigates the value STRUCTURALLY, rather than parsing rendered text.
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OutputFormat {
+    /// Pretty-print the value form as an s-expression (the historical human render).
+    #[default]
+    Sexp,
+    /// Emit the raw canonical binary AST bytes of the escaped value form (machine exchange).
+    #[value(name = "binary-ast")]
+    BinaryAst,
+}
+
 /// The arguments to `cdz run` / `cdz-run` — run a finished Cadenza wasm component and print its result.
 /// `Clone` so a caller (e.g. `cdz run <project>`, which builds first) can re-target `component` at a
 /// freshly-built component while passing every other flag through unchanged.
@@ -69,6 +83,17 @@ pub struct RunArgs {
     /// after. The corpus `(call-method <member> …)` clause drives this.
     #[arg(long = "call-member", value_name = "MEMBER")]
     pub call_member: Option<String>,
+
+    /// Output ENCODING for the run RESULT. `sexp` (default) pretty-prints the value form as an s-expression;
+    /// `binary-ast` writes the RAW canonical binary AST bytes of the escaped value form to stdout instead —
+    /// the universal `cadenza-ast` exchange format — so a downstream tool decodes it with
+    /// `cadenza_ast::codec::decode` and navigates the value structurally rather than parsing rendered text
+    /// (e.g. `cdz-contract` reading a contract's `descriptor()` record to project its `id`/`name`).
+    /// `binary-ast` requires a value that escapes as a value-form document (a compound result crossing via
+    /// the `cadenza:run/run` `encode` escape) and emits that `encode` document (independent of
+    /// `--call-member`, which selects an alternate resource member for the s-expression render path).
+    #[arg(long = "format", value_name = "FMT", default_value = "sexp")]
+    pub format: OutputFormat,
 
     /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
     /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
@@ -332,6 +357,21 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     let drop_handle = cli.drop_handle;
     // The named value-resource member to reach (the `(call-method)` clause), threaded like `drop_handle`.
     let call_member: Option<&str> = cli.call_member.as_deref();
+
+    // `--format binary-ast`: emit the RAW canonical binary value form of the escaped result to stdout (the
+    // universal cadenza-ast exchange format) instead of the rendered s-expression, so a downstream tool
+    // (e.g. `cdz-contract` reading a contract's `descriptor()`) decodes it with `cadenza_ast::codec::decode`
+    // and navigates the value structurally — no fragile text parse. Emits the `encode` escape document (the
+    // whole value form); the caller projects the field(s) it wants after decoding. A value that does not
+    // escape as a value-form document (a bare scalar) errors in `capture_escaped_value_doc`, naming the cause.
+    if cli.format == OutputFormat::BinaryAst {
+        let doc = crate::capture_escaped_value_doc(&component_bytes, &cli.args, &opts)?;
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(&doc)
+            .map_err(|e| anyhow::anyhow!("writing binary-ast result to stdout: {e}"))?;
+        return Ok(ExitCode::SUCCESS);
+    }
 
     if !peers.is_empty() {
         // Compose the CONSUMER with its peers across the live boundary; the observed host calls are not
