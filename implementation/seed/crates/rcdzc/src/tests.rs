@@ -4188,6 +4188,43 @@ fn an_option_scalar_entry_param_compiles_to_a_component() {
     );
 }
 
+/// A PARAMETERIZED Symbol-returning export declines — but with a TRUTHFUL message. `(main (: n Int64)) #"hot"`
+/// has a scalar `Int64` param (fine) and a `Symbol` result; the runtime value-encode has no canonical Symbol
+/// render (no `Shape::Sym` — a Symbol renders as a String), so a parameterized symbol return (which cannot use
+/// the nullary constant-bake path that DOES produce `(Symbol.of …)`) declines. The prior diagnostic falsely
+/// blamed the param ("a parameter with no scalar boundary type") though the `Int64` param is a scalar. Pins
+/// that the message names the RESULT constraint, not the scalar param (the wrong-diagnostic fix).
+#[test]
+fn a_parameterized_symbol_return_declines_with_a_truthful_message_not_blaming_the_scalar_param() {
+    use crate::testkit::parse;
+    let src = "(do (def (main (: n Int64)) #\"hot\") (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a parameterized Symbol return declines (no canonical runtime value-encode render yet)"
+    );
+    let msgs: Vec<&str> = out.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| m.contains("a parameter with no scalar boundary type")),
+        "the decline must NOT falsely blame the scalar Int64 param: {msgs:?}"
+    );
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("parameterized export cannot yet return this heap type")),
+        "the decline must truthfully name the Symbol RESULT as the constraint: {msgs:?}"
+    );
+}
+
 /// VARIANT/ENUM in a derived param resolves to the guest's NAMED sum. A world export member's param type
 /// carries a WIT `variant`/`enum` (here the `error` inside `on-response`'s `result<list<u8>, variant…>`),
 /// which is declared ANONYMOUSLY in the world. A Cadenza sum carries a DECL identity, so the derived boundary
