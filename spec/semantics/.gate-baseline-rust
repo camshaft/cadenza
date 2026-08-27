@@ -1941,6 +1941,7 @@ pass	a fallible helper with a runtime-payload `?` is called from INSIDE a handle
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false first operand falls through — the OR's second perform fires (same program)
 pass	a false variant guard shields its arm's trapping body
+pass	a false variant guard shields its trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
 pass	a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio
 pass	a far-miss segment kind keeps the plain unrecognized message

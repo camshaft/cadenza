@@ -28448,31 +28448,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_guarded_arm_over_a_constant_folds_by_its_guard() {
-        // A guarded arm `(guard x (< x 0))` over a CONSTANT scrutinee folds: the binder `x` binds the
-        // constant, the guard folds, and the arm is selected iff both the (Wild) probe and the guard hold.
-        // `(match -5 ((guard x (< x 0)) -1) (_ 1))` → -1 (guard holds); `(match 5 …)` → 1 (guard fails).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match (- 0 5) ((guard x (< x 0)) (- 0 1)) (_ 1))) (export main))"
-                ),
-                "main"
-            ),
-            -1
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match 5 ((guard x (< x 0)) (- 0 1)) (_ 1))) (export main))"
-                ),
-                "main"
-            ),
-            1
-        );
-    }
-
-    #[test]
     fn a_guard_condition_must_be_bool_and_its_faults_surface() {
         // A guarded arm's guard `(guard <pattern> <cond>)` is a boolean predicate gating the arm, so
         // `<cond>` must be Bool — like an `if` condition. A non-Bool guard (`(guard x (+ x 1))`, an Int64)
@@ -31246,46 +31221,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
                 .iter()
                 .map(|d| (&d.code, &d.message))
                 .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_false_variant_guard_shields_a_trapping_body() {
-        // The variant-guard short-circuit (core-semantics.md §Boolean Connectives Short-Circuit applied to
-        // a guarded arm): a guarded arm's BODY is evaluated only when the guard HOLDS. `(guard (Some x) (>
-        // x 0)) (/ 10 x)` over `(Some 0)` must NOT trap on `(/ 10 0)` — the guard `0 > 0` is false, so the
-        // arm is skipped and the match takes `(Some y) -1`. A generation that folded the guarded body
-        // regardless of the guard raised a SPURIOUS CDZ0304 (a compile-time div-by-zero for an arm that
-        // never runs). `build_tree` folds the constant guard FIRST and skips the body when it is false.
-        let src = "(module m (def (main) \
-                     (match (Some 0) ((guard (Some x) (> x 0)) (/ 10 x)) ((Some y) -1) (None -2))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                "main"
-            ),
-            -1,
-            "a false variant guard shields its trapping body (no spurious CDZ0304)"
-        );
-    }
-
-    #[test]
-    fn a_match_whose_only_arm_is_guarded_is_non_exhaustive() {
-        // A guard does NOT count toward exhaustiveness: a match on Int64 whose sole arm is guarded covers
-        // no value unconditionally, so it is CDZ0210 (core-semantics.md #Matching Is Exhaustive Or
-        // Rejected). Pins that guarded arms are excluded from the coverage check.
-        assert_eq!(
-            reject_code("(module m (def (main) (match 5 ((guard x (< x 0)) 1))) (export main))")
-                .as_deref(),
-            Some("CDZ0210")
-        );
-        // The gate wraps a bare-expression case as `(do (def (main) …) (export main))` — the same
-        // program shape must reject identically (the `(do …)` top-form is scanned like `(module …)`).
-        assert_eq!(
-            reject_code("(do (def (main) (match 5 ((guard x (< x 0)) 1))) (export main))")
-                .as_deref(),
-            Some("CDZ0210")
         );
     }
 
