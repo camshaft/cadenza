@@ -137,6 +137,20 @@ def parseTrials (m : Module) : Except String (Array OTrial) := do
       | none => .error "oracle-trial: no (trials …) section"
   | none => .error "oracle-trial: empty module"
 
+/-- Canonicalize a trap reason to its KIND — replicating `cdz-corpus-grade::trap_kind` so a `(trap …)`
+comparison is by kind, not the varying reason string (design §1.2). `none` = an uncanonicalized
+(custom `trap("…")`) reason. -/
+def contains (haystack needle : String) : Bool := (haystack.splitOn needle).length > 1
+
+def trapKind (reason : String) : Option String :=
+  let r := reason.toLower
+  if contains r "divide by zero" || contains r "division by zero" || contains r "remainder by zero" then
+    some "div-by-zero"
+  else if contains r "out of bounds" || contains r "out-of-bounds" then some "out-of-bounds"
+  else if contains r "overflow" then some "overflow"
+  else if contains r "unreachable" || contains r "shift count out of range" then some "unreachable"
+  else none
+
 /-- Assert one trial against the program: run it, compare the outcome to the expectation. -/
 def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
   -- A no-argument trial is `reduce`; an argument-bearing call needs `execute` (argument application,
@@ -146,7 +160,11 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
   | .error _ | .declines => .skip "expect is a compile outcome (error/declines) — not modeled"
   | .trap kind =>
     match outcome with
-    | .trap k => if k == kind then .holds else .mismatch s!"expected trap {kind}, got trap {k}"
+    | .trap k =>
+      match trapKind kind with
+      | some ek => if trapKind k == some ek then .holds
+                   else .mismatch s!"expected trap kind {ek}, got trap {k}"
+      | none => .skip s!"expected trap reason {kind} has no canonical kind (custom trap) — not modeled"
     | .value _ => .mismatch s!"expected trap {kind}, got a value"
     | .unsupported r => .skip r
     | .diverges => .skip "diverges"
