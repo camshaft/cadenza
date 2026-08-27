@@ -22153,3 +22153,43 @@
              (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main)))
   (call main) (output (: 12 Int64))
   (live-objects known-leak 2))
+
+; -- Option.expect (SumExpect) payload retain, the twin of spr1/spr2: `Option.expect s` reads sum-payload (a
+; BORROW), so consuming it (List.push) while `s` is threaded UNCHANGED to the self-call must RETAIN — else the
+; borrowed payload FBIP-mutates at rc==1 and the threaded Option drifts (per-iter 3,4,5,6 → 18 not 12). The
+; chained face pins the retain root-walk follows SumExpect links (not just Proj/SumPayload) to reach `s`. The
+; Unit-payload faces pin the sentinel-drop: a Unit extraction has no heap cell, so the SumExpect/sum-match
+; emit must drop the IMM_UNIT sentinel (an un-dropped sentinel = INVALID wasm) — a running case validates the
+; module. (The dup-absence FBIP bench guard stays in a slimmed rcdzc test — the corpus can't express it.)
+(case "ope1 an Option.expect payload consumed per-iteration is retained (no drift)"
+  (doc    "`go` threads `s = (Some [7,8])` UNCHANGED to the self-call and each iteration consumes its payload via `(List.push (Option.expect s \"v\") 9)` → len 3 each of 4 iters = 12. A borrowed SumExpect payload FBIP-mutated at rc==1 would grow the shared list and drift (18 not 12).")
+  (input (do (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64))
+               (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) s "v") 9))))))
+             (def (main) (go (Option.Some ((. List push) ((. List push) (list) 7) 8)) 4 0)) (export main)))
+  (call main) (output (: 12 Int64))
+  (live-objects known-leak 1))
+
+(case "ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained"
+  (doc    "The chained face: `s = (Some (Some [7,8]))`, consumed via `(List.push (Option.expect (Option.expect s)) 9)` per iteration → 12. The retain root-walk must follow the OUTER expect's scrutinee (the INNER expect) back through SumExpect links to the threaded root `s`, else the inner list gets no retain and drifts (18 not 12).")
+  (input (do (def (go (: s (Option (Option (List Int64)))) (: n Int64) (: acc Int64))
+               (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) ((. Option expect) s "v") "w") 9))))))
+             (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) (list) 7) 8))) 4 0)) (export main)))
+  (call main) (output (: 12 Int64))
+  (live-objects known-leak 2))
+
+(case "ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)"
+  (doc    "The Unit-payload guard: extracting a `Unit` via `Option.expect` (and matching the same Option) has NO heap cell to alias, so no dup — but the extraction must still route through the sentinel-drop path, else the `IMM_UNIT` sentinel is left un-dropped on the stack → INVALID wasm. Running the module (not just compiling) validates it: `u2 x y = y`; each of 4 iters adds `(match s ((Some _) 1) ((None) 0))` = 1 → 4.")
+  (input (do (def (u2 (: x Unit) (: y Int64)) y)
+             (def (go (: s (Option Unit)) (: n Int64) (: acc Int64))
+               (if (= n 0) acc (go s (- n 1) (+ acc (u2 ((. Option expect) s "v") (match s ((Some _) 1) ((None) 0)))))))
+             (def (main) (go (Option.Some unit) 4 0)) (export main)))
+  (call main) (output (: 4 Int64))
+  (live-objects known-leak 1))
+
+(case "ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)"
+  (doc    "The chained Unit-payload twin of ope3: `(Option.expect (Option.expect s))` over `(Some (Some unit))` — both extraction levels must drop the `IMM_UNIT` sentinel to stay valid wasm. `u x = 1`; 4 iters → 4.")
+  (input (do (def (u (: x Unit)) 1)
+             (def (go (: s (Option (Option Unit))) (: n Int64) (: acc Int64))
+               (if (= n 0) acc (go s (- n 1) (+ acc (u ((. Option expect) ((. Option expect) s "v") "w"))))))
+             (def (main) (go (Option.Some (Option.Some unit)) 4 0)) (export main)))
+  (call main) (output (: 4 Int64)))
