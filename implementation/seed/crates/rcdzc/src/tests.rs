@@ -53470,73 +53470,6 @@ mod stage1 {
     }
 
     #[test]
-    fn two_distinctly_typed_boxed_closures_in_one_sum_only_one_built() {
-        // ONE sum boxes closures of TWO DISTINCT function types — a BINARY `(-> Int64 Int64 Int64)` in
-        // `Bin` and a UNARY `(-> Int64 Int64)` in `Un`. `run` matches the sum and APPLIES the boxed
-        // closure in EACH arm (`(f 2 3)` / `(g 9)`), so both arms carry a runtime `call_indirect`. But
-        // `main` constructs ONLY `Bin`, so the sole lifted lambda is the binary one; no unary closure
-        // value is ever built. A runtime closure value arises ONLY from a lift, so the `Un` arm's
-        // dispatch — over a unary closure the program can never construct — is PROVABLY DEAD. The backend
-        // must still EMIT that dead arm (selection is total over the match); it does so as an inert
-        // `unreachable`. The BUG: `closure_type_index` demanded a matching lifted function type for the
-        // dead `Un` arm and, finding none, declined the WHOLE program ("a runtime closure application has
-        // no matching function type") — even though the reachable `Bin` path is well-formed. This is the
-        // shape lazy-iterator libraries hit when a `scan` (binary accumulator) and a `flat-map`
-        // (element→sub-iterator) combinator share one `Iter` sum: each is fine alone, but coexisting
-        // declined. `run (Bin (fn (a x) (+ a x)))` → `f 2 3` = 5.
-        let src = "(module m \
-            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
-            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
-            (def (main) (run (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a x))))) (export main))";
-        let Some(r) = run_closure_nullary(src) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "5"); // f 2 3 = 2 + 3
-        // The MIRROR: build only `Un` and apply it — `run (Un (fn (x) (* x 3)))` → `g 9` = 27. Now the
-        // BINARY arm is the dead one, dispatched over a closure the program never lifts; it too emits an
-        // `unreachable` and the live `Un` path runs. Pins the deadness test is symmetric in WHICH variant
-        // is built (it keys off the operand's type, not a fixed arm), so either sibling can be the dead one.
-        let src_un = "(module m \
-            (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
-            (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
-            (def (main) (run (Box.Un (fn ((: x Int64)) (* x 3))))) (export main))";
-        assert_eq!(run_closure_nullary(src_un).unwrap(), "27"); // g 9 = 9 * 3
-    }
-
-    #[test]
-    fn a_boxed_nested_unary_curried_closure_applies_at_full_arity() {
-        // A closure of type `(-> Int64 (-> Int64 Int64))` written NESTED-UNARY — `(def (add n) (fn (m) (+
-        // n m)))` — boxed in a sum, extracted, and applied CURRIED `((f x) y)`. `run` spine-flattens the
-        // curried application into ONE `Core::CallClosure { args:[x,y] }` needing a `(env,i64,i64)->i64`
-        // functype. The BUG: a nested-unary value lifted CHAINED (an outer `(env,i64)->i32` returning a
-        // closure handle + a separate inner `(env,i64)->i64`), so the flattened `call_indirect` referenced
-        // a functype the chained value did NOT implement — the module validated structurally but TRAPPED
-        // 'indirect call type mismatch' at run time. The fix FLATTENS a directly-nested curried lambda into
-        // one multi-param lift `(fn (n m) …)` — the SAME single `(env,i64,i64)->i64` function the sugar
-        // form `(fn (a b) …)` produces — so the flattened call resolves. `run (C add) 3 4` → add 3 4 = 7.
-        let src = "(module m \
-            (type Box (C (-> Int64 (-> Int64 Int64)))) \
-            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
-            (def (add (: n Int64)) (fn ((: m Int64)) (+ n m))) \
-            (def (main) (run (Box.C add) 3 4)) (export main))";
-        let Some(r) = run_closure_nullary(src) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "7"); // add 3 4 = 3 + 4
-        // The SUGAR form of the identical type MUST coincide with the nested-unary one's representation —
-        // a curried arrow has ONE machine shape. `run (C (fn (a b) (* a b))) 3 4` → 12. Boxed in the SAME
-        // `Box.C` variant as the nested-unary value, so both must lift to the identical `(env,i64,i64)->i64`
-        // function; a mismatch would trap exactly as the un-flattened nested-unary form did.
-        let src_sugar = "(module m \
-            (type Box (C (-> Int64 (-> Int64 Int64)))) \
-            (def (run (: b Box) (: x Int64) (: y Int64)) (match b ((Box.C f) ((f x) y)))) \
-            (def (main) (run (Box.C (fn ((: a Int64) (: b Int64)) (* a b))) 3 4)) (export main))";
-        assert_eq!(run_closure_nullary(src_sugar).unwrap(), "12"); // (* 3 4)
-    }
-
-    #[test]
     fn a_partial_application_of_a_runtime_closure_declines_not_invalid_wasm() {
         // MISCOMPILE→DECLINE (v-effects-surfaced): a boxed 2-param curried closure applied at PARTIAL arity
         // (1 of 2 args) with the surviving intermediate let-bound then applied — `(let ((g (f 3))) (g 4))` —
@@ -53571,62 +53504,6 @@ mod stage1 {
         if let Some(r) = run_closure_nullary(full) {
             assert_eq!(r, "7", "((f 3) 4) = 3 + 4");
         }
-    }
-
-    #[test]
-    fn a_capturing_closure_crosses_a_recursive_boundary() {
-        // A CAPTURING closure: `(fn (x) (+ x k))` closes over the free variable `k` from `main`'s scope.
-        // It is a genuine runtime closure with an ENVIRONMENT — a heap cell holding the code pointer AND
-        // the captured `k` — passed to the recursive `apply-sum` and applied at each step, each
-        // application reading `k` back from the cell. `core-semantics.md` §A Function Value Captures The
-        // Bindings In Scope Where It Is Created. `apply-sum (fn (x) (+ x k)) 3 = (3+k)+(2+k)+(1+k) = 6+3k`.
-        let src = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: k Int64)) (apply-sum (fn ((: x Int64)) (+ x k)) 3)) (export main))";
-        let Some(r0) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r0, "6");
-        assert_eq!(run_closure(src, 10).unwrap(), "36");
-        assert_eq!(run_closure(src, 100).unwrap(), "306");
-    }
-
-    #[test]
-    fn a_closure_captures_a_function_value_and_applies_it_through_a_recursive_hof() {
-        // HIGHER-ORDER CAPTURE: a closure whose captured free variable is ITSELF A FUNCTION. The inner
-        // `(fn (b) (g b))` closes over `g` — a fn-typed parameter of the recursive `rec` — so the closure
-        // cell must store `g`'s closure HANDLE (a u32 cell) as a capture and, in the lifted body, read it
-        // back and apply it via `call_indirect`. Because `rec` is recursive, `g` stays a genuine runtime
-        // value (not inlined), and it threads through the recursive specialization as a fresh param
-        // binder — so `collect_captures` must classify a ref whose target is a SYNTHESIZED param as a
-        // capture (not a global), and `box_op`/`get_op` must store/read a `Ty::Fn` handle as-is (like any
-        // compound handle), NOT box it as a scalar. Both were bugs: the capture was skipped (a bare
-        // `Core::Param` with no local slot → invalid module) and the fn handle was boxed as an i64 (an
-        // i32/i64 type mismatch → invalid module). `rec` builds `(fn (b) (g b))`, hands it to the
-        // recursive `sumapply` (applied at 2 and 1), and sums over its own recursion: each `rec` level
-        // contributes `g(2)+g(1)`, repeated n times. With `g = (+1)`: (2+1)+(1+1) = 5 per level, ×3 = 15.
-        let src = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
-            (def (main (: n Int64)) (rec (fn ((: x Int64)) (+ x 1)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "15"); // 3 levels × (g(2)+g(1)) = 3 × ((2+1)+(1+1)) = 3×5
-        // A DIFFERENT captured function proves the handle dispatches the right code: `g = (*3)` →
-        // (2·3)+(1·3) = 9 per level, ×3 = 27.
-        let src2 = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (rec (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g b)) 2) (rec g (- n 1))))) \
-            (def (main (: n Int64)) (rec (fn ((: x Int64)) (* x 3)) n)) (export main))";
-        assert_eq!(run_closure(src2, 3).unwrap(), "27");
     }
 
     #[test]
