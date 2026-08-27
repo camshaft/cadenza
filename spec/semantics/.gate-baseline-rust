@@ -1830,6 +1830,7 @@ pass	a def parameter may be a record pattern that destructures by field
 pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
+pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-float pragma naming a non-float integer type is rejected
 pass	a default-float pragma naming a non-float rational type is rejected
@@ -2948,9 +2949,11 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
+pass	a non-tail cross-function conditional abort declines cleanly
 pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
+pass	a non-tail recursive abort declines rather than miscompiles
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
 pass	a non-unit base in a Unit.^ power is rejected
 pass	a non-unit factor in a Unit.* composition is rejected
@@ -3992,6 +3995,7 @@ pass	a short-circuit connective with a perform in the RHS preserves short-circui
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
+pass	a signature mixing a plain parameter and a tuple-pattern parameter binds both
 pass	a signed dependent size that reads negative falls through, not a backward read
 pass	a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes
 pass	a signed i8 segment encodes as two's complement
@@ -8221,6 +8225,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
-pass	a non-tail cross-function conditional abort declines cleanly
-pass	a non-tail recursive abort declines rather than miscompiles
