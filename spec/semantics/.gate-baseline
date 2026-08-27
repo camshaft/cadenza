@@ -7126,6 +7126,11 @@ pass	orp2 an open-row helper projects a field carrying a performing draw through
 pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
 pass	osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view
 pass	osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)
+pass	otc1 Map.len over an owned-temporary map reclaims it (no live objects)
+pass	otc2 Set.len over an owned-temporary set reclaims it (no live objects)
+pass	otc3 a borrowed map read by Map.len then reused by an insert is not freed early
+pass	otc4 300x Set.contains over an owned-temporary set each reclaims (no leak/UAF drift)
+pass	otc5 300x Map.lookup(Some) over an owned-temporary map each reclaims AFTER the value-dup (no UAF)
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch
 pass	over-applying a constructor by several arguments is a type error
