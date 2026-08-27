@@ -8568,3 +8568,40 @@
   (call main (: 5 Int64))
   (output (: (tuple 5 "abc") (Tuple Int64 String)))
   (live-objects 2))
+; The O(n) shell-ACCUMULATION known gap (more severe than the O(1) borrowed-param twin above): a
+; self-recursive `f` returns an OWNED sum `(Mk list)`, and every returning frame `(match (f …) ((Mk t)
+; (Mk t)))` destructures the owned recursive-call result and RE-WRAPS its payload into a FRESH `(Mk t)`.
+; The incoming shell (the callee's owned return) is DEAD after `t` is extracted, but no drop is inserted,
+; so each frame leaks its shell — the leak GROWS WITH RECURSION DEPTH (the distinguishing property). Root:
+; no drop of an OWNED match scrutinee's sum shell after its payload is extracted (the general Perceus
+; match/sum-shell-drop pass). VALUE-CORRECT (2) at every depth — a pure leak, no UAF. The two cases below
+; (2 frames vs 6 frames) pin the depth-monotone leak; flip both to 0 when the sum-shell-drop pass lands.
+
+(case "a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, SHALLOW (2 frames)"
+  (doc    "`f` recurses up to the base (n==0), builds one owned `(Mk (bl 0 2 (list)))`, then every returning
+           frame `(match (f (+ n 1)) ((Mk t) (Mk t)))` extracts the owned child and re-wraps it in a fresh
+           shell, leaking the dead incoming shell. `main(-2)` = 2 frames above the base; `(List.len t)` = 2
+           (value-correct, no UAF). The leak is the un-dropped per-frame shells; see the DEEP twin for the
+           depth-monotone growth that distinguishes this O(n) gap from the O(1) borrowed-param leak.")
+  (input  (do
+            (type Box (Mk (List Int64)))
+            (def (bl (: i Int64) (: n Int64) (: a (List Int64))) (if (< i n) (bl (+ i 1) n ((. List push) a i)) a))
+            (def (f (: n Int64)) (if (= n 0) (Mk (bl 0 2 (list))) (match (f (+ n 1)) ((Mk t) (Mk t)))))
+            (def (main (: n Int64)) (match (f n) ((Mk t) ((. List len) t))))
+            (export main)))
+  (call   main (: -2 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 14))
+
+(case "a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)"
+  (doc    "The SAME program as the shallow twin, driven to 6 re-wrap frames (`main(-6)`) instead of 2. Value
+           is still 2 (depth-independent, no UAF), but the leaked-shell count is STRICTLY GREATER than the
+           shallow case -- the O(n) accumulation that distinguishes this gap from the O(1) borrowed-param
+           leak. Deeper recursion re-wraps more owned shells, each left un-dropped after extraction.")
+  (input  (do
+            (type Box (Mk (List Int64)))
+            (def (bl (: i Int64) (: n Int64) (: a (List Int64))) (if (< i n) (bl (+ i 1) n ((. List push) a i)) a))
+            (def (f (: n Int64)) (if (= n 0) (Mk (bl 0 2 (list))) (match (f (+ n 1)) ((Mk t) (Mk t)))))
+            (def (main (: n Int64)) (match (f n) ((Mk t) ((. List len) t))))
+            (export main)))
+  (call   main (: -6 Int64)) (output (: 2 Int64))
+  (live-objects known-leak 254))

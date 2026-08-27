@@ -3269,6 +3269,8 @@ pass	a recursive performer of a nested-handler op whose resume performs the oute
 pass	a recursive performer whose recursion result feeds a HELPER call folds — no slot-less spec-body param
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
+pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)
+pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, SHALLOW (2 frames)
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
@@ -5465,6 +5467,11 @@ pass	cr2 RETRY-until-success — a recursive driver re-runs a conditionally-abor
 pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt
 pass	cross-unit Qty host results reject at the guest-side add
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
+pass	crr1 an export returns a three-element list (reachable return = shell plus node, two cells)
+pass	crr2 an export returns a pair tuple (one reachable cell)
+pass	crr3 an export returns a Some-wrapped scalar (one reachable cell)
+pass	crr4 an export returns a runtime-concatenated String (one reachable cell)
+pass	crr5 an export returns a two-field record (one reachable cell)
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
@@ -6387,6 +6394,11 @@ pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
+pass	nrr1 an export returns a list of two tuples (four reachable cells, compositional)
+pass	nrr2 an export returns a Some-wrapped list (three reachable cells)
+pass	nrr3 an export returns a record with a list field (three reachable cells)
+pass	nrr4 an export returns a list of lists (six reachable cells)
+pass	nrr5 an export returns a tuple carrying a runtime String (two reachable cells)
 pass	nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance
 pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
 pass	ns2 the sum-wrapped record round-trips FLATTENED — matched, field-updated with a draw, re-wrapped, echoed, re-matched at top level
@@ -8030,13 +8042,3 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	crr1 an export returns a three-element list (reachable return = shell plus node, two cells)
-pass	crr2 an export returns a pair tuple (one reachable cell)
-pass	crr3 an export returns a Some-wrapped scalar (one reachable cell)
-pass	crr4 an export returns a runtime-concatenated String (one reachable cell)
-pass	crr5 an export returns a two-field record (one reachable cell)
-pass	nrr1 an export returns a list of two tuples (four reachable cells, compositional)
-pass	nrr2 an export returns a Some-wrapped list (three reachable cells)
-pass	nrr3 an export returns a record with a list field (three reachable cells)
-pass	nrr4 an export returns a list of lists (six reachable cells)
-pass	nrr5 an export returns a tuple carrying a runtime String (two reachable cells)
