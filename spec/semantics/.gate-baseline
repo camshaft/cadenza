@@ -5197,6 +5197,8 @@ pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
 pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
 pass	sbd1 two occurrences of one constant Bytes literal — branch-selected use, length reads, and runtime equality across the pair
 pass	sbd2 a fifty-frame recursion re-evaluating a constant Bytes literal each frame reclaims to zero
+pass	ssd1 two occurrences of one constant String literal — branch-selected use, byte-length reads, and runtime equality across the pair
+pass	ssd2 a fifty-frame recursion re-evaluating a constant String literal each frame reclaims to zero
 pass	ce07 literal-tuple pattern matches a RUNTIME tuple
 pass	ce08 equality of two RUNTIME-built Maps
 pass	ce09 equality of two RUNTIME-built Sets
