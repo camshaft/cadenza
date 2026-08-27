@@ -1156,7 +1156,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 3 Int64)) (output (: 3103 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a STRING element of a compound"
   (doc    "Extends the Int/Int round-trip to a `(Tuple String Int64)` — exercising the R2 value-form STRING leaf
@@ -1210,7 +1210,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 3 Int64)) (output (: 3103 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a SUM's payload variant (Option Some)"
   (doc    "Extends the round-trips to a `(Option Int64)` SUM — the R2 value-form `(Head payload)` shape, framed
@@ -1228,7 +1228,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a SUM's NULLARY variant (Option None)"
   (doc    "The nullary-variant face of the sum round-trip: `(: None (Option Int64))` renders `(: (None unit)
@@ -1245,7 +1245,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4 Int64))
   (call   main (: 8 Int64)) (output (: 8 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a MULTI-PAYLOAD sum variant (spread)"
   (doc    "Extends the sum round-trip to a MULTI-payload variant of a user sum `(type Shape (Circle Int64)
@@ -1264,7 +1264,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5006 Int64))
   (call   main (: 3 Int64)) (output (: 3004 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a MAP's entries"
   (doc    "Extends the round-trips to a `(Map Int64 Int64)` — the R2 value-form `(map (k v) …)` shape, entries
@@ -1319,7 +1319,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a BigInt (arbitrary precision, multi-limb)"
   (doc    "Extends the round-trips to a `BigInt` — the R2 value-form KIND_INT leaf, framed `(: <int> BigInt)`.
@@ -1384,7 +1384,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 7107 Int64))
   (call   main (: 4 Int64)) (output (: 4104 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- The NEGATIVE face: an UNGROUNDED decode has no determined target, so it declines (actionably). ---
 
@@ -1527,7 +1527,7 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7008 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip preserves a scalar-erased single-ctor newtype NESTED as a record field"
   (doc    "The record-field companion of the nested tuple-element case: a scalar-erased single-ctor newtype
@@ -1546,7 +1546,7 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 7009 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Ast IS a runtime value: the R2 codec round-trips it (operator challenge 2026-08-26). ---
 ; Ast is a built-in RECURSIVE SUM (Int(BigInt)/Float/Bool/Str/Name/List((List Ast))/Bytes) with a full
@@ -1612,7 +1612,7 @@
                   ((None u) (- 0 1)))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 114 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Value.decode round-trip through a let-binder preserves a newtype-over-RECORD nominal"
   (doc    "The let-binder grounding sibling of the case above (the :1364 path over a newtype-over-record):
@@ -1631,4 +1631,4 @@
                     ((None u) (- 0 1))))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 114 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))

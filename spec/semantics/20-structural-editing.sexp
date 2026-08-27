@@ -648,7 +648,7 @@
             ((tuple _r k) (+ (* k 100) n))))
         (export main)))
   (call main (: 2 Int64)) (output (: 102 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 10))
 
 (case "Record.with on a map-extracted record leaves the stored original untouched"
   (doc    "Structural edit through a collection extraction: the record comes OUT of a map (lookup +

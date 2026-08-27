@@ -594,7 +594,7 @@
   (call   main (: 4 Int64)) (output (: 8 Int64))
   (call   main (: 7 Int64)) (output (: 105 Int64))
   (call   main (: 1 Int64)) (output (: 100 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc    "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`

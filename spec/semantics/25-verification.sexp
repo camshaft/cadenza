@@ -943,7 +943,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 ; ============================================================================================
 ; Increment 7 — the IMPLICATION fragment and the FLAGSHIP LOGICAL THEOREM ⊢ p ⇒ p. This lifts the kernel

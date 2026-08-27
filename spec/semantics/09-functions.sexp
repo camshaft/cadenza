@@ -1120,7 +1120,7 @@
                 ((Option.Some p) (match p ((tuple x s2) x)))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 ; --- Tail recursion compiles to a constant-stack loop -------------------------------------------
 ; core-semantics.md: a SELF tail-call updates the parameter locals and `br`s back to the function's own
@@ -1334,7 +1334,7 @@
             (def (main) (match (map-f (fn ((: x Int64)) (* x 2)) (L.Cons 3 (L.Cons 4 L.Nil))) ((L.Cons h t) h) ((L.Nil) 0)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 6))
 
 (case "a recursive fold with an unannotated two-argument callback parameter"
   (doc    "The callback takes TWO arguments — `(fn (a b) (+ a b))` — and `fold` threads an accumulator:
@@ -4092,7 +4092,7 @@
             (def (main) (match (twostep (list 1 2 3 4)) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 ; The GUARD companion of the Option-returning mixed-match tail case above. The prior cases that combine a
 ; `(guard …)` arm with a tail-recursive fall-through (03-equality: guarded-wildcard / literal-probe /
@@ -4123,7 +4123,7 @@
               (match (find (list 1 2 3 4) lim) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 6))
 
 ; A CONTROL-FLOW companion of the guarded-tail cases: the guard EXPRESSION itself calls a (non-tail)
 ; RECURSIVE helper. Every other guard×tail-loop pin uses a flat guard condition (a comparison or a
@@ -4225,7 +4225,7 @@
                 ((None) (- 0 1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 4 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 14))
 
 (case "nested mixed-match tail loops compose — an outer accumulator loop driving an inner seeking loop"
   (doc    "`inner` is the Option-returning mixed-match tail loop of the pin above (skip elements ≤ 2, return
@@ -6926,7 +6926,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 ; --- Recursive-generic transformer closure-tie: the element-change and self-compose faces -----------
 ; 7b67724e5 ties a recursive-generic transformer's closure domain to the mapped element (its pins
@@ -7791,7 +7791,7 @@
             (export main)))
   (call   main (: 97 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "ch01b eta-expanded closure control for prim-as-value"
   (input  (do
@@ -8711,7 +8711,7 @@
             (def (main (: n Int64)) (match (mk n) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; UAF GUARD (minimized from a real cad snowflake miscompile a rejected shell-reclaim shipped): an owned
 ; COMPOUND-payload sum whose child is a COMPOUND (a List) BORROWED OUT of the shell via a match binder,
@@ -8737,7 +8737,7 @@
             (def (main (: n Int64)) (match (mk n) ((Box.Bx lo hi) (List.len hi)) ((Box.Empty _) 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 ; -- breaker batch 476 (2026-08-27): the return-side TYPE matrix completed (extends crr/nrr).
 ; Collection and value-form returns from a scalar-param export: Set (its constructor-application
 ; encode form), Map, BigInt, Rational all cross and reclaim to their reachable cells. Symbol is

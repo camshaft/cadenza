@@ -2375,7 +2375,7 @@
   (call   main (: 5 Int64)) (output (: 20056 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64))
   (call   main (: 1 Int64)) (output (: 12 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ;; ── fa: FOLD-style accumulators through a performing recursion ───────────────
 ;; The draw feeds an accumulator PARAMETER rather than the return path. fa1's
@@ -3608,7 +3608,7 @@
   (call   main (: 8 Int64)) (output (: 3161 Int64))
   (call   main (: 2 Int64)) (output (: 4041 Int64))
   (call   main (: 0 Int64)) (output (: 71 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "gd3 the guard COMPARES the scrutinee draw to an earlier let-bound draw — two thread values meet in one pure predicate"
   (input  (do
@@ -9184,7 +9184,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 20707 Int64))
   (call   main (: 0 Int64)) (output (: 31010 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 6))
 
 (case "hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket"
   (input  (do
@@ -10071,7 +10071,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 10201010706 Int64))
   (call   main (: 2 Int64)) (output (: 30405041712 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 10))
 
 (case "tok1 a TOKENIZER protocol — next-tok skips leading spaces, answers the token's byte-len, and threads the REST of the string; the drained stream answers zero forever"
   (input  (do
@@ -11747,7 +11747,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 30100010203030399 Int64))
   (call   main (: 0 Int64)) (output (: 10103000203030399 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak 28))
 
 (case "lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds"
   (input  (do
@@ -12256,7 +12256,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 17201640157010105 Int64))
   (call   main (: 0 Int64)) (output (: 3600320128000001 Int64))
-  (live-objects known-leak 68))
+  (live-objects known-leak 67))
 
 (case "chg1 a BATTERY controller with a protected reserve — charge clamps at one hundred, draw refuses any request that would dip below the seed-shaped reserve answering the negated shortfall with the level UNTOUCHED, and the same draw sequence trips the refusal at DIFFERENT points per seed with the refused row's level surviving to the next draw"
   (input  (do
@@ -12492,7 +12492,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 121212120712121200 Int64))
   (call   main (: 0 Int64)) (output (: 21212120699020201 Int64))
-  (live-objects known-leak 75))
+  (live-objects known-leak 74))
 
 ;; ── Phase-change heater (constant-guard face), rule-90 automaton, water jugs (breaker batch 288) ──
 (case "phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there"
@@ -18374,7 +18374,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- breaker batch 461 (2026-08-27): the extraction dup-retain leak (lar1 family, reclaim inc2)
 ; composed with the effects fold — and a NEW mis-reject found at the edge. xar1: a handler ARM
