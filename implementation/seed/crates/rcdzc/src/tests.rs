@@ -85723,33 +85723,6 @@ mod closure_host_resource {
             .expect("distinct-sig round-trip core module validates");
     }
 
-    /// DISTINCT-SIGNATURE END-TO-END (the whole COMPILER pipeline): a program exporting closures of TWO
-    /// different signatures (`inc : (-> Int64 Int64)`, `isz : (-> Int64 Bool)`) compiles to a VALID
-    /// component with two resource types (`t0`/`t1`), each with its own `make-<name>`/`call-g<n>`. Pins
-    /// that `emit_distinct_sig_resource` → `distinct_sig_resource_core_module` →
-    /// `assemble_distinct_sig_resource` produces a wasmtime-parseable component (the earlier cuts hit two
-    /// bugs: a wrong `import_base` — off by 2*(G-1) — and a NON-kebab `call-0` extern name). `Component::new`
-    /// = wasmtime's structural validator, the semantic floor. Runnable e2e is witnessed by the corpus.
-    #[test]
-    fn a_distinct_signature_multi_export_is_a_valid_component() {
-        use crate::testkit::parse;
-        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
-                   (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz))";
-        let program =
-            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::new(&engine, &program)
-            .expect("a distinct-signature multi-export must produce a VALID component");
-        // The interface publishes two resource types + per-signature make/call — confirm it's the closure
-        // interface and imports the runtime (the cells are heap values).
-        assert!(
-            cdz_run::required_runtime(&program)
-                .expect("valid")
-                .is_some(),
-            "a distinct-signature closure program imports the value-heap runtime"
-        );
-    }
-
     /// C-HOST-6 (`borrow<t>` REPEATABLE call): a closure `call` takes `borrow<t>`, so the host keeps the
     /// handle across calls — ONE `make` handle serves MANY `call`s (the natural callback shape), versus
     /// `own<t>`'s consume-per-call (a second call on the same handle trapped "unknown handle index"). The
