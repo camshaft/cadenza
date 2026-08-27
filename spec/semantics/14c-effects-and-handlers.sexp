@@ -13160,7 +13160,7 @@
   (call   main (: 0 Int64)) (output (: 80803990312 Int64))
   (live-objects known-leak 139))
 
-;; ── xhs cross-handler shared-let mid-arm foreign-perform family — miscompile class closed by eead20a60; xhsE = freeze completeness boundary, flips on the list-branch-init follow-up (breaker batch 295) ──
+;; ── xhs cross-handler shared-let mid-arm foreign-perform family — miscompile class closed by eead20a60; xhsE freeze-completeness-boundary CLOSED (2026-08-27): the freeze inlines a computed perform-arg's arm-local let-refs to their drain-safe inits (breaker batch 295) ──
 (case "xhs1 CROSS-HANDLER shared-let — the inner step arm let-binds the advanced column, PERFORMS the outer note with it mid-arm (accumulating), then resumes packing the binder with the note's answer while threading the binder as next-state; the seed bias shifts every column so both the inner rows and the outer accumulator diverge"
   (input  (do
             (effect O (op note (-> Int64 Int64)))
@@ -13266,7 +13266,7 @@
   (call   main (: 10 Int64)) (output (: 40101002 Int64))
   (call   main (: 0 Int64)) (output (: 30081002 Int64)))
 
-(case "xhsE the COMPUTED perform-arg variant — the inner arm let-binds the advanced column but performs the outer note with the binder PLUS ONE (a compound of the binder, not the binder itself), resuming and threading as before; the freeze's completeness boundary declines this today and the post-merge follow-up folds it"
+(case "xhsE the COMPUTED perform-arg variant — the inner arm let-binds the advanced column but performs the outer note with the binder PLUS ONE (a compound of the binder, not the binder itself), resuming and threading as before; the freeze inlines the compound's arm-local refs to their drain-safe inits so it folds"
   (input  (do
             (effect O (op note (-> Int64 Int64)))
             (effect I (op step (-> Int64 Int64)))
