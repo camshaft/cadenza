@@ -355,7 +355,8 @@ fn all_surface_paths_round_trip_the_corpus() {
             let path_a = match &via_bin {
                 Some(a) => {
                     is_error
-                        || (printer::print(a, WIDTH) == ml && (!structural || a.structurally_eq(&input)))
+                        || (printer::print(a, WIDTH) == ml
+                            && (!structural || a.structurally_eq(&input)))
                 }
                 None => false,
             };

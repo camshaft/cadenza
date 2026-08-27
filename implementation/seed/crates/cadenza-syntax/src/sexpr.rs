@@ -708,7 +708,12 @@ impl<'a, 'b> Reader<'a, 'b> {
         let result = loop {
             self.skip_ws();
             match self.peek() {
-                None => break Err(ReadError(format!("unterminated `#{word}( … )` at byte {}", self.pos))),
+                None => {
+                    break Err(ReadError(format!(
+                        "unterminated `#{word}( … )` at byte {}",
+                        self.pos
+                    )));
+                }
                 Some(b')') => {
                     self.bump();
                     break Ok(self.mk_list(items, Span::new(start, self.pos)));
@@ -1023,9 +1028,18 @@ mod tests {
     // `(= key value)` FieldPair (no implicit `=` insertion).
     #[test]
     fn hash_word_literals_equal_the_str_head_form() {
-        assert_eq!(read("#list(1 2 3)").unwrap(), read("(\"list\" 1 2 3)").unwrap());
-        assert_eq!(read("#tuple(a b)").unwrap(), read("(\"tuple\" a b)").unwrap());
-        assert_eq!(read("#set(1 2 3)").unwrap(), read("(\"set\" 1 2 3)").unwrap());
+        assert_eq!(
+            read("#list(1 2 3)").unwrap(),
+            read("(\"list\" 1 2 3)").unwrap()
+        );
+        assert_eq!(
+            read("#tuple(a b)").unwrap(),
+            read("(\"tuple\" a b)").unwrap()
+        );
+        assert_eq!(
+            read("#set(1 2 3)").unwrap(),
+            read("(\"set\" 1 2 3)").unwrap()
+        );
         assert_eq!(read("#list()").unwrap(), read("(\"list\")").unwrap());
         // Record/map fields/entries are explicit `(= k v)` FieldPairs, read verbatim (no insertion).
         assert_eq!(
@@ -1052,7 +1066,10 @@ mod tests {
         // The reader inserts NOTHING: the body is read exactly as written, so a bare (non-`=`) element
         // stays a bare pair and a comment composes around a field as an ordinary node — both round-trip
         // as themselves, no implicit `=` and no pair-shape requirement.
-        assert_eq!(read("#record((x 1))").unwrap(), read("(\"record\" (x 1))").unwrap());
+        assert_eq!(
+            read("#record((x 1))").unwrap(),
+            read("(\"record\" (x 1))").unwrap()
+        );
         assert_eq!(
             read("#record((comment \"doc\" (= x 1)))").unwrap(),
             read("(\"record\" (comment \"doc\" (= x 1)))").unwrap(),
