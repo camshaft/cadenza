@@ -8779,3 +8779,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	rla1 a runtime List.at in bounds reads the element (Some)
+pass	rla2 a runtime List.at out of bounds takes the None arm

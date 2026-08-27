@@ -22315,3 +22315,19 @@
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) (+ (. acc 1) 1))) acc))
              (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) ((. List len) (. (. t 0) 0))))) (export main)))
   (call main) (output (: 7 Int64)) (live-objects known-leak 15))
+
+; -- runtime List.at reads through vec-get, in-bounds and out-of-bounds (migrated from rcdzc
+; a_runtime_list_index_reads_the_element_through_vec_get + a_runtime_list_index_out_of_bounds_takes_the_
+; none_arm): a RUNTIME-built list (push-loop, so List.at does NOT fold) exercises the emitted bounds check
+; + vec-get + Some/None construction + the match unwrap — the full fallible-read round-trip.
+(case "rla1 a runtime List.at in bounds reads the element (Some)"
+  (doc    "`xs = [0,1,2]` built at run time; `(match (List.at xs 1) ((Some x) x) ((None _) -1))` = 1.")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) (let ((xs (build 0 3 (list)))) (match ((. List at) xs 1) ((Some x) x) ((None _) -1)))) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "rla2 a runtime List.at out of bounds takes the None arm"
+  (doc    "`xs = [0,1,2]`; `(List.at xs 9)` is past the end → None (never traps) → the match yields -1.")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) (let ((xs (build 0 3 (list)))) (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) (export main)))
+  (call main) (output (: -1 Int64)))

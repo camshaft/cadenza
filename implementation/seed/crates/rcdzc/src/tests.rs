@@ -22441,46 +22441,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_runtime_list_index_reads_the_element_through_vec_get() {
-        // The RUNTIME `List.at` path: a list BUILT at run time (a recursive push-loop — not a visible
-        // literal, so `List.at` does NOT fold) is indexed and the element unwrapped by a match. `build 0
-        // 3 (list)` = `[0 1 2]`; `(match (List.at xs 1) ((Some x) x) ((None _) -1))` reads index 1 → `Some
-        // 1` → 1. Exercises the emitted bounds check + `vec-get` + `dup` + `sum-new(Some)`, then the
-        // match's `sum-disc`/`sum-payload` unwrap — the full runtime fallible-read round-trip.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) (let ((xs (build 0 3 (list)))) \
-                 (match ((. List at) xs 1) ((Some x) x) ((None _) -1)))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "1", "runtime List.at in bounds reads the element");
-    }
-
-    #[test]
-    fn a_runtime_list_index_out_of_bounds_takes_the_none_arm() {
-        // The absent side of the runtime path: indexing a runtime-built list PAST its end yields `None`
-        // (never traps, never reads garbage). `build 0 3 (list)` = `[0 1 2]` (length 3); `(List.at xs 9)`
-        // is out of bounds, so the match takes the `None` arm → -1. Pins the runtime bounds check's high
-        // side (`index < vec-len`) and the `None` construction. (The negative side is exercised by the
-        // constant fold; a runtime negative index takes the same `index >= 0` guard.)
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) (let ((xs (build 0 3 (list)))) \
-                 (match ((. List at) xs 9) ((Some x) x) ((None _) -1)))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "-1", "runtime List.at out of bounds → None");
-    }
-
-    #[test]
     fn a_provably_nonnegative_index_elides_the_list_at_lower_bound_check() {
         // BOUNDS-CHECK LOWER-HALF ELISION: `List.at`/`Bytes.at` test `(index >= 0) & (index < len)`. When
         // the index is provably NON-NEGATIVE (a masked value `(& i 3)`, a length, an unsigned type), the
