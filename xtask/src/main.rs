@@ -3903,6 +3903,22 @@ fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
     }
 }
 
+/// Why an interactive `gate` fell to the UNCACHED in-process path (for the fleet-load advisory). Pure so
+/// the arm selection is unit-testable; the caller has already excluded the `--save`/`--check`/`--shard`
+/// pipeline flows. Order matters: `--case` and rust-async are structural (no cached check exists), the
+/// explicit `CDZ_GATE_INPROCESS` opt-out is next, and everything else is an unavailable/unmapped cache.
+fn gate_inprocess_reason(has_case: bool, target: GateTarget, inprocess_env: bool) -> &'static str {
+    if has_case {
+        "--case runs in-process (single-case debug)"
+    } else if matches!(target, GateTarget::RustAsync) {
+        "--target rust-async has no cached nix check"
+    } else if inprocess_env {
+        "CDZ_GATE_INPROCESS=1 forces the in-process gate"
+    } else {
+        "the cached nix corpus was unavailable (nix missing/failed, or a file isn't an NN-feature corpus file)"
+    }
+}
+
 /// Run the corpus gate through the CACHED per-case nix corpus (`.#checks.<sys>.corpus[-rust][-<stem>]`)
 /// instead of recompiling every case in-process — the operator's "don't rebuild the world on every gate"
 /// (2026-08-26; ships the #3363 per-case caching as the gate agents run). A corpus-only edit re-runs ONLY
@@ -3993,6 +4009,47 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
         && let Some(code) = gate_via_nix_cache(paths, &opts.files, opts.target)
     {
         std::process::exit(code);
+    }
+
+    // FLEET-LOAD ADVISORY (concierge/operator 2026-08-27): control reached the IN-PROCESS path, so the
+    // grade below builds the compiler (uncached, shared with no peer) and grades the cases across all
+    // cores — this native gate was the ~55 host-load-spike source v-nix traced. Warn on the INTERACTIVE
+    // fallback (an agent's spot-check) so the uncached run is VISIBLE and point at the cached nix check;
+    // stay quiet for the sanctioned pipeline flows (`--save` baseline regen, `--check` pr-sync bar,
+    // `--shard` nightly), which legitimately need in-process verdicts. Non-blocking — it still runs.
+    if !opts.save && !opts.check && opts.shard.is_none() {
+        let reason = gate_inprocess_reason(
+            opts.case.is_some(),
+            opts.target,
+            std::env::var_os("CDZ_GATE_INPROCESS").is_some(),
+        );
+        eprintln!(
+            "⚠ xtask gate: UNCACHED in-process pipeline — builds the compiler + grades cases across all \
+             cores, shared with no peer (this native gate was flagged as a fleet host-load-spike source). \
+             Reason: {reason}."
+        );
+        // The cached, fleet-shared equivalent for any files that DO have a per-case nix check (wasm/rust
+        // NN-feature corpus files). Only shell out for the system string when there's a hint to print.
+        let cached: Vec<String> = opts
+            .files
+            .iter()
+            .filter_map(|f| corpus_check_attr(opts.target, f.file_stem().and_then(|s| s.to_str())))
+            .collect();
+        if !cached.is_empty() {
+            let sys = nix_current_system();
+            let cmd = cached
+                .iter()
+                .map(|a| format!(".#checks.{sys}.{a}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!("  Prefer the CACHED, fleet-shared check:  nix build {cmd}");
+        } else {
+            eprintln!(
+                "  (no cached nix check exists for this invocation — a routine corpus spot-check on an \
+                 `NN-feature` file with `--target wasm` IS cached; use that path when you can.)"
+            );
+        }
+        eprintln!("  Proceeding in-process…");
     }
 
     let tools = build_tools(paths, profile);
@@ -9655,6 +9712,38 @@ mod trap_grading_tests {
             "the flagged entry names the offending script"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gate_inprocess_advisory_reason_and_cached_attr_mapping() {
+        // Reason arms, in precedence order (caller has already excluded --save/--check/--shard).
+        assert!(gate_inprocess_reason(true, GateTarget::Wasm, false).contains("--case"));
+        assert!(gate_inprocess_reason(false, GateTarget::RustAsync, false).contains("rust-async"));
+        assert!(
+            gate_inprocess_reason(false, GateTarget::Wasm, true).contains("CDZ_GATE_INPROCESS")
+        );
+        assert!(gate_inprocess_reason(false, GateTarget::Wasm, false).contains("unavailable"));
+        // --case wins even when the env is also set (structural reason first).
+        assert!(gate_inprocess_reason(true, GateTarget::Wasm, true).contains("--case"));
+
+        // The cached-attr hint: NN-feature files map to a per-file check; rust-async / non-NN do not.
+        assert_eq!(
+            corpus_check_attr(GateTarget::Wasm, Some("13-strings")).as_deref(),
+            Some("corpus-13-strings")
+        );
+        assert_eq!(
+            corpus_check_attr(GateTarget::Rust, Some("05-compound-types")).as_deref(),
+            Some("corpus-rust-05-compound-types")
+        );
+        assert_eq!(
+            corpus_check_attr(GateTarget::RustAsync, Some("13-strings")),
+            None
+        );
+        // A non-`NN-feature` stem (e.g. a scratch file) has no cached check → in-process is the only path.
+        assert_eq!(
+            corpus_check_attr(GateTarget::Wasm, Some("zz-scratch")),
+            None
+        );
     }
 
     #[test]
