@@ -2234,6 +2234,9 @@ pub fn reduce_handle(
         // Forget + force-structural-re-resolve the rewritten subtree, exactly as
         // `inline_escaped_one_shot_perform_call` does after its rebuild; KEEP-PINNED preserves any genuine
         // outer capture the moved lambda carries (a free var resolved OUTSIDE the hoist region — sk4c).
+        // (The hoist is NARROWED to only fire when the closure binder is applied directly, never captured by
+        // a nested closure — see `binder_escapes_into_nested_lambda` — so this hygiene never faces the stale-
+        // pin-on-a-nested-captured-binder case that neither keep-pinned nor a full forget resolves correctly.)
         crate::resolve::forget_subtree_keep_pinned(db, hoisted);
         db.force_structural_resolution_subtree(hoisted);
         body = hoisted;
@@ -7502,6 +7505,27 @@ fn hoist_performing_capture_closure(
             Struct::Atom(_) => false,
         }
     }
+    // Whether the closure binder `name` is REFERENCED inside a nested `(fn …)` in the body — i.e. captured
+    // by another closure rather than only applied directly `(name v)`. The hoist is SOUND+correct when the
+    // binder is applied directly (ca1c/ca1m fold), but when a nested closure captures it (cp1: `h` wraps
+    // `g`), re-resolving the hoisted tree leaves the captured ref pointing at the pre-hoist performing
+    // binding (→ a re-draw, wrong value) and neither keep-pinned nor a full forget resolves it correctly.
+    // So we DECLINE that shape here (a clean todo, no wrong value); folding it is a later hygiene increment.
+    fn binder_escapes_into_nested_lambda(db: &Db, node: StructId, name: &str) -> bool {
+        // A `(fn params body…)` whose body (any child past the param list) references `name` = a capture.
+        if let Struct::List(children) = db.ast.get(node)
+            && children.first().and_then(|&h| db.ast.as_name(h)) == Some("fn")
+            && children.iter().skip(2).any(|&c| refs_name(db, c, name))
+        {
+            return true;
+        }
+        match db.ast.get(node) {
+            Struct::List(children) => children
+                .iter()
+                .any(|&c| binder_escapes_into_nested_lambda(db, c, name)),
+            Struct::Atom(_) => false,
+        }
+    }
     // Try to rewrite THIS node if it is a `(let (pairs) lbody)` with a matching binding.
     if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
         && form.len() == 2
@@ -7542,6 +7566,15 @@ fn hoist_performing_capture_closure(
                 _ => false,
             });
             if !matches {
+                continue;
+            }
+            // NARROW: only hoist when the closure binder is applied directly in the body, NOT captured by a
+            // nested closure. When another closure captures it (cp1: `h` wrapping `g`), re-resolving the
+            // hoisted tree cannot correctly rebind the captured ref (→ a re-draw / a false CDZ0101), so leave
+            // it to the honest decline rather than fold a wrong value; folding it is a later hygiene increment.
+            if let Some(bname) = db.ast.as_name(binder).map(str::to_string)
+                && binder_escapes_into_nested_lambda(db, form[1], &bname)
+            {
                 continue;
             }
             // Rebuild the current let with binding `i`'s value replaced by the returned LAMBDA, then wrap
