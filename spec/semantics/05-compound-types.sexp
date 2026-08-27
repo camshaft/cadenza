@@ -23209,3 +23209,32 @@
   (call main (: 9 Int64))
   (output (: 21 Int64))
   (live-objects 0))
+
+; ── breaker batch 562: Core::SetOf breadth (the day-old D2 path, adversarial cells beyond sd1's
+; basics): RUNTIME elements dedup at construction; STRING elements content-hash against a
+; runtime-BUILT equal probe (with literal-level dedup); the EMPTY literal composes with insert.
+
+(case "sn1 a #set literal with RUNTIME elements dedups at construction"
+  (input (do (def (main (: n Int64))
+  (+ (* 10 (Set.len #set(n n (+ n 1)))) (if (Set.contains #set(n (* n 7)) 7) 1 0)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
+
+(case "sn2 a #set of STRING elements content-hashes against a runtime-built equal probe (with literal dedup)"
+  (input (do (def (main (: n Int64))
+  (+ (if (Set.contains #set("ab" "cd") (String.concat "a" (if (> n 0) "b" "z"))) 100 0)
+     (Set.len #set("x" "x" "y"))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102 Int64))
+  (live-objects 0))
+
+(case "sn3 the empty #set() literal composes with insert"
+  (input (do (def (main (: n Int64))
+  (+ (* 10 (Set.len #set())) (Set.len (Set.insert #set() n))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
