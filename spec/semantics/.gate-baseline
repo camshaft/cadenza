@@ -8417,3 +8417,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
+pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
