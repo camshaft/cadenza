@@ -87,3 +87,28 @@ discriminate: DO drop the dead sibling (b), do NOT drop the escapee (a) — the 
 (1001 read through the returned tree in the caller) fence the UAF side; the known-leak 6 clauses
 flip to 0 on the correct fix. Pinned as dqe10/dqe11 (+ dqe12 the callee-scope 0-control),
 batch 524.
+
+## KIND/CONSUMER narrowing (breaker, tick 298, 2026-08-27) — leg 1 is TUPLE-positional-projection specific
+
+Operand-kind and consumer-kind sweep on the dual-use shape (walker = eq throughout; heap children
+forced where noted to kill the scalarization confound):
+
+| extracting consumer + walker | census |
+|---|---|
+| tuple `.` index chain (depth 3, scalar leaf) | 3 (dqe4) |
+| tuple `.` index, HEAP component at depth 1 (`List.len (. a 1)`) | 3 (tick-295 v7) |
+| tuple MATCH-destructure, same depth-3 shape as dqe4 | **0** |
+| record field read `(. a y)`, HEAP field (`List.len`) | **0** |
+| Option match-extract, HEAP payload (`List.len`) | **0** |
+| record/Option of scalars (possibly scalarized; kept as breadth) | 0 |
+
+So the under-drop family has TWO distinct legs:
+1. **Tuple positional projection of a component + walker on the same binding** — leaks the
+   projected side's tree. Record `.` (named field), sum match-extract, and tuple match-destructure
+   all release correctly — the dup minted by the TUPLE-INDEX read is the one never dropped.
+2. **Walker-result branch whose arm ESCAPES an operand** — leaks BOTH sides (dqe10/dqe11), no
+   projection involved.
+
+Pinned dqe13-15 (batch 525) as 0-CONTROLS documenting the discrimination: they must STAY 0 and
+their values must hold if the fix touches the match/record paths (an over-drop there corrupts the
+reads these cases make after the walker).
