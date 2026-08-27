@@ -62690,12 +62690,9 @@ mod stage1 {
                (export main))",
         )))
         .expect("a recursive const-closure driver compiles (identity re-pass is not a fault)");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "6",
-                "the specialized recursive closure driver sums [1,2,3] to 6"
-            );
-        }
+        // Emit-shape pin (wasmparser, wasmtime-free): the const closure re-passed through recursion must
+        // specialize + devirtualize the call_indirect to a direct call (S1 fusion). The runtime value
+        // (sums [1,2,3] to 6) is pinned in the corpus.
         assert!(
             !component_has_call_indirect(&bytes),
             "the const closure re-passed through recursion must specialize + devirtualize (no call_indirect)"
@@ -62910,10 +62907,10 @@ mod stage1 {
         // ("function index out of bounds": a nested spec's `Core::Call` referenced an un-laid-out function
         // slot) because `finish_layout`'s reachability walk appended a nested spec to `order` WITHOUT
         // closing over its own callees. The joint call/lifted-closure fixpoint fix reaches them. Assert the
-        // emitted component VALIDATES (the primary fix — `compile_component` runs `run_returns`/`run_linked`
-        // which instantiate, so an invalid module would panic) and computes correctly: [1..5] kept >2, summed
-        // = 3+4+5 = 12. (The single-driver fusion emit-shape is pinned separately; this pins the NESTED case
-        // does not regress to invalid wasm.)
+        // emitted component VALIDATES via `wasmparser::validate` (an out-of-bounds function index is invalid
+        // wasm); the runtime value ([1..5] kept >2, summed = 3+4+5 = 12) is pinned in the corpus. (The
+        // single-driver fusion emit-shape is pinned separately; this pins the NESTED case does not regress
+        // to invalid wasm.)
         let bytes = compile_component(&crate::codec::encode(&parse(
             "(module m \
                (type It (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
@@ -62927,14 +62924,13 @@ mod stage1 {
                (def (main) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2))))) (export main))",
         )))
         .expect("two nested recursive const-closure drivers compile");
-        // Instantiating (run_linked) proves the emitted module is VALID wasm — an out-of-bounds function
-        // index would fail to instantiate. Value 12 = 3+4+5 (filter > 2, then sum).
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "12",
-                "nested const-closure drivers fuse + compute 3+4+5 = 12"
-            );
-        }
+        // Validity pin (wasmparser, wasmtime-free): the nested spec's Core::Call must reference a laid-out
+        // function slot — an out-of-bounds function index is invalid wasm. The runtime value (filter >2 then
+        // sum [1..5] = 3+4+5 = 12) is pinned in the corpus.
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "two nested recursive const-closure drivers must emit a VALID module (no out-of-bounds function index)"
+        );
     }
 
     #[test]
@@ -62961,13 +62957,13 @@ mod stage1 {
                (def (main) (run2 (from-list (list 1 2 3 4)))) (export main))",
         )))
         .expect("a compound-returning export dispatching a runtime closure compiles + validates");
-        // Instantiating proves the emitted component is VALID wasm (invalid table/func indices fail to load).
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "(: (Some (tuple 3 (list 4))) (Option (Tuple Int64 (List Int64))))",
-                "twostep keeps the first x>2 (=3) → Some((3, [4]))"
-            );
-        }
+        // Validity pin (wasmparser, wasmtime-free): the escape module must emit the lifted closure body +
+        // funcref table/elem so the `call_indirect` and its imports resolve — invalid table/func indices are
+        // invalid wasm. The runtime value (twostep keeps the first x>2 → Some((3, [4]))) is pinned in the corpus.
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "a compound-returning export dispatching a runtime closure must emit a VALID module (table/func indices resolve)"
+        );
     }
 
     #[test]
