@@ -9283,33 +9283,10 @@ mod runtime_ops {
             "a trapping self-comparison keeps its operand's div; got {trapping:?}"
         );
 
-        // VALUE PARITY.
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(let ((y x)) (< y y))",
-            &[Val::S64(7)]
-        ));
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(let ((y x)) (<= y y))",
-            &[Val::S64(7)]
-        ));
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(let ((y x)) (= y y))",
-            &[Val::S64(-3)]
-        ));
-        // The trapping form still traps on b==0, and computes false otherwise.
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(< (/ a b) (/ a b))",
-            &[Val::S64(1), Val::S64(0)]
-        ));
-        assert!(!run::<bool>(
-            "(: a Int64) (: b Int64)",
-            "(< (/ a b) (/ a b))",
-            &[Val::S64(10), Val::S64(2)]
-        ));
+        // The VALUE + TRAP parity (x<x/x>x → false, x<=x/x>=x/x=x → true; a trapping `(< (/ a b) (/ a b))`
+        // still traps at b=0 and is false otherwise) is the corpus cases "a self-comparison of a scalar
+        // folds to a constant (value parity)" and "a self-comparison keeps a trapping operand (b=0 still
+        // traps)" in spec/semantics/06-numeric-model.sexp — this stays a white-box Lir no-compare check.
     }
 
     #[test]

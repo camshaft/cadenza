@@ -10032,3 +10032,32 @@
   (input (do (def (main (: n Int64)) (if (< (list) (list 1)) 1 0)) (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
+
+; -- self-comparison fold parity (behavioral half migrated from rcdzc
+; a_self_comparison_of_a_scalar_folds_to_a_constant, 2026-08-27; the white-box Lir no-compare / kept-div
+; inspection stays a wasmtime-free rcdzc unit test): `x < x` / `x > x` fold to false and `x <= x` /
+; `x >= x` / `x = x` to true (both operands the same x after copy-propagation), and a trapping operand is
+; not discarded by the fold.
+
+(case "a self-comparison of a scalar folds to a constant (value parity)"
+  (doc    "x<x and x>x fold to false; x<=x, x>=x, x=x fold to true — the `(let ((y x)) …)` copy-propagates
+           so both operands are the same x. `main` sums weighted flags so one output pins all five:
+           <→0, >→0, <=→100, >=→10, =→1 ⇒ 111 for every x.")
+  (input (do
+    (def (main (: x Int64))
+      (let ((y x))
+        (+ (if (< y y) 10000 0)
+           (+ (if (> y y) 1000 0)
+              (+ (if (<= y y) 100 0)
+                 (+ (if (>= y y) 10 0)
+                    (if (= y y) 1 0)))))))
+    (export main)))
+  (call main (: 7 Int64))  (output (: 111 Int64))
+  (call main (: -3 Int64)) (output (: 111 Int64)))
+
+(case "a self-comparison keeps a trapping operand (b=0 still traps)"
+  (doc    "The self-comparison fold must not discard a trapping operand: `(< (/ a b) (/ a b))` keeps the
+           div, so b=0 traps; (10,2) → 5<5 = false → 0.")
+  (input (do (def (main (: a Int64) (: b Int64)) (if (< (/ a b) (/ a b)) 1 0)) (export main)))
+  (call main (: 10 Int64) (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 1 Int64) (: 0 Int64))  (trap "divide by zero"))
