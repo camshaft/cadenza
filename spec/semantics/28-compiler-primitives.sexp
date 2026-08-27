@@ -2533,3 +2533,17 @@
     (export main)))
   (call main (: true Bool) (: 0 Int64))  (output (: 10 Int64))
   (call main (: false Bool) (: 0 Int64)) (trap "divide by zero"))
+
+(case "a repeated condition in a nested if collapses to the outer condition (value parity)"
+  (doc    "Within a branch the enclosing condition is known, so a directly-nested if on the SAME condition
+           collapses: `(if c (if c 1 2) 3)` = `(if c 1 3)` — c=true → 1 (inner c true), c=false → 3.")
+  (input (do (def (main (: c Bool)) (if c (if c 1 2) 3)) (export main)))
+  (call main (: true Bool))  (output (: 1 Int64))
+  (call main (: false Bool)) (output (: 3 Int64)))
+
+(case "a negated repeated condition in a nested if collapses (value parity)"
+  (doc    "In the else-branch c is known false, so `(if (not c) A B)` is A: `(if c 1 (if (not c) 2 3))` =
+           `(if c 1 2)` — c=true → 1, c=false → (not c true) → 2.")
+  (input (do (def (main (: c Bool)) (if c 1 (if (not c) 2 3))) (export main)))
+  (call main (: true Bool))  (output (: 1 Int64))
+  (call main (: false Bool)) (output (: 2 Int64)))
