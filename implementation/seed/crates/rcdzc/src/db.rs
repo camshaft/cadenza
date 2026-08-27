@@ -36,7 +36,7 @@
 //# The compiler MUST perform name resolution, type checking, and each transformation it applies to a program as a transformation of its intermediate representation rather than as an effect of emitting instruction bytes.
 
 use crate::arena::Column;
-use crate::ast::{Arenas, Leaf, LeafId, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Leaf, LeafId, Struct, StructId};
 use crate::core::Core;
 use crate::resolved::Resolved;
 use crate::ty::Ty;
@@ -6218,9 +6218,7 @@ fn mark_bigint_expected_literals(
         .or_else(|| ast.as_ctor_form(ty_expr, "List"))
         && let Some(&elem_ty) = list_ty_tail.first()
         && ast.as_name(elem_ty) == Some("BigInt")
-        && let Some(elems) = ast
-            .as_form(value, "list")
-            .or_else(|| ast.as_ctor_form(value, "list"))
+        && let Some(elems) = ast.compound_form_of(value, CompoundCtor::List)
     {
         for &e in elems {
             if ast.as_int(e).is_some() {

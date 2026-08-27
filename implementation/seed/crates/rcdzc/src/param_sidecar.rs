@@ -26,7 +26,7 @@
 //! so the ordinary compile sees it exactly like a hand-written effect. This is the FIRST BRICK: a single
 //! scalar param generates one `(op name (-> Unit Type))`; the widget MANIFEST + Quantity ABI are later.
 
-use crate::ast::{Arenas, Leaf, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, Leaf, Struct, StructId};
 use crate::prelude::{push_atom, push_list};
 
 /// A scanned `@param` site: the accessor NAME and its declared TYPE node (the outer colon's type child,
@@ -292,9 +292,7 @@ fn config_range(ast: &Arenas, app: StructId) -> Option<(StructId, StructId)> {
     // `[lo, hi]` lowers to a STRING-literal ctor head `("list" lo hi)` (`as_ctor_form`, the ctor-spelling
     // twin). Accept BOTH so an ML `@param(range: [a, b])` reports its authored bounds like the s-expr form
     // does — otherwise `range_lo`/`range_hi` come back absent for every ML parametric model.
-    let elems = ast
-        .as_form(v, "list")
-        .or_else(|| ast.as_ctor_form(v, "list"))?;
+    let elems = ast.compound_form_of(v, CompoundCtor::List)?;
     match elems {
         [lo, hi] => Some((*lo, *hi)),
         _ => None,

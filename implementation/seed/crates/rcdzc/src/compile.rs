@@ -24,7 +24,7 @@
 //# A computation whose value is observed in this sense MUST be evaluated, so its trap MUST occur.
 
 use crate::abi::{Artifact, CompileOutput, Diagnostic, Severity};
-use crate::ast::StructId;
+use crate::ast::{CompoundCtor, StructId};
 use crate::backend::{self, Target};
 use crate::core::Core;
 use crate::db::Db;
@@ -5027,8 +5027,7 @@ fn arm_cover(db: &mut Db, pat: StructId) -> Option<ArmCover> {
     // pattern` matches both the `(list …)` alias and the reserved `"list"` symbol head.
     if let Some(es) = db
         .ast
-        .as_form(pat, "list")
-        .or_else(|| db.ast.as_ctor_form(pat, "list"))
+        .compound_form_of(pat, CompoundCtor::List)
         .map(<[_]>::to_vec)
     {
         let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
@@ -5107,8 +5106,7 @@ fn is_irrefutable_cover(db: &mut Db, pat: StructId) -> bool {
     // A tuple covers its whole type iff every element is itself a whole-type cover.
     if let Some(elems) = db
         .ast
-        .as_form(pat, "tuple")
-        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .compound_form_of(pat, CompoundCtor::Tuple)
         .map(<[_]>::to_vec)
     {
         return elems.iter().all(|&e| is_irrefutable_cover(db, e));
@@ -5148,8 +5146,7 @@ fn pattern_shape_key(db: &mut Db, pat: StructId) -> Option<String> {
     // A TUPLE `(tuple p0 …)` — key = `(t <sub-key>…)`, recursing each element.
     if let Some(elems) = db
         .ast
-        .as_form(pat, "tuple")
-        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .compound_form_of(pat, CompoundCtor::Tuple)
         .map(<[_]>::to_vec)
     {
         let mut key = String::from("(t");

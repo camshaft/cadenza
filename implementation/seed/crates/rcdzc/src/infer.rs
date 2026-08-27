@@ -29,7 +29,7 @@
 //! Rewrite Preserves Value And Checks).
 
 use crate::arena::Slot;
-use crate::ast::StructId;
+use crate::ast::{CompoundCtor, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Fix, Reject};
 use crate::resolve::{resolved_of, resolved_ref};
@@ -4284,8 +4284,7 @@ fn literal_pattern_ty(db: &mut Db, pat: StructId) -> Option<Ty> {
 fn pattern_implied_ty(db: &mut Db, pat: StructId, fresh: &mut Fresh) -> Option<Ty> {
     if let Some(elems) = db
         .ast
-        .as_form(pat, "tuple")
-        .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+        .compound_form_of(pat, CompoundCtor::Tuple)
         .map(<[StructId]>::to_vec)
     {
         let tys: Vec<Ty> = elems
@@ -6824,10 +6823,7 @@ fn record_field_kv(db: &Db, entry: StructId) -> Option<(StructId, StructId)> {
 /// whole field, so a delete fix can remove it as a unit. `None` if `expr` is not an inline record literal
 /// (in the RAW AST) or has no such field. Same raw-AST discipline as [`record_field_key_occ`].
 fn record_field_entry_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
-    let entries = db
-        .ast
-        .as_ctor_form(expr, "record")
-        .or_else(|| db.ast.as_form(expr, "record"))?;
+    let entries = db.ast.compound_form_of(expr, CompoundCtor::Record)?;
     for &entry in entries {
         if let Some((key_id, _)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)
@@ -6971,10 +6967,7 @@ fn tuple_element_delete_fix(db: &mut Db, expected: &Ty, actual: &Ty, arg: Struct
 /// typo fix can recurse into a sub-record literal. `None` if `expr` is not an inline record literal or has
 /// no such field.
 fn record_field_value_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
-    let entries = db
-        .ast
-        .as_ctor_form(expr, "record")
-        .or_else(|| db.ast.as_form(expr, "record"))?;
+    let entries = db.ast.compound_form_of(expr, CompoundCtor::Record)?;
     for &entry in entries {
         if let Some((key_id, val_id)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)
@@ -6994,10 +6987,7 @@ fn record_field_value_occ(db: &Db, expr: StructId, field: &str) -> Option<Struct
 fn record_field_key_occ(db: &Db, expr: StructId, field: &str) -> Option<StructId> {
     // The `(key value)` entry list is the tail of a `(record …)` form (both the reserved-symbol head and a
     // bare `record` name-alias spell the same shape here).
-    let entries = db
-        .ast
-        .as_ctor_form(expr, "record")
-        .or_else(|| db.ast.as_form(expr, "record"))?;
+    let entries = db.ast.compound_form_of(expr, CompoundCtor::Record)?;
     for &entry in entries {
         if let Some((key_id, _)) = record_field_kv(db, entry)
             && let Some(sym) = crate::resolve::read_key(db, key_id)

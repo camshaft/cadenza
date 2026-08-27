@@ -57,7 +57,7 @@
 //! `wrapping-mul` variants never trap, so their reassociation is fully transparent — value-exact with no
 //! trap-timing caveat at all.
 
-use crate::ast::{Arenas, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Def;
 use crate::prelude::{push_atom, push_list};
 
@@ -532,8 +532,7 @@ fn arm_parts(ast: &Arenas, arm: StructId) -> Option<(StructId, StructId)> {
 /// (`"list"`, what the reader desugars to) and a bare `(list …)` form — mirrors the resolver's
 /// `as_ctor_form(…, "list").or_else(as_form(…, "list"))`.
 fn list_pattern_elems(ast: &Arenas, pat: StructId) -> Option<&[StructId]> {
-    ast.as_ctor_form(pat, "list")
-        .or_else(|| ast.as_form(pat, "list"))
+    ast.compound_form_of(pat, CompoundCtor::List)
 }
 
 /// Whether `pat` is the EMPTY-list pattern `(list)` — a `(list …)` pattern with no elements (the base arm).
