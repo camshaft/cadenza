@@ -614,6 +614,12 @@
   (call   main (: 0 Int64)) (output (: 7 Int64))
   (call   main (: 1 Int64)) (output (: 102 Int64)))
 
+(case "a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot"
+  (doc    "The SumExpect face of the tuple scratch-slot clash above: `(tuple (Option.expect (List.at xs 0) …) (+ i 1))` — the `Option.expect` emits its extracted-payload handle into a scratch slot ABOVE the running high-water, and the i64 arith element `(+ i 1)` takes the next per-element scratch base. If the two shared a slot the i32 handle and the i64 value would collide and wasm would reject the module (`expected i32, found i64`). Projecting element 0 reads the expect result: `go (list 7 8) 0` → 7. Complements the let-if-tuple/record scratch cases above with the SumExpect-in-tuple site.")
+  (input  (do (def (go (: xs (List Int64)) (: i Int64)) (. (tuple (Option.expect (List.at xs 0) "x") (+ i 1)) 0))
+              (def (main) (go (list 7 8) 0)) (export main)))
+  (call   main) (output (: 7 Int64)))
+
 ; --- Field access on a RUNTIME record (returned from a call / selected by a conditional) -----------
 ; The record analogue of the runtime-tuple projection cases: `(. rec field)` where the record operand
 ; does NOT reduce to a compile-time-visible record — it is RETURNED FROM A CALL, or SELECTED BY AN
