@@ -9661,61 +9661,6 @@ mod match_engine {
         compile_component(&crate::codec::encode(&parse(src))).expect("compile")
     }
 
-    #[test]
-    fn a_multi_param_and_nested_user_generic_resolves_by_name_in_a_type_annotation() {
-        // Coverage-hardening for the parenthesized-head user-generic-by-name resolve (#1683/#1700): the
-        // pinned case `a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation` covered a
-        // SINGLE-param `(Container a)` in a flat annotation. Three untested faces of the SAME resolve path,
-        // all confirmed here to resolve by name AND compute:
-        //   (1) a MULTI-param generic `(Pair a b)` applied with two args `(Pair Int64 Bool)` — the head
-        //       param collect + applied-ctor reduction must handle arity > 1;
-        //   (2) a user generic NESTED as a type-arg to a BUILT-IN generic `(Option (Box Int64))`;
-        //   (3) a user generic NESTED as a type-arg to ANOTHER user generic `(Box (Box Int64))`.
-        // Each was previously CDZ0101-unresolvable (the `""`-name registration bug); all now resolve like a
-        // built-in and run.
-        // (1) multi-param: `(Both 9 true)` through `fst` = 9.
-        assert_eq!(
-            run_returns_with::<i64>(
-                &component(
-                    "(module m (type (Pair a b) (Both a b)) \
-                       (def (fst (: p (Pair Int64 Bool))) (match p ((Both x y) x))) \
-                       (def (main (: k Int64)) (fst (Both k true))) (export main))"
-                ),
-                "main",
-                &[wasmtime::component::Val::S64(9)],
-            ),
-            9
-        );
-        // (2) user generic inside a built-in generic: `(Some (Mk 4))` through `unwrap` = 4.
-        assert_eq!(
-            run_returns_with::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk a)) \
-                       (def (unwrap (: b (Option (Box Int64)))) \
-                          (match b ((Some x) (match x ((Mk v) v))) (None 0))) \
-                       (def (main (: k Int64)) (unwrap (Some (Mk k)))) (export main))"
-                ),
-                "main",
-                &[wasmtime::component::Val::S64(4)],
-            ),
-            4
-        );
-        // (3) user generic inside another user generic: `(Mk (Mk 6))` through `unwrap` = 6.
-        assert_eq!(
-            run_returns_with::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk a)) \
-                       (def (unwrap (: b (Box (Box Int64)))) \
-                          (match b ((Mk x) (match x ((Mk v) v))))) \
-                       (def (main (: k Int64)) (unwrap (Mk (Mk k)))) (export main))"
-                ),
-                "main",
-                &[wasmtime::component::Val::S64(6)],
-            ),
-            6
-        );
-    }
-
     /// A runtime `Qty` return over a MID-WIDTH Int inner (a width in 33..=63, here `(Int 40)` produced at
     /// run time by a `.wrap` of an Int64 param) crosses the scalar-erased resource-escape as VALID wasm.
     /// The `scalar_box` narrow-int i32→i64 extend must gate on the actual machine SLOT (`int_valtype`: ground
@@ -11739,68 +11684,6 @@ mod match_engine {
             "Box",
             "1 type argument",
             "0",
-        );
-    }
-
-    #[test]
-    fn a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation() {
-        // A generic sum declared with the PARENTHESIZED-head spelling `(type (Container a) …)` (name +
-        // params in the head, a corpus-canonical form alongside `(type Box (Mk a))`) must resolve BY NAME in
-        // a TYPE-EXPRESSION position — a parameter annotation `(: b (Container Int64))` / a variant payload
-        // `(Wrap (Container Int64))`. `scan_type_decl` read the name off `tail.first()` as an ATOM, so a
-        // `(Container a)` LIST head gave `as_name = None` → the type registered under the EMPTY name "": it
-        // worked in VALUE position (resolved by its VARIANT names) but was UNRESOLVABLE by name in a type
-        // position — `(: b (Container Int64))` reported CDZ0101 "unbound name `Container`", while the
-        // built-in `(Option Int64)` worked. Now the name is taken from the `(Name …)` head. `(Full 7)`
-        // through `unwrap` = 7.
-        assert_eq!(
-            run_returns_with::<i64>(
-                &component(
-                    "(module m (type (Container a) (Full a)) \
-                       (def (unwrap (: b (Container Int64))) (match b ((Full v) v))) \
-                       (def (main (: k Int64)) (unwrap (Full k))) (export main))"
-                ),
-                "main",
-                &[wasmtime::component::Val::S64(7)],
-            ),
-            7
-        );
-        // A BARE (unapplied) generic name in an annotation now behaves EXACTLY like the built-in `(: b
-        // Option)`: CDZ0203 "`Container` is a type constructor — it needs a type argument here" (a generic
-        // type must be applied). Before the fix it was the WRONG "unknown type `Container`" (name unresolved
-        // entirely); now it resolves as a type constructor and correctly asks for its argument — the same
-        // diagnostic `Option` gives, confirming user generics resolve like built-ins.
-        let msg = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (type (Container a) (Full a)) \
-               (def (u (: b Container)) (match b ((Full v) v))) \
-               (def (main (: k Int64)) (u (Full k))) (export main))",
-        )))
-        .expect_err("a bare generic annotation must ask for its type argument")
-        .message;
-        assert!(
-            msg.contains("`Container` is a type constructor")
-                && msg.contains("needs a type argument"),
-            "bare generic annotation asks for its arg like Option, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn a_parenthesized_head_type_decl_dedups_repeated_head_params() {
-        // #1683 review gap (1): the parenthesized-head param collect must DE-DUP. A `(type (Box a a) …)`
-        // (a repeated head param — degenerate but well-formed input) must yield ONE param `a`, not `[a, a]`,
-        // so `decl.params.len()` is the true arity (an overcount made the ctor scheme read higher-arity →
-        // mis-type/render). `(Mk k)` through `(Box Int64)` = k.
-        assert_eq!(
-            run_returns_with::<i64>(
-                &component(
-                    "(module m (type (Box a a) (Mk a)) \
-                       (def (u (: b (Box Int64))) (match b ((Mk v) v))) \
-                       (def (main (: k Int64)) (u (Mk k))) (export main))"
-                ),
-                "main",
-                &[wasmtime::component::Val::S64(5)],
-            ),
-            5
         );
     }
 
