@@ -3935,3 +3935,38 @@
     (export main)))
   (call main (: "hot" String))
   (output (: 102 Int64)))
+
+; ── Reclaim: Set.remove drops the owned boxed element; a heap element into an empty (Var-typed) set boxes by its own type, 0-leak (migrated from rcdzc) ──
+(case "Set.remove drops the owned boxed element temporary it only borrows (large-int elem, no leak)"
+  (doc    "The Set.remove twin of the Map.remove owned-key drop: Set.remove BORROWS its element, so an owned
+           heap element temporary must be dropped after the borrow. A large-int element 100000000000 (>
+           fixnum max) op_box_int heap-allocs such a box; removing the sole element yields an empty set
+           (Set.len 0) and the box is reclaimed at the borrow's end -> live-objects 0 (a fixnum element boxes
+           inline, no heap temporary). A missing drop would leave the un-dropped boxed element.")
+  (input  (do
+            (def (main) (Set.len (Set.remove (Set.insert (Set.of (list)) 100000000000) 100000000000)))
+            (export main)))
+  (call   main) (output (: 0 Int64)) (live-objects 0))
+
+(case "a flat String inserted into an empty set boxes by its own type (not box-int) and adds no leak"
+  (doc    "An empty `(Set.of (list))` has an UNRESOLVED Var element type; the backend must box the inserted
+           element by its OWN concrete type, not default the var to box-int. Inserting a flat String emitted
+           an INVALID module (box-int on the i32 String handle -> expected i64 found i32) until box_op_for
+           deferred to the element node's type. A running case here proves the module is valid; the 1-element
+           set (Set.len 1) reclaims fully -> live-objects 0.")
+  (input  (do
+            (def (main) (Set.len (Set.insert (Set.of (list)) "hi")))
+            (export main)))
+  (call   main) (output (: 1 Int64)) (live-objects 0))
+
+(case "a runtime String rope inserted into an empty set boxes by its own type and its compaction is leak-neutral"
+  (doc    "The rope companion of the flat-String empty-set insert: a runtime `String.concat` rope element
+           into the same unresolved-Var empty set boxes by the String type (not box-int -> invalid module)
+           AND compacts at the champ site. Set.len 1, and the owned rope consumed by the insert plus its
+           refcount-neutral compaction reclaim fully -> live-objects 0 (same 0 as the flat-String baseline,
+           so the compaction added no leak).")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main) (Set.len (Set.insert (Set.of (list)) (rep "hi" 3))))
+            (export main)))
+  (call   main) (output (: 1 Int64)) (live-objects 0))
