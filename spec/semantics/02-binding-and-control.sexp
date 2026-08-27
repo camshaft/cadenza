@@ -1212,6 +1212,15 @@
   (input  (let ((list (fn (a b) (+ a b)))) (list 3 4)))
   (output (: 7 Int64)))
 
+(case "a let binding shadows a built-in type-module name in value position"
+  (doc    "Name resolution is ONE ordered lookup (prelude-and-resolution.md §Name Resolution Is One Ordered
+           Lookup): the scope-first rule means a `let`-bound `Int64` HIDES the built-in `Int64` module for
+           the extent of its scope, with no special case for built-in type names. `(let ((Int64 5)) Int64)`
+           = 5, the binding — not the module. The value-position, type-module-name companion of the
+           constructor-head shadow above (which shadows `list`/`tuple`/`record` in head position).")
+  (input  (let ((Int64 5)) Int64))
+  (output (: 5 Int64)))
+
 ; The SAME head-position shadowing holds for `tuple` and `record` — the compound-VALUE constructors.
 ; They are ordinary shadowable names bound in the prelude (aliases for the primitive symbol
 ; constructors `(,)` and `{}`, which a program cannot spell), so a `let`/`def`/parameter binding of
