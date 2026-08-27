@@ -7779,7 +7779,7 @@ todo	nfe4 two runtime NaN encodes are byte-identical via the tuple walk (canonic
 todo	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
 todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
-todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
+pass	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
 todo	read of malformed text is a coded reject, not a wrong value
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)

@@ -21355,6 +21355,27 @@ fn ordering_discs(db: &mut Db, id: StructId) -> Option<(u32, u32, u32)> {
     Some((lt?, eq?, gt?))
 }
 
+/// The type to use for a comparison's compound-ORDERABILITY check (and the `ValueCmp` descriptor). The type
+/// checker UNIFIED both operands, but `type_of` need not apply the final substitution at this query, so it can
+/// render an UNRESOLVED element var for a side carrying no direct evidence — a bare empty `(list)` whose element
+/// type comes ONLY from its sibling. Checking that side ALONE misclassifies the unified compound: `(< (list)
+/// (list 1))` sees `(List ?)`, fails `is_orderable_compound`, and declines as "no total order" though the element
+/// is `Int64` by unification (breaker olf4 / wrong-diagnostic #11). Prefer whichever sibling's type is a resolved
+/// ORDERABLE compound; else fall back to `a`'s type (for the honest decline / the runtime descriptor). This is the
+/// established sibling-check idiom (cf. the one-sided-scalar comparison arm) — unify-then-check without a
+/// workaround: since unification made the two operands the same type, a resolved sibling IS this operand's type.
+fn comparison_compound_ty(db: &mut Db, a: StructId, b: StructId) -> crate::ty::Ty {
+    let ta = crate::infer::type_of(db, a);
+    if is_orderable_compound(db, &ta) {
+        return ta;
+    }
+    let tb = crate::infer::type_of(db, b);
+    if is_orderable_compound(db, &tb) {
+        return tb;
+    }
+    ta
+}
+
 /// Lower `(compare a b)` — the three-way comparison yielding an `Ordering` (core-semantics.md §A Total
 /// Order Is Observed Through A Three-Way Comparison). FOLD a constant scalar/string operand pair to the
 /// matching `Ordering` variant — `Less`/`Equal`/`Greater` by the operands' `cmp`, built as a NULLARY
@@ -21425,7 +21446,7 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
         // so folding it here would diverge from the runtime path (§331). Gating on `is_orderable_compound`
         // makes such a compound yield `None` and fall through to the runtime `ValueCmp`/float declines below.
         _ if is_const_value(db, lhs) && is_const_value(db, rhs) && {
-            let ty = crate::infer::type_of(db, lhs);
+            let ty = comparison_compound_ty(db, lhs, rhs);
             is_orderable_compound(db, &ty)
         } =>
         {
@@ -21943,7 +21964,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 && is_const_value(db, args[0])
                 && is_const_value(db, args[1])
                 && {
-                    let ty = crate::infer::type_of(db, args[0]);
+                    let ty = comparison_compound_ty(db, args[0], args[1]);
                     is_orderable_compound(db, &ty)
                 }
                 && let Some(ord) = const_key_order(db, args[0], args[1])
@@ -22133,7 +22154,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     rhs: args[1],
                 }
             } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge) && {
-                let opnd_ty = crate::infer::type_of(db, args[0]);
+                let opnd_ty = comparison_compound_ty(db, args[0], args[1]);
                 is_orderable_compound(db, &opnd_ty)
             } {
                 // RUNTIME COMPOUND ORDERING — a `<`/`<=`/`>`/`>=` on two tuple/record/list/sum values whose
@@ -22157,7 +22178,7 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     op,
                     lhs: args[0],
                     rhs: args[1],
-                    ty: crate::infer::type_of(db, args[0]),
+                    ty: comparison_compound_ty(db, args[0], args[1]),
                 }
             } else if matches!(op, Prim::Eq) && {
                 let opnd_ty = crate::infer::type_of(db, args[0]);

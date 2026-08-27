@@ -8191,7 +8191,7 @@ todo	grx1 the entry List param flows through a two-deep non-recursive helper cha
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
-todo	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
+pass	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)

@@ -1324,6 +1324,25 @@
   (call   run 2)
   (output (: true Bool)))
 
+(case "cll2 a const BARE empty list orders against a populated sibling under the const demand (element unified from the sibling)"
+  (doc    "The fold-side face of breaker olf4 (wrong-diagnostic #11): `(< (list) (list 1))` — the bare empty list's
+           element type is `Int64` by UNIFICATION with the sibling, but `type_of` renders an unresolved element var
+           for it, so an orderability check on that side ALONE mis-declined it as a float/set/map no-total-order case.
+           `comparison_compound_ty` prefers the sibling's resolved `(List Int64)`, so the fold fires: `[]` is a proper
+           prefix of `[1]`, so `[] < [1]` → true, folded under the `(const ...)` demand. No ascription needed.")
+  (input  (do (def (main) (const (if (< (list) (list 1)) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "cll3 a const (Ordering.of) of a bare empty vs populated list folds to Less (prefix), sibling-resolved"
+  (doc    "The three-way twin: `Ordering.of (list) (list 5)` — the empty list is a proper prefix, so it orders Less
+           (shorter-is-less). The bare empty list's element type resolves from the sibling `(List Int64)` via
+           `comparison_compound_ty`, so the fold fires under the const demand → Less → 1.")
+  (input  (do (def (main)
+                (const (match (Ordering.of (list) (list 5))
+                         ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3))))
+              (export main)))
+  (output (: 1 Int64)))
+
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
 ; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
