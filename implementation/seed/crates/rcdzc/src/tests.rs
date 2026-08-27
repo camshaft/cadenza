@@ -9085,16 +9085,7 @@ mod runtime_ops {
             "Int64 (<= x MAX) → true; got {f64max:?}"
         );
 
-        // VALUE PARITY over runtime narrow inputs — the fold agrees with the true comparison. An `Int8`
-        // param takes `Val::S8`, a `UInt8` param `Val::U8`.
-        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(127)]));
-        assert!(run::<bool>("(: x Int8)", "(<= x 127)", &[Val::S8(-128)]));
-        assert!(!run::<bool>("(: x Int8)", "(> x 127)", &[Val::S8(100)]));
-        assert!(run::<bool>("(: x Int8)", "(>= x -128)", &[Val::S8(-128)]));
-        assert!(!run::<bool>("(: x Int8)", "(< x -128)", &[Val::S8(-128)]));
-        // UInt8 max (255) — the new unsigned-narrow-max coverage.
-        assert!(run::<bool>("(: x UInt8)", "(<= x 255)", &[Val::U8(255)]));
-        assert!(!run::<bool>("(: x UInt8)", "(> x 255)", &[Val::U8(255)]));
+        // The VALUE parity (Int8/UInt8 comparison against the type's own bound folds to a constant) is the corpus cases "an Int8 comparison against its own type bound ..." and "a UInt8 ..." in 06-numeric-model.
     }
 
     #[test]
@@ -9358,32 +9349,7 @@ mod runtime_ops {
             "a constant inside the range keeps the compare; got {inside:?}"
         );
 
-        // VALUE PARITY — the folded results agree with the real comparison, and the not-folded one too.
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(< (& x 15) 20)",
-            &[Val::S64(-1)]
-        )); // -1&15=15, 15<20
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(>= (& x 15) 0)",
-            &[Val::S64(-99)]
-        )); // masked → nonneg
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(> (& x 15) 15)",
-            &[Val::S64(255)]
-        )); // 255&15=15, not >15
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(< (& x 15) 10)",
-            &[Val::S64(8)]
-        )); // 8<10
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(< (& x 15) 10)",
-            &[Val::S64(12)]
-        )); // 12<10 false
+        // The VALUE parity (masked-range comparisons fold or stay per the range) is the corpus case "a comparison against a derived (masked) range bound folds or stays per the range" in 06-numeric-model.
     }
 
     #[test]
@@ -9450,42 +9416,7 @@ mod runtime_ops {
             "in-range equality stays runtime"
         );
 
-        // VALUE PARITY: outside-range folds to false; in-range computes the real answer.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (= (: (& x 15) Int64) 100) 1 0)",
-                &[Val::S64(200)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (= (: (& x 15) Int64) 8) 1 0)",
-                &[Val::S64(200)]
-            ),
-            1
-        ); // 200&15=8
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (= (: (& x 15) Int64) 8) 1 0)",
-                &[Val::S64(199)]
-            ),
-            0
-        ); // 199&15=7
-
-        // TRAP PRESERVATION: `(% (/ 100 z) 3) ∈ [-2,2]`, `== 5` is unsatisfiable, but the operand divides
-        // by zero — the fold must NOT discard that trap.
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(= (: (% (: (/ 100 z) Int64) 3) Int64) 5)",
-                &[Val::S64(0)]
-            ),
-            "an unsatisfiable equality must still trap on a div-by-zero operand"
-        );
+        // The VALUE + TRAP parity (outside-range equality folds to false; in-range runtime; unsatisfiable eq keeps a div-by-zero operand) is the corpus cases "an equality against a value outside the operand's range ..." and "an unsatisfiable equality still traps ..." in 06-numeric-model.
     }
 
     #[test]

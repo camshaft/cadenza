@@ -1228,6 +1228,7 @@ pass	a UInt32 holds a wasm section size at the width boundary
 pass	a UInt48 wrap-multiply traps on a storage-slot wrap, not just a type-overflow
 pass	a UInt64 closure round-trips through a consumer export
 pass	a UInt64 holds a value above the signed 64-bit maximum
+pass	a UInt8 comparison against its own type bound folds to a constant
 pass	a UInt8 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	a UInt8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	a UInt8 wrapping-add result feeds a CHECKED add — the MASKED value is what the checked op sees
@@ -1609,6 +1610,7 @@ pass	a common float ordering hoist reproduces the IEEE partial order including N
 pass	a common integer comparison hoisted out of both if arms compares once over the selected operand
 pass	a common operator hoisted out of both if arms selects the operand and computes once
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
+pass	a comparison against a derived (masked) range bound folds or stays per the range
 pass	a comparison operator passed to a recursive HOF (emit-call)
 pass	a comparison pair split across a nested connective reassociates and folds to the interval
 pass	a comparison walls the FLOAT width from a literal above it
@@ -4634,6 +4636,7 @@ pass	an Int argument to a parameter used as a Bool condition is rejected
 pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	an Int32 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an Int64 sum-payload literal-match needs no widening (width control)
+pass	an Int8 comparison against its own type bound folds to a constant
 pass	an Int8 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED masked value is compared
 pass	an N suffix lets a huge literal need no annotation
@@ -4872,6 +4875,7 @@ pass	an entrypoint returning a comparison presents a Bool result at the boundary
 pass	an entrypoint returning arithmetic presents an Int64 result at the boundary
 pass	an entrypoint that delegates no effect is pure and makes no host call
 pass	an enumerate-and-rebuild round trip equals the source map by canonical identity
+pass	an equality against a value outside the operand's range folds to false; in-range stays runtime
 pass	an equality combined with a contradicting range folds to false
 pass	an equality combined with a satisfiable range folds to the equality
 pass	an equality or-ed with a covering range subsumes to the range
@@ -5158,6 +5162,7 @@ pass	an unquoted variable is not captured by a variant-payload match-pattern bin
 pass	an unrecognized annotation leaves its wrapped definition in effect
 pass	an unrecognized pragma key is rejected rather than ignored
 pass	an unrecognized string escape is rejected
+pass	an unsatisfiable equality still traps on a divide-by-zero operand
 pass	an unsigned LEB128 encoder emits a single byte below the continuation threshold
 pass	an unsigned LEB128 encoder emits the known-answer multibyte encoding
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
