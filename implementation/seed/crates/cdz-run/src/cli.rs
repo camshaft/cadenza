@@ -213,12 +213,34 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             ),
             None => None,
         };
+        // A `(peer …)` case ships providers via `--peer <iface>=<wasm>`; the grade path MUST compose them
+        // (the consumer's imported interface is bound by forwarding the peer's exports over the shared
+        // runtime). Parse them HERE — grade mode returns before the direct-run path's peer parse, so
+        // without this the `--peer` args are silently dropped and the import falls to an unbound host-call
+        // (the corpus-29 nix reds). Empty for a plain case.
+        let peers = parse_peer_args(&cli.peers)?;
         let (bytes, runtime, runtime_cache_dir) = match &cli.component {
             Some(component) => {
                 let bytes = read_component_bytes(component)?;
+                // Resolve the value-heap runtime the composition needs. The CONSUMER's import first; but a
+                // SCALAR consumer that composes a HEAP peer (e.g. the A→B→C chain, where the runtime is
+                // imported by a middle/leaf provider, not the top consumer) imports none itself — so fall
+                // back to the FIRST peer that requires one (they all pin the same shared instance). Without
+                // this fallback the `--runtime` override (the grade's DEBUG-COUNTERS runtime) is not applied
+                // to the peer, so it resolves the SHIPPED runtime by hash and the heap-balance count is
+                // vacuous — the exact same consumer/peer runtime-sharing the direct-run path resolves.
                 let runtime = match required_runtime(&bytes)? {
                     Some(req) => Some(resolve_runtime(cli, &req)?),
-                    None => None,
+                    None => {
+                        let mut rt = None;
+                        for peer in &peers {
+                            if let Some(req) = required_runtime(&peer.bytes)? {
+                                rt = Some(resolve_runtime(cli, &req)?);
+                                break;
+                            }
+                        }
+                        rt
+                    }
                 };
                 let rcd = resolve_runtime_cache_dir(
                     runtime.is_some(),
@@ -238,6 +260,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             cli.compile_status,
             &compile_diag,
             baseline.as_deref(),
+            &peers,
         );
     }
 
@@ -281,37 +304,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
 
     // Parse each `--peer interface=path` and read the peer component bytes. A peer that itself imports the
     // runtime is composed against the SAME shared instance `run_with_peers` binds (X4b/X5).
-    let peers: Vec<Peer> = cli
-        .peers
-        .iter()
-        .map(|s| {
-            let (iface, path) = s
-                .split_once('=')
-                .ok_or_else(|| anyhow::anyhow!("--peer expects `interface=path`, got `{s}`"))?;
-            // Both halves must be non-empty. An empty PATH (`--peer iface=`) otherwise falls through to
-            // `fs::read("")` → a confusing blank-filename "No such file" error; an empty INTERFACE
-            // (`--peer =path`) makes a peer with no interface name that fails opaquely later. Name the
-            // real problem at the CLI edge.
-            if iface.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "--peer `{s}` has an empty interface name — expected `interface=path` \
-                     (e.g. `cadenza:math/api=math.wasm`)"
-                ));
-            }
-            if path.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "--peer `{s}` has an empty path — expected `interface=path` \
-                     (e.g. `cadenza:math/api=math.wasm`)"
-                ));
-            }
-            let bytes = std::fs::read(path)
-                .map_err(|e| anyhow::anyhow!("read peer component {path}: {e}"))?;
-            Ok(Peer {
-                bytes,
-                interface: iface.to_string(),
-            })
-        })
-        .collect::<anyhow::Result<_>>()?;
+    let peers: Vec<Peer> = parse_peer_args(&cli.peers)?;
 
     // If any peer needs the runtime but the consumer did not, resolve it too (they share one instance).
     let runtime = match runtime {
@@ -500,6 +493,40 @@ fn emit_observed_host_calls(observed: &[String]) {
 //# A program that is run or resumed against the value-heap runtime MUST be run against the runtime whose content address is the one pinned for that program, so that execution is deterministic in the pair (program, runtime content address) and a runtime built from different bytes is a distinct, explicitly-identified execution environment rather than a silent substitution.
 /// Read a component's bytes — from a file, or from stdin when the path is `-` (so the bin composes in a
 /// pipe). Shared by the single-run path and grade mode.
+/// Parse each `--peer <interface>=<path>` into a [`Peer`] (interface name + the peer component's bytes).
+/// Shared by the direct-run path AND the `--grade` path — a `(peer …)` corpus case graded via the nix exec
+/// MUST compose its peers, so grade mode parses them here too (before its early return) rather than letting
+/// the `--peer` args be silently dropped. Both halves must be non-empty (a blank interface / path fails
+/// opaquely deeper), named at the CLI edge.
+fn parse_peer_args(peers: &[String]) -> anyhow::Result<Vec<Peer>> {
+    peers
+        .iter()
+        .map(|s| {
+            let (iface, path) = s
+                .split_once('=')
+                .ok_or_else(|| anyhow::anyhow!("--peer expects `interface=path`, got `{s}`"))?;
+            if iface.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--peer `{s}` has an empty interface name — expected `interface=path` \
+                     (e.g. `cadenza:math/api=math.wasm`)"
+                ));
+            }
+            if path.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--peer `{s}` has an empty path — expected `interface=path` \
+                     (e.g. `cadenza:math/api=math.wasm`)"
+                ));
+            }
+            let bytes = std::fs::read(path)
+                .map_err(|e| anyhow::anyhow!("read peer component {path}: {e}"))?;
+            Ok(Peer {
+                bytes,
+                interface: iface.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn read_component_bytes(component: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     if component.as_os_str() == "-" {
         let mut buf = Vec::new();

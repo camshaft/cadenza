@@ -14,7 +14,9 @@ use cdz_corpus_grade::{
     GTrial, Grade, Outcome as GradeOutcome, decode_test_run, exec_exit, grade_run,
 };
 
-use crate::{HostResponse, Outcome, RunOpts, run_with_live_objects};
+use crate::{
+    HostResponse, Outcome, Peer, RunOpts, run_with_live_objects, run_with_peers_live_objects,
+};
 
 /// Grade `component_bytes` (the emitted wasm; `None` when the compile was refused) against `test_run_ast`.
 /// `component_name` (a `(wit-world …)` case's `(component-name …)`) qualifies a trial's call as
@@ -31,6 +33,12 @@ pub fn grade(
     compile_status: i32,
     compile_diag: &str,
     baseline: Option<&str>,
+    // Cross-component PROVIDER peers (`--peer <iface>=<wasm>`) the CONSUMER imports. A `(peer …)` corpus
+    // case MUST be graded with its peers COMPOSED — the consumer's imported interface is bound by
+    // forwarding the peer's exported funcs over the shared runtime instance (`run_with_peers`). Empty for a
+    // plain single-component case (the common path). Without this, a peer case's imported interface falls
+    // through to an unbound host-call and grades "no recorded response" (the corpus-29 nix reds).
+    peers: &[Peer],
 ) -> Result<ExitCode> {
     let test_run = decode_test_run(test_run_ast)?;
     // The recorded host-response tape, shared across every trial's run.
@@ -86,13 +94,37 @@ pub fn grade(
         // A `(call-method <member>)` case reaches a named value-resource member on the grade path too (no
         // export → routes to the escape driver, which reaches `<member>` instead of `encode`).
         let call_member: Option<&str> = trial.call.as_ref().and_then(|c| c.method.as_deref());
-        let (outcome, observed, live) = run_with_live_objects(
-            component_bytes,
-            &opts,
-            second_call,
-            drop_handle,
-            call_member,
-        )?;
+        // A `(peer …)` case composes its providers (the consumer's imported interface is bound by
+        // forwarding the peer's exported funcs over the shared runtime); a plain case runs the consumer
+        // alone. Both read the shared runtime's live-cell count for the heap-balance assertion.
+        let (outcome, observed, live) = if peers.is_empty() {
+            run_with_live_objects(
+                component_bytes,
+                &opts,
+                second_call,
+                drop_handle,
+                call_member,
+            )?
+        } else {
+            // A COMPOSE-TIME REJECT (arity/type/missing-op) is the peer case's OUTCOME, not a harness
+            // error: the corpus models it as `(trap "signature mismatch")` / `(trap "type mismatch")` /
+            // `(trap "does not export op")` (authoring rule), and the shared grader classifies those
+            // reasons to CDZ0705/CDZ0706. So map the compose `Err` to a graded `Trap` (with the reject
+            // message as the reason) rather than propagating it as a hard grade error — otherwise a
+            // reject case exits non-zero instead of grading against its expected trap. A successful
+            // compose returns its outcome normally; no live-count on a reject (no run happened).
+            match run_with_peers_live_objects(
+                component_bytes,
+                peers,
+                &opts,
+                second_call,
+                drop_handle,
+                call_member,
+            ) {
+                Ok(triple) => triple,
+                Err(e) => (Outcome::Trap(format!("{e}")), Vec::new(), None),
+            }
+        };
         if first_live.is_none() {
             first_live = Some(live);
         }

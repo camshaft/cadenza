@@ -1060,7 +1060,8 @@ pub fn run_with_peers_hosted(
     bindings: Vec<HostOpBinding>,
 ) -> Result<Outcome> {
     let compiled = compile_composition(consumer_bytes, peers)?;
-    run_composition_hosted_capturing(&compiled, opts, bindings).map(|(o, _)| o)
+    run_composition_hosted_capturing(&compiled, opts, bindings, None, false, None)
+        .map(|(o, _, _)| o)
 }
 
 /// Like [`run_with_peers`], but returns the ordered OBSERVED host-op list alongside the outcome — the
@@ -1238,7 +1239,8 @@ pub fn run_composition_capturing(
     compiled: &CompiledComposition,
     opts: &RunOpts,
 ) -> Result<(Outcome, Vec<String>)> {
-    run_composition_hosted_capturing(compiled, opts, Vec::new())
+    run_composition_hosted_capturing(compiled, opts, Vec::new(), None, false, None)
+        .map(|(o, c, _)| (o, c))
 }
 
 /// The capturing core, over PRE-COMPILED components — returns `(Outcome, observed-host-op-list)`. The
@@ -1251,7 +1253,13 @@ fn run_composition_hosted_capturing(
     compiled: &CompiledComposition,
     opts: &RunOpts,
     bindings: Vec<HostOpBinding>,
-) -> Result<(Outcome, Vec<String>)> {
+    // The trial's call shape (a `(then …)` two-call continuation, a `(drop)`, a `(call-method …)`) — the
+    // SAME knobs the single-component [`run_with_live_objects`] threads, so a PEER case grades identically
+    // to a plain one on the nix grade path. `(None, false, None)` for a plain composed run.
+    second_call: Option<&[String]>,
+    drop_handle: bool,
+    call_member: Option<&str>,
+) -> Result<(Outcome, Vec<String>, Option<u32>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let consumer = &compiled.consumer;
@@ -1382,12 +1390,54 @@ fn run_composition_hosted_capturing(
     }
 
     let outcome = run_export(
-        &engine, consumer, &mut store, &linker, opts, None, false, None,
+        &engine,
+        consumer,
+        &mut store,
+        &linker,
+        opts,
+        second_call,
+        drop_handle,
+        call_member,
     )?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
     let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
-    Ok((outcome, calls))
+    // Heap balance over the SHARED runtime instance — the composed analogue of [`run_with_live_objects`]:
+    // a heap-importing peer case must end at its expected live-cell count on the DEBUG-COUNTERS runtime the
+    // grade path composes (`--runtime runtimeDebug`). Read ONLY on a clean VALUE return (a trap aborted
+    // mid-computation, so the balance is ill-defined AND the instance may be unusable — mirrors
+    // `run_with_live_objects`). `None` when no component imported the runtime (a scalar peer case) → the
+    // grade skips the balance check.
+    let live = match (&outcome, &shared_runtime) {
+        (Outcome::Value(_), Some((rt, _))) => Some(read_live_objects(&mut store, rt)?),
+        _ => None,
+    };
+    Ok((outcome, calls, live))
+}
+
+/// The PEER-COMPOSING analogue of [`run_with_live_objects`]: compose `consumer_bytes` against its `peers`
+/// (the shared-runtime instance + compose-time signature check `run_with_peers` establishes), run the
+/// chosen export with the trial's call shape, and read the shared runtime's live-cell count. This is what
+/// the corpus GRADE path uses for a `(peer …)` case — the plain [`run_with_live_objects`] runs the consumer
+/// ALONE (no peers), so a peer case's imported interface would fall through to an unbound host-call. Returns
+/// the outcome, the observed host-op list, and the post-run live count (`None` for a no-heap case).
+pub fn run_with_peers_live_objects(
+    consumer_bytes: &[u8],
+    peers: &[Peer],
+    opts: &RunOpts,
+    second_call: Option<&[String]>,
+    drop_handle: bool,
+    call_member: Option<&str>,
+) -> Result<(Outcome, Vec<String>, Option<u32>)> {
+    let compiled = compile_composition(consumer_bytes, peers)?;
+    run_composition_hosted_capturing(
+        &compiled,
+        opts,
+        Vec::new(),
+        second_call,
+        drop_handle,
+        call_member,
+    )
 }
 
 /// Verify a consumer's imported model op `model_iface`.`op_name` has the `(u32) -> u32` boundary shape
