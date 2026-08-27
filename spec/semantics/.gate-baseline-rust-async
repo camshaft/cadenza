@@ -1385,6 +1385,7 @@ pass	a bottom-up fold matches a tuple of its recursive results with constructor 
 pass	a bound effect performed with neither a handler nor a host delegation has no home
 pass	a bound name in a map key is used by its value, not the literal name
 pass	a bounded generator produces only in-range values (0 <= roll < 64) for a runtime seed
+pass	a boxed Unit-parameter closure (a lazy thunk) is forced and runs
 pass	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
@@ -3209,6 +3210,7 @@ pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive consumer of a dictionary record inlines and erases the dictionary
 pass	a recursive def computes over its argument
 pass	a recursive def named a target-language keyword runs
+pass	a recursive def returning a closure is applied directly as the call head
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive do-local function nested in an inlined helper recurses
 pass	a recursive do-local function survives two inlinings of its helper

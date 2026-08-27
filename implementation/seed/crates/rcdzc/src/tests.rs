@@ -54524,30 +54524,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_def_returning_a_closure_is_applyable() {
-        // REGRESSION (corpus-bugfix/breaker 6360): a RECURSIVE def whose result is a CLOSURE, applied
-        // directly, declined "value is not applyable" (check rc=0, then a lower decline — a false reject of
-        // the factory-selected-by-recursion idiom). `(selfp n)` recurses to `(selfp 0)` = `(fn (x) (+ x
-        // 100))`; `((selfp 2) 5)` = 105. The head `(selfp 2)` is a recursive `Core::Call` returning a
-        // closure — it cannot β-reduce (no compile-time lambda body; the reduction hits the depth guard),
-        // so its result is a runtime closure HANDLE that must apply via `call_indirect`. Before this,
-        // `head_is_runtime_fn_value` had no arm for an application head, so `runtime_fn_spine` returned
-        // `None` and the apply fell to the NOT_APPLYABLE decline. Fix: recognize a non-reducible `Apply`
-        // head of `Ty::Fn` result as a runtime fn value (the emit materializes the call's returned handle
-        // as the closure cell). The NON-recursive control `((pick b) 5)` already worked (case-of-if /
-        // β-reduction) and must stay on that path — verified by the sibling factory tests above.
-        let recursive = "(module m \
-            (def (selfp (: n Int64)) (if (= n 0) (fn ((: x Int64)) (+ x 100)) (selfp (- n 1)))) \
-            (def (main) ((selfp 2) 5)) (export main))";
-        // COMPILE is the precise guard for the bug: the decline was at check/lower (no artifact produced),
-        // so a successful compile IS the regression witness. The runtime value (105) is covered by the
-        // corpus closure-return family.
-        compile_component(&crate::codec::encode(&parse(recursive))).expect(
-            "compile — a recursive closure-returner must be applyable, not decline 'not applyable'",
-        );
-    }
-
-    #[test]
     fn a_handle_whose_body_is_a_closure_is_applyable() {
         // REGRESSION (corpus-bugfix/breaker 6373, the handle-result twin of 6360): a `(handle …)` whose
         // BODY is a closure, applied directly, declined "value is not applyable". `((handle Env 0 ((get (u)
@@ -55296,42 +55272,6 @@ mod stage1 {
                 .unwrap_or_else(|e| {
                     panic!("closure-payload-sum if-helper reused-arg (k={kexpr}) must COMPILE, not CDZ0101: {e:?}")
                 });
-        }
-    }
-
-    #[test]
-    fn a_boxed_closure_taking_unit_a_lazy_thunk_is_forced_and_runs() {
-        // The canonical lazy THUNK `Thunk = Susp(Unit -> Int64)` — a closure with a `Unit` PARAMETER boxed
-        // in a sum, extracted by a match, and FORCED (`(f unit)`). `valtype_of(Unit) = None`, so the
-        // boxed-closure lift guard declined "a closure's parameter type has no machine representation" —
-        // but a Unit param, like a Unit result, occupies NO wasm slot. The fix ELIDES a Unit param from
-        // the closure's functype (lift guard, `select_function_of` slot assignment, `Core::Param` read of
-        // a Unit binder, `closure_type_index`, and `collect_closure_call_sigs`, all in lockstep). Unlike
-        // the Unit-RESULT face, the forced call is NOT dead (its result is observed), so a real
-        // `call_indirect` runs → 42. Unblocks the ideal thunk-based lazy `Iter` (v-iterators).
-        use crate::testkit::parse;
-        let src = "(module m \
-            (type Thunk (Susp (-> Unit Int64))) \
-            (def (force (: t Thunk)) (match t (((. Thunk Susp) f) (f unit)))) \
-            (def (mk) ((. Thunk Susp) (fn ((: u Unit)) 42))) \
-            (def (main) (force (mk))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a boxed Unit-param closure (thunk) compiles (was: declined)");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run boxed-unit-param thunk") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "42"),
-            cdz_run::Outcome::Trap(t) => panic!("boxed-unit-param thunk trapped: {t}"),
         }
     }
 
