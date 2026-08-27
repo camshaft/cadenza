@@ -5592,18 +5592,17 @@
   (call   main (: 5 Int64)) (output (: 31 Int64))
   (call   main (: 0 Int64)) (output (: 6 Int64)))
 
-(case "a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)"
-  (doc    "The completeness boundary where the #12 post-recursion-state fold (which threads a SELF-recursive
-           callee's out-state to a trailing observer) meets a MUTUAL-recursive SCC (breaker row-mr). `ev`/`od`
-           mutually recurse, each performing `E.next`; the caller reads the SCC's final out-state via a trailing
-           `(E.next)` after `(ev 2)`. The self-recursive face folds (the #12 fix, f60b44c42), but threading a
-           MUTUAL SCC's out-state across the whole group to a caller observer needs group-wide multi-value
-           specialization tying the partners together — a later increment. Single-return would drop the
-           partners' advances (a silent wrong value), so the fold DECLINES cleanly (an honest not-yet-reducible
-           todo) rather than miscompile. When the group multi-value + caller-observed-outstate arc lands, this
-           FOLDS to 3405: main(3) draws 3 (ev), 4 (od) → ev 2 = 10·3 + 4 = 34; the trailing (E.next) reads the
-           post-SCC state 5 → 100·34 + 5 = 3405 (verified via the linear-equivalent draw sequence). The output
-           is pinned (3405); when the arc lands, flip this case's baseline entry todo→pass.")
+(case "a mutually-recursive performer pair whose out-state a trailing caller draw observes folds via group-wide multi-value"
+  (doc    "Where the #12 post-recursion-state fold (which threads a SELF-recursive callee's out-state to a
+           trailing observer) meets a MUTUAL-recursive SCC (breaker row-mr). `ev`/`od` mutually recurse, each
+           performing `E.next`; the caller reads the SCC's final out-state via a trailing `(E.next)` after
+           `(ev 2)`. Threading a MUTUAL SCC's out-state across the whole group to a caller observer now WORKS:
+           the group-entry detection fires on a CALLER-observed SCC (not just a within-body partner-precedes-
+           observation), so the whole SCC is group-specialized multi-value (each member returns `(value,
+           out-states…)`, partner calls let-bound + out-state-projected), and the handle body's `(ev 2)` is
+           projected + its out-state threaded to the trailing `(E.next)`. Folds to 3405: main(3) draws 3 (ev),
+           4 (od) → ev 2 = 10·3 + 4 = 34; the trailing (E.next) reads the post-SCC state 5 → 100·34 + 5 = 3405
+           (verified via the linear-equivalent draw sequence).")
   (input  (do
             (effect E (op next (-> Int64)))
             (def (ev (: k Int64)) (if (<= k 0) 0 (+ (* 10 (E.next)) (od (- k 1)))))
@@ -5614,6 +5613,27 @@
                 (+ (* 100 (ev 2)) (E.next))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 3405 Int64)))
+
+(case "a caller-observed pure-mutual SCC (neither member self-recurses) folds via the group-wide multi-value fold"
+  (doc    "The breaker task-#15 adversarial witness, promoted from a Rust unit test to run its VALUE here. `ea`/
+           `eb` form a PURE-mutual SCC — each calls the OTHER (never itself) and performs `Counter.bump` — and
+           the handle body `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's final out-state via the
+           trailing draw. The group-entry detection fires on a caller-observed PURE-mutual SCC (the no-self-call
+           gate that separates it from the self-recursing frb3, which still declines), so the whole SCC is
+           group-specialized multi-value and the trailing draw reads the advanced post-SCC state. Value by an
+           independent hand-trace (bump returns s, advances s+1; left-to-right eval): ea(3)=3, trailing bump=3 →
+           1000·3 + 3 = 3003. Pins that the pure-mutual caller-observed shape folds (never a leaked internal
+           name, never a wrong value).")
+  (input  (do
+            (effect Counter (op bump (-> Int64)))
+            (def (ea (: n Int64)) (if (= n 0) 0 (+ (eb (- n 1)) (Counter.bump))))
+            (def (eb (: n Int64)) (if (= n 0) 0 (+ (ea (- n 1)) (Counter.bump))))
+            (def (main)
+              (handle Counter (: 0 Int64)
+                ((bump () s (resume s (+ s 1))))
+                (+ (* 1000 (ea 3)) (Counter.bump))))
+            (export main)))
+  (call   main) (output (: 3003 Int64)))
 
 (case "a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence"
   (input  (do

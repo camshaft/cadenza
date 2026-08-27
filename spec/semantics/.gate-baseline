@@ -1491,6 +1491,7 @@ pass	a call-returned Int32 newtype literal-payload arm spills at the narrow widt
 pass	a call-returned UInt8 newtype literal-payload arm spills at the narrow width
 pass	a called function's body resolves its free names lexically, not in the caller's scope
 pass	a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound
+pass	a caller-observed pure-mutual SCC (neither member self-recurses) folds via the group-wide multi-value fold
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
 pass	a cancelling add-then-subtract chain keeps the intermediate overflow
@@ -1980,7 +1981,6 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
-pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -2881,6 +2881,7 @@ pass	a mutually-recursive group threads two nested handlers' states at once
 pass	a mutually-recursive group with the perform in a DIFFERENT branch from the mutual call folds
 pass	a mutually-recursive pair fully named by the export clause resolves
 pass	a mutually-recursive parser projects a return tuple and rebuilds one with a boxed sum across the edge
+pass	a mutually-recursive performer pair whose out-state a trailing caller draw observes folds via group-wide multi-value
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
 pass	a naive (non-renaming) substitution captures a free variable — the bug capture-avoidance prevents
 pass	a name bound to a string keys a map by its value, not the literal name
@@ -8841,8 +8842,6 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
-todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
-todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
