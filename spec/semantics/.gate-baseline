@@ -2240,6 +2240,7 @@ pass	a guard expression calling a recursive helper inside a self-tail-loop match
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
+pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
@@ -2745,6 +2746,7 @@ pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a middle module re-exports a base function and also uses it in its own exported function
+pass	a middle peer is both a consumer and a provider (A to B to C chain)
 pass	a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-24 match-scrutinee hoist at integration scale
 pass	a mirrored equality pair under and folds by commutativity to one equality
 pass	a mirrored equality pair under or folds by commutativity to one equality
@@ -7023,6 +7025,9 @@ pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an
 pass	nm4 a narrow Int8 nested mask grounds the folded constant to the width
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	no over-conservatism: a trap-free masked operand still folds the tautology
+pass	no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)
+pass	no2 TWO outer performs in one inner-arm resume value fold with ordered state advance
+pass	no3 the inner state read both AROUND and INSIDE the outer perform folds
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	not over a narrow Int32 comparison folds to the complement
 pass	not over an unsigned comparison uses the unsigned op
@@ -8855,7 +8860,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
-pass	no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)
-pass	no2 TWO outer performs in one inner-arm resume value fold with ordered state advance
-pass	no3 the inner state read both AROUND and INSIDE the outer perform folds
