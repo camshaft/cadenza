@@ -10126,3 +10126,20 @@
   (input (do (def (main (: z Int64)) (if (< (& z 15) 16) 1 0)) (export main)))
   (call main (: 5 Int64))  (output (: 1 Int64))
   (call main (: -1 Int64)) (output (: 1 Int64)))
+
+; -- breaker batch 506 (2026-08-27): bitwise/shift folds, fold-vs-runtime verified (shl, ARITHMETIC
+; shr on a negative, band). Out-of-range shifts are CONSISTENT both ways: const (<< 1 64) fails
+; loud (precise CDZ0304 "shift count 64 is out of range 0..64"), and the runtime twin TRAPS (the
+; emit guards the count rather than adopting wasm's masking) — the language semantics are
+; count 0..=63-or-trap, enforced on both paths. (The runtime trap is a bare unreachable — the
+; trap-message-fidelity class, already filed.)
+
+(case "bwf1 shift-left, arithmetic shift-right on a negative, and bitwise-AND folds agree with their runtime twins"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (> n 0) 5 99)) (b (if (> n 0) 2 3)) (m (if (> n 0) -8 7)))
+      (+ (if (= (<< 5 2) (<< a b)) 1 0)
+         (+ (* 10 (if (= (>> -8 1) (>> m 1)) 1 0))
+            (* 100 (if (= (& 12 10) (& (if (> n 0) 12 5) (if (> n 0) 10 3))) 1 0))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 111 Int64)))
