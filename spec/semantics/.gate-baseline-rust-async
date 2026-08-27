@@ -1927,7 +1927,6 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
-pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -8320,7 +8319,6 @@ todo	a list of records with a bytes leaf crosses the export boundary via an impo
 todo	a middle peer is both a consumer and a provider (A to B to C chain)
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
-todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a peer missing a bound op is rejected naming the op
@@ -8328,7 +8326,6 @@ todo	a peer op arity mismatch is rejected at compose time, not a trap
 todo	a peer op type mismatch is rejected at compose time (same arity, different type)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
-todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive newtype escapes to the host tagged with its own name at each recursion point
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
