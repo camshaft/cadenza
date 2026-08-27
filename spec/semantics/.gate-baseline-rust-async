@@ -3545,6 +3545,7 @@ pass	a runtime conditional selects its then-branch when the runtime condition ho
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
 pass	a runtime const-multiply at its exact fitting boundary does not trap
 pass	a runtime const-multiply one past its fitting boundary traps
+pass	a runtime cross-scale scalar-Int quantity comparison converts before comparing, not a raw magnitude compare
 pass	a runtime dependent-size bytes segment sized by a bit-field field
 pass	a runtime dependent-size match falls through when the scrutinee is too short for the size prefix
 pass	a runtime dependent-size match reads a MULTI-BYTE (u16) length prefix
