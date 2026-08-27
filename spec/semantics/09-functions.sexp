@@ -8861,3 +8861,16 @@
   (call main (: 5 Int64))
   (output (: (tuple (list 7 8) (list 7 8)) (Tuple (List Int64) (List Int64))))
   (live-objects 3))
+
+; -- breaker batch 483 (2026-08-27): the result<scalar,scalar> param rung — the cell my original
+; Result probe MISSED (rp1 used a String error payload, which declined; the scalar-scalar shape
+; was ADMITTED by #3923 and emitted an INVALID component until #3937 made it decline honestly —
+; the same silent-bad-artifact class as the 17-param bug). Pinned so the eventual Result slice
+; flips BOTH payload shapes and any regression to invalid-wasm hits a row. Coverage lesson: probe
+; a type family's payload MATRIX, not one representative.
+
+(case "erp2 a Result entry param with two scalar payloads declines pending the Result lift"
+  (input (do (def (main (: r (Result Int64 Int64)))
+    (match r ((Ok v) (* v 2)) ((Err e) (- 0 e)))) (export main)))
+  (call main (: (Ok 21) (Result Int64 Int64)))
+  (output (: 42 Int64)))

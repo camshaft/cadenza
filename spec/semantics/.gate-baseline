@@ -8086,3 +8086,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+todo	erp2 a Result entry param with two scalar payloads declines pending the Result lift
