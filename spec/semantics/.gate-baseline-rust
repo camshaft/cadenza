@@ -2822,6 +2822,8 @@ pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
+pass	a nested symbol-literal payload pattern falls through on a non-match
+pass	a nested symbol-literal payload pattern matches by content
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
@@ -3688,6 +3690,9 @@ pass	a runtime symbol not among the known symbols is rejected
 pass	a runtime symbol not among the literal arms falls through to the wildcard
 pass	a runtime symbol round-trips back to its string
 pass	a runtime symbol that differs from the interned constant does not match
+pass	a runtime symbol-literal pattern dispatches to the first arm by content
+pass	a runtime symbol-literal pattern dispatches to the second arm by content
+pass	a runtime symbol-literal pattern falls through to the wildcard on an unlisted symbol
 pass	a runtime three-level nested tuple compares equal by a deep walk
 pass	a runtime three-variant classifier dispatches to the middle arm
 pass	a runtime three-variant classifier dispatches to the negative arm

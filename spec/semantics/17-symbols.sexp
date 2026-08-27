@@ -890,3 +890,32 @@
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (live-objects known-leak 4))
+
+; -- runtime Symbol content-dispatch match (Symbol.of over a runtime rope defeats the fold; migration from
+; rcdzc a_symbol_literal_pattern_dispatches_by_content, 2026-08-27): a symbol-literal pattern dispatches by
+; content across the arms, and a nested symbol-literal payload sub-pattern matches by content.
+
+(case "a runtime symbol-literal pattern dispatches to the first arm by content"
+  (input (do (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+             (def (main) (classify (Symbol.of (String.concat "ad" "d")))) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a runtime symbol-literal pattern dispatches to the second arm by content"
+  (input (do (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+             (def (main) (classify (Symbol.of (String.concat "su" "b")))) (export main)))
+  (call main) (output (: 2 Int64)))
+
+(case "a runtime symbol-literal pattern falls through to the wildcard on an unlisted symbol"
+  (input (do (def (classify (: s Symbol)) (match s (#"add" 1) (#"sub" 2) (_ 0)))
+             (def (main) (classify (Symbol.of (String.concat "x" "y")))) (export main)))
+  (call main) (output (: 0 Int64)))
+
+(case "a nested symbol-literal payload pattern matches by content"
+  (input (do (type W (Mk Symbol)) (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+             (def (main) (f (Mk (Symbol.of (String.concat "ad" "d"))))) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a nested symbol-literal payload pattern falls through on a non-match"
+  (input (do (type W (Mk Symbol)) (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
+             (def (main) (f (Mk (Symbol.of (String.concat "su" "b"))))) (export main)))
+  (call main) (output (: 0 Int64)))
