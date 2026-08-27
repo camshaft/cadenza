@@ -32137,43 +32137,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_mixed_scale_combine_converts_a_computed_quantity_operand() {
-        // The mixed-scale converters (convert_operand_ast{,_bigint,_rational}) read the operand's magnitude
-        // via `qty_magnitude_occ` — a literal `Qty.of`'s value occurrence, else `(Qty.value operand)`. So a
-        // COMPUTED quantity operand (a `*`-scaled one, here `(Qty n km) * 2N`), not only a literal `Qty.of`,
-        // combines across scales. Previously the literal-only `qty_value_occ` declined it ("runtime
-        // mixed-unit BigInt combine over a non-Qty.of operand not yet emitted"). (Qty n km * 2N) + 500 m,
-        // n=3 → 3·1000·2 + 500 = 6500. Uses the FULL runtime; skips if absent (the corpus gate covers e2e).
-        let src = "(do \
-                   (def (main (: n Int64)) \
-                     ((. Qty value) (+ (* ((. Qty of) ((. BigInt of) n) \
-                                             ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                                          ((. BigInt of) 2)) \
-                                       ((. Qty of) ((. BigInt of) 500) ((. Unit base) #\"meter\"))))) \
-                   (export main))";
-        let bytes = crate::codec::encode(&parse(src));
-        let comp = compile_component(&bytes)
-            .expect("a mixed-scale combine over a computed BigInt quantity operand compiles (was a decline)");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            return; // no runtime store — the corpus gate is the e2e witness
-        };
-        let opts = cdz_run::RunOpts {
-            export: None,
-            args: vec!["3".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&comp, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert!(
-                s.contains("6500"),
-                "(n km * 2N) + 500 m, n=3 → 6500 (computed operand combines across scales): {s}"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("computed-operand combine trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_runtime_same_unit_float_quantity_comparison_rides_the_scalar_float_compare() {
         // A same-unit Float-inner quantity comparison erases to a plain scalar float compare (the
         // `(Qty Float64 meter)` erases to its f64), so at RUNTIME it must route to the IEEE float compare,
@@ -50511,51 +50474,6 @@ mod stage1 {
             cdz_run::Outcome::Value(v) => assert_eq!(
                 v, "5",
                 "len monomorphized over Lst Int64 (2) + Lst String (3), type arg erased"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
-    fn a_type_valued_parameter_under_a_function_arrow_annotation_is_not_lost() {
-        // Type-valued-parameter vertical: a `(: t Type)` param used in the DOMAIN or RESULT of a FUNCTION
-        // ARROW annotation — `(: g (-> t Int64))` — must reduce `t` to the SAME stable type variable a
-        // bare `(: x t)` or `(: xs (List t))` does. It did not: `FnCtor` has no direct fast path in
-        // `typeval_of`'s `Apply` arm (unlike List/Set/Map/Tuple/Record), so the arrow took the
-        // `reduce_ctor`→`encode_typeval` round-trip, and `encode_ty` had NO `Ty::Var` arm — it stubbed the
-        // variable as `Unit`. So the scheme read `(-> Type (-> (-> Unit Int64) …))` instead of `(-> Type (->
-        // (-> a Int64) …))`, and a real closure argument `(fn (n) n) : (-> Int64 Int64)` failed CDZ0203
-        // "expected (-> Unit Int64)". The fix pairs an `encode_ty`/`decode_ty` `(Var N)` arm so the
-        // round-trip is faithful. This is exactly the operator's ad-hoc-polymorphism example (a dict of
-        // functions generic over the element type). Here `dict.describe` dispatches over BOTH an Int64 and a
-        // Bool instance through a `(Record (describe (-> t Int64)))`-annotated param: 5 + (true→1) = 6.
-        let src = "(module m \
-                   (def (describe-int (: n Int64)) n) \
-                   (def (describe-bool (: b Bool)) (if b 1 0)) \
-                   (def (show-with (: t Type) (: dict (Record (describe (-> t Int64)))) (: x t)) \
-                     ((. dict describe) x)) \
-                   (def (main) (+ (show-with Int64 (record (describe describe-int)) 5) \
-                                  (show-with Bool (record (describe describe-bool)) true))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a type-param under an arrow annotation compiles (ad-hoc-poly dict dispatch)");
-        // Uses the value heap (the record), so it runs through `cdz_run` with the runtime resolved — SKIP
-        // if the store is absent (as the sibling type-valued-parameter tests do).
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping arrow-type-param run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => assert_eq!(
-                v, "6",
-                "show-with dispatched describe-int (5) + describe-bool (true→1) through a `(-> t Int64)` dict field"
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }

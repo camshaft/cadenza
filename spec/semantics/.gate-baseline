@@ -789,6 +789,7 @@ pass	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiate
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
+pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
@@ -1783,6 +1784,7 @@ pass	a context-typed empty float map accepts a runtime float key insert
 pass	a context-typed empty float map needs no key inserted to ground its wrapper type
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
+pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
@@ -2668,6 +2670,7 @@ pass	a mixed-match tail loop whose Option payload is a heap String finds and rea
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns
 pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
+pass	a mixed-scale combine over a computed BigInt quantity operand converts across scales
 pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversion (5000 m = 5 km)
 pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
@@ -5731,6 +5734,8 @@ pass	csm4 the mixed-operator subsumption keeps a trapping operand's trap
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
+pass	ctd1 two occurrences of one constant tuple — branch-selected use, projections, and runtime equality across the pair
+pass	ctd2 a fifty-frame recursion re-evaluating a constant record each frame reclaims to zero
 pass	ctt1 RATIONAL handler state threads exact arithmetic across dispatches
 pass	ctt2 BIGINT handler state doubles past i64 across dispatches
 pass	ctt3 CHAR handler state advances by code point across dispatches
@@ -8437,7 +8442,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
-pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
-pass	ctd1 two occurrences of one constant tuple — branch-selected use, projections, and runtime equality across the pair
-pass	ctd2 a fifty-frame recursion re-evaluating a constant record each frame reclaims to zero
