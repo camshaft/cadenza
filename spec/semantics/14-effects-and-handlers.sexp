@@ -9532,6 +9532,50 @@
             (export main)))
   (declines))
 
+(case "a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly"
+  (doc    "A helper `unwrap` aborts in a MATCH arm, called with a FOREIGN op-result argument in a let-init:
+           `(let ((a (unwrap (E.fetch) 11))) …)`. When `E.fetch` returns None the `Bail.out` must home to the
+           Bail boundary, but the per-branch fold would thread the abort value into the continuation (a silent
+           wrong value). The abort is opaque to the `if`-only hoist and the cross-fn guard (which walks
+           `if`/`and`, not `match` arms), so this declines cleanly (the def-boundary non-local-exit is a later
+           increment).")
+  (input  (do
+            (effect E (op fetch (-> (Option Int64)))) (effect Bail (op out (-> Int64 Int64)))
+            (def (unwrap (: o (Option Int64)) (: tag Int64))
+              (match o ((Some v) v) ((None) (Bail.out tag))))
+            (def (main (: n Int64))
+              (handle E n ((fetch () s (resume (if (= (% s 2) 0) (Some s) (None)) (+ s 2))))
+                (+ (* 10 (handle Bail 0 ((out (v) t (+ 500 v)))
+                           (let ((a (unwrap (E.fetch) 11))) (* a 2)))) 3)))
+            (export main)))
+  (declines))
+
+(case "a non-tail cross-function conditional abort declines cleanly"
+  (doc    "A helper that CONDITIONALLY aborts, called at a NON-TAIL position — `(+ 10 (check -1))` where
+           `check n = (if (< n 0) (Bail.bail 99) n)`. The abort is opaque behind the call; a per-branch
+           capture would treat the `if` as the handle tail → `10 + 99` = 109 instead of abandoning the `+ 10`
+           to 99. The guard declines it (the non-local-exit convention is a later vertical); an UNCONDITIONAL
+           cross-fn abort folds.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (check (: n Int64)) (if (< n 0) (Bail.bail 99) n))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (+ 10 (check -1))))
+            (export main)))
+  (declines))
+
+(case "a non-tail recursive abort declines rather than miscompiles"
+  (doc    "`walk` recurses at a NON-TAIL position — `(+ 1 (walk (- n 1)))` — and bails at the base. An abort
+           ABANDONS the pending `+ 1` frames (result should be the arm value 99), but a specialized ordinary
+           return would flow 99 back up each `+ 1` → 102, a miscompile. specialize_recursive declines when an
+           abortive handler meets a callee with a non-tail self-call (the non-local-exit convention is later);
+           the TAIL case folds to 99.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (walk (- n 1)))))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (walk 3)))
+            (export main)))
+  (declines))
+
 (case "a pure one-hole continuation body reads an enclosing function parameter and folds"
   (doc    "The pure one-hole fold synthesizes the folded body with the perform replaced by the resume value;
            an outer name in the body — the enclosing function PARAMETER `x` — must re-anchor to the handle's
