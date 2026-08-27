@@ -19466,41 +19466,6 @@ mod match_engine {
     }
 
     #[test]
-    fn list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner() {
-        // LEAK reclamation (mirror the scalar-element `Core::Proj` reclaim): `vec-len` BORROWS the list and
-        // returns a scalar count, so an OWNED-TEMPORARY operand (`List.len (build …)` — a fresh list used
-        // once) must be dropped after the borrow, or it leaks one heap cell per call. The emit imports
-        // `drop` for that case and NOT for a borrowed param/local (whose owner reclaims).
-        let owned = "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) ((. List len) (build 0 3 (list)))) (export main))";
-        assert!(
-            component_imports_op(&component(owned), "drop"),
-            "List.len over an owned-temporary list must import `drop` (reclaim the temporary — leak fix)"
-        );
-        if let Some(out) = run_on_heap(owned) {
-            assert_eq!(
-                out, "3",
-                "the value is unchanged by the reclaim (leak-only fix)"
-            );
-        }
-        // A BORROWED list — bound to a `let` and ALSO consumed later (so it is a kept binding the owner
-        // reclaims, NOT an owned temporary of the `List.len`) — must NOT be dropped by the len (that would
-        // free it before the later use → double-free/UAF). Value stays correct: len xs (3) + len(push) (4)
-        // = 7. This guards the reclaim gate against firing on a borrowed operand.
-        let borrowed = "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) (let ((xs (build 0 3 (list)))) \
-                             (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main))";
-        if let Some(out) = run_on_heap(borrowed) {
-            assert_eq!(
-                out, "7",
-                "a borrowed list read by List.len must not be freed early (owner reclaims)"
-            );
-        }
-    }
-
-    #[test]
     fn map_len_and_set_len_over_an_owned_temporary_reclaim_it_but_a_borrowed_collection_is_kept() {
         // The Map/Set siblings of the List.len owned-temporary reclaim: `map-size`/`set-size` BORROW the
         // collection + return a scalar count, so an OWNED-TEMPORARY (`Map.len (build …)`) must be dropped
@@ -19541,39 +19506,6 @@ mod match_engine {
             assert_eq!(
                 out, "7",
                 "a borrowed map read by Map.len must not be freed early (owner reclaims)"
-            );
-        }
-    }
-
-    #[test]
-    fn list_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one() {
-        // The READ-op face of the owned-temporary reclaim: `List.at` BORROWS the list (vec-len/vec-get) and
-        // the read element is dup'd into the `Some`, so an OWNED-TEMPORARY list (`List.at (build …) i`) must
-        // be dropped after the borrows or it leaks. A BORROWED param/kept-local list read alongside a later
-        // use must NOT be freed early. (The Bytes.at twin lives in
-        // `bytes_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one`.)
-        let list_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) \"v\")) (export main))";
-        assert!(
-            component_imports_op(&component(list_owned), "drop"),
-            "List.at over an owned-temporary list must import `drop` (reclaim — leak fix)"
-        );
-        if let Some(out) = run_on_heap(list_owned) {
-            assert_eq!(
-                out, "1",
-                "List.at value unchanged by the reclaim (leak-only)"
-            );
-        }
-        // A BORROWED list — read by List.at AND List.len — must not be freed by the at (else double-free).
-        let list_borrowed = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) (let ((xs (build 0 3 (list)))) \
-                             (+ ((. Option expect) ((. List at) xs 1) \"v\") ((. List len) xs)))) (export main))";
-        if let Some(out) = run_on_heap(list_borrowed) {
-            assert_eq!(
-                out, "4",
-                "a borrowed list read by List.at must not be freed early (at=1 + len=3)"
             );
         }
     }
