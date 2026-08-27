@@ -3673,6 +3673,76 @@
   (call   main) (output (: 2 Int64))
   (live-objects 0))
 
+; -- Map.len / Set.len / Set.contains / Map.lookup over an OWNED-TEMPORARY collection reclaims it (migrated
+; from rcdzc map_len_and_set_len_… / set_contains_and_map_lookup_… reclaim tests). `map-size`/`set-size`/
+; `set-contains`/`map-lookup` BORROW the collection (return a scalar / a dup'd value), so a fresh owned
+; temporary fed to one must be dropped after the borrow or it leaks a heap cell — the same class as
+; List.len / Bytes.len / Set.to-list above. `build` recurses so the collection is a genuine runtime value
+; (a constant folds away). The value is unchanged by the reclaim; the stress loops (a fresh temp per
+; iteration) detect a leak (drift/OOM) or a premature free (trap). (The rcdzc tests asserted the reclaim
+; via component_imports_op(...,'drop') — subsumed here by the live-objects reclaim witness.)
+(case "otc1 Map.len over an owned-temporary map reclaims it (no live objects)"
+  (doc    "`(Map.len (build 0 3 Map.empty))` = 3 over a fresh owned map; the map is dropped after the
+           borrowing size read. Value 3; a leaked map cell would show live objects.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert m i i)) m))
+            (def (main) (Map.len (build 0 3 Map.empty)))
+            (export main)))
+  (call   main) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "otc2 Set.len over an owned-temporary set reclaims it (no live objects)"
+  (doc    "`(Set.len (build 0 3 (Set.of (list))))` = 3 over a fresh owned set; dropped after the borrowing
+           size read. Value 3.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (main) (Set.len (build 0 3 (Set.of (list)))))
+            (export main)))
+  (call   main) (output (: 3 Int64))
+  (live-objects 0))
+
+(case "otc3 a borrowed map read by Map.len then reused by an insert is not freed early"
+  (doc    "`(let ((m (build 0 3))) (+ (Map.len m) (Map.len (Map.insert m 99 99))))` reads the borrowed `m`
+           by the first Map.len and reuses it in the insert — the len must not free it (else UAF/double-free
+           on the reuse). The insert result is a fresh temp reclaimed by its own len. 3 + 4 = 7.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert m i i)) m))
+            (def (main) (let ((m (build 0 3 Map.empty)))
+                          (+ (Map.len m) (Map.len (Map.insert m 99 99)))))
+            (export main)))
+  (call   main) (output (: 7 Int64))
+  (live-objects 0))
+
+(case "otc4 300x Set.contains over an owned-temporary set each reclaims (no leak/UAF drift)"
+  (doc    "Stress: 300x build a fresh owned {0,1,2} and read `(Set.contains … 1)` = true (+1). A leaked set
+           per iteration would OOM/drift; a premature free would trap. Sum = 300.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (drive (: j Int64) (: m Int64) (: tot Int64))
+              (if (< j m) (drive (+ j 1) m (+ tot (if (Set.contains (build 0 3 (Set.of (list))) 1) 1 0))) tot))
+            (def (main) (drive 0 300 0))
+            (export main)))
+  (call   main) (output (: 300 Int64))
+  (live-objects 0))
+
+(case "otc5 300x Map.lookup(Some) over an owned-temporary map each reclaims AFTER the value-dup (no UAF)"
+  (doc    "Stress + the DELICATE Map.lookup case: the looked-up value is borrowed from the map and dup'd in
+           the Some arm, so the owned-map drop must come AFTER that dup (not right after lookup, which would
+           free the value -> UAF). 300x build {0:0,1:10,2:20}, lookup 1 -> 10; sum = 3000.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert m i (* i 10))) m))
+            (def (drive (: j Int64) (: k Int64) (: tot Int64))
+              (if (< j k) (drive (+ j 1) k (+ tot (Option.expect (Map.lookup (build 0 3 Map.empty) 1) "v"))) tot))
+            (def (main) (drive 0 300 0))
+            (export main)))
+  (call   main) (output (: 3000 Int64))
+  (live-objects 0))
+
 (case "a let-bound set shared across a consuming Set.union and a later read is dup'd and reclaimed once (no live objects)"
   (doc    "Set.union CONSUMES both operands, so a let-bound `s` reused AFTER the union must be dup'd by the
            Perceus retain BEFORE the union consumes it, or the later Set.len s reads a freed set. s={0,1,2};
