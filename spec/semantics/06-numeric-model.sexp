@@ -10373,3 +10373,33 @@
   (input (do (def (main (: x Int64)) (* (& x 15) 2)) (export main)))
   (call main (: 255 Int64)) (output (: 30 Int64))
   (call main (: 7 Int64))   (output (: 14 Int64)))
+; -- runtime integer bitwise + division/remainder value parity (fully migrated as a BATCH from rcdzc
+; runtime_bitwise_over_int64, runtime_signed_division_truncates_toward_zero,
+; runtime_unsigned_division_is_magnitude, 2026-08-27; all PURE parity -> rcdzc tests deleted): the
+; runtime & | ^ ops, signed div_s truncation + rem sign, and unsigned div_u magnitude + div-by-zero trap.
+
+(case "runtime bitwise and/or/xor over two Int64 operands compute correctly"
+  (doc    "`(& a b)`, `(| a b)`, `(^ a b)` over runtime i64. main = 1000000*(& a b) + 1000*(| a b) +
+           (^ a b): (12,10) → 8·1e6 + 14·1e3 + 6 = 8014006; (255,127) → 127·1e6 + 255·1e3 + 128 = 127255128.")
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (+ (* 1000000 (& a b)) (+ (* 1000 (| a b)) (^ a b))))
+    (export main)))
+  (call main (: 12 Int64) (: 10 Int64))   (output (: 8014006 Int64))
+  (call main (: 255 Int64) (: 127 Int64)) (output (: 127255128 Int64)))
+
+(case "runtime signed division truncates toward zero and remainder takes the dividend sign"
+  (doc    "i64.div_s truncates toward zero (not floor); rem takes the dividend's sign. main = 1000*(/ a b)
+           + (% a b): (7,2) → 3001 (3, 1); (-7,2) → -3001 (-3, -1).")
+  (input (do
+    (def (main (: a Int64) (: b Int64)) (+ (* 1000 (/ a b)) (% a b)))
+    (export main)))
+  (call main (: 7 Int64) (: 2 Int64))  (output (: 3001 Int64))
+  (call main (: -7 Int64) (: 2 Int64)) (output (: -3001 Int64)))
+
+(case "runtime unsigned division is by magnitude and traps on divide-by-zero"
+  (doc    "UInt64 division uses div_u: UInt64.max / 2 = 2^63-1 (a signed div_s would read the operand as
+           -1 and get it wrong); dividing by zero traps.")
+  (input (do (def (main (: a UInt64) (: b UInt64)) (/ a b)) (export main)))
+  (call main (: 18446744073709551615 UInt64) (: 2 UInt64)) (output (: 9223372036854775807 UInt64))
+  (call main (: 5 UInt64) (: 0 UInt64))                    (trap "divide by zero"))

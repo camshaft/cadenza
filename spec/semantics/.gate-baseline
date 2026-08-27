@@ -7143,6 +7143,7 @@ pass	runtime Set.of at two different element types in one program each build via
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime UInt64 division and remainder above the Int64 boundary compute unsigned
 pass	runtime addition computes in range and traps on overflow, not wrapping
+pass	runtime bitwise and/or/xor over two Int64 operands compute correctly
 pass	runtime char-literal match dispatches by Unicode code point
 pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
@@ -7154,6 +7155,7 @@ pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded rem
 pass	runtime multiplication computes in range and traps on overflow
 pass	runtime shaped equality of two owned List-Float64 operands reclaims both (no live objects)
 pass	runtime signed division traps on divide-by-zero and on Int64.min over -1
+pass	runtime signed division truncates toward zero and remainder takes the dividend sign
 pass	runtime signed remainder of Int64.min by -1 is zero, not an overflow
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
@@ -7163,6 +7165,7 @@ pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tr
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime subtraction computes in range and traps on overflow at both boundaries
 pass	runtime tuple concatenation preserves element order across the seam
+pass	runtime unsigned division is by magnitude and traps on divide-by-zero
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
 pass	runtime-payload `?`s in BOTH branches of a runtime if take their own continuations
