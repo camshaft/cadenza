@@ -845,9 +845,16 @@ pub fn emit(
         && extern_imports.is_empty()
         && layout.exports.iter().any(|e| {
             e.params.iter().any(|(_, t)| {
+                // A memory-bearing leaf (String/Bytes/list) OR a two-variant sum (option/result) param — the
+                // cheap pre-filter. A non-option `Sum`/`Nominal` still declines INSIDE (ty_natural_wit → None),
+                // so widening the filter to sums is safe (it just gives the entry path a chance to classify).
                 matches!(
                     t,
-                    crate::ty::Ty::String | crate::ty::Ty::Bytes | crate::ty::Ty::List(_)
+                    crate::ty::Ty::String
+                        | crate::ty::Ty::Bytes
+                        | crate::ty::Ty::List(_)
+                        | crate::ty::Ty::Sum { .. }
+                        | crate::ty::Ty::Nominal { .. }
                 )
             })
         })
@@ -9711,8 +9718,33 @@ fn try_bare_entry_param_component(
     let params: Vec<(crate::ast::StructId, Ty)> = layout.exports[0].params.clone();
     let mut param_vts: Vec<u8> = Vec::new();
     let mut mem_leaf_params: Vec<Option<(serialize::MemLeafKind, bool)>> = Vec::new();
+    let mut sum_params: Vec<Option<(serialize::SumArgRebuild, bool)>> = Vec::new();
     let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
     for (i, (binder, gty)) in params.iter().enumerate() {
+        // A two-variant sum (`option<T>` / `result<ok,err>`) entry param crosses as a native component sum,
+        // flattened to `(disc, payload…)`. Build it DIRECTLY as the def arg via the closure-arg classifier's
+        // `SumArgRebuild` (branch on the boundary disc → `sum-new`); the def owns the built cell. `ty_natural_wit`
+        // declines a `Ty::Sum`, so the WIT type comes from the Db-aware `spilled_result_wit_type` (`option<T>`).
+        if let Some((_slot, vts, rebuild)) = fixed_shape_option_scalar_arg(db, gty) {
+            let wit = crate::backend::wasm::host::spilled_result_wit_type(db, gty)?;
+            // The canonical flattening of `option<T>`/`result<…>` is `(disc: i32, payload…)` — a leading disc
+            // then the payload leaf/leaves (`vts`). `emit_sum_field` reads the disc at the running leaf cursor.
+            param_vts.push(ValType::I32.byte());
+            for vt in &vts {
+                param_vts.push(vt.byte());
+            }
+            // The def BORROWS the built sum cell (matches it, copying out any payload); the wrapper — its owner
+            // — always reclaims the SHELL after the call (the caller-owns-shell convention the closure-arg path
+            // uses: it too builds the sum and drops it post-call). The extracted payload escapes by its own
+            // copy/incref, independent of the shell. This slice's result is scalar/unit, so the whole sum never
+            // escapes; `drop_after` is unconditionally true here (a consuming/escaping widening is a later slice).
+            let _ = body;
+            let drop_after = true;
+            mem_leaf_params.push(None);
+            sum_params.push(Some((rebuild, drop_after)));
+            wit_params.push((format!("p{i}"), wit));
+            continue;
+        }
         let wit = crate::wit_world::ty_natural_wit(gty)?;
         // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
         // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
@@ -9733,17 +9765,20 @@ fn try_bare_entry_param_component(
                 param_vts.push(ValType::I32.byte());
                 param_vts.push(ValType::I32.byte());
                 mem_leaf_params.push(Some((kind, drop_after)));
+                sum_params.push(None);
             }
             (None, Ty::Int(_) | Ty::Bool | Ty::Float(_)) => {
                 param_vts.push(valtype_of(gty)?.byte());
                 mem_leaf_params.push(None);
+                sum_params.push(None);
             }
             (None, _) => return None, // a compound/unit param — a later slice
         }
         wit_params.push((format!("p{i}"), wit));
     }
-    // Require at least one memory-bearing leaf (a scalar-only export is the existing bare path, untouched).
-    if !mem_leaf_params.iter().any(Option::is_some) {
+    // Require at least one memory-bearing leaf OR sum param (a scalar-only export is the existing bare path,
+    // untouched — it falls through to the boundary loop).
+    if !mem_leaf_params.iter().any(Option::is_some) && !sum_params.iter().any(Option::is_some) {
         return None;
     }
     // MAX-FLAT-PARAMS GUARD (mirror of the boundary-loop guard): a String/Bytes/list param flattens to two
@@ -9765,7 +9800,8 @@ fn try_bare_entry_param_component(
     {
         return None;
     }
-    let any_drop = mem_leaf_params.iter().any(|m| matches!(m, Some((_, true))));
+    let any_drop = mem_leaf_params.iter().any(|m| matches!(m, Some((_, true))))
+        || sum_params.iter().any(|m| matches!(m, Some((_, true))));
     // RESULT: a scalar the def returns raw (Passthrough) or unit; a compound result is a later slice.
     let (result_vts, wit_result) = match &result_ty {
         Ty::Unit => (Vec::new(), None),
@@ -9798,6 +9834,12 @@ fn try_bare_entry_param_component(
             lift_ops.push(elem.box_op);
         }
     }
+    // A sum (option/result) param builds its cell via `sum-new` plus each arm's payload ops (box-int, etc.).
+    for (rebuild, _) in sum_params.iter().flatten() {
+        lift_ops.push("sum-new");
+        rebuild.arm_true.collect_ops(&mut |op| lift_ops.push(op));
+        rebuild.arm_false.collect_ops(&mut |op| lift_ops.push(op));
+    }
     if any_drop {
         lift_ops.push("drop");
     }
@@ -9818,6 +9860,7 @@ fn try_bare_entry_param_component(
         result_vts,
         params: vec![None; params.len()],
         param_slots: vec![None; params.len()],
+        sum_params,
         mem_leaf_params,
         def_abs,
         result: serialize::ResultLower::Passthrough,
@@ -9991,6 +10034,9 @@ fn record_interface_export(
             name: member.name.clone(),
             param_vts,
             result_vts,
+            // No top-level option/result param on this typed-interface-member path (a sum param crosses via
+            // the record-field `FieldRebuild::Sum` route, not a top-level direct arg).
+            sum_params: params.iter().map(|_| None).collect(),
             params,
             param_slots,
             mem_leaf_params,

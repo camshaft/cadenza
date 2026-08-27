@@ -855,6 +855,16 @@ pub struct WrapperDesc {
     /// ownership and sets this false so the wrapper does not double-free). `None` = a scalar/`record` param
     /// (handled via `params`). Reuses the two `list<u8>` scratch locals + memory 0 (`wrapper_needs_memory`).
     pub mem_leaf_params: Vec<Option<(MemLeafKind, bool)>>,
+    /// Parallel to `params`: for a TOP-LEVEL `option`/`result` param (a two-variant sum crossing the boundary
+    /// as a native `option<T>`/`result<ok,err>`, flattened to `(disc, payload…)`), `Some(rebuild)` says to
+    /// branch on the boundary disc and build the guest sum cell (`sum-new`) — leaving the handle DIRECTLY as
+    /// the def arg (not stored into a record cell). Reuses the closure-arg [`SumArgRebuild`] via
+    /// [`emit_sum_field`], which reads the disc at the wrapper's running leaf cursor (its `base_param` is
+    /// ignored). `None` = a scalar/`record`/mem-leaf param. `Some((rebuild, drop_after))`: `drop_after` = the
+    /// def only BORROWS the built cell (matches it to read a copied-out payload, does not consume it), so the
+    /// wrapper — its owner — must `drop` it after the call (the same borrowed-owned-operand reclaim as a
+    /// mem-leaf param; a consuming def would set this false so the wrapper does not double-free).
+    pub sum_params: Vec<Option<(SumArgRebuild, bool)>>,
     /// The compiled def's absolute core func index to `call` after building its args.
     pub def_abs: u32,
     /// How the wrapper turns the def's return value into the boundary result — pass a scalar straight through,
@@ -1315,7 +1325,16 @@ fn core_module_impl(
                 .flatten()
                 .any(FieldRebuild::has_bytes_leaf)
                 // A TOP-LEVEL memory-bearing leaf param copies bytes out of memory too (same two scratch locals).
-                || wrap.mem_leaf_params.iter().any(Option::is_some);
+                || wrap.mem_leaf_params.iter().any(Option::is_some)
+                // A TOP-LEVEL sum param whose selected arm carries a `list<u8>` payload (Bytes, or a compound
+                // with a bytes leaf) copies bytes out of memory in its arm build — it needs the scratch too.
+                || wrap.sum_params.iter().flatten().any(|(rebuild, _)| {
+                    let arm_bytes = |a: &SumArgArm| {
+                        matches!(a.payload, SumArmPayload::Bytes)
+                            || matches!(&a.payload, SumArmPayload::Compound(fs) if fs.iter().any(FieldRebuild::has_bytes_leaf))
+                    };
+                    arm_bytes(&rebuild.arm_true) || arm_bytes(&rebuild.arm_false)
+                });
             let scratch = if has_bytes { Some((p, p + 1)) } else { None };
             let mut next_local = p + if has_bytes { 2 } else { 0 };
             let mut inner = Vec::new();
@@ -1354,6 +1373,24 @@ fn core_module_impl(
                         next_local += 1;
                         inner.push(op::LOCAL_TEE);
                         uleb128(dl as u64, &mut inner); // [buf] stays; buf also saved in `dl`
+                        drop_locals.push(dl);
+                    }
+                    continue;
+                }
+                // A TOP-LEVEL option/result param: branch on the boundary disc and build the guest sum cell,
+                // leaving its handle DIRECTLY as the def arg (like the mem-leaf path — not stored in a record
+                // cell). `emit_sum_field` reads the disc at `leaf` and advances it past `(disc, payload…)`.
+                // `drop_after` = the def only BORROWS the cell (matches it), so the wrapper (its owner) drops it
+                // after the call — save the handle in a local first (it stays on the stack as the def arg).
+                if let Some((rebuild, drop_after)) =
+                    wrap.sum_params.get(pi).and_then(|s| s.as_ref())
+                {
+                    emit_sum_field(rebuild, &mut leaf, &imp, scratch, &mut inner); // → [sum-handle]
+                    if *drop_after {
+                        let dl = next_local;
+                        next_local += 1;
+                        inner.push(op::LOCAL_TEE);
+                        uleb128(dl as u64, &mut inner); // handle stays on the stack; also saved in `dl`
                         drop_locals.push(dl);
                     }
                     continue;

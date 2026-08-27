@@ -3366,19 +3366,26 @@ fn coerce_one(s: &str, t: &Type) -> Result<Val> {
         // coerce the payload against `option.ty()`.
         Type::Option(ot) => {
             let t = s.trim();
-            if t == "None" {
+            // The parenthesized body, if any: `(None unit)` → "None unit", `(Some 42)` → "Some 42".
+            let inner_paren = t
+                .strip_prefix('(')
+                .and_then(|x| x.strip_suffix(')'))
+                .map(str::trim);
+            // NONE accepts the canonical rendered form `(None unit)` (see `render_val`) AND the bare atom
+            // `None` — the renderer emits `(None unit)`, so coercion must round-trip it (the arg-marshal twin
+            // of the Some path). The head token is `None`.
+            let is_none = t == "None"
+                || inner_paren.is_some_and(|x| x.split_whitespace().next() == Some("None"));
+            if is_none {
                 Val::Option(None)
             } else {
                 // `(Some <value>)` — strip the parens + the `Some` head, coerce the remaining value.
-                let inner = t
-                    .strip_prefix('(')
-                    .and_then(|x| x.strip_suffix(')'))
-                    .map(str::trim)
+                let inner = inner_paren
                     .and_then(|x| x.strip_prefix("Some"))
                     .map(str::trim)
                     .ok_or_else(|| {
                         anyhow!(
-                            "argument `{s}`: expected an option literal `(Some <value>)` or `None`"
+                            "argument `{s}`: expected an option literal `(Some <value>)`, `(None unit)`, or `None`"
                         )
                     })?;
                 Val::Option(Some(Box::new(coerce_one(inner, &ot.ty())?)))
