@@ -787,6 +787,23 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "Map.lookup: operand")
+  else if is "Bytes" "of" then
+    -- `Bytes.of (list i…)` — build a Bytes value from a list of byte-valued ints (0..255).
+    some (match a1 with
+          | some (.value (.list es)) =>
+            if es.all (fun e => match e with | .int n => 0 ≤ n && n < 256 | _ => false) then
+              .value (.bytes (ByteArray.mk (es.map (fun e => match e with | .int n => UInt8.ofNat n.toNat | _ => 0))))
+            else .unsupported "Bytes.of: element is not a 0..255 byte"
+          | some (.value _) => .unsupported "Bytes.of: not a list" | some o => o | none => .unsupported "Bytes.of arity")
+  else if is "Bytes" "at" then
+    -- indexed BYTE access → Option Int: `Some b[i]` when 0 ≤ i < len, else `None`.
+    some (match a1, a2 with
+          | some (.value (.bytes b)), some (.value (.int i)) =>
+            if 0 ≤ i && i < Int.ofNat b.size then .value (.some (.int (Int.ofNat (b[i.toNat]!).toNat))) else .value .none
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Bytes.at: operand")
   else if (is "List" "at" || is "List" "get") then
     -- indexed access → Option: `Some l[i]` when 0 ≤ i < len, else `None` (out-of-bounds / negative).
     some (match a1, a2 with
