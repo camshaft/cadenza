@@ -3122,3 +3122,35 @@
   (call f (: 5 Int64))
   (output (: 1 Int64))
   (live-objects 0))
+
+; ── value-eq: a BORROWED runtime String rope compares equal to its flat twin (compaction is leak-neutral; migrated from rcdzc) ──
+(case "a borrowed runtime String rope compares equal to its flat twin and its compaction is leak-neutral"
+  (doc    "`rep` builds an OWNED rope \"hixxx\" (three String.concat), stored as a map value; `f` looks it up
+           and compares the BORROWED Some payload `s` against the flat literal \"hixxx\" INSIDE the arm. The
+           `=` operand `s` is a BORROWED rope — the case the owned-only compaction missed: `=` lowers to
+           champ_eq (physical bytes), and a concat rope's bytes differ from a flat leaf's, so it once compared
+           UNEQUAL (0). The emit now compacts a borrowed String operand in place before the compare -> equal
+           (1). Compacting a BORROWED operand is refcount-neutral (in-place flatten, same handle, no drop
+           follows the borrow), so it leaves the SAME live count as the byte-identical flat-value baseline
+           below (known-leak 2, a pre-existing map-temporary residual the scalar-returning main does not yet
+           reclaim). Their equal 2 is the leak-neutrality guard: a compaction leak would push this above 2.")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (f (: mp (Map String String)) (: k String))
+              (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
+            (def (main) (f (Map.insert (Map.empty) "y" (rep "hi" 3)) "y"))
+            (export main)))
+  (call   main) (output (: 1 Int64)) (live-objects known-leak 2))
+
+(case "the flat-value baseline for the borrowed-rope-eq leak-neutrality (same map/value-box residual)"
+  (doc    "The byte-identical flat-value baseline for the borrowed-rope-eq neutrality pin above: the map value
+           is the flat literal \"hixxx\" (no rope, no compaction needed). It builds the SAME map + value-box
+           shape, whose pre-existing map-temporary residual (2 cells, orthogonal to the compaction) the
+           scalar-returning main does not yet reclaim. Its known-leak 2 equalling the rope program's 2 proves
+           the borrowed-operand compaction added nothing.")
+  (input  (do
+            (def (f (: mp (Map String String)) (: k String))
+              (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
+            (def (main) (f (Map.insert (Map.empty) "y" "hixxx") "y"))
+            (export main)))
+  (call   main) (output (: 1 Int64)) (live-objects known-leak 2))
