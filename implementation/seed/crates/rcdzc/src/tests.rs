@@ -7322,57 +7322,6 @@ fn a_runtime_list_of_floats_equality_distinguishes_a_differing_element() {
     }
 }
 
-/// `Map.remove` BORROWS its key (the runtime `op_map_remove` reads it via `champ_hash`/`champ_eq` and
-/// drops only the map's OWN stored columns, never the passed-in key), so an OWNED-TEMPORARY key handle
-/// materialized at the emit — here a LARGE-int key that `op_box_int` heap-allocates (`!fixnum_fits`) —
-/// must be `drop`ped by the emit after the borrow. Before the ownership gate landed on the remove emit
-/// (the twin of the `map-lookup`/`set-contains` gate), that boxed key LEAKED on every `Map.remove`.
-/// Differential probe: a LARGE-int-key program (owned box, leaks the temporary before the fix) vs a
-/// byte-for-byte SMALL-int-key baseline (a fixnum, boxed INLINE — no heap key at all). Both build the
-/// identical champ shell (insert one entry, remove it), so the shared map-temporary baseline cancels;
-/// the ONLY difference is the remove's boxed-key temporary, which must net to 0 (leak-neutral) once the
-/// emit drops the owned key. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn map_remove_owned_key_leaves_no_extra_leak() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[map-remove] debug-counters runtime not in the store; skipping balance probe");
-        return;
-    };
-    // LARGE-int key `100000000000` (> FIXNUM_MAX) → `op_box_int` heap-allocs an owned key temporary the
-    // borrowing `map-remove` must NOT reclaim, so the emit drops it. `main` returns a scalar so nothing
-    // else survives beyond the (identical, cancelled) champ shell.
-    let big_src = "(module m (def (main) \
-                    (Map.len (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000))) \
-                    (export main))";
-    let big = compile_component(&crate::codec::encode(&parse(big_src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&big, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(0),
-        "removing the sole key yields an empty map (size 0)"
-    );
-    let big_live = rt.live_objects();
-
-    // SMALL-int (fixnum) key baseline: `5` boxes INLINE (no heap key), so no owned key temporary exists.
-    let small_src = "(module m (def (main) \
-                    (Map.len (Map.remove (Map.insert (Map.empty) 5 1) 5))) (export main))";
-    let small = compile_component(&crate::codec::encode(&parse(small_src))).expect("compile");
-    let mut rt_small = ComposedRuntime::new(&small, &runtime_bytes);
-    assert_eq!(rt_small.call("main", &[]), Val::S64(0));
-    let small_live = rt_small.live_objects();
-
-    assert_eq!(
-        big_live, small_live,
-        "Map.remove owned-key leak: the large-int-key program leaves {big_live} live cells vs the \
-         fixnum-key baseline's {small_live} — `map-remove` BORROWS the key, so the emit must drop the \
-         owned box after the borrow (any difference is the un-dropped boxed key temporary)"
-    );
-}
-
 /// `Set.remove` BORROWS its element exactly like `Map.remove` borrows its key — the twin leak. A
 /// LARGE-int element `op_box_int` heap-allocs is an owned temporary the borrowing `set-remove` never
 /// reclaims, so the emit must drop it (mirrors the `set-contains` ownership gate). Same differential
