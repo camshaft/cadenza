@@ -2169,6 +2169,7 @@ pass	a guard expression calling a recursive helper inside a self-tail-loop match
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
+pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
 pass	a guard on a tuple arm reads the tuple's element binders
 pass	a guard over a variant pattern gates on the payload
 pass	a guard reads a binding from the enclosing scope, not only its pattern's
@@ -8255,6 +8256,7 @@ todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
+todo	a middle peer is both a consumer and a provider (A to B to C chain)
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
@@ -8378,4 +8380,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
