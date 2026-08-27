@@ -5418,6 +5418,62 @@
             (export main)))
   (call   main (: 21 Int64)) (output (: 42 Int64)))
 
+; A single-variant newtype's ERASURE covers the non-scalar payload shapes too: a NULLARY variant is a
+; nominal Unit (erases to unit, matches unconditionally), a variant over a SUM erases without a second box
+; (the inner sum's own box is the only one — no redundant outer tag), and a variant over a RECORD reads a
+; field DIRECTLY through the tag (the runtime value IS the record handle, so `(. (Mk r) field)` sees
+; through the erased nominal with no unwrap). These pin the erasure for the nullary / sum / record payloads
+; alongside the scalar faces above.
+
+(case "a nullary single-variant newtype is a nominal unit tag that matches unconditionally"
+  (doc    "`(type Marker (The))` is a single nullary variant — a nominal Unit. `The` erases to unit (no
+           box), and `(match The ((The) 99))` matches unconditionally (a single irrefutable nullary arm) →
+           99. Pins the nullary end of the newtype erasure: a tag carrying nothing is a unit value, matched
+           without a discriminant probe.")
+  (input  (do
+            (type Marker (The))
+            (def (main) (match The ((The) 99)))
+            (export main)))
+  (output (: 99 Int64)))
+
+(case "a newtype over a sum erases without a second box and matches through both layers"
+  (doc    "A non-recursive newtype over a sum — `(type Cached (Mk (Option Int64)))` — ERASES: the runtime
+           value IS the `Option` handle, with NO outer box wrapping it (that would double-box). The
+           `Option`'s own box is genuine; only the redundant `Mk` tag is removed. Constructing `(Cached.Mk
+           (Some 5))` and matching through both layers — `((Mk o) (match o ((Some n) n) ((None u) 0)))` —
+           reads the inner payload → 5. Pins that the erasure removes only the newtype tag, not the inner
+           sum's box (a blunt 'contains any sum' guard that boxed this would leave a double box).")
+  (input  (do
+            (type Cached (Mk (Option Int64)))
+            (def (main)
+              (match (Cached.Mk (Some 5))
+                ((Mk o) (match o ((Some n) n) ((None u) 0)))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a newtype over a record reads a field through the tag"
+  (doc    "A newtype wrapping a record supports member access through the tag: binding `(UserId.Mk (record
+           (= x 1) (= y 2)))` and reading `(. u x)` sees through the erased nominal to the payload record —
+           the runtime value IS the record handle, so the field reads with no unwrap ceremony → 1. The
+           record-payload face of the newtype erasure.")
+  (input  (do
+            (type UserId (Mk (Record (: x Int64) (: y Int64))))
+            (def (main) (let ((u (UserId.Mk (record (= x 1) (= y 2))))) (. u x)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a newtype over a record reads a field through the tag at runtime"
+  (doc    "The runtime path of the record-payload erasure: a record built from a boundary parameter can't
+           fold, so the field read happens at run time off the erased handle — binding `(UserId.Mk (record
+           (= x 5) (= y k)))` over a runtime `k` and reading `(. u y)` → k. `main 9` → 9. Pins that the
+           field read through the newtype tag is a real runtime member access, not only a compile-time
+           projection.")
+  (input  (do
+            (type UserId (Mk (Record (: x Int64) (: y Int64))))
+            (def (main (: k Int64)) (let ((u (UserId.Mk (record (= x 5) (= y k))))) (. u y)))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 9 Int64)))
+
 ; The payload-value refinement above must work for a NARROW-width newtype too. A single-variant newtype over
 ; a narrow int `(type W (Wrap UInt8))` is stored on the heap as an i64 cell (`box-int`), so its raw i32
 ; payload must be WIDENED i32→i64 before being boxed as a tuple/sum/list element — exactly as a bare narrow

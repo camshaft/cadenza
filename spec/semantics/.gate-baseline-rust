@@ -2727,6 +2727,9 @@ pass	a nested-operand abort preserves a HEAP-state advance across a mid-mutation
 pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a newtype match-arm destructure reads the erased scalar back
+pass	a newtype over a record reads a field through the tag
+pass	a newtype over a record reads a field through the tag at runtime
+pass	a newtype over a sum erases without a second box and matches through both layers
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
@@ -2777,6 +2780,7 @@ pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
 pass	a nullary module export applied to a non-unit argument is rejected
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
+pass	a nullary single-variant newtype is a nominal unit tag that matches unconditionally
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
@@ -6451,6 +6455,9 @@ pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does
 pass	rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches
 pass	rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes
 pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch
+pass	rcw2 a hundred-field record projects its first and last fields
+pass	rcw3 a fifty-element tuple projects its first and last positions
+pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
@@ -7480,6 +7487,9 @@ pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exac
 pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
 pass	wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch
 pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
+pass	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
+pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
+pass	wfp3 NINE list entry params are eighteen flat values and decline
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
@@ -7646,9 +7656,3 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	rcw2 a hundred-field record projects its first and last fields
-pass	rcw3 a fifty-element tuple projects its first and last positions
-pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
-pass	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
-pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
-pass	wfp3 NINE list entry params are eighteen flat values and decline
