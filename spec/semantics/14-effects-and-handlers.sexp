@@ -9436,6 +9436,78 @@
             (export main)))
   (output (: 500 Int64)))
 
+(case "a tail-resumptive perform BEFORE an abort on the same spine abandons the pending continuation"
+  (doc    "get resumes (seed 5), then stop aborts → the arm value 99 becomes the handle value (the `(+ 5 …)`
+           continuation is abandoned).")
+  (input  (do
+            (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64)))
+            (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.get) (E.stop 99))))
+            (export main)))
+  (output (: 99 Int64)))
+
+(case "an abort BEFORE a tail-resumptive perform wins and the later perform never runs"
+  (doc    "The abort is evaluated first (left operand), so it wins and `get` never runs → 99.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64)))
+            (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.stop 99) (E.get))))
+            (export main)))
+  (output (: 99 Int64)))
+
+(case "an abort in a MATCH-SCRUTINEE abandons the whole match"
+  (doc    "The scrutinee performs an abort, abandoning the entire match → the arm value 7.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (match (Bail.bail 7) (0 100) (_ 200))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an abort value COMPUTED from the op argument folds"
+  (doc    "The abort arm value is a function of the op arg: `(* n 2)` with n=7 → 14 (the pending `(+ 1 …)` is
+           abandoned).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s (* n 2))) (+ 1 (Bail.bail 7))))
+            (export main)))
+  (output (: 14 Int64)))
+
+(case "an abort deeply nested under pure operators is still abandoned to the arm value"
+  (doc    "The abort sits several pure operators deep; it still abandons them all → the arm value 7.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (* 2 (+ 1 (- 10 (Bail.bail 7))))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an abort under an OUTER tail-resumptive handler of a DIFFERENT effect abandons to the arm value"
+  (doc    "The inner Bail aborts → 7; the outer A handler's body value IS the reduced inner-handle value, so
+           the whole program is 7.")
+  (input  (do
+            (effect A (op a (-> Unit Int64))) (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (resume 10 s)))
+                (handle Bail 0 ((bail (n) s2 n)) (+ (A.a) (Bail.bail 7)))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a conditional abort hoisted alongside a second abortive sibling declines cleanly"
+  (doc    "The hoist bails on an effectful sibling (a sound over-decline, never a mis-fold): `(+ (if (< 3 5)
+           (Bail.bail 7) 0) (Bail.bail 9))` has a conditional abort next to another abort, so it declines.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (+ (if (< 3 5) (Bail.bail 7) 0) (Bail.bail 9))))
+            (export main)))
+  (declines))
+
+(case "a handle whose body is a closure is applyable (the handle result IS that closure)"
+  (doc    "regression 6373 (the handle-result twin of 6360): a `(handle …)` whose BODY is a bare lambda,
+           applied directly, must be applyable. The handle discharges no perform (the body is a lambda), so
+           its result IS that closure: `((handle Env 0 ((get (u) s (resume s s))) (fn (x) (+ x 1))) 10)` = 11.")
+  (input  (do
+            (effect Env (op get (-> Unit Int64)))
+            (def (main) ((handle Env 0 ((get (u) s (resume s s))) (fn ((: x Int64)) (+ x 1))) 10))
+            (export main)))
+  (output (: 11 Int64)))
+
 (case "a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly"
   (doc    "The recursive callee `go` is tail-recursive and bails, but is called at a NON-TAIL position in the
            handle body: `(+ (go 2) 999999)`. The abort must ABANDON the pending `(+ _ 999999)` (arm value
