@@ -19042,20 +19042,16 @@ mod match_engine {
         // NO retain — the single `List.push` spends the sole reference in place. `build 0 2` = `[0 1]`,
         // pushed to `[0 1 9]`, length 3. The emitted body must import NO `dup` (a single-use consume
         // produces no retain site; a spurious dup+drop pair would regress the allocation bench). Pins that
-        // `collect_dup_sites` marks only a consume WITH a later use, and that the result is correct.
+        // `collect_dup_sites` marks only a consume WITH a later use. The run value-correctness (a single owned
+        // `List.push` then `List.len`) is corpus-covered by 05 "List.len over an owned-temporary List.push
+        // result reclaims it"; this keeps only the dup-absence bench guard the corpus cannot express.
         let src = "(module m \
                (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
                (def (main) (let ((e (build 0 2 (list)))) ((. List len) ((. List push) e 9)))) (export main))";
-        let bytes = component(src);
         assert!(
-            !component_imports_op(&bytes, "dup"),
+            !component_imports_op(&component(src), "dup"),
             "a single-use consume must not import `dup` (FBIP fast path — no retain site)"
         );
-        let Some(out) = run_on_heap(src) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "3", "single-use push then length");
     }
 
     #[test]
