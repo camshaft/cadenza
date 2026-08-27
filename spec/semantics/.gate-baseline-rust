@@ -1341,6 +1341,7 @@ pass	a boolean result threaded through a second function
 pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
+pass	a borrow-only compound-payload match shell is left un-dropped -- known gap (all-scalar reclaim floor)
 pass	a borrowed heap-payload sum param in a self-recursive fn is reclaimed at the loop exit (no leak)
 pass	a borrowed runtime String rope compares equal to its flat twin and its compaction is leak-neutral
 pass	a both-diverge if nested in a value position yields the outer value
@@ -1554,6 +1555,7 @@ pass	a compose combinator over HEAP-typed functions pipelines list transformers
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound Ast SUBTREE rides a template hole into the expansion intact
+pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a Bytes rope is found by its flat-twin key
@@ -7274,6 +7276,7 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	true is greater than false
 pass	true is not less than false
@@ -7663,5 +7666,3 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a borrow-only compound-payload match shell is left un-dropped -- known gap (all-scalar reclaim floor)
-pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak

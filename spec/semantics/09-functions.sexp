@@ -8710,3 +8710,40 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (live-objects known-leak 6))
+; -- breaker batch 476 (2026-08-27): the return-side TYPE matrix completed (extends crr/nrr).
+; Collection and value-form returns from a scalar-param export: Set (its constructor-application
+; encode form), Map, BigInt, Rational all cross and reclaim to their reachable cells. Symbol is
+; the ODD ONE OUT: its resource-lowering guard declines ANY parameterized Symbol-returning export
+; — even a CONSTANT symbol with an Int64 param — with a diagnostic whose claim ("a parameter with
+; no scalar boundary type") is factually false for the scalar param. Wrong-diagnostic filed to
+; v-rust-backend; trm5 pins the rung (flips when the guard admits scalar-param symbol returns or
+; the message becomes truthful — retitle then). The no-param constant Symbol works (deforested).
+
+(case "trm1 an export returns a two-element Set (one reachable cell, constructor-application render)"
+  (input (do (def (main (: n Int64)) (Set.of (list n (+ n 1)))) (export main)))
+  (call main (: 5 Int64))
+  (output (: ((. Set of) (list 5 6)) (Set Int64)))
+  (live-objects 1))
+
+(case "trm2 an export returns a one-entry Map (one reachable cell)"
+  (input (do (def (main (: n Int64)) (Map.insert Map.empty n (+ n 1))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (map (5 6)) (Map Int64 Int64)))
+  (live-objects 1))
+
+(case "trm3 an export returns a BigInt built from the scalar param (one reachable cell)"
+  (input (do (def (main (: n Int64)) (BigInt.of n)) (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 BigInt))
+  (live-objects 1))
+
+(case "trm4 an export returns an exact Rational from the scalar param (three reachable cells)"
+  (input (do (def (main (: n Int64)) (Rational.of n 2)) (export main)))
+  (call main (: 5 Int64))
+  (output (: 5/2 Rational))
+  (live-objects 3))
+
+(case "trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)"
+  (input (do (def (main (: n Int64)) #"hot") (export main)))
+  (call main (: 5 Int64))
+  (output (: ((. Symbol of) "hot") Symbol)))

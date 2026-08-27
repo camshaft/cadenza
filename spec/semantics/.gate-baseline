@@ -1597,6 +1597,7 @@ pass	a compose combinator over HEAP-typed functions pipelines list transformers
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound Ast SUBTREE rides a template hole into the expansion intact
+pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a Bytes rope is found by its flat-twin key
@@ -5474,6 +5475,8 @@ pass	crr3 an export returns a Some-wrapped scalar (one reachable cell)
 pass	crr4 an export returns a runtime-concatenated String (one reachable cell)
 pass	crr5 an export returns a two-field record (one reachable cell)
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
+pass	csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair
+pass	csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
@@ -7669,6 +7672,10 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
+pass	trm1 an export returns a two-element Set (one reachable cell, constructor-application render)
+pass	trm2 an export returns a one-entry Map (one reachable cell)
+pass	trm3 an export returns a BigInt built from the scalar param (one reachable cell)
+pass	trm4 an export returns an exact Rational from the scalar param (three reachable cells)
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	true is greater than false
 pass	true is not less than false
@@ -8046,9 +8053,7 @@ todo	phr1 an export returning its lifted List param verbatim declines (ownership
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 todo	read of malformed text is a coded reject, not a wrong value
+todo	trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair
-pass	csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero
-pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak
