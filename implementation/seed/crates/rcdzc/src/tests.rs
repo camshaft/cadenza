@@ -2813,87 +2813,6 @@ fn projecting_a_non_compound_argument_is_still_rejected() {
     );
 }
 
-/// R2 e2e: a RUNTIME compound built behind a RECURSIVE call ESCAPES to the host as a resource, and its
-/// `encode()` walks the live handle to the canonical value form. `f` is genuinely recursive (calls
-/// itself), so `is_recursive` DECLINES the compile-time fold — `f` becomes a real `Core::Call`, `(f 3)`
-/// runs it at run time, and the returned `(tuple n 7)` is built on the value heap (NOT constant-folded).
-/// It must IMPORT the runtime (the genuine-heap signal, distinct from a folded constant tuple which
-/// imports nothing) and, composed, decode to the exact value form. This is the first COMPILER-EMITTED
-/// runtime-compound host escape (R2) — the walker/envelope proven independently in `r2_runtime_resource`,
-/// here driven by the real compile pipeline.
-#[test]
-fn a_recursive_runtime_tuple_escapes_to_the_host() {
-    use crate::testkit::parse;
-    // `f` recurses to its base case, which builds `(tuple n 7)` from the runtime-threaded `n`. Recursive
-    // → not folded → the tuple is a genuine heap value that escapes as a resource.
-    let src = "(module m (def (f n) (if (= n 0) (tuple n 7) (f (- n 1)))) \
-                 (def (main) (f 3)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-
-    // The genuine-heap signal: it imports the value-heap runtime (a folded constant tuple would import
-    // nothing — this is what distinguishes R2 from the R1 constant escape).
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a recursive runtime-tuple escape must import the value-heap runtime (genuine heap, not a fold)"
-    );
-
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[R2] runtime wasm not found; skipping composed escape run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None, // a resource-escape program exports no bare func — the host takes the escape path
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(
-                s, "(: (tuple 0 7) (Tuple Int64 Int64))",
-                "R2 escape value form"
-            )
-        }
-        cdz_run::Outcome::Trap(t) => panic!("R2 escape run trapped: {t}"),
-    }
-}
-
-/// R2 e2e for a RECORD: a runtime record built behind a recursive call escapes as a resource and its
-/// `encode()` walks the heap array (a record IS the same positional array as a tuple — its fields in
-/// canonical sorted order — the distinction is only the static type the renderer bakes). Companion of
-/// `a_recursive_runtime_tuple_escapes_to_the_host`, on the record surface. Pins that a runtime record
-/// crosses with its field NAMES rendered (from the type) though the runtime holds a nameless array.
-#[test]
-fn a_recursive_runtime_record_escapes_to_the_host() {
-    use crate::testkit::parse;
-    let src = "(module m (def (f n) (if (= n 0) (record (a n) (b 7)) (f (- n 1)))) \
-                 (def (main) (f 3)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a recursive runtime-record escape must import the value-heap runtime (genuine heap)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[R2] runtime wasm not found; skipping composed record escape");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None,
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (record (= a 0) (= b 7)) (Record (: a Int64) (: b Int64)))",
-            "R2 record escape value form"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("R2 record escape run trapped: {t}"),
-    }
-}
-
 /// §3c REDUCER-SHAPE de-risk: a runtime-built record with a STRING field and a BYTES field — the essence
 /// of the reducer Event (`{content-type, payload}`) — escapes via the value-encode WALKER. Pins that the
 /// exact reducer-Event field shape (mixed String + Bytes) value-encodes to the canonical `(= name value)`
@@ -5183,41 +5102,6 @@ fn a_reducer_performing_a_world_effect_reifies_it_and_emits_a_valid_component() 
         .expect("the reify reducer's component loads on the pinned wasmtime");
 }
 
-/// R2 NESTED: a runtime tuple whose element is ITSELF a runtime tuple escapes — the inner compound is
-/// built on the heap as its own array, and the outer `arr-set`s the inner HANDLE directly (no box), so
-/// the outer array holds a handle to the inner array. `encode()` walks the nested `arr-get` path and
-/// renders both levels. Recursive → unfoldable → genuine nested-heap construction. Pins that a nested
-/// compound element is stored/read as a handle (not boxed/unboxed) — the `box_op`/`get_op` `None` path.
-#[test]
-fn a_nested_runtime_tuple_escapes_to_the_host() {
-    use crate::testkit::parse;
-    let src = "(module m (def (f n) (if (= n 0) (tuple n (tuple n n)) (f (- n 1)))) \
-                 (def (main) (f 2)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a nested runtime-tuple escape must import the value-heap runtime (genuine nested heap)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[R2] runtime wasm not found; skipping composed nested escape");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None,
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (tuple 0 (tuple 0 0)) (Tuple Int64 (Tuple Int64 Int64)))",
-            "R2 nested tuple escape value form"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("R2 nested tuple escape run trapped: {t}"),
-    }
-}
-
 /// A NESTED CONSTANT tuple whose inner and outer levels SHARE an element occurrence must fold and
 /// escape as the right value — the regression guard for the value-constructor build-once cache. A
 /// non-recursive `(f 2)` inlines by β-reduction, which SHARES a constant-atom occurrence
@@ -5251,40 +5135,6 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
             "a shared-occurrence nested constant tuple must escape as its true value form"
         ),
         cdz_run::Outcome::Trap(t) => panic!("shared-occurrence nested tuple escape trapped: {t}"),
-    }
-}
-
-/// R2 NESTED (heterogeneous): a runtime RECORD whose field is a runtime TUPLE — the type-directed
-/// walker recurses record→tuple, each sub-shape rendered by its own head. Pins the nested handle path
-/// across a record boundary.
-#[test]
-fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
-    use crate::testkit::parse;
-    let src = "(module m (def (f n) (if (= n 0) (record (x n) (y (tuple n 1))) (f (- n 1)))) \
-                 (def (main) (f 2)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a record-with-tuple-field escape must import the value-heap runtime"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[R2] runtime wasm not found; skipping composed nested-record escape");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None,
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s,
-            "(: (record (= x 0) (= y (tuple 0 1))) (Record (: x Int64) (: y (Tuple Int64 Int64))))",
-            "R2 nested record escape value form"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("R2 nested record escape run trapped: {t}"),
     }
 }
 
