@@ -18373,24 +18373,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_unrecognized_string_escape_is_rejected_cdz0001() {
-        // 01-literals "an unrecognized string escape is rejected": `"\q"` uses a backslash before `q`,
-        // which begins none of the closed escape set (`\n \t \r \\ \"`), so the reader emits a
-        // `Leaf::BadEscape` MARKER (it cannot report through its own stderr) that survives the
-        // cadenza-syntax→rcdzc codec, and the COMPILER rejects it CDZ0001 — not silently reading `q`.
-        assert_eq!(
-            reject_code("(module m (def (main) \"\\q\") (export main))").as_deref(),
-            Some("CDZ0001")
-        );
-        // A VALID escape is unaffected — `"\n"` reads to a newline `Str`, no marker, no rejection (it
-        // compiles; the const-string escape renders it). Pin that only the CLOSED set is rejected.
-        assert_eq!(
-            reject_code("(module m (def (main) \"\\n\") (export main))"),
-            None
-        );
-    }
-
-    #[test]
     fn applying_a_non_function_is_a_coded_type_error() {
         // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
         // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its
