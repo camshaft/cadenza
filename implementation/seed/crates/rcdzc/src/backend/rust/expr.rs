@@ -7778,6 +7778,23 @@ fn emit_branch(
     if let Some(w) = float_width_of_ty(&cty) {
         return emit_grounded_float(db, branch, w, env, ctx);
     }
+    // A COLLECTION result (`Map`/`Set`/`List`) whose element/key types are FULLY SOLVED: thread the
+    // construct's type as `expected_ty` so an EMPTY-collection branch annotates its `BTreeMap<K,V>` /
+    // `BTreeSet` / `Vec` from the solved construct type. Without this, an `(if b <Map String Int64>
+    // Map.empty)` emits the empty else-branch as `BTreeMap<i64, i64>` — its own KEY is an open var that
+    // `MapNew` grounds to the default `i64` (no `expected_ty` to read) — while the then-branch is
+    // `BTreeMap<String, i64>`, so rustc rejects `if`/`else` with incompatible types (E0308; the
+    // runtime-map REST-binder read / `Map.empty` if-branch case v-wasmtime-migration hit). The empty
+    // `MapNew`/`SetOf` emit already consults `expected_ty` for exactly this — feed it the construct type.
+    // Only when the construct type has NO free var (an exact type — a wrong annotation errors LOUD at
+    // rustc, never a silent miscompile); a call-arg inside the branch overrides this with its own
+    // `expected_ty`, so a nested unrelated empty collection is unaffected. The collection twin of the
+    // generic-sum `if`-result annotation in the `Core::If` arm.
+    if matches!(cty, Ty::Map(..) | Ty::Set(_) | Ty::List(_)) && !cty.has_free_var() {
+        let mut bctx = ctx.clone();
+        bctx.expected_ty = Some(cty.clone());
+        return emit(db, branch, env, &bctx);
+    }
     emit(db, branch, env, ctx)
 }
 
