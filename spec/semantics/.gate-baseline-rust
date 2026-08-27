@@ -4786,6 +4786,7 @@ pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
 pass	an unbound name inside an UNCALLED lambda body is still rejected
 pass	an unbound uppercase name in a type annotation's type position is rejected
+pass	an unconditional cross-function abort folds via inline
 pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
@@ -7246,6 +7247,7 @@ pass	the widening carries a full-width magnitude through BigInt
 pass	the width constructor applied to 64 projects the signed 64-bit maximum
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
+pass	the winning abort's value reads the op arg and the seed state
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
@@ -7539,6 +7541,7 @@ pass	wfp3 NINE list entry params are eighteen flat values and decline
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
+pass	with three abortive performs on a strict spine the leftmost still wins
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
 pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
 pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
