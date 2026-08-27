@@ -7904,6 +7904,7 @@ todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
 pass	el2 TWO List entry params measure independently
 pass	el3 an EMPTY List entry param has length zero
+pass	el4 a List entry param's element read by a non-recursive List.at
 todo	eo1 an Option entry param delivers its Some payload
 todo	eo2 an Option entry param takes the None arm
 todo	eo3 an Option param BETWEEN scalars keeps positions

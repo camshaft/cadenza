@@ -5390,6 +5390,7 @@ pass	egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (
 pass	el1 a List entry param summed by an indexed walk
 pass	el2 TWO List entry params measure independently
 pass	el3 an EMPTY List entry param has length zero
+pass	el4 a List entry param's element read by a non-recursive List.at
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value

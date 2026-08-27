@@ -7832,6 +7832,18 @@
   (call main (: (list) (List Int64)))
   (output (: 0 Int64)))
 
+; -- breaker batch 444 (2026-08-27): slice-2a boundary witness, cut the hour #3836 landed. A
+; non-recursive List.at ELEMENT READ through the lifted value-heap vec passes 0-leak (verified on
+; the debug-counters runtime) — pinning that element access is IN slice 2a while el1's recursive
+; walk (xs escaping into the self-call) stays the declined side of the same boundary.
+(case "el4 a List entry param's element read by a non-recursive List.at"
+  (input (do
+    (def (main (: xs (List Int64)))
+      (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1)))
+    (export main)))
+  (call main (: (list 7 42 9) (List Int64)))
+  (output (: 42 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
