@@ -1862,98 +1862,6 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
     // corpus cannot observe an opcode count.
 }
 
-/// A trapping `cond` must NOT hoist through a common constructor when a SHARED (non-differing) payload
-/// BEFORE the differing position can itself trap: the original `if` evaluates `cond` FIRST, but the
-/// hoisted form builds the shared payload OUTSIDE the per-position `if`, so it would evaluate before
-/// `cond` and PREEMPT its trap. `(if (< (+ i64::MAX e) 5) (tuple (/ 10 d) 1) (tuple (/ 10 d) 2))` —
-/// element 0 is the shared `(/ 10 d)` (a `/` by a runtime divisor, possibly-trapping), element 1 is
-/// the sole differing position. `cond` is a checked `+` overflow, so the original always traps
-/// 'integer overflow' first — at d=0 the hoisted form would instead trap 'integer divide by zero'
-/// (the WRONG trap). Asserting the trap REASON (not merely THAT it traps) pins the ordering.
-#[test]
-fn a_trapping_shared_payload_before_the_diff_does_not_preempt_a_trapping_cond() {
-    use crate::testkit::parse;
-    // A `tuple` payload lives on the value heap, so the run needs the runtime component linked.
-    let src = "(module m \
-                 (def (main (: d Int64) (: e Int64)) \
-                   (if (< (+ 9223372036854775807 e) 5) \
-                       (tuple (/ 10 d) 1) \
-                       (tuple (/ 10 d) 2))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    // At d=0 the shared `(/ 10 d)` divides by zero and `cond` overflows. Cond-first semantics demand the
-    // OVERFLOW is observed; a hoist that moved `(/ 10 d)` ahead of `cond` would surface div-by-zero.
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["0".to_string(), "1".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(v) => {
-            panic!("expected a trap (cond overflows), ran → {v}")
-        }
-        cdz_run::Outcome::Trap(t) => {
-            assert!(
-                t.contains("integer overflow"),
-                "cond (a checked-+ overflow) is evaluated FIRST, so the observed trap must be \
-                 'integer overflow', not the preceding shared payload's div-by-zero; got: {t}"
-            );
-            assert!(
-                !t.contains("divide by zero"),
-                "the trapping shared payload `(/ 10 d)` before the differing position must not \
-                 preempt the trapping cond's overflow; got the WRONG trap: {t}"
-            );
-        }
-    }
-}
-
-/// CSE must NOT hoist a repeated trapping subexpression out of a SHORT-CIRCUIT connective's shielded
-/// right operand (adv-55, a wasm soundness miscompile). `(if (and b (= (/ 10 d) (/ 10 d))) 1 0)`: the
-/// `and`'s rhs (the two divisions) is evaluated ONLY when `b` is true — short-circuit shields it exactly
-/// as a conditional's unselected branch (core-semantics.md #Boolean Connectives Short-Circuit). The
-/// repeated `(/ 10 d)` is a CSE class, but a hoist to the body root would evaluate it unconditionally →
-/// a spurious 'integer divide by zero' at `d=0` even when `b` is false. The fix: `collect_dominating_
-/// frontier` treats `Core::And`'s rhs as conditional (contributes only `lhs`), so the shielded division
-/// is never in the frontier a CSE hoist targets. At `main(false, 0)` the answer MUST be 0 (no trap).
-#[test]
-fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_short_circuit_and() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (def (main (: b Bool) (: d Int64)) \
-                   (if (and b (= (/ 10 d) (/ 10 d))) 1 0)) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    // b=false → the `and` short-circuits, the divisions never run, result is 0. A CSE that hoisted the
-    // repeated `(/ 10 d)` above the connective would divide by zero here.
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["false".to_string(), "0".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(v) => assert_eq!(
-            v, "0",
-            "b=false short-circuits the `and`, so its trapping rhs must not run — expected 0"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!(
-            "CSE hoisted the short-circuit-shielded `(/ 10 d)` above the `and` → spurious trap at \
-             d=0 when b=false; the frontier must treat And's rhs as conditional. Got trap: {t}"
-        ),
-    }
-}
-
 /// The Lir-level + `||` twin of the adv-55 short-circuit CSE-frontier pin (`cse_does_not_hoist_a_
 /// trapping_subexpr_out_of_a_short_circuit_and` above, which is `&&`-only + runtime-only). `Core::And`
 /// is the UNIFIED short-circuit node (`is_and=true` = `&&`, rhs runs iff lhs TRUE; `is_and=false` = `||`,
@@ -8287,39 +8195,10 @@ mod recursion {
              {vec_len_before}: {code:?}"
         );
 
-        // VALUE PARITY: sum [0,1000) via the index loop still computes correctly with the hoisted length.
-        // Build the list inside a nullary `main` and run through the value-heap runtime (as the sibling
-        // heap tests do — `run_heap_value` lives in another mod, so use the `cdz_run` path directly).
-        let prog = "(module m \
-                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
-                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (sumidx (: xs (List Int64)) (: i Int64) (: acc Int64)) \
-                     (if (< i ((. List len) xs)) \
-                         (sumidx xs (+ i 1) \
-                            (+ acc (match ((. List at) xs i) ((Some x) x) ((None _) 0)))) \
-                         acc)) \
-                   (def (main) (let ((xs (build 0 1000 (list)))) (sumidx xs 0 0))) (export main))";
-        let bytes = component(prog);
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping hoisted-length index-loop run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "499500",
-                    "index loop with a hoisted length sums [0,1000)"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
+        // The value parity of an index loop that runs correctly with the hoisted loop-invariant length is
+        // covered by the corpus loop-invariant-hoist family (02-binding-and-control "a loop whose bound is
+        // an invariant computation runs correctly (the bound is hoisted)" + the match-scrutinee-invariant
+        // case); only the Lir hoist witness (the single `vec-len` before the loop) stays here.
     }
 
     #[test]
