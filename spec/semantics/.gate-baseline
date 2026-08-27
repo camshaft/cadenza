@@ -8051,3 +8051,4 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 pass	csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair
 pass	csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero
+pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak

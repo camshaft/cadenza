@@ -8684,3 +8684,29 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (live-objects known-leak 3))
+
+; UAF GUARD (minimized from a real cad snowflake miscompile a rejected shell-reclaim shipped): an owned
+; COMPOUND-payload sum whose child is a COMPOUND (a List) BORROWED OUT of the shell via a match binder,
+; then read. The extracted `hi` ALIASES INTO the Box.Bx shell (a sum-payload borrow, not a copy), so a
+; reclaim that frees the shell after the outer match while `hi` is still read would be a USE-AFTER-FREE.
+; VALUE CORRECTNESS is the guard: correct len means no early free. The all-scalar-payload reclaim floor
+; keeps it safe today (the outer Box has a compound List payload -> reclaim=false), leaking the shell +
+; children -- a future compound-shell reclaim broadening that is unsound for this alias-out shape would
+; fail HERE (value must stay correct; a scalar-result heuristic that ignored the alias shipped the cad UAF).
+
+(case "a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak"
+  (doc    "`(type Box (Bx (List Int64) (List Int64)) Empty)`; `mk n` builds a fresh owned `Box.Bx` of two
+           runtime lists; `main n` matches it, binds the compound child `hi` (a List ALIASING into the Box
+           shell -- a sum-payload borrow, NOT a copy) and reads `(List.len hi)`. `mk 3` -> hi = [0,1,2,3,4],
+           len 5. Value 5 is the UAF guard: an over-eager reclaim freeing the shell while `hi` aliases into
+           it would trap OOB or read garbage. The owned Box.Bx shell + its two List children are left
+           un-dropped (compound-payload reclaim floor) -- a known leak; flip to 0 only under a reclaim
+           broadening that stays SOUND for this alias-out shape (value must remain 5).")
+  (input  (do
+            (type Box (Bx (List Int64) (List Int64)) Empty)
+            (def (bl (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (bl (+ i 1) n (List.push acc i)) acc))
+            (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) (Box.Bx (bl 0 n (list)) (bl 0 (+ n 2) (list)))))
+            (def (main (: n Int64)) (match (mk n) ((Box.Bx lo hi) (List.len hi)) ((Box.Empty _) 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 6))
