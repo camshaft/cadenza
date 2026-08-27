@@ -5394,6 +5394,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 args: run_args.clone(),
                 call_twice: false,
                 then_args: Vec::new(),
+                drop_handle: false,
                 runtime: None,
                 store: store.clone(),
                 host_responses: Vec::new(),
@@ -6118,7 +6119,9 @@ fn run_one_trial_with_pool(
     // against the compiled provider peer over one runtime. Both return the SAME `(Outcome, observed)` shape,
     // so the trial logic below is identical.
     let run_result = match target {
-        RunTarget::Standalone(compiled) => cdz_run::run_capturing_compiled(compiled, &opts, None),
+        RunTarget::Standalone(compiled) => {
+            cdz_run::run_capturing_compiled(compiled, &opts, None, false)
+        }
         RunTarget::Composed(composition) => cdz_run::run_composition_capturing(composition, &opts),
     };
     match run_result {

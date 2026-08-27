@@ -156,6 +156,13 @@ pub struct GTrial {
 pub struct GCall {
     pub export: String,
     pub args: Vec<String>,
+    /// A `(then …)` two-call continuation (the corpus `(then …)` clause): the SECOND call's args, or
+    /// `None` for the ordinary one-call form. `Some` (possibly empty) drives the same borrowed closure
+    /// handle twice, rendering the pair as a tuple — the grade-path analog of `--call-twice`.
+    pub second_call: Option<Vec<String>>,
+    /// A `(drop)` clause: resource-drop the minted handle after the call(s) before reading the heap
+    /// balance (so a `(live-objects 0)` case pins release) — the grade-path analog of `--drop-handle`.
+    pub drop_handle: bool,
 }
 
 /// The expected outcome of a trial. `Output`/`Trap` are RUN outcomes (graded against the run); `Error`/
@@ -560,6 +567,8 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     let items = a.as_form(id, "trial")?;
     let mut export: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
+    let mut second_call: Option<Vec<String>> = None;
+    let mut drop_handle = false;
     let mut expect: Option<GExpect> = None;
     for &child in items {
         match a.head_name(child) {
@@ -578,6 +587,21 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     args.push(v);
                 }
             }
+            // `(then-call)` opens a two-call continuation (a bare marker; args arrive as `(then-arg …)`),
+            // so `Some(vec![])` (nullary second call) is distinct from `None` (no second call).
+            Some("then-call") => second_call = Some(Vec::new()),
+            Some("then-arg") => {
+                if let Some(sc) = second_call.as_mut()
+                    && let Some(v) = a
+                        .as_form(child, "then-arg")
+                        .and_then(|t| t.first().copied())
+                        .and_then(|aid| str_leaf(a, aid))
+                {
+                    sc.push(v);
+                }
+            }
+            // `(drop-handle)` — resource-drop the minted handle after the call(s).
+            Some("drop-handle") => drop_handle = true,
             Some("expect-output") => {
                 expect = a
                     .as_form(child, "expect-output")
@@ -611,7 +635,12 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
             _ => {}
         }
     }
-    let call = export.map(|export| GCall { export, args });
+    let call = export.map(|export| GCall {
+        export,
+        args,
+        second_call,
+        drop_handle,
+    });
     Some(GTrial {
         call,
         expect: expect?,

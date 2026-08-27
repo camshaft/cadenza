@@ -53,6 +53,14 @@ pub struct RunArgs {
     #[arg(long = "then-arg", value_name = "VALUE", allow_hyphen_values = true)]
     pub then_args: Vec<String>,
 
+    /// After the closure call(s), RESOURCE-DROP the minted handle before reading the result / heap balance.
+    /// `call` BORROWS the handle, so without this the closure cell stays live until store teardown (a
+    /// `--report-live-objects` run then reports the leak); dropping fires the resource's `t-dtor`, reclaiming
+    /// the cell, so a leak-release case reports 0. The corpus `(drop)` clause drives this. Closure/escape
+    /// runs only.
+    #[arg(long = "drop-handle")]
+    pub drop_handle: bool,
+
     /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
     /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
     /// bypasses that lookup — use for local runtime debugging, not conformance.
@@ -310,6 +318,9 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // ordinary one-call run. Not a `RunOpts` field — that struct's field-adds are a known livelock (203
     // exhaustive literals); it rides as a parameter on the run functions the gate path uses instead.
     let second_call: Option<&[String]> = cli.call_twice.then_some(cli.then_args.as_slice());
+    // Whether to resource-drop the closure handle after the call(s) (the `(drop)` clause) — threaded like
+    // `second_call` on the run path down to the closure/escape driver.
+    let drop_handle = cli.drop_handle;
 
     if !peers.is_empty() {
         // Compose the CONSUMER with its peers across the live boundary; the observed host calls are not
@@ -355,7 +366,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
             );
         }
         let (outcome, observed, live) =
-            run_with_live_objects(&component_bytes, &opts, second_call)?;
+            run_with_live_objects(&component_bytes, &opts, second_call, drop_handle)?;
         emit_observed_host_calls(&observed);
         return match outcome {
             Outcome::Value(text) => {
@@ -375,7 +386,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         };
     }
 
-    let (outcome, observed) = run_capturing(&component_bytes, &opts, second_call)?;
+    let (outcome, observed) = run_capturing(&component_bytes, &opts, second_call, drop_handle)?;
     emit_observed_host_calls(&observed);
     match outcome {
         Outcome::Value(text) => {

@@ -1372,14 +1372,18 @@ fn run_program(
             message: String::new(),
         };
     }
-    // A `(then …)` two-call-on-one-handle case is driven ONLY through the WASM harness (make the closure
-    // handle once, call the SAME borrowed handle twice, render the tuple — see `run_closure_resource`'s
-    // `--call-twice`). The Rust/ML backends have no two-call closure drive on this path, so a `(then)` case
-    // is not-yet-supported there → DECLINE (Todo, coverage-not-yet). Without this, those backends run only
-    // the FIRST call and return its scalar (e.g. `15`), a spurious disagreement with the expected
-    // `(tuple 15 17)`; the decline makes a `(then)` case baseline pass-wasm / todo-elsewhere, the same
-    // wasm-only convention `wit-world` uses above.
-    if call.map(|c| c.second_call.is_some()).unwrap_or(false) && !matches!(target, GateTarget::Wasm)
+    // A `(then …)` two-call or a `(drop)` case is driven ONLY through the WASM harness — the two-call
+    // drive (`run_closure_resource`'s `--call-twice`) and the explicit resource-drop (`--drop-handle`,
+    // for a `(live-objects 0)` release assertion) both live in the wasm closure driver. The Rust/ML
+    // backends have no such closure-resource drive on this path, so those cases are not-yet-supported
+    // there → DECLINE (Todo, coverage-not-yet). Without this, a `(then)` backend runs only the FIRST call
+    // (scalar `15` vs the expected `(tuple 15 17)`), a spurious disagreement; the decline makes such a case
+    // baseline pass-wasm / todo-elsewhere, the same wasm-only convention `wit-world` uses above. (A `(drop)`
+    // case's `(live-objects …)` is itself wasm-only, but declining keeps the non-wasm grade a clean todo.)
+    if call
+        .map(|c| c.second_call.is_some() || c.drop_handle)
+        .unwrap_or(false)
+        && !matches!(target, GateTarget::Wasm)
     {
         return Ran::Declined {
             code: None,
@@ -1686,6 +1690,12 @@ fn run_program_wasm(
             for arg in second {
                 run.arg("--then-arg").arg(arg);
             }
+        }
+        // A `(drop)` clause: resource-drop the minted closure handle after the call(s), before the run
+        // reads the result / heap balance — so a `(live-objects 0)` case pins release (default holds the
+        // handle → the known leak of 1).
+        if call.drop_handle {
+            run.arg("--drop-handle");
         }
     }
     // HOST-CALL RESPONSES (E2h): a program that delegates an effect to the host consumes these in order.
@@ -4421,6 +4431,9 @@ struct Call {
     /// `cdz-run --call-twice` so the same closure handle serves both calls; the run renders both results
     /// as a tuple.
     second_call: Option<Vec<String>>,
+    /// A `(drop)` clause: resource-drop the minted closure handle after the call(s) before reading the
+    /// result / heap balance (so a `(live-objects 0)` case can pin release). Drives `cdz-run --drop-handle`.
+    drop_handle: bool,
 }
 
 /// Run `cdz-corpus records <file>` and parse its record stream.
@@ -4459,6 +4472,9 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     // The pending `(then …)` continuation's args (two-call-on-one-handle), or `None` until a `then-call`
     // marker line opens it. Flushed into the trial's `Call` alongside `call_args` on the `expect` line.
     let mut second_call: Option<Vec<String>> = None;
+    // The pending `(drop)` flag (resource-drop the closure handle after the call), set by a `drop-handle`
+    // marker line, flushed into the trial's `Call` on the `expect` line.
+    let mut drop_handle = false;
     for line in text.lines() {
         if line == "---" {
             records.push(CorpusRecord {
@@ -4478,6 +4494,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
             call_export = None;
             call_args.clear();
             second_call = None;
+            drop_handle = false;
             continue;
         }
         if let Some((key, val)) = line.split_once('\t') {
@@ -4502,14 +4519,18 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                         sc.push(val.to_string());
                     }
                 }
+                // `drop-handle\t1` — the `(drop)` clause: resource-drop the minted handle after the call.
+                "drop-handle" => drop_handle = true,
                 "expect" => {
                     // The `expect` closes a trial: pair the pending call (if any) with this payload,
-                    // carrying any `(then …)` second-call args.
+                    // carrying any `(then …)` second-call args and the `(drop)` flag.
                     let sc = second_call.take();
+                    let dh = std::mem::take(&mut drop_handle);
                     let call = call_export.take().map(|export| Call {
                         export,
                         args: std::mem::take(&mut call_args),
                         second_call: sc,
+                        drop_handle: dh,
                     });
                     call_args.clear();
                     trials.push(Trial {
