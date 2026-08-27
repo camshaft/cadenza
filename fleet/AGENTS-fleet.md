@@ -262,6 +262,10 @@ observed with 8+ concurrent heavy builds serializing, a 1h31m aggregate starved 
 check` acquires the lease itself, but a **raw `nix build .#checks.…` / `.#<heavy-attr>` you run directly
 BYPASSES the cap.** So wrap any heavy raw nix build: `cargo xtask fleet with-lease nix build .#…` (not a
 bare `nix build`). This is fleet-wide courtesy — one escapee crawls every peer's required gate too.
+`with-lease` also caps each wrapped build's rustc fan-out (injects a per-holder `NIX_CONFIG`
+`max-jobs`/`cores` budget ≈ `nproc / (2·(LEASE_MAX+1))`), so N lease holders can't oversubscribe the box
+even though each `nix build .#checks…corpus-<file>` forks many rustc — a bare `nix build` gets neither the
+slot cap NOR this fan-out cap. Tune per host with `CDZ_LEASE_NIX_BUDGET`.
 
 **Do NOT run the full `cargo xtask gate` (whole corpus × 3 backends) or `cargo xtask check` (whole
 workspace) yourself** — not per iteration, not "once before send." A green `dev-gate` + scoped spot-check
