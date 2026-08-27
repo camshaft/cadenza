@@ -9087,3 +9087,44 @@
            at N~32 before the spine reduction was flattened).")
   (input (do (def (f (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64) (: p6 Int64) (: p7 Int64) (: p8 Int64) (: p9 Int64) (: p10 Int64) (: p11 Int64) (: p12 Int64) (: p13 Int64) (: p14 Int64) (: p15 Int64) (: p16 Int64) (: p17 Int64) (: p18 Int64) (: p19 Int64) (: p20 Int64) (: p21 Int64) (: p22 Int64) (: p23 Int64) (: p24 Int64) (: p25 Int64) (: p26 Int64) (: p27 Int64) (: p28 Int64) (: p29 Int64) (: p30 Int64) (: p31 Int64) (: p32 Int64) (: p33 Int64) (: p34 Int64) (: p35 Int64) (: p36 Int64) (: p37 Int64) (: p38 Int64) (: p39 Int64) (: p40 Int64) (: p41 Int64) (: p42 Int64) (: p43 Int64) (: p44 Int64) (: p45 Int64) (: p46 Int64) (: p47 Int64) (: p48 Int64) (: p49 Int64)) (+ p0 (+ p1 (+ p2 (+ p3 (+ p4 (+ p5 (+ p6 (+ p7 (+ p8 (+ p9 (+ p10 (+ p11 (+ p12 (+ p13 (+ p14 (+ p15 (+ p16 (+ p17 (+ p18 (+ p19 (+ p20 (+ p21 (+ p22 (+ p23 (+ p24 (+ p25 (+ p26 (+ p27 (+ p28 (+ p29 (+ p30 (+ p31 (+ p32 (+ p33 (+ p34 (+ p35 (+ p36 (+ p37 (+ p38 (+ p39 (+ p40 (+ p41 (+ p42 (+ p43 (+ p44 (+ p45 (+ p46 (+ p47 (+ p48 p49)))))))))))))))))))))))))))))))))))))))))))))))))) (def (main) ((((((((((((((((((((((((((((((((((((((((((((((((((f 0) 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) 25) 26) 27) 28) 29) 30) 31) 32) 33) 34) 35) 36) 37) 38) 39) 40) 41) 42) 43) 44) 45) 46) 47) 48) 49)) (export main)))
   (output (: 1225 Int64)))
+
+; -- const-closure specialization regressions (behavioral halves migrated from rcdzc 2026-08-27; the
+; white-box "must compile / coded-reject" checks stay wasmtime-free rcdzc unit tests). These pin the
+; VALUE of const-closure/higher-order recursion shapes whose regressions produced a spurious CDZ0101
+; decline or a wrong value — the value the compile-only half cannot witness.
+
+(case "a const param re-passed on a mixed-match recursive arm does not drop, single and two-const forms (value parity)"
+  (doc    "Regression (const-param-drop): a `const` param re-passed on a SELF-RECURSIVE call sitting on a
+           MIXED innermost match arm (a recursive arm beside a value-returning sibling) used to decline
+           CDZ0101. filter-map shape (keep = return a value, drop = recurse): `twostep` over 0.. keeping
+           the first `> 2` yields 3, both for a single const `step` and for two const params `step` + `f`.")
+  (input (do
+           (type Option (Some Int64) None)
+           (def (mk (: n Int64)) (Option.Some n))
+           (def (twostep (const (: step (-> Int64 Option))) (: s Int64))
+             (match (step s) ((Option.None) 0)
+               ((Option.Some x) (if (> x 2) x (twostep step (+ s 1))))))
+           (def (twostep2 (const (: step (-> Int64 Option))) (: s Int64) (const (: f (-> Int64 Bool))))
+             (match (step s) ((Option.None) 0)
+               ((Option.Some x) (if (f x) x (twostep2 step (+ s 1) f)))))
+           (def (single) (twostep (fn ((: n Int64)) (mk n)) 0))
+           (def (both)   (twostep2 (fn ((: n Int64)) (mk n)) 0 (fn ((: x Int64)) (> x 2))))
+           (export single) (export both)))
+  (call single) (output (: 3 Int64))
+  (call both)   (output (: 3 Int64)))
+
+(case "a closure-payload sum built by an if-helper with a reused arg compiles and runs, not CDZ0101 (value parity)"
+  (doc    "Regression (fuse_match_into_if clone): `(run (mk k) k)` reuses `k` in BOTH arg positions; `mk k`
+           reduces to an `if`, so `run`'s `(match (mk k) …)` triggers fuse_match_into_if, deep-copying the
+           arm body `(f arg)` where `arg` = `k` is a beta-bound capture. A fresh copy re-resolved `k`
+           lexically against the grafted branch (where `k` is invisible) → a spurious CDZ0101; the fix
+           shares the pinned non-payload capture. k=4 → Fn arm `(* 4 3)` = 12; k=-1 → Const = 77.")
+  (input (do
+           (type Box (Fn (-> Int64 Int64)) (Const Int64))
+           (def (mk (: k Int64)) (if (> k 0) (Box.Fn (fn ((: x Int64)) (* x 3))) (Box.Const 77)))
+           (def (run (: b Box) (: arg Int64)) (match b ((Box.Fn f) (f arg)) ((Box.Const c) c)))
+           (def (pos) (let ((k 4)) (run (mk k) k)))
+           (def (neg) (let ((k (- 0 1))) (run (mk k) k)))
+           (export pos) (export neg)))
+  (call pos) (output (: 12 Int64))
+  (call neg) (output (: 77 Int64)))
