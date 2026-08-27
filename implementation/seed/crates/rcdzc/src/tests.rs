@@ -21653,7 +21653,6 @@ mod match_engine {
         );
     }
 
-
     #[test]
     fn a_match_on_a_tuple_of_recursive_calls_types_from_the_constructor() {
         // A bottom-up fold matches a TUPLE OF RECURSIVE CALLS against constructor patterns: `(match (tuple
@@ -56901,37 +56900,16 @@ mod cross_component_oracle {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(&consumer).expect("consumer validates");
         }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U8] runtime wasm not found; skipping");
-            return;
-        };
+        // The RUN half (compose the concat provider + this consumer; byte-len of the doubled "hello" = 10,
+        // proving the String arg crossed IN as a rope and was consumed, and the String result crossed back)
+        // is covered by corpus `spec/semantics/29-cross-component-peers.sexp` — "a string argument crosses to
+        // a peer and the doubled result byte-len is read". This in-crate test now pins the WHITE-BOX claim
+        // only: the source provider imports the value-heap runtime (it handles a String rope), which the
+        // corpus run confirms behaviorally.
         assert!(
             String::from_utf8_lossy(&provider).contains(&import_name),
             "the source provider imports the value-heap runtime (it handles a String rope)"
         );
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:model/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a String argument crosses to a peer-bound effect")
-        {
-            // main passed "hello" (5 bytes) as the peer arg; the provider concatenated it with itself →
-            // "hellohello" (10 bytes). byte-len = 10 proves the String arg crossed INTO the peer as a rope
-            // handle and was consumed — the mirror of U7's result crossing.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "10",
-                "the doubled prompt's byte-len proves the String arg crossed + was consumed by the peer"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("string-arg peer run trapped: {t}"),
-        }
     }
 
     // ------------------------------------------------------------------------------------------------

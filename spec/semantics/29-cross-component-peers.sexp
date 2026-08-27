@@ -398,3 +398,17 @@
               (def (main) (host (R) (R.req (record (msg "hi") (n 4))))) (export main)))
   (call   main)
   (output (: 6 Int64)))
+
+(case "a string argument crosses to a peer and the doubled result byte-len is read"
+  (doc    "The converse shape (string ARG + string RESULT both cross as rope handles over the shared runtime):
+           PROVIDER `converse(prompt)` = String.concat prompt prompt BUILDS a new rope from the crossed arg;
+           the CONSUMER passes the literal \"hello\" host-wrapped and reads the doubled completion's byte-len.
+           main = String.byte-len(host M (M.converse \"hello\")) = len(\"hellohello\") = 10 — proving the String
+           ARG crossed INTO the peer as a rope and was CONSUMED (a broken arg emit would trap or mis-length),
+           and the String RESULT crossed back. Relocated (RUN half) from rcdzc u8_a_string_argument_crosses_to_a_peer
+           — its white-box value-heap-runtime-import pin stays in rcdzc.")
+  (peer   "cadenza:model/api" (do (def (converse (: prompt String)) (String.concat prompt prompt)) (export converse)))
+  (input  (do (effect M (op converse (-> String String))) (bind M "cadenza:model/api")
+              (def (main) (String.byte-len (host (M) (M.converse "hello")))) (export main)))
+  (call   main)
+  (output (: 10 Int64)))

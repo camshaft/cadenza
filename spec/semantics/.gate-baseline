@@ -4316,6 +4316,7 @@ pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
 pass	a strict-operand abort in a DEEP-nested handler stack keeps its 99 when the advances are UNOBSERVED
+pass	a string argument crosses to a peer and the doubled result byte-len is read
 pass	a string carried as a sum-variant payload is bound and measured at run time
 pass	a string compared to a symbol is a type error
 pass	a string equality on an inlined match operand
