@@ -6717,50 +6717,7 @@ impl ComposedRuntime {
         (first, second)
     }
 
-    /// Like `closure_make_call` but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
-    /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
-    /// dispatches whichever the named `make` built.
-    fn closure_make_call_named(
-        &mut self,
-        make_name: &str,
-        make_args: &[wasmtime::component::Val],
-        call_args: &[wasmtime::component::Val],
-    ) -> wasmtime::component::Val {
-        use wasmtime::component::Val;
-        let iface = self
-            .program
-            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
-            .expect("closure interface exported");
-        let make_idx = self
-            .program
-            .get_export_index(&mut self.store, Some(&iface), make_name)
-            .unwrap_or_else(|| panic!("closure `{make_name}` exported"));
-        let call_idx = self
-            .program
-            .get_export_index(&mut self.store, Some(&iface), "call")
-            .expect("closure `call` exported");
-        let make = self
-            .program
-            .get_func(&mut self.store, make_idx)
-            .expect("make func");
-        let call = self
-            .program
-            .get_func(&mut self.store, call_idx)
-            .expect("call func");
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, make_args, &mut handle)
-            .expect("make call");
-        make.post_return(&mut self.store).expect("make post_return");
-        let mut full_call_args = vec![handle[0].clone()];
-        full_call_args.extend_from_slice(call_args);
-        let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &full_call_args, &mut out)
-            .expect("call");
-        call.post_return(&mut self.store).expect("call post_return");
-        out[0].clone()
-    }
-
-    /// Like [`closure_make_call_named`] but `call`s the named make's handle TWICE via the SHARED `call`,
+    /// Like `closure_make_call_named` but `call`s the named make's handle TWICE via the SHARED `call`,
     /// returning both results. Proves the multi-export shared `call` is a repeatable `borrow<t>` method — one
     /// `make-<name>` handle serves repeated calls (an `own<t>` shared call would consume it on the first).
     fn closure_make_call_named_twice(
@@ -86018,45 +85975,6 @@ mod closure_host_resource {
             "closure leak: the closure cell is still live after make+call+drop (expected 0 — `call` BORROWS \
              the handle under call_borrow=true, so the host's resource-drop fires the t-dtor that reclaims \
              the cell)"
-        );
-    }
-
-    /// MULTI-EXPORT end-to-end (the whole COMPILER pipeline): a program with TWO same-signature closure
-    /// exports (`inc`, `triple`) compiles to a component with `make-inc`/`make-triple` + a SHARED `call`,
-    /// and the host drives each — `make-inc()`+`call(5)`=6, `make-triple()`+`call(5)`=15. The production
-    /// analog of the `multi_export_closures_share_one_call` oracle: proves the hand-emitted multi-export
-    /// path (emit → `multi_closure_resource_core_module` → `assemble_multi_closure_resource`) composes
-    /// with the real value-heap runtime and dispatches the right closure per handle.
-    #[test]
-    fn a_compiled_multi_closure_program_is_driven_by_the_host() {
-        use crate::testkit::parse;
-        use wasmtime::component::Val;
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
-            return;
-        };
-        let src = "(do (def (inc) (fn ((: x Int64)) (+ x 1))) \
-                   (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple))";
-        let program =
-            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&program)
-                .expect("valid")
-                .is_some(),
-            "a multi-export closure program imports the value-heap runtime (the cells are heap values)"
-        );
-        let mut rt = super::ComposedRuntime::new(&program, &runtime);
-        // make-inc() → a handle; the SHARED call dispatches (+ x 1): call(5) = 6.
-        assert_eq!(
-            rt.closure_make_call_named("make-inc", &[], &[Val::S64(5)]),
-            Val::S64(6),
-            "make-inc then the shared call(5) = 6"
-        );
-        // make-triple() → a handle; the SAME shared call dispatches (* x 3): call(5) = 15.
-        assert_eq!(
-            rt.closure_make_call_named("make-triple", &[], &[Val::S64(5)]),
-            Val::S64(15),
-            "make-triple then the shared call(5) = 15 — the same call dispatches the other closure"
         );
     }
 
