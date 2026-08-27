@@ -7998,6 +7998,53 @@
   (call main (: (list 0.5 2.25 9.0) (List Float64)))
   (output (: 2.25 Float64)))
 
+; -- breaker batch 452 (2026-08-27): the GENERAL-recursion-gate edge ladder, pre-delivered for the
+; consuming slice. The slice's enabler is a general call-graph cycle check (tail-only
+; mutual_loop_group misses el1's non-tail suml). Post-slice contract: grx1/grx2 must FLIP to pass
+; (non-recursive consumption through a deep chain; recursion elsewhere must not poison the param) —
+; grx3/grx4 must STAY todo (non-tail MUTUAL recursion; transitive reach through a non-recursive
+; relay). A flip on grx3/grx4 is OVER-ADMISSION — the miscompiling recursive-param-slot shape.
+
+(case "grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat"
+  (input (do
+    (def (finish (: ys (List Int64))) (List.len (List.concat ys (list 7))))
+    (def (relay (: ys (List Int64))) (finish ys))
+    (def (main (: xs (List Int64))) (relay xs))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 4 Int64)))
+
+(case "grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param"
+  (input (do
+    (def (fact (: k Int64)) (if (= k 0) 1 (* k (fact (- k 1)))))
+    (def (main (: xs (List Int64)))
+      (let ((m (Map.insert Map.empty xs (fact 4))))
+        (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 24 Int64)))
+
+(case "grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)"
+  (input (do
+    (def (suma (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) (+ v (sumb xs (+ i 1)))) ((Option.None) 0)))
+    (def (sumb (: xs (List Int64)) (: i Int64))
+      (match (List.at xs i) ((Option.Some v) (+ (* 2 v) (suma xs (+ i 1)))) ((Option.None) 0)))
+    (def (main (: xs (List Int64))) (suma xs 0))
+    (export main)))
+  (call main (: (list 5 6 7) (List Int64)))
+  (output (: 24 Int64)))
+
+(case "grx4 the entry List param reaches a self-recursive summer through a non-recursive relay"
+  (input (do
+    (def (suml (: ys (List Int64)) (: i Int64))
+      (match (List.at ys i) ((Option.Some v) (+ v (suml ys (+ i 1)))) ((Option.None) 0)))
+    (def (relay (: ys (List Int64))) (suml ys 0))
+    (def (main (: xs (List Int64))) (relay xs))
+    (export main)))
+  (call main (: (list 5 6 7) (List Int64)))
+  (output (: 18 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
