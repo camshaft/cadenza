@@ -1,0 +1,170 @@
+/-
+The oracle as an ASSERTION CHECKER (operator architecture, design §1): given a program (`program.ast`)
+and its trials-with-expected-outcomes (`oracle-trial.ast`, the frozen artifact the corpus shred emits),
+evaluate each trial and ASSERT INTERNALLY whether the expected outcome holds — returning a per-trial
+VERDICT, not a raw value for a caller to compare. Everything is binary AST; no s-expr is parsed.
+
+Comparison is over the oracle's own value domain: the expected value-AST is interpreted (its `(: v T)`
+frame stripped to the value `v`; type-aware alias-expanding comparison is a later refinement — for the
+scalar core, comparing the underlying value matches how the corpus grades, which strips the ascription).
+An `Unsupported`/`Diverges` computation, or an `expect-error`/`expect-declines` (a COMPILE outcome the
+evaluator does not model), is a SKIP — a sound coverage-gap, never a mismatch (design §1.2).
+-/
+import Oracle.Ast
+import Oracle.Value
+import Oracle.Eval
+
+namespace Oracle
+
+open Oracle.Ast
+
+/-- A trial's expected outcome, as parsed from `oracle-trial.ast`. `value` holds the node id of the
+expected value-AST (within the oracle-trial module); the rest are the run/compile outcome kinds. -/
+inductive Expect where
+  | value (node : Nat)
+  | trap (kind : String)
+  | error (code : String)
+  | declines
+  deriving Inhabited
+
+/-- One parsed trial: an optional call export, its argument value-AST node ids, and the expectation. -/
+structure OTrial where
+  call : Option String := none
+  args : Array Nat := #[]
+  expect : Expect
+  deriving Inhabited
+
+/-- The verdict for a trial. `skip` is a sound coverage-gap (never a differential mismatch). -/
+inductive Verdict where
+  | holds
+  | mismatch (detail : String)
+  | skip (reason : String)
+  deriving Inhabited, BEq
+
+namespace Check
+
+/-- A `List` node's children after the head (the `(head child…)` convention), or `#[]`. -/
+def argsOf (node : Node) : Array Nat :=
+  match node with
+  | .list cs => if cs.size ≥ 1 then cs.extract 1 cs.size else #[]
+  | _ => #[]
+
+/-- The head name (as a `String`) of a `List` node, if any. -/
+def headStr? (m : Module) (i : Nat) : Option String :=
+  match m.nodes[i]? with
+  | some node => (m.headName? node).bind (fun b => String.fromUTF8? b)
+  | none => none
+
+/-- The bare-name atom's text, if node `i` is one. -/
+def atomName? (m : Module) (i : Nat) : Option String :=
+  match m.nodes[i]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name b) => String.fromUTF8? b
+    | _ => none
+  | _ => none
+
+/-- A name-or-string-leaf atom's text, if node `i` is one. -/
+def leafText? (m : Module) (i : Nat) : Option String :=
+  match m.nodes[i]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.str b) => String.fromUTF8? b
+    | some (Leaf.name b) => String.fromUTF8? b
+    | _ => none
+  | _ => none
+
+/-- The text of the FIRST child of a `(head <str-leaf>)` node `i`, or "". -/
+def leafTextOf (m : Module) (i : Nat) : String :=
+  match m.nodes[i]? with
+  | some node => match (argsOf node)[0]? with
+                 | some v => (leafText? m v).getD ""
+                 | none => ""
+  | none => ""
+
+/-- Strip a `(: <value> <type>)` frame to the value node id; a non-framed node is returned as-is. -/
+def stripFrame (m : Module) (i : Nat) : Nat :=
+  match m.nodes[i]? with
+  | some (Node.list cs) =>
+    match m.headName? (Node.list cs) with
+    | some h => if h == ":".toUTF8 && cs.size ≥ 2 then cs[1]! else i
+    | none => i
+  | _ => i
+
+/-- Interpret an expected value-AST node (its frame stripped) as a scalar `Value`, if it is one. -/
+def expectedValue? (m : Module) (i : Nat) : Option Value :=
+  match m.nodes[stripFrame m i]? with
+  | some (Node.atom lid) => (m.leaves[lid]?).bind Value.ofLeaf
+  | _ => none
+
+/-- Parse one `(trial (call <export>)? (arg <val>)* (expect-… …))`. -/
+def parseTrial (m : Module) (tid : Nat) : Except String OTrial := do
+  let kids := match m.nodes[tid]? with | some n => argsOf n | none => #[]
+  let mut call : Option String := none
+  let mut args : Array Nat := #[]
+  let mut expect : Option Expect := none
+  for cid in kids do
+    match headStr? m cid with
+    | some "call" =>
+      let cc := match m.nodes[cid]? with | some n => argsOf n | none => #[]
+      call := (cc[0]?).bind (fun v => atomName? m v <|> leafText? m v)
+    | some "arg" =>
+      let cc := match m.nodes[cid]? with | some n => argsOf n | none => #[]
+      if let some v := cc[0]? then args := args.push v
+    | some "expect-value" =>
+      let cc := match m.nodes[cid]? with | some n => argsOf n | none => #[]
+      if let some v := cc[0]? then expect := some (.value v)
+    | some "expect-trap" => expect := some (.trap (leafTextOf m cid))
+    | some "expect-error" => expect := some (.error (leafTextOf m cid))
+    | some "expect-declines" => expect := some .declines
+    | _ => pure ()
+  match expect with
+  | some e => .ok { call, args, expect := e }
+  | none => .error "oracle-trial: trial has no expect-… clause"
+
+/-- Parse the `oracle-trials` module into its trials. Root: `(oracle-trials (trials (trial …)…) …)`. -/
+def parseTrials (m : Module) : Except String (Array OTrial) := do
+  match m.nodes[m.root]? with
+  | some root =>
+    if headStr? m m.root != some "oracle-trials" then
+      .error "oracle-trial: root is not (oracle-trials …)"
+    else
+      let topKids := argsOf root
+      match topKids.find? (fun c => headStr? m c == some "trials") with
+      | some trialsId =>
+        let trialNodes := match m.nodes[trialsId]? with | some n => argsOf n | none => #[]
+        trialNodes.foldlM (fun acc tid => do pure (acc.push (← parseTrial m tid))) #[]
+      | none => .error "oracle-trial: no (trials …) section"
+  | none => .error "oracle-trial: empty module"
+
+/-- Assert one trial against the program: run it, compare the outcome to the expectation. -/
+def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
+  -- A no-argument trial is `reduce`; an argument-bearing call needs `execute` (argument application,
+  -- not yet modeled → Unsupported → skip).
+  let outcome := if t.args.isEmpty then Oracle.reduce prog else Oracle.execute prog #[]
+  match t.expect with
+  | .error _ | .declines => .skip "expect is a compile outcome (error/declines) — not modeled"
+  | .trap kind =>
+    match outcome with
+    | .trap k => if k == kind then .holds else .mismatch s!"expected trap {kind}, got trap {k}"
+    | .value _ => .mismatch s!"expected trap {kind}, got a value"
+    | .unsupported r => .skip r
+    | .diverges => .skip "diverges"
+  | .value node =>
+    match outcome with
+    | .value v =>
+      match expectedValue? ot node with
+      | some ev => if v == ev then .holds else .mismatch "value mismatch"
+      | none => .skip "expected value is not a modeled scalar (compound/typed value)"
+    | .trap k => .mismatch s!"expected a value, got trap {k}"
+    | .unsupported r => .skip r
+    | .diverges => .skip "diverges"
+
+/-- Assert every trial; returns the verdicts in order. -/
+def check (prog : Module) (ot : Module) : Except String (Array Verdict) := do
+  let trials ← parseTrials ot
+  pure (trials.map (checkTrial prog ot))
+
+end Check
+
+end Oracle

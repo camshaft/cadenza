@@ -2504,6 +2504,7 @@
             ./implementation/oracle-lean/Main.lean
             ./implementation/oracle-lean/OracleTest.lean
             ./implementation/oracle-lean/OracleAstTest.lean
+            ./implementation/oracle-lean/OracleCheck.lean
             ./implementation/oracle-lean/Oracle
           ];
         };
@@ -2517,7 +2518,7 @@
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             # fileset.toSource copies are read-only; lake writes .lake/ into the tree.
             chmod -R u+w .
-            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip
+            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip oracle-check
             runHook postBuild
           '';
           installPhase = ''
@@ -2526,6 +2527,7 @@
             install -m755 .lake/build/bin/cdz-oracle "$out/bin/cdz-oracle"
             install -m755 .lake/build/bin/oracle-selftest "$out/bin/oracle-selftest"
             install -m755 .lake/build/bin/oracle-ast-roundtrip "$out/bin/oracle-ast-roundtrip"
+            install -m755 .lake/build/bin/oracle-check "$out/bin/oracle-check"
             runHook postInstall
           '';
         };
@@ -2552,14 +2554,33 @@
             let stem = pkgs.lib.removeSuffix ".sexp" f; in
             mkCorpusShred { name = stem; file = ./spec/semantics + "/${f}"; })
           corpusFileNames;
+        # The corpus CASE-DIR manifest, computed ONCE (operator 2026-08-27: don't recompute corpus
+        # locations in every check). One line per shredded case dir (each holds `program.ast` +
+        # `oracle-trial.ast`), sorted; both the round-trip and the conformance checks consume this file
+        # in place (never re-`find`). Keyed on the shreds, so it rotates only when the corpus changes.
+        oracleLeanCaseDirs = pkgs.runCommand "oracle-lean-case-dirs"
+          { shreds = oracleLeanShreds; } ''
+          for s in $shreds; do find "$s" -name oracle-trial.ast; done | sed 's|/oracle-trial.ast$||' | sort > "$out"
+        '';
         oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
-          { nativeBuildInputs = [ oracleLean ]; shreds = oracleLeanShreds; } ''
-          # A manifest = the list of program.ast paths in the cached shred outputs (referenced in
-          # place, never copied); the exe reads it via --manifest (robust for thousands of blobs).
-          for s in $shreds; do find "$s" -name program.ast; done | sort > manifest
-          echo "oracle-lean ast round-trip: $(wc -l < manifest) program.ast blobs from cached corpus shreds"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
+          # Derive the program.ast paths from the shared case-dir manifest (computed once), never a fresh find.
+          sed 's|$|/program.ast|' "$caseDirs" > manifest
+          echo "oracle-lean ast round-trip: $(wc -l < manifest) program.ast blobs (shared case-dir manifest)"
           oracle-ast-roundtrip --manifest manifest
           echo "ok: oracle-lean ast round-trip — binary-AST decode/encode byte-identical on $(wc -l < manifest) corpus program.ast blobs" > "$out"
+        '';
+        # L1.2: the corpus-conformance run — the oracle ASSERTS each corpus case. Consumes the shared
+        # case-dir manifest (each dir holds `program.ast` + `oracle-trial.ast`, the latter emitted by the
+        # shred, #4252): `oracle-check` evaluates the trials and asserts the expected outcome. A `mismatch`
+        # on any realized trial is a real oracle-vs-corpus disagreement (fails); `skip`
+        # (Unsupported/Diverges/compile-outcome) is a sound coverage-gap. The operator's quality signal
+        # (corpus-conformance), keyed on {shred, lean oracle}. Standalone/advisory like the other checks.
+        oracleLeanCheck = pkgs.runCommand "oracle-lean-check"
+          { nativeBuildInputs = [ oracleLean ]; caseDirs = oracleLeanCaseDirs; } ''
+          echo "oracle-lean check: $(wc -l < "$caseDirs") corpus cases (shared case-dir manifest)"
+          oracle-check --manifest "$caseDirs" | tee result
+          echo "ok: oracle-lean corpus conformance — $(cat result)" > "$out"
         '';
       in
       {
@@ -3049,6 +3070,8 @@
             # program.ast blobs (decode → re-encode == input). Standalone/advisory, same as the smoke
             # check.
             oracle-lean-ast-roundtrip = oracleLeanAstRoundtrip;
+            # L1.2 corpus conformance: the oracle asserts each corpus case; 0 mismatches required.
+            oracle-lean-check = oracleLeanCheck;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
