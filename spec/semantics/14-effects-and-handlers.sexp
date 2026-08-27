@@ -5028,7 +5028,7 @@
                   (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 235 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "Set.to-list of the state crosses resume ORDERED — the body reads elements positionally"
   (doc    "The total-order contract surviving the marshal: the set {30, 5, 9} enumerates sorted

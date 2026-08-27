@@ -711,7 +711,7 @@
                           (+ (* 10 (. r2 y)) (. (. r2 x) q))))))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 30790 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "Record.with grows a LIST field by pushing onto the projected old value"
   (doc    "The collection-field update idiom: `(Record.with r #\"items\" (List.push (. r items) a))` — the
@@ -808,7 +808,7 @@
   (output (: 1099 Int64))
   (call   main (: false Bool))
   (output (: 1010 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)"
   (doc    "Witnesses DESIGN-record-update-syntax.md §2/§6 (operator DECISION 2026-07-15): the field-pair
@@ -1376,7 +1376,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 ; --- Record.without on a map-extracted record, both maps staying typed. ---
 
@@ -1418,7 +1418,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 28 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 ; --- Construction-path equality for row-op results with RUNTIME leaves (the const twins
 ; above fold before emit; these run the heap path-copies). ---
@@ -1520,7 +1520,7 @@
                    (if (= derived (record (= a 5) (= b 2))) 1 0))))
             (export main)))
   (call   main (: 9 Int64)) (output (: 421 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a record reached via a with-CHAIN keys like the final direct build, generations intact"
   (doc    "Three `Record.with` generations replace EVERY field of `g0` in turn (a→1, b→2, c→3); the

@@ -1898,7 +1898,7 @@
                      (lastkey ps -9)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 3))
 
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte

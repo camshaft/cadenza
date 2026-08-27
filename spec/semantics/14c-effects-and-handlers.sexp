@@ -3768,7 +3768,7 @@
   (call   main (: 3 Int64)) (output (: 312 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64))
   (call   main (: -4 Int64)) (output (: -388 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ;; ── rc/bt/ng/sw: rich handler-STATE shapes ───────────────────────────────────
 ;; rc1 a RECORD state (fields advance differently per rebuild); rc2 the arm
@@ -3834,7 +3834,7 @@
   (call   main (: 4 Int64)) (output (: 814 Int64))
   (call   main (: 0 Int64)) (output (: 370 Int64))
   (call   main (: -3 Int64)) (output (: 37 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 2))
 
 (case "bt1 a BOOL handler state TOGGLES per dispatch — three draws read the alternating flag, seeded by input parity"
   (input  (do
@@ -5233,7 +5233,7 @@
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (output (: 76 Int64))
   (call   main (: 4 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread"
   (input  (do
@@ -6266,7 +6266,7 @@
   (call   main (: 2 Int64)) (output (: 3400 Int64))
   (call   main (: 8 Int64)) (output (: 0 Int64))
   (call   main (: -5 Int64)) (output (: 3412 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "gp6 a CTOR-pattern guard with a SAME-CTOR non-guarded sibling admits per-dispatch across TWO dispatches (breaker #15)"
   (doc    "breaker FINDING #15 (HIGH silent-miscompile, all 3 backends). A ctor-pattern guard `(guard (Wrap
@@ -8422,7 +8422,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 7 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits"
   (input  (do
@@ -8948,7 +8948,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 109207104 Int64))
   (call   main (: 7 Int64)) (output (: 109211104 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value"
   (input  (do
@@ -9154,7 +9154,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 123008070 Int64))
   (call   main (: 20 Int64)) (output (: 123042070 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 16))
 
 (case "bis1 BINARY SEARCH against an ORACLE effect — the arm only answers -1/0/1 vs the hidden target, the body's recursive driver narrows (lo,hi) from the verdicts, dispatch count is data-dependent"
   (input  (do
@@ -10158,7 +10158,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1112213132 Int64))
   (call   main (: 5 Int64)) (output (: 1112131415 Int64))
-  (live-objects known-leak 27))
+  (live-objects known-leak 25))
 
 ; --- breaker batch 262: priority-pop selection, two-pointer merge across handlers, checkpoint/restore pair ---
 (case "pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild"
@@ -10200,7 +10200,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1232010 Int64))
   (call   main (: 9 Int64)) (output (: 1231030 Int64))
-  (live-objects known-leak 42))
+  (live-objects known-leak 40))
 
 (case "mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain"
   (input  (do
@@ -10350,7 +10350,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 6312052 Int64))
   (call   main (: 0 Int64)) (output (: 306022 Int64))
-  (live-objects known-leak 78))
+  (live-objects known-leak 68))
 
 ; --- breaker batch 264: base-7 codec round-trip, escrow conservation pair, weighted quorum vote ---
 (case "bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition"
@@ -10495,7 +10495,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 7000900 Int64))
   (call   main (: 12 Int64)) (output (: 7080009 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds"
   (input  (do
@@ -10675,7 +10675,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1231 Int64))
   (call   main (: 8 Int64)) (output (: 1131 Int64))
-  (live-objects known-leak 23))
+  (live-objects known-leak 19))
 
 (case "rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed"
   (input  (do
@@ -10915,7 +10915,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 1424344454 Int64))
   (call   main (: 7 Int64)) (output (: 1424242437 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 13))
 
 (case "rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element"
   (input  (do
@@ -12241,7 +12241,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 203010300 Int64))
   (call   main (: 0 Int64)) (output (: 204000300 Int64))
-  (live-objects known-leak 100))
+  (live-objects known-leak 70))
 
 ;; ── Annealing acceptance schedule, battery reserve, eight-bit LFSR (breaker batch 285) ────────
 (case "tmp1 a SIMULATED-ANNEALING acceptance schedule — cool decays the temperature by nine-tenths truncating, accept takes any improvement and any worsening still under the heat counting the accepts, and the hot seed accepts EVERYTHING the cold seed rejects while both take the improving move"
@@ -12366,7 +12366,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 102040101000000 Int64))
   (call   main (: 0 Int64)) (output (: 99000001020401 Int64))
-  (live-objects known-leak 77))
+  (live-objects known-leak 24))
 
 (case "bwl1 a SPARE-CHAIN scorer — each roll adds its pins plus a DOUBLE when the previous two rolls summed to ten, threading a two-roll history through the state, and only the seed whose opening pair hits ten fires the bonus so the scores drift apart from the third row"
   (input  (do
@@ -13066,7 +13066,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 3006063 Int64))
   (call   main (: 0 Int64)) (output (: 3002023 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 ;; ── Golf scorecard, vending machine, pagination cursor (breaker batch 294) ──
 (case "gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently"
   (input  (do
@@ -13954,7 +13954,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: -9496990001 Int64))
   (call   main (: 0 Int64)) (output (: -9296990001 Int64))
-  (live-objects known-leak 285))
+  (live-objects known-leak 282))
 
 (case "tow1 a TUG-OF-WAR marker with a latching win line — each pull moves the marker toward its side answering the position until crossing plus-or-minus ten LATCHES the result (every later pull answers the frozen plus-or-minus hundred), where reads the final marker, and the offset seed loses THREE pulls early so its frozen tail overlaps the other run's still-live rows"
   (input  (do
@@ -14082,7 +14082,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 610995408501 Int64))
   (call   main (: 0 Int64)) (output (: 598995004502 Int64))
-  (live-objects known-leak 237))
+  (live-objects known-leak 76))
 
 ;; ── Refill limiter, Hanoi cycle, gold panning (breaker batch 304) ──
 (case "rrl1 a REFILL-ON-READ rate limiter — every take first refills the bucket by the seed rate clamped at capacity ten then serves or answers the negated shortfall (tokens kept on refusal), and the faster drip keeps the refusals shallow while the slow one starves deeper on the same request stream"
@@ -14272,7 +14272,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10001030200 Int64))
   (call   main (: 0 Int64)) (output (: 10002009900 Int64))
-  (live-objects known-leak 94))
+  (live-objects known-leak 28))
 
 ;; ── Traffic light cycle, metronome accents, wind chill (breaker batch 306) ──
 (case "lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate"
@@ -14312,7 +14312,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 201112403030202 Int64))
   (call   main (: 0 Int64)) (output (: 201112302030202 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 3))
 
 (case "mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both"
   (input  (do
@@ -14344,7 +14344,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 1020302040201 Int64))
   (call   main (: 0 Int64)) (output (: 1020301010202 Int64))
-  (live-objects known-leak 153))
+  (live-objects known-leak 43))
 
 (case "wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps"
   (input  (do

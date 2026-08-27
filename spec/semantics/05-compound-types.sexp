@@ -7939,7 +7939,7 @@
             (def (go n t) (if (= n 0) t (go (- n 1) (tuple (+ (. t 0) n) (. t 1)))))
             (def (main) (. (go 3 (tuple 0 0)) 0)) (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "an association list is searched by key with a tuple-carrying Option match"
   (doc    "The compiler's symbol-table / environment idiom: a list of `(key value)` tuples searched by
@@ -7960,7 +7960,7 @@
                 ((None _)               -1)))
             (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main)))
   (output (: 200 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a linear index-of search returns the POSITION of a runtime key, or -1 past the end"
   (doc    "The index-returning twin of the assoc-list search above (that returns the stored VALUE with
@@ -8692,7 +8692,7 @@
             (export main)))
   (call   main (: 20 Int64)) (output (: 2 Int64))
   (call   main (: 10 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "a set as a map value: runtime membership tested through the lookup"
   (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
@@ -8923,7 +8923,7 @@
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 221 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
   (doc    "One level deeper than the three-level query above, adding a RECORD as the innermost layer —
@@ -8946,7 +8946,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 300 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 4))
 
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
@@ -11403,7 +11403,7 @@
   (call   main (: 1 Int64)) (output (: 106081015183 Int64))
   (call   main (: 2 Int64)) (output (: 1051 Int64))
   (call   main (: 3 Int64)) (output (: 1101 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 15))
 
 (case "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
   (doc    "The selection composite over the partition step above (there the split IS the answer; here
@@ -12214,7 +12214,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 2092204 Int64))
   (call   main (: -5 Int64)) (output (: -4908996 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
   (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
@@ -17188,7 +17188,7 @@
             (def (main) (sum-it (Take (tuple 3 (Range (tuple 0 1000000))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 28))
 
 (case "a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)"
   (doc    "The MAP twin of the list-arm coded-head case above. A `(Map …)` scrutinee has no user
@@ -17925,7 +17925,7 @@
   (call   main (: 2 Int64)) (output (: 50 Int64))
   (call   main (: 1 Int64)) (output (: 40 Int64))
   (call   main (: 9 Int64)) (output (: 29 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 14))
 
 ; A TRANSITIVE chain of single-variant (erasable) newtypes declared in REVERSED dependency order — `A`
 ; wraps `B`, `B` wraps `C`, `C` wraps `Int64`, declared A-FIRST — must construct + read through all three
@@ -18490,7 +18490,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 299 Int64))
   (call   main (: 1 Int64)) (output (: 199 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "lists built by PUSH and by CONCAT compare equal by content, and order stays decisive"
   (doc    "Construction-ROUTE equality: the RRB rep can differ by route (tail-buffer vs spine merge), so content-eq must normalize across a push-built and a concat-built pair. The k=1 face makes the wrong-order list a PALINDROME [1,1] equal to the target — maximal route difference with matching content.")
@@ -18553,7 +18553,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7223 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; --- Scale faces: the 5000-deep recursive-sum spine and the 33-variant wide sum. ---
 

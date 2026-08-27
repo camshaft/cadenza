@@ -676,7 +676,7 @@
   (output (: 23 Int64))
   (call   main (: 7 Int64))
   (output (: 25 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 8))
 
 (case "String ordering drives an insort over runtime ROPES, verified by content"
   (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort

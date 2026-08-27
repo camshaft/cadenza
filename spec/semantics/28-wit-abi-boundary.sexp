@@ -244,7 +244,7 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/deliver.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 8))
+  (live-objects known-leak 7))
 (case "a typed reducer performing a bytes host arg with a scalar result threads the u64 into the step (via an imposed WIT world)"
   (doc    "SHAPE 14 — a Bytes host-op ARG with a scalar RESULT (hasher.hash : (Bytes) -> u64) driven through an
            imposed WIT world. The reducer on-message performs hasher.hash(m.payload) (a list<u8> ARG, u64 result)
