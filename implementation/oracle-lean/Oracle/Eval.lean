@@ -348,6 +348,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
         else if h == "record".toUTF8 then evalRecord m env fuel children
         else if h == ".".toUTF8 then evalProject m env fuel children
+        else if h == "match".toUTF8 then evalMatch m env ty fuel children
         else match String.fromUTF8? h with
              | some hs => if arithOps.contains hs then evalArith m env ty fuel hs children
                           else if hs == "=" then evalEq m env fuel children
@@ -583,6 +584,53 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
     | .value _ => .unsupported "eval: projection operand is not a record (tuple/other access not modeled)"
     | other => other
   | _, _ => .unsupported "eval: malformed projection"
+
+/-- `(match scrutinee (pat body)… )` — try arms in order (spec: the scrutinee IS an observation point,
+core-semantics.md:287). Modeled patterns: a scalar LITERAL (matches if the scrutinee equals it — forces
++ observes the scrutinee), a WILDCARD `_` (matches, scrutinee not forced), and a bare-name BINDER (binds
+the scrutinee LAZILY like a `let`, so an unused binder does not force/observe it, then evaluates the
+body). A LIST pattern (constructor/tuple/record decomposition) is not modeled yet → the whole match is
+`unsupported` (a sound skip — we cannot soundly decide arm selection past a pattern we can't test).
+Pending v-spec-oracle's answer on the compound-observation set. -/
+partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]? with
+  | none => .unsupported "eval: malformed match (no scrutinee)"
+  | some scrutId =>
+    let rec tryArms (arms : List Nat) : Outcome :=
+      match arms with
+      | [] => .unsupported "eval: match fell through (non-exhaustive / no modeled arm matched)"
+      | armId :: rest =>
+        match m.nodes[armId]? with
+        | some (Node.list ac) =>
+          match ac[0]?, ac[1]? with
+          | some patId, some bodyId =>
+            match m.nodes[patId]? with
+            | some (Node.list _) =>
+              -- constructor/tuple/record pattern — cannot decide arm selection → skip whole match
+              .unsupported "eval: match constructor/compound pattern not modeled"
+            | some (Node.atom lid) =>
+              match m.leaves[lid]? with
+              | some (Leaf.name b) =>
+                if b == "_".toUTF8 then evalNode m env ty fuel bodyId          -- wildcard: no force
+                else                                                            -- binder: lazy bind
+                  evalNode m ((b, (fun _ => evalNode m env defaultIntTy fuel scrutId), Option.none) :: env)
+                    ty fuel bodyId
+              | some pl =>
+                -- scalar-literal pattern: force + observe the scrutinee, compare structurally
+                match Value.ofLeaf pl with
+                | some litV =>
+                  match evalNode m env defaultIntTy fuel scrutId with
+                  | .value sv =>
+                    match observeDeep sv with
+                    | .value fsv => if fsv == litV then evalNode m env ty fuel bodyId else tryArms rest
+                    | other => other
+                  | other => other
+                | none => .unsupported "eval: match literal pattern is a non-scalar leaf"
+              | none => .unsupported "eval: match arm pattern leaf out of range"
+            | none => .unsupported "eval: match arm pattern node out of range"
+          | _, _ => .unsupported "eval: malformed match arm"
+        | _ => .unsupported "eval: match arm is not a list"
+    tryArms (children.extract 2 children.size).toList
 end
 
 /-- Evaluate the program's `main` body, or `unsupported` if the program shape is not the modeled
