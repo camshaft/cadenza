@@ -292,6 +292,7 @@ pass	N-suffixed literals compose under BigInt arithmetic
 pass	NEGATIVE and HUGE indices cross the dispatch — List.at in the arm answers None-fallback for both out-of-range directions
 pass	NEGATIVE values thread every effect slot — state, argument, and result stay signed
 pass	NESTED CONTRACT: an @ensures predicate that CALLS a @requires-guarded helper enforces the HELPER's precondition during postcondition eval
+pass	NESTED effect-free calls in the continuation compose and fold
 pass	NaN equality survives the hoisted float compare by canonical byte form
 pass	ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
@@ -876,6 +877,7 @@ pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arg
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
 pass	a MULTI-shot arm over a distributed match arm-body hole folds
+pass	a MULTI-shot arm over a pure effect-free call in the continuation folds
 pass	a MULTI-shot arm over an if-condition hole duplicates the whole pure if safely
 pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list per resume
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
@@ -952,6 +954,7 @@ pass	a NON-identity constant add over a high UInt64 operand still rejects the ov
 pass	a NON-recursive helper calling a nested op whose resume performs the outer effect folds
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
 pass	a NON-tail one-shot arm that ADVANCES the state threads the advance through the re-reduced continuation
+pass	a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform
 pass	a NON-tail recursion 10000 deep computes through real stack frames
 pass	a NON-tail state-advancing arm threads the advance through a perform in a let INIT
 pass	a NON-tail state-advancing arm threads the advance through a perform in a match SCRUTINEE and its arm body
@@ -1373,6 +1376,7 @@ pass	a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
+pass	a binder read off a non-variant-0 list-payload element reads the right value (vec-get read walk)
 pass	a binding consumed in the left call arg while read in the right is retained
 pass	a binding consumed in the right call arg while read in the left is retained
 pass	a binding form with bindings but no body is rejected, not a crash
@@ -1801,6 +1805,7 @@ pass	a context-typed empty float map accepts a runtime float key insert
 pass	a context-typed empty float map needs no key inserted to ground its wrapper type
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
+pass	a continuation call whose body ITSELF performs is not effect-free and declines
 pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
@@ -2948,6 +2953,7 @@ pass	a nested effectful let inlined into a re-performing body keeps its inner bi
 pass	a nested element kind mismatch in equality is a type error
 pass	a nested element pattern dispatches on a MIDDLE-variant list payload
 pass	a nested element pattern dispatches on a NON-variant-0 list payload
+pass	a nested element pattern dispatches on a non-variant-0 list-payload sum (disc read via vec-get, not arr-get)
 pass	a nested handle's INIT expression performs against the OUTER handler before installing
 pass	a nested handler arm whose RESUME-VALUE performs the outer effect threads the advance to the continuation
 pass	a nested if of a common constructor builds it once and dispatches to each arm
@@ -3049,6 +3055,7 @@ pass	a non-tail accumulable recursion runs to a large runtime N in constant stac
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
 pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
+pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
@@ -6060,6 +6067,11 @@ pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	dpt1 divisibility by two agrees with the true modulo across signs and Int64.min
 pass	dpt2 unsigned divisibility by a power of two agrees with the true modulo
+pass	dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast
+pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
+pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
+pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
+pass	dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
 pass	drb1 a DRAWBRIDGE over a tidal channel — boat LET-BINDS the low-tide boolean ONCE and consumes it in TWO SEPARATE ifs, one selecting the answer's hundreds digit and one selecting the next-state tuple, a low-tide boat slips under advancing the tide by one and counting the crossing while a high-tide boat waits three tide steps crossing nothing, log reads tide and crossings without advancing, and the seed sets the starting tide so the runs disagree on which boats slip under
 pass	drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly
@@ -8304,6 +8316,7 @@ pass	two mutually-recursive functions instantiate one generic chooser at differe
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two nested distinct effects both tail-resumptive fold via the threading path
 pass	two nested intra-program handlers compose inside-out
 pass	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
 pass	two newtypes over the SAME inner type do not cross-assign
@@ -8613,14 +8626,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a MULTI-shot arm over a pure effect-free call in the continuation folds
-pass	NESTED effect-free calls in the continuation compose and fold
-pass	a continuation call whose body ITSELF performs is not effect-free and declines
-pass	a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform
-pass	two nested distinct effects both tail-resumptive fold via the threading path
-pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
-pass	dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast
-pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
-pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
-pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
-pass	dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees

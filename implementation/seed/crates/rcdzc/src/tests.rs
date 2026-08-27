@@ -8945,65 +8945,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nested_element_pattern_dispatches_on_a_non_variant0_list_payload() {
-        // REGRESSION (miscompile-node-payload-consumed-by-mutual-recursion): a sum whose payload is a LIST,
-        // in a NON-variant-0 slot (`List` is the LAST variant of `Ast`), matched by a NESTED list-element
-        // pattern `(Ast.List (list (Ast.Name n) .. _))`. To dispatch, the matcher walks `node → sum-payload
-        // (List Ast) → Elem(0)` and reads the element's discriminant. The disc-walk (`push_discriminant`)
-        // resolved the `Payload` step's type via VARIANT 0 (`Int`, whose payload is `Int64`, NOT a list), so
-        // it emitted `arr-get` on the RRB `vec` — reading GARBAGE → the element's disc came back wrong → the
-        // arm mis-dispatched and `head-of` returned `None` (0) though the head IS a `Name` (a SILENT wrong
-        // value, `cdz check` clean). The fix records the ENTERED variant's payload type as the enclosing
-        // switch descends, so the `Payload` step resolves to the ACTUAL `List Ast` and `Elem(0)` reads with
-        // `vec-get`. Scrutinee is genuinely RUNTIME (threaded through a recursive `idast` so it never folds).
-        //   head-of over a runtime `List [Name "a", Int 5]` → Some → 100; over a non-List → 0.
-        let src = "(module m \
-             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
-             (def (head-of (: node Ast)) \
-               (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0))) \
-             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node))) \
-             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name \"a\") (Ast.Int 5)))))) \
-             (export main))";
-        let Some(v) = run_heap_value(src, vec![]) else {
-            eprintln!("runtime wasm not found; skipping non-variant0 list-payload dispatch run");
-            return;
-        };
-        assert_eq!(
-            v, "100",
-            "a nested element pattern on a non-variant-0 list payload must dispatch correctly (was 0 — \
-             the disc-walk read the list element with arr-get on an RRB vec, garbage discriminant)"
-        );
-        // The DUAL check: a scrutinee whose head is NOT a Name falls through to `_` → 0 (dispatch is
-        // genuinely reading the element disc, not always taking the first arm).
-        let src_int_head = "(module m \
-             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
-             (def (head-of (: node Ast)) \
-               (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0))) \
-             (def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node))) \
-             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Int 9) (Ast.Int 5)))))) \
-             (export main))";
-        assert_eq!(
-            run_heap_value(src_int_head, vec![]).unwrap(),
-            "0",
-            "a List whose head element is Int (not Name) falls through to the wildcard arm"
-        );
-        // A BINDER read from the same non-variant-0 list-payload element (not just a disc dispatch): bind
-        // `k` from `(Ast.List (list (Ast.Int k) .. _))` and read it — the read walk must also pick vec-get.
-        let src_bind = "(module m \
-             (type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast))) \
-             (def (first-int (: node Ast)) \
-               (match node ((Ast.List (list (Ast.Int k) .. rest)) k) (_ -1))) \
-             (def (idast (: j Int64) (: node Ast)) (if (<= j 0) node (idast (- j 1) node))) \
-             (def (main) (first-int (idast 3 (Ast.List (list (Ast.Int 42) (Ast.Int 5)))))) \
-             (export main))";
-        assert_eq!(
-            run_heap_value(src_bind, vec![]).unwrap(),
-            "42",
-            "a binder read off a non-variant-0 list payload element reads the right value"
-        );
-    }
-
-    #[test]
     fn a_deep_nested_constructor_pattern_matching_a_nullary_variant_solves_its_switch_path() {
         // REGRESSION (v-compiler-ml surfaced, concierge-assigned): a constructor pattern nesting a NULLARY
         // variant TWO+ constructor layers deep errored `compound match switch path has no solved type`.
