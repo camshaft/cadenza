@@ -542,7 +542,7 @@
   (call   main (: 5 Int64)) (output (: 301 Int64))
   (call   main (: 1 Int64)) (output (: 311 Int64))
   (call   main (: 2 Int64)) (output (: 100 Int64))
-  (live-objects known-leak 15))
+  (live-objects known-leak 1))
 
 (case "TWO-SUM finds a complement pair via a seen-set built during one walk"
   (doc    "The complement-lookup idiom: one walk over `(2 7 11 15 3)` tests `target − h` against the
@@ -642,7 +642,7 @@
   (call   main (: 1 Int64)) (output (: 410 Int64))
   (call   main (: 5 Int64)) (output (: 211 Int64))
   (call   main (: 4 Int64)) (output (: 104 Int64))
-  (live-objects known-leak 41))
+  (live-objects known-leak 31))
 
 (case "BIPARTITE check two-colors components and rejects the odd cycle"
   (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
@@ -805,7 +805,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
   (call   main (: 2 Int64)) (output (: 150 Int64))
-  (live-objects known-leak 181))
+  (live-objects known-leak 117))
 
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
@@ -1873,7 +1873,7 @@
                    (lastbyte xs -9))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 3))
 
 (case "Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order"
   (doc    "The Map-key companion of the Set.to-list Bytes-order pin above: a `Map` keyed by single-byte `Bytes`
@@ -1898,7 +1898,7 @@
                      (lastkey ps -9)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 6))
 
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte

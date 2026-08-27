@@ -948,7 +948,7 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 1))
 
 (case "a rope label rides a pqueue entry through insort to its time-ordered slot"
   (doc    "The event-queue pins carry scalar/continuation payloads; this entry's SECOND field is a
@@ -978,7 +978,7 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 10))
 
 ; --- The adjacent-pair timeline window. ---
 

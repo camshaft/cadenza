@@ -101,7 +101,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 1))
 
 (case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
   (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the

@@ -96,6 +96,14 @@ pub struct Emit {
     /// Computed ONCE at function entry over all heap binders (params + `let`-binders); empty for a body
     /// with no shared-then-consumed heap binding (the common case), so the fast path is untouched.
     dup_sites: HashSet<StructId>,
+    /// Site A (self-loop-tail reclaim): wasm-local SLOTS of loop-carried params that, THIS loop iteration,
+    /// are reassigned (`local.set`) with NO end-of-scope drop AND whose last emitted use is a consuming
+    /// `vec-drop` tail-slice (PART 2 ordered it last). Their PRESERVATION dups (`emit_binder_ref` retain,
+    /// the `RestFrom` step's dup) are SKIPPED: a borrow reads the live slot directly and the final
+    /// `vec-drop` consumes+FBIP-reuses the sole ref (rc1→0). Populated by `emit_loop_iteration` around its
+    /// arg emit, restored after — so the general emit stays default-dup (straight-line matches keep the
+    /// preservation dup for their arm end-of-scope drop).
+    loop_reassign_no_dup: HashSet<u32>,
     /// ENTERED-VARIANT PAYLOAD TYPES for a sum decision tree — `switch_path + [Payload]` → the payload type
     /// of the variant an ENCLOSING switch arm entered. A nested switch / literal-test / disc-walk resolves
     /// a `Payload` step's sub-value type from here, so it descends the ACTUAL entered variant, not variant 0
@@ -7846,6 +7854,141 @@ fn emit_tail(
 /// set AFTER the params (its slot is above the params, never an arg source, so order is free). `tl.depth`
 /// is the number of enclosing `if`/loop blocks, so `br depth` targets the loop top.
 #[allow(clippy::too_many_arguments)]
+/// Whether `x` is a DIRECT `Param`/`LocalRef` occurrence of binder `p`.
+fn is_ref_to(db: &mut Db, x: StructId, p: StructId) -> bool {
+    matches!(core_of(db, x), Core::Param { binder } | Core::LocalRef { binder } if binder == p)
+}
+
+/// Site A sound guard: COUNT the CONSUMING uses of loop-param `p` in `expr` (all nesting). A consume =
+/// (a) a runtime CONSUME-BUT-PRODUCE-FRESH op whose consumed operand is DIRECTLY `p` (`List.concat`/push/
+/// update, `Bytes.concat`, `Map.insert`/remove, `Set.insert`/remove/algebra — the class `binding_escapes`
+/// wrongly calls a borrow because the result is fresh), (b) a `RestFrom` tail-slice (`vec-drop`) of `p`,
+/// or (c) an ESCAPE — `p` handed to a `Call`/`CallClosure`/constructor (ownership transfers out). A BORROW
+/// (`vec-len`/`vec-get`/`Proj`/length/compare) adds 0. The preservation dup for `p`'s reordered-last
+/// `RestFrom` is skippable ONLY when this total is 1 (that single `RestFrom` is `p`'s sole consume; every
+/// other use is a pure borrow that reads the live slot before the consume). Recurses ALL children so a
+/// NESTED consume (`INVERSION`'s `count-after` Call, or a nested `RestFrom`/`Map.insert` of `p` in a
+/// sibling arg) is counted — the gap that made `binding_escapes`-alone unsound.
+#[allow(clippy::collapsible_if, clippy::collapsible_match)]
+fn count_param_consumes(
+    db: &mut Db,
+    id: StructId,
+    p: StructId,
+    seen: &mut HashSet<StructId>,
+    count: &mut usize,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    match core_of(db, id) {
+        Core::ListConcat { lhs, rhs } | Core::BytesConcat { lhs, rhs } => {
+            if is_ref_to(db, lhs, p) {
+                *count += 1;
+            }
+            if is_ref_to(db, rhs, p) {
+                *count += 1;
+            }
+        }
+        Core::SetAlgebra { lhs, rhs, .. } => {
+            if is_ref_to(db, lhs, p) {
+                *count += 1;
+            }
+            if is_ref_to(db, rhs, p) {
+                *count += 1;
+            }
+        }
+        Core::ListPush { list, elem }
+        | Core::SetInsert {
+            set: list, elem, ..
+        }
+        | Core::SetRemove {
+            set: list, elem, ..
+        } => {
+            if is_ref_to(db, list, p) {
+                *count += 1;
+            }
+            if is_ref_to(db, elem, p) {
+                *count += 1;
+            }
+        }
+        Core::ListUpdate { list, elem, .. } => {
+            if is_ref_to(db, list, p) {
+                *count += 1;
+            }
+            if is_ref_to(db, elem, p) {
+                *count += 1;
+            }
+        }
+        Core::MapInsert { map, val, .. } => {
+            if is_ref_to(db, map, p) {
+                *count += 1;
+            }
+            if is_ref_to(db, val, p) {
+                *count += 1;
+            }
+        }
+        Core::MapRemove { map, .. } => {
+            if is_ref_to(db, map, p) {
+                *count += 1;
+            }
+        }
+        Core::SumNew { ref payloads, .. } => {
+            for &e in payloads.iter() {
+                if is_ref_to(db, e, p) {
+                    *count += 1;
+                }
+            }
+        }
+        Core::Tuple { ref elems }
+        | Core::ListNew { ref elems }
+        | Core::SetOf { ref elems, .. }
+        | Core::BytesOf { ref elems } => {
+            for &e in elems.iter() {
+                if is_ref_to(db, e, p) {
+                    *count += 1;
+                }
+            }
+        }
+        Core::Record { ref fields } => {
+            for &e in fields.values() {
+                if is_ref_to(db, e, p) {
+                    *count += 1;
+                }
+            }
+        }
+        Core::Call { ref args, .. } => {
+            for &a in args.iter() {
+                if is_ref_to(db, a, p) {
+                    *count += 1;
+                }
+            }
+        }
+        Core::CallClosure { closure, ref args } => {
+            if is_ref_to(db, closure, p) {
+                *count += 1;
+            }
+            for &a in args.iter() {
+                if is_ref_to(db, a, p) {
+                    *count += 1;
+                }
+            }
+        }
+        Core::SumPayload {
+            scrutinee,
+            ref path,
+        } if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))) => {
+            if is_ref_to(db, scrutinee, p) {
+                *count += 1;
+            }
+        }
+        _ => {}
+    }
+    for c in core_child_ids(db, id) {
+        count_param_consumes(db, c, p, seen, count);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn emit_loop_iteration(
     db: &mut Db,
     which: usize,
@@ -7887,11 +8030,54 @@ fn emit_loop_iteration(
                     if slots.get(&binder) == Some(&tl.param_slots[i]))
         })
         .collect();
-    let mut arg_base = base;
-    for (i, &arg) in args.iter().enumerate() {
-        if is_identity[i] {
-            continue; // pass-through to its own slot — no push, no store.
+    // EXPERIMENT PART 2: eval args whose VALUE is a RestFrom tail-slice (SumPayload path ends RestFrom,
+    // a runtime-CONSUMING vec-drop materialization) LAST — detected structurally (NOT via binding_escapes,
+    // which calls the fresh-tail a borrow).
+    let is_restfrom_consume: Vec<bool> = args
+        .iter()
+        .map(|&arg| {
+            matches!(core_of(db, arg), Core::SumPayload { ref path, .. }
+                if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))))
+        })
+        .collect();
+    let mut eval_order: Vec<usize> = (0..args.len())
+        .filter(|&i| !is_identity[i] && !is_restfrom_consume[i])
+        .collect();
+    eval_order.extend((0..args.len()).filter(|&i| !is_identity[i] && is_restfrom_consume[i]));
+    // PART 1 (Site A): mark loop-carried params consumed by a RestFrom tail-slice arg (PART 2 ordered
+    // these LAST, so the vec-drop is the param's last emitted use — no read after) as no-preservation-dup
+    // for THIS iteration's arg emit. SAFETY: only a param consumed by EXACTLY ONE arg (no double-consume)
+    // AND that is a walked loop-param slot (reassigned, so no end-of-scope drop needs the preserved
+    // handle). The gated dup sites (`emit_binder_ref`, the `RestFrom` step) then skip the preservation
+    // dup → borrows read the live slot, the final `vec-drop` consumes+reuses the sole ref (rc1→0). Restore
+    // the set after so a nested/outer emit is unaffected.
+    let saved_no_dup = std::mem::take(&mut out.loop_reassign_no_dup);
+    // SOUND guard (v-runtime co-designed): for each loop-param consumed by a RestFrom arg, skip its
+    // preservation dups ONLY IF that RestFrom is its SOLE consuming use across ALL args (all nesting) —
+    // every other use a pure borrow. `count_param_consumes` unions the consume-but-fresh op class +
+    // RestFrom + escapes; == 1 ⟹ the single RestFrom is the only consume ⟹ vec-drop consumes the sole
+    // ref (rc1→0, FBIP-reuse). > 1 (a NESTED consume: INVERSION's count-after Call, a sibling
+    // RestFrom/Map.insert of p) ⟹ KEEP the dup (else an rc-flap / census-hidden UAF).
+    for i in 0..args.len() {
+        if is_restfrom_consume[i]
+            && let Core::SumPayload { scrutinee, .. } = core_of(db, args[i])
+            && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+            && let Some(&sl) = slots.get(&binder)
+            && tl.param_slots.contains(&sl)
+        {
+            let mut seen = HashSet::new();
+            let mut total = 0usize;
+            for &a in args.iter() {
+                count_param_consumes(db, a, binder, &mut seen, &mut total);
+            }
+            if total == 1 {
+                out.loop_reassign_no_dup.insert(sl);
+            }
         }
+    }
+    let mut arg_base = base;
+    for &i in &eval_order {
+        let arg = args[i];
         if let Core::ConstInt(_) = core_of(db, arg)
             && let Ty::Int(ait) = type_of(db, arg)
         {
@@ -7901,14 +8087,10 @@ fn emit_loop_iteration(
         }
         arg_base = *high;
     }
-    // Pop the values into the parameter slots, last-arg-first (stack is LIFO). An identity-move slot was
-    // never pushed, so it is not popped either — its old value stands.
-    for (i, &slot) in tl.param_slots.iter().enumerate().rev() {
-        if i < is_identity.len() && is_identity[i] {
-            continue;
-        }
-        out.push(Lir::LocalSet(slot));
+    for &i in eval_order.iter().rev() {
+        out.push(Lir::LocalSet(tl.param_slots[i]));
     }
+    out.loop_reassign_no_dup = saved_no_dup;
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
     // (A plain self-loop has one member, `which = None`, and skips this.)
     if let Some(w) = tl.which {
@@ -8845,7 +9027,9 @@ fn push_discriminant(
 /// unchanged — then the value is pushed for the consumer (`local.get slot`). A non-retain occurrence emits
 /// the single `local.get`, byte-identical to before (the common case; `dup_sites` is empty for most bodies).
 fn emit_binder_ref(id: StructId, slot: u32, out: &mut Emit) {
-    if out.dup_sites.contains(&id) {
+    // Site A: skip the preservation retain for a loop param reassigned-without-drop this iteration (its
+    // borrow reads the live slot; the final vec-drop consumes the sole ref). Else default retain.
+    if out.dup_sites.contains(&id) && !out.loop_reassign_no_dup.contains(&slot) {
         out.push(Lir::LocalGet(slot));
         out.push(Lir::CallImport(OP_DUP)); // rc++ — pops this copy, returns nothing
     }
@@ -13257,8 +13441,22 @@ fn emit(
                         // element binder's i64 slot in a multi-binder pattern `(list a b .. rest)`).
                         // Stack here: [handle] (the copy vec-drop will consume). Push another read, dup it
                         // (rc++, pops it), leaving the original copy for vec-drop.
-                        emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle, handle]
-                        out.push(Lir::CallImport(OP_DUP)); // pops the 2nd read, rc++ → [handle]
+                        // Site A: skip the preservation dup when the scrutinee is a loop param reassigned-
+                        // without-drop this iteration whose vec-drop is its LAST emitted use (PART 2). Then
+                        // vec-drop consumes the SOLE handle already on the stack (rc1→0, FBIP-reuse into t),
+                        // no path-copy, no orphaned preserved ref. Else default: dup so co-binders / the arm
+                        // end-of-scope drop see a live handle.
+                        let skip_restfrom_dup = matches!(
+                            core_of(db, scrutinee),
+                            Core::Param { binder } | Core::LocalRef { binder }
+                                if slots
+                                    .get(&binder)
+                                    .is_some_and(|sl| out.loop_reassign_no_dup.contains(sl))
+                        );
+                        if !skip_restfrom_dup {
+                            emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?; // [handle, handle]
+                            out.push(Lir::CallImport(OP_DUP)); // pops the 2nd read, rc++ → [handle]
+                        }
                         out.push(Lir::ConstI32(*k as i32));
                         out.push(Lir::CallImport(OP_VEC_DROP)); // → [tail-handle]
                     }

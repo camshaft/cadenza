@@ -2081,7 +2081,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 10))
 
 (case "mixed-sign Rational add and multiply normalize signs through one runtime chain"
   (doc    "Runtime sign params steer add AND multiply against one expected value (-1/6): face 1 hits
@@ -2350,7 +2350,7 @@
   (call   main (: 1 Int64)) (output (: 21 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 3 Int64)) (output (: 41 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 2))
 
 (case "GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit"
   (doc    "The reflected binary code, all three bitwise pins composed: encode = `n ^ (n >> 1)` (one
@@ -2413,7 +2413,7 @@
   (call   main (: 0 Int64)) (output (: 51 Int64))
   (call   main (: -3 Int64)) (output (: -759 Int64))
   (call   main (: 1 Int64)) (output (: 41 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 2))
 
 (case "TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list"
   (doc    "The runtime digit decomposition (the RADIX pins read literal forms; this DERIVES digits):
@@ -2449,7 +2449,7 @@
   (call   main (: 907 Int64)) (output (: 31601 Int64))
   (call   main (: 1000 Int64)) (output (: 40101 Int64))
   (call   main (: 999999 Int64)) (output (: 65401 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a BASE-N conversion round-trips one value through three runtime radices"
   (doc    "The digits pin above fixes base 10; here the RADIX is the runtime parameter — the same
@@ -2483,7 +2483,7 @@
   (call   main (: 2 Int64)) (output (: 10100000100001 Int64))
   (call   main (: 7 Int64)) (output (: 200021 Int64))
   (call   main (: 16 Int64)) (output (: 6041 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 2))
 
 (case "BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries"
   (doc    "The spreadsheet-column numbering: BIJECTIVE base 26 has NO zero digit (A=1 … Z=26), so the
@@ -2704,7 +2704,7 @@
   (call   main (: 20 Int64)) (output (: 2030507111317198 Int64))
   (call   main (: 2 Int64)) (output (: 21 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 56))
+  (live-objects known-leak 42))
 
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does

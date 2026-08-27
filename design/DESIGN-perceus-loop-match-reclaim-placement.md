@@ -105,9 +105,74 @@ per-iteration dups net out, so each iteration nets zero. The tail child is retai
 param); the head is a scalar copy. The placement is the back-edge analogue of the post-match shell drop,
 targeting the spine slot rather than the whole scrutinee.
 
-*Open with v-runtime (pairing):* the exact slot the spine occupies at the back-edge and the dup-count to
-balance against (`code.dup_sites` for the walked param), so the drop lands after the retains and before
-the slot reassign.
+**Empirically confirmed (2026-08-28, WAT dump of the fold repro `(go (: xs (List Int64)) (: acc Int64)) =
+(match xs ((list) acc) ((list h .. t) (go t (+ acc h))))`):** the emitted `go` loop dups the walked param
+`xs` (`local 0`) TWO-TO-THREE times per iteration via `call $dup` — once for the `vec-len` dispatch, once
+for the `vec-get 0` head read, once for the `vec-drop 1` tail (`t`) — then does `local.set 0` (xs ← tail);
+`br 1`. There is NO `drop` of the old spine cell before the store, so each iteration leaks its cons cell
+(length-4 walk ≈ 9 objects). `list_shell_reclaim_slot` (now @16146, drifted from @15809) returns `None`
+for `TailPos::Tail(Some(_))` (the loop back-edge) — the gate that declines the reclaim. The back-edge
+emit is `emit_loop_iteration` (@7849): it evaluates the new args, then `local.set` each param slot
+(`param_slots`, incl. `xs ← t`), then `Br(loop_top)`.
+
+**RESOLVED with v-runtime (rc-read, 2026-08-28) — it is OVER-DUP, not a missing drop; fix = CONSUME-LAST
+ORDERING + last-use-no-dup, two INSEPARABLE parts.** Per-op ownership (runtime.wit + select.rs): `vec-len`
+BORROWS the walked param, `vec-get` BORROWS it (head `dup`'d out separately), `vec-drop(xs,1) → t`
+CONSUMES it (op 72, reuses the spine into `t` at rc==1 via FBIP). So the walked param needs ZERO dups: rc 1
+in, borrow-read by len/get, then CONSUMED by `vec-drop` (rc 1→0, reuse). The leak is the emit OVER-DUPPING:
+`mark_binder_dups_inner`'s Param arm marks the walked param at `consuming=true && live_after=true` — the
+CONSUME (`vec-drop`) is forced to `dup` because a SIBLING BORROW (`vec-get` head) is treated as
+simultaneously live (the sequential-group "all siblings live" model). WAT confirms `vec-drop`(@156)
+currently emits BEFORE `vec-get`(@161), so at the consume the head is not yet read → live_after=true → dup;
+that dup orphans at the `xs ← t` reassign = the leak (and inflates rc so `vec-drop` path-copies instead of
+reusing). This is why v-runtime's 3 prior back-edge-DROP attempts did nothing (rc ≥ 2 from over-dups; no
+separate spine cell — `vec-drop` already consumes/reuses it).
+
+THE FIX (two parts, ATOMIC — must land together):
+- **PART 1 — CONSUME-LAST emit ordering (v-core-opt emit lane).** `emit_loop_iteration` (@7849) evaluates
+  the recursive-call args left-to-right (push @~7890) then pops reverse into param slots (@~7903). For
+  `(go t (+ acc h))`, arg0 `t` (`vec-drop`, CONSUME) evaluates before arg1 `(+ acc h)` (`vec-get`, BORROW).
+  Reorder so every arg that BORROWS the walked param is evaluated BEFORE any arg that CONSUMES it (a
+  coordinated eval+pop reorder — the pop order must track the new stack order; semantics-preserving since
+  the arg reads are independent, v-runtime confirmed `h` before `t` changes no value). After the reorder
+  `vec-drop` is the GENUINE LAST use of the walked param.
+- **PART 2 — last-use-no-dup (`mark_binder_dups` refinement).** A CONSUME of the binder that is the LAST
+  use — only live-after siblings are BORROWS that already completed — needs NO dup. Refine the
+  sequential-group model to sequential liveness (a borrow RELEASES at its read, so a borrow sequenced
+  before a consume is not live across it). Post-PART-1, `vec-drop`'s live_after has no walked-param borrow
+  → false → no dup.
+- 🚨 **PART 1 IS THE UAF-SAFETY GATE.** Suppressing the consume's dup WITHOUT the reorder is a UAF: if
+  `vec-drop` (frees/reuses xs) stays before `vec-get` (borrow) and the dup is gone, `vec-get` reads a freed
+  xs. Gate PART 2 on "the consume is the LAST use of the binder (all borrows sequenced before it)" — which
+  PART 1 guarantees. Do NOT land PART 2 without PART 1.
+
+NET: xs rc 1 → borrows (rc 1) → `vec-drop` consumes the sole ref (rc 1→0, FBIP-reuse into `t`) → ZERO dups,
+ZERO leak, reuse-not-path-copy. Generalizes across fold/count/walk (walked param = N borrows + 1
+tail-consume; make the consume last, no dup). Biggest remaining leak class (~333). Acceptance (v-runtime
+co-verify): fold/count/walk → 0 value-correct + no-trap + reused-tail-not-double-freed, AND a counter-case
+where a borrow WOULD-be-after-consume stays correctly dup'd (proves the last-use gate). Implement PART 1 +
+PART 2 atomically; trace the reordered WAT (`vec-drop` last, no dup, reuse); circulate the diff.
+
+**OUTCOME (implemented, PR #4139, 2026-08-28 — the SOUND guard + two verification tools the object-census
+lacks).** The two parts landed as: (i) the CONSUME-LAST reorder in `emit_loop_iteration` — detect the
+consuming arg STRUCTURALLY (its value is a `Core::SumPayload` whose path ends in `RestFrom` = the runtime
+`vec-drop` consume; NOT `binding_escapes`, which calls the fresh tail a borrow — that miss no-op'd two
+attempts) and evaluate it LAST (coordinated eval+pop). (ii) an Emit SKIP-SET (by wasm slot) marks a
+loop-carried param whose preservation dups (`emit_binder_ref` retain + the `RestFrom`-step dup at the
+`SumPayload` emit) are skipped — gated NOT at `mark_binder_dups` but at those two emit sites. THE SOUND
+GATE is `count_param_consumes`: skip iff the param's SOLE consuming use is the reordered-last `RestFrom`,
+counting consumes across ALL args + ALL nesting = the CONSUME-BUT-PRODUCE-FRESH op CLASS (`List.concat`/
+push/update, `Bytes.concat`, `Map.insert`/remove, `Set`-ops) ∪ `RestFrom` ∪ escapes (`Call`/`CallClosure`/
+ctor). `binding_escapes` ALONE is UNSOUND — it treats the whole consume-but-fresh class as a borrow, so a
+NESTED consume (the `INVERSION` case: `count-after` Call, or a sibling `RestFrom`/`Map.insert` of the
+param) is missed → the dup wrongly skipped → an rc imbalance. A param with count > 1 KEEPS its dup.
+🔑 TWO VERIFICATION TOOLS the static live-objects census cannot provide (both now standard for reclaim
+work): (a) VALUE-WRONG GREP — a miscompile reports `expected (: X), ran/got Y` with NO `trapped:`, so it
+hides among leak-count mismatches; grep for any FAIL that is NOT a `live-objects mismatch`. (b) FLAP-
+DETECTION — run the whole corpus TWICE; a live-objects count that DIFFERS run-to-run is a census-hidden
+rc-UNSOUNDNESS (an order/allocation-dependent imbalance), even when the value is correct. The first
+(unsound) guard made `INVERSION` flap 1↔2; the sound guard keeps its nested-consume dup → `INVERSION`
+stable at value-3, leak 36→16. RESULT: 143 value-correct leak reductions, 0 value-wrong, no flaps.
 
 ## What actually leaks: generic-sum instantiation × heap payload
 

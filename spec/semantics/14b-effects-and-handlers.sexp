@@ -1103,7 +1103,7 @@
         (export main)))
   (call main (: 5 Int64)) (output (: 63 Int64))
   (call main (: 0 Int64)) (output (: 13 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys"
   (doc    "The CHAMP composition: the map's KEYS are perform results — insert-arg evaluation
@@ -2776,7 +2776,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a MAP argument to an effect op is looked up inside the arm at the handler's own state"
   (doc    "The CHAMP-descent-in-arm face: the perform carries a 2-entry map, and the arm looks it up at
@@ -2817,7 +2817,7 @@
                 (Sink.tally (fill n Map.empty))))
             (export main)))
   (call   main (: 60 Int64)) (output (: 1830 Int64))
-  (live-objects known-leak 242))
+  (live-objects known-leak 1))
 
 (case "a handler's heap STATE grows to a 40-key trie across resumes and enumerates at the end"
   (doc    "The state-side companion: the handler's STATE is a map that GROWS by one insert per resume
@@ -2843,7 +2843,7 @@
                   (Acc.total))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 8200 Int64))
-  (live-objects known-leak 171))
+  (live-objects known-leak 10))
 
 (case "a handler SEEDED with a 40-key trie reads it across resumes"
   (doc    "The deep-trie SEED face (the state-growth case above starts EMPTY and grows; here the heap
@@ -3807,7 +3807,7 @@
                 (do (run-ops (list 1 2 3)) (Prim.run 0))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a LET-BOUND perform after a cross-function recursive helper observes the helper's out-state"
   (doc    "The LET-INIT face of the caller-observed out-state (breaker tk3d; the bare-do-item face is pinned
@@ -3880,7 +3880,7 @@
                 (do (run-ops (list 1 2 3)) (Prim.total))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "two successive cross-function folds thread out-state left-to-right in the continuation"
   (doc    "Two `run-ops` cross-fn folds in the caller's `do` must EACH thread their out-state to the next
@@ -3899,7 +3899,7 @@
                 (do (run-ops (list 1 2 3)) (run-ops (list 1 2)) (Prim.run 0))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 2))
 
 (case "a cross-function fold whose out-state is NOT observed stays single-return"
   (doc    "The negative control: `(handle Prim 0 (...) (run-ops [1 2 3]))` — the handle value is the fold's
@@ -3917,7 +3917,7 @@
                 (run-ops (list 1 2 3))))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a per-element perform in a cross-function fold threads to a read-out in the base case"
   (doc    "The observer sits INSIDE the fold's base case: `run-ops` performs `Prim.run` per element then its
@@ -3935,7 +3935,7 @@
                 (run-ops (list 1 2 3))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a nested inner handler that re-threads its own state folds (merged-context seed from init)"
   (doc    "Two NESTED handlers over a cross-function recursive loop that performs BOTH effects — the
@@ -5797,7 +5797,7 @@
                 (apply-all (list (fn ((: x Int64)) (* x 10)) (fn ((: x Int64)) (+ x 100)) (fn ((: x Int64)) x)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 163 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 4))
 
 (case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
   (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
