@@ -8077,3 +8077,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 pass	cpf1 a performing nullary factory called once and applied once folds capture-once
+pass	idc1 a unary def-call's allocated list bound once and referenced twice stays one shared object
+pass	idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object

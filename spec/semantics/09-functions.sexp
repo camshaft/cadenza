@@ -8834,3 +8834,30 @@
        (* 10 (match o ((Option.Some v) v) ((Option.None) -1))))) (export main)))
   (call main (: (Some 7) (Option Int64)))
   (output (: 77 Int64)))
+
+; -- breaker batch 482 (2026-08-27): sharing through DEF-CALL bindings — the pure-allocation
+; contrast to the cp4 inline-duplication (a PERFORMING nullary call inlined per use loses its
+; one-draw sharing; filed to v-inference). A def-call whose body merely ALLOCATES binds once:
+; both cells read 3 (tuple 1 + list 2 shared once), same as the inline-let shr2 baseline — so the
+; per-use inline engages only for performing bodies (or under handle reduction), which narrows
+; the inliner fix's scope. These controls must stay 3 through that fix.
+
+(case "idc1 a unary def-call's allocated list bound once and referenced twice stays one shared object"
+  (input (do
+    (def (mk2 (: n Int64)) (list n (+ n 1)))
+    (def (main (: n Int64))
+      (let ((x (mk2 n))) (tuple x x)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple (list 5 6) (list 5 6)) (Tuple (List Int64) (List Int64))))
+  (live-objects 3))
+
+(case "idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object"
+  (input (do
+    (def (mk0) (list 7 8))
+    (def (main (: n Int64))
+      (let ((x (mk0))) (tuple x x)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple (list 7 8) (list 7 8)) (Tuple (List Int64) (List Int64))))
+  (live-objects 3))
