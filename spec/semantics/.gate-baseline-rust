@@ -1910,6 +1910,7 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
+pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -2983,6 +2984,7 @@ pass	a non-unit factor in a Unit./ composition is rejected
 pass	a nonneg-dividend signed division elides the MIN over -1 guard and divides by -1 as a plain negation
 pass	a nonzero BigInt literal probe dispatches across MUTUAL recursion post-fix
 pass	a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time
+pass	a not connective with a non-boolean operand is a type error
 pass	a not of a runtime conjunction computes the negated conjunction
 pass	a not-a-number leaf makes a compound unequal to the same compound with a finite leaf
 pass	a not-a-number value is unequal to a finite float
@@ -2997,6 +2999,7 @@ pass	a nullary lambda applied yields its body
 pass	a nullary module export applied to a non-unit argument is rejected
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
 pass	a nullary single-variant newtype is a nominal unit tag that matches unconditionally
+pass	a nullary sum type declared inside a do block resolves and matches
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
@@ -3057,6 +3060,7 @@ pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
 pass	a payload binder read in two different subexpressions shares its read
 pass	a payload op arg feeds BOTH the resume value and the next-state through DIFFERENT operators, dispatched twice
+pass	a payload sum type declared inside a do block resolves and matches its payload
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a peer-bound operation cannot take or return a closure
@@ -5099,6 +5103,7 @@ pass	an operation with a TUPLE parameter binds the compound and the arm projects
 pass	an operator applied inside a lambda passed to an annotated named HOF
 pass	an option value annotated with the wrong payload type is rejected
 pass	an option<s64> field in a record result crosses the export boundary on both arms
+pass	an or connective with a non-boolean operand is a type error
 pass	an or whose left operand short-circuits elides the performing right operand
 pass	an ordering < of two same-bits Float32 literals const-folds false
 pass	an ordering <= of two same-bits Float32 literals const-folds true
@@ -8294,5 +8299,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	an or connective with a non-boolean operand is a type error
-pass	a not connective with a non-boolean operand is a type error
