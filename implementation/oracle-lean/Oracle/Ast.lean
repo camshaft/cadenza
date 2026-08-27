@@ -117,6 +117,22 @@ def intKindParts (k : UInt8) : Bool × Radix :=
 /-- Read a length-prefixed blob as raw bytes. -/
 def readBlob (c : Cursor) : Except String (ByteArray × Cursor) := c.readLenPrefixed
 
+/-- Require `b` to be valid UTF-8 (kinds 7/10/14/15 per the format). Bytes are kept raw; this only
+validates, per `spec/contracts/ast-binary-format.md`. -/
+def requireUtf8 (what : String) (b : ByteArray) : Except String Unit :=
+  match String.fromUTF8? b with
+  | some _ => .ok ()
+  | none => .error s!"ast: {what} leaf is not valid UTF-8"
+
+/-- Require `b` to be valid UTF-8 encoding exactly ONE Unicode scalar (kinds 12 BadEscape / 13 Char),
+so the leaf is injective. -/
+def requireOneScalar (what : String) (b : ByteArray) : Except String Unit :=
+  match String.fromUTF8? b with
+  | some s =>
+    if s.length == 1 then .ok ()
+    else .error s!"ast: {what} leaf must encode exactly one Unicode scalar (got {s.length})"
+  | none => .error s!"ast: {what} leaf is not valid UTF-8"
+
 /-- Decode the `[mag_len][magnitude]` int body given the kind byte. -/
 def readIntLeaf (k : UInt8) (c : Cursor) : Except String (Leaf × Cursor) := do
   let (mag, c) ← readBlob c
@@ -138,15 +154,15 @@ def readLeaf (c : Cursor) : Except String (Leaf × Cursor) := do
   else if k == 6 then
     let ((neg, e, sig), c) ← readFloatBody c
     .ok (.float neg e sig, c)
-  else if k == 7 then let (b, c) ← readBlob c; .ok (.str b, c)
+  else if k == 7 then do let (b, c) ← readBlob c; requireUtf8 "string" b; .ok (.str b, c)
   else if k == 8 then .ok (.boolLit false, c)
   else if k == 9 then .ok (.boolLit true, c)
-  else if k == 10 then let (b, c) ← readBlob c; .ok (.name b, c)
+  else if k == 10 then do let (b, c) ← readBlob c; requireUtf8 "name" b; .ok (.name b, c)
   else if k == 11 then let (b, c) ← readBlob c; .ok (.bytesLit b, c)
-  else if k == 12 then let (b, c) ← readBlob c; .ok (.badEscape b, c)
-  else if k == 13 then let (b, c) ← readBlob c; .ok (.char b, c)
-  else if k == 14 then let (b, c) ← readBlob c; .ok (.badChar b, c)
-  else if k == 15 then let (b, c) ← readBlob c; .ok (.sym b, c)
+  else if k == 12 then do let (b, c) ← readBlob c; requireOneScalar "bad-escape" b; .ok (.badEscape b, c)
+  else if k == 13 then do let (b, c) ← readBlob c; requireOneScalar "char" b; .ok (.char b, c)
+  else if k == 14 then do let (b, c) ← readBlob c; requireUtf8 "bad-char" b; .ok (.badChar b, c)
+  else if k == 15 then do let (b, c) ← readBlob c; requireUtf8 "symbol" b; .ok (.sym b, c)
   else if k == 16 then
     let (suffix, c) ← c.readByte
     let (shape, c) ← c.readByte
@@ -208,7 +224,26 @@ def checkRefs (m : Module) : Except String Unit := do
         if ch ≥ nNodes then .error s!"ast: list child {ch} out of range (nodes={nNodes})"
   .ok ()
 
-/-- Decode a full module (`cdzast\x00\x01`). Rejects a bad header and trailing bytes. -/
+/-- Tree-ness check: the structure reachable from the root MUST be a tree — every reachable node is
+reached exactly once (a node reached twice, by a shared subtree or a cycle, is refused). Unreachable
+nodes are permitted. Assumes referential integrity (checked first), so every index is in range. -/
+partial def checkTreeGo (m : Module) (visited : Array Bool) (i : Nat) :
+    Except String (Array Bool) :=
+  match visited[i]? with
+  | some true =>
+    .error s!"ast: node {i} reached more than once — not a tree (shared subtree or cycle)"
+  | _ =>
+    let visited := visited.set! i true
+    match m.nodes[i]? with
+    | some (Node.list children) => children.foldlM (fun v j => checkTreeGo m v j) visited
+    | _ => .ok visited
+
+def checkTree (m : Module) : Except String Unit := do
+  let _ ← checkTreeGo m (Array.replicate m.nodes.size false) m.root
+  .ok ()
+
+/-- Decode a full module (`cdzast\x00\x01`). Enforces header, referential integrity, tree-ness, and
+exact consumption, per `spec/contracts/ast-binary-format.md`. -/
 def decode (bytes : ByteArray) : Except String Module := do
   let c := Cursor.ofBytes bytes
   let (hdr, c) ← c.readBytes header.size
@@ -223,6 +258,7 @@ def decode (bytes : ByteArray) : Except String Module := do
     else
       let m : Module := { leaves, nodes, root }
       checkRefs m
+      checkTree m
       .ok m
 
 /-! ### Encoding (the mirror; byte-identical to the canonical serialization of a canonical module) -/

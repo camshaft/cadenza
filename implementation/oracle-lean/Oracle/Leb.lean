@@ -49,15 +49,29 @@ def readByte (c : Cursor) : Except String (UInt8 × Cursor) :=
   else
     .error s!"cursor: read past end of input at offset {c.pos}"
 
-/-- Read an unsigned LEB128 varint, advancing the cursor. Rejects an over-long encoding. -/
+/--
+Read an unsigned LEB128 varint, advancing the cursor. STRICTLY canonical, per
+`spec/contracts/ast-binary-format.md`: rejects a non-minimal (over-long) encoding, an encoding wider
+than 64 bits, and one longer than ten bytes — the minimality that makes the whole format a bijection.
+-/
 partial def readUleb (c : Cursor) : Except String (Nat × Cursor) :=
   let rec go (c : Cursor) (shift acc : Nat) : Except String (Nat × Cursor) := do
     let (b, c) ← c.readByte
-    let acc := acc ||| ((b.toNat &&& 0x7f) <<< shift)
-    if b.toNat &&& 0x80 == 0 then
-      .ok (acc, c)
+    if shift ≥ 64 then
+      .error "varu64: more than ten bytes / wider than 64 bits"
     else
-      go c (shift + 7) acc
+      let payload := b.toNat &&& 0x7f
+      if shift == 63 && payload > 1 then
+        .error "varu64: value overflows 64 bits"
+      else
+        let acc := acc ||| (payload <<< shift)
+        if b.toNat &&& 0x80 == 0 then
+          if payload == 0 && shift != 0 then
+            .error "varu64: non-minimal (over-long) encoding"
+          else
+            .ok (acc, c)
+        else
+          go c (shift + 7) acc
   go c 0 0
 
 /-- Read exactly `n` bytes as a sub-buffer, advancing the cursor. -/
