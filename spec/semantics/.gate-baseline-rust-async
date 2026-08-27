@@ -178,8 +178,10 @@ pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	List.at in-bounds control alongside the huge-index guard reads the right elements
 pass	List.at over a let-bound constant list folds through the binder on both backends
 pass	List.at with near-i64::MAX and i32-wrap indices declines to None, not a wrapped read
+pass	List.len does NOT fold away a trapping element construction (runtime denominator)
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	List.len of a trap-free constant list still folds to its arity
 pass	List.len over a let-bound constant list folds to the arity on both backends
 pass	List.len over a list with a TRAPPING element construction preserves the trap (does not fold it away)
 pass	List.len over a trap-free pure-data list still folds to the length
@@ -4414,11 +4416,13 @@ pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
 pass	an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)
 pass	an abortive perform in a fused-match arm carries the payload binder out and abandons the rest
+pass	an abortive perform in a let body tail referencing the let binding stays in scope
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
 pass	an abortive perform in the tail of an if branch abandons only that branch
 pass	an abortive perform in the tail of an if branch inside a let body abandons only that branch
+pass	an abortive perform of a bare parameter argument abandons the surrounding operator
 pass	an abortive perform short-circuited out of a connective condition is never performed
 pass	an abortive perform under THREE nested handlers abandons the two resumptive frames above it
 pass	an abortive perform under a non-tail conditional abandons the enclosing computation
@@ -5027,6 +5031,7 @@ pass	ca1c a closure over a performing nested-let-init capture folds via the capt
 pass	ca1m a capture-once closure applied TWICE shares the single draw across both applications
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
+pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
@@ -7775,6 +7780,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
-pass	List.len does NOT fold away a trapping element construction (runtime denominator)
-pass	List.len of a trap-free constant list still folds to its arity
