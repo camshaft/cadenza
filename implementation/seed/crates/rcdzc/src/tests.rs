@@ -40919,75 +40919,6 @@ mod stage1 {
     }
 
     #[test]
-    fn abortive_compositions_fold_to_the_correct_value_or_decline_cleanly() {
-        // E4 abortive SOUNDNESS SWEEP pinned as a regression (abortive is the most miscompile-prone fold —
-        // 5 miscompiles found historically). Each shape must fold to the value the deep-handler semantics
-        // dictate, or decline cleanly — NEVER a wrong value. `run_returns` only accepts a compiling artifact,
-        // so a wrong value fails the assert and a decline fails `.expect` (both catch a regression).
-        let folds: &[(&str, i64)] = &[
-            // A tail-resumptive perform BEFORE an abort on the same spine: get resumes (seed 5), then stop
-            // aborts → 99 (the `(+ 5 …)` continuation is abandoned).
-            (
-                "(do (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64))) \
-               (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.get) (E.stop 99)))) (export main))",
-                99,
-            ),
-            // An abort BEFORE a tail-resumptive perform: the abort wins, `get` never runs → 99.
-            (
-                "(do (effect E (op get (-> Unit Int64)) (op stop (-> Int64 Int64))) \
-               (def (main) (handle E 5 ((get (u) s (resume s s)) (stop (n) s2 n)) (+ (E.stop 99) (E.get)))) (export main))",
-                99,
-            ),
-            // An abort in a match SCRUTINEE abandons the whole match → 7.
-            (
-                "(do (effect Bail (op bail (-> Int64 Int64))) \
-               (def (main) (handle Bail 0 ((bail (n) s n)) (match (Bail.bail 7) (0 100) (_ 200)))) (export main))",
-                7,
-            ),
-            // The abort value is COMPUTED from the op argument: `(* n 2)` with n=7 → 14.
-            (
-                "(do (effect Bail (op bail (-> Int64 Int64))) \
-               (def (main) (handle Bail 0 ((bail (n) s (* n 2))) (+ 1 (Bail.bail 7)))) (export main))",
-                14,
-            ),
-            // An abort deeply nested under pure operators is still abandoned to the arm value → 7.
-            (
-                "(do (effect Bail (op bail (-> Int64 Int64))) \
-               (def (main) (handle Bail 0 ((bail (n) s n)) (* 2 (+ 1 (- 10 (Bail.bail 7)))))) (export main))",
-                7,
-            ),
-            // An abort under an OUTER tail-resumptive handler of a DIFFERENT effect: the inner Bail aborts →
-            // 7 (the outer A handler's body value IS the reduced inner-handle value).
-            (
-                "(do (effect A (op a (-> Unit Int64))) (effect Bail (op bail (-> Int64 Int64))) \
-               (def (main) (handle A 0 ((a (u) s (resume 10 s))) (handle Bail 0 ((bail (n) s2 n)) (+ (A.a) (Bail.bail 7))))) (export main))",
-                7,
-            ),
-        ];
-        for (src, want) in folds {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(src)))
-                        .expect("abortive composition compiles"),
-                    "main"
-                ),
-                *want,
-                "abortive composition folded to the wrong value: {src}"
-            );
-        }
-        // A conditional abort hoisted ALONGSIDE a second abortive sibling declines cleanly (the hoist bails on
-        // an effectful sibling — sound over-decline, never a mis-fold). Not a miscompile.
-        let clean_declines: &[&str] = &["(do (effect Bail (op bail (-> Int64 Int64))) \
-               (def (main) (handle Bail 0 ((bail (n) s n)) (+ (if (< 3 5) (Bail.bail 7) 0) (Bail.bail 9)))) (export main))"];
-        for src in clean_declines {
-            assert!(
-                compile_component(&crate::codec::encode(&parse(src))).is_err(),
-                "a conditional-abort-plus-abortive-sibling must decline cleanly, not miscompile: {src}"
-            );
-        }
-    }
-
-    #[test]
     fn an_abort_in_a_compound_typed_body_declines_rather_than_miscompiles() {
         // E4 abort-value / handle-body TYPE-CONSISTENCY (a MISCOMPILE regression). An abort makes its arm
         // value the WHOLE handle's value, so the value must have the handle body's type. `(tuple 1
@@ -45907,23 +45838,53 @@ mod stage1 {
     }
 
     #[test]
-    fn a_handle_whose_body_is_a_closure_is_applyable() {
-        // REGRESSION (corpus-bugfix/breaker 6373, the handle-result twin of 6360): a `(handle …)` whose
-        // BODY is a closure, applied directly, declined "value is not applyable". `((handle Env 0 ((get (u)
-        // s (resume s s))) (fn (x) (+ x 1))) 10)` = 11 — the handle discharges no perform (the body is a
-        // bare lambda), so its result IS that closure. `lambda_of` did not peer through a `Resolved::Handle`
-        // (not a lambda/def-ref shape), so the applied handle head was neither a lambda nor a runtime fn
-        // value → NOT_APPLYABLE. Fix: `lambda_of` reduces a handle to its BODY's lambda (checked directly,
-        // NOT the `reduce_handle`-folded whole handle — an ESCAPING CAPTURED CONTINUATION from an ARM also
-        // folds to a closure but MUST stay refused, so gating on the BODY being a lambda admits only the
-        // closure-IS-the-body case). Folds to the constant 11 (a no-op handle over a pure applied closure).
-        let src = "(module m (effect Env (op get (-> Unit Int64))) \
-            (def (main) ((handle Env 0 ((get (u) s (resume s s))) (fn ((: x Int64)) (+ x 1))) 10)) \
+    fn a_generic_transformer_maps_a_closure_to_an_aggregate_result_at_two_distinct_domains() {
+        // INFERENCE FIX (v-inference): a recursive-generic TRANSFORMER `gmap` threading a closure whose
+        // result is an AGGREGATE (a tuple / user-sum), instantiated at TWO DISTINCT element (domain) types
+        // in one program, was DECLINED at monomorphize (CDZ0201 "type variable this call cannot determine")
+        // — `cdz check` PASSED but `cdz test`/compile REJECTED. Root: a bare closure param types as
+        // `Ty::Any` (not a var), so `solved_lambda_arrow_under` binding the param's expected domain via a
+        // var-subst could not reach an aggregate body — `(fn (x) (x, x))` typed `(Tuple Any Any)`, and with
+        // the enclosing HOF staying polymorphic across ≥2 domains, `type_specialize` rejected the `Any`.
+        // Fix: `solved_lambda_arrow_under` now ALSO seeds each param's concrete expected domain into
+        // `db.param_types` (save+restore) so `type_of` of the aggregate body reads the param at its domain
+        // type, giving `(Tuple Int64 Int64)`. This was the real root of v-iterators' misnamed
+        // "instantiation-pressure ceiling" (flatten was a red herring; it is this closure-aggregate tie).
+        // `gmap [1,2] (x -> (x,x))` (Int64→tuple) + `gmap ["a","b"] (s -> concat s s)` (String→String),
+        // counting each: 2 + 2 = 4. Uses the value heap (GIter), so SKIP if the store is absent.
+        let src = "(module m \
+            (type GIter (Nil) (Cons a (GIter a))) \
+            (def (from-list xs) \
+              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t))))) \
+            (def (count it) \
+              (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest))))) \
+            (def (gmap it f) \
+              (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f))))) \
+            (def (main) \
+              (+ (count (gmap (from-list (list 1 2)) (fn (x) (tuple x x)))) \
+                 (count (gmap (from-list (list \"a\" \"b\")) (fn (s) (String.concat s s)))))) \
             (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "compile — a handle whose body is a closure must be applyable, not 'not applyable'",
+            "a generic transformer mapping a closure to an aggregate at two domains compiles",
         );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping aggregate-result transformer run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(v) => assert_eq!(
+                v, "4",
+                "gmap at Int64→tuple (count 2) + String→String (count 2) = 4"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
+        }
     }
 
     #[test]

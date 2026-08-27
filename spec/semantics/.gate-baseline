@@ -1685,6 +1685,7 @@ pass	a concat-built list = a push-built list with the same elements (element-wis
 pass	a concat-built rope of 1-, 2-, and 3-byte scalars measures and indexes at every width
 pass	a concat-of-concat chain keeps every intermediate binding readable
 pass	a concat-reached string equals a slice-reached string of the same content and not a decoy
+pass	a conditional abort hoisted alongside a second abortive sibling declines cleanly
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch
@@ -2257,6 +2258,7 @@ pass	a handle body reads an enclosing function parameter beside a resuming perfo
 pass	a handle held in a helper seeded by the caller's runtime param resumes the seed
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handle whose body NEVER performs is exactly its body (zero dispatches)
+pass	a handle whose body is a closure is applyable (the handle result IS that closure)
 pass	a handle whose head names a value rather than an effect is rejected
 pass	a handle's RESULT seeds the NEXT handle of the same effect — explicit state handoff between instances
 pass	a handle's TUPLE value pairing a scalar with a built list escapes and is destructured
@@ -4360,6 +4362,7 @@ pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail
+pass	a tail-resumptive perform BEFORE an abort on the same spine abandons the pending continuation
 pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
 pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 pass	a tautology comparison against a masked value's derived range still traps on the operand
@@ -4883,8 +4886,13 @@ pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to
 pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
 pass	an `and` whose first RESUMING perform is true evaluates the second: both advances land
 pass	an `or` short-circuit SKIPS a resuming perform, and the skip is observable through the state
+pass	an abort BEFORE a tail-resumptive perform wins and the later perform never runs
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
+pass	an abort deeply nested under pure operators is still abandoned to the arm value
+pass	an abort in a MATCH-SCRUTINEE abandons the whole match
+pass	an abort under an OUTER tail-resumptive handler of a DIFFERENT effect abandons to the arm value
+pass	an abort value COMPUTED from the op argument folds
 pass	an aborting arm's unread op-argument still threads its foreign perform's state advance
 pass	an abortive arm READS the heap LIST op argument it was handed — the payload survives the abort
 pass	an abortive arm returns a MAP built FROM its heap op argument as the handle's value
