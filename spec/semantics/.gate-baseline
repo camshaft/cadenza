@@ -2557,6 +2557,7 @@ pass	a list-driven map build resolves a RUNTIME key collision last-wins, and the
 pass	a list-of-quantities used as a Map key canonicalizes and hits
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a list-payload sum arm dispatches a runtime node by EXACT child count and binds a fixed child
 pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
 pass	a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)
@@ -2573,6 +2574,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal just past the Float32 finite max overflows in a runtime branch
+pass	a literal list element and an author guard on the same arm both gate it
 pass	a literal list element dispatches a runtime list by its value
 pass	a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact
 pass	a literal narrow-newtype element in a constructed list grounds its ConstInt to the inner width
@@ -8566,6 +8568,7 @@ pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as dist
 pass	two let-sequenced sibling self-calls thread out-state via multi-value return
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
+pass	two literal list elements in one arm conjoin — both must match
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
 pass	two module exports are selected by a runtime branch and applied as values
