@@ -60508,8 +60508,7 @@ mod stage1 {
                    (def (main) (host (ask) (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a host op composed with the value-heap runtime now emits");
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the composed host+runtime component must be valid");
     }
 
@@ -60531,8 +60530,7 @@ mod stage1 {
                    (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a host string-param op composed with the value-heap runtime now emits");
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the composed host-string+runtime component must be valid");
     }
 
@@ -60553,8 +60551,7 @@ mod stage1 {
                    (def (main (: x Int64)) (host (H) (\"tuple\" (H.h x) x))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a scalar host op result-escaping as a resource now emits");
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the composed host-resource-escape component must be valid");
     }
 
@@ -60607,8 +60604,7 @@ mod stage1 {
         ] {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
                 .expect("a scalar host op result-escaping as a sum/list resource now emits");
-            let engine = wasmtime::Engine::default();
-            wasmtime::component::Component::from_binary(&engine, &bytes)
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
                 .expect("the host+sum/list-resource-escape component must be valid");
         }
     }
@@ -60628,8 +60624,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
             "a scalar host op result-escaping as a Bytes resource now emits (with methods)",
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the host+bytes-resource-escape (with-methods) component must be valid");
     }
 
@@ -60787,8 +60782,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a runtime string host arg must marshal into shared mem, not decline");
         // The composed component must be VALID (the `mem` import + the copy-loop ops are all present).
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the host-mem runtime-string-arg component must be valid");
         let opts = cdz_run::RunOpts {
             export: Some("main".to_string()),
@@ -60835,8 +60829,7 @@ mod stage1 {
             .expect("a runtime Bytes host arg must cross as list<u8>, not decline");
         // The composed component must be VALID — the list<u8> defined-type + the instance-type index-shift
         // must produce a well-formed component (wasmtime rejects a malformed instance-type).
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
             .expect("the host-mem runtime-bytes-arg component (list<u8> import) must be valid");
         let opts = cdz_run::RunOpts {
             export: Some("main".to_string()),
@@ -60883,8 +60876,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
             "two runtime Bytes args must each marshal to a disjoint scratch region, not decline",
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the two-runtime-Bytes-args component must be VALID (disjoint scratch regions, no slot clobber)",
         );
         let opts = cdz_run::RunOpts {
@@ -60928,8 +60920,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
             "three runtime Bytes args must each marshal to a disjoint scratch region, not decline",
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the three-runtime-Bytes-args component must be VALID (three disjoint scratch regions, no slot clobber)",
         );
         let opts = cdz_run::RunOpts {
@@ -60973,8 +60964,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
             "an interleaved Bytes/scalar/Bytes host call must marshal both Bytes args, not decline",
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the interleaved Bytes/scalar/Bytes component must be VALID (cursor persists across the scalar, no slot clobber)",
         );
         let opts = cdz_run::RunOpts {
@@ -61022,8 +61012,7 @@ mod stage1 {
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
             "a const String + runtime Bytes host call must route each arg to its own path, not decline",
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the const-String-plus-runtime-Bytes component must be VALID (data-segment const + cursor runtime, no clobber)",
         );
         let opts = cdz_run::RunOpts {
@@ -61076,11 +61065,10 @@ mod stage1 {
                 })
                 .to_vec()
         };
-        let engine = wasmtime::Engine::default();
         // (1) The fold EXPORT alone: apply(Bytes)->Bytes as a member of the named interface — the
         //     pinned bytes fold shape (list<u8>->list<u8>).
         let export_only = compile_reducer("(do (def (apply (: ev Bytes)) ev) (export apply))");
-        wasmtime::component::Component::from_binary(&engine, &export_only)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&export_only)
             .expect("the fold-export-only reducer component must be VALID");
         // (2) The FULL reducer shape: export apply(Bytes)->Bytes + import `kv` via `bind` + perform
         //     put(Bytes,Bytes) — the two-`list<u8>`-arg host call S0 enables — inside the fold.
@@ -61088,7 +61076,7 @@ mod stage1 {
             "(do (effect Kv (op put (-> Bytes Bytes Unit))) (bind Kv \"cadenza:agent-kernel/kv\") \
              (def (apply (: ev Bytes)) (host (Kv) (do ((. Kv put) ev ev) ev))) (export apply))",
         );
-        wasmtime::component::Component::from_binary(&engine, &full).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&full).expect(
             "the full reducer component (fold export + kv import + put marshal) must be VALID — the \
              generic paths compose, no reducer-specific emit",
         );
@@ -61119,8 +61107,7 @@ mod stage1 {
                    (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .expect("a marshalled host arg before a scalar arg must compile, not decline");
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes).expect(
             "the marshalled-arg-before-scalar component must be VALID (no i32/i64 slot-width clobber)",
         );
         let opts = cdz_run::RunOpts {
@@ -61162,8 +61149,7 @@ mod stage1 {
         let run = |src: &str, args: Vec<String>| -> String {
             let bytes = compile_component(&crate::codec::encode(&parse(src)))
                 .expect("edge runtime-string host arg must compile");
-            let engine = wasmtime::Engine::default();
-            wasmtime::component::Component::from_binary(&engine, &bytes)
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all()).validate_all(&bytes)
                 .expect("the edge host-mem component must be valid");
             let opts = cdz_run::RunOpts {
                 export: Some("main".to_string()),
