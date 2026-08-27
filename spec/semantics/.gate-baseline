@@ -3182,6 +3182,7 @@ pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value
 pass	a re-declared same-name theorem type in another module is a distinct type a kernel value does not satisfy
 pass	a re-masked UInt8 wrapping-add result compares EQUAL to its modular value at the narrow width
+pass	a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply
 pass	a read result destructures through nested Ast patterns — the analyze path computes
 pass	a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged
 pass	a reader literal carries a qualified name with a dot
@@ -3829,6 +3830,7 @@ pass	a satisfied @ensures on a performing def passes the effectful result throug
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
+pass	a scalar do-def shared across both resume slots in a state-advancing add handler
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
@@ -8186,4 +8188,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a re-performing escaping continuation over a `do`-sequenced body re-installs its handler at apply
