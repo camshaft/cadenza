@@ -358,6 +358,11 @@
           # crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
           cdz-world-artifact = "implementation/seed/crates/cdz-world-artifact";
           cdz-rust-run = "implementation/seed/crates/cdz-rust-run";
+          # cdz-wasm-opt-gap (#4537): the std-only, zero-dep parse+format bin for the wasm-opt optimality-gap
+          # sweep (its per-case Nix derivation runs wasm-opt; this just formats the record). A ROOT workspace
+          # member (no own [workspace]), so — like cdz-contract / cdz-world-artifact — it MUST be registered
+          # here or the crane deps-layer src omits its Cargo.toml and the whole workspace fails to load.
+          cdz-wasm-opt-gap = "implementation/seed/crates/cdz-wasm-opt-gap";
           rcdzc = "implementation/seed/crates/rcdzc";
           xtask = "xtask";
         };
@@ -1519,6 +1524,11 @@
         # the (content-addressed) build input. It shells the ambient `rustc` (provided by the exec derivation)
         # to compile the emitted driver, linking the pre-built `rustRlibs`.
         cdzRustRun = mkPhaseBin { pname = "cdz-rust-run"; crate = "cdz-rust-run"; closure = crateClosure "cdz-rust-run"; };
+        # The wasm-opt optimality-gap FORMATTER (v-wasm-opt's `cdz-wasm-opt-gap`, #4537): parses a case's
+        # `wasm-opt --metrics` output (ours vs -O3) + the three module sizes into ONE `(gap …)`/`(optimal …)`
+        # sexpr record. Std-only + zero-dep so its closure is just itself — a tiny compiler-free phase bin. It
+        # runs NO wasm-opt of its own (the per-case derivation does), so it stays trivially cacheable.
+        cdzWasmOptGap = mkPhaseBin { pname = "cdz-wasm-opt-gap"; crate = "cdz-wasm-opt-gap"; bin = "wasm-opt-gap"; closure = crateClosure "cdz-wasm-opt-gap"; };
 
         # Just the contract sources — the narrowest input so the mapping re-derives only when a contract's
         # schema/pragmas change, not on any seed-crate edit. `cdz-contract hash` walks these `*.cdz`, parses
@@ -1776,6 +1786,19 @@
             caps = builtins.filter builtins.isList (builtins.split "\n\\(case[[:space:]]+\"" txt);
           in
           builtins.length caps;
+        # The `idx`-th case's TITLE, extracted at EVAL time from the SOURCE `.sexp` (same line-anchored
+        # `(case "…"` split as corpusCaseCount, no IFD). Used to LABEL an opt-gap record WITHOUT taking a
+        # dependency on the whole-file shred — so a single case's edit re-runs ONLY its own opt-gap derivation
+        # (keyed on its content-addressed emit.wasm), never the whole file's wasm-opt work. The split yields
+        # `[pre, seg0, seg1, …]` where `seg<i>` is the text right after the i-th `(case "`; the title is that
+        # segment up to its first `"`. Titles carry no embedded quote in the corpus (verified).
+        corpusCaseTitle = file: idx:
+          let
+            txt = "\n" + builtins.readFile file;
+            strs = builtins.filter builtins.isString (builtins.split "\n\\(case[[:space:]]+\"" txt);
+            seg = builtins.elemAt strs (idx + 1);
+          in
+          builtins.head (builtins.split "\"" seg);
 
         # SHRED (content-addressed) — parse a whole corpus file into per-case artifact dirs, ONCE. Closure =
         # the parser (`cdzCorpus`); reruns only when the `.sexp` changes. Clean-name copy first: `cdz-corpus`
@@ -1943,6 +1966,112 @@
           ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusFileAggs)}
           echo "ok: corpus — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→build→exec caching graph" > "$out"
         '';
+
+        # ── wasm-opt OPTIMALITY-GAP sweep (operator 2026-08-27; design/DESIGN-wasm-opt-gap-analysis-rcdzc.md) ──
+        # For every corpus wasm output that COMPILES, measure the gap between our emit and what Binaryen's
+        # `wasm-opt` would produce. If wasm-opt shrinks nothing, our module is OPTIMAL on the metrics we track;
+        # any reduction is a tracked, ADVISORY (never a gate-fail) emit-side backend TODO. rcdzc emits a
+        # COMPONENT and Binaryen can't parse components (binaryen#6728), so per case we UNBUNDLE the core
+        # module(s) first, then run `wasm-opt --all-features -O3`/`-Oz` + `--metrics` and hand the sizes+metrics
+        # to `cdz-wasm-opt-gap` for one `(gap …)`/`(optimal …)` record. `--all-features` because our core uses
+        # `return_call` (tail calls) — a bare wasm-opt fails the validator + would under-report a gap. Per-case
+        # derivations depend ONLY on {emit.wasm (build), binaryen, wasm-tools, the formatter} — NEVER the
+        # whole-file shred — so a single case's edit re-runs ONLY its own wasm-opt (keyed on its
+        # content-addressed emit.wasm), not every case in the file. The case TITLE is passed at EVAL time
+        # (corpusCaseTitle), not read from the shred, precisely to keep that per-case caching isolation. Nix
+        # runs them IN PARALLEL exactly like the per-case test execs.
+        mkCorpusOptGap = { name, build, idx, caseTitle }:
+          pkgs.runCommand "wasm-opt-gap-${name}-${idx}"
+            {
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+              nativeBuildInputs = [ pkgs.wasm-tools pkgs.binaryen cdzWasmOptGap ];
+            } ''
+            set -euo pipefail
+            caseid=${pkgs.lib.escapeShellArg "${name} :: ${caseTitle}"}
+            # A refused compile (an error/decline case) has no emit.wasm — nothing to optimize; write a skip
+            # marker the aggregator drops (NOT an `optimal` claim — we simply did not measure it).
+            if [ ! -e ${build}/emit.wasm ]; then
+              echo "; skip (case \"$caseid\") no-emit" > "$out"; exit 0
+            fi
+            mkdir -p mods
+            # Extract the embedded core module(s); `--threshold 0` grabs even tiny ones. An ordinary program is
+            # one core module (`unbundled-module0.wasm`); a resource-escape/dtor program emits several — each
+            # gets its own record (distinguished by `--module N`).
+            wasm-tools component unbundle ${build}/emit.wasm --module-dir mods --threshold 0 -o /dev/null
+            : > "$out"
+            i=0
+            for m in mods/*.wasm; do
+              [ -e "$m" ] || continue
+              orig=$(wc -c < "$m")
+              wasm-opt --all-features -O3 "$m" -o o3.wasm
+              wasm-opt --all-features -Oz "$m" -o oz.wasm
+              o3=$(wc -c < o3.wasm); oz=$(wc -c < oz.wasm)
+              # `--metrics` is a pass: bare = OUR module's metrics; appended after -O3 = the optimized metrics.
+              wasm-opt --all-features     --metrics "$m" -o /dev/null > ours.metrics 2>/dev/null || true
+              wasm-opt --all-features -O3 --metrics "$m" -o /dev/null > o3.metrics   2>/dev/null || true
+              wasm-opt-gap --case "$caseid" --module "$i" --orig "$orig" --o3 "$o3" --oz "$oz" \
+                --metrics-ours ours.metrics --metrics-opt o3.metrics >> "$out"
+              printf '\n' >> "$out"
+              i=$((i + 1))
+            done
+          '';
+
+        # Per-FILE opt-gap report LIST (one derivation per case), mirroring corpusCaseChecks: shred once, build
+        # per case, opt-gap per case. Independent → Nix parallelizes; each report is CA on {emit, binaryen}.
+        corpusOptGapReports = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          map
+            (idx: mkCorpusOptGap {
+              inherit name idx;
+              caseTitle = corpusCaseTitle file (pkgs.lib.toIntBase10 idx);
+              build = mkCorpusBuild { inherit name shred idx; };
+            })
+            idxs;
+
+        # AGGREGATOR: collect a set of per-case records, DROP the optimal/skip markers, sort the `(gap …)`
+        # records by o3-delta DESC, wrap in the top-level `(wasm-opt-gaps …)` form. Pure reduction (no wasm-opt)
+        # so it re-runs only when a per-case report changed. `from-trunk` rides the flake rev — only in the
+        # aggregator (the per-case CA reports stay rev-independent, so they cache across commits).
+        mkOptGapAgg = { drvName, reports }:
+          pkgs.runCommand drvName { } ''
+            set -euo pipefail
+            idx=$(mktemp)
+            ${pkgs.lib.concatMapStringsSep "\n" (r: ''
+              if head -c4 ${r} | grep -q '(gap'; then
+                d=$(grep -oE '\(delta \(o3 -?[0-9]+\)' ${r} | grep -oE -- '-?[0-9]+' | head -1)
+                printf '%s\t%s\n' "''${d:-0}" "${r}" >> "$idx"
+              fi
+            '') reports}
+            {
+              echo "(wasm-opt-gaps"
+              echo "  (binaryen \"${pkgs.binaryen.version}\")"
+              echo "  (from-trunk \"${self.shortRev or "dev"}\")"
+              if [ -s "$idx" ]; then
+                sort -k1,1 -rn "$idx" | cut -f2 | while IFS= read -r r; do sed 's/^/  /' "$r"; echo; done
+              fi
+              echo ")"
+            } > "$out"
+          '';
+        mkOptGapFileAgg = { name, file }: mkOptGapAgg { drvName = "wasm-opt-gaps-${name}"; reports = corpusOptGapReports { inherit name file; }; };
+        # `wasm-opt-gaps-<file>` per-file aggregates + one whole-corpus sweep (aggregates ALL per-case reports —
+        # the SAME CA reports the per-file aggs use, so they share/cache).
+        optGapFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            { name = "wasm-opt-gaps-${stem}"; value = mkOptGapFileAgg { name = stem; file = ./spec/semantics + "/${f}"; }; })
+          corpusFileNames);
+        optGapAll = mkOptGapAgg {
+          drvName = "wasm-opt-gaps-all";
+          reports = builtins.concatMap
+            (f: let stem = pkgs.lib.removeSuffix ".sexp" f; in corpusOptGapReports { name = stem; file = ./spec/semantics + "/${f}"; })
+            corpusFileNames;
+        };
 
         # ── The RUST exec layer (design gap #6) ──────────────────────────────────────────────────────────
         #
@@ -2818,6 +2947,7 @@
               test-cdz-run = mkCrateTestCrane { crate = "cdz-run"; extraSrc = [ ./implementation/compiler-ml ]; };
               test-cdz-rust-render = mkCrateTestCrane { crate = "cdz-rust-render"; };
               test-cdz-rust-run = mkCrateTestCrane { crate = "cdz-rust-run"; };
+              test-cdz-wasm-opt-gap = mkCrateTestCrane { crate = "cdz-wasm-opt-gap"; };
               test-cdz-world-artifact = mkCrateTestCrane { crate = "cdz-world-artifact"; };
               test-rcdzc = mkCrateTestCrane {
                 crate = "rcdzc";
@@ -3102,6 +3232,10 @@
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
+            # The wasm-opt OPTIMALITY-GAP sweep (advisory, never a gate constituent): the whole-corpus
+            # `wasm-opt-gaps.sexp` aggregate; the per-file `wasm-opt-gaps-<file>` aggregates are spread in below
+            # so a slice (e.g. 01-literals + 10-bytes) builds in isolation. See DESIGN-wasm-opt-gap-analysis-rcdzc.md.
+            wasm-opt-gaps = optGapAll;
             # S3: the example project's @tests run through nix — a cache HIT when its sources are
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
@@ -3236,7 +3370,11 @@
           # PER-FILE rust corpus aggregates: `corpus-rust-<file>` for every corpus file (the rust-target twin
           # of the wasm `corpus-<file>` set), so CI can build/cache one file's rust per-case graph in isolation
           # (the top-level `corpus-rust` forces them all).
-          // corpusRustFileAggs;
+          // corpusRustFileAggs
+          # PER-FILE wasm-opt-gap aggregates: `wasm-opt-gaps-<file>` for every corpus file, so a slice
+          # (01-literals + 10-bytes) builds in isolation while the top-level `wasm-opt-gaps` forces the whole
+          # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.
+          // optGapFileAggs;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
@@ -3479,6 +3617,32 @@
           {
             type = "app";
             program = "${fastGate}/bin/cdz-fast-gate";
+          };
+
+        # apps.wasm-opt-gaps — run the wasm-opt optimality-gap sweep + refresh the tracked
+        # `implementation/design/wasm-opt-gaps.sexp` (design/DESIGN-wasm-opt-gap-analysis-rcdzc.md). Builds the
+        # `wasm-opt-gaps` check (per-case unbundle → `wasm-opt --all-features -O3`/`-Oz` → record, all cached +
+        # parallel) and copies the aggregate into the tree so v-wasm-opt reads/ranks a committed doc.
+        #   nix run .#wasm-opt-gaps            → refresh the default doc path + print it
+        #   nix run .#wasm-opt-gaps -- PATH    → write to PATH instead
+        apps.wasm-opt-gaps =
+          let
+            writer = pkgs.writeShellApplication {
+              name = "cdz-wasm-opt-gaps";
+              runtimeInputs = [ pkgs.nix pkgs.coreutils ];
+              text = ''
+                out="''${1:-implementation/design/wasm-opt-gaps.sexp}"
+                echo "cdz wasm-opt-gaps: building the corpus-wide sweep (unbundle + wasm-opt per case; cached)…" >&2
+                p=$(nix build --no-link --print-out-paths ".#checks.${system}.wasm-opt-gaps")
+                cp "$p" "$out"
+                echo "cdz wasm-opt-gaps: wrote $out" >&2
+                cat "$out"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${writer}/bin/cdz-wasm-opt-gaps";
           };
       });
 }
