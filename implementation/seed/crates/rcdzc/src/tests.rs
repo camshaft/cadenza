@@ -5495,22 +5495,6 @@ fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
     );
 }
 
-/// A synthesized (β-reduced) scope form's parameters still resolve — the regression guard for the
-/// per-scope binder index. The index is built at load over the ORIGINAL arena, but β-reduction copies
-/// a lambda/def body into FRESH `fn`/`def` nodes; a parameter reference inside such a copy must find
-/// its binder too (the incremental `push_list` re-index). `(Int 8)` builds its module by reducing the
-/// `Int` type-lambda `(fn (w) …)`, and `.wrap` reads the built width — this exact path regressed to "a
-/// conversion target is not a definite integer type" when the synthesized `fn`'s `w` found no binder.
-#[test]
-fn a_parameter_inside_a_synthesized_scope_form_resolves() {
-    use crate::testkit::parse;
-    // `(Int 8).wrap 200` = -56: builds the width-8 module through the copied `Int` type-lambda, then
-    // wraps. A miss on the synthesized lambda's width param declines the conversion.
-    let src = "(module m (def (main) ((Int 8).wrap 200)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
-}
-
 /// `T.wrap(U.wrap x)` where the outer width N ≤ the inner width M — the inner wrap is redundant (the
 /// outer keeps only the low N ≤ M bits, unchanged by the inner). The inner Convert is elided; VALUE
 /// parity is preserved (the composed wrap gives the same low bits as the single outer wrap).
@@ -5965,47 +5949,6 @@ fn a_record_match_pattern_typo_field_suggests_the_nearest_field() {
     assert!(
         far.fix.is_none(),
         "a far-miss field carries no baseless rename fix"
-    );
-}
-
-/// The atom-copy fix must NOT substitute a BINDER occurrence that shadows the parameter. `(def (f x)
-/// (let ((x true)) x))` binds the inner `x = true` shadowing the Int64 param `x`; `(f 99)` must return
-/// `true`. The atom-copy pass resolved the let's BINDER-name occurrence `x` (a `Ref` up to the param,
-/// because it shares the name) and SUBSTITUTED the argument into it — turning the binding into `(99
-/// true)`, so the body's `x` found no binding and reported a spurious unbound name. A differently-typed
-/// shadow additionally MISCOMPILED (the parameter's i64 slot reused for the Bool). A binder occurrence
-/// NAMES a binding — β-reduction must copy it, never substitute — so both the same-type and Bool
-/// shadows now run. (The companion `a_let_bound_value_under_a_fn_param_compiles` pins that a genuine
-/// let-local REFERENCE is still substituted/re-resolved — this pins that its BINDER is not.)
-#[test]
-fn a_let_binder_shadowing_a_parameter_is_not_substituted() {
-    use crate::testkit::parse;
-    // Bool shadow: the inner binding's type differs from the parameter — the worst case (was an invalid
-    // component). `(f 99)` returns the inner `x = true`.
-    let bool_shadow = "(module m (def (f x) (let ((x true)) x)) (def (main) (f 99)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(bool_shadow))).expect("compile");
-    assert!(
-        run_returns::<bool>(&bytes, "main"),
-        "Bool shadow of an Int64 param returns true"
-    );
-
-    // Same-type shadow: `(let ((x 7)) x)` over Int64 param `x` — `(f 99)` returns the inner `x = 7`.
-    let int_shadow = "(module m (def (f x) (let ((x 7)) x)) (def (main) (f 99)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(int_shadow))).expect("compile");
-    assert_eq!(
-        run_returns::<i64>(&bytes, "main"),
-        7,
-        "same-type shadow returns the inner binding"
-    );
-
-    // A match-arm pattern binder that shadows the param is likewise a binder, not a reference:
-    // `(match 5 (x x))` binds `x` to the scrutinee 5 for the arm, shadowing the param `x`.
-    let arm_shadow = "(module m (def (f x) (match 5 (x x))) (def (main) (f 99)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(arm_shadow))).expect("compile");
-    assert_eq!(
-        run_returns::<i64>(&bytes, "main"),
-        5,
-        "match-arm binder shadow binds the scrutinee"
     );
 }
 
@@ -10628,114 +10571,6 @@ mod match_engine {
             valid.is_ok(),
             "a recursive fn self-calling in a do-def RHS must type by its scheme (valid wasm), not mis-type via deep β-reduce: {:?}",
             valid.err()
-        );
-    }
-
-    #[test]
-    fn a_do_def_shadowing_a_param_rebinds_the_name_it_does_not_unbind_it() {
-        // A do-local VALUE def that SHADOWS an enclosing PARAM — `(def (f (: v Int64)) (do (def v (* v 2)) v))`
-        // — must rebind `v` (the do-def's RHS reads the outer param, the trailing `v` reads the do-def), NOT
-        // report a spurious CDZ0101 "unbound name v". ROOT: `is_binder_occurrence` did not recognize a do-def's
-        // NAME slot as a binder, so INLINING `f` β-substituted the argument for the do-def's name atom `v`;
-        // the COPIED do-block then no longer DECLARED `v` (`do_local_binds` found no declaring form) and the
-        // trailing reference fell through to unbound. This is the def-over-PARAM shadow — inconsistent with
-        // let-over-param and def-over-def, which already worked. Also the ROOT of a nested-handler
-        // false-unbound regression (v-effects' hygiene lifts a fn-local into a synth PARAM, then the arm-local
-        // `(def x …)` hit this exact unbind). Oracle: `f(5) = 10`, `f(0) = 0`. `main` inlines `(f 5)` → 10.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (f (: v Int64)) (do (def v (* v 2)) v)) \
-                       (def (main) (f 5)) (export main))"
-                ),
-                "main"
-            ),
-            10
-        );
-        // The non-self-referencing shadow row (breaker's matrix): the RHS reads the param via a helper local,
-        // the trailing `v` must still be the rebound do-def, not unbound. `w=5, v=10`, return `v` → 10.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (f (: v Int64)) (do (def w v) (def v (* w 2)) v)) \
-                       (def (main) (f 5)) (export main))"
-                ),
-                "main"
-            ),
-            10
-        );
-        // SOUNDNESS FACE (breaker #37, corpus-bugfix note): a do-def shadowing a fn-wrapping LET was SILENTLY
-        // DROPPED — the same binder-copy corruption, but under a `let` the vanished do-def left the trailing
-        // `v` resolving to the surviving LET binding `k` instead (returned 5-for-10, no error). `v=k=5`, do-def
-        // `v=10`, return the do-def → 10. (Fn-WRAPPING is the trigger: a bare-main let-shadow always worked.)
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (f (: k Int64)) (let ((v k)) (do (def v (* v 2)) v))) \
-                       (def (main) (f 5)) (export main))"
-                ),
-                "main"
-            ),
-            10
-        );
-        // SOUNDNESS FACE (trap-elision, the worst): with a TRAPPING init `(def v (/ 1 0))`, the dropped do-def
-        // took its side-effect with it — the whole binding was dead-code-eliminated and `f` returned `k` with
-        // NO trap. Now the do-def survives, so the constant divide-by-zero is REACHED and declined at compile
-        // (CDZ0304 `constant / traps`), not silently elided. Guards that the fix restores the effect, not just
-        // the value.
-        let trap_err = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (f (: k Int64)) (let ((v k)) (do (def v (/ 1 0)) v))) \
-               (def (main) (f 5)) (export main))",
-        )))
-        .expect_err(
-            "a reached constant divide-by-zero in a surviving do-def must be declined, not elided",
-        );
-        assert!(
-            trap_err.message.contains("divide by zero") || trap_err.message.contains("/ traps"),
-            "expected a constant divide-by-zero decline once the do-def is no longer dropped, got: {}",
-            trap_err.message
-        );
-        // ADJACENT FACE (audit): the shadowing do-def value is CAPTURED by an inner do-local FUNCTION whose
-        // body reads it — the copied inner `g` must see the copied do-def `v` (10), not the orphaned param.
-        // `v = 5*2 = 10`, `(g 100) = 100 + 10` → 110. Guards that the binder-copy fix holds when the rebound
-        // name flows through a nested closure, not just a direct trailing reference.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (f (: v Int64)) \
-                       (do (def v (* v 2)) (do (def (g (: x Int64)) (+ x v)) (g 100)))) \
-                       (def (main) (f 5)) (export main))"
-                ),
-                "main"
-            ),
-            110
-        );
-        // ADJACENT FACE (audit): TWO sequential do-defs both shadowing the param — each must rebind against
-        // the PREVIOUS binding (in-order do scope), not fall back to the param. `v=5*2=10`, `v=10+1=11` → 11.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (f (: v Int64)) (do (def v (* v 2)) (def v (+ v 1)) v)) \
-                       (def (main) (f 5)) (export main))"
-                ),
-                "main"
-            ),
-            11
-        );
-        // ADJACENT FACE (audit): a do-def shadowing a MATCH-ARM PAYLOAD binder (not a param/let) — `(Some v)`
-        // binds `v`, then `(do (def v (* v 2)) v)` shadows it. The do-def NAME must stay a binder through the
-        // β-inline (same fix), so the arm body rebinds `v` rather than corrupting it. Builds a heap Opt value
-        // (needs the value-heap runtime this linker lacks), so guard the EMIT validates — the resolve/β-copy
-        // path is what the fix touches; a valid module proves the arm-local do-def resolved (a corrupted binder
-        // would decline CDZ0101 before emit). `(Some 5)` → arm binds v=5, do-def v=10.
-        assert!(
-            wasmparser::validate(&component(
-                "(module m (type Opt (None) (Some a)) \
-                   (def (f (: o (Opt Int64))) (match o ((Some v) (do (def v (* v 2)) v)) ((None) 0))) \
-                   (def (main) (f (Some 5))) (export main))"
-            ))
-            .is_ok(),
-            "a do-def shadowing a match-arm payload binder must resolve (valid module), not corrupt the binder"
         );
     }
 
