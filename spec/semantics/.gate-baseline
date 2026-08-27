@@ -3644,7 +3644,10 @@ pass	a reflected module AST is a well-formed Ast value that round-trips through 
 pass	a reflected quantity type rejects a value of a different dimension
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a refutable constructor pattern in a let binder is rejected
+pass	a refutable map value sub-pattern binds the ctor payload on a matching value
 pass	a refutable map value sub-pattern dispatches by the value's constructor
+pass	a refutable map value sub-pattern falls through on a non-matching variant
+pass	a refutable map value sub-pattern folds the same over a constant map
 pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
 pass	a remainder by a constant bounds its result so a downstream checked op sheds its guard (value + trap parity)
@@ -8883,6 +8886,7 @@ todo	erp2 a Result entry param with two scalar payloads declines pending the Res
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
+todo	frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
 todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
