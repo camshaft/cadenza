@@ -471,3 +471,15 @@ objects deterministic) + value-wrong-grep. Increment order: (1) adv54b 2-lane (U
 (2) dqe dual-use (the spurious-dup mirror, ~27 objs); (3) ZIP loop-exit (deferred spec §2c.4); (4) the
 audit residual spine/dead-binding drops. Single-writer (me) on select.rs's dup/escape/loop-drop machinery;
 circulate each to v-runtime BEFORE emit. NO emit in this design tick.
+
+## §5 IMPLEMENTED (self-loop-tail sum-spine back-edge reclaim) — depth-tail 10001 → 1
+
+emit_loop_iteration: for a member-tail-call arg that is a self-consuming `Payload` of the loop-param it is
+stored back into (gated: path ends `Payload`, scrutinee binder's slot == target param slot, and
+`count_param_consumes(v) == 0` = no OTHER consuming use), SAVE the old shell to a scratch slot before eval,
+then AFTER the stores emit `local.get slot(rest); dup` (rc++, stack-neutral — `dup` is `(i32)->()`) +
+`local.get scratch; drop` (op_drop cascades, decrementing the carried rest back to owned; the old S cell is
+freed). Import companion: `def_sum_spine_reclaims` in `collect_module_used_ops` imports dup+drop iff the
+reclaim fires. VERIFIED: depth-tail (a=10000) 10001 → live-objects 1 (direct run, debug rt), value correct,
+validates; whole-corpus --check 0 value/trap regressed. Leak-count corpus-wide pending v-runtime peer-verify
+(local store debug-runtime stale vs committed hash — can't run the heap-balance check locally).

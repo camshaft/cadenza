@@ -4036,7 +4036,7 @@
               (depth-tail (mk-tail a (Z)) 0))
             (export main)))
   (call   main (: 10000 Int64)) (output (: 10000 Int64))
-  (live-objects known-leak 10001))
+  (live-objects known-leak 1))
 
 ; A recursive function with TWO OR MORE NARROW-WIDTH parameters (UInt8/Int8/UInt16/…) threading a narrow
 ; accumulator through the recursive call. A narrow value lives in an i32 machine slot (a wide Int64 is

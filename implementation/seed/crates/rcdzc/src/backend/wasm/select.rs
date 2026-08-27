@@ -3760,6 +3760,91 @@ pub fn def_drops_owned_param(
     !looped_owned_param_drops(db, body, params, self_def).is_empty()
 }
 
+/// Import-side companion of [`emit_loop_iteration`]'s §5 SUM-SPINE reclaim: whether this def's body has a
+/// member tail-call whose arg is a self-consuming `Payload` extraction of a loop-param it is stored back
+/// into (the `depth-tail` spine-walk). When it does, the emit adds a `dup` (retain the carried payload) +
+/// a `drop` (free the old shell) per iteration, so `collect_module_used_ops` must import BOTH — precise
+/// import/emit agreement (mirrors [`def_drops_owned_param`]). Re-derives the loop context + param slots
+/// exactly as [`looped_owned_param_drops`].
+pub fn def_sum_spine_reclaims(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+) -> bool {
+    let Some(self_d) = self_def else {
+        return false;
+    };
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return false;
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    if param_slots.is_empty() {
+        return false;
+    }
+    let members = mutual_loop_group(db, self_d);
+    if members.is_empty() {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    sum_spine_reclaim_in_body(db, body, &members, &param_slots, &slot_of, &mut seen)
+}
+
+/// Walk `id` for a member `Call` (a tail-loop back-edge) carrying a self-consuming `Payload` arg — the
+/// same predicate [`emit_loop_iteration`]'s `is_sumpayload_consume` applies. Used ONLY for the dup/drop
+/// import decision; the emit re-checks per-call. `seen` breaks DAG re-walk.
+fn sum_spine_reclaim_in_body(
+    db: &mut Db,
+    id: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slot_of: &HashMap<StructId, u32>,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if let Core::Call { callee, args } = core_of(db, id) {
+        if members.contains(&callee) {
+            for (i, &arg) in args.iter().enumerate() {
+                if i >= param_slots.len() {
+                    continue;
+                }
+                let is_self_payload = matches!(core_of(db, arg), Core::SumPayload { scrutinee, ref path }
+                    if matches!(path.last(), Some(crate::core::PathStep::Payload))
+                        && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
+                            if slot_of.get(&binder) == Some(&param_slots[i])));
+                if is_self_payload
+                    && let Core::SumPayload { scrutinee, .. } = core_of(db, arg)
+                    && let Core::Param { binder } | Core::LocalRef { binder } =
+                        core_of(db, scrutinee)
+                {
+                    let mut cseen = HashSet::new();
+                    let mut total = 0usize;
+                    for &a in args.iter() {
+                        count_param_consumes(db, a, binder, &mut cseen, &mut total);
+                    }
+                    if total == 0 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| sum_spine_reclaim_in_body(db, c, members, param_slots, slot_of, seen))
+}
+
 fn looped_owned_param_drops(
     db: &mut Db,
     body: StructId,
@@ -8048,6 +8133,50 @@ fn emit_loop_iteration(
                 if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))))
         })
         .collect();
+    // SELF-LOOP-TAIL SUM-SPINE reclaim (§5, v-runtime co-designed): an arg that is a `Payload` extraction of
+    // the loop-param it is stored BACK INTO — `depth-tail`'s `(S rest) => depth-tail rest …`, `rest` =
+    // `SumPayload{scrutinee: Param v, path:[Payload]}` carried into v's own slot — consumes v's spine node
+    // per iteration. `sum-payload` is a BORROW (no rc++, no reclaim, unlike `vec-drop`/RestFrom which
+    // reclaims implicitly), so without help the old S shell is overwritten un-dropped → the whole spine
+    // LEAKS (the tail shell-reclaim is SKIPPED for a member-tail-call arm, comment at the reclaim gate). FIX:
+    // `dup(rest)` after eval, then `drop(old v)` BEFORE the store — op_drop ALWAYS cascades, so the dup keeps
+    // `rest` alive as the cascade decrements v's payload ref back to its owned rc; v's cell is freed, `rest`
+    // carried at the correct rc → one node reclaimed per iteration, no leak / no double-free. GATED like the
+    // RestFrom case: the Payload must be v's SOLE consuming use (`count_param_consumes == 1`) so the drop
+    // reclaims the sole ref, and the scrutinee binder's slot must BE the target param slot (a self-spine walk).
+    let is_sumpayload_consume: Vec<bool> = args
+        .iter()
+        .enumerate()
+        .map(|(i, &arg)| {
+            i < tl.param_slots.len()
+                && matches!(core_of(db, arg), Core::SumPayload { scrutinee, ref path }
+                    if matches!(path.last(), Some(crate::core::PathStep::Payload))
+                        && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
+                            if slots.get(&binder) == Some(&tl.param_slots[i])))
+                && {
+                    // SOLE-consume gate: the Payload extraction is v's only consuming use across all args.
+                    if let Core::SumPayload { scrutinee, .. } = core_of(db, arg)
+                        && let Core::Param { binder } | Core::LocalRef { binder } =
+                            core_of(db, scrutinee)
+                    {
+                        let mut seen = HashSet::new();
+                        let mut total = 0usize;
+                        for &a in args.iter() {
+                            count_param_consumes(db, a, binder, &mut seen, &mut total);
+                        }
+                        // `count_param_consumes` counts RestFrom / consume-ops / escapes but NOT a `Payload`
+                        // extraction, so `total` here is the count of OTHER consuming uses of v. `== 0` ⟹ v is
+                        // used only as the match scrutinee (borrow) + this carried Payload → v is DEAD after
+                        // the extraction and the drop reclaims its sole remaining (shell) ref. `> 0` (v also
+                        // pushed/inserted/escaped/RestFrom'd elsewhere) ⟹ KEEP — dropping it would double-free
+                        // the ref that other consume needs.
+                        total == 0
+                    } else {
+                        false
+                    }
+                }
+        })
+        .collect();
     let mut eval_order: Vec<usize> = (0..args.len())
         .filter(|&i| !is_identity[i] && !is_restfrom_consume[i])
         .collect();
@@ -8083,7 +8212,23 @@ fn emit_loop_iteration(
             }
         }
     }
-    let mut arg_base = base;
+    // §5 sum-spine: BEFORE eval, SAVE each self-consuming loop-param's OLD shell into a fresh scratch slot,
+    // so it can be dropped AFTER the stores (off-stack) without interleaving with the parallel-move arg
+    // stack. The save is a slot COPY (no rc change); the old shell stays owned in the scratch until its drop.
+    let mut spine_old_scratch: Vec<u32> = Vec::new();
+    for i in 0..args.len() {
+        if is_sumpayload_consume[i] {
+            let sc = *high;
+            *high = (*high).max(sc + 1);
+            scratch_ty.insert(sc, ValType::I32);
+            out.push(Lir::LocalGet(tl.param_slots[i])); // [old-v]
+            out.push(Lir::LocalSet(sc)); // scratch = old-v (slot copy)
+            spine_old_scratch.push(sc);
+        }
+    }
+    // Args start ABOVE the saved-shell scratch so their emit never reuses those persistent slots (and never
+    // below the body scratch floor `base`).
+    let mut arg_base = base.max(*high);
     for &i in &eval_order {
         let arg = args[i];
         if let Core::ConstInt(_) = core_of(db, arg)
@@ -8097,6 +8242,23 @@ fn emit_loop_iteration(
     }
     for &i in eval_order.iter().rev() {
         out.push(Lir::LocalSet(tl.param_slots[i]));
+    }
+    // §5 sum-spine reclaim (post-store): the carried Payload `rest` is now IN its param slot. For each
+    // self-consuming sum-spine param, RETAIN rest (`local.get slot; dup` — `dup` pops a handle + rc++, no
+    // stack result, so this is stack-neutral and bumps rest's rc), then DROP the saved OLD shell
+    // (`local.get scratch; drop`). op_drop ALWAYS cascades, so the old shell's free decrements its child ref
+    // = rest, which the dup pre-bumped → rest lands at its owned rc. Net per iteration: the old S cell is
+    // freed and rest is carried owned — the 10000-deep spine is reclaimed AS WALKED, no leak / no UAF.
+    let mut spine_idx = 0usize;
+    for i in 0..args.len() {
+        if is_sumpayload_consume[i] {
+            let sc = spine_old_scratch[spine_idx];
+            spine_idx += 1;
+            out.push(Lir::LocalGet(tl.param_slots[i])); // [rest]
+            out.push(Lir::CallImport(OP_DUP)); // rc++ (pops rest; no result) → []
+            out.push(Lir::LocalGet(sc)); // [old-v]
+            out.push(Lir::CallImport(OP_DROP)); // free old-v; cascade decrements rest → owned → []
+        }
     }
     out.loop_reassign_no_dup = saved_no_dup;
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
