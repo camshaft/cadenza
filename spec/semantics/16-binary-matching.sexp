@@ -110,6 +110,24 @@
   (input  (= (bin (bits 258 16)) (Bytes.of (list 1 2))))
   (output (: true Bool)))
 
+(case "a 16-bit bit-field packs a two-nibble-distinct value across the byte boundary big-endian"
+  (doc    "The byte-boundary bit-field pack where both bytes carry non-trivial content: `(bin (bits 4660
+           16))` packs 4660 = 0x1234 into a 16-bit field, closing two bytes big-endian = `(Bytes.of (list
+           18 52))` (0x12 = 18, 0x34 = 52). Distinct from the 258 = 0x0102 case above, whose high byte is
+           1; here both bytes differ, pinning that the split is a genuine most-significant-first byte
+           division of the field value, not a low-byte-only write.")
+  (input  (= (bin (bits 4660 16)) (Bytes.of (list 18 52))))
+  (output (: true Bool)))
+
+(case "a byte-closing bit-field composes with a following byte-aligned integer segment"
+  (doc    "A `(bits v k)` run that closes on a byte boundary composes with a subsequent `uNN` integer
+           segment, each encoded independently and concatenated: `(bin (bits 255 8) (u8 1))` writes the
+           8-bit field 255 as one byte, then the u8 1 as the next = `(Bytes.of (list 255 1))`. Pins that a
+           byte-aligned bit-field and an integer segment coexist in one construction (the sub-byte and
+           fixed-width segment kinds interleave once the bit-field run is byte-aligned).")
+  (input  (= (bin (bits 255 8) (u8 1)) (Bytes.of (list 255 1))))
+  (output (: true Bool)))
+
 (case "a bit-field value that needs more bits than its width does not fit its segment"
   (doc    "A `(bits v k)` segment holds only the low `k` bits, so a value needing more than `k` bits has no
            defined encoding — construction is rejected (`binary value does not fit segment`, CDZ0304, the

@@ -547,6 +547,7 @@ pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members
+pass	a 16-bit bit-field packs a two-nibble-distinct value across the byte boundary big-endian
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2-arm all-literal Float32 match grounds its arms to f32 via the select path
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
@@ -1413,6 +1414,7 @@ pass	a byte read back from a runtime-list-built Bytes has the right value
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-closing bit-field composes with a following byte-aligned integer segment
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
@@ -1612,6 +1614,7 @@ pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a compound map key whose string element is a rope is found by its flat-twin key
 pass	a compound-element float renders the same full expansion as the scalar path
+pass	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
@@ -1858,6 +1861,7 @@ pass	a discarded do-statement whose value would overflow is elided, so its trap 
 pass	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
 pass	a discarded trapping item in a do sequence is elided per the dead-init ruling
 pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
+pass	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
 pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
 pass	a distinct-signature round-trip alongside a plain export — the plain export runs
@@ -2620,6 +2624,7 @@ pass	a multi-argument closure round-trips through a consumer — FLAT arrow spel
 pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
 pass	a multi-argument op with TWO heap arguments — a String key and a Map to search
 pass	a multi-byte runtime bit-field takes the matching wide unsigned type
+pass	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 pass	a multi-export compound-result shared call is a repeatable (borrow<t>) callback
 pass	a multi-export record interface guest emits a wrapper per member and runs both (via an imposed WIT world)
 pass	a multi-export set of parameterized capturing closures is driven per export
@@ -3778,6 +3783,7 @@ pass	a same-name multi-variant constructor in a called helper resolves to the co
 pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default
 pass	a same-sign widening wrap is the identity
+pass	a same-signature multi-export shared call is repeatable on one make-<name> handle
 pass	a same-signature mutual tail cycle shares one constant-stack loop
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
@@ -6138,6 +6144,7 @@ pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks t
 pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
+pass	lbr1 a List entry param relayed to a helper def that only borrows its length
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
 pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
@@ -7201,6 +7208,9 @@ pass	ss3 nested SAME-effect handlers with independent STRING states — inner se
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	ssc1 a String entry param captured by a local closure applied twice
+pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
+pass	ssc3 a String entry param read inside a handle body alongside a dispatch
 pass	ssd1 two occurrences of one constant String literal — branch-selected use, byte-length reads, and runtime equality across the pair
 pass	ssd2 a fifty-frame recursion re-evaluating a constant String literal each frame reclaims to zero
 pass	ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split
@@ -7985,6 +7995,7 @@ pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
 pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance
 pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
+pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 pass	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
@@ -8071,6 +8082,7 @@ todo	eop2 an Option-of-list entry param measures its Some payload
 todo	ep1 TWO String entry params concat in declaration order
 todo	er1 a Rational entry param in exact arithmetic
 todo	erp1 a Result entry param delivers its Ok payload
+todo	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
@@ -8086,14 +8098,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-todo	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
-pass	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
-pass	a same-signature multi-export shared call is repeatable on one make-<name> handle
-pass	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
-pass	a distinct-signature per-group call-g is repeatable on one make-<name> handle
-pass	ssc1 a String entry param captured by a local closure applied twice
-pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
-pass	ssc3 a String entry param read inside a handle body alongside a dispatch
-pass	lbr1 a List entry param relayed to a helper def that only borrows its length
