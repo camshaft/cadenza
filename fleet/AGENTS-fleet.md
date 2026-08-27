@@ -154,7 +154,7 @@ delivery is atomic and well-formed:
 
 ```
 cargo xtask fleet send --to <agent> --kind <kind> --subject "<one line>" \
-    [--ref <sha-or-branch>] [--body "<detail, may be multiline>"]
+    [--ref <sha-or-branch>] [--body "<detail, may be multiline>"] [--urgency <level>]
 ```
 
 Kinds and who sends them:
@@ -186,6 +186,14 @@ Include enough in `--body` that the recipient needs no other context. A `merge-r
 carry the gate summary (fail-set diff, test count) so pr-sync can trust it fast. An `ask` body MUST
 state the concrete options so the human can decide in one line — the concierge is a router, not an
 investigator.
+
+**`--urgency <low|normal|high|urgent>` (default `normal`) tells the recipient how to PRIORITIZE.** An
+elevated (`high`/`urgent`) message is TAGGED in the recipient's `cargo xtask fleet inbox` listing
+(`<high>` / `<<URGENT>>`) with a "prioritize reading these" summary line, so it stands out while you
+drain. The listing stays OLDEST-FIRST (urgency is a SIGNAL, not a reorder — you still drain oldest-first
+and handle a `reject`/`ask` by kind). Reserve `urgent` for genuinely time-critical coordination (a fleet
+wedge, a trunk-red, a freeze) so the tag keeps its meaning; most mail is `normal`. Kind still governs
+handling — urgency only nudges attention ORDER, it does not change what a message MEANS.
 
 **A `merge-request` integrates the SINGLE `--ref` commit, NOT your branch range.** pr-sync applies
 just the one commit you name in `--ref` onto `trunk` (verified empirically: every per-MR landing is a
