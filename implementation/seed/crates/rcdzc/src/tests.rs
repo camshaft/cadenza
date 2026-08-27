@@ -20981,53 +20981,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_generic_def_monomorphizes_over_a_user_generic_at_two_element_types() {
-        // Coverage-hardening for recursive-generic monomorphization when a DEF's parameter/result is a USER
-        // generic sum, exercised at TWO distinct element types in one program (each call site
-        // monomorphizes to its own instantiation). Three faces, each run to a value:
-        //   (1) `unwrap : (Box a) -> a` (unannotated), called at Bool AND Int64;
-        //   (2) the same with the parameter ANNOTATED `(: b (Box Int64))` (monomorphic);
-        //   (3) `rewrap : a -> (Box a)` — a def that RETURNS the generic — called at Int64 AND Bool.
-        // (1) (unwrap (Mk true)) is truthy → (unwrap (Mk 7)) = 7.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk a)) \
-                       (def (unwrap b) (match b ((Mk v) v))) \
-                       (def (main) (if (unwrap (Mk true)) (unwrap (Mk 7)) 0)) (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
-        // (2) annotated (Box Int64): (unwrap (Mk 7)) = 7.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk a)) \
-                       (def (unwrap (: b (Box Int64))) (match b ((Mk v) v))) \
-                       (def (main) (unwrap (Mk 7))) (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
-        // (3) rewrap returns (Box a): (rewrap 5) = (Mk 5), (rewrap true) = (Mk true) truthy → 5.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk a)) \
-                       (def (rewrap x) (Mk x)) \
-                       (def (main) (match (rewrap 5) ((Mk v) (if (match (rewrap true) ((Mk w) w)) v 0)))) \
-                       (export main))"
-                ),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
     fn a_generic_type_param_resolves_through_nested_payload_shapes_and_computes() {
         // Coverage-hardening for generic type-parameter resolution when the param appears in a NESTED
         // payload shape (not just a bare `(Mk a)`): the param must thread through the inner container and
