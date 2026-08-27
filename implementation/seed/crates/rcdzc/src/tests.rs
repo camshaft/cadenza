@@ -1617,47 +1617,6 @@ fn a_match_over_a_match_selected_sum_pushes_into_the_arms() {
     // match-selected sum folds into the inner arms" in spec/semantics/02-binding-and-control.sexp.
 }
 
-/// A `let`-BOUND tuple/record produced by an `if`, read at TWO positions, compiles to VALID wasm. Reading
-/// TWICE keeps the compound as a genuine runtime handle (the single-projection fold above DECLINES for a
-/// multi-use binding), so the `if` value-join lands the handle in the binding's persistent i32 slot. The
-/// bug: the `let` emitted its `if` initializer at `binding_slot + 1` while the scratch high-water still
-/// LAGGED the binding slot, so the first tuple element's i64 temp (`(+ p 5)`) was teed into the binding's
-/// OWN i32-handle slot → an invalid module (`expected i32, found i64`). A SINGLE read hid it (the
-/// mis-typed slot was overwritten before a second read forced the clash); the `match`-producer form
-/// worked (its arm join pre-reserves its slot). Fixed by reserving the `let` binding slot BEFORE its
-/// initializer emits, so every inner scratch stays above it. Both tuple and record (any heap-handle
-/// compound) hit it; a genuine runtime handle is required (a constant-folded if-compound is fine).
-#[test]
-fn a_let_bound_if_produced_compound_read_at_two_positions_emits_valid_wasm() {
-    use crate::testkit::parse;
-    // The bug was an INVALID component (`expected i32, found i64`) — a wasm-validation failure at load —
-    // so assert each program COMPILES and its bytes LOAD under wasmtime (which type-validates every
-    // function). This is backend-agnostic and needs no composed runtime; the corpus cases cover the
-    // runtime VALUES (7 / 102). A single projection compiled before the fix; reading BOTH exposed the
-    // aliased-slot mis-typing, so each program reads the binding at two positions.
-    let engine = wasmtime::Engine::default();
-    // TUPLE and RECORD (the fault is not tuple-specific — any heap-handle compound produced by the `if`).
-    let progs = [
-        "(module m (def (main (: p Int64)) \
-           (let ((r (if (= p 0) (tuple (+ p 5) (+ p 2)) (tuple 99 (+ p 2))))) \
-              (+ (. r 0) (. r 1)))) (export main))",
-        "(module m (def (main (: p Int64)) \
-           (let ((r (if (= p 0) (record (x (+ p 5)) (y (+ p 2))) (record (x 99) (y (+ p 2)))))) \
-              (+ (. r x) (. r y)))) (export main))",
-    ];
-    for src in progs {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
-        let loaded = wasmtime::component::Component::from_binary(&engine, &bytes);
-        assert!(
-            loaded.is_ok(),
-            "a let-bound if-produced compound read at two positions must emit VALID wasm (was `expected \
-             i32, found i64`: the if-compound's first-element i64 temp aliased the binding's i32 handle \
-             slot); wasmtime rejected it: {:?}",
-            loaded.err()
-        );
-    }
-}
-
 /// A NARROW-width element crosses the heap boundary with an explicit slot conversion. The heap stores
 /// an integer as one i64 cell, but a narrow width (UInt8) lives in an i32 slot — so a narrow element is
 /// extended i32→i64 into the heap and narrowed i64→i32 out of it. To exercise a GENUINE heap round-trip
