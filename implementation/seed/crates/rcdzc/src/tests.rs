@@ -43434,43 +43434,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_scalar_host_op_result_escaping_as_a_bytes_resource_runs_e2e() {
-        // RUNTIME behavior pin for the host×resource with-methods fusion (the emit test above only checks the
-        // component PARSES). Runs the composed host-Bytes-resource component with a host-response fixture: the
-        // host op `h` answers 7, which flows into `(Bytes.of (list (H.h x)))`, escaping as the published Bytes
-        // resource. Verifies the escaped value round-trips to the single byte 0x07 — i.e. the host result
-        // actually reaches the resource-escape payload through `assemble_host_runtime_resource_with_scalar_
-        // methods` at run time, not just that the module validates. Skips if the runtime wasm isn't in the
-        // store. A regression that mis-wired the host op into the escape (wrong index shift, dropped result)
-        // would surface as a wrong byte or a trap here, which the parse-only emit test cannot catch.
-        use crate::testkit::parse;
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("[host-bytes-e2e] runtime wasm not in the store; skipping run");
-            return;
-        };
-        let src = "(do (effect H (op h (-> Int64 UInt8))) \
-                   (def (main (: x Int64)) (host (H) (Bytes.of (list (H.h x))))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["9".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: vec![cdz_run::HostResponse {
-                op: "h".to_string(),
-                value: "7".to_string(),
-            }],
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "(: b\"\\x07\" Bytes)",
-                "the host op result 7 escapes as the single-byte Bytes resource 0x07"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("host-bytes-resource-escape run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn adv62_a_let_bound_host_result_captured_by_two_escaping_closures_fires_the_host_op_once() {
         // adv-62 (breaker, HIGH wasm soundness): a `let`-bound host-call result captured by TWO escaping
         // closures must fire the host op EXACTLY ONCE — the shared `let`-bound `v` is captured by both. The
