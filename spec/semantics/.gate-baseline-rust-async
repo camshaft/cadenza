@@ -3327,6 +3327,7 @@ pass	a repeated trapping divide in a short-circuited and's right operand stays s
 pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
+pass	a rest-pattern head binder read by an inlined match-arg callee resolves
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
@@ -3669,6 +3670,7 @@ pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
+pass	a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot
 pass	a runtime velocity multiplied by a time cancels back to the base dimension
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected

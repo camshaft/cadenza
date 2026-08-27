@@ -9161,3 +9161,34 @@
     (def (main) (let ((f (fn ((tuple x y) z) (+ (+ x y) z)))) (f (tuple 3 4) 5)))
     (export main)))
   (output (: 12 Int64)))
+
+(case "a rest-pattern head binder read by an inlined match-arg callee resolves"
+  (doc    "A coin-DP shape: the rest-pattern head `c` from `(list c .. t)` is read inside a nested-match
+           scrutinee that is the argument to `omin` (which matches its param and inlines). The head binder
+           must resolve through the inline (regression: was CDZ0101 unbound). main → -1.")
+  (input (do
+    (def (at0 (: xs (List (Option Int64))) (: i Int64)) (Option.expect (List.at xs i) "x"))
+    (def (omin (: a (Option Int64)) (: b (Option Int64)))
+      (match a ((None _u) b) ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b))))))
+    (def (f (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64)))
+      (match cs ((list) best)
+        ((list c .. t)
+          (f t dp i
+            (if (<= c i)
+                (omin best (match (at0 dp (- i c)) ((None _u) (None unit)) ((Some v) (Some (+ v 1)))))
+                best)))))
+    (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
+    (export main)))
+  (output (: -1 Int64))
+  (live-objects known-leak 4))
+
+(case "a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot"
+  (doc    "`find` compares `(N.I n)` against `(N.I 3)` (an i32 heap-handle compare) in the condition of a
+           tail-recursive wasm loop whose other branch does `(+ n 1)` (i64). The compare's scratch slot must
+           not alias the arith slot (regression: forced one wasm local to two types). find(0) = 3.")
+  (input (do
+    (type N (I Int64) (J Int64))
+    (def (mk (: n Int64)) (N.I n))
+    (def (find (: n Int64)) (if (= (mk n) (mk 3)) n (find (+ n 1))))
+    (export find)))
+  (call find (: 0 Int64)) (output (: 3 Int64)))

@@ -3477,6 +3477,7 @@ pass	a repeated trapping divide inside one if-arm is not speculated past the bra
 pass	a repeated trapping divide inside one match arm is not hoisted past the match
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
+pass	a rest-pattern head binder read by an inlined match-arg callee resolves
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok and Err arms (via an imposed WIT world)
 pass	a resume outside any handler arm is rejected
@@ -3834,6 +3835,7 @@ pass	a runtime unsigned-byte subtraction traps below zero
 pass	a runtime value is constructed into a fixed-width segment and its length read
 pass	a runtime value narrowed to the segment width constructs without trapping
 pass	a runtime value under a const key binds through the map pattern
+pass	a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot
 pass	a runtime velocity multiplied by a time cancels back to the base dimension
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected
@@ -8310,6 +8312,7 @@ pass	xat1 TWO scalar main-local lets captured by the arm thread as extra spec pa
 pass	xat2 a mixed HEAP-list + scalar capture threads and answers but leaks the threaded list
 pass	xc1 xor by the same value twice cancels to the operand (runtime, constant, commuted, masked w)
 pass	xc2 a trapping discarded xor operand keeps its trap (the cancellation must not drop it)
+pass	xcl1 the arm applies a main-local CLOSURE per dispatch through the recursive specialization (leaks the threaded cell)
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 pass	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
@@ -8417,4 +8420,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	xcl1 the arm applies a main-local CLOSURE per dispatch through the recursive specialization (leaks the threaded cell)
