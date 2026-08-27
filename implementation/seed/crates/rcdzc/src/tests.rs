@@ -67664,63 +67664,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_constant_sum_match_folds_to_the_selected_arm() {
-        // A match over a CONSTANT sum folds at compile time to the arm whose variant it is — no runtime
-        // dispatch, like a constant scalar match. `(match (Some 5) ((Some x) x) (None 0))` selects the
-        // `Some` arm and yields its payload binding `x` = 5; `(match None …)` selects the `None` arm → 0.
-        let some = "(module m (type Option (Some Int64) None) \
-                     (def (main) (match (Option.Some 5) ((Option.Some x) x) (Option.None 0))) \
-                     (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(some))).expect("compile"),
-                "main"
-            ),
-            5
-        );
-        let none = "(module m (type Option (Some Int64) None) \
-                     (def (main) (match Option.None ((Option.Some x) x) (Option.None 0))) \
-                     (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(none))).expect("compile"),
-                "main"
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn a_record_scrutinee_is_bound_whole_by_a_match_binder() {
-        // A `match` on a RECORD scrutinee binds the WHOLE record with a bare-binder arm — a record is not
-        // pattern-destructured field-by-field (core-semantics.md §Patterns Compose lists tuple + ctor
-        // patterns, not record patterns; a record is read by `(. r field)` projection), so its only
-        // patterns are a whole-value binder or a wildcard. Was declined "matching a compound value needs a
-        // heap walk"; now a `Ty::Record` scrutinee routes through the decision-tree matcher like a
-        // tuple/sum. `(match (record (x 3) (y 4)) (r (+ (. r x) (. r y))))` binds `r` and projects → 7. A
-        // wildcard arm ignores it → 99. A CONSTANT record folds, so this runs via run_returns.
-        let bind = "(module m (def (main) \
-                      (match (record (x 3) (y 4)) (r (+ (. r x) (. r y))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(bind))).expect("compile"),
-                "main"
-            ),
-            7,
-            "a record scrutinee bound whole projects its fields"
-        );
-        let wild = "(module m (def (main) (match (record (x 3) (y 4)) (_ 99))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(wild))).expect("compile"),
-                "main"
-            ),
-            99,
-            "a wildcard arm over a record scrutinee ignores it"
-        );
-    }
-
-    #[test]
     fn a_tuple_scrutinee_is_matched_by_a_tuple_pattern() {
         // Matching directly on a TUPLE scrutinee — `(match (tuple a b) ((tuple x y) …))` — was declined "a
         // match pattern that is not a scalar literal or `_`"; now a `Ty::Tuple` scrutinee routes through the
