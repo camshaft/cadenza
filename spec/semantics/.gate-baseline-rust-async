@@ -525,6 +525,7 @@ pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members
+pass	a 16-bit bit-field packs a two-nibble-distinct value across the byte boundary big-endian
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order
@@ -1377,6 +1378,7 @@ pass	a byte read back from a runtime-list-built Bytes has the right value
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
+pass	a byte-closing bit-field composes with a following byte-aligned integer segment
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
@@ -5504,6 +5506,7 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	equality with zero selects eqz and computes correctly for both operand orders
 pass	er1 a Rational entry param in exact arithmetic
 pass	erp1 a Result entry param delivers its Ok payload
+pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
 pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
@@ -5841,6 +5844,7 @@ pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure form
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
+pass	lbr1 a List entry param relayed to a helper def that only borrows its length
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
 pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
@@ -6814,6 +6818,9 @@ pass	ss3 nested SAME-effect handlers with independent STRING states — inner se
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	ssc1 a String entry param captured by a local closure applied twice
+pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
+pass	ssc3 a String entry param read inside a handle body alongside a dispatch
 pass	ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split
 pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose
 pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
@@ -7558,6 +7565,7 @@ pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — varia
 pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf5 a handler threads a SET state and the final answer materializes its sorted head
 pass	xfr1 CLAMPED transfers between two accounts — each transfer moves min(requested, available) and answers the amount actually moved, the final draw reads the signed imbalance, and only one seed clamps the last transfer
@@ -7600,8 +7608,11 @@ todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers 
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
+todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
+todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
@@ -7613,6 +7624,7 @@ todo	a reducer performing a scalar host import threads the u64 result into the s
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
+todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq2 bare equality of String.to-bytes twins
@@ -7690,17 +7702,7 @@ todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three disp
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
-todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
-todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
-todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
-todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
-todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
-pass	ssc1 a String entry param captured by a local closure applied twice
-pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
-pass	ssc3 a String entry param read inside a handle body alongside a dispatch
-pass	lbr1 a List entry param relayed to a helper def that only borrows its length
