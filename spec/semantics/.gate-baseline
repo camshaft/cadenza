@@ -7904,3 +7904,5 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
 todo	read of malformed text is a coded reject, not a wrong value
+pass	rlv0 a returned 2-element list keeps exactly its own 2 cells alive
+pass	rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result
