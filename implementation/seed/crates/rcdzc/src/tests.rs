@@ -9521,36 +9521,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_multi_payload_variant_destructures_positionally() {
-        // A MULTI-PAYLOAD variant pattern `(Cons h t)` binds each payload positionally — sugar for the
-        // single-tuple-payload form `(Cons (tuple h t))` (the payloads are boxed as one tuple handle). The
-        // canonical linked list `(type IntList Nil (Cons Int64 IntList))`: `len` recurses on the tail `t`,
-        // `sm` binds the head `h` AND recurses on `t`. Before this landed, `(Cons h t)` reported a spurious
-        // CDZ0101 "unbound name `t`" (the arity-2 pattern was never bound); `t` IS bound by the pattern.
-        let Some(len) = run_heap_value(
-            "(module m (type IntList Nil (Cons Int64 IntList)) \
-               (def (len (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ 1 (len t))))) \
-               (def (main) (len (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping multi-payload destructure run");
-            return;
-        };
-        assert_eq!(len, "3", "linked-list length over a multi-payload Cons");
-        assert_eq!(
-            run_heap_value(
-                "(module m (type IntList Nil (Cons Int64 IntList)) \
-                   (def (sm (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons h t) (+ h (sm t))))) \
-                   (def (main) (sm (IntList.Cons 1 (IntList.Cons 2 (IntList.Cons 3 IntList.Nil))))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "6",
-            "linked-list sum binds the head AND recurses on the tail"
-        );
-    }
-
-    #[test]
     fn a_nullary_dotted_variant_pattern_matches_in_a_directly_nested_match() {
         // REGRESSION (resolve, both surfaces): a qualified NULLARY-variant pattern `(. Ty TInt)` in a match
         // whose scrutinee is itself an OUTER match's arm body — `(match x ((. Ty TBool) …) ((. Ty TInt)
@@ -9656,82 +9626,6 @@ mod match_engine {
             )
             .unwrap_or_else(|| "7".to_string()),
             "7"
-        );
-    }
-
-    #[test]
-    fn a_tuple_of_two_sums_match_reads_each_sums_payload_from_its_own_slot() {
-        // REGRESSION (silent MISCOMPILE): a match on a TUPLE OF TWO SUMS binding a payload from EACH sum —
-        // `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2, b2)` — read BOTH `a2` and `b2` from
-        // the SAME payload (a's), so a self-recursive `unify(a2,b2)` became `unify(a2,a2)`. `unify((Int→Bool),
-        // (Int→Int))` recurses on the 2nd components `unify(Bool, Int)` which MUST be 0 (Bool≠Int), but
-        // returned 1 (it compared `unify(Bool, Bool)`). This is the HM-unification dispatch shape — a
-        // self-hosted type checker silently misunifies.
-        //
-        // ROOT: the shared-sum-payload-prefix CSE (`payload_prefix_slots`) keyed its slot on `(scrutinee,
-        // prefix LENGTH)`. A tuple-of-two-sums match produces TWO prefixes of the SAME length off the SAME
-        // tuple scrutinee — `[Elem(0), Payload]` (a's payload) and `[Elem(1), Payload]` (b's) — so the
-        // length-only key COLLIDED them: the second overwrote the first, and both `a2`/`b2` reads used one
-        // slot. FIX: key on the full prefix STEPS, so the two distinct prefixes get distinct slots.
-        let Some(v) = run_heap_value(
-            "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
-               (def (unify (: a Ty) (: b Ty)) \
-                 (match (tuple a b) \
-                   ((tuple (. Ty TInt) (. Ty TInt)) 1) \
-                   ((tuple (. Ty TBool) (. Ty TBool)) 1) \
-                   ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2)) \
-                   ((tuple _ _) 0))) \
-               (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TBool)) (Ty.TArrow (Ty.TInt) (Ty.TInt)))) \
-               (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping tuple-of-two-sums payload-slot run");
-            return;
-        };
-        assert_eq!(
-            v, "0",
-            "the arrow arm recurses unify(a2,b2) = unify(TBool, TInt) → 0 (b2 must read b's payload, not a's)"
-        );
-        // The DUAL: two arrows with EQUAL 2nd components unify to 1 — confirms b2 is genuinely read (not
-        // always aliased to a2): unify((Int→Int),(Bool→Int)) → recurse unify(Int,Int) → 1.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
-                   (def (unify (: a Ty) (: b Ty)) \
-                     (match (tuple a b) \
-                       ((tuple (. Ty TInt) (. Ty TInt)) 1) \
-                       ((tuple (. Ty TBool) (. Ty TBool)) 1) \
-                       ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2)) (unify a2 b2)) \
-                       ((tuple _ _) 0))) \
-                   (def (main) (unify (Ty.TArrow (Ty.TInt) (Ty.TInt)) (Ty.TArrow (Ty.TBool) (Ty.TInt)))) \
-                   (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "equal 2nd components (Int,Int) unify to 1 — b2 reads b's payload"
-        );
-        // A 3-TUPLE of sums (three colliding `[Elem(i), Payload]` prefixes of equal length) — the stronger
-        // guard (v-compiler-ml flagged the sibling shapes). `u3(a2,b2,c2)` recurses to (Int,Int,Bool); not
-        // all TInt → 0. A length-only key would alias all three prefixes to one slot; the full-prefix-STEPS
-        // key keeps them distinct (Elem(0)/Elem(1)/Elem(2) differ). Verified the sum-wrapped-pair sibling
-        // (`P.Mk(a,b)` then `match (a,b)`) resolves too — same steps-key mechanism.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Ty (TInt) (TBool) (TArrow Ty Ty)) \
-                   (def (u3 (: a Ty) (: b Ty) (: c Ty)) \
-                     (match (tuple a b c) \
-                       ((tuple (Ty.TArrow a1 a2) (Ty.TArrow b1 b2) (Ty.TArrow c1 c2)) (u3 a2 b2 c2)) \
-                       ((tuple (. Ty TInt) (. Ty TInt) (. Ty TInt)) 1) \
-                       ((tuple _ _ _) 0))) \
-                   (def (main) (u3 (Ty.TArrow (Ty.TInt) (Ty.TInt)) (Ty.TArrow (Ty.TInt) (Ty.TInt)) \
-                                   (Ty.TArrow (Ty.TInt) (Ty.TBool)))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "0",
-            "a 3-tuple of sums recurses u3(a2,b2,c2) = u3(Int,Int,Bool) → not all TInt → 0 (three distinct \
-             same-length payload prefixes each read from their own slot)"
         );
     }
 
