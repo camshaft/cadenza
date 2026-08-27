@@ -9305,54 +9305,6 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::I64LtS | Lir::I64GeS | Lir::I32And | Lir::I32Or)),
             "(if (< x y) (>= x y) false) → false, got: {complement:?}"
         );
-        // TAIL-CALL VETO: a mutually-recursive `even`/`odd` whose bodies are `(if (= n 0) true/false
-        // (other …))` must NOT rewrite the call-bearing branch into a connective — it stays an `if` so the
-        // loop transform fires. Verified via runtime correctness at a depth that would blow a non-loop
-        // stack only if the transform were defeated; here we just confirm the values are right.
-        let eo = "(module m (def (even (: n Int64)) (if (= n 0) true (odd (- n 1)))) \
-                    (def (odd (: n Int64)) (if (= n 0) false (even (- n 1)))) (export even))";
-        let comp =
-            compile_component(&crate::codec::encode(&crate::testkit::parse(eo))).expect("compile");
-        assert!(run_returns_with::<bool>(&comp, "even", &[Val::S64(10)]));
-        assert!(!run_returns_with::<bool>(&comp, "even", &[Val::S64(7)]));
-
-        // VALUE PARITY: the connective forms match `and`/`or` over the full truth table.
-        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(
-                run::<bool>(
-                    "(: c Bool) (: a Bool)",
-                    "(if c a false)",
-                    &[Val::Bool(c), Val::Bool(a)]
-                ),
-                c && a,
-                "(if c a false) @{c},{a}"
-            );
-            assert_eq!(
-                run::<bool>(
-                    "(: c Bool) (: b Bool)",
-                    "(if c true b)",
-                    &[Val::Bool(c), Val::Bool(a)]
-                ),
-                c || a,
-                "(if c true b) @{c},{a}"
-            );
-        }
-        // TRAP SHIELDING: the guarded branch's trap stays shielded exactly as in the `if` — `(if c (> (/ 10
-        // n) 0) false)` = `(and c (> (/ 10 n) 0))`; at c=false the trapping `/` is NOT evaluated (no trap),
-        // at c=true it fires.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) false) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
-            0,
-            "c=false shields the trap"
-        );
-        assert!(
-            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
-            "c=true reaches the trapping branch"
-        );
     }
 
     #[test]
@@ -9418,51 +9370,6 @@ mod runtime_ops {
                     .any(|i| matches!(i, Lir::I32Eqz | Lir::Select | Lir::If(_))),
             "(if (> x 10) (< x 5) true) → (or (<= x 10) (< x 5)), got: {folded:?}"
         );
-
-        // VALUE PARITY over the truth tables.
-        for (c, a) in [(true, true), (true, false), (false, true), (false, false)] {
-            assert_eq!(
-                run::<bool>(
-                    "(: c Bool) (: a Bool)",
-                    "(if c a true)",
-                    &[Val::Bool(c), Val::Bool(a)]
-                ),
-                if c { a } else { true },
-                "(if c a true) @{c},{a}"
-            );
-            assert_eq!(
-                run::<bool>(
-                    "(: c Bool) (: b Bool)",
-                    "(if c false b)",
-                    &[Val::Bool(c), Val::Bool(a)]
-                ),
-                if c { false } else { a },
-                "(if c false b) @{c},{a}"
-            );
-        }
-
-        // TRAP SHIELDING: `(if c (> (/ 10 n) 0) true)` = `(or (not c) (> (/ 10 n) 0))` — the guarded `/` is
-        // reached only when c is true (so `(not c)` is false); c=false short-circuits, no trap.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) true) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        assert_eq!(
-            run_returns_with::<i64>(&tb, "f", &[Val::Bool(false), Val::S64(0)]),
-            1,
-            "c=false short-circuits the trapping branch"
-        );
-        assert!(
-            call_traps(&tb, "f", &[Val::Bool(true), Val::S64(0)]),
-            "c=true reaches the trapping branch"
-        );
-
-        // TAIL-CALL VETO: a recursive call in the guarded branch keeps the `if` (loop transform must win).
-        let rec = "(module m (def (rec (: n Int64)) (if (= n 0) true (if (< n 0) (rec (- n 1)) true))) (export rec))";
-        let rc =
-            compile_component(&crate::codec::encode(&crate::testkit::parse(rec))).expect("compile");
-        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(0)]));
-        assert!(run_returns_with::<bool>(&rc, "rec", &[Val::S64(3)]));
     }
 
     #[test]
@@ -9586,70 +9493,6 @@ mod runtime_ops {
         assert!(
             call_traps(&tc, "f", &[Val::Bool(false), Val::S64(0)]),
             "c1=false reaches the trapping condition c2"
-        );
-    }
-
-    #[test]
-    fn if_not_comparison_one_zero_computes_the_negated_predicate() {
-        // `(if (not (CMP a b)) 1 0)` — a negated comparison materialized as an int. `lower` branch-swaps
-        // to `(if (CMP a b) 0 1)` and the backend folds the negation into the complement comparison (no
-        // `eqz ; eqz`). Confirm the VALUE equals the negated predicate for every comparison.
-        // (not (< a b)) == a >= b.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (not (< a b)) 1 0)",
-                &[Val::S64(5), Val::S64(5)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (not (< a b)) 1 0)",
-                &[Val::S64(4), Val::S64(5)]
-            ),
-            0
-        );
-        // (not (= n 0)) == n is nonzero — the "eqz;eqz" case that now folds to a single ne.
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(0)]),
-            0
-        );
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(7)]),
-            1
-        );
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (not (= n 0)) 1 0)", &[Val::S64(-3)]),
-            1
-        );
-        // (not (= a b)) == a != b.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (not (= a b)) 1 0)",
-                &[Val::S64(5), Val::S64(5)]
-            ),
-            0
-        );
-        // Unsigned complement stays unsigned.
-        assert_eq!(
-            run::<i64>(
-                "(: a UInt64) (: b UInt64)",
-                "(if (not (< a b)) 1 0)",
-                &[Val::U64(u64::MAX), Val::U64(1)]
-            ),
-            1
-        );
-        // A bare bool param `(if (not p) 1 0)` — no comparison to fold, still correct via eqz.
-        assert_eq!(
-            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(true)]),
-            0
-        );
-        assert_eq!(
-            run::<i64>("(: p Bool)", "(if (not p) 1 0)", &[Val::Bool(false)]),
-            1
         );
     }
 

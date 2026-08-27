@@ -10893,3 +10893,60 @@
   (input (do (def (main (: u UInt64)) (= (% u 4) 0)) (export main)))
   (call main (: 16 UInt64)) (output (: true Bool))
   (call main (: 17 UInt64)) (output (: false Bool)))
+
+(case "an if with a false else-branch is the AND connective (truth table)"
+  (doc    "(if c a false) = c && a; (if c true a) = c || a. checksum (and-flag) + 10*(or-flag):
+           (T,T)→11, (T,F)→10, (F,T)→10, (F,F)→0.")
+  (input (do
+    (def (main (: c Bool) (: a Bool)) (+ (if (if c a false) 1 0) (* 10 (if (if c true a) 1 0))))
+    (export main)))
+  (call main (: true Bool) (: true Bool))   (output (: 11 Int64))
+  (call main (: true Bool) (: false Bool))  (output (: 10 Int64))
+  (call main (: false Bool) (: true Bool))  (output (: 10 Int64))
+  (call main (: false Bool) (: false Bool)) (output (: 0 Int64)))
+
+(case "the AND connective shields the guarded branch's trap (c=false does not evaluate it)"
+  (doc    "(if c (> (/ 10 n) 0) false) = (and c (> (/ 10 n) 0)): at c=false the trapping `/` is not
+           evaluated (no trap → 0); at c=true it fires.")
+  (input (do
+    (def (main (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) false) 1 0))
+    (export main)))
+  (call main (: false Bool) (: 0 Int64)) (output (: 0 Int64))
+  (call main (: true Bool) (: 0 Int64))  (trap "divide by zero"))
+
+(case "an if with a true then / false else-branch is the negated-condition connective (truth table)"
+  (doc    "(if c a true) = (or (not c) a); (if c false a) = (and (not c) a). checksum (first) + 10*(second):
+           (T,T)→1, (T,F)→0, (F,T)→11, (F,F)→1.")
+  (input (do
+    (def (main (: c Bool) (: a Bool)) (+ (if (if c a true) 1 0) (* 10 (if (if c false a) 1 0))))
+    (export main)))
+  (call main (: true Bool) (: true Bool))   (output (: 1 Int64))
+  (call main (: true Bool) (: false Bool))  (output (: 0 Int64))
+  (call main (: false Bool) (: true Bool))  (output (: 11 Int64))
+  (call main (: false Bool) (: false Bool)) (output (: 1 Int64)))
+
+(case "the OR (negated-condition) connective short-circuits the guarded branch's trap at c=false"
+  (doc    "(if c (> (/ 10 n) 0) true) = (or (not c) (> (/ 10 n) 0)): c=false short-circuits (true → 1,
+           the `/` not evaluated); c=true reaches the trapping `/`.")
+  (input (do
+    (def (main (: c Bool) (: n Int64)) (if (if c (> (/ 10 n) 0) true) 1 0))
+    (export main)))
+  (call main (: false Bool) (: 0 Int64)) (output (: 1 Int64))
+  (call main (: true Bool) (: 0 Int64))  (trap "divide by zero"))
+
+(case "a mutually-recursive even/odd guard computes correctly (the call-branch is not rewritten)"
+  (doc    "even/odd whose bodies are (if (= n 0) true/false (other (- n 1))): even(10)=true, even(7)=false.")
+  (input (do
+    (def (even (: n Int64)) (if (= n 0) true (odd (- n 1))))
+    (def (odd (: n Int64)) (if (= n 0) false (even (- n 1))))
+    (export even)))
+  (call even (: 10 Int64)) (output (: true Bool))
+  (call even (: 7 Int64))  (output (: false Bool)))
+
+(case "a recursive guard in a negated-connective shape stays correct"
+  (doc    "(rec n) = (if (= n 0) true (if (< n 0) (rec (- n 1)) true)): rec(0)=true, rec(3)=true.")
+  (input (do
+    (def (rec (: n Int64)) (if (= n 0) true (if (< n 0) (rec (- n 1)) true)))
+    (export rec)))
+  (call rec (: 0 Int64)) (output (: true Bool))
+  (call rec (: 3 Int64)) (output (: true Bool)))

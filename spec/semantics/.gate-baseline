@@ -1311,6 +1311,7 @@ pass	a bare literal grounded to a narrow width through a BITWISE spine is range-
 pass	a bare literal grounded to a narrow width through a DIVISION spine is range-checked
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a SUBTRACTION spine is range-checked
+pass	a bare literal in an if branch grounds to the narrow result width of the sibling branch
 pass	a bare literal that FITS its contextually-grounded narrow width through an arith spine computes
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
@@ -2736,6 +2737,7 @@ pass	a mutually tail-recursive even/odd over a large runtime count iterates in c
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+pass	a mutually-recursive even/odd guard computes correctly (the call-branch is not rewritten)
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -3344,6 +3346,7 @@ pass	a recursive generic function is instantiated at three distinct machine shap
 pass	a recursive generic function is instantiated at two different types
 pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument
+pass	a recursive guard in a negated-connective shape stays correct
 pass	a recursive linked-list fold leaks every heap node (O(N) reclaim gap)
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted
@@ -4956,7 +4959,9 @@ pass	an if whose both branches diverge is Never and always traps
 pass	an if whose branches do NOT refine to the same constant keeps both values
 pass	an if whose branches refine to the same constant collapses to that constant (value parity)
 pass	an if whose untaken arm would trap keeps the branch (no select of checked arith)
+pass	an if with a false else-branch is the AND connective (truth table)
 pass	an if with a narrow branch and a bare-literal branch computes at the narrow width
+pass	an if with a true then / false else-branch is the negated-condition connective (truth table)
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
@@ -7513,6 +7518,7 @@ pass	tb1 a def RETURNS a tuple of two draws — the caller destructures the mult
 pass	tdr1 a RESERVOIR gate with a ratcheting threshold — inflow raises the level, gate releases HALF truncating only above the threshold (which ratchets up by one after every release), and the LOWER starting threshold releases on the very first gate while the higher one holds, the runs re-converging on the final held gate
 pass	tel1 a TELESCOPE tracker with a slew-rate limit — track names a target locking within five degrees (else a nine-hundred miss with the gap's low digits), slew moves the azimuth toward the target by at most SEVEN degrees (a two-sided inline clamp of the signed difference) tagging an exact arrival, the read packs azimuth lock and arrival, and one seed starts within locking range so every row down to the read disagrees with the far-parked run
 pass	textually-identical performs are DISTINCT state-advancing reads, not a common subexpression
+pass	the AND connective shields the guarded branch's trap (c=false does not evaluate it)
 pass	the ARM ENCODES its scalar op argument into framed Bytes and resumes them — body decodes
 pass	the ARM decodes a Bytes op argument with a bin pattern and resumes a parsed field
 pass	the AST is a sum type deconstructible by pattern matching
@@ -7535,6 +7541,7 @@ pass	the LUHN checksum doubles alternate digits from the right with the nine-fol
 pass	the NULLARY scalar-newtype escape renders the nominal (: 5 W), agreeing with the param'd path
 pass	the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)
 pass	the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)
+pass	the OR (negated-condition) connective short-circuits the guarded branch's trap at c=false
 pass	the OR short-circuits on a true first operand — the second perform must NOT fire
 pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants
 pass	the SAME op name on two DIFFERENT effects — each qualified perform routes to its own handler
@@ -8320,4 +8327,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a bare literal in an if branch grounds to the narrow result width of the sibling branch
