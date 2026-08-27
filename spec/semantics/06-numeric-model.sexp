@@ -6370,6 +6370,15 @@
   (input  (. (Int 8) min))
   (output (: -128 Int8)))
 
+(case "the width constructor applied to 64 projects the signed 64-bit maximum"
+  (doc    "`(. (Int 64) max)` = 9223372036854775807 — `Int` is a type-constructor record; applying it to
+           64 REDUCES (via its `(meta apply)` builder) to a fresh width-64 integer module, off which `max`
+           projects, folding to the constant exactly like the pre-built `Int64.max`. Pins that the
+           width-indexed constructor at the DEFAULT width 64 denotes the same module as the named `Int64`,
+           the 64-bit companion of the `(Int 8)` max/min equivalence above.")
+  (input  (. (Int 64) max))
+  (output (: 9223372036854775807 Int64)))
+
 ; ── WRAP ELISION is value-transparent: a wrap whose source/value already fits the target is the identity ─
 ; `T.wrap x` truncates to the target width, but when the SOURCE already fits (same-sign, source width <=
 ; target) the mask/sign-extend is redundant and elided; likewise a nested `T.wrap(U.wrap x)` with the outer
