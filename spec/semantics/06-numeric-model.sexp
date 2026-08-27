@@ -10762,3 +10762,63 @@
   (call main (: -100 Int8) (: 27 Int8)) (output (: -127 Int8))
   (call main (: 100 Int8) (: -50 Int8)) (trap "overflow")
   (call main (: -100 Int8) (: 50 Int8)) (trap "overflow"))
+
+; -- comparison-against-bound / range folds value+trap parity (behavioral half migrated as a BATCH from
+; rcdzc a_comparison_against_a_narrow_types_own_bound_is_simplified,
+; a_comparison_against_a_derived_range_bound_is_simplified,
+; an_equality_against_a_value_outside_its_range_folds_to_a_constant, 2026-08-27; the white-box Lir
+; keep/fold inspections stay wasmtime-free rcdzc unit tests): a comparison whose result is decided by the
+; operand's provable range folds to the constant; a trapping operand is still evaluated.
+
+(case "an Int8 comparison against its own type bound folds to a constant"
+  (doc    "For any Int8 x: (<= x 127) and (>= x -128) are always true; (> x 127) and (< x -128) always
+           false. checksum = 1 + 100 = 101 for every x.")
+  (input (do
+    (def (main (: x Int8))
+      (+ (if (<= x 127) 1 0)
+         (+ (if (> x 127) 10 0)
+            (+ (if (>= x -128) 100 0)
+               (if (< x -128) 1000 0)))))
+    (export main)))
+  (call main (: 127 Int8))  (output (: 101 Int64))
+  (call main (: -128 Int8)) (output (: 101 Int64)))
+
+(case "a UInt8 comparison against its own type bound folds to a constant"
+  (input (do
+    (def (main (: x UInt8)) (+ (if (<= x 255) 1 0) (if (> x 255) 10 0)))
+    (export main)))
+  (call main (: 255 UInt8)) (output (: 1 Int64))
+  (call main (: 0 UInt8))   (output (: 1 Int64)))
+
+(case "a comparison against a derived (masked) range bound folds or stays per the range"
+  (doc    "`(& x 15)` ∈ [0,15]: (< .. 20) and (>= .. 0) always true; (> .. 15) always false; (< .. 10)
+           stays runtime. checksum: x=-1 (&15=15) → 11; x=8 → 1011 (the <10 flag); x=12 → 11.")
+  (input (do
+    (def (main (: x Int64))
+      (+ (if (< (& x 15) 20) 1 0)
+         (+ (if (>= (& x 15) 0) 10 0)
+            (+ (if (> (& x 15) 15) 100 0)
+               (if (< (& x 15) 10) 1000 0)))))
+    (export main)))
+  (call main (: -1 Int64)) (output (: 11 Int64))
+  (call main (: 8 Int64))  (output (: 1011 Int64))
+  (call main (: 12 Int64)) (output (: 11 Int64)))
+
+(case "an equality against a value outside the operand's range folds to false; in-range stays runtime"
+  (doc    "`(& x 15)` ∈ [0,15]: `(= (& x 15) 100)` is always false (100 outside the range); `(= (& x 15) 8)`
+           is runtime. x=200 (&15=8) → 10 (the =8 flag); x=199 (&15=7) → 0.")
+  (input (do
+    (def (main (: x Int64))
+      (+ (if (= (: (& x 15) Int64) 100) 1 0) (if (= (: (& x 15) Int64) 8) 10 0)))
+    (export main)))
+  (call main (: 200 Int64)) (output (: 10 Int64))
+  (call main (: 199 Int64)) (output (: 0 Int64)))
+
+(case "an unsatisfiable equality still traps on a divide-by-zero operand"
+  (doc    "`(% (/ 100 z) 3)` ∈ [-2,2] so `== 5` is unsatisfiable, but the fold must not discard the
+           trapping `(/ 100 z)`: z=0 divides by zero; z=2 → (/ 100 2)=50, %3=2, (= 2 5) false → 0.")
+  (input (do
+    (def (main (: z Int64)) (if (= (: (% (: (/ 100 z) Int64) 3) Int64) 5) 1 0))
+    (export main)))
+  (call main (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
