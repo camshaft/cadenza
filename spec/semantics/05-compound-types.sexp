@@ -17831,6 +17831,22 @@
   (call   main (: 500 Int64)) (output (: 49500 Int64))
   (live-objects 0))
 
+(case "Record.with over a runtime record: a PRESERVED sibling reads its source value"
+  (doc    "The preserved-field companion to the leak case above (which reads the UPDATED field): `Record.with`
+           over a genuinely-RUNTIME source rebuilds the result from synth `(. src field)` projections of the
+           UNCHANGED fields, so a preserved sibling must read the SOURCE value. `setx` updates `x` on the
+           runtime projection `(. o pos)` and `main` reads the PRESERVED `y` = 2 (`mk` recurses so the nested
+           record can't const-fold). Pins that Record.with preserves sibling values through the
+           fresh-from-projections rebuild — the `with` face of the project/without kept-field reads.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (= pos (record (= x 1) (= y 2))) (= vel 5)) (mk (- n 1))))
+            (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64))))
+              (Record.with (. o pos) #"x" 99))
+            (def (main (: v Int64)) (. (setx (mk v)) y))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))
+
 (case "Record.project over a runtime record leaves no live heap objects"
   (doc    "`(Record.project (mk 0) (a c))` keeps fields a,c of a runtime source record; reading `.a` (1),
            looped 500× -> 500. The owned-temporary source (borrowed by the projections) and the fresh

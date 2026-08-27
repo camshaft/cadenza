@@ -2202,74 +2202,6 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
     }
 }
 
-/// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
-/// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
-/// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted
-/// order — `(record (z 9) (a n))` — so `a` is heap slot 0 and `z` is slot 1; projecting `a` must read
-/// the runtime value (slot 0), not the literal 9. Earlier the member-access path folded only through a
-/// compile-time record and REJECTED a call-produced one with a self-contradictory CDZ0201 "requires a
-/// record, found (record …)"; this pins the runtime field read AND that it indexes by sorted position.
-/// To keep the record OPAQUE to the fold, it is built behind a RECURSIVE call: `is_recursive` declines
-/// the compile-time β-reduction, so `reduce_to_record_id` (and thus the member fold, incl. the cycle-33
-/// member-into-if fold) cannot see through `mk` — `main` reads `a` off the heap at run time. (Earlier
-/// this test used an `if` with branches differing in `a`, but cycle 33's member-into-if fold now sees
-/// through such an `if`, so an `if` no longer keeps a record opaque — a recursive call does.)
-#[test]
-fn record_with_over_a_runtime_record_builds_from_projections() {
-    use crate::testkit::parse;
-    // REGRESSION (row-op over a runtime record — breaker l6): `Record.with` whose TARGET is a RUNTIME record
-    // (a PROJECTION `(. o pos)`, a param, a call result — NOT a compile-time-visible record literal) used to
-    // DECLINE "a record row operation over a runtime record is not yet built" (lower only folded over a
-    // const `Core::Record`). FIX: build a fresh record whose UNCHANGED fields are synth `(. record field)`
-    // projections (per the solved `Ty::Record` field set) and whose named field carries the new value. Here
-    // `setx` takes a nested-record param and does `Record.with (. o pos) #x 99` on the PROJECTED sub-record —
-    // the exact l6 shape. `mk` recurses so the outer record can't fold; the inner Record.with is over the
-    // runtime projection. Reading the UPDATED field = 99, and a PRESERVED sibling `y` = its source value.
-    let updated = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (pos (record (x 1) (y 2))) (vel 5)) (mk (- n 1)))) \
-        (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64)))) \
-          (Record.with (. o pos) #\"x\" 99)) \
-        (def (main (: v Int64)) (. (setx (mk v)) x)) \
-        (export main))";
-    let preserved = "(module m \
-        (def (mk (: n Int64)) (if (= n 0) (record (pos (record (x 1) (y 2))) (vel 5)) (mk (- n 1)))) \
-        (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64)))) \
-          (Record.with (. o pos) #\"x\" 99)) \
-        (def (main (: v Int64)) (. (setx (mk v)) y)) \
-        (export main))";
-    // It COMPILES (was a decline) and imports the heap runtime (a genuine runtime record, not a fold).
-    let bytes = compile_component(&crate::codec::encode(&parse(updated)))
-        .expect("Record.with over a runtime record must compile, not decline");
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime record row-op builds on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found; skipping runtime Record.with run");
-        return;
-    };
-    let run = |src: &str, expect: &str, what: &str| {
-        let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["1".to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&b, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
-            cdz_run::Outcome::Trap(t) => panic!("runtime Record.with trapped (miscompile?): {t}"),
-        }
-    };
-    run(updated, "99", "the UPDATED field reads the new value");
-    run(
-        preserved,
-        "2",
-        "a PRESERVED sibling field reads its source value (fresh-record-from-projections)",
-    );
-}
-
 #[test]
 fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_preserved_field() {
     use crate::testkit::parse;
@@ -2301,25 +2233,9 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
         "the runtime operand of `Record.with` must be materialized ONCE, not re-emitted per preserved \
          field (found the operand's distinctive constant {occurrences} times, expected 1)"
     );
-    // And the value is still correct — the preserved field `a` reads the operand's `a` (mk's base = 1).
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found; skipping runtime materialize-once value check");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["1".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "1",
-            "a preserved field reads its source value through the materialized operand"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("runtime Record.with trapped: {t}"),
-    }
+    // The run VALUE (a preserved field reads its source through the materialized operand) is corpus-pinned
+    // in 05-compound-types.sexp ("Record.with over a runtime-produced record leaves no live heap objects"
+    // + the project/without kept-field cases); this test keeps only the corpus-inexpressible emit pin.
 }
 
 /// The CDZ0215 bare-field-name reject NAMES THE CORRECT SYMBOL SYNTAX and carries an applyable fix. Two
@@ -2407,10 +2323,11 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
     // uses) and materialize the shared operand ONCE (self-keyed `Core::Let`, the reviewer-49d6eec14
     // materialize-once fix, now shared via `materialize_row_op_operand`). Operand = `(mk (+ v 987654321))`,
     // a call (runtime path) whose arg carries a distinctive constant landing at the use site; the result
-    // keeps ≥2 fields, so a re-emit would duplicate the constant. Asserts: COMPILES (was a decline), value
-    // correct, and the operand's constant emits EXACTLY ONCE.
-    let runtime = find_runtime_wasm();
-    let check = |src: &str, expect_val: &str, what: &str| {
+    // keeps ≥2 fields, so a re-emit would duplicate the constant. Asserts: COMPILES (was a decline) and the
+    // operand's constant emits EXACTLY ONCE. (The run VALUES — project/without over a runtime record read a
+    // KEPT field = 1 — are corpus-pinned in 05-compound-types.sexp's runtime-row-op leak cases; this keeps
+    // only the corpus-inexpressible materialize-once emit pin.)
+    let check = |src: &str, what: &str| {
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|e| panic!("{what}: runtime row-op must compile, not decline: {e:?}"));
         let n = count_opcode(
@@ -2421,38 +2338,23 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
             n, 1,
             "{what}: the runtime operand must be materialized ONCE (found {n}, expected 1)"
         );
-        if let Some(rt) = runtime.clone() {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec!["1".to_string()],
-                runtime: Some(rt),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, expect_val, "{what}: value"),
-                cdz_run::Outcome::Trap(t) => panic!("{what}: runtime row-op trapped: {t}"),
-            }
-        }
     };
-    // `project` KEEPS {a, c} (2 fields, so ≥2 projections share the operand); read `a` = mk's base = 1.
+    // `project` KEEPS {a, c} (2 fields, so ≥2 projections share the operand).
     check(
         "(module m \
          (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
-        "1",
         "Record.project over a runtime record",
     );
-    // `without` DROPS {b}, keeping {a, c} (2 fields); read `a` = 1.
+    // `without` DROPS {b}, keeping {a, c} (2 fields).
     check(
         "(module m \
          (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
          (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a)) \
          (def (main (: v Int64)) (upd v)) \
          (export main))",
-        "1",
         "Record.without over a runtime record",
     );
 }
@@ -2469,7 +2371,6 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
     // since either of merge's two operands may be runtime independently). The distinctive per-operand
     // constants (987654321 / 111222333) each land at their operand's use site, so a re-emit would duplicate
     // them; assert each appears EXACTLY ONCE.
-    let runtime = find_runtime_wasm();
     // POP: `(Record.pop (mk (+ v 987654321)) a)` → `(a-value, {b,c})`; read tuple element 0 = popped a = 1.
     // The operand feeds BOTH the popped value's projection AND the rest record's ≥1 projection.
     let pop_src = "(module m \
@@ -2507,34 +2408,9 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
             "Record.merge: operand carrying {k} materialized ONCE (found {n}, expected 1)"
         );
     }
-    // Values (if the runtime is linkable): pop's popped `a` = 1, merge's `c` = 3.
-    let Some(rt) = runtime else {
-        eprintln!("runtime wasm not found; skipping merge/pop value checks");
-        return;
-    };
-    let run = |bytes: &[u8], expect: &str, what: &str| {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["1".to_string()],
-            runtime: Some(rt.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
-            cdz_run::Outcome::Trap(t) => panic!("{what}: runtime row-op trapped: {t}"),
-        }
-    };
-    run(
-        &pop_bytes,
-        "1",
-        "Record.pop over a runtime record: popped field value",
-    );
-    run(
-        &merge_bytes,
-        "3",
-        "Record.merge over runtime records: a field from the union",
-    );
+    // The run VALUES (pop's popped `a` = 1, merge's `c` = 3) are corpus-pinned in 05-compound-types.sexp
+    // (the runtime-row-op leak cases + `ce03 Record.merge of two RUNTIME-built records`); this keeps only
+    // the corpus-inexpressible per-operand materialize-once emit pins above.
 }
 
 /// §3c REDUCER-SHAPE de-risk: a runtime-built record with a STRING field and a BYTES field — the essence
