@@ -7600,6 +7600,8 @@ todo	bk5 Blake3-of-encode runtime composition compares equal across recomputatio
 todo	bo1 bare order over two runtime encode results compares content-lexicographically
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
+todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
 todo	cj03 Ast.print of a RUNTIME AST value renders

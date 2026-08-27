@@ -8019,6 +8019,8 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
+todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims

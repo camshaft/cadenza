@@ -77,6 +77,17 @@ fn a_let_bound_closure_capturing_a_performing_draw_folds_via_the_capture_once_ho
         twice.is_ok(),
         "capture-once closure applied twice must fold, not decline: {twice:?}"
     );
+    // NARROWING guard (cp1): when the capture-once closure `g` is CAPTURED by a nested closure `h` rather
+    // than applied directly, the hoist must NOT fire — re-resolving the hoisted tree cannot rebind the
+    // captured ref, so folding it would emit a silent wrong value (the un-narrowed hoist folded 61 instead
+    // of the correct 51). It must DECLINE cleanly (no artifact) until the nested-capture hygiene increment.
+    let nested_capture = try_compile_rust(
+        "(do (effect St (op next (-> Int64))) (def (main (: n Int64)) (handle St n ((next () s (resume s (+ s 1)))) (let ((g (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (let ((h (fn ((: y Int64)) (+ (g y) 1)))) (h 10))))) (export main))",
+    );
+    assert!(
+        nested_capture.is_err(),
+        "a capture-once closure captured by a nested closure must DECLINE (not fold a wrong value): {nested_capture:?}"
+    );
 }
 
 #[test]

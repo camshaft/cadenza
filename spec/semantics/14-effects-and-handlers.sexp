@@ -6817,6 +6817,39 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 80 Int64)))
 
+(case "cp3 two performing draws in one capture-once closure init fold once each, in order"
+  (doc    "Two performing inits in the SAME closure-value-let, applied once: (let ((f (let ((a (St.next))
+           (b (St.next))) (fn (x) (+ (* a x) b))))) (f 10)). The capture-once hoist lifts BOTH draws out to
+           wrap the binding, each threaded ONCE in order — a = seed n, b = n+1. At n=5: a=5, b=6, (f 10) =
+           5*10 + 6 = 56.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((f (let ((a (St.next)) (b (St.next))) (fn ((: x Int64)) (+ (* a x) b)))))
+                  (f 10))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64)))
+
+(case "cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment"
+  (doc    "Decline-witness (v-effects capture-once). The capture-once closure g is not applied directly but
+           CAPTURED by a wrapping closure h: (let ((g (let ((a (St.next))) (fn (x) (* a x))))) (let ((h (fn
+           (y) (+ (g y) 1)))) (h 10))). The hoist is NARROWED to fire only when the closure binder is applied
+           directly (ca1c/ca1m) — when a nested closure captures it, re-resolving the hoisted tree cannot
+           correctly rebind the captured ref, so this DECLINES cleanly (a todo) rather than fold a wrong
+           value (the un-narrowed hoist folded a silent-miscompile 61). Pinned with the CORRECT capture-once
+           oracle: a = St.next captured ONCE = seed n = 5; h(10) = g(10)+1 = 50+1 = 51. Flips to 51 when the
+           nested-capture resolution-hygiene increment lands.")
+  (input  (do
+            (effect St (op next (-> Int64)))
+            (def (main (: n Int64))
+              (handle St n ((next () s (resume s (+ s 1))))
+                (let ((g (let ((a (St.next))) (fn ((: x Int64)) (* a x)))))
+                  (let ((h (fn ((: y Int64)) (+ (g y) 1))))
+                    (h 10)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 51 Int64)))
+
 (case "TWO performs in an if condition both fold on the strict-first spine"
   (input  (do
             (effect Amb (op flip (-> Unit Int64)))
