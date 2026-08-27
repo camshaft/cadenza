@@ -12838,20 +12838,9 @@ mod runtime_ops {
             2,
             "`x>=5` must NOT decide `x>5` (x=5 is in range) — both compares stay, got: {ge_edge:?}"
         );
-        // VALUE parity: the boundary case (x=5) must take the LIVE inner else, proving the bound is inclusive
-        // at exactly 5 and the refinement did not shift it by one.
-        let le_fold_s = "(if (<= n 5) (if (< n 6) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(3)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(10)]), 3);
-        let le_edge_s = "(if (<= n 5) (if (< n 5) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(5)]), 2); // boundary: outer yes, inner no
-        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(3)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(10)]), 3);
-        let ge_edge_s = "(if (>= n 5) (if (> n 5) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(5)]), 2); // boundary: outer yes, inner no
-        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(7)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(0)]), 3);
+        // VALUE parity (fold: x=5→1/3→1/10→3; edge: x=5→2 at the boundary; edge-ge: x=5→2) is the corpus
+        // case "an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it"
+        // in 02-binding-and-control — this stays a white-box Lir compare-count check.
     }
 
     #[test]
@@ -12932,13 +12921,9 @@ mod runtime_ops {
             !lo.contains(&Lir::ConstI64(1)),
             "the dead inner branch `1` is eliminated by the point-fact fold, got: {lo:?}"
         );
-        // VALUE parity on both faces: the guarded x=5 takes the folded arm, any other x takes the outer else.
-        let hi_s = "(if (= n 5) (if (> n 3) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", hi_s, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", hi_s, &[Val::S64(4)]), 0);
-        let lo_s = "(if (= n 5) (if (> n 5) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", lo_s, &[Val::S64(5)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", lo_s, &[Val::S64(9)]), 0);
+        // VALUE parity (hi: x=5→1/4→0; lo: x=5→2/9→0) is the corpus case "an equality point fact folds an
+        // inner range comparison, both directions" in 02-binding-and-control — this stays a white-box Lir
+        // compare-count check.
     }
 
     #[test]
@@ -13013,14 +12998,9 @@ mod runtime_ops {
             !anded.contains(&Lir::ConstI64(1)),
             "the `and`-squeeze also reaches [5,5] and folds the inner `> 5` (1-arm dead), got: {anded:?}"
         );
-        // VALUE parity: only x=5 satisfies the squeeze, and there `> 5` is false → the inner else (2).
-        let nested_s = "(if (>= n 5) (if (<= n 5) (if (> n 5) 1 2) 3) 4)";
-        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(5)]), 2); // squeeze holds, > 5 false
-        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(4)]), 4); // fails >= 5
-        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(9)]), 3); // >= 5 but fails <= 5
-        let and_s = "(if (and (>= n 5) (<= n 5)) (if (> n 5) 1 2) 3)";
-        assert_eq!(run::<i64>("(: n Int64)", and_s, &[Val::S64(5)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", and_s, &[Val::S64(6)]), 3);
+        // VALUE parity (nested: x=5→2/4→4/9→3; anded: x=5→2/6→3) is the corpus case "a two-sided squeeze
+        // refines to an exact point and folds an inner comparison" in 02-binding-and-control — this stays a
+        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -13088,13 +13068,9 @@ mod runtime_ops {
             !pinned.contains(&Lir::ConstI64(2)),
             "the repeated `= 5`'s `2` arm is dead under the [5,5] point, got: {pinned:?}"
         );
-        // VALUE parity: only x=5 enters the then; there `= 3` is false (→2) and the repeated `= 5` is true (→1).
-        let out_s = "(if (= n 5) (if (= n 3) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", out_s, &[Val::S64(5)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", out_s, &[Val::S64(3)]), 0); // fails outer = 5
-        let pin_s = "(if (= n 5) (if (= n 5) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", pin_s, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", pin_s, &[Val::S64(7)]), 0);
+        // VALUE parity (outside: x=5→2/3→0; pinned: x=5→1/7→0) is the corpus case "an equality point fact
+        // decides a DIFFERENT equality test in the then branch" in 02-binding-and-control — this stays a
+        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -13170,13 +13146,9 @@ mod runtime_ops {
             !below.contains(&Lir::ConstI64(1)),
             "the `> -1` true-arm `1` is dead under the [-3,-3] point (signed, not magnitude), got: {below:?}"
         );
-        // VALUE parity: only x=-3 enters the then; `> -5` true (→1), `> -1` false (→2).
-        let above_s = "(if (= n -3) (if (> n -5) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", above_s, &[Val::S64(-3)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", above_s, &[Val::S64(-2)]), 0); // fails outer = -3
-        let below_s = "(if (= n -3) (if (> n -1) 1 2) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", below_s, &[Val::S64(-3)]), 2);
-        assert_eq!(run::<i64>("(: n Int64)", below_s, &[Val::S64(0)]), 0);
+        // VALUE parity (above: x=-3→1/-2→0; below: x=-3→2/0→0) is the corpus case "a NEGATIVE-constant point
+        // fact folds an inner comparison with the correct SIGN" in 02-binding-and-control — this stays a
+        // white-box Lir compare-count check.
     }
 
     #[test]
@@ -13223,10 +13195,8 @@ mod runtime_ops {
             !code.contains(&Lir::ConstI64(2)),
             "the point fact flows n->y through the let+arith, folding `> y 3` true and killing the `2` arm, got: {code:?}"
         );
-        // VALUE parity: only n=5 enters the then; there y=6 and `> y 3` holds → 1. Any other n → outer else → 0.
-        let s = "(if (= n 5) (let ((y (+ n 1))) (if (> y 3) 1 2)) 0)";
-        assert_eq!(run::<i64>("(: n Int64)", s, &[Val::S64(5)]), 1);
-        assert_eq!(run::<i64>("(: n Int64)", s, &[Val::S64(4)]), 0);
+        // VALUE parity (n=5→1, n=4→0) is the corpus case "a point fact flows through a let binding into a
+        // compare fold" in 02-binding-and-control — this stays a white-box Lir compare-check.
     }
 
     #[test]
