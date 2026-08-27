@@ -8856,3 +8856,6 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder
+pass	no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)
+pass	no2 TWO outer performs in one inner-arm resume value fold with ordered state advance
+pass	no3 the inner state read both AROUND and INSIDE the outer perform folds
