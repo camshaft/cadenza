@@ -1159,6 +1159,7 @@ pass	a String-to-String transformer op — a rope argument crosses in, a wrapped
 pass	a String.at result then reuse of the source does not double-free
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
+pass	a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot
 pass	a Symbol entry parameter compares to an interned constant
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
@@ -8318,6 +8319,7 @@ todo	nfp1 Ast.print renders a runtime +inf Ast.Float as inf.0
 todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
 todo	pak1 a peer op returning a (List of a user sum) crosses and its length is read
+todo	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
 todo	pcl1 a peer op returning a list crosses as a handle and its length is read
 todo	pcl2 a peer op returning a tuple with a variable-length list element crosses, both fields read
 todo	pcl3 an element of a peer-returned list is read and used
@@ -8333,6 +8335,10 @@ todo	pcs2 membership of a peer-returned set is queried for a present and an abse
 todo	pcs3 a peer op returning an EMPTY set crosses and reads length zero
 todo	pcs4 a peer-returned set unions with a locally-built set over the shared runtime
 todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
+todo	plr1 a peer LIST result escapes the entrypoint via the fused envelope
+todo	pnc1 a peer op returning a nested compound crosses as one handle and is projected
+todo	por1 a peer Option result escapes the entrypoint via the fused envelope
+todo	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope
 todo	read of malformed text is a coded reject, not a wrong value
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
 todo	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)
@@ -8355,4 +8361,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot
