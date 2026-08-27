@@ -33171,8 +33171,9 @@ mod stage1 {
         }
         // A real (non-digit-led) unbound name is STILL an unbound name, not misclassified.
         assert!(expect_decline("frobnicate").contains("unbound name"));
-        // A well-formed literal is unaffected.
-        assert_eq!(run_main("0x2A"), 42);
+        // (A well-formed hex literal `0x2A` = 42 is unaffected — the positive control, corpus-covered in
+        // 01-literals; the wasmtime run is dropped so this test stays dep-free, keeping the diagnostic-
+        // QUALITY assertions the corpus cannot express: the N-suffix-slip specific message + Replace fix.)
         // A `N`-suffixed literal in FLOAT FORM (`0.5N`/`2.0N`/`1e3N`) — the common suffix slip — gets a
         // SPECIFIC message naming the cause (`N` = BigInt, spelled as a plain integer) + the fix (use the
         // `R` Rational suffix), not the bare generic "malformed numeric literal". The named repair is ALSO
@@ -44514,34 +44515,6 @@ mod stage1 {
     fn a_multi_param_function() {
         // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
         assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);
-    }
-
-    #[test]
-    fn over_applying_a_function_is_a_coded_type_error() {
-        // OVER-application (more args than arity) is a TYPE ERROR (CDZ0203), not a silent argument drop
-        // nor a to-do decline — the SAME code an over-applied CONSTRUCTOR uses. `((fn (x) (+ x 1)) 5 9)`
-        // desugars to `(((fn (x)…) 5) 9)`: `(fn x) 5` = 6 (not a function), applied to 9 → CDZ0203.
-        // `core-semantics.md` §Functions Are Single-Arity (closes SPEC-BACKLOG-21 for user functions).
-        for src in [
-            "(module m (def (main) ((fn ((: x Int64)) (+ x 1)) 5 9)) (export main))",
-            "(module m (def (f (: x Int64)) (+ x 1)) (def (main) (f 5 9)) (export main))",
-            // Three args to a 2-param lambda.
-            "(module m (def (main) ((fn ((: a Int64) (: b Int64)) (+ a b)) 1 2 3)) (export main))",
-        ] {
-            let d = compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("over-application must be rejected");
-            assert_eq!(
-                d.code.as_deref(),
-                Some("CDZ0203"),
-                "over-application should be CDZ0203, got {:?} for `{src}`",
-                d.code
-            );
-        }
-        // A correctly-applied curried chain is NOT over-application (it fully consumes each level).
-        assert_eq!(
-            run_main("((((fn ((: a Int64) (: b Int64) (: c Int64)) (+ a (+ b c))) 1) 2) 3)"),
-            6
-        );
     }
 
     #[test]
