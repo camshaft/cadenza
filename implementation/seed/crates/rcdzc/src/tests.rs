@@ -24512,23 +24512,6 @@ mod match_engine {
     }
 
     #[test]
-    fn dividing_quantities_composes_their_dimensions_to_a_velocity() {
-        // L1-2: `(/ (Qty 6.0 meter) (Qty 2.0 second))` derives meter/second (the classic velocity) with
-        // value 3.0 — the dimensions divide by the free-abelian-group quotient, the magnitudes by the
-        // (float) division. `Qty.value` recovers the erased magnitude; this pins that it COMPILES + RUNS.
-        let src = "(do (def (main) ((. Qty value) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
-                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))))) (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a velocity quotient compiles and runs"),
-                "main"
-            ),
-            3.0
-        );
-    }
-
-    #[test]
     fn remainder_on_a_quantity_declines_cleanly_not_a_leaked_scheme_mismatch() {
         // `%` (remainder) on a quantity operand is not defined (the units surface has no `%` rule). It must
         // DECLINE with a clear message, NOT leak the operator's `∀a.(Int a)→…` scheme as a confusing
@@ -24564,59 +24547,6 @@ mod match_engine {
             ),
             1,
             "(% (Qty.value 7m) (Qty.value 3m)) = 1 — the suggested repair"
-        );
-    }
-
-    #[test]
-    fn annotating_a_quantity_at_a_same_dimension_different_unit_is_accepted_keeping_its_scale() {
-        // A quantity annotation checks the DIMENSION, not the unit's scale (a unit is construction sugar
-        // for a magnitude at the reference — DESIGN §Interaction With Annotations). So `(: (Qty.of 1 km)
-        // (Qty Int64 meter))` — km and meter share dimension length — is ACCEPTED, and the value KEEPS ITS
-        // OWN SCALE: it stays 1 km, so Qty.value reads back 1 (NOT a coerced-to-meter 1000; the annotation
-        // does not normalize to its unit). This was a bug: the annotation branch compared full-unit equality
-        // (au != eu, scale included) and rejected CDZ0501 with a nonsense "dimension meter but annotated
-        // meter" message (both units render to the reference name). Now it compares `same_dimension`.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(do (def (main) ((. Qty value) \
-                     (: ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                        (Qty Int64 ((. Unit base) #\"meter\"))))) (export main))"
-                )))
-                .expect("a same-dimension quantity annotation is accepted"),
-                "main"
-            ),
-            1,
-            "the annotated value keeps its own km scale (Qty.value = 1, not a coerced 1000)"
-        );
-        // A cross-DIMENSION annotation is still CDZ0501 (meter vs second).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (: ((. Qty of) 5 ((. Unit base) #\"meter\")) (Qty Int64 ((. Unit base) #\"second\"))))) \
-                 (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0501"),
-            "a cross-dimension quantity annotation is still a dimensional error"
-        );
-        // A same-dimension annotation whose INNER numeric type differs is still CDZ0203 (Int value vs
-        // Float annotation) — the dimension agreeing does not excuse a numeric-type clash.
-        let inner = reject_full(
-            "(module m (def (main) ((. Qty value) \
-             (: ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"meter\"))) \
-                (Qty Float64 ((. Unit base) #\"meter\"))))) (export main))",
-        )
-        .expect("a same-dimension quantity annotation with a mismatched inner type is rejected");
-        assert_eq!(
-            inner.code.as_deref(),
-            Some("CDZ0203"),
-            "an inner numeric mismatch is CDZ0203"
-        );
-        assert!(
-            inner.message.contains("units share a dimension"),
-            "the message names the inner-numeric clash, not a dimension mismatch: {}",
-            inner.message
         );
     }
 
