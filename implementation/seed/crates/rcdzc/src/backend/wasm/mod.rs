@@ -10880,6 +10880,13 @@ fn collect_module_used_ops(
         if select::def_drops_owned_param(db, body, &params, Some(def)) {
             used.insert("drop");
         }
+        // §5 self-loop-tail SUM-SPINE reclaim: a member tail-call carrying a self-consuming `Payload` arg
+        // makes `emit_loop_iteration` add a per-iteration `dup` (retain the carried payload) + `drop` (free
+        // the walked spine node). Import BOTH iff the reclaim fires — precise import/emit agreement.
+        if select::def_sum_spine_reclaims(db, body, &params, Some(def)) {
+            used.insert("dup");
+            used.insert("drop");
+        }
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         if layout.lifted_reached.get(code).copied().unwrap_or(true) {

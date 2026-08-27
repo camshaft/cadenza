@@ -13042,7 +13042,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 5))
 
 (case "a recursive sum recurses THROUGH a record-typed payload"
   (doc    "The recursion runs through a RECORD field rather than a tuple element: `(type Tree (Leaf Int64)
@@ -13206,7 +13206,7 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 1))
 
 (case "a four-level nested-constructor pattern with a generic user sum in the middle matches"
   (doc    "A deeply nested match pattern `(Some (Ok (Box.W (Some n))))` descends FOUR sum layers —
@@ -19127,7 +19127,7 @@
             (export main)))
   (call   main (: 5000 Int64) (: 5000 Int64))
   (output (: 10010 Int64))
-  (live-objects known-leak 5001))
+  (live-objects known-leak 1))
 
 (case "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
   (doc    "Corpus sums top out ~6 variants; 33 crosses the 32 boundary (i32-bitmask/5-bit-tag reps saturate; jump-table vs if-chain dispatch switches here). Faces: first/middle/last nullary discriminants, the PAYLOAD variant at index 32, and the wildcard covering the other 29.")
