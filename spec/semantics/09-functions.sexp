@@ -9568,3 +9568,17 @@
            (+ (+ 5 1) 1) = 7.")
   (input  (do (def (main) (let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))) (export main)))
   (output (: 7 Int64)))
+
+(case "a recursive match binder scrutinee is materialized once (linear, not 2^depth)"
+  (doc    "A match/pattern BINDER used more than once must NOT re-emit its whole scrutinee per use. When the
+           scrutinee is a RECURSIVE CALL, a binder used K times would re-run that call K times per recursion
+           level → 2^depth. `f` recurses to (Mk 1 1) at n=0; each arm matches (f (+ n 1)), binds `a`, and uses
+           it TWICE in (Mk a a). Materialized-once keeps it LINEAR: (f -60) is 60 self-calls → 1. A regression
+           to per-use re-emission is 2^60, which hits the run DEADLINE and TRAPS — so this case's RUN is the
+           linear-vs-exponential witness (the gate's run-deadline is the perf catch). Relocated from the
+           in-crate rcdzc a_recursive_match_binder_scrutinee_is_materialized_once.")
+  (input  (do (type P (Mk Int64 Int64))
+              (def (f (: n Int64)) (if (= n 0) (Mk 1 1) (match (f (+ n 1)) ((Mk a _) (Mk a a)))))
+              (def (main) (match (f -60) ((Mk x _) x))) (export main)))
+  (output (: 1 Int64))
+  (live-objects known-leak 59))
