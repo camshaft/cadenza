@@ -487,6 +487,53 @@ fn emit_list_children(child: &str, src_var: &str) -> String {
     )
 }
 
+/// Whether `ty` is (or transitively contains) a sum that references its OWN declaration through ANY payload
+/// position — INCLUDING through a collection (`List`/`Map`/`Set`) element/key/value. This is DISTINCT from
+/// [`super::enums::variant_is_recursive`], which excludes collections (a `Vec<Ast>` enum FIELD is finite-sized
+/// and needs no `Box`, so the Rust enum type is fine). But the native-rust value-form encode/decode WALKS the
+/// structure, and that walk recurses through the collection too — so a codec over a recursive type (`type Ast
+/// … (List (List Ast))`) emits UNBOUNDED rust that HANGS rustc. Detect it up front and decline: the native
+/// value codec of a recursive type is a later increment (the wasm-only-corpus doc), and an honest decline is
+/// far better than a compile hang. `seen` cycle-guards the sum-decl graph so the walk terminates.
+fn value_codec_type_is_recursive(
+    db: &mut Db,
+    ty: &Ty,
+    seen: &mut std::collections::BTreeSet<crate::ast::StructId>,
+) -> bool {
+    match ty.strip_nominal() {
+        Ty::Sum { decl, args, .. } => {
+            let decl_occ = *decl;
+            if !seen.insert(decl_occ) {
+                return true; // re-entering a sum decl already on this path = a cycle = recursive
+            }
+            let args = args.clone();
+            let payload_occs: Vec<crate::ast::StructId> = match db.type_decl_by_occ(decl_occ) {
+                Some(d) => d.variants.iter().flat_map(|v| v.payloads.clone()).collect(),
+                None => Vec::new(),
+            };
+            let rec = payload_occs.iter().any(|&occ| {
+                crate::eval::typeval_of(db, occ)
+                    .is_some_and(|pty| value_codec_type_is_recursive(db, &pty, seen))
+            }) || args
+                .iter()
+                .any(|a| value_codec_type_is_recursive(db, a, seen));
+            seen.remove(&decl_occ);
+            rec
+        }
+        Ty::List(e) | Ty::Set(e) => value_codec_type_is_recursive(db, e, seen),
+        Ty::Map(k, v) => {
+            value_codec_type_is_recursive(db, k, seen) || value_codec_type_is_recursive(db, v, seen)
+        }
+        Ty::Tuple(elems) => elems
+            .iter()
+            .any(|e| value_codec_type_is_recursive(db, e, seen)),
+        Ty::Record(fields) => fields
+            .values()
+            .any(|t| value_codec_type_is_recursive(db, t, seen)),
+        _ => false,
+    }
+}
+
 fn emit_value_form(db: &mut Db, ty: &Ty, val_expr: &str) -> Result<String, Reject> {
     match ty.strip_nominal() {
         Ty::Bool => Ok(format!(
@@ -3287,6 +3334,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // round-trip corpus cases need BOTH, so they stay todo until decode lands. See `native-rust-r2-value-codec`.
         Core::ValueEncode { value, .. } => {
             let vty = type_of(db, value);
+            // A RECURSIVE type's value-form encode walks unbounded depth; the native-rust static emit would
+            // generate rust that HANGS rustc (the recursion runs through a collection payload, e.g. `Ast =
+            // … (List (List Ast))`). Decline up front — the recursive-type value codec is a later increment.
+            if value_codec_type_is_recursive(db, &vty, &mut std::collections::BTreeSet::new()) {
+                return Err(Reject::decline(
+                    "Value.encode native rust: recursive-type value codec not yet wired (would generate non-terminating rust)",
+                ));
+            }
             // The `<type-node>` half of the `(: <value> <type-node>)` frame — computed under a scoped
             // `name_ctx` borrow (released before the `&mut db` `emit` call below).
             let tnode = {
@@ -3324,6 +3379,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     ));
                 }
             };
+            // A RECURSIVE target type's value-form reconstruct walks unbounded depth → non-terminating rust
+            // that HANGS rustc (recursion through a collection payload). Decline up front (later increment).
+            if value_codec_type_is_recursive(db, &target, &mut std::collections::BTreeSet::new()) {
+                return Err(Reject::decline(
+                    "Value.decode native rust: recursive-type value codec not yet wired (would generate non-terminating rust)",
+                ));
+            }
             let b = emit(db, bytes, env, ctx)?;
             // PEEL the `(: <value> <type-node>)` frame the encoder wraps the document in: the decoded root
             // is the 3-element `(: value type)` list, so extract child[1] (the bare value node) and
