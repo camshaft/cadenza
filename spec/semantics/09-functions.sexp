@@ -9412,3 +9412,52 @@
     (def (main (: a Int64) (: n Int64)) (f a n))
     (export main)))
   (call main (: 5 Int64) (: 3 Int64)) (output (: 30 Int64)))
+
+; ── breaker batch 520: the generic-transformer closure-result family (siblings of the tracked
+; issue BUG-generic-transformer-closure-compound-result-grounds-elements-to-unit, routed
+; v-inference). Full 7-cell matrix probed on all three targets; the E0308 miscompile cells
+; (structural aggregate result × discarding consumer × two domains: tuple/record/List/nested)
+; CANNOT enter the corpus until fixed (they red the rust battery) — the map lives in the issue
+; file. Pinned here: the three cells that are green/attributable today. All carry the
+; recursive-sum known-leak (the rsl1 class): these clauses flip to 0 on the reclaim fix.
+; gtx2/gtx3 are rust/rust-async clean DECLINES today (over-conservative per the issue analysis —
+; the programs are well-typed); when v-inference lands the element-type tie they should flip to
+; rust PASS with value 5 / 2 — but as leak-clause cases they are wasm-only rows, so that
+; acceptance is checked via the issue file's matrix, not baseline flips.
+
+(case "gtx2 a generic transformer's tuple-result closure with a consumer that PROJECTS the element (vars pinned by the consumer body)"
+  (input (do
+(type GIter (Nil) (Cons a (GIter a)))
+(def (from-list xs) (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+(def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest)))))
+(def (gmap it f) (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f)))))
+(def (sumfirst it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ (. h 0) (sumfirst rest)))))
+(def (main) (+ (sumfirst (gmap (from-list (list 1 2)) (fn (x) (tuple x x)))) (count (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
+(export main)))
+  (call main)
+  (output (: 5 Int64))
+  (live-objects known-leak 32))
+
+(case "gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer"
+  (input (do
+(type GIter (Nil) (Cons a (GIter a)))
+(def (from-list xs) (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+(def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest)))))
+(def (gmap it f) (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f)))))
+(def (main) (count (gmap (from-list (list 1 2)) (fn (x) (tuple x x)))))
+(export main)))
+  (call main)
+  (output (: 2 Int64))
+  (live-objects known-leak 16))
+
+(case "gtx5 a generic transformer's Option-result closure with a discarding consumer at two domains (the nominal-sum cell is green on every target)"
+  (input (do
+(type GIter (Nil) (Cons a (GIter a)))
+(def (from-list xs) (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+(def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest)))))
+(def (gmap it f) (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f)))))
+(def (main) (+ (count (gmap (from-list (list 1 2)) (fn (x) (Option.Some x)))) (count (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
+(export main)))
+  (call main)
+  (output (: 4 Int64))
+  (live-objects known-leak 32))

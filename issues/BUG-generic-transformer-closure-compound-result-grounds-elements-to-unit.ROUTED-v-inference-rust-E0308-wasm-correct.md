@@ -48,3 +48,35 @@ The transformer-closure result-element tie in infer/unify/resolve — the same p
 ## Meanwhile
 
 corpus-mig-1 keeps the rcdzc test `a_generic_transformer_maps_a_closure_to_an_aggregate_result_at_two_distinct_domains` **wasm-only** (uses cdz_run/wasm) — no corpus regression. It cannot migrate to a 3-backend corpus run case until this is fixed. When fixed: verify the rust emit produces `GIter<(i64,i64)>`, then migrate as a 3-backend run case.
+
+## Family map (breaker, 2026-08-27) — sibling cells probed on all three targets
+
+Seven-cell matrix around the repro, each cell `cdz check`-clean and wasm-correct (whole family
+carries the recursive-sum known-leak, 16–34 cells — the rsl1 class, separate issue):
+
+| cell | closure result | consumer | domains | rust / rust-async |
+|---|---|---|---|---|
+| gtx1 (= repro) | tuple | discards | 2 | **E0308 miscompile** |
+| gtx2 | tuple | PROJECTS `(. h 0)` | 2 | clean decline (todo) |
+| gtx3 | tuple | discards | 1 | clean decline (todo) |
+| gtx4 | record | discards | 2 | **E0308 miscompile** |
+| gtx5 | `(Option.Some x)` | discards | 2 | **PASS (value 4)** |
+| gtx6 | list | discards | 2 | **E0308 miscompile** |
+| gtx7 | nested tuple | discards | 2 | **E0308 miscompile** |
+
+Refinements to the root-cause model:
+- The miscompile covers every STRUCTURAL aggregate result (tuple, record, list, nested tuple) —
+  not tuples specifically.
+- A NOMINAL generic-sum result (`Option.Some x`) resolves correctly and passes end-to-end —
+  observed behavior; consistent with the element-type tie succeeding through a nominal
+  constructor application but not through structural constructors (hypothesis, not verified in
+  the inference source).
+- Both the projecting-consumer and single-domain variants fall into the CLEAN-DECLINE cell
+  (over-conservative per the analysis above — the programs are well-typed; wasm proves 5 / 2).
+  A fix that ties the element types should flip gtx2/gtx3 decline→pass alongside un-breaking
+  the four E0308 cells.
+- rust and rust-async agree cell-for-cell.
+
+gtx2/gtx3/gtx5 are pinned in `spec/semantics/09-functions.sexp` (wasm-only rows — the leak
+clauses keep them out of the rust battery). The four E0308 cells are reproducible by dropping
+the corresponding `(fn (x) …)` into the repro above.
