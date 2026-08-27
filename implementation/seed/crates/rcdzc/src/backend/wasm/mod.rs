@@ -9746,8 +9746,19 @@ fn try_bare_entry_param_component(
         // declines a `Ty::Sum`, so the WIT type comes from the Db-aware `spilled_result_wit_type` (`option<T>`).
         if let Some((_slot, vts, rebuild)) = fixed_shape_option_scalar_arg(db, gty) {
             let wit = crate::backend::wasm::host::spilled_result_wit_type(db, gty)?;
-            // The canonical flattening of `option<T>`/`result<…>` is `(disc: i32, payload…)` — a leading disc
-            // then the payload leaf/leaves (`vts`). `emit_sum_field` reads the disc at the running leaf cursor.
+            // SCOPE = genuine `option<T>` ONLY. `fixed_shape_option_scalar_arg` also classifies a
+            // `result<ok,err>`, but `spilled_result_wit_type` resolves a Result to a WIT `variant` (two payload
+            // cases), NOT the built-in `result` — a type whose flattening/disc convention DISAGREES with the
+            // option-shaped `SumArgRebuild` lift built here, so admitting it emitted an INVALID component
+            // (a `result<scalar,scalar>` param). Until a dedicated Result entry-param sub-slice ties the WIT
+            // type and the lift together, DECLINE a Result param: fall through to the honest sum decline
+            // (`ty_natural_wit`→None below would also decline, but returning early keeps the reason clear).
+            // erp1 pins the Result rung; eo1-3/eop1 (Option) stay green.
+            if !matches!(wit, crate::wit_world::WitType::Option(_)) {
+                return None;
+            }
+            // The canonical flattening of `option<T>` is `(disc: i32, payload…)` — a leading disc then the
+            // payload leaf/leaves (`vts`). `emit_sum_field` reads the disc at the running leaf cursor.
             param_vts.push(ValType::I32.byte());
             for vt in &vts {
                 param_vts.push(vt.byte());
