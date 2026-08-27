@@ -3681,6 +3681,7 @@ pass	a runtime right shift by the bit width or more traps
 pass	a runtime rope slice maps scalar offsets to bytes across the seam for a multi-byte scalar
 pass	a runtime same-dimension multiply derives the SQUARED dimension and computes the area
 pass	a runtime same-dimension quotient is dimensionless and its value joins bare integer arithmetic
+pass	a runtime scrutinee gates through a multi-guard chain and falls through to the wildcard
 pass	a runtime scrutinee keeps the full switch and nested dispatch
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
