@@ -2012,6 +2012,18 @@
   (output (: (map (1 1) (2 2) (3 3)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
+(case "a map built at run time with list values escapes with its nested value type"
+  (doc    "The nested-value-type companion of the runtime Map escape above: a `(Map Int64 (List Int64))` — a
+           map whose VALUES are themselves lists — renders the nested value type in the parametric Map frame,
+           not a bare `List`. `build` inserts (k=n v=(list n)) for n in {2,1} → entries in canonical KEY order
+           `(1 (list 1)) (2 (list 2))`. Pins that a nested type node in the Map frame's VALUE position (a
+           recursive `Framed` frame) survives the boundary — the map analogue of the nested list-of-lists.")
+  (input  (do
+            (def (build m n) (if (< n 1) m (build (Map.insert m n (list n)) (- n 1))))
+            (def (main) (build Map.empty 2)) (export main)))
+  (output (: (map (1 (list 1)) (2 (list 2))) (Map Int64 (List Int64))))
+  (live-objects known-leak 5))
+
 ; The runtime-built maps above stop at a handful of keys — small enough that the CHAMP never splits a
 ; node, so the trie machinery (multi-level descent, per-level bitmap indexing, node splitting on
 ; collision-prefix growth, and structural sharing under churn) is unexercised. These force it: a

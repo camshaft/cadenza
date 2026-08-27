@@ -2474,6 +2474,7 @@ pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a map KEYED by a user sum looks up by the variant
 pass	a map as a map value: a nested lookup queries the inner map through the outer lookup
 pass	a map built at run time escapes to the host as its value form
+pass	a map built at run time with list values escapes with its nested value type
 pass	a map built from a BigInt sum key and a BigInt.of-over-arithmetic key has both entries
 pass	a map can be a key, compared by its value
 pass	a map can hold a map as a value
