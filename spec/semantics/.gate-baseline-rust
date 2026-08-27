@@ -5641,7 +5641,6 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
-pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
@@ -6591,6 +6590,9 @@ pass	nested quasiquote: a double unquote at level 2 decrements back to active an
 pass	nested quasiquote: a level-1 unquote splices even while a level-2 one is deferred (same template)
 pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosing binding
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
+pass	nested recursive performers THROUGH A NON-RECURSIVE PASS-THROUGH also fold (the pass-through inlines to the recursive leaf)
+pass	nested recursive performers through a non-recursive intermediate — out-state threads across the hop
+pass	nested recursive performers — an inner walk's out-state threads across the outer recursion boundary
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption

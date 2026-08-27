@@ -1713,10 +1713,11 @@
            out-state every outer iteration (a silent wrong value: 9 not 7). The multi-value marking now
            recognizes that a recursive-effectful callee (`inner`) whose out-state feeds an enclosing recursive
            def's self-call must be threaded, and both are upgraded to multi-value — so the shape no longer
-           SILENTLY MISCOMPILES. Threading it to the final value is the full cross-def recursion-boundary fold
-           (a later increment): until then it DECLINES cleanly (the honest not-yet-reducible todo) rather than
-           the pre-fix silent wrong value. Correct value pinned: main(1)=7, main(0)=2. Each walk folds ALONE
-           (the compositions is the gap). Uniform on all 3 backends.")
+           SILENTLY MISCOMPILES. Threading it to the final value — the full cross-def recursion-boundary fold —
+           now FOLDS: `thread_returning_tuple`'s let-dispatch arm routes a `(let ((d (E.op))) (self-call …))`
+           body (was dropped to the leaf arm, which orphaned `d`) so the let-init perform's binder + advance
+           thread, and the cross-def callee's out-state projects across `outer`'s recursion under multi-value
+           mode. Correct value pinned: main(1)=7, main(0)=2. Each walk also folds ALONE. Uniform on all 3 backends.")
   (input  (do
             (effect S (op depth (-> Int64)) (op tick (-> Int64)))
             (def (inner (: k Int64) (: acc Int64))
@@ -1734,16 +1735,15 @@
   (call   main (: 1 Int64)) (output (: 7 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
 
-(case "nested recursive performers THROUGH A NON-RECURSIVE PASS-THROUGH also reach the sound decline floor"
+(case "nested recursive performers THROUGH A NON-RECURSIVE PASS-THROUGH also fold (the pass-through inlines to the recursive leaf)"
   (doc    "The INDIRECTION face of finding #19: `outer`'s self-call reaches the recursive performer `inner`
            through a NON-RECURSIVE helper `via` (`(def (via k) (inner k 0))`, outer adds `(via d)`). The
-           recursion-boundary marking + decline guard are TRANSITIVE (follow non-recursive helpers, depth-general
-           per breaker s19f), so this reaches the SAME sound decline as the direct case — instead of the earlier
-           silent wrong value (9 not 7) that slipped past the direct-only checks. A STRAIGHT-LINE performing
-           helper that reaches NO recursive performer (a `pair-draw` doing two ticks) is NOT flagged and folds
-           normally (breaker s19g) — only a helper transitively reaching a recursive performer declines. Correct
-           value pinned main(1)=7 / main(0)=2; declines cleanly (todo) until the value-computing cross-def fold
-           lands. Uniform 3 backends.")
+           cross-def recursion-boundary fold now handles it: the let-dispatch arm threads `(let ((d (S.depth)))
+           (outer … (via d)))`, `via` inlines to `(inner d 0)`, and `inner`'s out-state projects across `outer`'s
+           recursion under multi-value mode — folding to the correct value instead of the earlier silent wrong
+           value (9 not 7) the direct-only checks let slip. A STRAIGHT-LINE performing helper that reaches NO
+           recursive performer (a `pair-draw` doing two ticks) folds by the ordinary inline (breaker s19g).
+           Correct value pinned main(1)=7 / main(0)=2. Uniform 3 backends.")
   (input  (do
             (effect S (op depth (-> Int64)) (op tick (-> Int64)))
             (def (inner (: k Int64) (: acc Int64))
