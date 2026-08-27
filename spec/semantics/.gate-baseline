@@ -8045,3 +8045,6 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	shr1 a let-bound inner list referenced twice in a returned list stays one shared object (four cells)
+pass	shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)
+pass	shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)
