@@ -7805,6 +7805,42 @@
             (export main)))
   (output (: 22 Int64)))
 
+(case "a perform in an if-CONDITION with a NON-performing else selected folds via the one-shot refold"
+  (doc    "E5 two-hole with the leading hole in an if-CONDITION composing with distribution. `(if (< (Amb.flip)
+           5) (+ 1 (Amb.flip)) 0)` performs in the condition and the then-branch. The refold takes the
+           condition flip as the leading hole → `C = (if (< □ 5) (+ 1 (Amb.flip)) 0)`; `(resume 10 s)`
+           re-reduces `C[10]` where `(< 10 5)` = false, so the ELSE branch (pure 0) is taken and the
+           then-branch perform never runs → 0; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 0)` = 1.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a perform in an if-CONDITION with a PERFORMING taken branch folds via refold + distribution"
+  (doc    "The true direction of the condition-and-branch two-hole, where the taken (then) branch DOES perform:
+           `(< 10 50)` = true → the then-branch `(+ 1 (Amb.flip))` is served by handler distribution →
+           `(+ 1 (+ 1 10))` = 12; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 12)` = 13.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0)))
+            (export main)))
+  (output (: 13 Int64)))
+
+(case "an abortive perform in a MATCH ARM body is branch-local and folds per arm"
+  (doc    "A match on a pure scrutinee whose selected arm performs an ABORT — `(match x (0 (Bail.bail 7))
+           (_ 42))` under an abortive `(bail (n) s n)` handler. The abort is branch-local: x=0 → the arm
+           aborts to the arm value 7; x=1 → the wildcard arm yields the pure 42 (no perform).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle Bail 0 ((bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: 42 Int64)))
+
 (case "a handler arm that resumes NON-tail folds through a pure continuation containing an effect-free call"
   (doc    "The pure one-hole continuation `C` may contain a NON-RECURSIVE user CALL whose body reaches no
            effect — not only primitive operators. Cadenza is strict, so the call evaluates its argument

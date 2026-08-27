@@ -45763,39 +45763,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_perform_in_a_match_scrutinee_threads_state() {
-        // E-fold `match` arm (the analogue of the `if` arm). A tail-resumptive perform in a match SCRUTINEE
-        // — `(match (Get.next) (0 100) (_ 200))` — threads state: the scrutinee reads the current counter,
-        // then the match dispatches on the resume value. Seed 0 → `Get.next` reads 0 → arm `0` → 100; seed 5
-        // → 200 (wildcard). Before the `Match` thread arm this DECLINED (no arm → the whole handle refused).
-        let zero = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (match (Get.next) (0 100) (_ 200)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(zero)))
-                    .expect("a perform in a match scrutinee threads state"),
-                "main"
-            ),
-            100
-        );
-        // A perform in an ARM BODY threads the post-scrutinee state; an abort in an arm is branch-local.
-        let arm_abort = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main (: x Int64)) (handle Bail 0 ((bail (n) s n)) (match x (0 (Bail.bail 7)) (_ 42)))) (export main))";
-        let comp = compile_component(&crate::codec::encode(&parse(arm_abort)))
-            .expect("an abortive match arm folds per-arm");
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(0)]),
-            7,
-            "x=0 → the arm aborts to 7"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
-            42,
-            "x=1 → the wildcard arm yields 42"
-        );
-    }
-
-    #[test]
     fn an_e5_pure_one_hole_continuation_admits_an_effect_free_user_call() {
         // E5 EXTENSION: the pure one-hole continuation `C` may now contain a NON-RECURSIVE user call whose
         // body reaches NO effect — not only primitive operators. `C = (dbl □)` where `dbl x = x*2` is
@@ -45895,40 +45862,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(both_non_tail))).is_err(),
             "a non-tail inner handle with a foreign perform sibling stays declined (needs frames)"
-        );
-    }
-
-    #[test]
-    fn a_perform_in_the_condition_and_a_branch_folds_via_the_one_shot_refold() {
-        // E5 TWO-HOLE with the leading hole in an if-CONDITION composing with distribution: `(if (< (Amb.flip)
-        // 5) (+ 1 (Amb.flip)) 0)` performs in BOTH the condition and the then-branch. The one-shot refold
-        // takes the CONDITION flip as the leading hole → `C = (if (< □ 5) (+ 1 (Amb.flip)) 0)`; `(resume 10
-        // s)` re-reduces `C[10] = (if (< 10 5) (+ 1 (Amb.flip)) 0)` where the condition is now the constant
-        // `(< 10 5)` = false, so the ELSE branch (pure `0`) is taken and the then-branch perform never runs →
-        // 0; the outer arm `(+ 1 (resume 10 s))` → `(+ 1 0)` = 1. (Was a clean decline; the refold turns the
-        // condition hole into a leading strict hole, and the now-constant condition selects a branch.)
-        let false_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(false_dir)))
-                    .expect("a condition-and-branch two-hole folds via the refold"),
-                "main"
-            ),
-            1
-        );
-        // The TRUE direction, where the taken (then) branch DOES perform: `(< 10 50)` = true → `(+ 1
-        // (Amb.flip))` (distribution serves the branch perform) → `(+ 1 (+ 1 10))` = 12; outer arm `(+ 1 12)`
-        // = 13. The refold composes with handler distribution for the surviving branch perform.
-        let true_dir = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 50) (+ 1 (Amb.flip)) 0))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(true_dir)))
-                    .expect("a condition-and-taken-branch two-hole folds via the refold"),
-                "main"
-            ),
-            13
         );
     }
 
