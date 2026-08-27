@@ -10838,3 +10838,48 @@
            255>>4 = 15, & 7 = 7.")
   (input (do (def (main (: x UInt8)) (& (>> x 4) 7)) (export main)))
   (call main (: 255 UInt8)) (output (: 7 UInt8)))
+
+; -- non-aliased signed widening + narrow constant-operand dead-bound + power-of-two divisibility
+; (behavioral half of the width/divisibility subgroup migrated from rcdzc, 2026-08-27, run/traps
+; wasmtime sweep; the divisibility Lir mask-vs-rem inspection stays a wasmtime-free rcdzc unit test).
+
+(case "nwc1 a produced non-aliased signed width crosses widened and sign-extended (Int24 wrap)"
+  (doc    "A `(Int 24)` result we produce has no component primitive, so it crosses WIDENED to the next
+           aliased signed width, SIGN-extended (not reinterpreted as a large unsigned): (Int24.wrap -5)
+           = -5. Pins the widening picks the SAME signedness.")
+  (input ((. (Int 24) wrap) (: -5 Int64)))
+  (output (: -5 (Int 24))))
+
+(case "ncb1 a narrow signed (+ a 1) by a constant drops the dead lower bound, keeps the upper edge"
+  (doc    "`(+ a 1)` on Int8 moves up only, so the r<min check is provably dead and dropped, but the
+           r>max check stays: 126+1=127 fits, 127+1=128 traps, and MIN+1=-127 must NOT trap (dropping the
+           dead lower check must not admit a false trap at the safe edge).")
+  (input (do (def (main (: a Int8)) (+ a 1)) (export main)))
+  (call main (: 126 Int8))  (output (: 127 Int8))
+  (call main (: 127 Int8))  (trap "overflow")
+  (call main (: -128 Int8)) (output (: -127 Int8)))
+
+(case "ncb2 a narrow signed (- a 1) by a constant drops the dead upper bound, keeps the lower edge"
+  (doc    "`(- a 1)` on Int8 moves down only: -127-1=-128 fits, -128-1=-129 traps the lower edge, and
+           MAX-1=126 must NOT trap. A negative constant flips the direction: (+ a -1) traps only below.")
+  (input (do (def (main (: a Int8)) (- a 1)) (export main)))
+  (call main (: -127 Int8)) (output (: -128 Int8))
+  (call main (: -128 Int8)) (trap "overflow")
+  (call main (: 127 Int8))  (output (: 126 Int8)))
+
+(case "dpt1 divisibility by two agrees with the true modulo across signs and Int64.min"
+  (doc    "`(= (% x 2) 0)` (the even test) must agree with the true signed `%`-then-`==0` for negatives
+           and Int64.min (signed `%` is sign-of-dividend, but divisibility is sign-agnostic): 8→true,
+           7→false, -8→true, -7→false, MIN→true.")
+  (input (do (def (main (: x Int64)) (= (% x 2) 0)) (export main)))
+  (call main (: 8 Int64))                    (output (: true Bool))
+  (call main (: 7 Int64))                    (output (: false Bool))
+  (call main (: -8 Int64))                   (output (: true Bool))
+  (call main (: -7 Int64))                   (output (: false Bool))
+  (call main (: -9223372036854775808 Int64)) (output (: true Bool)))
+
+(case "dpt2 unsigned divisibility by a power of two agrees with the true modulo"
+  (doc    "`(= (% u 4) 0)` over UInt64: 16→true, 17→false.")
+  (input (do (def (main (: u UInt64)) (= (% u 4) 0)) (export main)))
+  (call main (: 16 UInt64)) (output (: true Bool))
+  (call main (: 17 UInt64)) (output (: false Bool)))
