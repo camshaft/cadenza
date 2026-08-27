@@ -438,15 +438,13 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | _, _ => .unsupported "eval: non-integer operand to arithmetic"
   | _, _ => .unsupported s!"eval: malformed {op}"
 
-/-- A unary constructor `(Ctor e)` (Some/Ok/Err): evaluate `e`, wrap the value; a trap/diverges/
-unsupported inner outcome propagates. -/
+/-- A unary constructor `(Ctor e)` (Some/Ok/Err): wrap the payload, storing a non-value payload as a
+deferred `poison` (spec Q2: a sum payload defers exactly like a tuple/record field — a
+constructed-but-never-observed payload never surfaces its trap). Construction always yields a value. -/
 partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Array Nat)
     (wrap : Value → Value) : Outcome :=
   match children[1]? with
-  | some eId =>
-    match evalNode m env defaultIntTy fuel eId with
-    | .value v => .value (wrap v)
-    | other => other
+  | some eId => .value (wrap (outcomeToValue (evalNode m env defaultIntTy fuel eId)))
   | none => .unsupported "eval: malformed unary constructor"
 
 /-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element, storing a non-value
@@ -585,17 +583,76 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
     | other => other
   | _, _ => .unsupported "eval: malformed projection"
 
+/-- Match a SUB-pattern (a constructor's payload position) against `payload`, evaluating `body` on a
+match. `none` = no match (try the next arm); `some o` = decided (body result, a forced non-value, or
+`unsupported`). Modeled sub-patterns: wildcard `_`, bare-name binder (binds the payload LAZILY, so an
+unused binder never forces it — spec Q2), and a scalar literal (forces + compares the payload). A nested
+constructor sub-pattern is not modeled → `unsupported`. -/
+partial def matchSubPat (m : Module) (env : Env) (ty : IntTy) (fuel : Nat)
+    (subPatId : Nat) (payload : Value) (bodyId : Nat) : Option Outcome :=
+  match m.nodes[subPatId]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name b) =>
+      if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)
+      else some (evalNode m ((b, (fun _ => observeShallow payload), Option.none) :: env) ty fuel bodyId)
+    | some pl =>
+      match Value.ofLeaf pl with
+      | some litV =>
+        match observeDeep payload with
+        | .value fp => if fp == litV then some (evalNode m env ty fuel bodyId) else none
+        | other => some other
+      | none => some (.unsupported "eval: match sub-pattern is a non-scalar leaf")
+    | none => some (.unsupported "eval: match sub-pattern leaf out of range")
+  | _ => some (.unsupported "eval: nested constructor sub-pattern not modeled")
+
 /-- `(match scrutinee (pat body)… )` — try arms in order (spec: the scrutinee IS an observation point,
 core-semantics.md:287). Modeled patterns: a scalar LITERAL (matches if the scrutinee equals it — forces
-+ observes the scrutinee), a WILDCARD `_` (matches, scrutinee not forced), and a bare-name BINDER (binds
-the scrutinee LAZILY like a `let`, so an unused binder does not force/observe it, then evaluates the
-body). A LIST pattern (constructor/tuple/record decomposition) is not modeled yet → the whole match is
-`unsupported` (a sound skip — we cannot soundly decide arm selection past a pattern we can't test).
-Pending v-spec-oracle's answer on the compound-observation set. -/
++ observes the scrutinee), a WILDCARD `_` (matches, scrutinee not forced), a bare-name BINDER (binds the
+scrutinee LAZILY like a `let`), and a SUM-CONSTRUCTOR pattern `(Some p)`/`(Ok p)`/`(Err p)`/`(None _)`
+(forces the scrutinee to inspect its tag, then matches the payload sub-pattern — binding the payload
+LAZILY per spec Q2). A tuple/record/user-sum decomposition pattern is not modeled → the whole match is
+`unsupported` (a sound skip — arm selection cannot be soundly decided past an untestable pattern). -/
 partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children : Array Nat) : Outcome :=
   match children[1]? with
   | none => .unsupported "eval: malformed match (no scrutinee)"
   | some scrutId =>
+    -- `none` = arm did not match, try the next; `some o` = this arm decided the match.
+    let matchArm := fun (patId bodyId : Nat) =>
+      match m.nodes[patId]? with
+      | some (Node.atom lid) =>
+        match m.leaves[lid]? with
+        | some (Leaf.name b) =>
+          if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)          -- wildcard: no force
+          else some (evalNode m ((b, (fun _ => evalNode m env defaultIntTy fuel scrutId), Option.none) :: env)
+                       ty fuel bodyId)                                          -- binder: lazy bind
+        | some pl =>
+          match Value.ofLeaf pl with                                           -- scalar literal
+          | some litV =>
+            match evalNode m env defaultIntTy fuel scrutId with
+            | .value sv => match observeDeep sv with
+                           | .value fsv => if fsv == litV then some (evalNode m env ty fuel bodyId) else none
+                           | other => some other
+            | other => some other
+          | none => some (.unsupported "eval: match literal pattern is a non-scalar leaf")
+        | none => some (.unsupported "eval: match arm pattern leaf out of range")
+      | some (Node.list pc) =>
+        -- sum-constructor pattern `(Ctor subpat)`: inspect the scrutinee's tag (observed shallowly)
+        match m.headName? (Node.list pc), pc[1]? with
+        | some ph, some subPatId =>
+          match evalNode m env defaultIntTy fuel scrutId with
+          | .value sv0 =>
+            match observeShallow sv0 with
+            | .value sv =>
+              if ph == "Some".toUTF8 then (match sv with | .some p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
+              else if ph == "Ok".toUTF8 then (match sv with | .ok p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
+              else if ph == "Err".toUTF8 then (match sv with | .err p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
+              else if ph == "None".toUTF8 then (match sv with | .none => matchSubPat m env ty fuel subPatId .unit bodyId | _ => none)
+              else some (.unsupported "eval: match tuple/record/user-sum pattern not modeled")
+            | other => some other
+          | other => some other
+        | _, _ => some (.unsupported "eval: malformed constructor pattern")
+      | none => some (.unsupported "eval: match arm pattern node out of range")
     let rec tryArms (arms : List Nat) : Outcome :=
       match arms with
       | [] => .unsupported "eval: match fell through (non-exhaustive / no modeled arm matched)"
@@ -604,30 +661,9 @@ partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (childr
         | some (Node.list ac) =>
           match ac[0]?, ac[1]? with
           | some patId, some bodyId =>
-            match m.nodes[patId]? with
-            | some (Node.list _) =>
-              -- constructor/tuple/record pattern — cannot decide arm selection → skip whole match
-              .unsupported "eval: match constructor/compound pattern not modeled"
-            | some (Node.atom lid) =>
-              match m.leaves[lid]? with
-              | some (Leaf.name b) =>
-                if b == "_".toUTF8 then evalNode m env ty fuel bodyId          -- wildcard: no force
-                else                                                            -- binder: lazy bind
-                  evalNode m ((b, (fun _ => evalNode m env defaultIntTy fuel scrutId), Option.none) :: env)
-                    ty fuel bodyId
-              | some pl =>
-                -- scalar-literal pattern: force + observe the scrutinee, compare structurally
-                match Value.ofLeaf pl with
-                | some litV =>
-                  match evalNode m env defaultIntTy fuel scrutId with
-                  | .value sv =>
-                    match observeDeep sv with
-                    | .value fsv => if fsv == litV then evalNode m env ty fuel bodyId else tryArms rest
-                    | other => other
-                  | other => other
-                | none => .unsupported "eval: match literal pattern is a non-scalar leaf"
-              | none => .unsupported "eval: match arm pattern leaf out of range"
-            | none => .unsupported "eval: match arm pattern node out of range"
+            match matchArm patId bodyId with
+            | some o => o
+            | none => tryArms rest
           | _, _ => .unsupported "eval: malformed match arm"
         | _ => .unsupported "eval: match arm is not a list"
     tryArms (children.extract 2 children.size).toList
