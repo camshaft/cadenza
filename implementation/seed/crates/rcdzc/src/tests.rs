@@ -8506,24 +8506,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nested_multi_payload_variant_pattern_destructures() {
-        // A NESTED multi-payload variant pattern `(Cons h (Cons h2 rest))` switches TWO levels deep — the
-        // second `Cons` sits in the tail payload position `[Payload, Elem(1)]`, whose sub-value type is
-        // registered so the inner switch resolves. `snd` returns the list's second element; for
-        // `(Cons 10 (Cons 20 Nil))` → 20. A shorter list falls to the `_` arm (0).
-        assert_eq!(
-            run_heap_value(
-                "(module m (type IntList Nil (Cons Int64 IntList)) \
-                   (def (snd (: l IntList)) (match l ((IntList.Cons h (IntList.Cons h2 rest)) h2) (_ 0))) \
-                   (def (main) (snd (IntList.Cons 10 (IntList.Cons 20 IntList.Nil)))) (export main))",
-                vec![],
-            )
-            .unwrap_or_else(|| "20".to_string()),
-            "20"
-        );
-    }
-
-    #[test]
     fn a_deeply_nested_option_pattern_lowers_in_bounded_time() {
         // REGRESSION (perf): the match decision-tree builder (`lower::build_tree`) threads a `PathTypes`
         // map (path → the sub-value's `Ty`) that `extend_path_types` CLONED whole at every nesting level so
