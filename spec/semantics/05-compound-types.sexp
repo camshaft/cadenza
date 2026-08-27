@@ -19961,3 +19961,16 @@
   (call main (: 5 Int64))
   (output (: (list 5 6) (List Int64)))
   (live-objects 2))
+
+; ── Reclaim: Map.remove drops the owned boxed key temporary it only borrows (migrated from rcdzc) ──
+(case "Map.remove drops the owned boxed key temporary it only borrows (large-int key, no leak)"
+  (doc    "`Map.remove` BORROWS its key, so an OWNED heap key temporary passed to it must be dropped after
+           the borrow. A large-int key `100000000000` (> fixnum max) `op_box_int` heap-allocs such an owned
+           box; removing the sole key yields an empty map (Map.len 0), and the boxed key temporary is
+           reclaimed at the borrow's end -> live-objects 0 (a fixnum key like 5 boxes inline with no heap
+           temporary, the trivial baseline). A missing drop would leave the un-dropped boxed key -> a leak;
+           this pins the borrow-then-drop of the owned key.")
+  (input  (do
+            (def (main) (Map.len (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000)))
+            (export main)))
+  (call   main) (output (: 0 Int64)) (live-objects 0))

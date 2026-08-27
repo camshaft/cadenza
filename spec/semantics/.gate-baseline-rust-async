@@ -245,6 +245,7 @@ pass	MUTUALLY-recursive MODULE-exported performers are both homed by the importe
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
 pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove by a slice-view key drops the flat-keyed entry
+pass	Map.remove drops the owned boxed key temporary it only borrows (large-int key, no leak)
 pass	Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry
 pass	Map.swap and Map.take canonicalize a runtime COMPOUND (tuple) key on their value-yielding paths
 pass	Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body
