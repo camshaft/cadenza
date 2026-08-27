@@ -5951,18 +5951,29 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
                 } else {
                     crate::unify::freshen_free(&at_raw, &mut fresh)
                 };
-                let _ = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx());
-                // A PASS-THROUGH CLOSURE argument — `(fn (s) s)` identity — types `(-> Any Any)` bottom-up,
-                // so unifying it into the param arrow pins the DOMAIN (from a sibling arg, e.g. `it`'s
-                // element) but leaves the RESULT a free var (the body cannot type `s` bottom-up). Once the
-                // param's domain is pinned in `subst`, RE-SOLVE the closure body under that domain
-                // (`solved_lambda_arrow_under`) so the identity result takes its domain's type, then unify
-                // the recovered arrow back into the param — tying the callee's result var (`gmap`'s `b`,
-                // hence its `Iter b` result) to the closure's now-concrete result. Only fires for a lambda
-                // arg whose bottom-up type still has a hole AND whose param-arrow domain is now concrete;
-                // a fully-typed closure or an unrecoverable one is untouched (byte-identical). This is the
-                // call-site half of the transformer closure tie — the domain tie (scheme solve) pins the
-                // domain, this pins the pass-through result.
+                // A CLOSURE argument — `(fn (s) s)` identity, `(fn (x) (tuple x x))` aggregate — types
+                // bottom-up with an `Any` at every unannotated-param position (`(-> Any Any)`, `(-> Any
+                // (Tuple Any Any))`). The DOMAIN is pinned by a sibling arg (`gmap`'s `it` element), and
+                // once it is concrete we RE-SOLVE the closure body UNDER that domain
+                // (`solved_lambda_arrow_under`) to recover the closure's fully-CONCRETE arrow — tying the
+                // callee's result var (`gmap`'s `b`, hence its `Iter b` result) to the closure's real
+                // result. Unify THAT recovered arrow, NOT the bottom-up `at`:
+                //
+                // Unifying `at` first POISONS `b` for an AGGREGATE result. A SCALAR-`Any` result
+                // (`(-> Any Any)`) leaves `b` free — `unify(?b, Any)` hits the `Any`-poison arm
+                // (`unify.rs`), no bind — so the recovery below could refine it. But a COMPOUND result
+                // (`(Tuple Any Any)`) is NOT bare `Any`: `unify(?b, (Tuple Any Any))` binds `?b :=
+                // (Tuple Any Any)`, and then the recovery's re-unify against `(Tuple Int64 Int64)` cannot
+                // refine the inner `Any`s (Any-absorbs). So the OUTER call node types `(GIter (Tuple Any
+                // Any))`, the tuple elements ground to `Unit`, and a consumer specialized off THIS node
+                // type (`count(gmap …)`) takes `GIter<((),())>` while `gmap` itself specializes
+                // `GIter<(i64,i64)>` → rust E0308 (wasm erases the element, so it is a rust-visible
+                // miscompile). Unifying the recovered CONCRETE arrow instead binds `b` to `(Tuple Int64
+                // Int64)` directly. The recovered arrow's domain equals the pinned domain `at` would
+                // supply, so skipping `at` here loses nothing. Falls back to `at` when recovery can't fire
+                // (domain not yet concrete, non-lambda arg, or an unrecoverable body) — byte-identical to
+                // the prior path for every non-recovered shape.
+                let mut tied_via_recovery = false;
                 if at.has_any()
                     && let Some(node) = args.get(i).copied()
                     && let (Some(lam_params), Some(lam_body)) = (
@@ -5979,7 +5990,11 @@ fn apply_scheme_to_args(db: &mut Db, scheme: &Scheme, args: &[StructId]) -> Ty {
                         && !solved.has_any()
                     {
                         let _ = crate::unify::unify(&mut subst, &param, &solved, &db.name_ctx());
+                        tied_via_recovery = true;
                     }
+                }
+                if !tied_via_recovery {
+                    let _ = crate::unify::unify(&mut subst, &param, &at, &db.name_ctx());
                 }
                 cur = *result;
             }
