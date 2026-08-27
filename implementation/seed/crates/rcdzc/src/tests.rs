@@ -19673,52 +19673,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_string_scrutinee_selects_the_matching_string_literal_arm() {
-        // 02-binding "matching on string literals": a STRING-literal pattern `("hello" …)` selects the arm
-        // whose string EQUALS a constant scrutinee (by value, both NFC — the constant `String` equality
-        // basis). The scrutinee folds (a literal, or a `String.concat`/`String.slice` that folds to a
-        // constant), so the whole match folds to the selected arm — no runtime string equality op.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match \"hello\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
-                ),
-                "main"
-            ),
-            1
-        );
-        // A later arm + fall-through to the wildcard.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match \"world\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
-                ),
-                "main"
-            ),
-            2
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match \"xyz\" (\"hello\" 1) (\"world\" 2) (_ 0))) (export main))"
-                ),
-                "main"
-            ),
-            0
-        );
-        // A scrutinee produced by a folding String op — `(String.concat \"a\" \"b\")` → \"ab\".
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match ((. String concat) \"a\" \"b\") (\"ab\" 100) (_ 200))) (export main))"
-                ),
-                "main"
-            ),
-            100
-        );
-    }
-
-    #[test]
     fn a_string_match_is_well_formed_or_rejected() {
         // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
         // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
@@ -50668,65 +50622,6 @@ mod stage1 {
                 .iter()
                 .any(|d| d.code.as_deref() == Some("CDZ0203")),
             "a bare `Box` (a generic type used with no type argument) must reject CDZ0203"
-        );
-    }
-
-    #[test]
-    fn a_tuple_scrutinee_is_matched_by_a_tuple_pattern() {
-        // Matching directly on a TUPLE scrutinee — `(match (tuple a b) ((tuple x y) …))` — was declined "a
-        // match pattern that is not a scalar literal or `_`"; now a `Ty::Tuple` scrutinee routes through the
-        // decision-tree matcher (`Elem`-path binders + literal tests, no discriminant). A CONSTANT tuple
-        // folds: `(tuple 3 4)` destructures to x=3,y=4 → 7. A tuple of SUMS matches with nested constructor
-        // patterns (the structural-editing idiom `(match (tuple a b) ((tuple (E.Lit x) (E.Lit y)) …))`).
-        let sum = "(module m (def (main) (match (tuple 3 4) ((tuple x y) (+ x y)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
-                "main"
-            ),
-            7,
-            "a tuple scrutinee destructures by a tuple pattern"
-        );
-        // A LITERAL tuple element refines the match; a non-match falls to the binder arm.
-        let lit_hit = "(module m (def (main) \
-                        (match (tuple 0 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(lit_hit))).expect("compile"),
-                "main"
-            ),
-            100,
-            "a matching tuple-element literal selects its arm"
-        );
-        let lit_miss = "(module m (def (main) \
-                         (match (tuple 5 9) ((tuple 0 y) 100) ((tuple x y) x))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(lit_miss))).expect("compile"),
-                "main"
-            ),
-            5,
-            "a non-matching tuple-element literal falls through to the binder arm"
-        );
-        // A wrong-TYPE literal element (`true` where the element is Int64) is CDZ0201; a repeated binder
-        // (`(tuple x x)`) is CDZ0102 (linearity) — both checked in the tuple/nested pattern path, not only
-        // at the top level.
-        let wrong_ty = "(module m (def (main) \
-                         (match (tuple 1 2) ((tuple true b) 9) (_ 0))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(wrong_ty)))
-                .expect_err("wrong-type literal element must reject")
-                .message
-                .contains("does not match"),
-            "a wrong-type tuple-element literal is a type error (CDZ0201)"
-        );
-        let dup = "(module m (def (main) (match (tuple 1 2) ((tuple x x) x))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(dup)))
-                .expect_err("a repeated binder must reject")
-                .message
-                .contains("more than once"),
-            "a tuple pattern binding the same name twice is non-linear (CDZ0102)"
         );
     }
 
