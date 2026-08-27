@@ -1012,6 +1012,27 @@ pub fn emit(
         });
     }
 
+    // MAX-FLAT-PARAMS GUARD: a function whose params flatten to MORE than the canonical-ABI limit (16 core
+    // values) must pass them MEMORY-INDIRECT — the caller stores the params to a linear-memory area and
+    // passes a single pointer, which the lift reads back. This emit writes the FLAT form regardless, so past
+    // 16 it produces an INVALID component (the worst outcome: a compile-success-only check reads a malformed
+    // artifact as green). Until the indirect convention is emitted, DECLINE honestly at >16 rather than
+    // emitting garbage. Each boundary param here is one scalar/handle = one flattened core value, so
+    // `params.len()` IS the flattened count. (Rust targets have no flat limit and compile these fine.)
+    for be in &boundary {
+        if be.params.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
+            return Err(Reject::decline(format!(
+                "export `{}` has {} boundary parameters; the canonical ABI passes more than {} flat \
+                 parameters memory-indirect, which this backend does not yet emit — a >{}-parameter export \
+                 is declined rather than emitting an invalid component",
+                be.name,
+                be.params.len(),
+                crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS,
+                crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS,
+            )));
+        }
+    }
+
     // §3c COMPILER-PLATFORM SEPARATION — a provider export member the TARGET WIT WORLD declares as a
     // `list<u8>`-in/out boundary crosses as CANONICAL VALUE-FORM bytes. This takes PRECEDENCE over the
     // host-import / plain-provider paths below: `emit_bytes_provider_member` handles BOTH a pure reducer AND
@@ -9723,6 +9744,13 @@ fn try_bare_entry_param_component(
     }
     // Require at least one memory-bearing leaf (a scalar-only export is the existing bare path, untouched).
     if !mem_leaf_params.iter().any(Option::is_some) {
+        return None;
+    }
+    // MAX-FLAT-PARAMS GUARD (mirror of the boundary-loop guard): a String/Bytes/list param flattens to two
+    // core values (ptr, len), so past 8 such params (or fewer, mixed with scalars) the flattened arity
+    // exceeds the canonical-ABI limit (16) and needs the memory-indirect convention this path does not emit.
+    // Decline rather than produce an invalid component.
+    if param_vts.len() > crate::backend::wasm::wit_ctype::MAX_FLAT_PARAMS {
         return None;
     }
     // SLICE 1 = BORROWED memory-bearing params only. A param the def only borrows is reclaimed by the wrapper
