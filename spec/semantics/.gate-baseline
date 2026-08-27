@@ -8151,3 +8151,5 @@ pass	hwp1 a UInt8-width list entry param read inside a handle body composes with
 todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
 pass	oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)
 pass	oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise
+pass	oqc3 an extraction-Some payload consumed by a RECURSIVE callee leaks the retain (the true Stage-B negative witness)
+pass	oqc4 an extraction-Some payload passed as an op ARGUMENT balances at the dispatch boundary
