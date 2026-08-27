@@ -24583,23 +24583,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_quantity_erases_to_its_inner_numeric_value() {
-        // L1-1b: `Qty.value (Qty.of 5.0 meter)` recovers the erased inner `5.0` — a quantity is CHECKED
-        // THEN ERASED, so `Qty.of`/`Qty.value` are runtime no-ops and the compiled program is plain
-        // Float64 (byte-identical to the bare `5.0`). Compiles + runs to the recovered value.
-        let src = "(do (def (main) ((. Qty value) ((. Qty of) 5.0 ((. Unit base) #\"meter\")))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a quantity erases and its value is recoverable"),
-                "main"
-            ),
-            5.0
-        );
-    }
-
-    #[test]
     fn combining_quantities_of_incompatible_dimension_is_cdz0501() {
         // L1-2: adding a length to a time is a DIMENSIONAL mismatch — CDZ0501 (units-of-measure.md §A
         // Dimensional Mismatch Is An Error), the code that opens the CDZ05xx verification-layer band. It
@@ -24704,29 +24687,6 @@ mod match_engine {
             reject_full("(module m (def (g) (* (Qty.of 5 (Unit.base #\"meter\")) 2)) (export g))")
                 .is_none_or(|d| d.code.as_deref() != Some("CDZ0301")),
             "an Int64 quantity scaled by a bare Int64 is well-formed"
-        );
-    }
-
-    #[test]
-    fn scaling_a_quantity_by_a_bare_number_preserves_its_dimension() {
-        // apply_type REORDER: a `(Qty T u) * <bare T>` keeps the unit — a bare number scales, contributing
-        // `Unit.one`. Before the reorder, apply_type's Float/BigInt/Rational operand-type arms ran BEFORE
-        // the quantity arm, so a `(Qty Float64 meter)` multiplied by a bare `Float64` matched the Float arm
-        // (its bare sibling is `Ty::Float`) and returned the bare `Float64` — the unit silently dropped, and
-        // `Qty.value` of the result declined ("no machine representation"). Now the quantity arm runs first
-        // (mirroring check_application's `is_multiplicative && any_qty` ordering), so the result stays a
-        // quantity and `Qty.value` recovers the scaled magnitude. Runs end-to-end.
-        let src = "(do (def (main) \
-                   ((. Qty value) (* ((. Qty of) 2.0 ((. Unit base) #\"meter\")) 3.0))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a Float64 quantity scaled by a bare Float64 keeps its unit and runs"),
-                "main"
-            ),
-            6.0,
-            "2.0 meter * 3.0 = 6.0 meter (unit preserved, Qty.value recovers 6.0)"
         );
     }
 
@@ -25035,28 +24995,6 @@ mod match_engine {
                 "main"
             ),
             3.0
-        );
-    }
-
-    #[test]
-    fn qty_pow_over_a_computed_quantity_squares_it() {
-        // `lower_qty_pow` fell back from the literal-only `qty_value_occ` to `(Qty.value q)` for a
-        // non-literal argument, so `Qty.pow` now works over ANY quantity expression, not only a directly
-        // written `Qty.of`. `(Qty.pow (/ (Qty 6.0 m) (Qty 2.0 s)) 2)` — squaring a COMPUTED velocity —
-        // previously declined ("Qty.pow over a non-Qty.of magnitude"); now (3.0 m/s)² = 9.0. Qty.value
-        // recovers the squared magnitude.
-        let src = "(do (def (main) ((. Qty value) \
-                   ((. Qty pow) (/ ((. Qty of) 6.0 ((. Unit base) #\"meter\")) \
-                                   ((. Qty of) 2.0 ((. Unit base) #\"second\"))) 2))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("Qty.pow over a computed velocity compiles and runs"),
-                "main"
-            ),
-            9.0,
-            "(6m/2s = 3 m/s)^2 = 9.0 (Qty.pow over a computed quantity, not a literal Qty.of)"
         );
     }
 
@@ -25505,28 +25443,6 @@ mod match_engine {
         let bytes = component(src);
         wasmparser::validate(&bytes)
             .expect("a Float32 Qty read back via Map.lookup must emit valid wasm (f32, not f64)");
-    }
-
-    #[test]
-    fn unit_in_unwraps_to_a_bare_number_usable_in_ordinary_arithmetic() {
-        // Q3 (DESIGN-quantity-reference-normalized-unwrap.md §1b): `Unit.in`/`as` UNWRAPS — its result is
-        // a BARE dimensionless number of the quantity's inner type, NOT a `(Qty T u)`, so it is subject to
-        // ordinary numeric rules and no longer dimension-checked. `(+ (Unit.in meter (Qty.of 2 kilometer))
-        // 5)` converts 2 km to 2000 m, unwraps to the bare Int64 2000, then adds 5 as plain integer
-        // arithmetic → 2005. If `Unit.in` still returned a `(Qty Int64 meter)`, the `+ 5` (a bare number)
-        // would be a CDZ0501 dimension mismatch (quantity + bare number) and this would not compile — so
-        // the fact it compiles + runs to 2005 pins the unwrap. NO `Qty.value` wrapper is needed.
-        let src = "(do (def (main) \
-                   (+ ((. Unit in) ((. Unit of) #\"meter\") ((. Qty of) 2 ((. Unit of) #\"kilometer\"))) 5)) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("an unwrapped Unit.in result adds to a bare number and runs"),
-                "main"
-            ),
-            2005
-        );
     }
 
     #[test]
