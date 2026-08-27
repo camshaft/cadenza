@@ -2571,3 +2571,17 @@
   (call main (: 1 UInt8) (: 42 UInt16)) (output (: 42 Int64))
   (call main (: 2 UInt8) (: 42 UInt16)) (output (: 1042 Int64))
   (call main (: 9 UInt8) (: 42 UInt16)) (output (: -1 Int64)))
+
+; -- a top-bit-set u64 bin binding reads UNSIGNED (migration from rcdzc a_u64_bin_binding_binds_unsigned_
+; not_wrapped_signed, 2026-08-27): the existing u64 pattern case reads a small value (top bit clear); this
+; pins the top-bit-set path where a signed rem_s would give the wrong answer.
+
+(case "a top-bit-set u64 bin binding reads UNSIGNED not signed-wrapped"
+  (doc    "`(bin (u64 n))` over a byte sequence whose top bit is set must read n as UNSIGNED (>= 2^63):
+           x=128 -> n = 2^63 + 1, (% n 1000) = 809 unsigned (a signed rem_s would give -807). x=64 ->
+           n = 2^62 + 1 -> 905, the top-bit-clear control where signed and unsigned agree.")
+  (input (do (def (main (: x UInt8))
+               (do (def b (Bytes.of (list x 0 0 0 0 0 0 1)))
+                   (match b ((bin (u64 n)) (Int64.of (% n 1000))) (_ -1)))) (export main)))
+  (call main (: 128 UInt8)) (output (: 809 Int64))
+  (call main (: 64 UInt8))  (output (: 905 Int64)))

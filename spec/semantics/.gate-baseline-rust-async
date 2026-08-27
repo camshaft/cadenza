@@ -4154,6 +4154,7 @@ pass	a three-payload constructor partially applied in a runtime tuple completes 
 pass	a too-short list refutes a leading-rest arm and falls through
 pass	a top-bit u64 binding re-encodes to its exact source bytes
 pass	a top-bit u64 binding widens to BigInt unsigned
+pass	a top-bit-set u64 bin binding reads UNSIGNED not signed-wrapped
 pass	a top-level do-local fn capturing a constant lowers (capture control)
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later

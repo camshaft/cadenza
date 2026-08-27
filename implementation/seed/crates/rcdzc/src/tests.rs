@@ -6965,7 +6965,6 @@ fn an_unannotated_exported_parameter_declines() {
 // ones) both signednesses; the emitter is width-generic (a value promotes to the smallest slot that
 // holds it, computes there, then range-checks back to its N-bit type).
 mod runtime_ops {
-    use super::find_runtime_wasm;
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -7025,62 +7024,6 @@ mod runtime_ops {
         // runtime integer by negative one is checked negation in both operand orders" and
         // "multiply-by-negative-one strength reduction keeps its operand's own trap" in
         // spec/semantics/06-numeric-model.sexp.
-    }
-
-    /// A `(bin (u64 n))` PATTERN binder is a genuine `UInt64` — its sign-sensitive downstream arithmetic
-    /// (`%`/`/`, and `Int64.of`'s range-check) must treat a top-bit-set value as unsigned, NOT as a wrapped
-    /// signed `Int64`. Before the fix, an integer bin-segment binder collapsed to the deferred-signed
-    /// `Ty::int()`, so `n = 2^63 + 1` (bytes `[128,0,…,0,1]`, big-endian) arithmetic'd as the negative
-    /// `-(2^63 - 1)`: `(% n 1000)` picked `rem_s` → -807 instead of the unsigned 809, and `Int64.of`
-    /// SILENTLY yielded the wrapped negative rather than trapping. A SILENT wrong value, identical on both
-    /// backends (shared typing), so this pins the value directly. The top-bit-CLEAR control (`x = 64`,
-    /// `n = 2^62 + 1`, fits `Int64`) already agreed and stays a witness that the fix didn't regress it.
-    #[test]
-    fn a_u64_bin_binding_binds_unsigned_not_wrapped_signed() {
-        // The scrutinee is a `Bytes.of` (a heap value), so the run needs the composed runtime linked —
-        // drive it through `cdz_run::run` (which links `bytes-alloc`), skipping cleanly if the runtime
-        // wasm isn't built.
-        let src = "(module m \
-                     (def (main (: x UInt8)) \
-                       (do \
-                         (def b (Bytes.of (list x 0 0 0 0 0 0 1))) \
-                         (match b \
-                           ((bin (u64 n)) (Int64.of (% n 1000))) \
-                           (_ -1)))) \
-                     (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!(
-                "runtime wasm not found (run `cargo xtask build`); skipping u64-bin composed run"
-            );
-            return;
-        };
-        let run_x = |x: &str| -> String {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![x.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => s,
-                cdz_run::Outcome::Trap(t) => panic!("u64-bin run trapped (miscompile?): {t}"),
-            }
-        };
-        // x=128 → n = 2^63 + 1 (top bit set): (% n 1000) = 809 UNSIGNED, NOT -807 signed. Before the fix
-        // the u64 binder collapsed to signed Int64 → rem_s → -807 (and `Int64.of` silently wrapped).
-        assert_eq!(
-            run_x("128"),
-            "809",
-            "a top-bit-set u64 bin binding must do UNSIGNED rem (809), not signed rem_s (-807)"
-        );
-        // x=64 → n = 2^62 + 1 (top bit clear, fits Int64): control — always agreed at 905.
-        assert_eq!(
-            run_x("64"),
-            "905",
-            "top-bit-clear control: n fits Int64, unsigned and signed rem agree (905)"
-        );
     }
 
     #[test]
