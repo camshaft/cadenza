@@ -80,16 +80,6 @@ def mainBody? (m : Module) : Option Nat := do
     find
   | _ => none
 
-/-- A lexical environment: names bound LAZILY to a thunk that computes the binding's outcome when the
-variable is first used, innermost first. Laziness is load-bearing: an UNUSED binding (or one in a
-short-circuited/dead position) is never forced, so a binding that would trap does not trap unless its
-value is actually needed — matching cadenza's const-fold, which elides a dead failing binding. -/
-abbrev Env := List (ByteArray × (Unit → Outcome))
-
-/-- Look up a name's thunk (innermost binding wins). -/
-def Env.lookup? (env : Env) (name : ByteArray) : Option (Unit → Outcome) :=
-  (env.find? (fun (n, _) => n == name)).map (·.2)
-
 /-- The name a bare-name atom node references, if it is one. -/
 def nameOf? (m : Module) (i : Nat) : Option ByteArray :=
   match m.nodes[i]? with
@@ -99,44 +89,90 @@ def nameOf? (m : Module) (i : Nat) : Option ByteArray :=
     | _ => none
   | _ => none
 
-/-- The integer type in force for an integer-typed subexpression: signedness + a bit width, or
-`bits = none` for arbitrary-precision (`BigInt`, never overflows). Cadenza integers are parametric in
-width (`(Int width)` / `(UInt width)`; `Int64` = `(Int 64)`). Used ONLY for overflow-trap decisions
-during arithmetic — the produced value is width-agnostic (the canonical output form is bare). -/
+/-- The parameter names of a `def` target `(name (: p T)… )` (or `(name p …)`), in order — each param
+spec's bound name. -/
+def paramSpecNodes (m : Module) (targetId : Nat) : Array Nat :=
+  match m.nodes[targetId]? with
+  | some (Node.list cs) => cs.extract 1 cs.size
+  | _ => #[]
+
+/-- `main`'s parameter-spec node ids + body node, from `(do … (def (main <params…>) BODY) …)`. -/
+def mainParamsBody? (m : Module) : Option (Array Nat × Nat) := do
+  let root ← m.nodes[m.root]?
+  match root with
+  | Node.list stmts =>
+    stmts.toList.findSome? (fun sid =>
+      match asDef? m sid with
+      | some dc =>
+        match defName? m dc, dc[1]?, dc[dc.size - 1]? with
+        | some nm, some targetId, some bodyId =>
+          if nm == "main".toUTF8 then some (paramSpecNodes m targetId, bodyId) else none
+        | _, _, _ => none
+      | none => none)
+  | _ => none
+
+/-- The width of a Cadenza integer type — parametric: an UNKNOWN width (an unresolved type variable
+`W`, e.g. in generic `(Int W)` code), a KNOWN concrete bit width, or BIG (arbitrary-precision `BigInt`,
+never overflows). An `unknown` width makes overflow undecidable, so arithmetic at it is `unsupported`
+(a sound coverage-gap) rather than a guess. -/
+inductive Width where
+  | unknown
+  | bits (n : Nat)
+  | big
+  deriving BEq, Inhabited
+
+/-- The integer type in force for an integer-typed subexpression: signedness + a parametric width
+(`Int64` = `(Int 64)`, `UInt8` = `(UInt 8)`, `BigInt` = big, `(Int W)` = unknown). Used ONLY for
+overflow-trap decisions — the produced value is width-agnostic (the canonical output form is bare). -/
 structure IntTy where
   signed : Bool
-  bits : Option Nat
+  width : Width
   deriving BEq, Inhabited
 
 /-- The model-default integer literal type (unconstrained literal) — `Int64`. -/
-def defaultIntTy : IntTy := { signed := true, bits := some 64 }
+def defaultIntTy : IntTy := { signed := true, width := .bits 64 }
+
+/-- A lazily-computed binding outcome. -/
+abbrev Thunk := Unit → Outcome
+
+/-- A lexical environment: each name bound LAZILY to a thunk (forced on first use) PLUS its declared
+integer type if known (a typed parameter / ascribed binding), innermost first. Laziness is
+load-bearing: an UNUSED binding (or one in a short-circuited/dead position) is never forced, so a
+binding that would trap does not trap unless its value is actually needed — matching cadenza's
+const-fold eliding a dead failing binding. The declared type flows the parameter/binding width into
+arithmetic (so a narrow-typed param traps on overflow at its width, not the ambient default). -/
+abbrev Env := List (ByteArray × Thunk × Option IntTy)
+
+/-- Look up a name's thunk + declared type (innermost binding wins). -/
+def Env.lookup? (env : Env) (name : ByteArray) : Option (Thunk × Option IntTy) :=
+  (env.find? (fun e => e.1 == name)).map (fun e => (e.2.1, e.2.2))
 
 /-- Parse an integer type-AST node to an `IntTy`: the aliases `Int8/16/32/64` + `UInt8/16/32/64`, the
-parametric `(Int N)` / `(UInt N)`, and `BigInt`. A non-integer type (e.g. `Bool`) → `none`. -/
+parametric `(Int N)` / `(UInt N)` (a NAME width like `(Int W)` → `unknown`), and `BigInt`. A
+non-integer type (e.g. `Bool`) → `none`. -/
 def parseIntTy? (m : Module) (i : Nat) : Option IntTy :=
   match m.nodes[i]? with
   | some (Node.atom lid) =>
     match m.leaves[lid]? with
     | some (Leaf.name b) =>
       match String.fromUTF8? b with
-      | some "BigInt" => some { signed := true, bits := none }
+      | some "BigInt" => some { signed := true, width := .big }
       | some s =>
-        if s.startsWith "Int" then (s.drop 3).toNat?.map (fun w => { signed := true, bits := some w })
-        else if s.startsWith "UInt" then (s.drop 4).toNat?.map (fun w => { signed := false, bits := some w })
+        if s.startsWith "Int" then (s.drop 3).toNat?.map (fun w => { signed := true, width := .bits w })
+        else if s.startsWith "UInt" then (s.drop 4).toNat?.map (fun w => { signed := false, width := .bits w })
         else none
       | none => none
     | _ => none
   | some (Node.list cs) =>
-    -- `(Int N)` / `(UInt N)`: head name + a width int-leaf
     match m.headName? (Node.list cs) with
     | some h =>
       let signed := h == "Int".toUTF8
-      let unsigned := h == "UInt".toUTF8
-      if signed || unsigned then
+      if signed || h == "UInt".toUTF8 then
         match cs[1]? with
         | some wid => match m.nodes[wid]? with
                       | some (Node.atom l) => match m.leaves[l]? with
-                        | some (Leaf.intLit false _ mag) => some { signed, bits := some (Value.beBytesToNat mag) }
+                        | some (Leaf.intLit false _ mag) => some { signed, width := .bits (Value.beBytesToNat mag) }
+                        | some (Leaf.name _) => some { signed, width := .unknown }  -- `(Int W)` width variable
                         | _ => none
                       | _ => none
         | none => none
@@ -144,34 +180,43 @@ def parseIntTy? (m : Module) (i : Nat) : Option IntTy :=
     | none => none
   | _ => none
 
-/-- Is `n` representable in `ty`? (Arbitrary-precision `BigInt` always is.) -/
-def IntTy.inBounds (ty : IntTy) (n : Int) : Bool :=
-  match ty.bits with
-  | none => true
-  | some w =>
-    if ty.signed then
-      (-(2 ^ (w - 1) : Int)) ≤ n && n < (2 ^ (w - 1) : Int)
-    else
-      0 ≤ n && n < (2 ^ w : Int)
-
-/-- The most-negative value of a signed width (for the `MIN / -1` overflow trap). -/
-def IntTy.minVal (ty : IntTy) : Option Int :=
-  match ty.bits with
-  | some w => if ty.signed then some (-(2 ^ (w - 1))) else some 0
+/-- A `def`/`main` parameter spec `(: name T)` (or a bare name) → its bound name + declared integer
+type (if `T` is one). The declared type flows the param's width into arithmetic on it. -/
+def paramSpec? (m : Module) (specId : Nat) : Option (ByteArray × Option IntTy) :=
+  match m.nodes[specId]? with
+  | some (Node.list pc) =>  -- `(: name T)`
+    match pc[1]? with
+    | some nId => (nameOf? m nId).map (fun nm => (nm, (pc[2]?).bind (parseIntTy? m)))
+    | none => none
+  | some (Node.atom lid) =>  -- a bare-name param
+    match m.leaves[lid]? with | some (Leaf.name b) => some (b, none) | _ => none
   | none => none
 
 /-- Evaluate a binary integer operator, trapping on overflow / divide-by-zero per `ty`. Division and
-remainder truncate toward zero (matching the checked wasm `i64.div_s`/`rem_s` the compiler emits). -/
+remainder truncate toward zero (matching the checked wasm `i64.div_s`/`rem_s` the compiler emits). An
+`unknown` width makes overflow undecidable → `unsupported` (a sound coverage-gap, never a guess);
+`big` never overflows. -/
 def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
-  if op == "/" || op == "%" then
-    if b == 0 then .trap "divide by zero"
-    else if op == "/" && ty.minVal == some a && b == -1 then .trap "overflow"  -- MIN / -1
+  match ty.width with
+  | .unknown => .unsupported "eval: arithmetic at an unresolved (unknown) integer width"
+  | .big =>
+    if op == "/" || op == "%" then
+      if b == 0 then .trap "divide by zero"
+      else .value (.int (if op == "/" then Int.tdiv a b else Int.tmod a b))
+    else .value (.int (if op == "+" then a + b else if op == "-" then a - b else a * b))
+  | .bits w =>
+    let lo : Int := if ty.signed then -(2 ^ (w - 1)) else 0
+    let hi : Int := if ty.signed then 2 ^ (w - 1) else 2 ^ w  -- exclusive upper bound
+    let inB : Int → Bool := fun r => lo ≤ r && r < hi
+    if op == "/" || op == "%" then
+      if b == 0 then .trap "divide by zero"
+      else if op == "/" && ty.signed && a == lo && b == -1 then .trap "overflow"  -- MIN / -1
+      else
+        let r := if op == "/" then Int.tdiv a b else Int.tmod a b
+        if inB r then .value (.int r) else .trap "overflow"
     else
-      let r := if op == "/" then Int.tdiv a b else Int.tmod a b
-      if ty.inBounds r then .value (.int r) else .trap "overflow"
-  else
-    let r := if op == "+" then a + b else if op == "-" then a - b else a * b
-    if ty.inBounds r then .value (.int r) else .trap "overflow"
+      let r := if op == "+" then a + b else if op == "-" then a - b else a * b
+      if inB r then .value (.int r) else .trap "overflow"
 
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
@@ -202,7 +247,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       | some (Leaf.name b) =>
         -- a bare name: force its (lazy) binding, or (unmodeled) a free/prelude name
         match env.lookup? b with
-        | some thunk => thunk ()  -- propagates the binding's value / trap / unsupported / diverges
+        | some (thunk, _) => thunk ()  -- propagates the binding's value / trap / unsupported / diverges
         | none => .unsupported "eval: free name (variable not bound; prelude/global not yet modeled)"
       | some l =>
         match Value.ofLeaf l with
@@ -243,7 +288,7 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
               match nameOf? m nId with
               | some nm =>
                 let captured := env
-                extend ((nm, fun _ => evalNode m captured defaultIntTy fuel vId) :: env) rest
+                extend ((nm, (fun _ => evalNode m captured defaultIntTy fuel vId), none) :: env) rest
               | none => .error "eval: let binding target is not a name"
             | _, _ => .error "eval: malformed let binding pair"
           | _ => .error "eval: malformed let binding"
@@ -277,8 +322,11 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
   | some aId, some bId =>
     if children.size != 3 then .unsupported s!"eval: {op} expects 2 operands"
     else
-      -- the op's width comes from an operand's ascription if present, else the ambient type
-      let opTy := ((operandTy? m aId).orElse (fun _ => operandTy? m bId)).getD ty
+      -- the op's width comes from an operand's ascription OR a bound (param) variable's declared
+      -- type, if either is present; else the ambient type
+      let operandTyIn := fun (i : Nat) =>
+        (operandTy? m i).orElse (fun _ => (nameOf? m i).bind (fun nm => (env.lookup? nm).bind (·.2)))
+      let opTy := ((operandTyIn aId).orElse (fun _ => operandTyIn bId)).getD ty
       match evalNode m env opTy fuel aId with
       | .value (.int a) =>
         match evalNode m env opTy fuel bId with
@@ -299,13 +347,27 @@ def evalMain (m : Module) (fuel : Nat) : Outcome :=
 
 end Eval
 
-/-- STAGE 1 — const-evaluate a closed program to its minimal form (grades a bare `(input E)` case). -/
-def reduce (m : Ast.Module) : Outcome := Eval.evalMain m Eval.defaultFuel
-
-/-- STAGE 2 — run a trial against the program. L1.1a models only the no-argument trial (which equals
-`reduce`); a trial WITH arguments needs function application (a later slice) → `unsupported`. -/
+/-- STAGE 2 — run a trial against the program: bind the call arguments to `main`'s parameters (with
+each param's declared integer type, so narrow-typed params trap at their width) and evaluate its body.
+For the no-argument trial this is a nullary `main` with an empty env. -/
 def execute (m : Ast.Module) (args : Array Value) : Outcome :=
-  if args.isEmpty then Eval.evalMain m Eval.defaultFuel
-  else .unsupported "execute: argument application not yet modeled (L1.1a)"
+  match Eval.mainParamsBody? m with
+  | some (specs, bodyId) =>
+    if specs.size != args.size then
+      .unsupported s!"execute: arity mismatch ({specs.size} params, {args.size} args)"
+    else
+      -- bind each already-evaluated arg value under its parameter name + declared type
+      let bindings := (specs.zip args).filterMap (fun (specId, v) =>
+        (Eval.paramSpec? m specId).map (fun (nm, ty) =>
+          (nm, (fun _ => Outcome.value v : Eval.Thunk), ty)))
+      if bindings.size != specs.size then
+        .unsupported "execute: a parameter spec is malformed"
+      else
+        Eval.evalNode m bindings.toList Eval.defaultIntTy Eval.defaultFuel bodyId
+  | none => .unsupported "execute: program is not a (do (def (main …) BODY) (export main)) form"
+
+/-- STAGE 1 — const-evaluate a closed program to its minimal form (grades a bare `(input E)` case).
+Equal to `execute` with no arguments (stage parity holds by construction). -/
+def reduce (m : Ast.Module) : Outcome := execute m #[]
 
 end Oracle
