@@ -1165,7 +1165,7 @@
   (call main (: 1 Int64)) (output (: 230 Int64))
   (call main (: 2 Int64)) (output (: 18 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 10))
 
 (case "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
   (doc    "The transcoder pin further down re-encodes the SAME decoded n and checks only Bytes.len;

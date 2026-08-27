@@ -4258,7 +4258,7 @@
             (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; A further residual of the SAME i32/i64 slot family, on the `if`-BRANCH axis: a self-recursive function
 ; CARRYING a heap collection whose BASE arm materializes a fallible-read Option HANDLE. The two `if`
@@ -4285,7 +4285,7 @@
             (def (main (: p Int64)) (loop b"\x05" p 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a list-carrying recursion whose base arm does a fallible indexed read compiles"
   (doc    "The LIST companion of the Bytes case above — the fault is not Bytes-specific. A self-recursive
@@ -4745,7 +4745,7 @@
             (export main)))
   (call   main)
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; A function's name is an ordinary lexical binding, and #Binding Is Lexical resolves a reference to the
 ; NEAREST enclosing binding of that name — regardless of the name's capitalization. So a `def` whose name

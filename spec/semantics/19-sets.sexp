@@ -1644,7 +1644,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 197 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "Set.to-list orders a set of RECORD elements canonically"
   (doc    "The record companion of the tuple-element case: records order by comparing field values in the
@@ -1865,7 +1865,7 @@
                    (lastbyte xs -9))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 7))
 
 (case "Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order"
   (doc    "The Map-key companion of the Set.to-list Bytes-order pin above: a `Map` keyed by single-byte `Bytes`
@@ -1890,7 +1890,7 @@
                      (lastkey ps -9)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 10))
 
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte

@@ -223,7 +223,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a slice OF a slice over a CONCAT rope composes offsets across the seam"
   (doc    "The view-of-a-view composition case above runs over a FLAT parent; here the parent is a
@@ -252,7 +252,7 @@
                   ((None _u) -3))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 380 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "the composed slice view EQUALS its flat twin and keys a Map by canonical content"
   (doc    "The identity witness of the rope view-of-view case above: the doubly-sliced seam-crossing
@@ -276,7 +276,7 @@
                      ((Some v) v) ((None _u) -1)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 17 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 (case "Bytes.concat of two runtime SLICES splices window content in order"
   (doc    "The concat-of-views face (the seam case below slices a CONCAT; this concatenates two SLICES):
@@ -295,7 +295,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a runtime slice VIEW crosses a helper-function boundary intact"
   (doc    "The escape face: the slice is passed to a helper `(first-byte b)` whose body indexes its Bytes
@@ -384,7 +384,7 @@
   (output (: 230 Int64))
   (call   main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "String.from-bytes of a runtime slice decodes the WINDOW only"
   (doc    "The decode face: `String.from-bytes` over a runtime-start slice of (x,a,b,y) at a=1 must
@@ -467,7 +467,7 @@
   (call main (: 2 Int64) (: -1 Int64))                 (output (: -1 Int64))
   (call main (: 0 Int64) (: 9223372036854775807 Int64)) (output (: -1 Int64))
   (call main (: 5 Int64) (: 1 Int64))                  (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; The seam case at "a slice spanning a concatenation sees the logical bytes" slices across the seam of a
 ; concat of CONSTANT chunks, which the fold may materialize before slicing. A GENUINELY-runtime byte
@@ -1135,7 +1135,7 @@
                 (None acc)))
             (def (main) (go (Bytes.of (list 10 20 30)) 0 0)) (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)"
   (doc    "A recursive `be` whose body composes a heap-`match` result (the inlined `byte-at`, which
@@ -1153,7 +1153,7 @@
               (if (< n 1) 0 (+ (* (byte-at b i) (place (- n 1))) (be b (+ i 1) (- n 1)))))
             (def (main) (be (Bytes.of (list 1 2)) 0 2)) (export main)))
   (output (: 258 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a CBOR head decodes its major type and big-endian argument from the input bytes"
   (doc    "The compiler's INPUT-side decode spine — the dual of the LEB128 output encoder: reading a
@@ -1291,7 +1291,7 @@
                   (+ i (cbor-head-len b i)))))
             (def (main) (cbor-skip (Bytes.of (list 0x82 0x82 0x01 0x02 0x03)) 0)) (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a recursive reader decodes a CBOR application tree and evaluates it by head index"
   (doc    "The reader's spine assembled end-to-end: `ev` recursively decodes a canonical-AST application
@@ -1330,7 +1330,7 @@
                   (cbor-arg b i)))
             (def (main) (ev (Bytes.of (list 0x83 0x00 0x01 0x83 0x01 0x02 0x0B)) 0)) (export main)))
   (output (: 23 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a CBOR reader walks a variable-length array using its decoded length as the element count"
   (doc    "The reader's structural-COUNT primitive, distinct from head-index dispatch: a CBOR array's
@@ -1362,7 +1362,7 @@
             (def (sum-array b i) (sum-elems b i 0 (cbor-arg b i)))
             (def (main) (sum-array (Bytes.of (list 0x84 0x0A 0x14 0x18 0x1E 0x18 0x28)) 0)) (export main)))
   (output (: 100 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a CBOR skip steps over a tagged item to the value it wraps"
   (doc    "The reader's navigation over a CBOR TAG (major 6): a tag is its head followed by exactly one
@@ -1392,7 +1392,7 @@
                   (+ i (cbor-head-len b i))))))
             (def (main) (cbor-skip (Bytes.of (list 0xD8 0x27 0x01)) 0)) (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- The `b"…"` literal reads to a byte sequence, and rendering round-trips -----------------------
 ; `b"…"` is reader sugar for `(Bytes.of (list …))`, so a byte-string literal and the explicit form
@@ -1464,7 +1464,7 @@
               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
               (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0)))) (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; --- A Bytes ROPE nested in a compound MAP KEY is canonicalized (the Bytes face of nested-rope compaction) --
 ; A `Bytes.concat` builds a ROPE (a concat node whose raw is a header, not the content) — the same
@@ -1672,7 +1672,7 @@
   (call main (: 1 Int64)) (output (: 25660 Int64))
   (call main (: 4 Int64)) (output (: 52720 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes"
   (doc    "Composes the checksum with #Sharing Is Not Observable: slice(2,2) of [10,20,30]⧺[40,50,60]
@@ -1907,7 +1907,7 @@
           (Bytes.len (walk (Bytes.of (list 1 2 3 4 5)) 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 10))
 
 ; --- Byte-wise reversal over a seamed rope. ---
 
@@ -2089,7 +2089,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 40 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ; ============================================================================================
 ; Byte-string-literal DISPATCH — a runtime Bytes value matched against `b"…"` whole-value literals
