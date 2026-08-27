@@ -21858,3 +21858,36 @@
   (call main (: 50 Int64))
   (output (: 746 Int64))
   (live-objects 0))
+
+; ── breaker batch 530: deep-CHAMP fences, pinned the hour #4354 landed (constant Map build-once
+; via mark-immortal-deep). mps1-3 (2-key, single-node) verified green same-hour with values
+; verbatim + non-vacuity (1 static global, was 0); Sets are NOT in #4354 (sv probe: 0 globals) —
+; sts1 stays the armed acceptance for the Set increment. These extend the family to a 40-key
+; MULTI-LEVEL CHAMP where a half-marked interior node is the hazard (the tle5 analog for maps):
+
+(case "mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (match (Map.lookup (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30) 4 40) 5 50) 6 60) 7 70) 8 80) 9 90) 10 100) 11 110) 12 120) 13 130) 14 140) 15 150) 16 160) 17 170) 18 180) 19 190) 20 200) 21 210) 22 220) 23 230) 24 240) 25 250) 26 260) 27 270) 28 280) 29 290) 30 300) 31 310) 32 320) 33 330) 34 340) 35 350) 36 360) 37 370) 38 380) 39 390) 40 400) (% k 41)) ((Some v) v) ((None u) 0))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 8650 Int64))
+  (live-objects 0))
+
+(case "mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30) 4 40) 5 50) 6 60) 7 70) 8 80) 9 90) 10 100) 11 110) 12 120) 13 130) 14 140) 15 150) 16 160) 17 170) 18 180) 19 190) 20 200) 21 210) 22 220) 23 230) 24 240) 25 250) 26 260) 27 270) 28 280) 29 290) 30 300) 31 310) 32 320) 33 330) 34 340) 35 350) 36 360) 37 370) 38 380) 39 390) 40 400))
+            (u (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30) 4 40) 5 50) 6 60) 7 70) 8 80) 9 90) 10 100) 11 110) 12 120) 13 130) 14 140) 15 150) 16 160) 17 170) 18 180) 19 190) 20 200) 21 210) 22 220) 23 230) 24 240) 25 250) 26 260) 27 270) 28 280) 29 290) 30 300) 31 310) 32 320) 33 330) 34 340) 35 350) 36 360) 37 370) 38 380) 39 390) 40 400) 1 999)))
+        (+ (+ (match (Map.lookup c 1) ((Some v) v) ((None u2) -1))
+              (match (Map.lookup u 1) ((Some w) w) ((None u3) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50450 Int64))
+  (live-objects 0))
