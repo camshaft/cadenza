@@ -8725,3 +8725,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	tkp1 a TAKEN conditionally-demoted const divide-by-zero names its kind (not unreachable)
+pass	tkp2 a TAKEN conditionally-demoted const Int64.min/-1 names the overflow kind
+pass	tkp3 a TAKEN const rem-by-zero in a MATCH arm names the divide kind

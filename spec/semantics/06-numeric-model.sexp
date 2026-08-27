@@ -11431,3 +11431,21 @@
   (input (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)) (export main)))
   (call main (: true Bool) (: false Bool)) (output (: 115 Int8))
   (call main (: true Bool) (: true Bool))  (trap "overflow"))
+
+(case "tkp1 a TAKEN conditionally-demoted const divide-by-zero names its kind (not unreachable)"
+  (doc    "#4398: the cn02 demote previously erased the trap KIND (bare unreachable); the demote target
+           now preserves it — the taken branch traps with the native divide-by-zero reason, the untaken
+           path answers. Twin coverage: tkp2 = overflow kind, tkp3 = the match-arm face.")
+  (input (do (def (main (: n Int64)) (if (> n 0) (/ 1 0) n)) (export main)))
+  (call main (: 1 Int64)) (trap "divide by zero")
+  (call main (: -1 Int64)) (output (: -1 Int64)))
+
+(case "tkp2 a TAKEN conditionally-demoted const Int64.min/-1 names the overflow kind"
+  (input (do (def (main (: n Int64)) (if (> n 0) (/ -9223372036854775808 -1) n)) (export main)))
+  (call main (: 1 Int64)) (trap "integer overflow")
+  (call main (: -1 Int64)) (output (: -1 Int64)))
+
+(case "tkp3 a TAKEN const rem-by-zero in a MATCH arm names the divide kind"
+  (input (do (def (main (: n Int64)) (match n (1 (% 7 0)) (_ n))) (export main)))
+  (call main (: 1 Int64)) (trap "divide by zero")
+  (call main (: -1 Int64)) (output (: -1 Int64)))
