@@ -7898,3 +7898,8 @@ todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and recl
 pass	mha1 an op with TWO heap arguments — both read by the arm, both reclaim
 pass	mha2 the arm resumes with the op's OWN heap argument as the answer (arg becomes answer)
 pass	mha3 the arm TRANSFORMS the heap arg into the answer (prepend then resume)
+pass	gh1 a guard condition builds and consumes a heap temporary (guard taken)
+pass	gh2 a FAILED guard's heap temporary reclaims before the next arm
+pass	dst2 THREE levels: list of tuples of records, no Option wrapper
+pass	dst5 a USER sum with a list payload destructured to scalars
+pass	dst6 CONTROL: Option payload bound WHOLE (not destructured) then consumed by List.len

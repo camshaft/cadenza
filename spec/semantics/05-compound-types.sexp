@@ -19872,3 +19872,68 @@
   (call main (: 5 Int64))
   (output (: 5 Int64))
   (live-objects 0))
+
+; -- breaker batch 442 (2026-08-27): guard-position heap temporaries + deep-destructure controls.
+; gh1/gh2: a match GUARD's condition builds+consumes a heap temp on both the taken and FAILED paths
+; (live 0). dst2/dst5/dst6: the fence around the filed Option-nested-payload leak — a 3-level
+; list-of-tuples-of-records destructure (no Option) reclaims; a USER sum with the identical
+; list-payload nested destructure reclaims; the Option payload bound WHOLE reclaims. (The leaking
+; face — Option's NESTED-payload destructure — is filed with v-runtime, not pinned.) wasm-only rows.
+
+(case "gh1 a guard condition builds and consumes a heap temporary (guard taken)"
+  (input (do
+    (def (main (: n Int64))
+      (match n
+        ((guard k (> (List.len (if (> k 0) (list k k) (list 9))) 1)) 1)
+        (_ 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64))
+  (live-objects 0))
+
+(case "gh2 a FAILED guard's heap temporary reclaims before the next arm"
+  (input (do
+    (def (main (: n Int64))
+      (match n
+        ((guard k (> (List.len (if (> k 0) (list k) (list 9 9))) 5)) 1)
+        (_ 7)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64))
+  (live-objects 0))
+
+(case "dst2 THREE levels: list of tuples of records, no Option wrapper"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0)
+                 (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2)))))
+                 (list (tuple 0 (record (= v 0)))))
+        ((list (tuple _ (record (= v a))) (tuple _ (record (= v b)))) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects 0))
+
+(case "dst5 a USER sum with a list payload destructured to scalars"
+  (input (do
+    (type Box (Full (List Int64)) (Empty))
+    (def (main (: n Int64))
+      (match (if (> n 0) (Box.Full (list n (+ n 1))) Box.Empty)
+        ((Box.Full (list a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects 0))
+
+(case "dst6 CONTROL: Option payload bound WHOLE (not destructured) then consumed by List.len"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
+        ((Option.Some xs) (List.len xs))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
