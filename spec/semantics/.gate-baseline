@@ -7952,3 +7952,13 @@ todo	eln1 an EMPTY nested-list entry param has outer length zero
 todo	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
 todo	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 todo	read of malformed text is a coded reject, not a wrong value
+pass	d4 Option wrapping a bare list (2 levels) destructured to scalars
+pass	dm1 a FOUR-level mixed destructure (option-list-tuple-record) reduces to scalars
+pass	d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars
+pass	dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims
+pass	drs1 Result Ok nested-payload destructure (the Option-leak sibling)
+pass	drs2 Option-in-Option nested destructure to scalars
+pass	d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims
+pass	d5 a USER sum with a list payload destructured to scalars deforests completely
+pass	drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely
+pass	ap1 an arm destructures an Option-of-list op ARGUMENT through the nested pattern

@@ -19974,3 +19974,117 @@
             (def (main) (Map.len (Map.remove (Map.insert (Map.empty) 100000000000 1) 100000000000)))
             (export main)))
   (call   main) (output (: 0 Int64)) (live-objects 0))
+
+; -- breaker batch 454 (2026-08-27): the #3860/#3833 reclaim-placement ACCEPTANCE SET, promoted
+; from the queue bank (queue/adv-option-nested-payload-destructure-leak.*) to corpus rows the
+; design's increments can flip. Both designs cite these by name; until now only the gh1/gh2
+; controls and the 14b/c trap witnesses were corpus-pinned. known-leak values measured on the
+; debug runtime 2026-08-27; the increments flip them to (live-objects 0) — the mts1/mmx1/rrb1
+; fence must NOT flip. RENAMES vs the design text (corpus title collisions): rs1→drs1, rs2→drs2,
+; rs3→drs3, d2→dt2. NOTE the asymmetry the measurements exposed: the USER-sum sibling (d5) and
+; the String-payload whole-binding (drs3) DEFORESTED to pure scalars (no heap emitted, so no
+; live-objects clause is possible) — the reclaim gap in these shapes is prelude-sum-specific
+; (Option/Result), which narrows where the alias analysis must act.
+
+(case "d4 Option wrapping a bare list (2 levels) destructured to scalars"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
+        ((Option.Some (list a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 3))
+
+(case "dm1 a FOUR-level mixed destructure (option-list-tuple-record) reduces to scalars"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0)
+                 (Option.Some (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2))))))
+                 Option.None)
+        ((Option.Some (list (tuple _ (record (= v a))) (tuple _ (record (= v b))))) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 7))
+
+(case "d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (list (record (= v n)) (record (= v (* n 2))))) Option.None)
+        ((Option.Some (list (record (= v a)) (record (= v b)))) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 5))
+
+(case "dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0)
+                 (list (tuple 1 (record (= v n))) (tuple 2 (record (= v (* n 2)))))
+                 (list (tuple 0 (record (= v 0)))))
+        ((list (tuple _ (record (= v a))) (tuple _ (record (= v b)))) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects 0))
+
+(case "drs1 Result Ok nested-payload destructure (the Option-leak sibling)"
+  (input (do
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Ok (list n (+ n 1))) (Err "nope")) (Result (List Int64) String))
+        ((Ok (list a b)) (+ a b))
+        ((Err _) -1)
+        (_ -2)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 3))
+
+(case "drs2 Option-in-Option nested destructure to scalars"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (Option.Some (list n (+ n 1)))) Option.None)
+        ((Option.Some (Option.Some (list a b))) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 4))
+
+(case "d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)
+        ((Option.Some xs) (List.len xs))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "d5 a USER sum with a list payload destructured to scalars deforests completely"
+  (input (do
+    (type Box (Full (List Int64)) (Empty))
+    (def (main (: n Int64))
+      (match (if (> n 0) (Box.Full (list n (+ n 1))) Box.Empty)
+        ((Box.Full (list a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some (String.concat "ab" "c")) Option.None)
+        ((Option.Some s) (String.byte-len s))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 3 Int64)))
