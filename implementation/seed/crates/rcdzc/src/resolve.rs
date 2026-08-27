@@ -31,7 +31,7 @@
 //! becomes a [`Resolved::Poison`] rather than an abort.
 
 use crate::arena::Slot;
-use crate::ast::{Leaf, Struct, StructId};
+use crate::ast::{CompoundCtor, Leaf, Struct, StructId};
 use crate::db::Db;
 use crate::diag::{Code, Reject};
 use crate::resolved::{HandleArm, Prim, Resolved, Symbol};
@@ -441,12 +441,12 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // are NOT matched below: a `(tuple …)` NAME head falls through to `Resolved::Apply` and
             // resolves lexically-first (a local `tuple` binding shadows the alias). ("The strings are
             // the symbols.")
-            match db.ast.head_ctor(id) {
-                Some("record") => return resolve_record(db, id),
-                Some("tuple") => return resolve_tuple(db, id),
-                Some("list") => return resolve_list(db, id),
-                Some("map") => return resolve_map(db, id),
-                _ => {}
+            match db.ast.compound_ctor(id) {
+                Some(CompoundCtor::Record) => return resolve_record(db, id),
+                Some(CompoundCtor::Tuple) => return resolve_tuple(db, id),
+                Some(CompoundCtor::List) => return resolve_list(db, id),
+                Some(CompoundCtor::Map) => return resolve_map(db, id),
+                None => {}
             }
             match db.ast.head_name(id) {
                 Some("if") => resolve_if(db, id),
