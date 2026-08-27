@@ -2231,3 +2231,32 @@
   (call main (: true Bool) (: 20 Int64) (: 4 Int64)) (output (: 5 Int64))
   (call main (: false Bool) (: 20 Int64) (: 0 Int64)) (output (: 20 Int64))
   (call main (: true Bool) (: 20 Int64) (: 0 Int64)) (trap "divide by zero"))
+
+; -- nested strength-reduction overflow parity (behavioral half migrated from rcdzc
+; a_nested_multiply_by_a_power_of_two_also_strength_reduces, 2026-08-27; the white-box Lir shl-count /
+; no-mul-div_s inspection stays a wasmtime-free rcdzc unit test): a nested `(* (* x 2) 4)` reduces both
+; multiplies to shifts, and the shift chain must still trap on the SAME overflow the checked multiply
+; would — value parity (x*8) and overflow-trap parity, at Int64 and at a narrow Int8 (inner and outer).
+
+(case "a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity"
+  (doc    "The inner `(* x 2)` is an operand of the outer `* 4`; both reduce to shifts (`x << 1`,
+           `<< 2`). Value parity: x*8. Overflow parity: 2^61 * 8 = 2^64 overflows Int64, so the shift
+           chain must still trap exactly as the checked multiply would.")
+  (input (do
+    (def (main (: x Int64)) (* (: (* x 2) Int64) 4))
+    (export main)))
+  (call main (: 5 Int64))                   (output (: 40 Int64))
+  (call main (: -3 Int64))                  (output (: -24 Int64))
+  (call main (: 0 Int64))                   (output (: 0 Int64))
+  (call main (: 2305843009213693952 Int64)) (trap "overflow"))
+
+(case "the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow"
+  (doc    "The narrow-width twin: Int8 `(* (* x 2) 4)` = x*8. 15*8=120 fits; x=20 overflows the OUTER
+           multiply (160 > 127); x=100 overflows the INNER `* 2` already (200 > 127). Both narrow
+           overflows must trap — the strength-reduced shift chain range-checks the narrow bound.")
+  (input (do
+    (def (main (: x Int8)) (* (: (* x 2) Int8) 4))
+    (export main)))
+  (call main (: 15 Int8))  (output (: 120 Int8))
+  (call main (: 20 Int8))  (trap "overflow")
+  (call main (: 100 Int8)) (trap "overflow"))
