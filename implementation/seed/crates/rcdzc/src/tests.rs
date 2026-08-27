@@ -7048,11 +7048,23 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
             panic!("a non-empty constant Set.to-list must fold to a sorted ListNew, got {other:?}")
         }
     }
-    // A set with a NON-orderable element (a nested tuple — `const_key_order` declines) keeps the runtime op.
-    match fold("(Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))") {
+    // A tuple of ORDERABLE scalars now folds (element-wise lexicographic) — a 2-element sorted ListNew.
+    match fold("(Set.to-list (Set.of (list (tuple 3 4) (tuple 1 2))))") {
+        Core::ListNew { elems } => assert_eq!(
+            elems.len(),
+            2,
+            "a const Set.to-list of orderable tuples folds to a sorted ListNew, got {} elems",
+            elems.len()
+        ),
+        other => panic!("a const Set.to-list of orderable tuples must fold, got {other:?}"),
+    }
+    // A set whose element the canonical order cannot rank (a tuple carrying a FLOAT) keeps the runtime op.
+    match fold("(Set.to-list (Set.of (list (tuple 1.5 2) (tuple 3.5 4))))") {
         Core::SetToList { .. } => {}
         other => {
-            panic!("a non-orderable-element Set.to-list must emit the runtime op, got {other:?}")
+            panic!(
+                "a non-orderable-element (float-in-tuple) Set.to-list must emit the runtime op, got {other:?}"
+            )
         }
     }
 }
@@ -7286,11 +7298,23 @@ fn map_to_list_of_an_empty_map_folds_to_the_empty_list() {
             panic!("a non-empty constant Map.to-list must fold to a sorted ListNew, got {other:?}")
         }
     }
-    // A map with a NON-orderable KEY (a nested tuple — `const_key_order` declines) keeps the runtime op.
-    match fold("(Map.to-list (Map.insert Map.empty (tuple 1 2) 99))") {
+    // A map keyed on a tuple of ORDERABLE scalars now folds (element-wise lexicographic key order).
+    match fold("(Map.to-list (Map.insert (Map.insert Map.empty (tuple 3 4) 20) (tuple 1 2) 10))") {
+        Core::ListNew { elems } => assert_eq!(
+            elems.len(),
+            2,
+            "a const Map.to-list keyed on orderable tuples folds to a sorted ListNew, got {} elems",
+            elems.len()
+        ),
+        other => panic!("a const Map.to-list keyed on orderable tuples must fold, got {other:?}"),
+    }
+    // A map whose KEY the canonical order cannot rank (a tuple carrying a FLOAT) keeps the runtime op.
+    match fold("(Map.to-list (Map.insert Map.empty (tuple 1.5 2) 99))") {
         Core::MapToList { .. } => {}
         other => {
-            panic!("a non-orderable-key Map.to-list must emit the runtime op, got {other:?}")
+            panic!(
+                "a non-orderable-key (float-in-tuple) Map.to-list must emit the runtime op, got {other:?}"
+            )
         }
     }
     // The fold sees through an inlined nullary `(def (em) Map.empty)` — the exact seed shape; the whole

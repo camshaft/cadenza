@@ -1027,14 +1027,35 @@
   (call   run 2)
   (output (: true Bool)))
 
-(case "a const Set.to-list of a TUPLE element keeps the runtime op (const-fold CAPABILITY gap, not soundness)"
-  (doc    "A tuple element DOES have a runtime canonical order (19-sets pins tuple Set.to-list lexicographic),
-           but the compiler's `const_key_order` does not yet rank compound values, so `(const … Set.to-list …)`
-           over a tuple set keeps the runtime op → REJECTS under the const demand. This is a fold-CAPABILITY
-           gap (a later increment could add compound ordering), NOT a soundness necessity. Scalar + Bytes
-           elements fold (below); compounds defer.")
-  (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2) (tuple 3 4))))))) (export main)))
-  (error  CDZ0201 (message "compile-time constant")))
+; --- Primitive 2: const Set/Map.to-list folds TUPLE elements/keys by element-wise lexicographic order --------
+; A tuple orders ELEMENT-WISE lexicographically (position 0, then 1, …), recursing through the canonical value
+; order — the runtime to-list tuple order (19-sets). `const_key_order`/`cval_key_order` now rank tuples, so a
+; const Set/Map of tuples materializes its to-list byte-matching the runtime (the operator wants full generality
+; across ALL shapes). A tuple whose element the canonical order cannot rank (a float / nested collection) still
+; declines. (Record + sum element ordering are the remaining shape increments.)
+
+(case "a const Set.to-list of TUPLE elements folds, dedup'd, in element-wise lexicographic order"
+  (doc    "`{(3,30),(1,99),(1,10)}` sorts lexicographically — first by element 0, ties broken by element 1 — so
+           the head is `(1,10)` (not `(1,99)`): `(+ (* 100 k) v)` = 110. Dedups a repeated tuple. Pins the
+           element-wise recursive tuple order matching the runtime (19-sets).")
+  (input  (do (def (main)
+                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (tuple 3 30) (tuple 1 99) (tuple 1 10) (tuple 1 10))))))
+                          (match (List.at (Set.to-list (Set.of (list (tuple 3 30) (tuple 1 99) (tuple 1 10)))) 0)
+                            ((Option.Some (tuple k v)) (+ (* 100 k) v))
+                            ((Option.None) -1)))))
+              (export main)))
+  (output (: 3110 Int64)))
+
+(case "a const Set.to-list of TUPLE elements byte-matches the RUNTIME set-to-list (cross-check)"
+  (doc    "The soundness cross-check: a RUNTIME tuple Set.to-list (built via a runtime Set.insert of `(tuple 2
+           n)`) equals the COMPILE-TIME fold of `{(1,10),(2,20),(3,30)}` — both lexicographically ordered.
+           Pins that `const_key_order`'s recursive Tuple arm agrees with the runtime tuple order.")
+  (input  (do (def (run (: n Int64))
+                (= (Set.to-list (Set.insert (Set.of (list (tuple 1 10) (tuple 3 30))) (tuple 2 n)))
+                   (const (Set.to-list (Set.of (list (tuple 1 10) (tuple 2 20) (tuple 3 30)))))))
+              (export run)))
+  (call   run 20)
+  (output (: true Bool)))
 
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
@@ -1752,11 +1773,17 @@
 ; order-trivial and folds to the empty list (the correct boundary of the per-element pre-check).
 
 (case "lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)"
-  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1 2))))))) (export main)))
+  (doc "A LONE element (a `sort_by` over one element never calls the comparator) must still be probed for
+        orderability. A tuple carrying a FLOAT is genuinely non-orderable (`const_key_order` declines a float),
+        so the per-element pre-check keeps the runtime op → the const demand REJECTS. (A tuple of orderable
+        scalars now folds — see the tuple-order cases above; this pins the LONE-non-orderable soundness face.)")
+  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1.5 2))))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
-  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) (tuple 1 2) 10))))) (export main)))
+  (doc "The Map-key twin: a lone tuple KEY carrying a FLOAT is non-orderable, so the per-element pre-check
+        keeps the runtime op and the const demand REJECTS.")
+  (input (do (def (main) (const (List.len (Map.to-list (Map.insert (map) (tuple 1.5 2) 10))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
