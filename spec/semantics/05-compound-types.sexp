@@ -22859,7 +22859,8 @@
               (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
-  (output (: 5 Int64)))
+  (output (: 5 Int64))
+  (live-objects known-leak 2))
 
 (case "a refutable map value sub-pattern falls through on a non-matching variant"
   (doc    "The refutation face: over `{\"a\": None}` the value at \"a\" is not `(Some n)`, so the arm is
@@ -22868,7 +22869,8 @@
               (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
-  (output (: -1 Int64)))
+  (output (: -1 Int64))
+  (live-objects known-leak 2))
 
 (case "a refutable map value sub-pattern folds the same over a constant map"
   (doc    "The constant-map form folds identically: matching `{\"a\": Some 7}` against `(map (\"a\" (Some n)) …)`
@@ -22877,6 +22879,45 @@
               (export main)))
   (output (: 7 Int64)))
 
+; ── RUNTIME map matching (Inc-9): `(match m ((map ("a" v) .. rest) …) (_ …))` over a map whose keys are NOT
+;    known at compile time (built by a conditional). desugar_runtime_map_match rewrites it to a nested
+;    presence-test if-chain (Map.lookup is-Some), the value/rest binders lower to runtime reads (Map.lookup
+;    unwrap; a Map.remove chain for the rest). A named key PRESENT selects the arm + binds; ABSENT falls through.
+(case "a runtime map match binds a present key's value"
+  (doc    "Over a RUNTIME map `{\"a\": k}` (built by a conditional so not const-folded), the `(map (\"a\" v) …)`
+           arm fires — key \"a\" is present → binds v to its runtime value. main(7) → 7.")
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) v) (_ -1)))
+              (def (main (: k Int64)) (look (pick true k))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a runtime map match falls through when the named key is absent"
+  (doc    "The refutation face: `pick false` → `{\"b\": 2}`, so the `(map (\"a\" v) …)` arm's key \"a\" is
+           ABSENT → the match falls through to the catch-all → -1.")
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" k) (Map.insert (Map.empty) "b" 2)))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) v) (_ -1)))
+              (def (main (: k Int64)) (look (pick false k))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime map match fires a two-key arm only when both keys are present"
+  (doc    "A multi-key arm `(map (\"a\" x) (\"b\" y) …)` fires only when EVERY named key is present. Over
+           `{\"a\": 3, \"b\": 4}` both are present → binds x=3,y=4 → x+y = 7.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" x) ("b" y) .. rest) (+ x y)) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (call   main (: true Bool))
+  (output (: 7 Int64)))
+
+(case "a runtime map match's two-key arm falls through when one key is missing"
+  (doc    "Over `{\"a\": 3}` (missing \"b\") the two-key arm `(map (\"a\" x) (\"b\" y) …)` is refuted → falls
+           through to the catch-all → -1.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.empty) "a" 3) "b" 4) (Map.insert (Map.empty) "a" 3)))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" x) ("b" y) .. rest) (+ x y)) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (call   main (: false Bool))
+  (output (: -1 Int64)))
 (case "mde1 the two #map entry spellings (raw pair and = pair) build EQUAL maps (the #4589 dual-read; operator: maps+records unify on =)"
   (input (do (def (main (: n Int64))
   (+ (if (= #map((1 10) (2 20)) #map((= 1 10) (= 2 20))) 1000 0)

@@ -3775,6 +3775,10 @@ pass	a runtime literal int probe reads at a dynamic offset after a dependent-siz
 pass	a runtime literal-tag probe gates a dependent-size body in one arm
 pass	a runtime magnitude unwraps through a unit conversion
 pass	a runtime map drained by remove equals the EMPTY map literal
+pass	a runtime map match binds a present key's value
+pass	a runtime map match falls through when the named key is absent
+pass	a runtime map match fires a two-key arm only when both keys are present
+pass	a runtime map match's two-key arm falls through when one key is missing
 pass	a runtime map reached VIA insert-then-remove equals the directly-built map
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
