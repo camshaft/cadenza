@@ -11074,9 +11074,6 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
         );
-        // VALUE + TRAP parity (sub: n=5→4/0→0/MIN→0 no false trap; add: n=5→6, n=MAX traps overflow;
-        // esub: n=3→2) is the corpus case "a branch condition refines a variable's range so a dead
-        // underflow guard is elided" in 02-binding-and-control — this stays a white-box Lir guard-count check.
         // `<` refines the ELSE branch: `(if (< n 1) 0 (- n 1))` — else knows `n ≥ 1`, guard dropped.
         let else_refine = select(
             "(module m (def (f (: n Int64)) (if (< n 1) 0 (- n 1))) (def (main) 0) (export main))",
@@ -11241,11 +11238,6 @@ mod runtime_ops {
             !redundant.contains(&Lir::ConstI32(2)),
             "the dead inner branch `2` is eliminated by the unsigned refinement: {redundant:?}"
         );
-        // VALUE PARITY (same: x=3→1/50→3; implied: 2→1/6→3; undecided twin: 2→1/6→2; and the UInt64
-        // ceiling soundness x=2^63→1/100→2) is the corpus cases "an UNSIGNED branch refinement decides a
-        // nested comparison and its soundness twin must not over-refine" and "an UNSIGNED lower-bound
-        // refinement must not fabricate an i64::MAX ceiling for a UInt64 above it" in 02-binding-and-control
-        // — this stays a white-box Lir compare-count check.
         // IMPLIED: `x < 4 ⇒ x < 8` true → inner folds, one compare, dead `2` gone.
         let implied = select(
             "(module m (def (g (: x UInt32)) (if (< x 4) (if (< x 8) 1 2) 3)) (def (main) 0) (export main))",
@@ -11600,10 +11592,6 @@ mod runtime_ops {
             wild.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the wildcard arm's (- n 1) sees no refinement — guard MUST be kept, got: {wild:?}"
         );
-        // VALUE + TRAP parity (the (5 …) arm's guard-elided `(± n 1)` computes correctly; the un-refined
-        // wildcard `(- n 1)` still traps at MIN) is the corpus case "a literal match arm pins the scrutinee
-        // to a point, folding an arm-body compare and shedding an arith guard" in 02-binding-and-control —
-        // this stays a white-box Lir guard-count check.
     }
 
     #[test]
@@ -12163,10 +12151,6 @@ mod runtime_ops {
             !implied.contains(&Lir::ConstI64(2)),
             "the dead inner branch `2` is eliminated by the refinement fold, got: {implied:?}"
         );
-        // VALUE parity across all three shapes (same: n=5→1/0→3; implied: 10→1/5→1/3→3; made-false:
-        // -1→2/0→3/20→3) is the corpus flagship case "a redundant relational check inside its own truthy
-        // branch is known-true and its dead branch is eliminated" in 02-binding-and-control — this stays a
-        // white-box Lir compare-count check.
         // A comparison the refinement does NOT decide (constant strictly inside the range) is UNCHANGED —
         // `n >= 5` does not decide `n > 8`, so both compares stay. This guards against over-folding.
         let undecided = select(
@@ -12427,10 +12411,6 @@ mod runtime_ops {
             overflow_capable.contains(&Lir::ConstI64(2)),
             "an overflow-capable (+ x 1) (x>0, no upper bound) must NOT fold — the trap must survive, the `2` stays: {overflow_capable:?}"
         );
-        // VALUE PARITY across the three shapes (folds: x=5/9→1, x=20→3; undecided: x=3→1, x=5→2;
-        // overflow-capable: x=5→1) is the corpus case "a flow refinement folds a compare over a no-overflow
-        // arith operand, but the trap survives when overflow is possible" in 02-binding-and-control — this
-        // stays a white-box Lir dead-branch-elision check.
     }
 
     #[test]
