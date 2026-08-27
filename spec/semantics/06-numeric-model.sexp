@@ -8677,6 +8677,16 @@
   (input  (do (def (main) (| (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main)))
   (output (: 18446744073709551615 UInt64)))
 
+(case "a constant shift-left whose result exceeds i64 but fits the UInt64 width folds, not declines"
+  (doc    "`(<< (: 1 UInt64) (: 63 UInt64))` = 2^63 — both operands fit i64, so the wide-OPERAND fold path is not reached, yet `1 << 63` = 9223372036854775808 overflows Int64 while fitting the UInt64 width. The i64-only fold's `checked_shl_i64` spuriously declined CDZ0304 ('overflows Int64'); the width-aware shift fold folds over the SOLVED unsigned width and range-checks against THAT width, not i64. The fits-complement of the UInt64.max << 1 overflow-reject below.")
+  (input  (do (def (main) (<< (: 1 UInt64) (: 63 UInt64))) (export main)))
+  (output (: 9223372036854775808 UInt64)))
+
+(case "a constant SIGNED shift-right sign-extends (the unsigned-width fold bails on a signed type)"
+  (doc    "`(>> (- 0 256) 4)` = -16: a SIGNED `>>` is ARITHMETIC (sign-extending), so the unsigned-width shift fold must BAIL on a signed type (returns None → the i64 path folds it, preserving the sign). Treating a signed `>>` as a logical shift over the width-masked magnitude would fold -256 >> 4 to 0 instead of -16. Guards that the width-aware unsigned shift fold does not swallow signed arithmetic shifts.")
+  (input  (do (def (main) (>> (- 0 256) 4)) (export main)))
+  (output (: -16 Int64)))
+
 (case "a constant shift-left that overflows a high UInt64 width still rejects"
   (doc    "The overflow boundary: `(<< (: 18446744073709551615 UInt64) (: 1 UInt64))` — UInt64.max << 1
            overflows the 64-bit width (drops the high bit), a genuine overflow → must still reject CDZ0304,

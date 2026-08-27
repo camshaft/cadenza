@@ -13433,26 +13433,10 @@ mod match_engine {
             None,
             "1 << 63 at UInt64 = 2^63 fits the unsigned width and must fold, not decline as an Int64 overflow"
         );
-        if let Some(v) = run_heap_value_escape(
-            "(module m (def (main) (<< (: 1 UInt64) (: 63 UInt64))) (export main))",
-        ) {
-            assert!(
-                v.contains("9223372036854775808"),
-                "1 << 63 (UInt64) folds to 2^63 = 9223372036854775808: got {v}"
-            );
-        }
-        // CRITICAL GUARD: the unsigned-width fold must NOT swallow a SIGNED `>>`, which is ARITHMETIC
-        // (sign-extending). `fold_shift_bitwise_at_width` bails on a signed type (returns None → the i64
-        // path folds it correctly). A regression here (treating signed `>>` as a logical shift over the
-        // width-masked magnitude) would fold `-256 >> 4` to 0 instead of -16.
-        if let Some(v) =
-            run_heap_value_escape("(module m (def (main) (>> (- 0 256) 4)) (export main))")
-        {
-            assert!(
-                v.contains("-16"),
-                "a SIGNED `>>` must sign-extend: -256 >> 4 = -16, not a logical 0: got {v}"
-            );
-        }
+        // The folded VALUES are confirmed end-to-end by corpus 06: "a constant shift-left whose result
+        // exceeds i64 but fits the UInt64 width folds" (1<<63 = 2^63) and "a constant SIGNED shift-right
+        // sign-extends" (-256 >> 4 = -16, the unsigned-width fold bails on signed). This keeps only the
+        // compile-time fold-vs-CDZ0304 decline witnesses (`reject_code`, no runtime).
         // A small signed `<<` whose result FITS still folds (the i64 path owns signed; `-8 << 1 = -16` fits
         // Int64). (This is the fold-not-reject case — NOT an overflow; see the overflow assertion below.)
         assert!(
