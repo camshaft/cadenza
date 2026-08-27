@@ -23373,7 +23373,35 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
             }
             Some(std::cmp::Ordering::Equal)
         }
-        // A runtime key, or a nested-compound this stage does not yet rank (record / sum), declines.
+        // Sums order by DISCRIMINANT first (the variant index, as the canonical byte form encodes it), then by
+        // PAYLOAD within the same variant — the runtime `value_cmp_shaped` Sum order. Different discs decide
+        // immediately; same disc compares payloads element-wise via this canonical order. A non-orderable
+        // payload declines (`?`). (Covers Option/Result and user sums as Set/Map elements/keys.)
+        (
+            Core::SumNew {
+                disc: dx,
+                payloads: px,
+            },
+            Core::SumNew {
+                disc: dy,
+                payloads: py,
+            },
+        ) => match dx.cmp(&dy) {
+            std::cmp::Ordering::Equal => {
+                if px.len() != py.len() {
+                    return None;
+                }
+                for (&xi, &yi) in px.iter().zip(py.iter()) {
+                    match const_key_order(db, xi, yi)? {
+                        std::cmp::Ordering::Equal => {}
+                        ord => return Some(ord),
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            }
+            ord => Some(ord),
+        },
+        // A runtime key, or a nested-compound this stage does not yet rank (record), declines.
         _ => None,
     }
 }
@@ -23409,6 +23437,32 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
             }
             Some(std::cmp::Ordering::Equal)
         }
+        // Sums: DISCRIMINANT first, then payload element-wise — the const_eval twin of const_key_order's Sum
+        // arm (runtime value_cmp_shaped Sum order). A non-orderable payload declines.
+        (
+            CVal::Sum {
+                disc: dx,
+                payloads: px,
+            },
+            CVal::Sum {
+                disc: dy,
+                payloads: py,
+            },
+        ) => match dx.cmp(dy) {
+            std::cmp::Ordering::Equal => {
+                if px.len() != py.len() {
+                    return None;
+                }
+                for (xi, yi) in px.iter().zip(py.iter()) {
+                    match cval_key_order(xi, yi)? {
+                        std::cmp::Ordering::Equal => {}
+                        ord => return Some(ord),
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            }
+            ord => Some(ord),
+        },
         _ => None,
     }
 }
