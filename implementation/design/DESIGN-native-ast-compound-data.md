@@ -114,9 +114,17 @@ This is a **consolidation**: it changes *how many times and where* the reserved 
 prevents string-matching from spreading into the platform. It is safe (behavior-preserving) and can
 land incrementally site-by-site behind the new helper.
 
-### 3.2 Layer 2 — the stored representation of the tag (OPERATOR DECISION — see §6 D1)
+### 3.2 Layer 2 — the stored representation of the tag (RESOLVED — see §3.6 / §6 D1)
+
+> **⚠ SUPERSEDED / historical.** The operator RULED this (2026-08-27): the stored representation is a
+> **distinct payloadless LEAF KIND per collection** — see **§3.6** and **§6 D1 (2d)**. The (2a)/(2b)/(2c)
+> menu below is the *rationale that led there* (why not name-leaf, why not a bare `Sym`, why the
+> prelude-by-index endgame is deferred), retained for context. **Do NOT implement the (2b) namespaced-`Sym`
+> "recommendation" — it is superseded by the leaf-kind ruling.** Read §3.6/§6 for the decision.
+
 "A way to clearly say what's a record *in the cadenza-ast*" is a statement about the **stored node**.
-Three candidate representations, additive-evolution-ordered:
+Three candidate representations were weighed (additive-evolution-ordered); the operator chose a fourth,
+(2d), a distinct leaf kind (§3.6):
 
 - **(2a) Keep the `Name`-leaf head** (status quo, as #4370 pins). The "tag" is a `Name` leaf whose
   text is a reserved word. Layer 1 already delivers typed dispatch; the wire is unchanged and #4370
@@ -217,9 +225,11 @@ value-structural heads*, each of which is recognized by head text today and woul
 string-matched everywhere:
 - **`=` — the record field-pair marker** `(= key value)`. It is a distinct node so the ML printer can
   attach a comment to a field; making it a **dedicated payloadless leaf kind** keeps that while removing
-  the text dispatch. **Disambiguation win:** if the field-pair `=` shares its spelling with the equality
-  operator `(= a b)` (to verify — likely, given the corpus uses `=` for both), a dedicated field-pair
-  tag *separates the two structurally* instead of relying on position/context. (`FieldPair` tag.)
+  the text dispatch. **Disambiguation win (CONFIRMED, v-spec-oracle 2026-08-27):** the field-pair `=` and
+  the equality operator `(= a b)` ARE the same bare `=` leaf today, disambiguated ONLY by position (a `=`
+  directly under a resolved record head = field pair; a `=` in expression/application position = equality
+  — `03-equality-and-observation.sexp` vs `05-compound-types.sexp`). A dedicated `FieldPair` leaf kind
+  *separates the two structurally*, removing that position-context ambiguity.
 - **`.` — member access / projection** `(. obj key)`. Ubiquitous; same treatment — a dedicated leaf
   kind (`Member`/`Dot` tag), dispatched by kind, not by matching the `.` head text.
 
