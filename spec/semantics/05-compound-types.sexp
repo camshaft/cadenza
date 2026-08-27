@@ -20817,3 +20817,38 @@
             (def (main) (f 3)) (export main)))
   (call   main) (drop) (output (: (tuple 0 7) (Tuple Int64 Int64)))
   (live-objects 0))
+
+; -- breaker batch 491 (2026-08-27): the OPAQUE-consumer cells v-core-opt requested as Stage-B
+; negative witnesses — with an INVERTED result: an extraction-Some payload consumed by an opaque
+; user-fn call (oqc1) or a closure application (oqc2) ALREADY reclaims to 0 — the call boundary
+; consumes/balances the extraction's dup-retain, unlike the in-place borrow (lar1=3) and the
+; inline builder-consume (mlr2=3). So these pin as ZERO CONTROLS for Stage-B: the allowlist
+; reclaim must NOT double-free the already-balanced opaque-consume path (an over-reclaim traps or
+; goes negative here). The "must-stay-declined" fence v-core-opt asked for cannot exist as a leak
+; row — the shape never leaked.
+
+(case "oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)"
+  (input (do
+    (def (sink (: l (List Int64))) (List.len l))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (match (List.at xs 1)
+          ((Option.Some inner) (sink inner))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9))))
+            (f (fn ((: l (List Int64))) (List.len l))))
+        (match (List.at xs 1)
+          ((Option.Some inner) (f inner))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
