@@ -1178,6 +1178,7 @@ pass	a String match with a BOUND default arm equals its (= s literal) if-chain w
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String match with no wildcard is non-exhaustive
 pass	a String op RESULT selected by the op argument, composed via concat
+pass	a String param threaded UNCHANGED to a self-call AND consumed by String.concat each step is retained
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String slice OF a slice over a MULTIBYTE concat rope composes scalar offsets
 pass	a String slice VIEW keys a map by content in both directions, rope-backed included
@@ -1977,6 +1978,7 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
+pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope

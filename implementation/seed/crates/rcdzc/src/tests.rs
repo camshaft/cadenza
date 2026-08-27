@@ -19097,30 +19097,13 @@ mod match_engine {
 
     #[test]
     fn a_string_param_threaded_and_concatenated_in_a_selfrec_loop_is_retained_not_freed() {
-        // REGRESSION (OOB TRAP): a String PARAM threaded UNCHANGED through a self-recursive loop AND consumed
-        // by `String.concat` each step — `build(s, n, acc) = build(s, n-1, String.concat(acc, s))` — trapped
-        // "out of bounds memory access" at n≥4. `cdz check` clean; `cdz compile` ok; RAN → trap. `s` is
-        // consumed by `String.concat` (rc--) yet re-passed to the self-call, so the shared ROPE was freed
-        // while still referenced and the rope walk read OOB past a depth threshold. ROOT: `is_heap_type` (the
-        // Perceus retain-candidate gate) included `Bytes` but NOT `String`/`Symbol` — though a String is a
-        // heap rope exactly as Bytes is — so `s` was never a retain candidate and no `dup` was emitted (the
-        // List ops worked because `Ty::List` WAS in `is_heap_type`). FIX: add `String`/`Symbol` to
-        // `is_heap_type`. Now `s` duped before the consuming concat; the threaded copy stays live.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build (: s String) (: n Int64) (: acc String)) \
-                 (if (= n 0) acc (build s (- n 1) ((. String concat) acc s)))) \
-               (def (main) ((. String byte-len) (build \"x\" 8 \"\"))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping String-concat threaded-param run");
-            return;
-        };
-        assert_eq!(
-            out, "8",
-            "a String param consumed by String.concat AND threaded to the self-call is retained — the rope \
-             stays live for n=8 (was an OOB trap at n≥4)"
-        );
-        // The FBIP fast path guard: a SINGLE-consume String.concat (no threading) must NOT import `dup`.
+        // FBIP fast-path bench guard (backend-shape, NOT corpus-expressible): a SINGLE-consume String.concat
+        // (no threading) must NOT import `dup`. The RETAIN drift-CORRECTNESS run — a String PARAM threaded
+        // UNCHANGED through a self-recursive loop AND consumed by `String.concat` each step, which was an OOB
+        // memory-access TRAP at n≥4 before `is_heap_type` gained `String`/`Symbol` (a String is a heap rope
+        // exactly as Bytes is) — lives in corpus 13 as "a String param threaded UNCHANGED to a self-call AND
+        // consumed by String.concat each step is retained" (n=4/8 → 4/8); this keeps only the dup-absence
+        // guard the corpus cannot express.
         let single = "(module m (def (f (: a String)) ((. String byte-len) ((. String concat) a \"y\"))) \
                (def (main) (f \"x\")) (export main))";
         assert!(
