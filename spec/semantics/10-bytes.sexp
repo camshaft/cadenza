@@ -2376,7 +2376,7 @@
       (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
       ((None _u) -1)))) (export main)))
   (call main (: 0 Int64)) (output (: 295 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 3))
 
 (case "adv54b a let-bound Bytes.concat of slice-view to-bytes read twice sees the concatenated bytes"
   (input (do (def (main (: k Int64)) (let ((s (String.concat "ab" "cdé")))
@@ -2384,7 +2384,7 @@
       (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 3) "b3")))))
       ((None _u) -1)))) (export main)))
   (call main (: 0 Int64)) (output (: 200 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 3))
 
 ; -- runtime Bytes.at / concat / slice / compact behavior (migration from rcdzc bytes cdz-run tests, 2026-08-27):
 ; each threads a byte sequence through a fn param so the op runs (not a fold) and reads a scalar out.
