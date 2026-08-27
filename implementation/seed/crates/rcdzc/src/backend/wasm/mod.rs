@@ -9622,12 +9622,13 @@ fn try_bare_entry_param_component(
     // consuming-param lift whose reclaim the wrapper cannot guarantee here (the consumer, or a looped-param
     // reclaim, must own it) — decline it to the existing todo, a later slice. Prevents a boundary leak (the
     // #3808 default-enforced live-objects check reds a lifted-but-unreclaimed escaping param).
-    if mem_leaf_params.iter().any(|m| matches!(m, Some((_, false)))) {
+    if mem_leaf_params
+        .iter()
+        .any(|m| matches!(m, Some((_, false))))
+    {
         return None;
     }
-    let any_drop = mem_leaf_params
-        .iter()
-        .any(|m| matches!(m, Some((_, true))));
+    let any_drop = mem_leaf_params.iter().any(|m| matches!(m, Some((_, true))));
     // RESULT: a scalar the def returns raw (Passthrough) or unit; a compound result is a later slice.
     let (result_vts, wit_result) = match &result_ty {
         Ty::Unit => (Vec::new(), None),
@@ -9647,7 +9648,9 @@ fn try_bare_entry_param_component(
     }
     for op_name in lift_ops {
         if !entry_imports.iter().any(|o| o.name == op_name) {
-            let op = runtime_abi::RUNTIME_OPS.iter().find(|o| o.name == op_name)?;
+            let op = runtime_abi::RUNTIME_OPS
+                .iter()
+                .find(|o| o.name == op_name)?;
             entry_imports.push(op);
         }
     }
