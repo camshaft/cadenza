@@ -506,6 +506,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
          | none => none)
         <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
         <|> (if qualHead? m children == some ("Map".toUTF8, "insert".toUTF8) then some (evalMapInsert m env fuel children) else none)
+        <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
       match ctorConstruct with
       | some o => o
       | none =>
@@ -691,6 +692,52 @@ partial def evalMapInsert (m : Module) (env : Env) (fuel : Nat) (children : Arra
     | .value _ => .unsupported "eval: Map.insert on a non-map"
     | other => other
   | _, _, _ => .unsupported "eval: malformed Map.insert"
+
+/-- Function-FREE collection query/update module fns (flat `((. Mod fn) args…)`): `List.len`,
+`List.concat`, `Set.contains`, `Map.len`, `Map.lookup` (→ Option), `Map.remove`. `none` = not one of
+these (fall through). Ops taking a FUNCTION arg (map/filter/fold) or Option-returning index (`.at`/`.get`)
+are not handled here. -/
+partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteArray) (children : Array Nat) : Option Outcome :=
+  let a1 := (children[1]?).map (fun i => evalNode m env defaultIntTy fuel i)
+  let a2 := (children[2]?).map (fun i => evalNode m env defaultIntTy fuel i)
+  let is := fun (q f : String) => qual == q.toUTF8 && mem == f.toUTF8
+  if is "List" "len" then
+    some (match a1 with | some (.value (.list es)) => .value (.int es.size)
+                        | some (.value _) => .unsupported "List.len: not a list" | some o => o | none => .unsupported "List.len arity")
+  else if is "Map" "len" then
+    some (match a1 with | some (.value (.map es)) => .value (.int es.size)
+                        | some (.value _) => .unsupported "Map.len: not a map" | some o => o | none => .unsupported "Map.len arity")
+  else if is "List" "concat" then
+    some (match a1, a2 with
+          | some (.value (.list x)), some (.value (.list y)) => .value (.list (x ++ y))
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "List.concat: non-list operand")
+  else if is "Set" "contains" then
+    some (match a1, a2 with
+          | some (.value (.set es)), some (.value x) => .value (.bool (es.any (· == x)))
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Set.contains: operand")
+  else if is "Map" "lookup" then
+    some (match a1, a2 with
+          | some (.value (.map es)), some (.value k) =>
+            (match (es.find? (fun kv => kv.1 == k)).map (·.2) with | some v => .value (.some v) | none => .value .none)
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Map.lookup: operand")
+  else if is "Map" "remove" then
+    some (match a1, a2 with
+          | some (.value (.map es)), some (.value k) =>
+            (match canonMap (es.filter (fun kv => !(kv.1 == k))) with | some cm => .value (.map cm) | none => .unsupported "Map.remove: unorderable key")
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Map.remove: operand")
+  else none
 
 /-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
 → `variant C payload` (payload deferred as a `poison` if non-value, like a tuple/record field — spec Q2). -/
