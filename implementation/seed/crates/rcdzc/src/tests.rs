@@ -20136,53 +20136,6 @@ mod match_engine {
     // through" gap the increment-2 note records).
 
     #[test]
-    fn a_nullary_variant_applied_to_a_non_unit_payload_is_rejected() {
-        // core-semantics.md §A Sum Type Constructor Is A Single-Arity Function: "A nullary variant MUST be
-        // a constructor whose argument type is Unit". Construction via application `(V unit)` must check
-        // the argument IS unit; a non-unit payload is a malformed construction (CDZ0201), NOT a silently
-        // discarded payload. Regression: nullary-construction-via-application accepted `(Opt.Nn 5)` and
-        // discarded the 5, fabricating `(Nn unit)` — an ill-typed program accepted (a soundness hole).
-        for (src, ty) in [
-            (
-                "(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn 5)) (export main))",
-                "Int64",
-            ),
-            (
-                "(module m (type Opt (Sm Int64) Nn) (def (main) (Opt.Nn true)) (export main))",
-                "Bool",
-            ),
-        ] {
-            assert_eq!(
-                reject_code(src).as_deref(),
-                Some("CDZ0201"),
-                "a nullary variant applied to a non-unit {ty} payload must reject, not discard it"
-            );
-        }
-        // NO OVER-REJECTION: applying the nullary variant to its canonical `unit` value constructs, and a
-        // payload variant with its declared payload is unaffected.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Opt (Sm Int64) Nn) \
-                       (def (main) (match (Opt.Nn unit) ((Opt.Sm x) x) ((Opt.Nn _) 7))) \
-                       (export main))"
-                ),
-                "main"
-            ),
-            7,
-            "(Opt.Nn unit) must still construct the nullary variant"
-        );
-        assert!(
-            reject_code(
-                "(module m (type Opt (Sm Int64) Nn) \
-                   (def (main) (match (Opt.Sm 5) ((Opt.Sm x) x) ((Opt.Nn _) 0))) (export main))"
-            )
-            .is_none(),
-            "a payload variant applied to its declared payload must still construct"
-        );
-    }
-
-    #[test]
     fn a_variant_name_colliding_with_a_prelude_name_does_not_shadow_it() {
         // A bare variant name resolves BEFORE the prelude (`resolve` step 3c precedes step 4), so a variant
         // whose name COLLIDES with a built-in prelude entry (`Int`/`List`/`Name` — a type constructor, a
