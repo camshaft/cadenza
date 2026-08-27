@@ -8746,3 +8746,4 @@ pass	ope1 an Option.expect payload consumed per-iteration is retained (no drift)
 pass	ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained
 pass	ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)
 pass	ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)
+pass	a folded recursive-newtype ANNOTATION unifies with the unfolded value type

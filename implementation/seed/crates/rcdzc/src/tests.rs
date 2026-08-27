@@ -9233,25 +9233,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_recursive_newtype_unifies_across_folded_and_unfolded_reps() {
-        // The Phase-1 crux: a recursive newtype's type appears FOLDED (an annotation `(: … Lst)` collapses
-        // the recursion to a `Ty::Sum{Lst}` back-edge) and UNFOLDED (a value's type, `Ty::Nominal{Lst}` at
-        // the recursion point). Because `Ty::Nominal` is compared by decl+args (NOT inner), these unify —
-        // the annotation type-checks. Was "annotation type Lst does not match value type Lst" pre-fix.
-        let v = run_heap_value(
-            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
-               (def (main) (match (: (Mk (Some (tuple 42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main))",
-            vec![],
-        );
-        if let Some(v) = v {
-            assert_eq!(
-                v, "42",
-                "a folded annotation unifies with the unfolded value type"
-            );
-        }
-    }
-
-    #[test]
     fn a_newtype_over_a_record_still_rejects_a_missing_field() {
         // The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))`
         // rejects (CDZ0212, the absent-record-field code) exactly as it would on the bare record — seeing
