@@ -583,42 +583,104 @@ partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array 
     | other => other
   | _, _ => .unsupported "eval: malformed projection"
 
-/-- Match a SUB-pattern (a constructor's payload position) against `payload`, evaluating `body` on a
-match. `none` = no match (try the next arm); `some o` = decided (body result, a forced non-value, or
-`unsupported`). Modeled sub-patterns: wildcard `_`, bare-name binder (binds the payload LAZILY, so an
-unused binder never forces it — spec Q2), and a scalar literal (forces + compares the payload). A nested
-constructor sub-pattern is not modeled → `unsupported`. -/
-partial def matchSubPat (m : Module) (env : Env) (ty : IntTy) (fuel : Nat)
-    (subPatId : Nat) (payload : Value) (bodyId : Nat) : Option Outcome :=
-  match m.nodes[subPatId]? with
+/-- Match a pattern against an ALREADY-FORCED subject value — a purely structural test that binds names
+LAZILY and yields the environment extension on a match. `.error o` = decided (a forced non-value from a
+literal comparison, or an `unsupported` for a pattern shape we do not model — aborts the arm with `o`);
+`.ok none` = no match (try the next arm); `.ok (some ext)` = matched, add bindings `ext`. Modeled:
+wildcard `_`, bare-name binder (binds `subj` LAZILY, so an unused binder never forces it — spec Q2),
+scalar literal (forces + compares), and the decomposition patterns `(Some p)`/`(Ok p)`/`(Err p)`/
+`(None _)`/`(tuple p…)`/`(record (= k p)…)` recursively. A user-sum or other head → `unsupported`. -/
+partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome (Option Env) :=
+  match m.nodes[patId]? with
   | some (Node.atom lid) =>
     match m.leaves[lid]? with
     | some (Leaf.name b) =>
-      if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)
-      else some (evalNode m ((b, (fun _ => observeShallow payload), Option.none) :: env) ty fuel bodyId)
+      if b == "_".toUTF8 then .ok (some [])
+      else .ok (some [(b, (fun _ => observeShallow subj), Option.none)])
     | some pl =>
       match Value.ofLeaf pl with
-      | some litV =>
-        match observeDeep payload with
-        | .value fp => if fp == litV then some (evalNode m env ty fuel bodyId) else none
-        | other => some other
-      | none => some (.unsupported "eval: match sub-pattern is a non-scalar leaf")
-    | none => some (.unsupported "eval: match sub-pattern leaf out of range")
-  | _ => some (.unsupported "eval: nested constructor sub-pattern not modeled")
+      | some litV => match observeDeep subj with
+                     | .value fp => if fp == litV then .ok (some []) else .ok none
+                     | other => .error other
+      | none => .error (.unsupported "eval: match literal pattern is a non-scalar leaf")
+    | none => .error (.unsupported "eval: match pattern leaf out of range")
+  | some (Node.list pc) =>
+    match m.headName? (Node.list pc) with
+    | some ph =>
+      if ph == "Some".toUTF8 then (match subj, pc[1]? with | .some p, some sp => matchPat m sp p | .some _, none => .error (.unsupported "eval: malformed Some pattern") | _, _ => .ok none)
+      else if ph == "Ok".toUTF8 then (match subj, pc[1]? with | .ok p, some sp => matchPat m sp p | .ok _, none => .error (.unsupported "eval: malformed Ok pattern") | _, _ => .ok none)
+      else if ph == "Err".toUTF8 then (match subj, pc[1]? with | .err p, some sp => matchPat m sp p | .err _, none => .error (.unsupported "eval: malformed Err pattern") | _, _ => .ok none)
+      else if ph == "None".toUTF8 then (match subj, pc[1]? with | .none, some sp => matchPat m sp .unit | .none, none => .ok (some []) | _, _ => .ok none)
+      else if ph == "tuple".toUTF8 then
+        (match subj with
+         | .tuple es => let sps := pc.extract 1 pc.size
+                        if sps.size != es.size then .ok none else matchSeq m (sps.zip es).toList
+         | _ => .ok none)
+      else if ph == "record".toUTF8 then
+        (match subj with
+         | .record fields => matchRecordPats m (pc.extract 1 pc.size).toList fields
+         | _ => .ok none)
+      else .error (.unsupported "eval: match user-sum/other constructor pattern not modeled")
+    | none => .error (.unsupported "eval: match pattern is a headless list")
+  | none => .error (.unsupported "eval: match pattern node out of range")
+
+/-- Match `(pattern, subject)` pairs left-to-right, ANDing results and concatenating bindings; a
+no-match or a decided outcome short-circuits. -/
+partial def matchSeq (m : Module) (pairs : List (Nat × Value)) : Except Outcome (Option Env) :=
+  match pairs with
+  | [] => .ok (some [])
+  | (pid, sv) :: rest =>
+    match matchPat m pid sv with
+    | .error o => .error o
+    | .ok none => .ok none
+    | .ok (some e1) => match matchSeq m rest with
+                       | .error o => .error o
+                       | .ok none => .ok none
+                       | .ok (some e2) => .ok (some (e1 ++ e2))
+
+/-- Match record field-patterns `(= k p)…` against a record's fields: each named key MUST be present
+(else no match), its value matched by the field's sub-pattern. -/
+partial def matchRecordPats (m : Module) (fieldPats : List Nat) (fields : Array (ByteArray × Value)) : Except Outcome (Option Env) :=
+  match fieldPats with
+  | [] => .ok (some [])
+  | fp :: rest =>
+    match recordField? m fp with
+    | some (key, subPatId) =>
+      match (fields.find? (fun kv => kv.1 == key)).map (·.2) with
+      | some fv =>
+        match matchPat m subPatId fv with
+        | .error o => .error o
+        | .ok none => .ok none
+        | .ok (some e1) => match matchRecordPats m rest fields with
+                           | .error o => .error o
+                           | .ok none => .ok none
+                           | .ok (some e2) => .ok (some (e1 ++ e2))
+      | none => .ok none   -- named key absent → no match
+    | none => .error (.unsupported "eval: malformed record field-pattern")
 
 /-- `(match scrutinee (pat body)… )` — try arms in order (spec: the scrutinee IS an observation point,
-core-semantics.md:287). Modeled patterns: a scalar LITERAL (matches if the scrutinee equals it — forces
-+ observes the scrutinee), a WILDCARD `_` (matches, scrutinee not forced), a bare-name BINDER (binds the
-scrutinee LAZILY like a `let`), and a SUM-CONSTRUCTOR pattern `(Some p)`/`(Ok p)`/`(Err p)`/`(None _)`
-(forces the scrutinee to inspect its tag, then matches the payload sub-pattern — binding the payload
-LAZILY per spec Q2). A tuple/record/user-sum decomposition pattern is not modeled → the whole match is
-`unsupported` (a sound skip — arm selection cannot be soundly decided past an untestable pattern). -/
+core-semantics.md:287). A top-level WILDCARD `_` or bare-name BINDER binds the scrutinee LAZILY (never
+forcing it, like a `let`); every other pattern (scalar literal, and the `(Some p)`/`(Ok p)`/`(Err p)`/
+`(None _)`/`(tuple p…)`/`(record (= k p)…)` decomposition patterns via `matchPat`) forces the scrutinee
+(observed) and matches structurally, binding sub-values LAZILY. A user-sum or unmodeled pattern → the
+whole match is `unsupported` (a sound skip — arm selection cannot be soundly decided past it). -/
 partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children : Array Nat) : Outcome :=
   match children[1]? with
   | none => .unsupported "eval: malformed match (no scrutinee)"
   | some scrutId =>
     -- `none` = arm did not match, try the next; `some o` = this arm decided the match.
     let matchArm := fun (patId bodyId : Nat) =>
+      -- the forced path: observe the scrutinee, then match structurally via `matchPat`
+      let forced := fun (_ : Unit) =>
+        match evalNode m env defaultIntTy fuel scrutId with
+        | .value sv0 =>
+          match observeShallow sv0 with
+          | .value sv => match matchPat m patId sv with
+                         | .error o => some o
+                         | .ok none => none
+                         | .ok (some ext) => some (evalNode m (ext ++ env) ty fuel bodyId)
+          | other => some other
+        | other => some other
       match m.nodes[patId]? with
       | some (Node.atom lid) =>
         match m.leaves[lid]? with
@@ -626,33 +688,8 @@ partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (childr
           if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)          -- wildcard: no force
           else some (evalNode m ((b, (fun _ => evalNode m env defaultIntTy fuel scrutId), Option.none) :: env)
                        ty fuel bodyId)                                          -- binder: lazy bind
-        | some pl =>
-          match Value.ofLeaf pl with                                           -- scalar literal
-          | some litV =>
-            match evalNode m env defaultIntTy fuel scrutId with
-            | .value sv => match observeDeep sv with
-                           | .value fsv => if fsv == litV then some (evalNode m env ty fuel bodyId) else none
-                           | other => some other
-            | other => some other
-          | none => some (.unsupported "eval: match literal pattern is a non-scalar leaf")
-        | none => some (.unsupported "eval: match arm pattern leaf out of range")
-      | some (Node.list pc) =>
-        -- sum-constructor pattern `(Ctor subpat)`: inspect the scrutinee's tag (observed shallowly)
-        match m.headName? (Node.list pc), pc[1]? with
-        | some ph, some subPatId =>
-          match evalNode m env defaultIntTy fuel scrutId with
-          | .value sv0 =>
-            match observeShallow sv0 with
-            | .value sv =>
-              if ph == "Some".toUTF8 then (match sv with | .some p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
-              else if ph == "Ok".toUTF8 then (match sv with | .ok p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
-              else if ph == "Err".toUTF8 then (match sv with | .err p => matchSubPat m env ty fuel subPatId p bodyId | _ => none)
-              else if ph == "None".toUTF8 then (match sv with | .none => matchSubPat m env ty fuel subPatId .unit bodyId | _ => none)
-              else some (.unsupported "eval: match tuple/record/user-sum pattern not modeled")
-            | other => some other
-          | other => some other
-        | _, _ => some (.unsupported "eval: malformed constructor pattern")
-      | none => some (.unsupported "eval: match arm pattern node out of range")
+        | _ => forced ()                                                        -- scalar literal
+      | _ => forced ()                                                          -- decomposition pattern
     let rec tryArms (arms : List Nat) : Outcome :=
       match arms with
       | [] => .unsupported "eval: match fell through (non-exhaustive / no modeled arm matched)"
