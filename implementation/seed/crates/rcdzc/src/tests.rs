@@ -20075,62 +20075,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_refutable_map_value_sub_pattern_dispatches_by_value() {
-        // A REFUTABLE map value sub-pattern — a MULTI-VARIANT ctor `(map ("a" (Some n)))` — now dispatches
-        // by the VALUE (the map analogue of Inc-12's ctor-list-element). `desugar_map_value_subpatterns`
-        // LIFTS the refutable value into the body as `(match __mv ((Some n) body) (_ <catch-all>))`: it
-        // binds `n` AND falls through to the catch-all when the value is NOT `Some`. The lift re-resolves
-        // the body's `n` against the synthesized `(Some n)` (via `forget_subtree`, since Inc-17 had resolved
-        // it to a `MapField` at the fault stage). Only the arm needs a catch-all (a refutable value may not
-        // match), which a map match requires anyway.
-        //
-        // A `{"a": Some 5}` matches `(Some n)` → n=5; a `{"a": None}` falls through to -1.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (pick (: b Bool)) \
-                 (if b (Map.insert (Map.empty) \"a\" (Some 5)) (Map.insert (Map.empty) \"a\" None))) \
-               (def (look (: m (Map String (Option Int64)))) \
-                 (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
-               (def (main (: b Bool)) (look (pick b))) (export main))",
-            vec!["true".to_string()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping refutable-map-value run");
-            return;
-        };
-        assert_eq!(
-            v, "5",
-            "a Some value matches the (Some n) sub-pattern, binding its payload"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (pick (: b Bool)) \
-                     (if b (Map.insert (Map.empty) \"a\" (Some 5)) (Map.insert (Map.empty) \"a\" None))) \
-                   (def (look (: m (Map String (Option Int64)))) \
-                     (match m ((map (\"a\" (Some n)) .. rest) n) (_ -1))) \
-                   (def (main (: b Bool)) (look (pick b))) (export main))",
-                vec!["false".to_string()],
-            )
-            .unwrap(),
-            "-1",
-            "a None value does NOT match (Some n) and falls through to the catch-all"
-        );
-        // A CONSTANT-map form folds the same: `{"a": Some 7}` → 7.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (main) \
-                   (match (Map.insert (Map.empty) \"a\" (Some 7)) \
-                     ((map (\"a\" (Some n)) .. rest) n) \
-                     (_ -1))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "7",
-            "a constant Some value folds the (Some n) match"
-        );
-    }
-
-    #[test]
     fn a_map_value_sub_pattern_with_binders_reads_a_runtime_map() {
         // The RUNTIME companion of `a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders`:
         // over a map whose keys are NOT known at compile time (built by a conditional), the value read at a

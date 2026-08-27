@@ -22782,3 +22782,32 @@
               (def (main (: a Int64)) (look (pick a))) (export main)))
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
+
+; ── a REFUTABLE map value sub-pattern (a multi-variant ctor `(map ("a" (Some n)))`) dispatches by the
+;    VALUE: desugar_map_value_subpatterns lifts it into the body as `(match __mv ((Some n) body) (_ …))`,
+;    binding the payload AND falling through when the value is not that variant (the map analogue of a
+;    ctor-list-element dispatch). Requires a catch-all (a refutable value may not match).
+(case "a refutable map value sub-pattern binds the ctor payload on a matching value"
+  (doc    "`(map (\"a\" (Some n)) .. rest)` over a RUNTIME map `{\"a\": Some 5}` (built by a conditional so
+           not const-folded): the value at \"a\" matches `(Some n)`, binding n = 5.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
+              (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (call   main (: true Bool))
+  (output (: 5 Int64)))
+
+(case "a refutable map value sub-pattern falls through on a non-matching variant"
+  (doc    "The refutation face: over `{\"a\": None}` the value at \"a\" is not `(Some n)`, so the arm is
+           refuted and the match falls through to the catch-all → -1.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.empty) "a" (Some 5)) (Map.insert (Map.empty) "a" None)))
+              (def (look (: m (Map String (Option Int64)))) (match m ((map ("a" (Some n)) .. rest) n) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (call   main (: false Bool))
+  (output (: -1 Int64)))
+
+(case "a refutable map value sub-pattern folds the same over a constant map"
+  (doc    "The constant-map form folds identically: matching `{\"a\": Some 7}` against `(map (\"a\" (Some n)) …)`
+           binds n = 7.")
+  (input  (do (def (main) (match (Map.insert (Map.empty) "a" (Some 7)) ((map ("a" (Some n)) .. rest) n) (_ -1)))
+              (export main)))
+  (output (: 7 Int64)))

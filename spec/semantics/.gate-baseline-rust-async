@@ -8407,3 +8407,6 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a refutable map value sub-pattern binds the ctor payload on a matching value
+pass	a refutable map value sub-pattern falls through on a non-matching variant
+pass	a refutable map value sub-pattern folds the same over a constant map
