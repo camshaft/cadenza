@@ -8904,3 +8904,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	msc1 a tail-mutual performer pair folds with per-member state advance (the #4575 shape, independent trace)
+pass	msc2 a THREE-function tail SCC (a→b→c→a) folds with ordered state advance
+pass	msc3 a mutual pair where only ONE member performs folds (degenerate half-performing SCC)

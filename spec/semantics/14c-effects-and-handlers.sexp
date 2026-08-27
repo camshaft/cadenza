@@ -18688,3 +18688,36 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 2321 Int64)))
+
+;; ── breaker batch 549: siblings at the #4575 mutrec-fold boundary (caller-observed mutual SCC,
+;; group-wide multi-value). All three fold; oracles hand-traced twice per the frb3 lesson.
+;; msc2 proves the fold generalizes beyond PAIRS (a 3-function tail cycle); mr3 the degenerate
+;; half-performing SCC (one pure member).
+
+(case "msc1 a tail-mutual performer pair folds with per-member state advance (the #4575 shape, independent trace)"
+  (input (do (effect S (op depth (-> Int64)))
+(def (evn (: k Int64) (: acc Int64)) (if (= k 0) acc (odd (- k 1) (+ acc (S.depth)))))
+(def (odd (: k Int64) (: acc Int64)) (if (= k 0) acc (evn (- k 1) (+ acc (* 10 (S.depth))))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (evn n 0)))
+(export main)))
+  (call main (: 4 Int64))
+  (output (: 42 Int64)))
+
+(case "msc2 a THREE-function tail SCC (a→b→c→a) folds with ordered state advance"
+  (input (do (effect S (op depth (-> Int64)))
+(def (fa (: k Int64) (: acc Int64)) (if (= k 0) acc (fb (- k 1) (+ acc (S.depth)))))
+(def (fb (: k Int64) (: acc Int64)) (if (= k 0) acc (fc (- k 1) (+ acc (* 10 (S.depth))))))
+(def (fc (: k Int64) (: acc Int64)) (if (= k 0) acc (fa (- k 1) (+ acc (* 100 (S.depth))))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (fa n 0)))
+(export main)))
+  (call main (: 6 Int64))
+  (output (: 753 Int64)))
+
+(case "msc3 a mutual pair where only ONE member performs folds (degenerate half-performing SCC)"
+  (input (do (effect S (op depth (-> Int64)))
+(def (pf (: k Int64) (: acc Int64)) (if (= k 0) acc (pure (- k 1) (+ acc (S.depth)))))
+(def (pure (: k Int64) (: acc Int64)) (if (= k 0) acc (pf (- k 1) (+ acc 1000))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (pf n 0)))
+(export main)))
+  (call main (: 4 Int64))
+  (output (: 2001 Int64)))
