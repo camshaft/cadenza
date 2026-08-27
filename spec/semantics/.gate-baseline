@@ -8072,7 +8072,7 @@ todo	phr1 an export returning its lifted List param verbatim declines (ownership
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 todo	read of malformed text is a coded reject, not a wrong value
-todo	trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)
+todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers

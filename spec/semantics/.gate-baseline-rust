@@ -7293,7 +7293,7 @@ pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	tri1 sign TRICHOTOMY of a draw — negative, zero-literal, and positive rows each route distinctly
 pass	triple negation of a runtime boolean is a single negation
 pass	triple-nested same-op performs — each argument is the inner perform's result
-pass	trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)
+pass	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepening negative count), push passes and relocks or bounces (bounces answer their own negative count), the seed decides whether the gate STARTS unlocked, and the first push diverges the runs from the very first row
 pass	true is greater than false
 pass	true is not less than false
