@@ -20415,3 +20415,20 @@
   (call main (: 5 Int64))
   (output (: 20 Int64))
   (live-objects known-leak 6))
+
+; -- breaker batch 464 (2026-08-27): the NIL-arm cell of the multi-payload shape (dmp1's program,
+; untaken-Both path). Isolation: with a WILDCARD payload pattern ((Both _ c)) the nil path
+; deforests to scalars — the 1-object leak appears only when the OTHER arm carries the nested
+; LIST pattern, i.e. the nested-pattern codegen keeps the ascribed nil ctor cell heap-allocated
+; and the wildcard arm never drops it. Family orbit (inc2 flip-set), pinned at the exact cell.
+(case "gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+        ((Both (list a b) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
