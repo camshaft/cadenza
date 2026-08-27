@@ -2510,3 +2510,31 @@
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
   (call main (: 99 UInt8)) (output (: 2 Int64)))
+
+; -- runtime bin-match (param-built scrutinee, defeats the const fold) rest + dependent-size segments
+; (migration from rcdzc bin-match cdz-run tests, 2026-08-27): exercises the runtime BinRestRead / BinSizedRead emit.
+
+(case "a runtime bin-match binds a final rest bytes segment (tail length)"
+  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of (list 1 2 3))))
+    (match (bin (u8 n) (bytes payload)) ((bin (u8 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
+  (call main (: 5 UInt8)) (output (: 3 Int64)))
+
+(case "a runtime bin-match final rest is empty when the scrutinee is exactly the header"
+  (input (do (def (main (: n UInt8)) (let ((payload (Bytes.of (list))))
+    (match (bin (u8 n) (bytes payload)) ((bin (u8 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
+  (call main (: 7 UInt8)) (output (: 0 Int64)))
+
+(case "a runtime bin-match final rest after a 2-byte header binds the tail"
+  (input (do (def (main (: n UInt16)) (let ((payload (Bytes.of (list 9 8 7 6 5))))
+    (match (bin (u16 n) (bytes payload)) ((bin (u16 t) (bytes rest)) (Bytes.len rest)) (_ -9)))) (export main)))
+  (call main (: 300 UInt16)) (output (: 5 Int64)))
+
+(case "a runtime bin-match too short for the fixed prefix falls through"
+  (input (do (def (main (: n UInt8)) (match (bin (u8 n)) ((bin (u16 t) (bytes rest)) (Bytes.len rest)) (_ -9))) (export main)))
+  (call main (: 5 UInt8)) (output (: -9 Int64)))
+
+(case "a runtime bin-match binds a dependent-size bytes segment named by an earlier binder"
+  (input (do (def (main (: h Int64)) (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+    ((bin (u8 n) (bytes payload n)) (Bytes.len payload)) (_ -1))) (export main)))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: 1 Int64)) (output (: -1 Int64)))
