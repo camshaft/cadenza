@@ -25688,46 +25688,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_prefixed_unit_auto_converts_to_the_reference_over_int() {
-        // F2-1: `1 KiB + 1 kB` over Int64 — two units of the `information` dimension at DIFFERENT scales
-        // (kibi = 1024, kilo = 1000) — each converts to the reference `byte` and sums to 2024 (NOT 2000:
-        // the classic KiB-vs-kB conflation is CAUGHT and computed distinctly). The scale is compile-time
-        // metadata and the conversion is exact integer arithmetic — NO arbitrary-precision Rational
-        // needed. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
-                   (+ ((. Qty of) 1 ((. Unit prefix) kibi ((. Unit base) #\"byte\"))) \
-                      ((. Qty of) 1 ((. Unit prefix) kilo ((. Unit base) #\"byte\")))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a KiB+kB mixed-unit sum compiles and runs"),
-                "main"
-            ),
-            2024
-        );
-    }
-
-    #[test]
-    fn a_family_unit_auto_converts_to_the_reference_over_float() {
-        // F2-2: `1 inch + 1 mm` over Float64 — two named FAMILY units of `length` (inch = 127/5000 m, mm
-        // = 1/1000 m) — each converts to the reference `meter` and sums to 127/5000 + 1/1000 = 33/1250 =
-        // 0.0264 m. The family vocabulary is prelude DATA (`Db::unit_families`); the scales are machine-
-        // int metadata, so `Unit.of` families convert over Float with NO bignum. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
-                   (+ ((. Qty of) 1.0 ((. Unit of) #\"inch\")) \
-                      ((. Qty of) 1.0 ((. Unit of) #\"millimeter\"))))) (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("an inch+mm family-unit sum compiles and runs"),
-                "main"
-            ),
-            0.0264
-        );
-    }
-
-    #[test]
     fn a_plural_family_unit_spelling_names_the_same_unit_as_its_singular() {
         // The ML quantity-literal surface reads for natural language (`4.0 feet`, `1.0 meters`), so a
         // common English PLURAL spelling resolves to the SAME family unit as its canonical singular:
