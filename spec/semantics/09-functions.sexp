@@ -8421,3 +8421,18 @@
             (def (main (: n Int64)) (walk n ((. List push) ((. List push) ((. List push) (list) 1) 2) 3)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 9 Int64)) (live-objects known-leak 2))
+
+; -- breaker batch 468 (2026-08-27): compile-robustness pins from the depth/width sweep. wep1 pins
+; the SIXTEEN-param entry edge — the component-model max-flat-params boundary; 17+ currently emits
+; an INVALID component (silent bad artifact, filed to v-rust-backend with the 16/17 bisection —
+; the canonical ABI wants the memory-indirect convention past 16). rbw1-rbw3 pin wide/deep COMPILE
+; robustness: a 300-arm integer match dispatches, a 400-binding let chain threads, and a
+; 1,000,000-frame +1 recursion answers (the non-tail spine is loop-converted rather than
+; exhausting the wasm stack).
+
+(case "wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)"
+  (input (do
+    (def (main (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64) (: p6 Int64) (: p7 Int64) (: p8 Int64) (: p9 Int64) (: p10 Int64) (: p11 Int64) (: p12 Int64) (: p13 Int64) (: p14 Int64) (: p15 Int64)) (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ p0 p1) p2) p3) p4) p5) p6) p7) p8) p9) p10) p11) p12) p13) p14) p15))
+    (export main)))
+  (call main (: 0 Int64) (: 1 Int64) (: 2 Int64) (: 3 Int64) (: 4 Int64) (: 5 Int64) (: 6 Int64) (: 7 Int64) (: 8 Int64) (: 9 Int64) (: 10 Int64) (: 11 Int64) (: 12 Int64) (: 13 Int64) (: 14 Int64) (: 15 Int64))
+  (output (: 120 Int64)))

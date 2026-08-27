@@ -8006,3 +8006,7 @@ todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
+pass	rbw1 a three-hundred-arm integer match dispatches to the right arm
+pass	rbw2 a four-hundred-binding let chain threads sequentially
+pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does not exhaust the stack)
