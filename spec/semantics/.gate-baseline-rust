@@ -8457,3 +8457,4 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	a signature mismatch in ONE of several bound peers is rejected at compose time
+todo	a peer result handle passes straight through to another peer's arg without local inspection
