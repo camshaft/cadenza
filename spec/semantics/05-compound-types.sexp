@@ -20852,3 +20852,41 @@
   (call main (: 5 Int64))
   (output (: 2 Int64))
   (live-objects 0))
+
+; -- breaker batch 492 (2026-08-27): the consumer asymmetry COMPLETED (extends oqc1/oqc2). An
+; extraction-Some payload passed into a RECURSIVE callee leaks its 3 (oqc3 — the recursive-call
+; boundary does NOT balance the retain, unlike the non-recursive call/closure faces) — this IS
+; the Stage-B negative witness v-core-opt originally asked for: an opaque Call consumer that
+; leaks and must STAY known-leak under the allowlist (recursive callees are exactly the
+; unprovable case). The op-ARGUMENT dispatch face (oqc4) balances like a plain call — a second
+; zero-control. Consumer map: {non-recursive call, closure app, op-arg dispatch} balance ·
+; {in-place borrow lar1, inline builder mlr2, recursive call oqc3} leak.
+
+(case "oqc3 an extraction-Some payload consumed by a RECURSIVE callee leaks the retain (the true Stage-B negative witness)"
+  (input (do
+    (def (suml (: ys (List Int64)) (: i Int64))
+      (match (List.at ys i) ((Option.Some v) (+ v (suml ys (+ i 1)))) ((Option.None) 0)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (match (List.at xs 1)
+          ((Option.Some inner) (suml inner 0))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 3))
+
+(case "oqc4 an extraction-Some payload passed as an op ARGUMENT balances at the dispatch boundary"
+  (input (do
+    (effect E (op put (-> (List Int64) Int64)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (handle E 0
+          ((put (l) st (resume (List.len l) st)))
+          (match (List.at xs 1)
+            ((Option.Some inner) (E.put inner))
+            ((Option.None) -1)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
