@@ -520,6 +520,14 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
          | none => none)
         <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
         <|> (if qualHead? m children == some ("Map".toUTF8, "insert".toUTF8) then some (evalMapInsert m env fuel children) else none)
+        <|> (match qualHead? m children with            -- QUALIFIED built-in Option/Result ctors → built-in path
+             | some (q, c) =>
+               if q == "Option".toUTF8 && c == "Some".toUTF8 then some (evalUnaryCtor m env fuel children Value.some)
+               else if q == "Option".toUTF8 && c == "None".toUTF8 then some (Outcome.value Value.none)
+               else if q == "Result".toUTF8 && c == "Ok".toUTF8 then some (evalUnaryCtor m env fuel children Value.ok)
+               else if q == "Result".toUTF8 && c == "Err".toUTF8 then some (evalUnaryCtor m env fuel children Value.err)
+               else none
+             | none => none)
         <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
         <|> ((m.headName? (Node.list children)).bind (fun h =>
                if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
@@ -765,6 +773,27 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
   else if is "Map" "len" then
     some (match a1 with | some (.value (.map es)) => .value (.int es.size)
                         | some (.value _) => .unsupported "Map.len: not a map" | some o => o | none => .unsupported "Map.len arity")
+  else if is "List" "push" then
+    -- append an element (deferred as a poison if non-value, like a list literal element).
+    some (match a1 with
+          | some (.value (.list es)) =>
+            (match children[2]? with
+             | some xId => .value (.list (es.push (outcomeToValue (evalNode m env defaultIntTy fuel xId))))
+             | none => .unsupported "List.push arity")
+          | some (.value _) => .unsupported "List.push: not a list" | some o => o | none => .unsupported "List.push arity")
+  else if is "Bytes" "concat" then
+    some (match a1, a2 with
+          | some (.value (.bytes x)), some (.value (.bytes y)) => .value (.bytes (x ++ y))
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "Bytes.concat: non-bytes operand")
+  else if is "Option" "expect" then
+    -- unwrap `Some x` → x (observed); `None` traps with the given message (a custom trap → not modeled → skip).
+    some (match a1 with
+          | some (.value (.some x)) => observeShallow x
+          | some (.value .none) => .unsupported "Option.expect on None (trap-message semantics not modeled)"
+          | some (.value _) => .unsupported "Option.expect: operand is not an Option" | some o => o | none => .unsupported "Option.expect arity")
   else if is "List" "concat" then
     some (match a1, a2 with
           | some (.value (.list x)), some (.value (.list y)) => .value (.list (x ++ y))
