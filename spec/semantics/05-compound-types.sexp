@@ -21907,3 +21907,37 @@
   (call main (: 50 Int64))
   (output (: 50450 Int64))
   (live-objects 0))
+
+; ── breaker batch 531: deep-Set fences PRE-ARMED for the Set build-once increment (Maps landed
+; #4354; Sets verified NOT covered — sts1 + these arm the symmetric slice). 40-element constant
+; Set = a multi-level CHAMP; today it builds per-eval and reclaims (census 0); when the Set hoist
+; lands the clauses hold under the mechanism swap and the VALUES fence half-marked interior nodes
+; and in-place FBIP corruption. sts3's probes are RUNTIME-keyed — an all-constant probe set folds
+; the whole loop to a scalar program (the no-runtime-import vacuity trap, hit again this tick).
+
+(case "sts2 fifty frames of runtime-indexed membership over a 40-element constant Set hit every element and the miss cells"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (if (Set.contains (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (% k 45)) 1 0)
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 45 Int64))
+  (live-objects 0))
+
+(case "sts3 fifty frames of runtime-keyed Set.insert against a 40-element constant Set never corrupt it (sibling stays without the key)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
+            (u (Set.insert (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (+ 900 k))))
+        (+ (+ (if (Set.contains c (+ 900 k)) 100 0)
+              (+ (if (Set.contains u (+ 900 k)) 10 0) (if (Set.contains c (% k 45)) 1 0)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 545 Int64))
+  (live-objects 0))
