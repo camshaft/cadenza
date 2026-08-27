@@ -497,3 +497,17 @@
              (export main)))
   (call main (: 65 Int64)) (host-responses (respond hs.h (: 99 Int64))) (host-calls (call hs.h)) (output (: 99 Int64))
   (live-objects known-leak 2))
+
+; -- a host-op RESULT flowing into a Bytes-resource escape (migration from rcdzc a_scalar_host_op_result_
+; escaping_as_a_bytes_resource_runs_e2e, 2026-08-27): the host response value reaches the escaped Bytes
+; resource payload; no new drive clause (existing host-responses + value-escape).
+
+(case "a host op result escapes as a single-byte Bytes resource"
+  (input (do (effect hr (op h (-> Int64 UInt8)))
+             (def (main (: x Int64)) (host (hr) (Bytes.of (list (hr.h x)))))
+             (export main)))
+  (call main (: 9 Int64))
+  (host-responses (respond hr.h (: 7 UInt8)))
+  (host-calls (call hr.h))
+  (output (: b"\x07" Bytes))
+  (live-objects known-leak 1))
