@@ -1836,39 +1836,9 @@ fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
         "the record common-constructor hoist must lower the differing field to a branchless select \
          (build-once); found no select"
     );
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime record must build on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |c: bool, x: &str, y: &str| -> String {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![c.to_string(), x.to_string(), y.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => {
-                panic!("record common-ctor hoist trapped (miscompile?): {t}")
-            }
-        }
-    };
-    assert_eq!(
-        run(true, "10", "20"),
-        "10",
-        "c=true → differing field a = x"
-    );
-    assert_eq!(
-        run(false, "10", "20"),
-        "20",
-        "c=false → differing field a = y"
-    );
+    // The VALUE + arm/element guard are corpus-covered (02-binding-and-control common-constructor
+    // hoist family); only the build-once EMISSION witness (the opcode count above) stays here — the
+    // corpus cannot observe an opcode count.
 }
 
 /// The common-constructor hoist also fires for a same-length LIST: `(if c (list a 1) (list b 1))` builds
@@ -1904,31 +1874,9 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
         "the list common-constructor hoist must lower the differing element to a branchless select \
          (build-once); found no select"
     );
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime list must build on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |c: bool, a: &str, b: &str| -> String {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![c.to_string(), a.to_string(), b.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => {
-                panic!("list common-ctor hoist trapped (miscompile?): {t}")
-            }
-        }
-    };
-    assert_eq!(run(true, "10", "20"), "10", "c=true → element 0 = a");
-    assert_eq!(run(false, "10", "20"), "20", "c=false → element 0 = b");
+    // The VALUE + arm/element guard are corpus-covered (02-binding-and-control common-constructor
+    // hoist family); only the build-once EMISSION witness (the opcode count above) stays here — the
+    // corpus cannot observe an opcode count.
 }
 
 /// A trapping `cond` must NOT hoist through a common constructor when a SHARED (non-differing) payload
@@ -2191,42 +2139,9 @@ fn the_build_once_hoists_compose_through_synthesized_differing_positions() {
         selects >= 1,
         "the composed hoist must lower the deepest differing operand to a branchless select"
     );
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "runtime tuple/Option must build on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |c1: bool, c2: bool, a: i64, b: i64| -> String {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![c1.to_string(), c2.to_string(), a.to_string(), b.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => panic!("composed hoist trapped (miscompile?): {t}"),
-        }
-    };
-    assert_eq!(
-        run(true, false, 10, 20),
-        "11",
-        "c1 → Some a=10, +field1=1 → 11"
-    );
-    assert_eq!(
-        run(false, true, 10, 20),
-        "21",
-        "else-c2 → Some b=20, +1 → 21"
-    );
-    assert_eq!(
-        run(false, false, 10, 20),
-        "11",
-        "else-else → Some a=10, +1 → 11"
-    );
+    // The VALUE + arm/element guard are corpus-covered (02-binding-and-control common-constructor
+    // hoist family); only the build-once EMISSION witness (the opcode count above) stays here — the
+    // corpus cannot observe an opcode count.
 }
 
 /// A repeated bounds-checked indexed read `(Option.expect (List.at xs i))` is shared by CSE (one
