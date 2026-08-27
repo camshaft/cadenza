@@ -4069,7 +4069,9 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 5 1 1) (Tuple Int64 Int64 Int64)))
-  (live-objects known-leak 12))
+  ; The (tuple 5 1 1) folds to a constant, so its embedded constant cells now hoist build-once (WIT static
+  ; encoding) — census-excluded immortals — dropping the leak 12→7 (the residual is the runtime String rope).
+  (live-objects known-leak 7))
 
 ; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
 ; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a

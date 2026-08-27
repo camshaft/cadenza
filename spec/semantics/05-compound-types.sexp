@@ -21414,14 +21414,14 @@
   (output (: 5200 Int64))
   (live-objects 0))
 
-(case "ifb2 a let-bound constant tuple referenced twice const-propagates into two embedded allocations"
+(case "ifb2 a let-bound constant tuple referenced twice: the WHOLE `(tuple t t)` is a constant compound RETURN, so it hoists build-once (WIT static encoding) to a single census-excluded immortal — 0 mortal allocations"
   (input (do (def (main (: n Int64))
     (let ((t (tuple 1 2)))
       (tuple t t)))
     (export main)))
   (call main (: 5 Int64))
   (output (: (tuple (tuple 1 2) (tuple 1 2)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
-  (live-objects 3))
+  (live-objects 0))
 
 ; -- a RECORD sub-pattern nested under a variant, tuple, or list binds its field BY NAME at the real width
 ; (behavioral migration from rcdzc a_variant_nested_record_match_binder_wires_and_grounds_the_field_width +

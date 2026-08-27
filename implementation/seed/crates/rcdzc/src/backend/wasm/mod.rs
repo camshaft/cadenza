@@ -3139,6 +3139,22 @@ fn emit_runtime_resource(
     // so its rebuild ops join the import set (frozen below).
     let make_params = export_make_params(db, layout, export_def)?;
 
+    // BUILD-ONCE STATIC COMPOUNDS (WIT static encoding, 2026-08-27): the escaping bodies (the export +
+    // its call graph) may embed markable constant Tuple/Record/List/Map/Set literals — e.g. the inner
+    // `(tuple 1 2)` of a compound RETURN. Collect them as build-once roots and precompute the START init
+    // that builds each immortal, exactly as the ordinary `emit` path does — the resource-escape assembler
+    // never ran this before, so those constants built MORTAL per-`make` (the imc/irb corpus family). The
+    // collected roots are threaded onto the selection layout below (so the body's `Core::Tuple`/… arms emit
+    // `global.get` via `try_emit_static_compound`) and their count + init are passed to the core builder to
+    // emit the GLOBAL/START sections. Empty (no markable constant) → byte-identical to before.
+    let static_compounds = collect_static_compounds(db, &layout.order);
+    let static_compound_init = if static_compounds.is_empty() {
+        Vec::new()
+    } else {
+        // byte_base 0: the resource module has NO static-bytes globals, so compound globals ARE `0..n`.
+        select::build_static_compound_init(db, &static_compounds, 0, layout)?
+    };
+
     // Ops the reachable bodies emit (construction: arr-alloc/arr-set/box-*), PLUS the ops the walker
     // `t-encode` calls (arr-get + get-int/get-bool per template leaf). The walker ops are added here
     // because they appear only in the synthesized encode body, not in any reachable Core.
@@ -3168,6 +3184,26 @@ fn emit_runtime_resource(
     // Core, so add it here — it becomes one of the lowered ops, and the envelope threads it into the
     // separate `heap-dtor` instance the dtor imports.
     used.insert("drop");
+    // The static-compound START init builds each immortal with `arr-alloc` + boxed `arr-set` (+ `vec-of-arr`
+    // / `map-*` / `set-*` per kind), then `mark-immortal[-deep]`. When EVERY constant use is hoisted the
+    // bodies no longer emit those ops, so `collect_module_used_ops` would omit them and the init's
+    // `CallImport` would reference an undeclared import — force the full init op set when the table is
+    // non-empty (mirrors the ordinary `emit` path). Idempotent; no-op when there are no static compounds.
+    if !static_compounds.is_empty() {
+        used.insert("arr-alloc");
+        used.insert("arr-set");
+        used.insert("box-int");
+        used.insert("box-bool");
+        used.insert("bytes-alloc");
+        used.insert("bytes-set");
+        used.insert("mark-immortal");
+        used.insert("vec-of-arr");
+        used.insert("mark-immortal-deep");
+        used.insert("map-empty");
+        used.insert("map-insert");
+        used.insert("set-empty");
+        used.insert("set-insert");
+    }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
         .map(|name| {
@@ -3295,6 +3331,8 @@ fn emit_runtime_resource(
             &make_params.leaf_vts,
             &make_params.core_slots(),
             &escape_lifted_table(host_layout),
+            0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+            &[], // no static-compound init
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -3335,7 +3373,10 @@ fn emit_runtime_resource(
     let k = imports.len() as u32;
     let layout = layout
         .with_import_base(p + k + 2)
-        .with_extern_order(extern_order);
+        .with_extern_order(extern_order)
+        // Thread the build-once static compounds onto the selection layout so the body's `Core::Tuple`/… arms
+        // emit `global.get idx` (`try_emit_static_compound`) matching the GLOBAL section the builder lays.
+        .with_static_compounds(static_compounds.clone(), static_compound_init.clone());
     let layout = &layout;
 
     // Select every reachable body (the export + its call-graph). The export body returns the compound's
@@ -3381,6 +3422,8 @@ fn emit_runtime_resource(
         &make_params.leaf_vts,
         &make_params.core_slots(),
         &escape_lifted_table(layout),
+        static_compounds.len(),
+        &static_compound_init,
     )
     .map_err(Reject::decline)?;
     // DEBUG: a compound-returning program is debuggable too. The user function bodies lead the escape
@@ -8398,6 +8441,8 @@ fn emit_runtime_bytes_resource(
             &make_param_vts,
             &make_core_slots,
             &escape_lifted_table(host_layout),
+            0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+            &[], // no static-compound init
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -8499,6 +8544,8 @@ fn emit_runtime_bytes_resource(
         &make_param_vts,
         &make_core_slots,
         &escape_lifted_table(layout),
+        0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+        &[], // no static-compound init
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat/sum resource paths — the user bodies lead the escape core's code section,
@@ -8713,6 +8760,8 @@ fn emit_runtime_sum_resource(
             &make_param_vts,
             &make_core_slots,
             &escape_lifted_table(host_layout),
+            0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+            &[], // no static-compound init
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -8790,6 +8839,8 @@ fn emit_runtime_sum_resource(
         &make_param_vts,
         &make_core_slots,
         &escape_lifted_table(layout),
+        0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+        &[], // no static-compound init
     )
     .map_err(Reject::decline)?;
     // DEBUG: same as the flat resource path — the user bodies lead the code section, so the D2/D3
@@ -8974,6 +9025,8 @@ fn emit_recursive_sum_resource(
             &make_params.leaf_vts,
             &make_params.core_slots(),
             &escape_lifted_table(host_layout),
+            0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+            &[], // no static-compound init
         )
         .map_err(Reject::decline)?;
         append_debug_sections(db, host_layout, &funcs, &imports, spans, &mut main_core);
@@ -9039,6 +9092,8 @@ fn emit_recursive_sum_resource(
         &make_params.leaf_vts,
         &make_params.core_slots(),
         &escape_lifted_table(layout),
+        0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
+        &[], // no static-compound init
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);

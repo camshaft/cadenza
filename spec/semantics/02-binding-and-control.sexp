@@ -6433,7 +6433,9 @@
   (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64)))
   (call   main (: 5 Int64) (: 5 Int64))
   (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 1))
+  ; The returned tuple is fully CONSTANT (the complementary comparisons fold to 1/0 regardless of a,b), so it
+  ; now hoists build-once (WIT static encoding) to a census-excluded immortal — the former per-call leak is gone.
+  (live-objects 0))
 
 ; The complementary-comparison fold above fires on IDENTICAL operand pairs. These pin its GUARDS —
 ; the faces where a fold keyed on comparison SHAPE rather than operand identity (or one that dropped
@@ -6540,7 +6542,8 @@
   (output (: (tuple 0 1) (Tuple Int64 Int64)))
   (call   main (: 5 Int64) (: 3 Int64) (: -9 Int64))
   (output (: (tuple 0 1) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  ; Fully-constant folded tuple → build-once immortal (WIT static encoding), census-excluded, no per-call leak.
+  (live-objects 0))
 
 ; ── EQUALITY does not subsume: two `=` to different constants are a contradiction / a 2-point set ─────
 ; The same-direction subsumption fold (upper/lower half-lines collapse to the tighter/looser bound) is

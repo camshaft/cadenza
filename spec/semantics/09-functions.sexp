@@ -9412,19 +9412,24 @@
 
 ; -- breaker batch 512→516 (2026-08-27): incr6 calibration, mechanism CORRECTED per v-static-data's
 ; root-cause. The discriminator is NOT embedded/constructor-arg position — it is the ASSEMBLER: a
-; compound-RETURNING export routes through the value-ENCODE boundary assembler, which does not
-; emit the build-once GLOBAL/START sections (the multi-assembler-safety pattern), so ALL constants
-; on that path allocate per-eval (imc1 = outer 1 + inner 1; imc2 = 4). An INTERNALLY-used embedded
-; constant (scalar-returning main) DOES hoist. These clauses DROP (1 and 3) when the value-encode
-; assembler gains the build-once sections — that increment's acceptance.
+; compound-RETURNING export routes through the value-ENCODE boundary assembler, which USED NOT to
+; emit the build-once GLOBAL/START sections, so its embedded constants allocated per-eval.
+; WIT-STATIC-ENCODING increment (v-static-data, 2026-08-27): the FIXED-SHAPE tuple/record assembler
+; (`emit_runtime_resource`) now emits build-once GLOBAL/START sections, so an EMBEDDED markable
+; constant in such a return hoists to a build-once immortal global — imc1 dropped 2→1 (the inner
+; `(tuple 1 2)` is now census-excluded; only the outer `(tuple n …)`, which captures the runtime `n`,
+; is a mortal per-eval allocation). The COLLECTION-return path (imc2 list, irb1 33-elem list — these
+; route through the recursive-sum/`value-encode`-walker sibling assembler) and a TOP-LEVEL constant
+; return tuple (irb2, whose whole result is the constant) do NOT yet hoist — a follow-up increment
+; wires build-once into those sibling assemblers; they stay at their mortal counts here.
 
-(case "imc1 a constant tuple in a compound RETURN allocates per-eval (the value-encode assembler lacks build-once sections)"
+(case "imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal"
   (input (do (def (main (: n Int64)) (tuple n (tuple 1 2))) (export main)))
   (call main (: 5 Int64))
   (output (: (tuple 5 (tuple 1 2)) (Tuple Int64 (Tuple Int64 Int64))))
-  (live-objects 2))
+  (live-objects 1))
 
-(case "imc2 a constant tuple as a returned list element allocates likewise (same assembler path)"
+(case "imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)"
   (input (do (def (main (: n Int64)) (list (tuple 1 2) (tuple n 9))) (export main)))
   (call main (: 5 Int64))
   (output (: (list (tuple 1 2) (tuple 5 9)) (List (Tuple Int64 Int64))))
