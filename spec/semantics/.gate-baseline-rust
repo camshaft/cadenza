@@ -5405,6 +5405,10 @@ pass	el5 a List-of-UInt8 entry param measures and reads an element
 pass	el6 a List-of-Int32 entry param measures and reads an element
 pass	el7 a List-of-Float64 entry param measures and compares an element
 pass	el8 a nested List-of-List entry param measures both levels
+pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
+pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
+pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
+pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
 pass	elc1 a local closure captures the lifted List entry param and is invoked twice
 pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
