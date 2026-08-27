@@ -2332,6 +2332,7 @@ pass	a let-bound host result captured by two escaping closures fires the host op
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
+pass	a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)
 pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound returned closure applied twice folds each application independently

@@ -2787,6 +2787,25 @@
   (output (: 13 Int64))
   (live-objects known-leak 1))
 
+; The complement of the escaping-partial case above: the partial is over a RUNTIME closure (boxed in a sum,
+; extracted by a match), NOT a statically-known lambda, and a `let` breaks the curried-spine flatten —
+; `(match p ((Box.C f) (let ((g (f 3))) (g 4))))`. That gathers 1 of the closure's 2 curried args and would
+; need a residual-closure build the emit does not yet do, so it DECLINES cleanly rather than emit an invalid
+; module. The residual-closure lift is a later capability; the DIRECT full-arity `((f 3) 4)` = 7 flattens to
+; one call and is covered by the boxed-curried-closure cases.
+
+(case "a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)"
+  (doc    "A closure boxed in a sum and applied at partial arity through a `let` that breaks the spine
+           flatten gathers 1 of 2 curried args; the emit has no residual-closure build, so it declines
+           cleanly ('a partial application of a runtime closure ... is not yet emittable') rather than
+           produce an invalid module. Contrast the statically-known escaping partial above, which runs.")
+  (input  (do
+            (type Box (C (-> Int64 (-> Int64 Int64))))
+            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b)))))
+            (def (main) (let ((p (mk))) (match p ((Box.C f) (let ((g (f 3))) (g 4))))))
+            (export main)))
+  (declines))
+
 (case "a user-written MAP combinator builds a transformed list through its fn parameter"
   (doc    "The list-BUILDING HOF (the fold-list pins reduce to a scalar): `map-l` pushes `(f h)` per
            element, the closure capturing the boundary `k` — element 2 of the result is 3·14 = 42. The
