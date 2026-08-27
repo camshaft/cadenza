@@ -7892,3 +7892,11 @@
            param v, the trailing v reads the do-def — a rebind, not a spurious CDZ0101 unbound. f(v)=2v.")
   (input (do (def (f (: v Int64)) (do (def v (* v 2)) v)) (def (main (: v Int64)) (f v)) (export main)))
   (call main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "a do-local def function references a sibling do-local def function by name"
+  (doc    "A do-local `(def (f …) …)` FUNCTION references a sibling do-local `(def (dbl …) …)` function by
+           bare name: `dbl` binds lexically to a Lambda, so its use inside `f`'s body is a captured free
+           var that must be pinned before β-reduction (exactly as a module sibling is), else the copied
+           body re-resolves it against an orphan scope (a spurious CDZ0101). f(3) = dbl(3) + 1 = 7.")
+  (input (do (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1)) (f 3)))
+  (output (: 7 Int64)))

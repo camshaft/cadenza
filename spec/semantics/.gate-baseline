@@ -1947,6 +1947,7 @@ pass	a do-def shared across BOTH resume slots stays in scope (the accumulator-ar
 pass	a do-def value in a handle body flows into a perform's argument and stays in scope
 pass	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
 pass	a do-discarded OUTER perform under an inner handle threads its state advance across the level
+pass	a do-local def function references a sibling do-local def function by name
 pass	a do-local def shadowing a parameter rebinds the name (does not unbind it)
 pass	a do-local fn capturing a CONSTANT sibling local lowers (capture guard)
 pass	a do-local fn capturing a runtime-computed sibling local survives the enclosing fn's inlining
@@ -2699,6 +2700,7 @@ pass	a module in a top-level do sequence type-checks its members
 pass	a module may nest three deep
 pass	a module member named by the export clause is reachable
 pass	a module member not named by the export clause is private
+pass	a module member reading a sibling constant with an unannotated param compiles and runs
 pass	a module nested in a module projects as a nested record field
 pass	a module reflects itself via Ast.module and exports a compile-time content-address a caller imports
 pass	a module value definition registers a reachable export field
@@ -2930,8 +2932,10 @@ pass	a nested match on a recursive sum falls through when the inner variant diff
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
 pass	a nested match on a runtime scrutinee
 pass	a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm
+pass	a nested module and a sibling def in the same outer module both stay reachable
 pass	a nested module's exported member IS reachable through the chain despite a private sibling
 pass	a nested module's function export is applied through the projection chain
+pass	a nested module's inner function calls its inner sibling by bare name
 pass	a nested modulo by a dividing constant collapses to one modulo (across signs)
 pass	a nested modulo by a multiple collapses to a single modulo on a runtime operand
 pass	a nested modulo does NOT collapse when the inner divisor does not divide the outer

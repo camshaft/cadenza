@@ -872,6 +872,46 @@
             ((. outer f) 21)))
   (output (: 42 Int64)))
 
+(case "a nested module and a sibling def in the same outer module both stay reachable"
+  (doc    "A nested module and an ordinary `(def …)` coexist as members of one outer module — the outer's
+           record carries a field per member, module or def alike, and neither displaces the other. `(. (.
+           outer inner) v)` projects the nested module's export (5) and `(. outer w)` the sibling def (9);
+           their sum is 14. Pins that nesting a module does not shadow or drop a sibling value def.")
+  (input  (do
+            (module outer
+              (module inner
+                (def v 5))
+              (def w 9))
+            (+ (. (. outer inner) v) (. outer w))))
+  (output (: 14 Int64)))
+
+(case "a nested module's inner function calls its inner sibling by bare name"
+  (doc    "In-module sibling scope holds INSIDE a nested module too: the inner module's `g` references its
+           inner sibling `dbl` by bare name (the same Case-R sibling resolution the outer level uses), and
+           `g` is reached through the projection chain. g(20) = dbl(20) + 1 = 41. Pins that mutual member
+           visibility is per-module at every nesting depth, not only at the outermost level.")
+  (input  (do
+            (module outer
+              (module inner
+                (def (dbl x) (* x 2))
+                (def (g x) (+ (dbl x) 1))))
+            ((. (. outer inner) g) 20)))
+  (output (: 41 Int64)))
+
+(case "a module member reading a sibling constant with an unannotated param compiles and runs"
+  (doc    "The Circle variant of the module-qualified-call shape (companion to the Temp c-to-f case): a
+           module member `area` reads a sibling CONSTANT `pi` and multiplies an UNANNOTATED param `r`,
+           reached by the qualified call `((. Circle area) 10)`. The unannotated param is grounded by the
+           body (`pi * (r * r)` is Int64) with the export clause not blocking registration. area(10) = 3 *
+           (10 * 10) = 300.")
+  (input  (do
+            (module Circle
+              (def pi 3)
+              (def (area r) (* pi (* r r)))
+              (export area))
+            ((. Circle area) 10)))
+  (output (: 300 Int64)))
+
 (case "a module's delegated capability is reachable as metadata, not as an export"
   (doc    "Witnesses core-semantics.md #A Module Carries Its Manifest And Entry As Metadata:
            the capabilities are reached by the (meta …) key, distinct from the export
