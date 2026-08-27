@@ -302,3 +302,64 @@
               (def (main (: x Int64)) (host (M) (Map.len (Map.insert (M.mk x) 3 (+ x 2))))) (export main)))
   (call   main (: 7 Int64))
   (output (: 3 Int64)))
+; ── the ENTRYPOINT'S OWN result escapes as a runtime resource while reaching a peer op (the fused
+; envelope: the consumer imports BOTH the peer interface AND the value-heap runtime, and main RETURNS
+; the raw peer-produced compound rather than reading a scalar off it). Distinct emit paths per result
+; shape — flat Tuple (assemble_extern_runtime_resource), non-recursive Option (emit_runtime_sum_resource),
+; recursive List (emit_recursive_sum_resource). Migrated from the in-crate rcdzc PL35/PL36/PL37.
+(case "ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope"
+  (doc    "PROVIDER `mkpair(x)` = (x, x+1); the consumer RETURNS the raw tuple the peer produced, so the
+           entrypoint's OWN result escapes as a runtime resource while a peer op is reached in the body
+           (the component imports both the peer interface and the value-heap runtime). main(9) = (9,10),
+           escaping to the host as its canonical value form.")
+  (peer   "cadenza:p/api" (do (def (mkpair (: x Int64)) (tuple x (+ x 1))) (export mkpair)))
+  (input  (do (effect P (op mkpair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
+              (def (main (: x Int64)) (host (P) (P.mkpair x))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: (tuple 9 10) (Tuple Int64 Int64))))
+
+(case "por1 a peer Option result escapes the entrypoint via the fused envelope"
+  (doc    "The non-recursive SUM-resource escape path (emit_runtime_sum_resource, peer-aware): main RETURNS
+           the raw Option a peer-derived list was indexed into (`List.at` IS the whole body), so the sum
+           result escapes as a resource while the peer op `mklist` is reached. mklist(7)=[8,9],
+           List.at 0 = Some 8; main RETURNS that Option → escapes as its value form.")
+  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
+              (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: (Some 8) (Option Int64))))
+
+(case "plr1 a peer LIST result escapes the entrypoint via the fused envelope"
+  (doc    "The recursive-sum / value-encode walker escape path (emit_recursive_sum_resource), distinct from
+           ptr1's flat Tuple and por1's non-recursive Option: main RETURNS the raw List the peer produced,
+           so a variable-length collection escapes the entrypoint as a resource. mklist(7)=[8,9]; main
+           RETURNS it → escapes as the List's value form.")
+  (peer   "cadenza:l/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
+              (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: (list 8 9) (List Int64))))
+
+; ── peer RESULT crossings read down to a scalar (no entrypoint escape): a BIGINT handle and a NESTED
+; compound. Migrated from the in-crate rcdzc PL25/PL26.
+(case "pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds"
+  (doc    "PROVIDER `big(x)` = BigInt.of(x) widens the fixed-width int to a bignum handle (is_extern_heap_type,
+           crosses as a u32 handle like a compound). The consumer compares the crossed BigInt to a locally
+           built BigInt.of(x): big(42) == BigInt.of(42) → equal → 1. Confirms the bignum handle crosses and
+           value-equality holds across the boundary.")
+  (peer   "cadenza:big/api" (do (def (big (: x Int64)) (BigInt.of x)) (export big)))
+  (input  (do (effect B (op big (-> Int64 BigInt))) (bind B "cadenza:big/api")
+              (def (main (: x Int64)) (host (B) (if (= (B.big x) (BigInt.of x)) 1 0))) (export main)))
+  (call   main (: 42 Int64))
+  (output (: 1 Int64)))
+
+(case "pnc1 a peer op returning a nested compound crosses as one handle and is projected"
+  (doc    "PROVIDER `nest(x)` = (tuple (list x x x) (+ x 1)) — a tuple whose first element is a List; the whole
+           nesting crosses as a SINGLE handle. The consumer projects element 0 (the nested List), reads its
+           List.len, and adds scalar element 1: nest(5)=([5,5,5],6), len 3 + 6 = 9. Pins that a compound
+           CONTAINING a collection crosses intact and the inner list is reachable via projection.")
+  (peer   "cadenza:n/api" (do (def (nest (: x Int64)) (tuple (list x x x) (+ x 1))) (export nest)))
+  (input  (do (effect N (op nest (-> Int64 (Tuple (List Int64) Int64)))) (bind N "cadenza:n/api")
+              (def (main (: x Int64)) (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 9 Int64)))

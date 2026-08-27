@@ -1189,6 +1189,7 @@ pass	a String-to-String transformer op — a rope argument crosses in, a wrapped
 pass	a String.at result then reuse of the source does not double-free
 pass	a String.slice VIEW built in the ARM crosses back through resume — the body measures it
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
+pass	a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
 pass	a Symbol literal pattern over a String scrutinee is rejected at the nominal boundary
@@ -7145,6 +7146,7 @@ pass	partial application captures a runtime parameter in the residual lambda
 pass	pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds the row by a recursive pairwise-sum answering the row total (a power of two), coef reads the SEED-KEYED binomial coefficient mid-descent and after, and the out-of-range read answers -1
 pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
+pass	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
 pass	pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route
 pass	pbr2 THREE-way match-branch resumes — each residue class answers and strides differently, three dispatches walk the classes
 pass	pcc1 a partial ctor in an inline tuple completes when projected and applied
@@ -7208,13 +7210,16 @@ pass	pjr2 a doubly-nested projected list consumed then re-read is retained (proj
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
 pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
 pass	pla1 a list argument crosses inbound to a peer and is read by the peer op
+pass	plr1 a peer LIST result escapes the entrypoint via the fused envelope
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
 pass	pm1 LITERAL match arms grade the state INSIDE the handler arm — a mod-4 walker crosses all four literal rows
+pass	pnc1 a peer op returning a nested compound crosses as one handle and is projected
 pass	pop1 a POPCORN kettle — each heat raises the temperature five degrees answering how many NEW kernels popped (thresholds every three degrees from the seed base, the count derived by differencing the running total), bowl reads the total, and the cool kettle pops a single late kernel while the hot one accelerates through five
 pass	popping a field yields its value and the remaining record
 pass	popping a tuple with a runtime element separates the head from the rest
 pass	popping a tuple yields element zero and the remaining tuple
 pass	popping an absent field is rejected
+pass	por1 a peer Option result escapes the entrypoint via the fused envelope
 pass	pp1 a PING-PONG data thread across two handlers — A's answer feeds B's argument and B's answer feeds A's next argument, additive and modular-multiplicative arms advance independently
 pass	pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild
 pass	pr1 List.prepend onto a MERGED vector grows the front without disturbing the seam
@@ -7281,6 +7286,7 @@ pass	prs1 TWIN parking meters — feed adds coins times the seed rate to one met
 pass	ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack
 pass	psr1 a PREPEND-rope accumulator — each push prepends its piece so the OLDEST piece rides at the END, the closing slice proves the reversal order and the piece width varies by seed
 pass	pst1 a POSTMARK desk where every stamp weight is a LET CHAIN COMPUTED AT THE PERFORM SITE — the second stamp's argument let-binds the first answer's tens digit doubled-plus-one, the third stamp's argument chains two lets folding the second answer's low digit with the audit's remainder before a mod-seven clamp, stamp folds the weight into the total counting stamps and echoing weight and count, audit reads the total mod one hundred, and the seed sets the first weight so every downstream let chain carries different bindings between the runs
+pass	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope
 pass	pts1 a 2D POINT under quarter-turn rotations and translations — rot maps (x,y) to (y,-x) answering a sign-tagged composite, mv translates answering the Manhattan norm, quad reads the quadrant, and the seeds trace different orbits around the origin
 pass	pure guards on fused-match arms read the payload binder and an enclosing capture
 pass	pushing an element of a different type onto a list is a type error
@@ -8830,4 +8836,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a SumExpect result beside an i64 arith element in a tuple gets a disjoint scratch slot
