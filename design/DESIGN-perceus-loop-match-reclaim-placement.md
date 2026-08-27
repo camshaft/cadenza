@@ -115,16 +115,43 @@ for `TailPos::Tail(Some(_))` (the loop back-edge) — the gate that declines the
 emit is `emit_loop_iteration` (@7849): it evaluates the new args, then `local.set` each param slot
 (`param_slots`, incl. `xs ← t`), then `Br(loop_top)`.
 
-*Open with v-runtime (pairing):* the SPINE-slot to drop is the walked param's OLD slot value (`local 0`)
-BEFORE the `xs ← t` reassign in `emit_loop_iteration`; the DUP-COUNT to balance against is `xs`'s per-
-iteration retains (`code.dup_sites` count for the walked param — the WAT shows 2–3 `dup`s, of which the
-tail `vec-drop` CONSUMES one to mint `t`). The drop must net exactly one spine-cell reclaim per iteration:
-after the head read + the tail `vec-drop` have taken their references, drop the residual spine ref before
-the slot reassign. 🚨 UAF-critical: over-dropping frees the tail `t` (the next iteration's param → next-
-iter UAF); under-dropping keeps the leak. Need v-runtime's exact rc arithmetic — how many of the 2–3
-`dup`s survive to the back-edge vs are consumed by `vec-drop`/`vec-get`, and where the residual-drop lands
-relative to the tail `vec-drop`. This is the emit analogue of the MatchSum shell reclaim but on the `br`
-path, and it is the biggest remaining leak class (self-loop-tail fold/count/walk family).
+**RESOLVED with v-runtime (rc-read, 2026-08-28) — it is OVER-DUP, not a missing drop; fix = CONSUME-LAST
+ORDERING + last-use-no-dup, two INSEPARABLE parts.** Per-op ownership (runtime.wit + select.rs): `vec-len`
+BORROWS the walked param, `vec-get` BORROWS it (head `dup`'d out separately), `vec-drop(xs,1) → t`
+CONSUMES it (op 72, reuses the spine into `t` at rc==1 via FBIP). So the walked param needs ZERO dups: rc 1
+in, borrow-read by len/get, then CONSUMED by `vec-drop` (rc 1→0, reuse). The leak is the emit OVER-DUPPING:
+`mark_binder_dups_inner`'s Param arm marks the walked param at `consuming=true && live_after=true` — the
+CONSUME (`vec-drop`) is forced to `dup` because a SIBLING BORROW (`vec-get` head) is treated as
+simultaneously live (the sequential-group "all siblings live" model). WAT confirms `vec-drop`(@156)
+currently emits BEFORE `vec-get`(@161), so at the consume the head is not yet read → live_after=true → dup;
+that dup orphans at the `xs ← t` reassign = the leak (and inflates rc so `vec-drop` path-copies instead of
+reusing). This is why v-runtime's 3 prior back-edge-DROP attempts did nothing (rc ≥ 2 from over-dups; no
+separate spine cell — `vec-drop` already consumes/reuses it).
+
+THE FIX (two parts, ATOMIC — must land together):
+- **PART 1 — CONSUME-LAST emit ordering (v-core-opt emit lane).** `emit_loop_iteration` (@7849) evaluates
+  the recursive-call args left-to-right (push @~7890) then pops reverse into param slots (@~7903). For
+  `(go t (+ acc h))`, arg0 `t` (`vec-drop`, CONSUME) evaluates before arg1 `(+ acc h)` (`vec-get`, BORROW).
+  Reorder so every arg that BORROWS the walked param is evaluated BEFORE any arg that CONSUMES it (a
+  coordinated eval+pop reorder — the pop order must track the new stack order; semantics-preserving since
+  the arg reads are independent, v-runtime confirmed `h` before `t` changes no value). After the reorder
+  `vec-drop` is the GENUINE LAST use of the walked param.
+- **PART 2 — last-use-no-dup (`mark_binder_dups` refinement).** A CONSUME of the binder that is the LAST
+  use — only live-after siblings are BORROWS that already completed — needs NO dup. Refine the
+  sequential-group model to sequential liveness (a borrow RELEASES at its read, so a borrow sequenced
+  before a consume is not live across it). Post-PART-1, `vec-drop`'s live_after has no walked-param borrow
+  → false → no dup.
+- 🚨 **PART 1 IS THE UAF-SAFETY GATE.** Suppressing the consume's dup WITHOUT the reorder is a UAF: if
+  `vec-drop` (frees/reuses xs) stays before `vec-get` (borrow) and the dup is gone, `vec-get` reads a freed
+  xs. Gate PART 2 on "the consume is the LAST use of the binder (all borrows sequenced before it)" — which
+  PART 1 guarantees. Do NOT land PART 2 without PART 1.
+
+NET: xs rc 1 → borrows (rc 1) → `vec-drop` consumes the sole ref (rc 1→0, FBIP-reuse into `t`) → ZERO dups,
+ZERO leak, reuse-not-path-copy. Generalizes across fold/count/walk (walked param = N borrows + 1
+tail-consume; make the consume last, no dup). Biggest remaining leak class (~333). Acceptance (v-runtime
+co-verify): fold/count/walk → 0 value-correct + no-trap + reused-tail-not-double-freed, AND a counter-case
+where a borrow WOULD-be-after-consume stays correctly dup'd (proves the last-use gate). Implement PART 1 +
+PART 2 atomically; trace the reordered WAT (`vec-drop` last, no dup, reuse); circulate the diff.
 
 ## What actually leaks: generic-sum instantiation × heap payload
 
