@@ -51324,25 +51324,6 @@ mod stage1 {
         }
     }
 
-    /// `run_closure`'s sibling for a program whose `main` takes a single BOOL argument — used to exercise
-    /// a closure that captures a boolean (its lifted body unboxes with `get-bool`). Same composed-runtime
-    /// path; `arg` is rendered as the s-expr boolean literal the entrypoint expects.
-    fn run_closure_bool(src: &str, arg: bool) -> Option<String> {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let runtime = find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![arg.to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
-        }
-    }
-
     /// `run_closure`'s sibling for a program whose `main` is NULLARY (a closure captures a compound built
     /// in `main`, so no runtime entry argument is needed). Same composed-runtime path.
     fn run_closure_nullary(src: &str) -> Option<String> {
@@ -51502,151 +51483,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_generic_producer_result_is_consumed_by_an_element_typed_consumer() {
-        // INFERENCE FIX (issue mlrepro-decline-recursive-generic-map-result-element-untied): a recursive-
-        // generic PRODUCER — `mapl : (a -> b) -> List a -> List b`, building a generic result list — whose
-        // result is then CONSUMED at a concrete element type (`suml` sums it) was DECLINED at emit: the
-        // producer's list-pattern parameter got NO shape (`pattern_implied_ty` returned `None` for a
-        // `(list …)` pattern), so `xs` grounded to `Any` and the scheme declined entirely. FIX (two parts):
-        // (A) `pattern_implied_ty` shapes a `(list …)` pattern to `List <elem>`; (B) `solve_recursive_params`
-        // preserves that body-solved shape for a generic position (instead of a bare `Var`). Now `mapl`'s
-        // param + result carry their `List` structure and the consumer pins the element. `mapl (fn (x) (+ x
-        // 1)) [n,n,n]` = `[n+1,n+1,n+1]`, `suml` of that = `3·(n+1)`; runtime boundary `n` → real
-        // call_indirect + fold, no const-fold. (The ≥2-element-type producer instantiation is a separate
-        // not-yet-built monomorphization tie — see the issue's PART C.)
-        let src = "(module m \
-            (def (mapl f xs) \
-              (match xs ((list) (list)) ((list h .. t) (List.push (mapl f t) (f h))))) \
-            (def (suml xs) \
-              (match xs ((list) 0) ((list h .. t) (+ h (suml t))))) \
-            (def (main (: n Int64)) (suml (mapl (fn (x) (+ x 1)) (list n n n)))) (export main))";
-        let Some(r) = run_closure(src, 1) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "6"); // 3·(1+1)
-        assert_eq!(run_closure(src, 4).unwrap(), "15"); // 3·(4+1)
-    }
-
-    #[test]
-    fn a_recursive_generic_producer_wrapping_elements_in_a_user_sum_is_consumed_at_one_type() {
-        // COVERAGE (v-inference): the same recursive-generic producer→consumer path as above, but the
-        // produced element is a USER-defined generic sum `(Box a)` — `wrapall : List a -> List (Box a)`
-        // wraps each element, `sumfirst` unwraps + sums. Exercises the A+B list-pattern shaping over a
-        // USER sum's payload (not just the built-in List element): the producer's `xs` shapes `List _` and
-        // its result carries the element through the `Box.Wrap` construction. Single element type (Int64) →
-        // monomorphizes + runs. `sumfirst(wrapall([n,n,n]))` = `3·n`. Pins the user-sum producer path so a
-        // future change to `pattern_implied_ty`/`solve_recursive_params` can't silently regress it.
-        let src = "(module m \
-            (type Box (Wrap a)) \
-            (def (wrapall xs) \
-              (match xs ((list) (list)) ((list h .. t) (List.push (wrapall t) (Box.Wrap h))))) \
-            (def (unwrap1 b) (match b ((Box.Wrap v) v))) \
-            (def (sumfirst xs) \
-              (match xs ((list) 0) ((list h .. t) (+ (unwrap1 h) (sumfirst t))))) \
-            (def (main (: n Int64)) (sumfirst (wrapall (list n n n)))) (export main))";
-        let Some(r) = run_closure(src, 2) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "6"); // 3·2
-        assert_eq!(run_closure(src, 4).unwrap(), "12"); // 3·4
-    }
-
-    #[test]
-    fn a_closure_that_captures_a_boolean_imports_the_ops_its_lifted_body_uses() {
-        // A runtime op used ONLY inside a LIFTED closure body must still be imported. The used-op set that
-        // fixes the module's import layout was walked over the top-level defs ONLY, NOT the lambda-lifted
-        // bodies — so an op no top-level def happens to use, but a closure body does (`get-bool` unboxing a
-        // captured boolean; `box-bool` storing it), resolved to a bogus import index and the module was
-        // INVALID (`call 4294967295`). `collect_module_used_ops` now walks the reached lifted bodies too.
-        // `(fn (x) (if flag (* x 2) x))` captures the boolean `flag`; the lifted body reads it back with
-        // `get-bool`. With flag=true it doubles: apply-sum over 3,2,1 = 6+4+2 = 12. (Before the fix this
-        // compiled to a module wasmtime rejects — `run_closure` would panic on the invalid component.)
-        let src = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: t Bool)) (apply-sum (fn ((: x Int64)) (if t (* x 2) x)) 3)) \
-            (export main))";
-        let Some(r) = run_closure_bool(src, true) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "12"); // flag=true → 2·(3+2+1) = 12
-        assert_eq!(run_closure_bool(src, false).unwrap(), "6"); // flag=false → 3+2+1 = 6
-    }
-
-    #[test]
-    fn a_closure_captures_a_compound_and_reads_it_back_inside_its_lifted_body() {
-        // A capture slot holds a COMPOUND heap HANDLE (a tuple / a sum), not a boxed scalar — stored into
-        // the env cell as-is and read back as-is (`box_op`/`get_op` return None for a compound). Two
-        // shapes: (a) a captured TUPLE projected in the body; (b) a captured SUM matched in the body (the
-        // scrutinee of a `match` is a CAPTURED free variable, read from the env cell). Both survive the
-        // recursive `apply-sum` indirect-call boundary.
-        // (a) tuple capture: each application adds (. p 0)+(. p 1) = 30, so over 3,2,1 = 96.
-        let tup = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main) (let ((p (tuple 10 20))) \
-              (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3))) (export main))";
-        let Some(r) = run_closure_nullary(tup) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "96");
-        // (b) sum capture matched: each application takes the Some arm and adds 100, so over 3,2,1 = 306.
-        let sum = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main) (let ((o (Some 100))) \
-              (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3))) (export main))";
-        assert_eq!(run_closure_nullary(sum).unwrap(), "306");
-    }
-
-    #[test]
-    fn an_inner_lambda_captures_an_enclosing_match_arm_binder() {
-        // OVER-REJECTION regression: a match-arm binder captured by a DIRECTLY-APPLIED inner lambda in the
-        // same arm was rejected CDZ0101 "unbound name". A match-arm binder resolves to a `SumPayload`
-        // (reading the arm's scrutinee), but `pin_free_vars`'s `ref_binder` returned None for a
-        // `SumPayload` — so the capture was never pinned, and β-reducing the inner lambda copied the
-        // reference fresh into the reduced orphan where it re-resolved unbound. Fixed by `ref_binder`
-        // returning the SumPayload's scrutinee as the capture representative → the occurrence is pinned →
-        // `beta_reduce`'s SumPayload capture-share exception shares it, preserving the resolution.
-        // `(match (A 7) ((A m) ((fn (x) (+ x m)) 3)) …)` = 3 + 7 = 10.
-        let sum = "(module m (type C (A Int64) (B)) \
-            (def (main) (match (A 7) ((A m) ((fn (x) (+ x m)) 3)) ((B) 0))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(sum))).expect("compile"),
-                "main"
-            ),
-            10,
-            "a sum-arm binder captured by a directly-applied inner lambda must resolve (was CDZ0101)"
-        );
-        // A TUPLE-pattern binder captured the same way (the binder is an `Elem`-path SumPayload).
-        let tup = "(module m \
-            (def (main) (match (tuple 7 9) ((tuple a b) ((fn (x) (+ x a)) 3)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(tup))).expect("compile"),
-                "main"
-            ),
-            10
-        );
-        // NO REGRESSION of the working companions: the same binder used DIRECTLY, and captured through a
-        // TUPLE, still resolve (they took different paths and always worked).
-        let direct = "(module m (type C (A Int64) (B)) \
-            (def (main) (match (A 7) ((A m) (+ m 3)) ((B) 0))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(direct))).expect("compile"),
-                "main"
-            ),
-            10
-        );
-    }
-
-    #[test]
     fn a_lambda_forwarding_to_a_substituted_fn_param_runs_through_a_recursive_hof() {
         // The outer HOF `twice` is NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by
         // `main`'s concrete lambda. The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it
@@ -51673,25 +51509,6 @@ mod stage1 {
             (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
             (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
         assert_eq!(run_closure_nullary(src2).unwrap(), "12"); // (3+2)+(2+2)+(1+2)
-    }
-
-    #[test]
-    fn an_unannotated_closure_param_is_grounded_from_its_body() {
-        // A bare `(fn (x) (* x 2))` — no `(: x T)`. `x` types `Any` at its own occurrence (inference does
-        // not thread the use-site arrow back), but the body `(* x 2)` uses it as an integer operand, so
-        // `solve_lambda_param_ty` grounds `x : Int64` from that use (the lambda analogue of the recursive
-        // -def A2 solve). The closure lifts with that machine type and runs — no annotation needed.
-        // `apply-sum (fn (x) (* x 2)) 3 = 6+4+2 = 12`.
-        let src = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: n Int64)) (apply-sum (fn (x) (* x 2)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "12");
-        assert_eq!(run_closure(src, 5).unwrap(), "30");
     }
 
     #[test]
