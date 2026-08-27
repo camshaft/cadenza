@@ -109,18 +109,46 @@ targeting the spine slot rather than the whole scrutinee.
 balance against (`code.dup_sites` for the walked param), so the drop lands after the retains and before
 the slot reassign.
 
-## Acceptance and fence (from #3833, unchanged)
+## What actually leaks: generic-sum instantiation × heap payload
+
+Breaker localized the leak family precisely (#3865, `df` quad in `05-compound-types.sexp`). A
+construct-then-destructure over a MONOMORPHIC sum whose shape mirrors `Option` at a heap payload
+(`df1`) DEFORESTS — the construct fuses with the immediate destructure, no shell is allocated, nothing
+to reclaim. The SAME shape as a GENERIC sum (`(type (GBox a) …)`) at a heap payload (`df2`) does NOT
+fuse — it allocates the shell and leaks 3 (identical to `Option`'s `d4`). Generic-at-scalar (`df3`) and
+`Option`-at-scalar (`df4`) both deforest. So the leak family is exactly **generic-sum instantiation × a
+heap payload**; prelude-ness is incidental (`Option`/`Result` leak because they are generic). This
+scopes the reclaim increment: the shells that reach the reclaim gate are the instantiated-generic ones
+the fusion pass leaves un-deforested.
+
+## Acceptance and fence (corpus-pinned by breaker #3863/#3865, measured on the debug runtime)
 
 - Reclaim-to-zero (flip `(live-objects known-leak N)` → `(live-objects 0)` in the SAME PR, per v-nix):
-  `d4` (minimal Option), `dm1`/`d3` (scaling), `rs1` (Result), `rs2` (nested Option), `ap1` (arm/handler
-  position); plus the self-loop `fold`/`count` family for site A.
-- Fence (must STAY correct — leaking is acceptable, a UAF is not): `dst2`/`dst5`/`dst6` (user-sum
-  controls), `rs3` (whole-binding), and the three trap witnesses `mts1`/`mmx1`/`rrb1` (must NOT be
-  reclaimed until the reuse-clean predicate proves them safe).
-- Repros: `queue/adv-option-nested-payload-destructure-leak.*.sexp`; `mts1`/`mmx1`/`rrb1` in
-  `spec/semantics/14c-effects-and-handlers.sexp`; site-A minimal
+  `d4=3` (minimal Option), `dm1=7`/`d3=5` (scaling), `drs1=3` (Result), `drs2=4` (nested Option),
+  `ap1=3` (arm/handler position, in `14c-effects-and-handlers.sexp` beside the fence), `df2=3` (the
+  generic-user-sum witness); plus the self-loop `fold`/`count` family for site A. (Note the corpus
+  renames that dodge handler-state prefix collisions: the acceptance `rs1`/`rs2`/`rs3` are `drs1`/`drs2`/
+  `drs3`, and `d2` is `dt2` — the un-prefixed `rs*` in the corpus are UNRELATED handler-state cases.)
+- Fence (must STAY at its current value — leaking is acceptable, a UAF is not, and a control must not be
+  over-corrected): the three trap witnesses `mts1`/`mmx1`/`rrb1` stay `known-leak` (must NOT be reclaimed
+  until the reuse-clean predicate proves them safe); the zero-controls `dt2`/`d6`/`dst2`/`dst5`/`dst6`
+  (and the deforesting `d5`/`drs3`/`df1`/`df3`/`df4`) stay `(live-objects 0)`.
+- Repros: the acceptance/`df` rows in `05-compound-types.sexp`; `ap1`/`mts1`/`mmx1`/`rrb1` in
+  `14c-effects-and-handlers.sexp`; site-A minimal
   `(def (go (: xs (List Int64)) (: acc Int64)) (match xs ((list) acc) ((list h .. t) (go t (+ acc h)))))`
-  (leaks 9 at length 4). Verify on the debug runtime with `--report-live-objects`.
+  (leaks 9 at length 4). Verify on the debug runtime `052KQzQP` with `--report-live-objects`.
+
+## Alternative / complementary: deforest the instantiated-generic path (breaker #3865)
+
+The reclaim-placement increments below reclaim a shell that WAS allocated. A complementary attack is to
+stop allocating it: make the generic construct-then-destructure fuse the way the monomorphic one does
+(`df2` → read like `df1`). That eliminates the leak at its source for the pure construct-then-immediately-
+destructure subset (`d4`/`dm1`/`d3`/`df2`), with no reclaim needed. It does NOT cover shells whose
+payload genuinely escapes or is threaded (`ap1`, and the `mts1`/`mmx1`/`rrb1` shapes) — those still need
+the reclaim decision. So deforestation and reclaim-placement are complementary: fusion removes the
+fusable subset, reclaim covers the rest. Deforestation likely lives in the monomorphization/inlining
+pass rather than the shell-reclaim gate; it is out of this doc's emit-placement scope but recorded here
+as the cheaper fix for the fusable cases if that pass's owner takes it.
 
 ## Increment order
 
