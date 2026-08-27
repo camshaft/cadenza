@@ -343,6 +343,32 @@
             (export main)))
   (error  CDZ0203))
 
+(case "a nullary generic producer argument with no element source declines with a nullary-specific message"
+  (doc    "`(count (empty))` feeds a NULLARY generic producer `empty : forall a. GIter a` into a generic
+           recursive consumer — nothing determines the element type, so it cannot monomorphize (CDZ0201).
+           The message names the NULLARY-PRODUCER shape (its workaround is to annotate THAT argument), not
+           the generic three-shape 'annotate a nested argument' advice which does not apply to a producer
+           that takes no argument.")
+  (input  (do
+            (type GIter (Nil) (Cons a (GIter a)))
+            (def (empty) (GIter.Nil))
+            (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest)))))
+            (def (main) (count (empty)))
+            (export main)))
+  (error  CDZ0201 (message "nullary generic producer")))
+
+(case "annotating a nullary generic producer's result grounds the element and it runs"
+  (doc    "The workaround the message above names: annotating the producer call's result
+           `(: (empty) (GIter Int64))` grounds the element type, so the program compiles and runs —
+           `count` of the empty GIter is 0. The passing companion of the nullary-producer decline.")
+  (input  (do
+            (type GIter (Nil) (Cons a (GIter a)))
+            (def (empty) (GIter.Nil))
+            (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest)))))
+            (def (main) (count (: (empty) (GIter Int64))))
+            (export main)))
+  (call   main) (output (: 0 Int64)))
+
 (case "a valid deeply-nested generic type argument still resolves and runs (the crash-guard control)"
   (doc    "The passing control for the cyclic-substitution guard above: the SAME shape but the nested generic
            is FULLY applied — `(: x (Option (Box Int64)))` — so no cycle forms and the annotation resolves

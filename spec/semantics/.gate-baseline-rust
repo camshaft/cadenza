@@ -2999,6 +2999,7 @@ pass	a nullary constructor is a single-arity function taking unit
 pass	a nullary do-local def followed by a use of it computes over its result
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
+pass	a nullary generic producer argument with no element source declines with a nullary-specific message
 pass	a nullary helper called and used in arithmetic
 pass	a nullary lambda applied yields its body
 pass	a nullary module export applied to a non-unit argument is rejected
@@ -5250,6 +5251,7 @@ pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
 pass	and short-circuits at run time: a false left operand skips the trapping right operand
 pass	angle units radian and degree are first-class and exact within their own dimension
+pass	annotating a nullary generic producer's result grounds the element and it runs
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
 pass	applying a boolean is a type error
