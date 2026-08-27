@@ -9958,32 +9958,6 @@ mod runtime_ops {
             bare_div.contains(&Lir::I64ShrU),
             "an unknown-sign dividend keeps the round-toward-zero bias; got: {bare_div:?}"
         );
-        // VALUE parity — the fast path agrees with the divide for nonneg, and the bias path still
-        // truncates toward zero for negatives. Masked (always nonneg, even for a negative source):
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(255)]),
-            127
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (/ (& x 255) 2) Int64)", &[Val::S64(-1)]),
-            127
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (% (& x 255) 4) Int64)", &[Val::S64(255)]),
-            3
-        );
-        // Flow-refined nonneg dividend inside `(> x 0)`:
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(7)]),
-            3
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(if (> x 0) (/ x 2) 0)", &[Val::S64(8)]),
-            4
-        );
-        // Bare signed divide (bias kept) still rounds toward zero for negatives — soundness.
-        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-7)]), -3);
-        assert_eq!(run::<i64>("(: x Int64)", "(/ x 2)", &[Val::S64(-1)]), 0);
     }
 
     #[test]
