@@ -3422,6 +3422,7 @@ pass	a recursive generic with a type-valued parameter monomorphizes per type, er
 pass	a recursive guard in a negated-connective shape stays correct
 pass	a recursive linked-list fold leaks every heap node (O(N) reclaim gap)
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
+pass	a recursive list consumer whose element is inferred solely through List.at iterates by index
 pass	a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted
 pass	a recursive list-match called in an IF-branch inside a match arm builds on all backends
 pass	a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends

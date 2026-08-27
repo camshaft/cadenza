@@ -1839,6 +1839,30 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 33 Int64)))
 
+(case "a recursive list consumer whose element is inferred solely through List.at iterates by index"
+  (doc    "The self-hosting arg-walk idiom: `(sum-at xs i n)` reads its list PARAMETER `xs` ONLY through
+           `(List.at xs i)` (never a direct operator on the list itself), summing element-by-index up to
+           `n`. `xs`'s element type is inferred through the `List.at` CALL RESULT — the `(Some x)` payload
+           binder links `x` to `xs`'s element via the scheme call's substitution, and the sibling `(None _)
+           → 0` arm pins it Int64. Before, this shape DECLINED (`xs`'s element read `Any` mid-solve since the
+           `(List.at xs i)` scrutinee is a call result, not a param, so its `(Option a)` never linked to
+           `xs`) — the exact iterate-by-index walk a self-hosted compiler uses. The list is built at run time
+           by a push-loop. n=3 → sum [0 1 2] = 3; n=5 → sum [0..4] = 10. Relocated from rcdzc
+           `a_recursive_list_consumer_infers_its_element_via_list_at` (its double-consume-dup twin is covered
+           by the shared-list cases above @1810/@1826).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (sum-at (: xs (List Int64)) (: i Int64) (: n Int64))
+              (if (< i n)
+                  (+ (match (List.at xs i) ((Some x) x) ((None _) 0)) (sum-at xs (+ i 1) n))
+                  0))
+            (def (main (: n Int64)) (let ((xs (build 0 n (list)))) (sum-at xs 0 (List.len xs))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 2))
+
 (case "a runtime list aliased into two tuples and its original binding all read consistently"
   (doc    "The tuple twin, with the ORIGINAL binding read after both aliases: `inner` is stored in t1's
            slot 0 and t2's slot 1 (two consuming insertions), then all THREE paths — both tuple
