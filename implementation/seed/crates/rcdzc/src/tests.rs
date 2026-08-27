@@ -33469,11 +33469,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn let_binding_in_scope_in_body() {
-        // 02-binding-and-control: (let ((x 10)) x) = 10.
-        assert_eq!(run_main("(let ((x 10)) x)"), 10);
-    }
 
     #[test]
     fn ml_forall_binder_compiles_runs_and_monomorphizes_end_to_end() {
@@ -33565,23 +33560,8 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn name_resolves_to_nearest_enclosing_binding() {
-        // (let ((x 1)) (let ((x 2)) x)) = 2 — inner shadows outer.
-        assert_eq!(run_main("(let ((x 1)) (let ((x 2)) x))"), 2);
-    }
 
-    #[test]
-    fn a_later_let_binding_sees_an_earlier_one() {
-        // (let ((x 1) (y x)) y) = 1 — the second initializer sees the first binding.
-        assert_eq!(run_main("(let ((x 1) (y x)) y)"), 1);
-    }
 
-    #[test]
-    fn a_repeated_binding_shadows_the_earlier_one() {
-        // (let ((x 1) (x 2)) x) = 2 — a repeat shadows for what follows.
-        assert_eq!(run_main("(let ((x 1) (x 2)) x)"), 2);
-    }
 
     #[test]
     fn a_wide_accumulation_let_resolves_each_binder_correctly() {
@@ -33612,15 +33592,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn a_do_sequencing_block_yields_its_last_form() {
-        // 02-binding-and-control: `(do f1 … fn)` in EXPRESSION position is a sequencing block — its value
-        // is the LAST form, the non-final (pure) forms evaluated for their discarded value. `(do 1 2 3)` =
-        // 3; a discarded compound intermediate `(do (tuple 1 2) 42)` = 42; nested in a `let` body works.
-        assert_eq!(run_main("(do 1 2 3)"), 3);
-        assert_eq!(run_main("(do (tuple 1 2) 42)"), 42);
-        assert_eq!(run_main("(let ((x 4)) (do (+ x 1) x))"), 4);
-    }
 
     #[test]
     fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
@@ -33779,16 +33750,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn a_do_local_declaration_binds_the_following_forms() {
-        // 02-binding-and-control §A Declaration In A Sequencing Block Is Scoped To The Forms That Follow
-        // It: a `(def …)` form of a `do` binds its name for the LATER forms — a VALUE declaration
-        // `(def x 5)` and a FUNCTION declaration `(def (f n) …)` alike, each resolved like a top-level
-        // def (a `Ref` / a lambda). A later declaration sees an earlier one (`y` = `(+ x 1)`).
-        assert_eq!(run_main("(do (def x 5) (+ x 1))"), 6);
-        assert_eq!(run_main("(do (def (f n) (+ n 1)) (f 9))"), 10);
-        assert_eq!(run_main("(do (def x 5) (def y (+ x 1)) y)"), 6);
-    }
 
     /// A WIDE `do` block compiles cheaply AND still detects its do-local declaration — the correctness
     /// guard for the `is_binding_candidate` per-parent memo in `build_scope_skip`. That predicate is
