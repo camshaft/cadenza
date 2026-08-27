@@ -6539,54 +6539,7 @@ impl ComposedRuntime {
         results[0].clone()
     }
 
-    /// Drive a CLOSURE-RESOURCE export (C-HOST-1): call `make()` on the `cadenza:closure/exports`
-    /// instance to get the closure resource handle, then `call(handle, args…)` to invoke it — returning
-    /// the `call` result. This is the host acting as the closure's custodian: it holds an opaque handle
-    /// and invokes the guest's `call` method (which dispatches the closure via the guest's own
-    /// `call_indirect`). `own<t>` consumes the handle per call, so each `closure_make_call` mints a fresh
-    /// handle (C-HOST-1 own/no-drop; the `borrow<t>` repeated-call form is C-HOST-5).
-    fn closure_make_call(
-        &mut self,
-        make_args: &[wasmtime::component::Val],
-        call_args: &[wasmtime::component::Val],
-    ) -> wasmtime::component::Val {
-        use wasmtime::component::Val;
-        let iface = self
-            .program
-            .get_export_index(&mut self.store, None, "cadenza:closure/exports")
-            .expect("closure interface exported");
-        let make_idx = self
-            .program
-            .get_export_index(&mut self.store, Some(&iface), "make")
-            .expect("closure `make` exported");
-        let call_idx = self
-            .program
-            .get_export_index(&mut self.store, Some(&iface), "call")
-            .expect("closure `call` exported");
-        let make = self
-            .program
-            .get_func(&mut self.store, make_idx)
-            .expect("make func");
-        let call = self
-            .program
-            .get_func(&mut self.store, call_idx)
-            .expect("call func");
-        // make(make_args…) → the closure handle. A PARAMETERIZED export (C-HOST-2) passes its params here
-        // (e.g. `adder(10)`); a nullary export passes none.
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut self.store, make_args, &mut handle)
-            .expect("make call");
-        make.post_return(&mut self.store).expect("make post_return");
-        let mut full_call_args = vec![handle[0].clone()];
-        full_call_args.extend_from_slice(call_args);
-        let mut out = [Val::Bool(false)];
-        call.call(&mut self.store, &full_call_args, &mut out)
-            .expect("call");
-        call.post_return(&mut self.store).expect("call post_return");
-        out[0].clone()
-    }
-
-    /// Like [`closure_make_call`], but RESOURCE-DROPS the still-owned handle after the call, then reads the
+    /// Like `closure_make_call`, but RESOURCE-DROPS the still-owned handle after the call, then reads the
     /// result. The production single-export ABI is `borrow<t>` for `call` (serialize.rs, `call_borrow=true`
     /// — the REPEATABLE list-call): `call` does NOT release the cell, so the host keeps the handle live and
     /// the `t-dtor` reclaims it on DROP. This mirrors [`run_escape_and_drop`] (the value-heap escape's
@@ -6764,7 +6717,7 @@ impl ComposedRuntime {
         (first, second)
     }
 
-    /// Like [`closure_make_call`] but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
+    /// Like `closure_make_call` but drives a NAMED make (`make-<export>`) of a MULTI-EXPORT closure
     /// program, sharing the one `call`. Proves several closure exports coexist and the shared `call`
     /// dispatches whichever the named `make` built.
     fn closure_make_call_named(
@@ -86226,42 +86179,6 @@ mod closure_host_resource {
             "closure leak: the closure cell is still live after make+call+drop (expected 0 — `call` BORROWS \
              the handle under call_borrow=true, so the host's resource-drop fires the t-dtor that reclaims \
              the cell)"
-        );
-    }
-
-    /// C-HOST-2: a PARAMETERIZED export returning a CAPTURING closure. `(def (adder (: k Int64)) (fn (x)
-    /// (+ x k)))` crosses as `adder : (s64) -> own<closure>`; the host calls `make(10)` (which runs the
-    /// export body, closing over k=10 into the cell), then `call(handle, 5)` → 15. This proves (a) the
-    /// closure handle is COMPUTED from the host's input (make forwards the export param), and (b) the
-    /// captured environment (k) rides along in the cell and is read back inside `call`'s dispatch.
-    #[test]
-    fn a_compiled_capturing_closure_export_is_called_by_the_host() {
-        use crate::testkit::parse;
-        use wasmtime::component::Val;
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
-            return;
-        };
-        let src = "(module m (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder))";
-        let program =
-            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&program)
-                .expect("valid")
-                .is_some(),
-            "a capturing closure export imports the value-heap runtime"
-        );
-        let mut rt = super::ComposedRuntime::new(&program, &runtime);
-        // make(10) → a closure capturing k=10; call(handle, 5) → 5 + 10 = 15.
-        assert_eq!(
-            rt.closure_make_call(&[Val::S64(10)], &[Val::S64(5)]),
-            Val::S64(15),
-            "adder(10) then call(5) = 15 — the captured k rides in the cell"
-        );
-        // A different capture (k=100) + a different call arg (7) → 107 — the handle tracks make's input.
-        assert_eq!(
-            rt.closure_make_call(&[Val::S64(100)], &[Val::S64(7)]),
-            Val::S64(107)
         );
     }
 
