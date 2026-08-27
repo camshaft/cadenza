@@ -20656,47 +20656,13 @@ mod match_engine {
     }
 
     #[test]
-    fn checked_integer_conversion_folds_in_range_and_rejects_out_of_range_constants() {
-        // `T.of` — the CHECKED (range-checked) integer conversion (numeric-model.md §A Conversion Between
-        // Integer Types Is Explicit): a constant IN RANGE folds to the value at the target type; a
-        // constant OUT OF RANGE is a statically-ill-formed conversion, REJECTED at compile time (CDZ0302),
-        // consistent with `(: 128 Int8)` and the const-overflow arithmetic — NOT a runtime trap for a
-        // provably-impossible conversion. Distinct from `T.wrap` (which truncates totally, never rejects).
-        // In range: `(UInt8.of 200)` = 200 : UInt8 (unchanged, not truncated).
-        assert_eq!(
-            run_returns::<u8>(
-                &component("(module m (def (main) ((. UInt8 of) (: 200 Int32))) (export main))"),
-                "main"
-            ),
-            200,
-            "an in-range checked conversion yields the value unchanged"
-        );
-        // Signed boundary: `(Int8.of 127)` = 127 (Int8.max, the largest that fits).
-        assert_eq!(
-            run_returns::<i8>(
-                &component("(module m (def (main) ((. Int8 of) (: 127 Int32))) (export main))"),
-                "main"
-            ),
-            127,
-            "the boundary value fits and converts unchanged"
-        );
-        // Out of range (magnitude): `(UInt8.of 256)` is one past UInt8.max → a compile-time CDZ0302 reject
-        // (the compiler already knows 256 does not fit at const-fold), NOT a runtime trap, and never a
-        // silent truncation to 0 the way `wrap` would.
-        assert_eq!(
-            reject_code("(module m (def (main) ((. UInt8 of) (: 256 Int32))) (export main))")
-                .as_deref(),
-            Some("CDZ0302"),
-            "an out-of-range checked conversion of a constant is rejected at compile time"
-        );
-        // Out of range (sign): `(UInt8.of -1)` — UInt8 has no negatives → CDZ0302 (where `(UInt8.wrap -1)`
-        // would give 255). Pins that `of` checks the sign boundary, not only the magnitude boundary.
-        assert_eq!(
-            reject_code("(module m (def (main) ((. UInt8 of) (: -1 Int32))) (export main))")
-                .as_deref(),
-            Some("CDZ0302"),
-            "a checked conversion of a negative constant into an unsigned type is rejected"
-        );
+    fn checked_integer_conversion_over_range_message_is_actionable() {
+        // `T.of` is the CHECKED (range-checked) integer conversion; its in-range folds and out-of-range
+        // CDZ0302 rejects (magnitude + sign) are corpus-covered in 06-numeric-model ("a checked integer
+        // conversion in range yields the value unchanged", "…at the signed boundary…", "an out-of-range
+        // checked integer conversion of a constant is rejected", "a checked conversion of a negative
+        // constant into an unsigned type is rejected"). This rcdzc test keeps only the ACTIONABLE-message
+        // white-box pin (the corpus records the code, not the message text).
         // The message is ACTIONABLE (like the annotation-position CDZ0302, not the terse "(unsigned
         // 8-bit)"): it names the offending VALUE, the target width TYPE, and the VALID RANGE, plus the
         // `.wrap`-vs-`.of` hint. `(UInt8.of 300)` → "the value 300 does not fit … UInt8 (the valid range is

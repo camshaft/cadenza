@@ -128,6 +128,36 @@
   (input  (+ (Float64.of-int 1) 2.0))
   (output (: 3.0 Float64)))
 
+; `T.of` is the CHECKED (range-checked) integer conversion (numeric-model.md #A Conversion Between Integer
+; Types Is Explicit): an IN-RANGE constant folds to the value at the target type; an OUT-OF-RANGE constant is
+; a statically-ill-formed conversion rejected CDZ0302 (like `(: 128 Int8)`), NOT a runtime trap and NOT the
+; silent truncation `T.wrap` would give. `.of` checks BOTH the magnitude and the sign boundary.
+(case "a checked integer conversion in range yields the value unchanged"
+  (doc    "`(UInt8.of (: 200 Int32))` = 200 : UInt8 — an in-range checked conversion yields the value
+           unchanged (not truncated). The Int32 source value fits the UInt8 target, so `.of` admits it.")
+  (input  ((. UInt8 of) (: 200 Int32)))
+  (output (: 200 UInt8)))
+
+(case "a checked integer conversion at the signed boundary fits and converts unchanged"
+  (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
+           Pins the inclusive upper boundary of the checked conversion.")
+  (input  ((. Int8 of) (: 127 Int32)))
+  (output (: 127 Int8)))
+
+(case "an out-of-range checked integer conversion of a constant is rejected"
+  (doc    "`(UInt8.of (: 256 Int32))` — 256 is one past UInt8.max (valid 0..=255), a magnitude the compiler
+           knows overflows at const-fold, so the checked conversion is rejected CDZ0302 at compile time — not
+           a runtime trap and never a silent truncation to 0 the way `.wrap` would give.")
+  (input  ((. UInt8 of) (: 256 Int32)))
+  (error  CDZ0302))
+
+(case "a checked conversion of a negative constant into an unsigned type is rejected"
+  (doc    "`(UInt8.of (: -1 Int32))` — UInt8 has no negative values, so a negative source is out of range
+           and rejected CDZ0302 (where `(UInt8.wrap -1)` would give 255). Pins that `.of` checks the SIGN
+           boundary, not only the magnitude boundary.")
+  (input  ((. UInt8 of) (: -1 Int32)))
+  (error  CDZ0302))
+
 ; `Float64.of-int` is exact only up to 2^53 — the largest integer a Float64's 52-bit mantissa (+ implicit
 ; leading 1) represents with no gap. At and beyond 2^53 the representable integers thin to every-other,
 ; so the conversion of an odd integer just past 2^53 must ROUND to the nearest representable even one

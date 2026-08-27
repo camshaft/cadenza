@@ -1506,6 +1506,9 @@ pass	a char-literal pattern selects the arm whose char matches
 pass	a char-literal payload matches over a RUNTIME sum scrutinee (boxed char payload, Char-rep 4/N)
 pass	a checked addition of two runtime-wrapped bytes still guards at the narrow width
 pass	a checked conversion of a negative CONSTANT into an unsigned type is rejected
+pass	a checked conversion of a negative constant into an unsigned type is rejected
+pass	a checked integer conversion at the signed boundary fits and converts unchanged
+pass	a checked integer conversion in range yields the value unchanged
 pass	a checked integer conversion of an out-of-range CONSTANT is rejected at compile time
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
@@ -5153,6 +5156,7 @@ pass	an ordering >= of two same-bits Float32 literals const-folds true
 pass	an ordering operator with a single operand curries into a partial-application closure
 pass	an out-of-range Map.insert value via a sibling-inferred width is CDZ0302
 pass	an out-of-range Set.of element via a sibling-inferred width is CDZ0302
+pass	an out-of-range checked integer conversion of a constant is rejected
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
 pass	an out-of-range integer literal is a malformed literal, not an unbound name
 pass	an out-of-range literal MAP KEY through a builder chain (Map.insert) is rejected
