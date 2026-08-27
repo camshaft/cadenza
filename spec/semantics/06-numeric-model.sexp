@@ -1650,6 +1650,16 @@
   (input  (do (def (main (: a UInt8) (: b UInt8)) (& (* 10000 (if (< a b) 1 0)) (% a b))) (export main)))
   (error  CDZ0201))
 
+(case "a bare literal in an if branch grounds to the narrow result width of the sibling branch"
+  (doc    "`(if c x 0)` over a runtime UInt8 `x`: the bare literal `0` in the else branch grounds to the
+           NARROW result width (UInt8, from the `x` branch), so both branches leave the same i32 slot —
+           not an i32(narrow)/i64(default-literal) mismatch. c=true selects `x` = 200; c=false selects the
+           grounded `0`. Pins the if-branch bare-literal narrowing (a regression for an i32/i64 branch-slot
+           mismatch that produced an invalid module).")
+  (input  (do (def (main (: x UInt8) (: c Bool)) (if c x 0)) (export main)))
+  (call   main (: 200 UInt8) (: true Bool))  (output (: 200 UInt8))
+  (call   main (: 200 UInt8) (: false Bool)) (output (: 0 UInt8)))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
