@@ -20006,6 +20006,79 @@ mod tests {
         );
     }
 
+    /// DEEP mark-immortal (op 96) is DAG-SAFE: persistent structures SHARE nodes, so a node reachable via
+    /// two paths must be marked EXACTLY ONCE — a re-visit is skipped (rc already IMMORTAL), decrementing
+    /// the census once per DISTINCT node, never twice. This pins the no-double-census-decrement invariant
+    /// v-core-opt's large-list/map build-once hoist relies on: a deep-mark that re-decremented a shared
+    /// node would push the census BELOW `base` (caught here), and a shared-live node marked/freed on the
+    /// wrong path would corrupt the other owner. The `== base` assert IS the DAG check.
+    #[test]
+    fn mark_immortal_deep_is_dag_safe_over_shared_nodes() {
+        let base = LIVE_NODES.with(|n| n.get());
+        // A >32 multi-level RRB `xs`, then a push-derived `ys` that SHARES xs's untouched subtrees (a push
+        // onto a shared/rc>1 root path-copies only the touched spine and dups+shares the rest). Holding
+        // BOTH in a tuple makes those shared leaves reachable via two paths — a genuine heap DAG.
+        let mut xs = op_vec_empty();
+        for i in 0..40u32 {
+            xs = op_vec_push(xs, bytes_leaf(&[i as u8]));
+        }
+        op_dup(xs); // keep xs live past the push (vec-push consumes its arg)
+        let ys = op_vec_push(xs, bytes_leaf(&[0xFF])); // ys shares xs's untouched leaves (now rc 2)
+        let tup = op_arr_alloc(2);
+        op_arr_set(tup, 0, xs); // both owned by the tuple (moved into slots, rc untouched)
+        op_arr_set(tup, 1, ys);
+        assert!(LIVE_NODES.with(|n| n.get()) > base, "the DAG holds live nodes");
+
+        let tup = op_mark_immortal_deep(tup);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "census nets to base — every DISTINCT node (incl. the SHARED leaves) marked EXACTLY once, no double-decrement"
+        );
+        assert_eq!(node_rc(tup), IMMORTAL, "the tuple root is immortal");
+        assert_eq!(node_rc(op_arr_get(tup, 0)), IMMORTAL, "the xs child is immortal");
+        assert_eq!(node_rc(op_arr_get(tup, 1)), IMMORTAL, "the ys child is immortal");
+        // Both lists stay readable THROUGH the shared, now-immortal leaves; a shared element (index < 40,
+        // present in both) is itself immortal.
+        assert_eq!(op_vec_len(op_arr_get(tup, 0)), 40, "xs readable via the shared immortal nodes");
+        assert_eq!(op_vec_len(op_arr_get(tup, 1)), 41, "ys readable via the shared immortal nodes");
+        assert_eq!(
+            node_rc(op_vec_get(op_arr_get(tup, 1), 17)),
+            IMMORTAL,
+            "a SHARED element leaf (in both xs and ys) is immortal"
+        );
+    }
+
+    /// A MULTI-NODE deep-immortal value nested under a MORTAL shell survives the shell's drop: `op_drop`'s
+    /// free cascade SKIPS an IMMORTAL child WITHOUT recursing into or decrementing its subtree, so dropping
+    /// the mortal parent frees ONLY the parent — the whole immortal list (spine + leaves + elements) is
+    /// untouched. This pins the double-reclaim-safety v-core-opt relies on when a hoisted deep-immortal
+    /// static is embedded in an ordinary refcounted value it reclaims.
+    #[test]
+    fn drop_of_mortal_shell_over_deep_immortal_leaves_the_immortal_intact() {
+        let base = LIVE_NODES.with(|n| n.get());
+        let mut xs = op_vec_empty();
+        for i in 0..40u32 {
+            xs = op_vec_push(xs, bytes_leaf(&[i as u8]));
+        }
+        let xs = op_mark_immortal_deep(xs);
+        assert_eq!(LIVE_NODES.with(|n| n.get()), base, "the deep-immortal list is census-excluded");
+        // A MORTAL tuple wrapping the immortal list (+ a scalar sibling). The shell is one live node.
+        let tup = op_arr_alloc(2);
+        assert_eq!(LIVE_NODES.with(|n| n.get()), base + 1, "the mortal tuple shell is one live node");
+        op_arr_set(tup, 0, xs); // embed the immortal (moved in, rc untouched)
+        op_arr_set(tup, 1, op_box_int(7)); // an immediate scalar sibling (no node)
+        op_drop(tup); // cascade drops the shell; the immortal child is skipped, not recursed/freed
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "only the shell is freed (census back to base); the whole immortal list survives untouched"
+        );
+        assert_eq!(node_rc(xs), IMMORTAL, "the immortal list root survived the shell drop");
+        assert_eq!(op_vec_len(xs), 40, "the immortal list is still fully readable after the shell drop");
+        assert_eq!(node_rc(op_vec_get(xs, 23)), IMMORTAL, "an element leaf survived (not freed under the shell)");
+    }
+
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
     /// leaf, a ROPE (which must flatten first), and the empty input. This pins the RUNTIME half of the
     /// design's §9 byte-identity invariant (DESIGN-compiler-primitives.md): the compile-time `Blake3.of`
