@@ -99,8 +99,8 @@ def notification-envelope-conforms() =
     | _ => trap("expected an Event.Notification")
 
 // Self-reflecting uniform descriptor (operator shape): { id, name, input, output, ast } via
-// contract-descriptor(Ast.module) — a reducer imports it and routes on descriptor().id.
+// contract-descriptor(Ast.module, <name>, <input>, <output>) — a reducer imports it and routes on descriptor().id.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.deliver", "Envelope", "Outcome")
 export { descriptor }

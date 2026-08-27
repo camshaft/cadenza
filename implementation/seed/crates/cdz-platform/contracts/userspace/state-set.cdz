@@ -16,5 +16,5 @@ def set-conforms() =
   | SetRequest.Set(r) => if (r.key == b"k") and (r.value == b"v") then unit else trap("set payload mismatch")
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.state.set", "SetRequest", "SetResult")
 export { SetRequest.*, SetResult.*, descriptor }

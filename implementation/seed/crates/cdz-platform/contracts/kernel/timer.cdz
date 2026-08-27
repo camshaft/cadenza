@@ -55,6 +55,6 @@ def fired-conforms() =
 // for the Rust codegen (which reads the schema, not the export clause) and for a single-file compile.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.timer", "Envelope", "Event")
 
 export { Envelope.*, Event.*, descriptor }

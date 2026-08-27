@@ -15,5 +15,5 @@ def get-conforms() =
   match a-get() with | GetRequest.Get(k) => if k == b"k" then unit else trap("get key mismatch")
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.state.get", "GetRequest", "GetResult")
 export { GetRequest.*, GetResult.*, descriptor }

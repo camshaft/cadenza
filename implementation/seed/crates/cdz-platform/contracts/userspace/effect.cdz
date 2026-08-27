@@ -42,6 +42,6 @@ def effect-conforms() =
 // a single-file compile.
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.effect", "Effect", "Ack")
 
 export { Effect.*, Ack.*, descriptor }

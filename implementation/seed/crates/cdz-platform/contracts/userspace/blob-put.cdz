@@ -13,5 +13,5 @@ def put-conforms() =
   match a-put() with | PutRequest.Put(p) => if p == b"blob-bytes" then unit else trap("put payload mismatch")
 import { contract-descriptor } from "contract-id"
 def descriptor() -> Record(id: Bytes, name: String, input: Bytes, output: Bytes, ast: Bytes) =
-  contract-descriptor(Ast.module)
+  contract-descriptor(Ast.module, "cdz-platform.blob.put", "PutRequest", "PutResult")
 export { PutRequest.*, PutResult.*, descriptor }

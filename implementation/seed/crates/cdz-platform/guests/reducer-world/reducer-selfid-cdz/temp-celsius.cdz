@@ -16,5 +16,5 @@
 // materialize at runtime.
 type Temp = | Mk(f64)
 import { contract } from "contract-id"
-def descriptor() -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) = contract(Ast.module)
+def descriptor() -> Record(id: Bytes, name: String, input: Ast, output: Ast, types: Ast) = contract(Ast.module, "temp.celsius", "Temp", "Temp")
 export { descriptor }
