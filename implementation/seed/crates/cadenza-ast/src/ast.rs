@@ -105,6 +105,21 @@ pub enum Leaf {
         value: SuffixBody,
         kind: SuffixKind,
     },
+    /// A native-compound-data CTOR-HEAD leaf — the HEAD child of a compound literal, one payloadless leaf
+    /// per collection constructor (`("list" …)`'s head becomes `Atom(Leaf::Ctor(CompoundCtor::List))`).
+    /// The compound KIND is recognized by this leaf's IDENTITY (a distinct codec byte), not by comparing
+    /// head text against `"list"`/`"record"`/… — the native-compound-data migration
+    /// (`DESIGN-native-ast-compound-data.md` D1). A distinct kind cannot collide with a user `#"record"`
+    /// symbol value or a rebindable `record` name. Payloadless: the constructor is the whole value.
+    Ctor(CompoundCtor),
+    /// A record/map ENTRY head — the `=` of a `(= key value)` field pair. A dedicated payloadless leaf so
+    /// the structural field-pair head is recognized by kind identity, distinct from the equality operator
+    /// name `=` (which stays a `Name`), per `DESIGN-native-ast-compound-data.md` (the FIELD_PAIR tag).
+    FieldPair,
+    /// A member-access head — the `.` of a `(. obj key)` projection. A dedicated payloadless leaf so the
+    /// structural member head is recognized by kind identity rather than head text
+    /// (`DESIGN-native-ast-compound-data.md`, the MEMBER tag).
+    Member,
 }
 
 /// The numeric body a type suffix decorates — an exact integer (with its display radix) or an exact
@@ -204,7 +219,7 @@ pub enum Struct {
 /// migration; the seed compiler's `rcdzc::ast::CompoundCtor` is the twin. (`set` is not yet a primitive
 /// constructor on this plane — held for operator decision D2 in
 /// `implementation/design/DESIGN-native-ast-compound-data.md`.)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum CompoundCtor {
     /// `("record" (= k v)…)` — a record.
     Record,
