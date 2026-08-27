@@ -761,7 +761,7 @@
   (call main (: 3 Int64)) (output (: 2 Int64))
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a match guard performs a MAP lookup keyed by the pattern binder (guard x CHAMP)"
   (doc    "The guard-predicate cases above read the destructured payload directly (List.len bands); this
@@ -4360,7 +4360,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 633 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO
@@ -6980,7 +6980,7 @@
                 ((None) 0)))
             (def (main (: n Int64)) (f true n))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects known-leak 3))
+  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects 0))
 
 (case "the non-fused Some-shell control reads a heap binder twice with the same reclaim (no fusion)"
   (doc    "The non-fused control for the fusion neutrality pin above: the SAME Some-wrapped heap list with
@@ -6996,7 +6996,7 @@
                 ((None) 0)))
             (def (main (: n Int64)) (f true n))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects known-leak 3))
+  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects 0))
 
 (case "a twice-used heap binder without a Some shell reclaims fully (the fusion-neutrality anchor)"
   (doc    "The anchor proving the fused/non-fused residual (3) is the pre-existing compound-Some-shell

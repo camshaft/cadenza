@@ -2710,7 +2710,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 6 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "to-bytes of a sliced multibyte string is read twice and both reads see the right bytes"
   (doc    "The `String.slice`/`to-bytes` member of the consuming-op-double-read family (the sibling the
@@ -2997,7 +2997,7 @@
                           ((None _) -1)))
             (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before validation"
   (doc    "Exercises `str-from-bytes` on a runtime Bytes ROPE (a `Bytes.concat` tree) whose logical bytes
@@ -3015,7 +3015,7 @@
                           ((None _) -1)))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a helper decodes bytes to a string and consumes the fallible result"
   (doc    "The reader's symbol-table idiom: a helper takes raw `Bytes` (a slice of the input), decodes
@@ -3065,7 +3065,7 @@
               (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
             (export main)))
   (call   main (: 33 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "decoding a runtime ROPE Bytes that is ill-formed yields none"
   (doc    "The ill-formed rope companion: a runtime `Bytes.of (list (UInt8.wrap n) 255)` whose second byte
@@ -3077,7 +3077,7 @@
               (match (String.from-bytes (mk n)) ((Some s) (String.byte-len s)) ((None _) (- 0 1))))
             (export main)))
   (call   main (: 104 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a utf8 bin segment binds a decoded string when the bytes are well-formed"
   (doc    "The `bin` pattern `(bin (u8 n) (utf8 name n))` reads a length byte n, then decodes exactly the
@@ -3940,7 +3940,7 @@
             (export main)))
   (call   main (: 128 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "String.from-bytes rejects an overlong encoding"
   (doc    "`[0xC0 0x80]` — the OVERLONG encoding of NUL (a 2-byte form of a value that must be 1
@@ -3956,7 +3956,7 @@
             (export main)))
   (call   main (: 192 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "String.from-bytes accepts a two-byte sequence split across a concat seam"
   (doc    "The lead byte 0xC3 and its continuation 0xA9 (é) arrive in SEPARATE ropes joined by
@@ -3972,7 +3972,7 @@
             (export main)))
   (call   main (: 195 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a String param threaded through a self-recursive loop and concatenated each step is retained"
   (doc    "The idiomatic pretty-printer shape: `build(s, n, acc) = build(s, n-1, String.concat(acc, s))`
@@ -4672,7 +4672,7 @@
                   ((None _u) -1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 13 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf"
   (doc    "[0xE2 0x98] (a 3-byte lead + one valid continuation) ++ [0x41] ('A', NOT a continuation
@@ -4735,7 +4735,7 @@
             (def (main (: n Int64)) (loop n 0))
             (export main)))
   (call   main (: 5 Int64)) (output (: 20 Int64))
-  (live-objects known-leak 10))
+  (live-objects 0))
 
 ; -- breaker batch 446 (2026-08-27): PRE-DELIVERED acceptance fence for static-data increment 5
 ; (constant-String build-once hoist; #3842 landed the byte-neutral payload-extractor groundwork).

@@ -417,7 +417,7 @@
   (host-responses (respond ask.ask (: 5 Int64)))
   (host-calls (call ask.ask))
   (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "performs in DISCARDED do positions still run — the effect count is the observable"
   (doc    "The side-effect-only statement face (the evaluate-ONCE pins above bound the count from ABOVE;

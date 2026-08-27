@@ -8363,9 +8363,23 @@ fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<S
     ) {
         return true;
     }
-    core_child_ids(db, id)
-        .into_iter()
-        .any(|c| expr_constructs_compound_seen(db, c, seen))
+    // A borrowing READ (Proj/SumPayload/SumExpect/*Len) reads its AGGREGATE operand in place without
+    // transferring it — do NOT descend into that operand. It is the scrutinee/aggregate, and a constructor
+    // in the aggregate's OWN definition (e.g. an inline `(if (Some (list …)) None)` scrutinee) is not an
+    // arm reuse of the shell payload; descending it false-flagged every inline-constructed-scrutinee match
+    // (d4/dm1/… declined despite pure-scalar arm bodies). A genuine FBIP-rebuild `(tuple (. t 0) (. t 1))`
+    // is still caught: the `Tuple` is a top-level arm node, flagged above before its `Proj` operands here.
+    match core_of(db, id) {
+        Core::Proj { .. }
+        | Core::SumPayload { .. }
+        | Core::SumExpect { .. }
+        | Core::ListLen { .. }
+        | Core::BytesLen { .. }
+        | Core::StrScalarLen { .. } => false,
+        _ => core_child_ids(db, id)
+            .into_iter()
+            .any(|c| expr_constructs_compound_seen(db, c, seen)),
+    }
 }
 
 /// Whether `id` is a FALLIBLE-READ extraction op (`List.at`/`Bytes.at`/`Map.lookup`/`Bytes.slice`/

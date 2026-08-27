@@ -1582,7 +1582,7 @@
             (def (main) (match (bump (ICons 5 (ICons 6 (INil)))) ((INil) 0) ((ICons h t) h)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 5))
 
 (case "a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted"
   (doc    "The `List.push` sibling of the recursive-sum-constructor scratch-slot case above: `(List.push (h
@@ -3266,7 +3266,7 @@
                  (rhs (contract (App (Ix 1) (Ix 0)) (Ix 7)))))
             (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 18))
 
 (case "a map with a user-sum VALUE looks up and matches the stored variant"
   (doc    "A user sum used as a Map VALUE — `(Map.insert Map.empty 1 (C.R))` stores the variant `C.R` at key
@@ -3660,7 +3660,7 @@
   (call   main (: 3 Int64)) (output (: 12 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 14 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
@@ -4502,7 +4502,7 @@
   (output (: 0 Int64))
   (call   main (: -5 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Result-of-Option threads both wrappers through one runtime match"
   (doc    "The mixed-wrapper composition: `(Result (Option Int64) Int64)` — Err carries a code, Ok
@@ -4525,7 +4525,7 @@
   (output (: 0 Int64))
   (call   main (: -7 Int64))
   (output (: -7 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "an Option-of-Option survives a Map VALUE cell with its exact nesting"
   (doc    "The collection round-trip: `(Some (Some n))` stored as a map value and read back through
@@ -6829,7 +6829,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime"
   (doc    "The deepest runtime nested-constructor pattern: `Option (Result C Int64)` where the innermost
@@ -6854,7 +6854,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a total match on a partly-un-built sum compiles its dead arm's unconstrained payload"
   (doc    "The scrutinee `(if … (Some (Ok (C.R k))) None)` only ever builds `Some(Ok …)` or `None` — NO
@@ -6880,7 +6880,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; `Option` is the partial-lookup carrier; chaining two lookups so a `None` short-circuits the rest is the
 ; partial-lookup pipeline (the Option analogue of the Result-pipeline cases). And a `(Map.lookup m k)` over
@@ -6926,7 +6926,7 @@
   (call   main (: 3 Int64) (: 0 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64) (: 4 Int64)) (output (: 4 Int64))
   (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "sibling patterns over a two-sum tuple diverge on PER-POSITION literals"
   (doc    "The 2×2 literal grid over multi-payload sums: four arms test `(P 0 x)` vs `(P _ x)` at EACH
@@ -7423,7 +7423,7 @@
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 1 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "an erased-newtype's list payload split across empty and rest arms dispatches with vec-get"
   (doc    "The ERASED-NEWTYPE twin: `(type Box (Bx (List Int64)))` (a single-variant sum, its box erased)
@@ -7443,7 +7443,7 @@
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 2 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the empty and None arms of a list-payload split dispatch to their own values"
   (doc    "The two cases above call the non-empty arm (`mk 1`/`mk 2`); this exercises the OTHER arms of the
@@ -7463,7 +7463,7 @@
             (def (main (: n Int64)) (f (mk n))) (export main)))
   (call   main (: 0 Int64)) (output (: 100 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a list-payload split missing the non-empty arm is non-exhaustive"
   (doc    "The soundness counterpart of the exhaustive-split cases: the empty+rest split is total only
@@ -9851,7 +9851,7 @@
             (export f)))
   (call   f (: 7 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two variants past the first each carry a different nested sum, over a runtime discriminant"
   (doc    "The harder disc-≥1 nested shape: `(type W (A Int64) (U (Option Int64)) (V (Result Int64 Int64)))`
@@ -13447,7 +13447,7 @@
   (output (: 2005 Int64))
   (call   main (: 0 Int64) (: 1 Int64) (: 5 Int64))
   (output (: 3005 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two stacked erased newtypes wrapping a sum peel both no-op layers before the inner discriminant"
   (doc    "TWO erased single-variant newtypes stacked over a sum — `Outer (Wrap Mid)`, `Mid (Box Inner)`,
@@ -17269,7 +17269,7 @@
   (output (: 4 Int64))
   (call   main (: 9 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a guarded record match arm gates the fields it binds and falls through on a failing guard"
   (doc    "A record match arm may carry a `(guard <pattern> <cond>)`: the record's fields are bound and then
@@ -17294,7 +17294,7 @@
   (output (: -1 Int64))
   (call   main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "an empty record pattern matches any record of its type"
   (doc    "The empty record pattern `(record)` names NO fields, so it is irrefutable over any record of the
@@ -18508,7 +18508,7 @@
   (call   main (: 5 Int64))   (output (: 5 Int64))
   (call   main (: -3 Int64))  (output (: -1 Int64))
   (call   main (: 200 Int64)) (output (: -999 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without"
   (doc    "Corpus records top out at ~5 fields; 16 crosses the small-bitmap/inline-layout width and the MIXED types (String/list/rope/scalars/tuple) force a non-uniform slot map. Projections at start/heap-mid/runtime/end + a mid-layout without re-slotting all higher fields — heap fields must move with their handles (a scalar-width memmove splits a heap slot).")
@@ -18603,7 +18603,7 @@
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- A sum leaf inside a tuple CHAMP key. ---
 
@@ -19707,7 +19707,7 @@
             (def (main) (loop 0 4 0))
             (export main)))
   (call   main) (output (: 12 Int64))
-  (live-objects known-leak 8))
+  (live-objects 0))
 
 (case "a match arm ordering a compound sum-shell child via a borrowing compare computes correctly"
   (doc    "A 2-variant sum `Box=(Mk(List))(Nil)`; `probe` matches a fresh owned `Mk(list)` and in the arm
@@ -20051,7 +20051,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "dm1 a FOUR-level mixed destructure (option-list-tuple-record) reduces to scalars"
   (input (do
@@ -20064,7 +20064,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 7))
+  (live-objects 0))
 
 (case "d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars"
   (input (do
@@ -20075,7 +20075,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 (case "dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims"
   (input (do
@@ -20100,7 +20100,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "drs2 Option-in-Option nested destructure to scalars"
   (input (do
@@ -20111,7 +20111,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims"
   (input (do
@@ -20174,7 +20174,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "df3 the SAME generic sum at a scalar payload deforests completely"
   (input (do
@@ -20214,7 +20214,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 11 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "dfr2 a generic sum's RECORD payload destructured to a field leaks its shells"
   (input (do
@@ -20226,7 +20226,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly"
   (input (do
@@ -20268,7 +20268,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 111 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- v-rust-backend (2026-08-27): dmp1 is the batch 456/457 trap — a GENERIC multi-payload ctor with a
 ; nested LIST sub-pattern — now FIXED and PINNED. The wasm select walk reset `cur` to `Ty::Any` after an
@@ -20428,7 +20428,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 ; -- breaker batch 463 (2026-08-27): depth-3 walks through the #3879 type-carry (fresh-surface
 ; probes the hour after the fix). The carried field type must survive consecutive interior walks —
@@ -20446,7 +20446,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 (case "dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type"
   (input (do
@@ -20458,7 +20458,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 (case "dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks"
   (input (do
@@ -20470,7 +20470,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 20 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 ; -- breaker batch 464 (2026-08-27): the NIL-arm cell of the multi-payload shape (dmp1's program,
 ; untaken-Both path). Isolation: with a WILDCARD payload pattern ((Both _ c)) the nil path
@@ -20487,7 +20487,7 @@
     (export main)))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; -- breaker batch 465 (2026-08-27): three measurements that SHAPE the site-B′ release placement
 ; (the design's open question: release at the Some-unwrap vs no-dup at the extraction op). xop1:

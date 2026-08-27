@@ -1405,7 +1405,7 @@
               (export main)))
   (call   main (: 9 Int64))
   (output (: 2311 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee"
   (doc    "The length-prefixed-frame parse (the dependent-size crown jewel) over a RUNTIME scrutinee: a

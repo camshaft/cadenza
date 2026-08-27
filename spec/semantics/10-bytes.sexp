@@ -1792,7 +1792,7 @@
             (export main)))
   (call   main (: 200 Int64))
   (output (: 400 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a Bytes slice of a slice composes offsets against the VIEW and bounds against its length"
   (doc    "The BYTES twin of the string slice-of-slice pin (Bytes.slice takes start+LENGTH, not

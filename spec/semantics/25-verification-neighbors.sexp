@@ -345,7 +345,7 @@
                ((Option.None _) -1)))
            (export main)))
   (call main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 2))
 
 (case "TRANS carries a hypothesis borne by the RIGHT operand only (mirror of the left-only pin)"
   (doc "The landed pin threads an assumption through TRANS's LEFT operand (refl on the right). This mirrors it: the hypothesis lives on the RIGHT operand and refl (no hypotheses) is on the left. trans(refl a, {a=c}|-a=c) = {a=c}|-a=c, so hyps has length 1. A TRANS reading only the left operand's hypotheses would drop the assumption entirely.")
@@ -374,7 +374,7 @@
                ((Option.None _) -1)))
            (export main)))
   (call main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 2))
 
 (case "MK_COMB unions the hypotheses of BOTH operands when each carries a distinct assumption"
   (doc "Companion to the TRANS two-operand union: MK_COMB combines {f=g} and {x=y} into (Comb f x)=(Comb g y), and the result must retain BOTH assumptions. mk-comb({f=g}|-f=g, {x=y}|-x=y) has hyps of length 2. An MK_COMB emitting an empty hypothesis set (the pre-fix bug) would let a congruence step launder away two live assumptions.")
