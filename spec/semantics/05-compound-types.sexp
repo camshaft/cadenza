@@ -804,7 +804,7 @@
             (def (main) (nc (Option.expect (List.at (read-leaves b"\x00\x01\x05" 0 1 (list)) 0) "at")))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; A recursion that CARRIES a heap collection (Bytes / List) as a parameter and, at its BASE arm, performs
 ; a FALLIBLE INDEXED READ (`Bytes.at` / `List.at`, which materializes an Option HANDLE in a scratch slot)
@@ -825,7 +825,7 @@
             (def (main (: p Int64)) (loop b"\x05" p 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a recursion carrying a List parameter does a fallible read in its base arm"
   (doc    "The List companion — the shape is not Bytes-specific. `loop` carries a `(List Int64)` and reads
@@ -876,7 +876,7 @@
             (def (main (: p Int64)) (loop b"\x07" p 0))
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; A self-tail loop that threads a (node, cursor) pair — a BOXED-SUM accumulator `(. r 0)` AND a cursor
 ; `(. r 1)`, BOTH projected from the same tuple returned by an `if`-builder — must thread each projection
@@ -905,7 +905,7 @@
             (def (main (: pos Int64)) (wval (loop b"\x05\x07\x09" 3 pos ((. W Atom) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
@@ -8920,7 +8920,7 @@
                 ((list) -2)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent"
   (doc    "A Map key `(Bytes, Int64)` is orderable/keyable because both components are; the champ key descent

@@ -2590,7 +2590,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: true Bool))
   (call   main (: false Bool)) (output (: false Bool))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "a recursive transform composed over Ast.module const-evaluates at compile time"
   (doc    "The general const-evaluator evaluates a total function applied to `Ast.module` — the reflected

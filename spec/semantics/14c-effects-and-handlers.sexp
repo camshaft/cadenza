@@ -5459,7 +5459,7 @@
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
   (call   main (: 0 Int64)) (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "tk-ann1 an ASCRIBED empty-Map seed (: Map.empty (Map (Tuple Int64 Int64) Int64)) used across three arms — the annotation grounds the element type every arm sees"
   (input  (do
@@ -7790,7 +7790,7 @@
                              (+ (* 10 (at-or w2 0)) (at-or w2 (- (Bytes.len w2) 1))))))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 260410 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 9))
 
 (case "a computed-index String.at over an effect-grown rope emits valid wasm"
   (doc    "Pins breaker finding 18 (v-wasm-opt fix 27aba9cc5). A String handler state grown by a RECURSIVE

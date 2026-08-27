@@ -10047,6 +10047,27 @@ fn emit_ast_op_with_discs(
     Ok(())
 }
 
+/// §2d STATIC BYTES (`DESIGN-static-data.md`): if `id` is a fully-constant `Bytes` value present in the
+/// build-once table (`layout.static_bytes`), emit a BARE `global.get` of its module global and return
+/// `true`. The value was built ONCE at instantiation (the `CORE_SEC_START` init) and marked IMMORTAL
+/// (`mark-immortal`), so a plain read is all a use needs: `op_dup`/`op_drop` are NO-OPs on an immortal
+/// node, so the consumer treating the handle as owned and dropping it is harmless (never frees the shared
+/// static → no UAF), and `node_rc == IMMORTAL` makes FBIP path-copy so the static is never mutated in
+/// place. No dup, no drop, no per-eval `bytes-alloc`+`bytes-set`. Covers BOTH representations of a constant
+/// `Bytes` — a `Core::BytesOf` of constants AND a baked `Core::ConstBytes` — via `constant_bytes_value`,
+/// so both emit arms route through here; the table is interned by content, so `position` returns the ONE
+/// shared global for identical literals. Returns `false` (build inline) for a runtime literal or a program
+/// with no static-bytes table, keeping every non-hoisted program byte-identical.
+fn try_emit_static_bytes(db: &mut Db, id: StructId, layout: &Layout, out: &mut Emit) -> bool {
+    if let Some(bytes) = crate::lower::constant_bytes_value(db, id)
+        && let Some(pos) = layout.static_bytes.iter().position(|b| *b == bytes)
+    {
+        out.push(Lir::GlobalGet(pos as u32)); // [handle] — the once-built immortal static, owned-by-value
+        return true;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit(
     db: &mut Db,
@@ -10452,6 +10473,12 @@ fn emit(
         // would sign-extend negative if hand-emitted, but `Lir::ConstI32` handles the signed encoding, so
         // there is no raw-opcode hazard here (the seed's `sleb128` bug was in hand-written opcode bytes).
         Core::BytesOf { elems } => {
+            // §2d STATIC BYTES: a fully-constant literal in the build-once table is materialized ONCE (the
+            // `start` init) into an IMMORTAL module global; read it with a bare `global.get` (see
+            // `try_emit_static_bytes`). Falls through to the per-eval inline build below when not hoisted.
+            if try_emit_static_bytes(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::ConstI32(elems.len() as i32)); // [len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
             for (i, &elem) in elems.iter().enumerate() {
@@ -10487,6 +10514,11 @@ fn emit(
         // reading each byte from the constant slice (already in 0..=255) rather than a child node. Leaves
         // the bytes handle on the stack, byte-identical to a `BytesOf` of the same constant elements.
         Core::ConstBytes(bytes) => {
+            // §2d STATIC BYTES: a baked constant is an equal hoist target to a `BytesOf` of constants
+            // (`constant_bytes_value` covers both) — route it to its build-once immortal global too.
+            if try_emit_static_bytes(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::ConstI32(bytes.len() as i32)); // [len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
             for (i, &byte) in bytes.iter().enumerate() {

@@ -216,7 +216,7 @@
   (host-responses (respond io.sink (: 42 Int64)))
   (host-calls (call io.sink))
   (call   main (: 0 Int64)) (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary"
   (doc    "The representation edge: a 50-leaf rope built by recursive Bytes.concat crosses the
@@ -5171,7 +5171,7 @@
                 (lex (bin (u8 (UInt8.wrap 1)) (u8 (UInt8.wrap 2)) (u8 (UInt8.wrap 3))) 0 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 135 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "an emit/flush byte-writer seeded EMPTY — three emits accumulate, flush reads the frame back"
   (doc    "The empty-seed writer (the wire-accumulator pin seeds non-empty and returns lengths):
