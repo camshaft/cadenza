@@ -526,3 +526,21 @@
               (def (main (: x Int64)) (host (M) (M.mid x))) (export main)))
   (call   main (: 9 Int64))
   (output (: 10 Int64)))
+
+; ── breaker batch 554: the peer-leak taxonomy contrast cell. #4610 known-leaked the compound
+; results that ESCAPE to the entrypoint (por1/plr1/pcl 1-2 cells — the boundary-envelope family);
+; this pins the other side: a let-bound result MULTI-consumed in-frame (len + element read),
+; fifty frames, reclaims to ZERO — the leak keys to ESCAPE position, not consumption count.
+
+(case "pkc1 fifty let-bound multi-consumed peer results reclaim to zero (the leak keys to escape, not consumption)"
+  (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (input (do (effect A (op dup (-> Int64 (List Int64)))) (bind A "cadenza:a/api")
+             (def (frames (: k Int64))
+               (if (= k 0) 0
+                   (host (A) (let ((r (A.dup k)))
+                     (+ (+ (List.len r) (match (List.at r 0) ((Option.Some v) v) ((Option.None) -1)))
+                        (frames (- k 1)))))))
+             (def (main (: n Int64)) (frames n)) (export main)))
+  (call main (: 50 Int64))
+  (output (: 1425 Int64))
+  (live-objects 0))
