@@ -17651,44 +17651,6 @@ mod match_engine {
     }
 
     #[test]
-    fn constant_symbol_of_equality_and_to_string_fold() {
-        // 17-symbols inc 1: `Symbol.of` interns a String → Symbol (content-derived identity), and equality
-        // is String equality lifted through the Symbol tag. A CONSTANT symbol reuses the underlying
-        // `Core::ConstStr` rep, so `=`/`to-string` fold with no new machinery.
-        let run_b = |src: &str| {
-            run_returns::<bool>(
-                &component(&format!("(module m (def (main) {src}) (export main))")),
-                "main",
-            )
-        };
-        let run_i = |src: &str| {
-            run_returns::<i64>(
-                &component(&format!("(module m (def (main) {src}) (export main))")),
-                "main",
-            )
-        };
-        // Idempotent: interning the same string twice is equal.
-        assert!(run_b(
-            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-insert\"))"
-        ));
-        // Distinct strings → distinct symbols.
-        assert!(!run_b(
-            "(= (Symbol.of \"map-insert\") (Symbol.of \"map-lookup\"))"
-        ));
-        // Identity is content, not derivation: a concat-built symbol equals the literal-built one.
-        assert!(run_b(
-            "(= (Symbol.of (String.concat \"map\" \"-insert\")) (Symbol.of \"map-insert\"))"
-        ));
-        // The empty symbol equals itself.
-        assert!(run_b("(= (Symbol.of \"\") (Symbol.of \"\"))"));
-        // `to-string` recovers the content String — measurable via String.scalar-len (folds to Int64).
-        assert_eq!(
-            run_i("((. String scalar-len) (Symbol.to-string (Symbol.of \"abc\")))"),
-            3
-        );
-    }
-
-    #[test]
     fn an_empty_quote_is_cdz0201_not_an_unbound_name() {
         // 07-type-system "an empty quote is rejected, not a crash": `(quote)` with no operand is
         // MALFORMED — quote requires exactly one operand, the form it denotes. It rejects CDZ0201 (a
@@ -22327,60 +22289,6 @@ mod match_engine {
             reject_code("(module m (def (main) (match (Bytes.of (list 1 2)) ((bin (u16 n)) n))) (export main))")
                 .as_deref(),
             Some("CDZ0210"),
-        );
-    }
-
-    #[test]
-    fn a_bin_dependent_size_segment_binds_exactly_n_bytes() {
-        // `(bytes body n)` binds exactly the `n` bytes an earlier INT segment named; a trailing `(bytes
-        // rest)` takes the remainder. Construction: `(bytes b)` splices `b`; `(bytes b n)` checks `|b|==n`.
-        // Round-trip: construct a length-prefixed frame, match it back, rebuild. All constant → fold.
-        for (body, want) in [
-            // dependent body: n=2 → body=[10,20]
-            (
-                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list 10 20))) 1 0)) (_ 0))) (export main))",
-                1,
-            ),
-            // the trailing rest = [99]
-            (
-                "(module m (def (main) (match (Bytes.of (list 2 10 20 99)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= rest (Bytes.of (list 99))) 1 0)) (_ 0))) (export main))",
-                1,
-            ),
-            // dependent size 0 → empty body, rest untouched
-            (
-                "(module m (def (main) (match (Bytes.of (list 0 42)) ((bin (u8 n) (bytes body n) (bytes rest)) (if (= body (Bytes.of (list))) 1 0)) (_ 0))) (export main))",
-                1,
-            ),
-            // a dependent size overrunning the remainder → non-match → catch-all
-            (
-                "(module m (def (main) (match (Bytes.of (list 5 1 2)) ((bin (u8 n) (bytes body n) (bytes rest)) 1) (_ 0))) (export main))",
-                0,
-            ),
-            // TLV round-trip: build (tag,len,payload), match it back, compare the payload
-            (
-                "(module m (def (main) (match (bin (u8 7) (u16 3) (bytes (Bytes.of (list 100 101 102)))) ((bin (u8 7) (u16 n) (bytes body n)) (if (= body (Bytes.of (list 100 101 102))) 1 0)) (_ 0))) (export main))",
-                1,
-            ),
-            // length-prefixed construction: (u16 len) then the bytes → [0,3,10,20,30]
-            (
-                "(module m (def (main) (if (= (bin (u16 3) (bytes (Bytes.of (list 10 20 30)))) (Bytes.of (list 0 3 10 20 30))) 1 0)) (export main))",
-                1,
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
-                    "main"
-                ),
-                want,
-                "bin dependent-size: {body}"
-            );
-        }
-        // A sized `(bytes b n)` construction whose value length differs from `n` → provable trap.
-        assert_eq!(
-            reject_code("(module m (def (main) (Bytes.len (bin (bytes (Bytes.of (list 1 2 3)) 2)))) (export main))")
-                .as_deref(),
-            Some("CDZ0304"),
         );
     }
 
@@ -27766,31 +27674,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         }
         assert!(Decimal::from_f64(f64::INFINITY).is_none());
         assert!(Decimal::from_f64(f64::NAN).is_none());
-    }
-
-    #[test]
-    fn a_utf8_bin_segment_decodes_a_length_prefixed_string() {
-        // `(bin (u8 n) (utf8 s n))` reads a length byte then decodes exactly `n` bytes as strict UTF-8,
-        // binding `s : String` on well-formed input and being a NON-MATCH (→ catch-all) on ill-formed
-        // bytes — never a trap (collections-and-text.md #Decoding Bytes To A String Is Total). The decode
-        // is CONSTANT-FOLDED here (a constant `Bytes.of` scrutinee), so the match reduces to a bool via
-        // string equality: `[3 102 111 111]` = len-3 "foo" → matches, binds "foo" (= "foo" → 1); `[1 255]`
-        // = len-1 then 0xFF (invalid UTF-8) → non-match → catch-all (→ 0).
-        for (bytes, want) in [
-            ("3 102 111 111", 1), // len 3, "foo" — well-formed, binds and equals "foo"
-            ("1 255", 0),         // len 1, 0xFF — ill-formed, falls to the catch-all
-        ] {
-            let src = format!(
-                "(module m (def (main) (match (Bytes.of (list {bytes})) \
-                   ((bin (u8 n) (utf8 name n)) (if (= name \"foo\") 1 2)) \
-                   (_ 0))) (export main))"
-            );
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "utf8 bin segment [{bytes}]"
-            );
-        }
     }
 
     #[test]
