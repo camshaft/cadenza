@@ -721,3 +721,15 @@
               (def (main (: x Int64)) (host (A B) (B.gb (A.ga x)))) (export main)))
   (call   main (: 0 Int64))
   (output (: "hihi" String)))
+
+(case "a peer compound is projected and rebuilt into a fresh escaping compound (mixed ownership reclaims)"
+  (doc    "MIXED-OWNERSHIP reclaim: a peer op `mk(x) = (tuple x x)` @cadenza:p/api mints a runtime tuple; the
+           consumer LET-binds it, reads BOTH fields (borrowing projections), and rebuilds a FRESH tuple
+           `(t.0, t.1 + 100)` that ESCAPES as a resource — while the BORROWED peer handle drops ONCE at scope
+           end (not double-counted against the escaping resource). main(5) = (tuple 5 105). A miscount would
+           double-free (trap) or read a freed field (wrong result).")
+  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) (tuple x x)) (export mk)))
+  (input  (do (effect P (op mk (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
+              (def (main (: x Int64)) (host (P) (let ((t (P.mk x))) (tuple (. t 0) (+ (. t 1) 100))))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: (tuple 5 105) (Tuple Int64 Int64))))
