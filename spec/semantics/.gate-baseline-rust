@@ -5367,6 +5367,10 @@ pass	cr2 RETRY-until-success — a recursive driver re-runs a conditionally-abor
 pass	cr3 a BOUNDED retry budget — two attempts then give up, the fallback negating the last failed attempt
 pass	cross-unit Qty host results reject at the guest-side add
 pass	cross-width widening a runtime narrow int with .of (UInt16.of a UInt8) emits (total)
+pass	cru1 a bool-materialized conditional range sheds the downstream overflow guard and computes
+pass	cru2 a narrow conditional whose product fits the type sheds its guard
+pass	cru3 a narrow conditional whose branch-union overflows the type keeps its guard and traps
+pass	cru4 an unbounded conditional branch keeps the guard and traps on real overflow
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
@@ -6061,6 +6065,9 @@ pass	lp1 a LIST handler state — each feed pushes and returns the pre-push leng
 pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max
 pass	lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS
 pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
+pass	lsb1 a bounded value shifted by a bounded count computes the masked result
+pass	lsb2 a negative bounded operand shifted by a bounded count stays sound (Int8)
+pass	lsb3 a bounding box that overflows keeps the guard and traps at a genuinely-overflowing input
 pass	lsu1 a mask covering a UInt64 top-byte logical shift is elided (value parity)
 pass	lsu2 a mask covering a UInt32 high-nibble logical shift is elided
 pass	lsu3 a mask that does not cover the shifted range is kept (UInt64 x>>8)
@@ -6184,6 +6191,9 @@ pass	ms1 an op returns a THREE-variant sum built from state parity — two seque
 pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the state — arm-selected continuation of the same thread
 pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
 pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match
+pass	msc1 a masked runtime shift count wraps mod the mask (>> x (& k 63))
+pass	msc2 a masked runtime left-shift count elides the count guard but keeps the value-overflow trap
+pass	msc3 a narrow UInt8 masked left-shift with an out-of-width count traps
 pass	mts1 a Map whose VALUES are TUPLES — per-key (count,sum) stats update through tuple rebuild inside the arm, the answer packs the fresh pair
 pass	multi-argument application is curried application
 pass	multi-export Set-result closures — the singleton one

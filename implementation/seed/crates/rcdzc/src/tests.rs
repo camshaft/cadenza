@@ -10052,24 +10052,9 @@ mod runtime_ops {
             three.iter().any(|i| matches!(i, Lir::I64RemS)),
             "(= (% x 3) 0) keeps rem_s; got {three:?}"
         );
-
-        // VALUE PARITY (the mask test agrees with the true `%`-then-`==0` across signs, Int64.min, and
-        // unsigned) is migrated to spec/semantics/06-numeric-model.sexp cases "dpt1 divisibility by two
-        // agrees with the true modulo across signs and Int64.min" + "dpt2 unsigned divisibility by a
-        // power of two agrees with the true modulo" (wasmtime-drop); the Lir mask-vs-rem inspection above
-        // is the wasmtime-free coverage and stays here.
     }
 
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
-
-    // runtime_left_shift_multiplies_and_traps_on_overflow: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rls1 left shift multiplies by 2^count; value overflow and out-of-range count trap" (wasmtime-drop).
-
-    // an_odd_width_signed_min_divided_by_neg1_traps_overflow_on_wasm: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "an odd-width signed division overflow traps at the declared width (Int24 min / -1)" (cite-and-delete).
-
-    // a_provably_in_range_shift_computes_the_same_value_without_a_guard: pure-run value parity
-    // (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp cases "a provably-in-range
-    // left shift of a masked operand computes the guarded value (shl parity)" + "a provably-in-range
-    // multiply of a masked operand strength-reduces and drops its guard (mul parity)" (wasmtime-drop).
 
     #[test]
     fn a_clear_low_bits_shift_pair_elides_the_left_shift_overflow_guard() {
@@ -10117,15 +10102,7 @@ mod runtime_ops {
             bare.iter().any(|i| matches!(i, Lir::I64Ne)),
             "a bare `<< 4` must keep its overflow guard, got: {bare:?}"
         );
-
-        // VALUE PARITY (clear-low-bits idiom values + no-false-trap, and the bare `<< 4` overflow) is
-        // migrated to spec/semantics/06-numeric-model.sexp cases "clb1 the clear-low-bits idiom
-        // (<< (>> x k) k) computes and never overflows" + "clb2 a bare left shift (not the
-        // clear-low-bits idiom) still overflows" (wasmtime-drop); the Lir guard-shape assertions above
-        // are the wasmtime-free coverage and stay here.
     }
-
-    // constant_count_shift_folds_the_count_guard: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp cases "ccs1".."ccs5" (constant-count shift value/trap parity) (wasmtime-drop).
 
     #[test]
     fn a_masked_runtime_shift_count_elides_the_count_guard() {
@@ -10185,40 +10162,6 @@ mod runtime_ops {
             "an unmasked count keeps the count guard, got: {unmasked:?}"
         );
 
-        // VALUE PARITY: the mask semantics are preserved (a count ≥ N wraps mod the mask, exactly as the
-        // machine shift does after the mask). `256 >> (k & 63)`.
-        for (k, want) in [
-            (0i64, 256),
-            (1, 128),
-            (4, 16),
-            (63, 0),
-            (64, 256),
-            (65, 128),
-        ] {
-            assert_eq!(
-                run::<i64>(
-                    "(: x Int64) (: k Int64)",
-                    "(>> x (& k 63))",
-                    &[Val::S64(256), Val::S64(k)]
-                ),
-                want,
-                ">> masked count @k={k}"
-            );
-        }
-        // `<<` overflow STILL traps with a masked count (1 << 63 overflows signed i64); a valid one computes.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: k Int64)",
-                "(<< x (& k 63))",
-                &[Val::S64(1), Val::S64(4)]
-            ),
-            16
-        );
-        assert!(traps(
-            "(: x Int64) (: k Int64)",
-            "(<< x (& k 63))",
-            &[Val::S64(1), Val::S64(63)]
-        ));
         // NARROW type: `(& k 7)` on UInt8 (width 8) is in `[0,7]` → count guard elided; `(& k 15)` ([0,15])
         // is NOT within [0,7], so the guard STAYS. The COUNT guard is `ConstI32(width=8) ; I32GeU` — the
         // separate `<<` range-check compares against `ConstI32(2^8=256)`, so look for the `8`-valued bound
@@ -10235,11 +10178,6 @@ mod runtime_ops {
             count_guard_u8(&lir("(: x UInt8) (: k UInt8)", "(<< x (& k 15))")),
             "UInt8 << (& k 15) keeps the count guard (mask exceeds width)"
         );
-        assert!(traps(
-            "(: x UInt8) (: k UInt8)",
-            "(<< x (& k 15))",
-            &[Val::U8(3), Val::U8(10)]
-        ));
     }
 
     #[test]
@@ -10301,54 +10239,11 @@ mod runtime_ops {
             )),
             "a bounding box that overflows keeps the guard"
         );
-
-        // VALUE PARITY (mask semantics preserved, incl. count-wrap when k&3 wraps).
-        use wasmtime::component::Val;
-        let f = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: x Int64) (: k Int64)) (<< (& x 15) (& k 3))) (export f))",
-        )))
-        .expect("compile");
-        for (x, k) in [(15i64, 3i64), (7, 2), (1, 7), (255, 10), (15, 8)] {
-            assert_eq!(
-                run_returns_with::<i64>(&f, "f", &[Val::S64(x), Val::S64(k)]),
-                (x & 15) << (k & 3),
-                "@x={x},k={k}"
-            );
-        }
-        // A negative-valued bounded operand stays sound (four-corner box): [-7,0] << [0,3] fits Int8.
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: k Int8)",
-                "(<< (- 0 (& x 7)) (& k 2))",
-                &[Val::S8(7), Val::S8(2)]
-            ),
-            -28
-        );
-        // TRAP SAFETY: the overflowing bounding-box case still traps at a genuinely-overflowing input.
-        assert!(traps(
-            "(: x Int64) (: k Int64)",
-            "(<< (& x 8589934591) (& k 31))",
-            &[Val::S64(8589934591), Val::S64(31)]
-        ));
     }
-
-    // runtime_shift_with_a_nested_value_operand: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rsn1 a shift with a nested checked-add value operand keeps both guards" (wasmtime-drop).
-
-    // runtime_signed_right_shift_is_arithmetic: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rsr1 a signed right shift is arithmetic (sign-extending)" (wasmtime-drop).
-
-    // runtime_unsigned_right_shift_is_logical: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rur1 an unsigned right shift is logical (zero-filling)" (wasmtime-drop).
 
     // ── unsigned checked +/-/*: the unsigned overflow guards (carry/borrow) ───────────────────────
 
-    // runtime_unsigned_addition_traps_on_carry: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 addition that overflows traps rather than wrapping" (cite-and-delete).
-
-    // runtime_unsigned_subtraction_traps_below_zero: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 subtraction that underflows traps rather than wrapping" (cite-and-delete).
-
-    // runtime_unsigned_multiplication_traps_on_overflow: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 multiplication that overflows traps rather than wrapping" (cite-and-delete).
-
     // ── unsigned comparison: _u selection — the dual of the signed-ordering case ──────────────────
-
-    // runtime_unsigned_comparison_orders_by_magnitude: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "una1 a runtime unsigned less-than orders by magnitude ..."; the signed half is case "a runtime less-than at the integer extremes is signed".
 
     // ── narrow widths (≤32-bit): compute in i32, range-check back to the N-bit type ───────────────
     //
@@ -10356,14 +10251,6 @@ mod runtime_ops {
     // UInt8 as `u8` — so args/results are `Val::S8`/`Val::U8` and `i8`/`u8` (not the machine-slot s32).
     // wasmtime enforces the argument is a valid s8/u8 at the edge, and the ABI lifts/lowers to the i32
     // slot the emitted code computes in — the range-checks keep the core result in the N-bit range.
-
-    // runtime_narrow_signed_addition_range_checks: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "nsa1 a narrow Int8 addition computes at the max boundary and traps one past it".
-
-    // runtime_narrow_signed_subtraction_range_checks_both_edges: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "nss1 a narrow Int8 subtraction range-checks both edges".
-
-    // a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width: runtime value/trap parity (no Lir) — the UInt48 halves are covered by cases "an unusual in-range width is a first-class type" + "a truncating conversion to an unusual width keeps that width's low bits"; the signed Int24-wrap widening half is migrated to case "nwc1 a produced non-aliased signed width crosses widened and sign-extended (Int24 wrap)".
-
-    // a_narrow_constant_operand_addsub_drops_the_dead_range_bound: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp cases "ncb1 ..." + "ncb2 ..." (narrow signed +/- by a constant drops the dead range bound).
 
     #[test]
     fn a_conditional_operands_range_is_the_union_of_its_branches() {
@@ -10438,60 +10325,6 @@ mod runtime_ops {
             guards(&lir("(: n Int8)", "(: (+ (if (< n 5) 100 0) 100) Int8)")) > 0,
             "Int8 (+ [0,100] 100) can reach 200 > 127 — guard kept"
         );
-
-        // VALUE + TRAP parity.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(* (if (< a b) 1 0) 5)",
-                &[Val::S64(1), Val::S64(2)]
-            ),
-            5
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(* (if (< a b) 1 0) 5)",
-                &[Val::S64(5), Val::S64(2)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool)",
-                "(: (* (if c 3 4) 5) Int8)",
-                &[Val::Bool(true)]
-            ),
-            15
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool)",
-                "(: (* (if c 3 4) 5) Int8)",
-                &[Val::Bool(false)]
-            ),
-            20
-        );
-        // The narrow overflow still traps (n=3 → 100+100=200 > 127), in-range computes (n=9 → 0+100=100).
-        assert!(traps(
-            "(: n Int8)",
-            "(: (+ (if (< n 5) 100 0) 100) Int8)",
-            &[Val::S8(3)]
-        ));
-        assert_eq!(
-            run::<i8>(
-                "(: n Int8)",
-                "(: (+ (if (< n 5) 100 0) 100) Int8)",
-                &[Val::S8(9)]
-            ),
-            100
-        );
-        // The unbounded conditional still traps on real overflow.
-        assert!(traps(
-            "(: c Bool) (: x Int64)",
-            "(* (if c x 4) 5)",
-            &[Val::Bool(true), Val::S64(i64::MAX)]
-        ));
     }
 
     #[test]
