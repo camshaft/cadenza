@@ -2235,3 +2235,45 @@
   (call   f 1)
   (output (: 2 Int64))
   (live-objects known-leak 4))
+
+; -- breaker batch 445 (2026-08-27): static-data drop-safety for deduplicated constant Bytes
+; (#3837 extended constant-Bytes detection to Core::ConstBytes; both occurrences of a byte-identical
+; literal dedup onto one const_byte_slice). These pin that the SHARED static survives Perceus drops:
+; a program may use the same literal twice with a drop between (no use-after-free on the second use),
+; and a 50-frame construct+drop loop over the shared constant reclaims to zero (a per-eval fresh
+; allocation would also pass the value check — the live-objects 0 is what pins the balance either way;
+; a drop that freed the shared static would trap or misread here).
+
+(case "sbd1 two occurrences of one constant Bytes literal — branch-selected use, length reads, and runtime equality across the pair"
+  (doc    "`a` branch-selects (on the runtime arg) between the shared literal and a different one; `b` is a
+           second occurrence of the same literal. n=1 takes the shared arm: 100*len(a) + len(b) + 1000 if
+           a=b -> 100*20 + 20 + 1000 = 3020. The runtime `=` compares a deduplicated constant against its
+           own second occurrence; the intermediate drops of `a`/`b` must not free the static. MUST be 3020,
+           live-objects 0.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((a (if (= n 1) b"const-shared-payload" b"other"))
+                    (x (Bytes.len a))
+                    (b b"const-shared-payload"))
+                (+ (* 100 x) (+ (Bytes.len b) (if (= a b) 1000 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3020 Int64))
+  (live-objects 0))
+
+(case "sbd2 a fifty-frame recursion re-evaluating a constant Bytes literal each frame reclaims to zero"
+  (doc    "Per-frame amplification over the shared static: each frame branch-selects (parity of k) between
+           the shared literal (len 20) and a second literal (len 15), reads the length, and drops. n=50 ->
+           25*20 + 25*15 = 875. A leak of even one object per evaluation reads >=50 here; a drop that freed
+           the build-once static would corrupt later frames. MUST be 875, live-objects 0.")
+  (input  (do
+            (def (frames (: k Int64))
+              (if (= k 0)
+                  0
+                  (let ((a (if (= (% k 2) 0) b"const-shared-payload" b"odd-frame-bytes")))
+                    (+ (Bytes.len a) (frames (- k 1))))))
+            (def (main (: n Int64)) (frames n))
+            (export main)))
+  (call   main (: 50 Int64))
+  (output (: 875 Int64))
+  (live-objects 0))
