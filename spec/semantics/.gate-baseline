@@ -6757,6 +6757,7 @@ pass	multiplying a runtime integer by negative one is checked negation in both o
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	mutually-recursive do-local functions nested in an inlined helper recurse
+pass	mutually-recursive newtypes erase and construct and match end to end
 pass	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 pass	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state

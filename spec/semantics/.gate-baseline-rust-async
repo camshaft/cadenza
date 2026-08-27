@@ -6418,6 +6418,7 @@ pass	multiplying a compound (tuple) by a number is a cross-kind type error, not 
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	mutually-recursive do-local functions nested in an inlined helper recurse
+pass	mutually-recursive newtypes erase and construct and match end to end
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
 pass	mx1 mutual recursion with a (List Int64) accumulator (scalar element control)
 pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
