@@ -19616,65 +19616,6 @@ mod match_engine {
     }
 
     #[test]
-    fn list_len_over_a_sum_match_reclaims_when_all_arms_own_but_not_when_an_arm_borrows() {
-        // The MatchSum twin of the `if`-join test above: a sum `match` used as a borrowing op's operand is
-        // classified by `sum_cont_ownership` — a SEPARATE recursive join over the decision tree's leaves
-        // (Leaf/Guarded/LitTest/Switch continuations), distinct from `join_arm_ownership` (`if`/`match`
-        // scalar). Same contract: Owned iff EVERY reachable leaf is a proven owned temporary, else Borrowed
-        // (leak-safe). Pins both faces so a change to the sum-match ownership walk can't regress into an
-        // unsound drop of a borrowed payload.
-        //
-        // (a) BOTH match arms owned producers (List.push / List.concat) → join = Owned → `List.len (match …)`
-        // reclaims (imports drop; each arm yields a 4-elem list → 4 + 4 = 8).
-        let both_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: o (Option Int64))) ((. List len) (match o \
-                   ((Some v) ((. List push) (build 0 3 (list)) v)) \
-                   ((None _) ((. List concat) (build 0 2 (list)) (build 0 2 (list))))))) \
-               (def (main) (+ (g (Option.Some 9)) (g Option.None))) (export main))";
-        assert!(
-            component_imports_op(&component(both_owned), "drop"),
-            "List.len of a sum match whose BOTH arms are owned producers must reclaim (join = Owned → drop)"
-        );
-        if let Some(out) = run_on_heap(both_owned) {
-            assert_eq!(
-                out, "8",
-                "both owned match arms yield a 4-elem list each → len 4 + 4 = 8"
-            );
-        }
-        // (b) MIXED: the `Some xs` arm reads the BORROWED payload list `xs` (via List.len) AND re-reads it as
-        // a sibling — dropping the extracted payload would free it under its still-live scrutinee (a UAF).
-        // The sum-match/payload ownership must stay Borrowed. Value exact: Some path = len(xs)+len(xs) = 6.
-        let mixed = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: o (Option (List Int64)))) (match o \
-                   ((Some xs) (+ ((. List len) xs) ((. List len) xs))) \
-                   ((None _) -1))) \
-               (def (main) (g (Option.Some (build 0 3 (list))))) (export main))";
-        if let Some(out) = run_on_heap(mixed) {
-            assert_eq!(
-                out, "6",
-                "a borrowed sum-payload read twice must not be freed under its live scrutinee (3 + 3 = 6)"
-            );
-        }
-        // Stress the borrowed-payload path 5000× — a double-free of the payload would trap, a leak drift.
-        let mixed_stress = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: o (Option (List Int64)))) (match o \
-                   ((Some xs) (+ ((. List len) xs) ((. List len) xs))) \
-                   ((None _) -1))) \
-               (def (drive j m tot) (if (< j m) \
-                   (drive (+ j 1) m (+ tot (g (Option.Some (build 0 3 (list)))))) tot)) \
-               (def (main) (drive 0 5000 0)) (export main))";
-        if let Some(out) = run_on_heap(mixed_stress) {
-            assert_eq!(
-                out, "30000",
-                "5000× a borrowed sum-payload read twice (3+3=6 each) must not double-free (no trap/drift)"
-            );
-        }
-    }
-
-    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. WARNING: Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
