@@ -8413,3 +8413,24 @@
   (call main (: 5 Int64))
   (output (: 3 Int64))
   (live-objects 0))
+
+; -- breaker batch 479 (2026-08-27): the remaining capture-once edge from the cp probe set (cp1/cp3
+; were pinned by v-effects with #3929; cp4 factory-body is a QUEUED pre-existing silent re-draw —
+; not pinnable until fixed). cpc1 = the CONDITIONAL-selected performing capture: only one branch of
+; the if performs, so the closure identity is branch-dependent — declines cleanly today; folds (50
+; at n=5, capture-once a=seed per the #3929 adjudication) when the conditional-capture increment
+; lands. Declines on ALL targets today (shared-frontend fold, no rust runtime fallback for this
+; shape) — the 50 oracle is derivation-from-adjudicated-semantics, confirmed on flip.
+
+(case "cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((f (if (> n 0)
+                     (let ((a (St.next))) (fn ((: x Int64)) (* a x)))
+                     (fn ((: x Int64)) x))))
+          (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 50 Int64)))
