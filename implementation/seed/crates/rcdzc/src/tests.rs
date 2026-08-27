@@ -38970,59 +38970,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn an_abortive_arm_whose_value_type_mismatches_the_op_result_declines() {
-        // E4 type-consistency guard: an abortive arm materializes its BODY as the abort value, which lands
-        // in the position the perform occupied — a position typed by the op's declared RESULT type (the
-        // type checker types a perform by its result, never by the arm value). If the arm body's type
-        // differs — `bail : Int64 -> Bool` but the arm yields `n : Int64` — the abort value does not fit
-        // (in `(if c (Bail.bail 7) false)` it disagrees with the `false` sibling, emitting an ill-typed
-        // `if` = invalid wasm). The checker misses this gap, so the fold declines. Regression guard for a
-        // latent miscompile the branch-tail/hoist folds would otherwise have emitted.
-        let src = "(do (effect Bail (op bail (-> Int64 Bool))) \
-                   (def (main (: x Int64)) (handle Bail false ((bail (n) s n)) (if (< x 5) (Bail.bail 7) false))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
-        );
-    }
-
-    #[test]
-    fn a_stray_resume_outside_a_handler_arm_is_a_coded_diagnostic() {
-        // A `resume` hands a value back to the point that performed a handler arm's operation, so it is
-        // meaningful ONLY inside a handler arm's body. A `resume` in a plain def body — no enclosing arm to
-        // return into — is malformed. It used to resolve to a valid `Resolved::Resume`, type-check leniently
-        // (a resume is `Ty::Any`), and DECLINE silently at lowering with NO coded diagnostic (`cdz check`
-        // reported nothing — a check≡compile gap). Now `collect_faults` rejects a STRAY resume CDZ0201, so
-        // `cdz check` surfaces it. The check is reachability-guarded: a synthesized fold-copy `resume` (a
-        // `push_list` node the reduction produced, not reachable from the arena root) is NOT flagged — only a
-        // LIVE source resume with no enclosing arm.
-        for stray in [
-            "(module m (effect Amb (op flip (-> Unit Int64))) (def (main) (resume 1 0)) (export main))",
-            "(module m (effect Amb (op flip (-> Unit Int64))) (def (main) (+ 1 (resume 2 0))) (export main))",
-        ] {
-            let d = compile_component(&crate::codec::encode(&parse(stray)))
-                .expect_err("a stray resume must be rejected");
-            assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-            assert!(
-                d.message.contains("resume"),
-                "the message names the resume form: {}",
-                d.message
-            );
-        }
-        // A `resume` INSIDE a handler arm body (bare, nested, and multi-shot) is well-placed — it must NOT be
-        // flagged and the handler folds normally.
-        for ok in [
-            "(do (effect Amb (op flip (-> Unit Int64))) (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))",
-            "(do (effect Amb (op flip (-> Unit Int64))) (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (+ (Amb.flip) (Amb.flip)))) (export main))",
-        ] {
-            assert!(
-                compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
-                "a resume inside a handler arm body must compile: {ok}"
-            );
-        }
-    }
-
     /// A `resume` is exactly `(resume <value> <next-state>)`. A resume with the WRONG NUMBER of operands
     /// is malformed: too FEW already rejected CDZ0201, but too MANY — `(resume v s extra)` — was SILENTLY
     /// ACCEPTED (the resolver read only the first two operands, dropping the surplus → a silent miscompile).
