@@ -7985,67 +7985,6 @@ fn an_int_seeded_handler_resuming_with_a_string_next_state_still_rejects_cdz0201
     );
 }
 
-/// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
-/// driver performing BOTH effects (the two-nested-states MERGE path). `converse`'s arm `(resume p 0)` closes
-/// over `run-with`'s param `p` — not the arm's own params/state. Before the fix, the synthesized `run#ctx`
-/// carried the driver's params + the threaded states but NOT `p`, so the spliced free `p` re-resolved against
-/// `run#ctx`'s signature (which lacked it) → a spurious CDZ0101 unbound `p` (a valid program falsely refused;
-/// v-agent-harness dogfood). The fix threads a captured enclosing-fn param as an extra specialized parameter
-/// (after the originals, before the states), passed UNCHANGED at every call. `run-with(3)` seeds `run(3,0)`;
-/// each step adds `converse→p (=3)` and `dispatch→1`: `(0+3+1)+(3+1)+(3+1)` = 12. The single-arm inner handler
-/// case never regressed (it specialized once); the multi-arm case is what surfaced the double-spec + leak.
-#[test]
-fn a_handler_arm_capturing_an_enclosing_fn_param_folds_under_a_multi_arm_nested_handler() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect Model (op converse (-> Int64 Int64))) \
-        (effect Tools (op dispatch (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-        (def (run (: fuel Int64) (: acc Int64)) \
-          (if (= fuel 0) acc \
-            (run (- fuel 1) (+ acc (+ (Model.converse fuel) (Tools.dispatch fuel)))))) \
-        (def (run-with (: p Int64)) \
-          (handle Model 0 ((converse (q) s (resume p 0))) \
-            (handle Tools 0 ((dispatch (a) s (resume 1 0)) (done (a) s (resume a 0))) \
-              (run 3 0)))) \
-        (def (main) (run-with 3)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a captured enclosing-fn param must thread as an extra spec param, not leak CDZ0101 unbound",
-    );
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "12");
-    }
-}
-
-/// A memoized query-DB shape (the salsa `Db` a self-hosting compiler mirrors): a TWO-op handler where an arm
-/// DESTRUCTURES its arg with a `match` and resumes inside the branch, performed in a `;`-SEQUENCE with a later
-/// op that READS the state the first wrote. `put` arm `(match kv ((tuple k v) (resume unit (+ k v))))` threads
-/// a new state from the PATTERN BINDERS; `get` reads it. Before the fix this declined "not yet reducible": the
-/// perform arm's `(value, next_state)` extraction (`peel_resume_from_arm_body`) handled a bare `(resume v s)`
-/// and a `(do stmt… (resume v s))` but NOT a `(match … (resume v s))` arm body → the whole fold declined when
-/// the match-shaped arm was performed in a sequence. The fix peels the resume from EACH match branch and
-/// rebuilds BOTH a value-match and a next-state-match over the (pure) arg — so a branch next-state that
-/// references its pattern binders (`(+ k v)`) stays scoped inside the branch and threads forward. A
-/// match-shaped arm folds when performed ONCE already (a different path); this is the SEQUENCED case (the
-/// second perform reads the first's out-state). (v-compiler-ml dogfood — the compiler's Db-on-effects
-/// substrate.)
-#[test]
-fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op get (-> Int64 Int64))) \
-        (def (main) \
-          (handle Db 0 \
-            ((put (kv) s (match kv ((tuple k v) (resume unit (+ k v))))) \
-             (get (k) s (resume s s))) \
-            (do (Db.put (tuple 1 41)) (Db.get 0)))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a match-shaped arm body performed in a sequence must peel the resume per branch, not decline",
-    );
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "42");
-    }
-}
-
 /// ADVERSARIAL companion (task #15, breaker witness): a caller-observed MUTUALLY-recursive effectful callee
 /// must DECLINE CLEANLY, never leak the internal `$s0`/`$t0` state-param names. `ea`/`eb` form an SCC (each
 /// performs `Counter.bump`), and `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's out-state via the

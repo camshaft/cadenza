@@ -2596,6 +2596,7 @@ pass	a match-based tail recursion with an earlier literal arm loops correctly
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a match-scrutinee self-call preceding an arm-body perform folds via multi-value return
+pass	a match-shaped arm body peels its resume per branch when performed in a sequence
 pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a matching-width handler state folds across two sequential performs
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
@@ -2809,6 +2810,7 @@ pass	a negative-exponent unit cancels its base through a multiply to dimensionle
 pass	a negative-key trie churned back keys and enumerates like the direct build
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity
 pass	a nested @!param is a misplaced module directive (CDZ0602), not a module parameter
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
@@ -7605,6 +7607,7 @@ pass	the multiplicative-one and subtractive-zero identities preserve a boundary-
 pass	the multiply-by-zero annihilator does not discard a trapping runtime operand
 pass	the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the multiply-by-zero annihilator folds to zero when the discarded constant operand is total
+pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow
 pass	the natural invariant construction over a VIOLATING perform result traps through the handler
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
@@ -8189,5 +8192,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity
-pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow
