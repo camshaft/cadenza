@@ -8336,3 +8336,5 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
+todo	pak1 a peer op returning a (List of a user sum) crosses and its length is read

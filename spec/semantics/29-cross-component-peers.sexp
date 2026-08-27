@@ -116,3 +116,33 @@
               (def (main (: x Int64)) (host (S) (Set.len (S.mk x)))) (export main)))
   (call   main (: 7 Int64))
   (output (: 2 Int64)))
+
+; -- a LIST argument crosses INBOUND to a peer as a handle (migrated from rcdzc
+; a_list_argument_crosses_inbound_to_a_peer_as_a_handle): the inbound twin of the list-RESULT crossing —
+; a List has a distinct runtime rep (RRB vector) but crosses as a handle the peer dereferences.
+(case "pla1 a list argument crosses inbound to a peer and is read by the peer op"
+  (doc    "PROVIDER `total : (List Int64) -> Int64` returns the list's length; the consumer builds
+           `(list 10 20 30)` on the shared runtime and passes its handle into the peer op:
+           total([10,20,30]) = 3.")
+  (peer   "cadenza:l/api" (do (def (total (: xs (List Int64))) (List.len xs)) (export total)))
+  (input  (do (effect L (op total (-> (List Int64) Int64))) (bind L "cadenza:l/api")
+              (def (main) (host (L) (L.total (list 10 20 30)))) (export main)))
+  (call   main)
+  (output (: 3 Int64)))
+
+; -- a peer op returning a (List <user-sum>) crosses to a peer executor (migrated from rcdzc
+; the_agent_kernel_list_of_hostop_result_runs_through_a_peer_executor): the agent-kernel seam — interpret
+; returns a branch-built (List HostOp) (a List of a String-payload user sum) that crosses peer->peer as a
+; handle; the executor reads its length. Both sides declare the shared HostOp type.
+(case "pak1 a peer op returning a (List of a user sum) crosses and its length is read"
+  (doc    "PROVIDER `interpret(kind, turn)` returns a branch-built (List HostOp): kind=1 -> [Append, Exec]
+           (2 ops). The consumer binds it and reads List.len of the crossed list: interpret(1,0) -> len 2.")
+  (peer   "cadenza:agent/kernel"
+          (do (type HostOp (Append String) (Exec String) (Http String) (Noop Int64))
+              (def (interpret (: kind Int64) (: turn Int64)) (if (= kind 1) (list (Append "a") (Exec "e")) (list (Noop 0))))
+              (export interpret)))
+  (input  (do (type HostOp (Append String) (Exec String) (Http String) (Noop Int64))
+              (effect K (op interpret (-> Int64 Int64 (List HostOp)))) (bind K "cadenza:agent/kernel")
+              (def (main (: kind Int64)) (host (K) (List.len (K.interpret kind 0)))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))
