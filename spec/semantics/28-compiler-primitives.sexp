@@ -1524,6 +1524,29 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "cbw1 a SHIFT (<<) threaded through a const recursion folds (const_eval delegation to core_of's fold_arith)"
+  (doc    "Bitwise/shift ops carry no hand-written `apply_const_prim` arm, but — unlike the member-headed
+           `Ordering.of` — `<<` is a plain operator the const_eval DELEGATION can rebuild + refold through
+           `core_of`'s `fold_arith`. `grow` threads `(<< k 1)` into a `(Set Int64)` accumulator (forces
+           whole-expression const_eval): k∈{3,2,1} → {6,4,2} → `Set.len` 3. Pins that the delegation covers
+           bitwise/shift in the recursive-fold path (no native arm needed).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s (grow (Set.insert s (<< k 1)) (- k 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "cbw2 a bitwise AND (&) threaded through a const recursion folds (const_eval delegation)"
+  (doc    "The bitwise-AND twin of cbw1: `(& k 1)` is the low bit — k∈{3,2,1} → {1,0,1} → the SET dedups to
+           {1,0} → `Set.len` 2. Confirms `&` folds in const_eval via the delegation (plain-operator refold).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s (grow (Set.insert s (& k 1)) (- k 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (output (: 2 Int64)))
+
 (case "cdv1 integer DIV and REM threaded through a const recursion fold (const_eval arithmetic arm)"
   (doc    "`apply_const_prim` folded Add/Sub/Mul but not `/`/`%`, so a recursion doing integer division declined
            and the `(const ...)` rejected — though `core_of` folds a direct `(/ n 10)`. `grow` extracts the base-10
