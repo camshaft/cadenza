@@ -2839,6 +2839,9 @@ pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a neutral or-false keeps both the trap and the value of its left operand
 pass	a newtype match-arm destructure reads the erased scalar back
+pass	a newtype over a record reads a field through the tag
+pass	a newtype over a record reads a field through the tag at runtime
+pass	a newtype over a sum erases without a second box and matches through both layers
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
@@ -2890,6 +2893,7 @@ pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
 pass	a nullary module export applied to a non-unit argument is rejected
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
+pass	a nullary single-variant newtype is a nominal unit tag that matches unconditionally
 pass	a nullary variant applied to a non-unit payload is a type error
 pass	a nullary variant applied to a non-unit payload rejects even when constructed via application
 pass	a nullary variant applied to unit constructs correctly through the application path
@@ -6779,6 +6783,10 @@ pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does
 pass	rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches
 pass	rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes
 pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch
+pass	rcw1 a hundred-constructor sum dispatches to the seventy-seventh arm
+pass	rcw2 a hundred-field record projects its first and last fields
+pass	rcw3 a fifty-element tuple projects its first and last positions
+pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
@@ -7876,6 +7884,7 @@ pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 thro
 pass	wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch
 pass	wen1 an enum host-import RESULT lifts and selects the guest arm
 pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
+pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime UInt8 to UInt64 zero-extends (total, emits)
 pass	widening a runtime UNSIGNED narrow integer to Int64 zero-extends (total, emits)
@@ -8016,11 +8025,6 @@ todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use 
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
-todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	rcw1 a hundred-constructor sum dispatches to the seventy-seventh arm
-pass	rcw2 a hundred-field record projects its first and last fields
-pass	rcw3 a fifty-element tuple projects its first and last positions
-pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
-pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers

@@ -22289,39 +22289,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nullary_newtype_is_a_unit_tag() {
-        // A nullary single variant `(type Marker (The))` is a nominal Unit — `The` erases to unit (no box),
-        // and `(match The ((The) …))` matches unconditionally.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Marker (The)) \
-                       (def (main) (match The ((The) 99))) (export main))"
-                ),
-                "main"
-            ),
-            99
-        );
-    }
-
-    #[test]
-    fn a_newtype_over_a_record_reads_a_field_through_the_tag() {
-        // A newtype wrapping a record (a "struct") supports `.field` DIRECTLY through the tag: `(. (Mk
-        // rec) x)` sees through the erased nominal to the payload record — the runtime value IS the record
-        // handle, so member access reads the inner field with NO unwrap ceremony. Constant fold.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
-                       (def (main) (. (UserId.Mk (record (x 1) (y 2))) x)) (export main))"
-                ),
-                "main"
-            ),
-            1
-        );
-    }
-
-    #[test]
     fn a_same_name_variant_of_a_multi_variant_sum_constructs_by_the_type_name() {
         // `(type N (N Int64) (J Int64))` — the FIRST variant shares the type's name, but the sum has
         // MORE than one variant. The same-name head-position rule must fire regardless of variant COUNT:
@@ -23305,25 +23272,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_newtype_over_a_sum_erases_no_double_box() {
-        // A NON-RECURSIVE newtype over a sum — `(type Cached (Mk (Option Int64)))` — ERASES: the value IS
-        // the `Option` handle, with NO outer `sum-new(0, …)` wrapping it (which would double-box). The
-        // `Option`'s own box is genuine; only the redundant `Mk` tag is removed. Constructs + matches
-        // through both layers. (The blunt "contains any sum" guard used to box this; the recursion guard
-        // now boxes ONLY a genuinely cyclic newtype.)
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Cached (Mk (Option Int64))) \
-                       (def (main) (match (Cached.Mk (Some 5)) ((Mk o) (match o ((Some n) n) ((None _) 0))))) (export main))"
-                ),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
     fn a_runtime_newtype_over_a_sum_escapes_to_the_host() {
         // REGRESSION: a newtype-over-sum RETURNED to the host at RUN TIME used to DECLINE ("a `(Option
         // Int64)` sum crosses the host boundary only as a single nullary export's result") — the escape
@@ -23423,23 +23371,6 @@ mod match_engine {
             return;
         };
         assert_eq!(v, "(: (Some (tuple 7 (: (None unit) Lst))) Lst)");
-    }
-
-    #[test]
-    fn a_newtype_over_a_record_reads_a_field_at_runtime() {
-        // The RUNTIME path: a field whose value is behind an `if` can't fold, so `.y` reads the inner
-        // record's sorted slot off the (erased) handle — `erase_nominal_steps` / `runtime_member_index`
-        // see through the tag.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type UserId (Mk (Record (x Int64) (y Int64)))) \
-                       (def (main) (. (UserId.Mk (record (x 5) (y (if true 9 0)))) y)) (export main))"
-                ),
-                "main"
-            ),
-            9
-        );
     }
 
     #[test]
