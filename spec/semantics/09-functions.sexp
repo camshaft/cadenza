@@ -8660,3 +8660,27 @@
   (call main (: 5 Int64))
   (output (: (list (list 5 6) (list 5 6)) (List (List Int64))))
   (live-objects 6))
+; SIMPLEST instance of the compound-shell reclaim gap (the before/after witness for the future
+; broadening): a SINGLE non-recursive match over an OWNED compound-payload sum whose payload child is
+; only BORROWED (read by List.len -> scalar, never moved out) and does NOT escape the arm, STILL leaks
+; the shell + payload — the MatchSum reclaim gates require all-scalar payloads, and a (List Int64)
+; payload fails that floor, so the owned Box.Wrap shell is left un-dropped. Value-correct, no UAF. The
+; scrutinee (mk n) takes a RUNTIME n so the match can't const-fold away (a constant would eliminate the
+; MatchSum and mask the leak). Flip to 0 when the sound no-arm-child-escapes compound-shell reclaim lands.
+
+(case "a borrow-only compound-payload match shell is left un-dropped -- known gap (all-scalar reclaim floor)"
+  (doc    "`(type Box (Wrap (List Int64)) Empty)`; `mk n` builds a fresh owned `Box.Wrap [0..n)`; `main n`
+           matches it, binds `xs`, and reads `(List.len xs)` — a BORROW to a scalar, `xs` never escapes the
+           arm. `mk 3` -> `Wrap [0,1,2]`, len = 3 (value-correct, no UAF). But the owned Box.Wrap shell +
+           its payload list are left un-dropped: the MatchSum shell-reclaim gate requires all-scalar
+           payloads and a `(List Int64)` payload fails it, so 3 cells stay live (shell + list spine + boxed
+           element) even though the borrowed non-escaping child would make the drop sound. Flip to 0 when
+           the no-arm-child-escapes compound-shell reclaim broadening lands — this is the first shape it fixes.")
+  (input  (do
+            (type Box (Wrap (List Int64)) Empty)
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) (Box.Wrap (build 0 n (list)))))
+            (def (main (: n Int64)) (match (mk n) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 3))
