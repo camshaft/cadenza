@@ -2316,3 +2316,21 @@
   (call   main (: 1 Int64))
   (output (: 4232 Int64))
   (live-objects 0))
+
+; ── the INSERT-direction Bytes-rope map-key face (migrated from rcdzc): insert under a rope key, found by its flat twin, 0-leak ──
+(case "a map keyed by inserting under a runtime Bytes ROPE is found by its flat twin and adds no leak"
+  (doc    "The INSERT-direction Bytes rope map-key face (the lookup-by-rope and swap-by-rope directions are
+           pinned elsewhere): insert an entry UNDER an owned runtime Bytes rope key `(rep [104] 1)` =
+           [104,120], then look up with the flat literal [104,120] -> 42. The compiler bytes-compacts a
+           String/Bytes key at every champ site (here the INSERT site), so the rope key hashes+compares to
+           the flat twin's slot (was None -> -1, a champ_hash/champ_eq physical-byte miss). The owned rope
+           key is consumed by the insert and its compaction is refcount-neutral, so the program reclaims
+           fully -> live-objects 0.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64))
+              (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main)
+              (match (Map.lookup (Map.insert (Map.empty) (rep (Bytes.of (list 104)) 1) 42) (Bytes.of (list 104 120)))
+                ((Some v) v) ((None) (- 0 1))))
+            (export main)))
+  (call   main) (output (: 42 Int64)) (live-objects 0))
