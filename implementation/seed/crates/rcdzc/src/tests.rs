@@ -83563,3 +83563,111 @@ fn constant_string_value_extracts_utf8_bytes_of_a_string_literal() {
         "a constant String \"AB\" and constant Bytes 65,66 must extract to equal byte vectors"
     );
 }
+
+/// §2d STATIC compounds (`DESIGN-static-data.md` increment 6 — tuple/record markability detection).
+/// Pins [`crate::lower::is_markable_constant_compound`]: a constant Tuple/Record whose every element is a
+/// per-node-markable constant (scalar Int/Bool/Unit, constant Bytes/String, or nested markable T/R) is a
+/// hoist candidate; a runtime element, a `ConstFloat`/`ConstChar`, a nested list, or a bare scalar root are
+/// NOT (they build inline). This is the classification the build-once immortal emit (next slice) keys on.
+#[test]
+fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
+    use crate::db::Db;
+    use crate::lower::is_markable_constant_compound;
+    let markable = |src: &str, def: &str| -> bool {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let body = db.defs[d].body.expect("body");
+        is_markable_constant_compound(&mut db, body)
+    };
+    let m = "(module m ";
+    // A constant scalar tuple → markable.
+    assert!(
+        markable(
+            &format!("{m}(def (main) (tuple 1 2 3)) (export main))"),
+            "main"
+        ),
+        "a constant scalar tuple must be markable"
+    );
+    // A constant record (incl. a String field) → markable.
+    assert!(
+        markable(
+            &format!("{m}(def (main) (record (x 1) (y \"hi\"))) (export main))"),
+            "main"
+        ),
+        "a constant record with scalar + string fields must be markable"
+    );
+    // A NESTED markable tuple → markable (recurse).
+    assert!(
+        markable(
+            &format!("{m}(def (main) (tuple (tuple 1 2) 3)) (export main))"),
+            "main"
+        ),
+        "a tuple of a markable nested tuple must be markable"
+    );
+    // A tuple with a RUNTIME element → NOT markable.
+    assert!(
+        !markable(
+            &format!("{m}(def (f (: n Int64)) (tuple n 2)) (def (main) 0) (export main))"),
+            "f"
+        ),
+        "a tuple with a runtime element must NOT be markable"
+    );
+    // A tuple containing a LIST → NOT markable (lists excluded: RRB-trie internals unmarkable per-node).
+    assert!(
+        !markable(
+            &format!("{m}(def (main) (tuple (list 1 2) 3)) (export main))"),
+            "main"
+        ),
+        "a tuple containing a list must NOT be markable (list excluded from per-node marking)"
+    );
+    // A bare scalar root → NOT a compound.
+    assert!(
+        !markable(&format!("{m}(def (main) 42) (export main))"), "main"),
+        "a bare scalar is not a compound"
+    );
+}
+
+/// §2d STATIC compounds (increment 6 — the collection pass). Pins
+/// [`crate::backend::wasm::collect_static_compounds`]: it gathers markable constant Tuple/Record ROOTS,
+/// does NOT descend into a collected root (its subtree is built inline), and skips runtime/non-markable
+/// compounds. A nested markable tuple contributes only its OUTER root (one global for the whole tree).
+#[test]
+fn collect_static_compounds_gathers_markable_roots_only() {
+    use crate::backend::wasm::collect_static_compounds;
+    use crate::db::Db;
+    let count = |src: &str, defs: &[&str]| -> usize {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let order: Vec<usize> = defs
+            .iter()
+            .map(|n| db.def_by_name(n).unwrap_or_else(|| panic!("def {n}")))
+            .collect();
+        collect_static_compounds(&mut db, &order).len()
+    };
+    // A returned constant tuple → 1 root.
+    assert_eq!(
+        count(
+            "(module m (def (main) (tuple 1 2 3)) (export main))",
+            &["main"]
+        ),
+        1,
+        "a markable constant tuple must be collected as one root"
+    );
+    // A NESTED markable tuple → still ONE root (the outer; subtree built inline, not descended).
+    assert_eq!(
+        count(
+            "(module m (def (main) (tuple (tuple 1 2) 3)) (export main))",
+            &["main"]
+        ),
+        1,
+        "a nested markable tuple contributes only its outer root (one global for the tree)"
+    );
+    // A runtime tuple → 0 (not markable).
+    assert_eq!(
+        count(
+            "(module m (def (f (: n Int64)) (tuple n 2)) (def (main) 0) (export main))",
+            &["f"]
+        ),
+        0,
+        "a runtime tuple must not be collected"
+    );
+}

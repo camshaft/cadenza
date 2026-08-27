@@ -14777,6 +14777,39 @@ pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a per-node-IMMORTAL-MARKABLE constant compound — the §2d STATIC compound
+/// (increment 6, tuple/record) hoist CANDIDATE. True for a `Core::Tuple` / `Core::Record` whose every
+/// element is itself a per-node-markable constant (see [`is_markable_constant_elem`]). The compiler builds
+/// EVERY node of such a tree explicitly (`arr-alloc` + a boxed leaf per element, recursively), so a
+/// build-once init can mark each node IMMORTAL per node (`mark-immortal` is shallow, so the WHOLE tree must
+/// be marked to be census-excluded + drop-safe).
+///
+/// DELIBERATELY EXCLUDES `Core::ListNew` and maps (and any compound CONTAINING one): a list's `vec-of-arr`
+/// (for `> 32` elements) and a map's hashed insert build RRB / CHAMP INTERNAL nodes that have no
+/// compile-time handle to `mark-immortal` — marking those needs a DEEP-mark op (deferred). Also excludes
+/// `ConstFloat`/`ConstChar` leaves for this first slice (conservative — they box fine, a later widening).
+/// A non-markable element makes the whole compound decline (it builds inline, per-eval, as before).
+pub fn is_markable_constant_compound(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::Tuple { elems } => elems.iter().all(|&e| is_markable_constant_elem(db, e)),
+        Core::Record { fields } => fields.values().all(|&v| is_markable_constant_elem(db, v)),
+        _ => false,
+    }
+}
+
+/// Whether an ELEMENT of a candidate static compound is per-node-markable (see
+/// [`is_markable_constant_compound`]): a constant `Int64`/`Bool`/`Unit` scalar (boxes to one markable heap
+/// node — `Unit` is the inline `IMM_UNIT` sentinel, already rc-free), a constant `Bytes`/`String` leaf, or
+/// a NESTED markable `Tuple`/`Record`. Anything else — a runtime value, a `ConstFloat`/`ConstChar`, a
+/// `ListNew`, a map — is NOT markable (the compound declines).
+fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
+        Core::Tuple { .. } | Core::Record { .. } => is_markable_constant_compound(db, id),
+        _ => is_constant_bytes(db, id) || constant_string_value(db, id).is_some(),
+    }
+}
+
 /// Whether the node at `id` is a fully COMPILE-TIME-CONSTANT `Bytes` value — the static-once CANDIDATE
 /// predicate for §2d STATIC bytes (`DESIGN-static-data.md`). Covers BOTH representations of a constant
 /// byte sequence, exactly as the backend emit does: a `Core::BytesOf` whose every element folds to a
