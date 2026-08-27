@@ -165,9 +165,18 @@ def contains (haystack needle : String) : Bool := (haystack.splitOn needle).leng
 
 def trapKind (reason : String) : Option String :=
   let r := reason.toLower
-  if contains r "divide by zero" || contains r "division by zero" || contains r "remainder by zero" then
+  -- from_id: the 4 STABLE trap-code ids (new corpus form, #4416) resolve directly …
+  if r == "div-by-zero" then some "div-by-zero"
+  else if r == "out-of-bounds" then some "out-of-bounds"
+  else if r == "overflow" then some "overflow"
+  else if r == "unreachable" then some "unreachable"
+  -- … else classify() a legacy English reason (case-insensitive substring — mirrors
+  -- cdz-corpus-grade::classify, the one place English is matched). This from_id-then-classify keeps
+  -- both the code-id `(trap "div-by-zero")` and the legacy `(trap "divide by zero")` forms resolving
+  -- to the same kind, matching the authoritative grader exactly.
+  else if contains r "divide by zero" || contains r "division by zero" || contains r "remainder by zero" then
     some "div-by-zero"
-  else if contains r "out of bounds" || contains r "out-of-bounds" then some "out-of-bounds"
+  else if contains r "out of bounds" then some "out-of-bounds"
   else if contains r "overflow" then some "overflow"
   else if contains r "unreachable" || contains r "shift count out of range" then some "unreachable"
   else none
