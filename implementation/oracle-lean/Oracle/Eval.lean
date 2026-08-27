@@ -348,6 +348,12 @@ partial def observeDeep (v : Value) : Outcome :=
   | .record fs =>
     match fs.findSome? (fun kv => match observeDeep kv.2 with | .value _ => Option.none | o => Option.some o) with
     | Option.some o => o | Option.none => .value v
+  | .map es =>
+    match es.findSome? (fun kv =>
+      match observeDeep kv.1 with
+      | .value _ => (match observeDeep kv.2 with | .value _ => Option.none | o => Option.some o)
+      | o => Option.some o) with
+    | Option.some o => o | Option.none => .value v
   | _ => .value v
 
 /-- Prelude SUM constructors modeled as generic `variant` values (name, arity). Sign + Ordering are the
@@ -453,6 +459,19 @@ def canonSet (elems : Array Value) : Option (Array Value) :=
     some (sorted.foldl (fun acc e => if acc.size > 0 && acc[acc.size - 1]! == e then acc else acc.push e) #[])
   else none
 
+/-- Canonicalize a Map's entries: require every KEY be orderable, SORT by key, dedupe by key (a later
+entry wins — the canonical Map form is sorted-by-key with unique keys). `none` on an unorderable key. -/
+def canonMap (entries : Array (Value × Value)) : Option (Array (Value × Value)) :=
+  if entries.all (fun e => (compareVals e.1 e.1).isSome) then
+    let sorted := entries.qsort (fun a b => compareVals a.1 b.1 == some Ordering.lt)
+    some (sorted.foldl (fun acc e =>
+      if acc.size > 0 && acc[acc.size - 1]!.1 == e.1 then acc.set! (acc.size - 1) e else acc.push e) #[])
+  else none
+
+/-- `Map.insert m k v`: replace any existing entry for `k`, then add `k ↦ v` (canonicalized by `canonMap`). -/
+def mapInsertRaw (entries : Array (Value × Value)) (k v : Value) : Array (Value × Value) :=
+  (entries.filter (fun e => !(e.1 == k))).push (k, v)
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -486,6 +505,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
            else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
          | none => none)
         <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
+        <|> (if qualHead? m children == some ("Map".toUTF8, "insert".toUTF8) then some (evalMapInsert m env fuel children) else none)
       match ctorConstruct with
       | some o => o
       | none =>
@@ -653,6 +673,25 @@ partial def evalSetOf (m : Module) (env : Env) (fuel : Nat) (children : Array Na
     | other => other
   | none => .unsupported "eval: malformed Set.of"
 
+/-- `Map.insert m k v` = `((. Map insert) m k v)` (flat 3-arg) — insert/replace `k ↦ v` in map `m`,
+canonicalized (sorted by key, unique keys). A non-map operand or an unorderable key → skip. -/
+partial def evalMapInsert (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]?, children[3]? with
+  | some mId, some kId, some vId =>
+    match evalNode m env defaultIntTy fuel mId with
+    | .value (.map entries) =>
+      match evalNode m env defaultIntTy fuel kId with
+      | .value k =>
+        match evalNode m env defaultIntTy fuel vId with
+        | .value v => match canonMap (mapInsertRaw entries k v) with
+                      | some cm => .value (.map cm)
+                      | none => .unsupported "eval: Map with an unorderable key"
+        | other => other
+      | other => other
+    | .value _ => .unsupported "eval: Map.insert on a non-map"
+    | other => other
+  | _, _, _ => .unsupported "eval: malformed Map.insert"
+
 /-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
 → `variant C payload` (payload deferred as a `poison` if non-value, like a tuple/record field — spec Q2). -/
 partial def evalVariantCtor (m : Module) (env : Env) (fuel : Nat) (cname : ByteArray) (arity : Nat) (children : Array Nat) : Outcome :=
@@ -786,6 +825,9 @@ operand or a non-name field key (tuple positional access, etc.) is not modeled �
 partial def evalProject (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
   match children[1]?, children[2]? with
   | some recId, some fieldId =>
+    -- `(. Map empty)` used as a value = the empty map (a prelude module value, not a record projection).
+    if (nameOf? m recId == some "Map".toUTF8) && (nameOf? m fieldId == some "empty".toUTF8) then .value (.map #[])
+    else
     match evalNode m env defaultIntTy fuel recId with
     | .value (.record fields) =>
       match nameOf? m fieldId with
