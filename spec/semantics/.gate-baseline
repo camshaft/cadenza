@@ -1977,7 +1977,6 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
-pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -3547,6 +3546,7 @@ pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive match binder used twice over a heap-list sum payload projects a live field
 pass	a recursive multiplication overflow traps across the call chain
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
+pass	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform folds (the inner state re-binds to the slot param)
 pass	a recursive newtype escapes to the host tagged with its own name at each recursion point
 pass	a recursive param used only as a call argument infers its type from the callee
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
