@@ -3903,6 +3903,7 @@ pass	a same-name GENERIC ctor in an inlined callee resolves with a CONST argumen
 pass	a same-name generic type applied in a variant payload denotes the type
 pass	a same-name generic type at TWO instantiations in one payload each denotes its type
 pass	a same-name monomorphic constructor in a called helper resolves to the constructor
+pass	a same-name monomorphic constructor over a COMPOUND payload in a called helper constructs
 pass	a same-name multi-variant constructor in a called helper resolves to the constructor
 pass	a same-name variant of a multi-variant sum constructs bare in a body
 pass	a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default
@@ -4079,6 +4080,7 @@ pass	a sparse three-arm match's terminal pair dispatches branchlessly — the mi
 pass	a specific constructor export exposes one variant and keeps the rest private
 pass	a spliced boolean drives an evaluated conditional through the lifted leaf
 pass	a spliced string participates in an evaluated equality
+pass	a split-branch mutual-effect group whose recursion never reaches the base-case perform runs to 0
 pass	a squared BigInt-inner quantity added to a linear one is a dimension mismatch
 pass	a squared quantity does not add to a linear quantity
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
@@ -8254,4 +8256,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a split-branch mutual-effect group whose recursion never reaches the base-case perform runs to 0
