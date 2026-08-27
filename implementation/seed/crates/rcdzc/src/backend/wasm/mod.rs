@@ -10064,6 +10064,16 @@ fn emit_bytes_provider_member(
     iface: &str,
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
+    // §2d STATIC-DATA GUARD: this provider-member path assembles via `bytes_roundtrip_*_core_module`, which
+    // does NOT emit the build-once static-bytes GLOBAL/START sections (only `core_module_impl` does). So the
+    // body it selects MUST NOT route a constant Bytes/String to a `global.get` (`try_emit_static_bytes`) —
+    // that would reference a global this module never declares (an "unknown global: index out of bounds"
+    // validation failure, the #3862 reify regression). Strip `static_bytes` from the layout used here so the
+    // body builds each constant inline (exactly the pre-hoist behavior). Static hoisting stays active on the
+    // ordinary `core_module_impl` path; a reify/provider reducer simply forgoes it until this assembler
+    // grows its own static-globals emit.
+    let layout_no_static = layout.with_static_bytes(Vec::new());
+    let layout = &layout_no_static;
     // The member's declared param/result types drive both descriptors — the compiler reads them off the
     // export plan, never off a hard-coded contract shape.
     let (params, result_ty) = {
