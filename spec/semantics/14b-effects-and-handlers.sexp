@@ -2268,6 +2268,20 @@
             (export main)))
   (call   main) (output (: 43 Int64)))
 
+(case "a split-branch mutual-effect group whose recursion never reaches the base-case perform runs to 0"
+  (doc    "The split-branch mutual group specializes even when the effect is never actually performed at
+           runtime: `ev` performs `Fresh.next` in its base branch and calls `od` in its recursive branch, but
+           `ev 3 -> od 2 -> ev 1 -> od 0 -> 0` bottoms out in `od`'s base (0), never reaching `ev`'s
+           `Fresh.next`. The per-branch state-ref copy makes the branch-distributed state thread correctly and
+           the memo knot tie; the run yields 0 (no draw).")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1))))
+            (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+            (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (ev 3)))
+            (export main)))
+  (call   main) (output (: 0 Int64)))
+
 (case "a mutually-recursive group performs through a shared non-recursive helper"
   (doc    "Composes the two cross-function triggers: a mutually-recursive group (`ev`/`od`) where the
            effect is performed inside a NON-recursive helper `h` that `od` calls, rather than syntactically

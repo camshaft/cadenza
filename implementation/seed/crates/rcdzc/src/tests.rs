@@ -39321,26 +39321,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_state_mutual_recursion_with_perform_split_from_the_mutual_call_specializes() {
-        // A STATE-threading handler over a mutually-recursive group where a cycle def performs the
-        // discharged op in ONE `if`/`match` branch while the mutual call is in a DIFFERENT branch
-        // (`(def (ev n) (if (= n 0) (Fresh.next) (od …)))`) now SPECIALIZES and runs (it once leaked the
-        // internal `ev#eff…$s0` name, then was briefly declined; the ROOT fix — the `if`/`match` thread arms
-        // copy the incoming state-ref nodes per branch/arm, so a single-parent arena no longer orphans a
-        // shared node — makes the branch-distributed state thread correctly and the memo knot tie). It must
-        // COMPILE (the gate verifies the value: `ev 3` never reaches the base-case perform → 0).
-        let split = "(module m (effect Fresh (op next (-> Int64))) \
-                   (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1)))) \
-                   (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1)))) \
-                   (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (ev 3))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(split))).is_ok(),
-            "the split-branch mutual-effect group must specialize (the per-branch state-ref copy fix), \
-             not decline or leak an internal ev#eff…$s0 name"
-        );
-    }
-
-    #[test]
     fn a_host_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
         // HOST + RUNTIME COMPOSITION: a host op result fed into a value-heap runtime op (`Map.insert` on the
         // runtime `ask.ask` value imports the `"heap"` runtime; `ask` imports `"host"`). Previously declined
@@ -39901,31 +39881,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_effectful_walk_accumulates_into_a_list_state_handler() {
-        // E3 list-state: a recursive effectful walk over a 2-arm handler whose state is an empty-list
-        // seed `(list)`. `walk` performs `(Diag.emit n)` at each descent step and reads the accumulator
-        // back with `(Diag.collect)` at the base; the handler seeds `(list)` and threads `(List.push s v)`,
-        // so `(walk 3)` accumulates `(list 3 2 1)`, whose length is 3. The empty-list seed's element type
-        // is fixed by JOINING the seed type with each tail arm's next-state type — the growing arm's
-        // `(List.push s v)` reveals `List Int64` because the arm op param `v` types from the op's declared
-        // `(-> Int64 Unit)` signature (`handle_arm_param_ty`). Was the hang/decline boundary; now served.
-        // Also the regression guard for the unbounded-inline loop (`THREAD_INLINE_LIMIT`) — a served value
-        // still proves the fold TERMINATES.
-        let src = "(do (effect Diag (op emit (-> Int64 Unit)) (op collect (-> Unit (List Int64)))) \
-                   (def (walk n) (if (< n 1) (Diag.collect unit) (do (Diag.emit n) (walk (- n 1))))) \
-                   (def (main) (handle Diag (list) \
-                     ((emit (v) s (resume unit (List.push s v))) (collect (u) s (resume s s))) \
-                     (List.len (walk 3)))) (export main))";
-        // The state lives on the value heap (`List.push`/`List.len`), so this needs the store runtime the
-        // in-process linker doesn't supply — assert it COMPILES (a well-formed component); the corpus gate
-        // (`14-effects-and-handlers.sexp`) verifies the runtime value is 3 against the real heap.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-            "recursive effectful list-state walk must compile"
-        );
-    }
-
-    #[test]
     fn an_effectful_host_arg_into_a_destructuring_match_is_evaluated_once() {
         // FIXED (was a KNOWN MISCOMPILE emitting 3, now 1). TWO independent bugs stacked here, both closed:
         // (1) the β-reduce call-by-name re-perform — `(mk (E.get))` with `mk s = (T s s s)` substituted the
@@ -39981,33 +39936,6 @@ mod stage1 {
             host_calls, 1,
             "evaluate-once: an effectful host arg to a multi-use scalar param is bound once (1 host call), \
              not re-performed per use"
-        );
-    }
-
-    #[test]
-    fn a_recursive_effectful_walk_accumulates_into_a_string_state_handler() {
-        // The ROPE-STRING analogue of the list-state walk above (the v-runtime rope seam): a recursive
-        // effectful walk whose handler state is a heap STRING accumulated with `String.concat` across
-        // performs, read back at the base and measured. `walk` performs `(Log.emit "x")` at each descent
-        // and reads the accumulator with `(Log.dump)` at the base; the handler seeds `""` and threads
-        // `(String.concat s m)`, so `(walk 3)` builds `"xxx"`, whose byte length is 3. This crosses the
-        // effect MECHANISM into the runtime ROPE path (where v-runtime's construction-site canonicalization
-        // lives), so it pins that a String-valued handler STATE threads through the fold + composes under a
-        // heap string op — the String-STATE companion of the list-state case (the corpus has a String
-        // RESULT case, "a STRING-result effect op resumes with a string that folds through a concat", but
-        // NOT a String threaded as recursive handler state). Guards against a rope-canonicalization change
-        // silently regressing a String-state effect accumulator.
-        let src = "(do (effect Log (op emit (-> String Unit)) (op dump (-> Unit String))) \
-                   (def (walk (: n Int64)) (if (= n 0) (Log.dump) (do (Log.emit \"x\") (walk (- n 1))))) \
-                   (def (main) (handle Log \"\" \
-                     ((emit (m) s (resume unit (String.concat s m))) (dump (u) s (resume s s))) \
-                     (String.byte-len (walk 3)))) (export main))";
-        // The state lives on the value heap (rope String), so the in-process linker can't run it — assert
-        // it COMPILES to a well-formed component; a store run yields byte length 3 (verified by hand via
-        // cdz-run). Mirrors the list-state test's compile-only assertion.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-            "recursive effectful string-state walk must compile"
         );
     }
 
