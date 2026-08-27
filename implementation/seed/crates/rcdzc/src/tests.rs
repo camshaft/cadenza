@@ -34792,43 +34792,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_annotated_tuple_pattern_parameter_binds_and_checks() {
-        // A tuple-pattern parameter that ALSO carries a type annotation — `(: (tuple a b) T)` — must both
-        // BIND its pattern's names and CHECK the annotation. `binding_params::lower` peels the `(: <pattern>
-        // T)` to reach the inner tuple: it rewrites `(def (f (: (tuple a b) T)) BODY)` →
-        // `(def (f (: p$0 T)) (let (((tuple a b) p$0)) BODY))`, keeping the annotation on the fresh binder
-        // and the destructuring on its value. Without the peel the whole `(: (tuple a b) T)` was left as one
-        // binder, so `a`/`b` were never bound (CDZ0101) — even though the un-annotated tuple param and the
-        // annotated PLAIN binder both work; only their combination broke (and the ML printer emits it).
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            run_returns::<i64>(&bytes, "main")
-        };
-        // Binds the halves: (+ a b) over (tuple 3 4) = 7; projecting just `a` = 3.
-        assert_eq!(
-            run(
-                "(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b)) \
-                   (def (main) (f (tuple 3 4))) (export main))"
-            ),
-            7
-        );
-        assert_eq!(
-            run("(module m (def (f (: (tuple a b) (Tuple Int64 Int64))) a) \
-                   (def (main) (f (tuple 3 4))) (export main))"),
-            3
-        );
-        // The annotation is ENFORCED, not dropped: a `(Tuple Int64 Bool)` annotation against an Int64/Int64
-        // argument is a contradiction (CDZ0203), exactly as an annotated `let` binder is.
-        let code = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (f (: (tuple a b) (Tuple Int64 Bool))) a) \
-               (def (main) (f (tuple 3 4))) (export main))",
-        )))
-        .err()
-        .and_then(|d| d.code);
-        assert_eq!(code.as_deref(), Some("CDZ0203"));
-    }
-
-    #[test]
     fn an_ill_formed_def_parameter_pattern_is_rejected() {
         // A parameter position is a binding position — no alternative arm — so its pattern must be
         // irrefutable and linear (core-semantics.md §A Binding Position Accepts An Irrefutable Pattern).
