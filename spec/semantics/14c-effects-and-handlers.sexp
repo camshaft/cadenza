@@ -18360,3 +18360,18 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 2 Int64)))
+
+; -- breaker batch 454 (2026-08-27): the handler-side member of the #3860/#3833 acceptance set
+; (the rest are in 05-compound; the mts1/mmx1/rrb1 fence is above). known-leak measured 2026-08-27.
+(case "ap1 an arm destructures an Option-of-list op ARGUMENT through the nested pattern"
+  (input (do
+    (effect E (op put (-> (Option (List Int64)) Int64)))
+    (def (main (: n Int64))
+      (handle E 0
+        ((put (o) st
+          (resume (match o ((Option.Some (list a b)) (+ a b)) (_ -1)) st)))
+        (E.put (if (> n 0) (Option.Some (list n (+ n 1))) Option.None))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 3))
