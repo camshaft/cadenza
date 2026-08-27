@@ -55589,32 +55589,10 @@ mod cross_component_oracle {
             String::from_utf8_lossy(&consumer).contains(&import_name),
             "a request-struct peer consumer imports the value-heap runtime (it builds the tuple + rope)"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL31] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:req/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a request-struct argument crosses to a peer")
-        {
-            // byte-len("hi") + 4 = 2 + 4 = 6. A compound carrying a String field crossed as ONE handle;
-            // the peer projected both the rope-leaf field and the scalar field out of it.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "6",
-                "a record-of-(String,scalar) argument crosses to a peer as one handle, both fields read"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("request-struct run trapped: {t}"),
-        }
+        // The RUN half (byte-len("hi") + 4 = 6 — a tuple carrying a String field crosses as ONE handle,
+        // both fields projected by the peer) is corpus-covered by 29-cross-component-peers "pca4 a tuple of
+        // a string and a scalar crosses INBOUND to a peer, both fields read there"; this rcdzc test keeps
+        // only the white-box value-heap-runtime-import pin.
     }
 
     // ------------------------------------------------------------------------------------------------

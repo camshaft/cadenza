@@ -8416,6 +8416,7 @@ todo	pby1 a peer BYTES result escapes the entrypoint via the with-methods fused 
 todo	pca1 a map argument crosses INBOUND to a peer and its length is read there
 todo	pca2 a set argument crosses INBOUND to a peer and its length is read there
 todo	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
+todo	pca4 a tuple of a string and a scalar crosses INBOUND to a peer, both fields read there
 todo	pcl1 a peer op returning a list crosses as a handle and its length is read
 todo	pcl2 a peer op returning a tuple with a variable-length list element crosses, both fields read
 todo	pcl3 an element of a peer-returned list is read and used
