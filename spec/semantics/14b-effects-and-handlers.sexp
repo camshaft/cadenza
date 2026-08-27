@@ -6849,7 +6849,7 @@
                     ((None _u) -1)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1006 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a record-LITERAL scrutinee whose fields perform, destructured by a `(record …)` arm, DECLINES (breaker finding #8)"
   (doc    "REJECT-DON'T-MISCOMPILE (v-effects finding #8, breaker 3-backend-agree-wrong). A record-pattern

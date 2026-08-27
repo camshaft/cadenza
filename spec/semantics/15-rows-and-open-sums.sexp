@@ -120,7 +120,7 @@
   (call main (: 1 Int64)) (output (: 100 Int64))
   (call main (: 2 Int64)) (output (: 7 Int64))
   (call main (: 9 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple

@@ -467,7 +467,7 @@
   (call main (: 2 Int64) (: -1 Int64))                 (output (: -1 Int64))
   (call main (: 0 Int64) (: 9223372036854775807 Int64)) (output (: -1 Int64))
   (call main (: 5 Int64) (: 1 Int64))                  (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; The seam case at "a slice spanning a concatenation sees the logical bytes" slices across the seam of a
 ; concat of CONSTANT chunks, which the fold may materialize before slicing. A GENUINELY-runtime byte
@@ -500,7 +500,7 @@
                 (match (Bytes.slice (rope s) 3 2) ((Option.Some _) 1)                              ((Option.None) 0))))
             (export main)))
   (call main (: 0 Int64)) (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 11))
+  (live-objects known-leak 5))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -917,7 +917,7 @@
             (export main)))
   (call   main (: 4611686018427387904 Int64) (: 4611686018427387904 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "slicing with a start near i64::MAX is out of range, not a trap"
   (doc    "The trap sibling: `start = i64::MAX`, `len = 1` on a 3-byte sequence — out of bounds → None. A
@@ -933,7 +933,7 @@
             (export main)))
   (call   main (: 9223372036854775807 Int64) (: 1 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "the slice overflow guard holds on a chained slice-of-a-slice"
   (doc    "The overflow-safe bounds check lives in the ONE shared `Core::BytesSlice` emit, so it holds at
@@ -954,7 +954,7 @@
             (export main)))
   (call   main (: 4611686018427387904 Int64) (: 4611686018427387904 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "compacting a byte sequence built at run time preserves its bytes"
   (doc    "`(Bytes.compact b)` on a runtime-built `b` = `b`: compact re-bases the value into storage
@@ -2354,7 +2354,7 @@
     (export main)))
   (call main (: 1 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)"
   (input (do

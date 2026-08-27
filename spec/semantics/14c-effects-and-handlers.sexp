@@ -1189,7 +1189,7 @@
   (call   main (: 5 Int64)) (output (: 108 Int64))
   (call   main (: 1 Int64)) (output (: 4 Int64))
   (call   main (: 3 Int64)) (output (: 103 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 5))
 
 ;; ── string CONTENT built, sliced, gated, and measured through the effect thread (breaker sg) ─────
 ;; sg1 a string BUILT by a walk of draws (EXACT content compared — dropped/doubled/reordered
@@ -8925,7 +8925,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 109207104 Int64))
   (call   main (: 7 Int64)) (output (: 109211104 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 3))
 
 (case "uwr1 a NARROW UInt8 handler state — wrapping-add accumulates modulo 256 through the thread, each dispatch answers the widened running value"
   (input  (do
@@ -10135,7 +10135,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 1112213132 Int64))
   (call   main (: 5 Int64)) (output (: 1112131415 Int64))
-  (live-objects known-leak 33))
+  (live-objects known-leak 27))
 
 ; --- breaker batch 262: priority-pop selection, two-pointer merge across handlers, checkpoint/restore pair ---
 (case "pq1 a PRIORITY-POP protocol — pushes append unsorted (priority,value) pairs, popmin scans for the strict minimum priority (first-of-equals wins) answers its value and removes it by filtered rebuild"
@@ -10177,7 +10177,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1232010 Int64))
   (call   main (: 9 Int64)) (output (: 1231030 Int64))
-  (live-objects known-leak 44))
+  (live-objects known-leak 42))
 
 (case "mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain"
   (input  (do
@@ -18397,7 +18397,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once"
   (input (do
@@ -18412,7 +18412,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers"
   (input (do

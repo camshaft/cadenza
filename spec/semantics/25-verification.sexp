@@ -2443,4 +2443,4 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 7))
+  (live-objects 0))
