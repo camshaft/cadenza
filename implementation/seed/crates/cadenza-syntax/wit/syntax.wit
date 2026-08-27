@@ -9,16 +9,16 @@
 // ── The boundary carries cdzast BYTES, not structured records ────────────────────────────────────
 // Every AST crossing this boundary is the canonical binary sexpr — a `cdzast\x00\x01` artifact
 // (`list<u8>`), the SAME wire the reducer world (cadenza:agent-kernel) and the shared
-// `cadenza-syntax::codec` bottom crate already use. This is deliberate (matches the whole dict/codec
-// arc): keeping ASTs as opaque versioned bytes at the boundary makes this world codec-VERSIONED and
+// `cadenza-syntax::codec` bottom crate already use. This is deliberate: keeping ASTs as opaque
+// versioned bytes at the boundary makes this world codec-VERSIONED and
 // arena-rep-INDEPENDENT — the importer decodes with its own `codec::decode` (byte-identical), so a
 // caller in a different arena representation (rcdzc vs cadenza_ast) still interoperates. We do NOT
 // mirror the `Struct`/`Leaf` value model into WIT records: that would freeze the arena shape into the
 // ABI and duplicate the frozen 2-variant codec. Source text crosses as `string` (UTF-8).
 //
 // ⚠ CONTRACT STABILITY: additive evolution ONLY (append new funcs / new optional record fields;
-// never reorder or remove). The AST-bytes payloads are versioned by the `cdzast\x00\x02`-vs-`\x00\x01`
-// header the codec already carries, so the wire under `list<u8>` evolves independently of this world.
+// never reorder or remove). The AST-bytes payloads are versioned by the `cdzast\x00\x01` header the
+// codec already carries, so the wire under `list<u8>` evolves independently of this world.
 // This is a DRAFT for review — no reducer binds it yet, so the interface names + func shapes can still
 // be reshaped before the first component imports it. The reducer IMPORTS under the full
 // content-addressed name (`cadenza:syntax/...@<version>+<hash>`); this world EXPORTS the BARE
@@ -28,7 +28,7 @@ package cadenza:syntax;
 
 // ── Shared boundary types ──────────────────────────────────────────────────────────────────────────
 interface types {
-  // A canonical binary AST artifact: a `cdzast\x00\x01` (or dict-bearing `\x00\x02`) byte string, as
+  // A canonical binary AST artifact: a `cdzast\x00\x01` byte string, as
   // `codec::encode` produces and `codec::decode` consumes. Opaque at this boundary — the importer
   // decodes it. (A type alias for intent; WIT has no newtype, so it is `list<u8>` on the wire.)
   type ast-bytes = list<u8>;

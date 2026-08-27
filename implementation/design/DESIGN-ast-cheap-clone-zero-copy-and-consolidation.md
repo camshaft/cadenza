@@ -63,7 +63,7 @@ seq380 reshape then moves **Str + Bytes** to the zero-copy `Bytes`-backed repr i
 
 ### The change
 
-- **`codec::decode`/`decode_detailed`/`decode_with_dicts`** take `bytes::Bytes` (not `&[u8]`/`Vec<u8>`).
+- **`codec::decode`/`decode_detailed`** take `bytes::Bytes` (not `&[u8]`/`Vec<u8>`).
   A caller with a `Vec<u8>` gets one `Bytes::from(vec)` at the boundary (the LAST copy); every leaf after
   is a slice of it.
 - **`leb128::Reader`** carries the `Bytes` (or a cursor + a handle to it) so `take(len)` can return a
