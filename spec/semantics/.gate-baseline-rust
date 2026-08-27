@@ -3371,6 +3371,7 @@ pass	a runtime Int16 division of the minimum by -1 overflows and traps
 pass	a runtime Int16 wrapping-add overflow wraps with sign-extension (32767 + 1 = -32768)
 pass	a runtime Int32 division of the minimum by -1 overflows and traps
 pass	a runtime Int32 division of the minimum by -2 is a normal division
+pass	a runtime Int8 division in range computes and division by zero traps
 pass	a runtime Int8 division of the minimum by -1 overflows and traps
 pass	a runtime Int8 wrapping-add overflow wraps with sign-extension (127 + 1 = -128)
 pass	a runtime Int8 wrapping-mul overflow wraps with sign-extension (-128 * -1 = -128)
@@ -3405,6 +3406,7 @@ pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime UInt8 subtraction underflowing below zero traps
+pass	a runtime UInt8 unsigned right shift is logical
 pass	a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-masked to width)
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
@@ -3477,6 +3479,7 @@ pass	a runtime float leaf in a tuple compares by the canonical byte form
 pass	a runtime float multiplication emits the machine mul
 pass	a runtime float promotes to a wider width with the machine promote
 pass	a runtime float subtraction emits the machine sub
+pass	a runtime full-width Int32 addition traps on carry overflow
 pass	a runtime full-width UInt64 addition that overflows traps rather than wrapping
 pass	a runtime full-width UInt64 multiplication that overflows traps rather than wrapping
 pass	a runtime full-width UInt64 subtraction that underflows traps rather than wrapping
@@ -3600,6 +3603,7 @@ pass	a runtime tuple orders lexicographically by field
 pass	a runtime tuple whose component is a list compares the list element-wise in order
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime two-operand UInt8 addition range-checks at the width boundary
+pass	a runtime two-operand UInt8 multiplication range-checks its product
 pass	a runtime unsigned division at the maximum by 1 does not trap
 pass	a runtime unsigned division by zero traps as divide-by-zero
 pass	a runtime unsigned-byte addition traps exactly past its width maximum
