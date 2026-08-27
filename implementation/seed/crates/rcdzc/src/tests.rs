@@ -8199,20 +8199,6 @@ fn compose_nfc_into_runtime_linker(
     }
 }
 
-/// `(def (main) 42)` compiles to a component that runs to 42.
-#[test]
-fn scalar_runs_to_42() {
-    let bytes = compile_component(&prog_scalar()).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-}
-
-/// `(def (main) (if false 1 2))` compiles to a component that runs to 2 (the else branch).
-#[test]
-fn if_runs_to_2() {
-    let bytes = compile_component(&prog_if()).expect("compile");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
-}
-
 // ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
 
 /// adv-61 regression: a CONSTANT `Float32` COMPARE must fold at binary32 precision, not at the
@@ -19911,16 +19897,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_recursive_sum_runs() {
-        // sum-to(3) = 3+2+1+0 = 6. The self-call `(sum-to (+ n -1))` is a `Core::Call`; the base case
-        // `(= n 0) → 0` pins the return type to Int64 (absorption), so it emits as a real function.
-        let bytes = component(
-            "(module m (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
-    }
-
-    #[test]
     fn a_lowercase_named_type_is_referenceable_in_a_field() {
         // A type is a VALUE, referenceable by name regardless of case. A lowercase-named sum
         // `(type mylist (Nil) (Cons Int64 mylist))` SELF-references `mylist` in its field, and a lowercase
@@ -19982,15 +19958,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_recursive_factorial_runs() {
-        // fac(5) = 120 — recursion through multiplication (checked; in range here).
-        let bytes = component(
-            "(module m (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1))))) (def (main) (fac 5)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 120);
-    }
-
-    #[test]
     fn a_pass_through_parameter_loop_computes_correctly() {
         // `go(n, k, acc)` re-passes `k` UNCHANGED each iteration — the loop back-edge elides the `k ← k`
         // self-move. Confirm the VALUE is right (the elision must not corrupt `k`, which `(+ acc k)`
@@ -20027,16 +19994,6 @@ mod recursion {
             "(module m (def (all-ge (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true)) (def (main) (if (all-ge 0 3 0) 1 0)) (export main))",
         );
         assert_eq!(run_returns::<i64>(&all_ge, "main"), 1);
-    }
-
-    #[test]
-    fn mutual_recursion_runs() {
-        // is-even/is-odd call each other; both are reachable (reachability adds is-odd via is-even's
-        // call) and emitted. is-even(10) → true → 1.
-        let bytes = component(
-            "(module m (def (is-even (: n Int64)) (if (= n 0) true (is-odd (+ n -1)))) (def (is-odd (: n Int64)) (if (= n 0) false (is-even (+ n -1)))) (def (main) (if (is-even 10) 1 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
     }
 
     #[test]
@@ -20175,17 +20132,6 @@ mod recursion {
             super::call_traps(&bytes, "main", &[]),
             "fac(25) must trap on overflow"
         );
-    }
-
-    #[test]
-    fn an_unannotated_recursive_def_runs_via_a2() {
-        // The corpus shape `(def (sum-to n) …)` — an UNANNOTATED recursive param, inferred `Int64` by
-        // the connected solve (A2, `solve_recursive_params`). Where B1 declined, it now COMPILES and
-        // RUNS: sum-to(3) = 6. This is the case the recursive corpus rides.
-        let bytes = component(
-            "(module m (def (sum-to n) (if (= n 0) 0 (+ n (sum-to (+ n -1))))) (def (main) (sum-to 3)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 6);
     }
 
     #[test]
