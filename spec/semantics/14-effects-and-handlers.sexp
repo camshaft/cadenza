@@ -1770,6 +1770,17 @@
   (host-calls (call ask.ask))
   (output (: 2 Int64)))
 
+(case "a bare effect declaration that is never performed is well-formed"
+  (doc    "Witnesses capabilities-and-effects.md #An Effect Declaration Names The Effect: an `(effect …)`
+           declaration is a routing-agnostic contract — declaring it grants nothing and performs nothing.
+           A program that declares an effect but never performs it is well-formed and `main` returns its
+           ordinary value 1, the effect decl contributing no behavior (it imports no host function and
+           needs no handler).")
+  (input  (do
+            (effect E (op f (-> Int64 Int64)))
+            (def (main) 1) (export main)))
+  (output (: 1 Int64)))
+
 (case "an effect discharged by a handler does not escape to the manifest"
   (doc    "Witnesses capabilities-and-effects.md #An Effect That Does Not Escape Is Discharged By A
            Handler and #An Effect Discharged By An In-Program Handler Does Not Appear In The Manifest:

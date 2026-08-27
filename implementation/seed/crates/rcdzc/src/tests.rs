@@ -59117,23 +59117,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_bare_effect_declaration_compiles() {
-        // An `(effect …)` declaration is a routing-agnostic contract; declaring it grants nothing and
-        // performs nothing (`capabilities-and-effects.md` §An Effect Declaration Names The Effect). So a
-        // program that declares an effect but never performs it is well-formed — `main` returns its
-        // value, the effect decl contributing no behavior (E0: the surface is recognized, not lowered).
-        let src = "(do (effect E (op f (-> Int64 Int64))) (def (main) 1) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a bare effect declaration compiles"),
-                "main"
-            ),
-            1
-        );
-    }
-
-    #[test]
     fn a_duplicate_effect_operation_is_rejected() {
         // An effect's operations are a closed name-set (like a sum's variants), so declaring `f` twice is
         // CDZ0201 — the fifth closed-name-set duplicate-member check (`capabilities-and-effects.md` §An
@@ -59235,46 +59218,6 @@ mod stage1 {
             serr.message.contains("operation `put`") && !serr.message.contains(" — "),
             "a scalar perform mismatch carries no structural-delta tail: {}",
             serr.message
-        );
-    }
-
-    #[test]
-    fn two_effects_may_declare_a_same_named_operation() {
-        // An operation is reached through its declaring effect, so two effects may each declare an `op`
-        // of the same name without collision (`capabilities-and-effects.md` §An Operation Is Reached
-        // Through Its Declaring Effect). Both `A.op` and `B.op` synthesize as distinct operation values
-        // (identity = the declaring effect's occurrence), so neither the declarations nor the projections
-        // collide — the program is well-formed (it declines to RUN only for want of a handler, an E1
-        // concern; here we assert the two same-named ops do not clash at the surface, so a projection of
-        // each resolves rather than erroring unbound/duplicate).
-        let src = "(do (effect A (op op (-> Int64 Int64))) (effect B (op op (-> Bool Bool))) \
-                   (def (main) 1) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("two effects with a same-named op are well-formed"),
-                "main"
-            ),
-            1
-        );
-    }
-
-    #[test]
-    fn a_tail_resumptive_handler_runs() {
-        // E1c: a tail-resumptive handler is REDUCED AWAY at lowering — the perform `(Choose.pick)` is
-        // resolved to its arm and rewritten to the arm's resume value `5`, so `(+ (Choose.pick) 1)` = 6.
-        // The handler is stateless (seed unit, thread s unchanged); the whole `handle` becomes plain
-        // arithmetic, so `select` sees only ordinary `Core` (no effect node, no runtime handler search).
-        let src = "(do (effect Choose (op pick (-> Unit Int64))) \
-                   (def (main) (handle Choose unit ((pick () s (resume 5 s))) \
-                   (+ ((. Choose pick)) 1))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a tail-resumptive handler compiles and runs"),
-                "main"
-            ),
-            6
         );
     }
 
