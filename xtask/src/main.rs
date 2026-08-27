@@ -3810,6 +3810,9 @@ fn is_ice_signature(message: &str) -> bool {
         || m.contains("is a compiler bug")
         || m.contains("no bound rust identifier")
         || m.contains("sum match sub-value has no declaration")
+        // Unreachable-by-construction defensive fallthrough (lower_quantity_combine's caller filters op to the
+        // handled set) — a "can't happen" internal-invariant guard, not a capability gap. Zero corpus reach.
+        || m.contains("unexpected op in mixed-unit")
         || m.contains("panicked")
         || m.contains("internal error")
 }
