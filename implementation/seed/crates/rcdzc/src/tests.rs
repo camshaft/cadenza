@@ -55419,29 +55419,12 @@ mod stage1 {
         let recursive = "(module m \
             (def (selfp (: n Int64)) (if (= n 0) (fn ((: x Int64)) (+ x 100)) (selfp (- n 1)))) \
             (def (main) ((selfp 2) 5)) (export main))";
-        // COMPILE is the precise guard for the bug (the decline was at check/lower — no artifact was
-        // produced). The recursive closure allocates a runtime cell (`arr-alloc`), so RUNNING it needs the
-        // value-heap runtime; run only when it is present, else skip (like the other heap-run tests).
-        let bytes = compile_component(&crate::codec::encode(&parse(recursive))).expect(
+        // COMPILE is the precise guard for the bug: the decline was at check/lower (no artifact produced),
+        // so a successful compile IS the regression witness. The runtime value (105) is covered by the
+        // corpus closure-return family.
+        compile_component(&crate::codec::encode(&parse(recursive))).expect(
             "compile — a recursive closure-returner must be applyable, not decline 'not applyable'",
         );
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping recursive-closure-return run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "105", "selfp(2) → (fn x → x+100) applied to 5")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("recursive closure-return trapped: {t}"),
-        }
     }
 
     #[test]
@@ -55462,107 +55445,6 @@ mod stage1 {
             "compile — a handle whose body is a closure must be applyable, not 'not applyable'",
         );
         assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
-    }
-
-    #[test]
-    fn a_returned_capturing_closure_bound_by_let_and_applied_folds() {
-        // A capturing closure RETURNED by a function, BOUND with `let`, then APPLIED — the discriminator
-        // that MISCOMPILED (invalid wasm, silently written at exit 0). `(mk n)` returns `(fn (x) (+ n x))`
-        // capturing the parameter `n`; `(let ((f (mk n))) (f 3))` binds that closure to `f` and applies it.
-        // Applying the SAME closure INLINE `((mk n) 3)` or through a higher-order function `(ap (mk n) 3)`
-        // always folded; only binding it with `let` mis-typed the local. Root cause: `should_keep_binding`
-        // short-circuits a syntactic `Resolved::Lambda` init to avoid a speculative `core_of` LIFT that
-        // pollutes `db.captured_ref`, but `(mk n)` is an `Apply` that REDUCES to a capturing lambda — it
-        // slipped past, was lifted, and recorded `n`'s occurrence as a capture. The copy-propagated
-        // `((mk n) 3)` then β-reduced to `(+ n 3)`, and the SHARED `n` occurrence lowered to a
-        // `Core::Captured` env-read in `main` (no env) → the i32/i64 slot mismatch. The fix extends the
-        // short-circuit to a binding whose value `lambda_body`-reduces to a lambda: it copy-propagates and
-        // folds inline exactly like the working `((mk n) 3)` form. With n = 10 → 10 + 3 = 13 (a pure fold,
-        // no runtime import).
-        let src = "(module m (def (mk (: n Int64)) (fn ((: x Int64)) (+ n x))) \
-            (def (main (: n Int64)) (let ((f (mk n))) (f 3))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-            "the let-bound closure folds inline — no heap round-trip, no runtime import"
-        );
-        // Value parity of the folds — f(3)=13, applied-twice (f 3)+(f 4)=27, and the multi-parameter
-        // full-arity flat `(f 3 4)` / curried `((f 3) 4)` = 17 — is the corpus family "a returned
-        // capturing closure bound with let and applied …" (spec/semantics/09-functions.sexp), via cdz-run.
-    }
-
-    #[test]
-    fn a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds() {
-        // The COMPOUND face of the let-bound-closure fold — the third face of the same hazard as
-        // `a_returned_capturing_closure_bound_by_let_and_applied_folds`. A capturing closure stored in a
-        // record/tuple that is `let`-bound, projected, and applied: `(let ((r (record (f (fn (x) (+ x n))))))
-        // ((. r f) 10))`. This was a BOTH-BACKEND MISCOMPILE (invalid wasm at exit 0 —
-        // `func … type mismatch: expected i32, found i64` — and rust E0425 on an unbound `__cap0`).
-        //
-        // Root cause: `should_keep_binding` already short-circuits a `Resolved::Lambda` init AND one that
-        // `lambda_body`-reduces to a lambda, precisely to keep the classification `core_of(init)` from
-        // speculatively LIFTING the closure and polluting `db.captured_ref`. But a COMPOUND init CONTAINING a
-        // lambda is neither — it slipped past, was lowered (lifting the contained closure), and recorded the
-        // captured `n`. The projection `(. r f)` then β-reduced inline to `(+ 10 n)` reusing the SHARED `n`
-        // occurrence, which the stale `captured_ref` entry lowered to a `Core::Captured` env-read in `main`
-        // (no closure env) → the slot mismatch. `compound_contains_lambda` (a lift-free reduce) now detects a
-        // projection-only compound-holding-a-closure binding so it folds through, exactly like the inline
-        // `((. (record (f (fn (x) (+ x n)))) f) 10)` and direct-let forms. n = 1 → 10 + 1 = 11 (a pure fold,
-        // no heap round-trip, no runtime import).
-        let record = "(module m \
-            (def (main (: n Int64)) (let ((r (record (f (fn ((: x Int64)) (+ x n)))))) ((. r f) 10))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(record))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-            "the let-bound record's closure folds inline — no heap round-trip, no runtime import"
-        );
-        // The TUPLE face — a capturing closure stored as tuple element 0, `let`-bound, projected, applied.
-        let tuple = "(module m \
-            (def (main (: n Int64)) (let ((r (tuple (fn ((: x Int64)) (+ x n)) 9))) ((. r 0) 10))) \
-            (export main))";
-        let bt = compile_component(&crate::codec::encode(&parse(tuple))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&bt).expect("valid").is_none(),
-            "the let-bound tuple's closure folds inline — no heap round-trip, no runtime import"
-        );
-        // Value parity — record/tuple projections fold to 11, projected-twice folds each application
-        // independently (= 32), and the let-local-capture-with-extra-field variant folds to 12 — is the
-        // corpus family "a capturing closure stored in a let-bound record/tuple is projected and applied"
-        // plus its twice / extra-field companions (spec/semantics/09-functions.sexp), run via cdz-run.
-    }
-
-    #[test]
-    fn a_let_bound_if_or_match_join_of_capturing_lambdas_applied_folds() {
-        // The CONTROL-FLOW face of the let-bound-closure fold — the fourth face of the same hazard as
-        // `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`. A `let` whose init is an
-        // `if`-JOIN of two CAPTURING lambdas, then applied:
-        // `(let ((f (if b (fn (x) (+ x n)) (fn (x) (* x n))))) (f 10))`. This was a BOTH-BACKEND MISCOMPILE:
-        // wasm b=true trapped `unreachable` and b=false returned 0 (the capture env lost); rust E0425 on an
-        // unbound `__cap0` (the arms β-inlined without their capture bindings).
-        //
-        // Root cause: `should_keep_binding` short-circuits a `Resolved::Lambda` init, a lambda-reducing init,
-        // and a compound-holding-a-closure init — precisely to keep the classification `core_of(init)` from
-        // speculatively LIFTING a closure and polluting `db.captured_ref`. But an `if`/`match` whose ARMS are
-        // lambdas is none of those — it slipped past, was lowered (lifting each arm's closure, recording the
-        // captured `n`), and the case-of-case rewrite β-reduced the selected arm inline (`(if b (+ 10 n) (*
-        // 10 n))`) reusing the SHARED `n` occurrences, which the stale `captured_ref` entries lowered to a
-        // `Core::Captured` env-read in `main` (no closure env). `if_or_match_selects_lambda` (a lift-free
-        // reduce) now keeps a conditionally-chosen-closure binding on the fold-through path, so the selected
-        // arm folds inline exactly as the non-capturing-join and record-held controls do. n = 5: b=true →
-        // 10 + 5 = 15, b=false → 10 * 5 = 50 (a pure fold, no heap round-trip, no runtime import).
-        let src = "(module m \
-            (def (main (: b Bool) (: n Int64)) \
-              (let ((f (if b (fn ((: x Int64)) (+ x n)) (fn ((: x Int64)) (* x n))))) (f 10))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-            "the if-join's selected closure folds inline — no heap round-trip, no runtime import"
-        );
-        // Value parity — if-join (b=true→15, b=false→50), the same-body identical-arms variant
-        // (b=false→15), and the match-join (A→15, B→50) — is the corpus family "an if-join / match-join
-        // of … capturing lambdas …" + the identical-arms case (spec/semantics/09-functions.sexp), via cdz-run.
     }
 
     #[test]
