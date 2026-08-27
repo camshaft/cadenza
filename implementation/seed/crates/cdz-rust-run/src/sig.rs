@@ -225,6 +225,37 @@ pub fn peel_arrow_result(ty: &str) -> String {
     }
 }
 
+/// Marshal an async FACTORY's flat APPLIED args into the SINGLE argument an `EnvClosure::call(&mut env, a)`
+/// takes. The lifted async closure convention (matching the emit's `CallClosure`) collapses a multi-arg
+/// closure application into one tuple `A`: 0 applied args → the unit `()`, exactly 1 → the bare arg, ≥2 →
+/// a tuple `(a, b, …)`. The comma count is TOP-LEVEL only — a compound argument (`(3, 4)`, `Foo { … }`, an
+/// `x as Rc<dyn Fn(A) -> R>` coercion) is one arg, so its inner commas at depth > 0 don't split it. A `>`
+/// preceded by `-` is the `->` arrow of a closure-typed arg, NOT a `<` group close, so it is not depth-
+/// decremented (mirroring the emitted `Rc<dyn Fn(A) -> R>` spelling). Ported from xtask `env_closure_call_arg`.
+pub(crate) fn env_closure_call_arg(applied: &str) -> String {
+    let applied = applied.trim();
+    if applied.is_empty() {
+        return "()".to_string();
+    }
+    let bytes = applied.as_bytes();
+    let mut depth = 0usize;
+    let mut n_top_commas = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'<' | b'[' | b'{' => depth += 1,
+            b'>' if i > 0 && bytes[i - 1] == b'-' => {} // the `>` of a `->` arrow, not a group close
+            b')' | b'>' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => n_top_commas += 1,
+            _ => {}
+        }
+    }
+    if n_top_commas == 0 {
+        applied.to_string() // 1 arg → the bare arg
+    } else {
+        format!("({applied})") // ≥2 args → a tuple of them
+    }
+}
+
 /// Split a FACTORY call expression `export(caps…)(applied…)` into `("export(caps…)", "(applied…)")` at the
 /// boundary between the factory's own arg group and the returned-closure application. `None` when there is
 /// no top-level application group (a non-factory `export(args…)`, or a factory whose closure is not
@@ -378,6 +409,26 @@ mod tests {
         assert_eq!(
             rust_factory_param_count("pub fn g(a: i64) -> i64 { a }", "g", false),
             None
+        );
+    }
+
+    #[test]
+    fn env_closure_call_arg_tuples_top_level_args_only() {
+        // 0 args → unit; 1 → bare; ≥2 → a tuple (matching the lifted EnvClosure::call `A`).
+        assert_eq!(env_closure_call_arg(""), "()");
+        assert_eq!(env_closure_call_arg("5"), "5");
+        assert_eq!(env_closure_call_arg("3, 4"), "(3, 4)");
+        // A compound arg's inner commas are at depth > 0 → not a top-level split.
+        assert_eq!(env_closure_call_arg("a, (x, y)"), "(a, (x, y))");
+        assert_eq!(env_closure_call_arg("(1, 2)"), "(1, 2)");
+        assert_eq!(
+            env_closure_call_arg("Foo { a: 1, b: 2 }"),
+            "Foo { a: 1, b: 2 }"
+        );
+        // A `->` arrow inside a closure-typed coercion is not a `<` group close.
+        assert_eq!(
+            env_closure_call_arg("x as Rc<dyn Fn(i64) -> (i64, i64)>"),
+            "x as Rc<dyn Fn(i64) -> (i64, i64)>"
         );
     }
 
