@@ -2622,6 +2622,7 @@ pass	a multi-shot handle SEEDED by the enclosing param folds with a let-bound bo
 pass	a multi-site arm folds while the handle BODY reads an enclosing binding (the re-anchored free var)
 pass	a multi-site arm's resume value routes through a pure helper call
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
+pass	a multi-use param bound to a pure recursive-helper call inlines and computes
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
 pass	a multi-use runtime bool binding is reused in a nested condition

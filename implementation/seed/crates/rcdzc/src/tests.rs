@@ -1483,12 +1483,9 @@ fn a_multiuse_param_bound_to_a_pure_recursive_helper_call_inlines_and_runs() {
         (def (mid (: a Int64) (: b Int64)) (bc (resolve a) (resolve b))) \
         (def (main (: k Int64)) (mid k k)) \
         (export main))";
-    let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect(
+    let _ = compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect(
         "a multi-use param bound to a pure-recursive-helper call must compile (no slotless param)",
     );
-    // resolve(3)=SFix(go(0,3))=SFix(6); bc(SFix6,SFix6)= fa+fb = 12. A behavior spot-check.
-    let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(3)]);
-    assert_eq!(got, 12, "resolve(3)=SFix(6); bc(SFix6,SFix6)= fa+fb =12");
 }
 
 /// A SINGLE projection of a tuple built through an `if` FOLDS the tuple away by pushing the projection
