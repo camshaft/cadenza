@@ -57,6 +57,10 @@ inductive Value where
   | set (elems : Array Value)                    -- a Set value; elems kept SORTED + DEDUPED (canonical)
   | map (entries : Array (Value × Value))        -- a Map value; entries kept SORTED BY KEY, deduped (canonical)
   | variant (tag : ByteArray) (payload : Value)  -- a prelude/user sum value `(Ctor payload)` (nullary payload = unit)
+  -- a first-class function value: its parameter-spec node ids, its body node id, and its captured
+  -- environment (each captured name → its already-forced value, a `poison` if it did not reduce to a
+  -- value — so an unused captured binding never surfaces its trap). Closures are never value-equal.
+  | closure (params : Array Nat) (body : Nat) (cap : List (ByteArray × Value))
   | poison (d : Deferred)         -- a deferred non-value element outcome, surfaced only when observed
   deriving Inhabited, BEq
 

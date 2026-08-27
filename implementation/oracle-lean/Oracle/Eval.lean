@@ -533,10 +533,14 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         if h == "let".toUTF8 then evalLet m env ty fuel children
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
+        else if h == "fn".toUTF8 then evalFn m env fuel children
         else if (env.lookup? h).isSome then
-          -- the head is a BOUND (shadowed) name, not the builtin constructor/operator — this is an
-          -- application of that binding, which the pure-core does not model yet → skip.
-          .unsupported "eval: head is a bound/shadowed name (application not modeled)"
+          -- the head is a BOUND local — an application of that binding. If it forces to a CLOSURE,
+          -- apply it; otherwise (a non-function value applied) it is not modeled → skip.
+          match ((env.lookup? h).map (fun e => e.1 ())).getD (.unsupported "") with
+          | .value (.closure params body cap) => applyClosure m env fuel params body cap children
+          | .value _ => .unsupported "eval: head is a bound non-function value"
+          | other => other
         else if h == "Some".toUTF8 then evalUnaryCtor m env fuel children Value.some
         else if h == "Ok".toUTF8 then evalUnaryCtor m env fuel children Value.ok
         else if h == "Err".toUTF8 then evalUnaryCtor m env fuel children Value.err
@@ -722,6 +726,30 @@ partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array N
     (paramSpec? m specId).map (fun (nm, ty) => (nm, (fun _ => evalNode m env defaultIntTy fuel argId), ty)))
   if bindings.size == paramSpecs.size then evalNode m bindings.toList defaultIntTy fuel bodyId
   else .unsupported "eval: call has a malformed parameter spec"
+
+/-- `(fn (param…) body)` → a closure value capturing the CURRENT env (each binding forced now to a value
+or a `poison`, so an unused captured binding never surfaces its trap; laziness preserved via poison). -/
+partial def evalFn (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]? with
+  | some paramListId, some bodyId =>
+    let params := match m.nodes[paramListId]? with | some (Node.list ps) => ps | _ => #[]
+    let cap := env.map (fun e => (e.1, outcomeToValue (e.2.1 ())))
+    .value (.closure params bodyId cap)
+  | _, _ => .unsupported "eval: malformed fn"
+
+/-- Apply a closure to a FULLY-supplied argument list: bind each arg LAZILY (over the caller's env) under
+its parameter name + declared type, plus the captured env (each name → its stored value, observed
+shallowly on use), then evaluate the body. A partial application (wrong arg count) is not modeled → skip. -/
+partial def applyClosure (m : Module) (env : Env) (fuel : Nat) (params : Array Nat) (body : Nat)
+    (cap : List (ByteArray × Value)) (children : Array Nat) : Outcome :=
+  let args := children.extract 1 children.size
+  if params.size != args.size then .unsupported "eval: closure arity mismatch (partial application not modeled)"
+  else
+    let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
+      (paramSpec? m specId).map (fun (nm, ty) => (nm, (fun _ => evalNode m env defaultIntTy fuel argId), ty)))
+    let capBindings : Env := cap.map (fun (nm, v) => (nm, (fun _ => observeShallow v), Option.none))
+    if argBindings.length == params.size then evalNode m (argBindings ++ capBindings) defaultIntTy fuel body
+    else .unsupported "eval: closure has a malformed parameter spec"
 
 /-- Function-FREE collection query/update module fns (flat `((. Mod fn) args…)`): `List.len`,
 `List.concat`, `Set.contains`, `Map.len`, `Map.lookup` (→ Option), `Map.remove`. `none` = not one of
