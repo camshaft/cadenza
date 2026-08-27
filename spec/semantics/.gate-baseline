@@ -3253,6 +3253,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)
 pass	a projected trapping element of a hoisted same-constructor if traps
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a projection chain rooted at a parameter retains the consumed child in the callee

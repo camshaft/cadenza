@@ -1470,6 +1470,7 @@ pass	a capturing closure whose surviving map store and direct call both feed the
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a catch-all after the specific arms already cover a finite type is unreachable and earns a CDZ0213 warning
+pass	a chain of let bindings each referencing the immediately-preceding one accumulates
 pass	a chain of perform-fed let inits — each binding feeds the next perform's argument
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
@@ -3129,6 +3130,7 @@ pass	a program that makes a host call has that call in its observable behavior
 pass	a program uses a response-returning delegated host function's return value
 pass	a program's syntax tree is an ordinary value walked recursively across calls
 pass	a program's unary variant reusing a prelude nullary variant name is unary
+pass	a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)
 pass	a projected trapping element of a hoisted same-constructor if traps
 pass	a projected tuple element IS observed, so its trap occurs (the anchor)
 pass	a projection chain rooted at a parameter retains the consumed child in the callee
@@ -7221,6 +7223,7 @@ pass	set union is associative on generated inputs (the order merges are grouped 
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
+pass	several independent do-local functions each resolve their own call
 pass	several same-shaped recursive defs each resolve their own parameter
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
@@ -8231,5 +8234,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a chain of let bindings each referencing the immediately-preceding one accumulates
-pass	several independent do-local functions each resolve their own call
