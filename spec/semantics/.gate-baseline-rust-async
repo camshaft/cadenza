@@ -1915,6 +1915,7 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
+pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -8322,6 +8323,8 @@ todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
 todo	pak1 a peer op returning a (List of a user sum) crosses and its length is read
 todo	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
+todo	pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes
+todo	pby1 a peer BYTES result escapes the entrypoint via the with-methods fused envelope
 todo	pca1 a map argument crosses INBOUND to a peer and its length is read there
 todo	pca2 a set argument crosses INBOUND to a peer and its length is read there
 todo	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
@@ -8343,6 +8346,8 @@ todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
 todo	plr1 a peer LIST result escapes the entrypoint via the fused envelope
 todo	pnc1 a peer op returning a nested compound crosses as one handle and is projected
 todo	por1 a peer Option result escapes the entrypoint via the fused envelope
+todo	psc1 chained peer String ops flow a result into an arg then the second result escapes
+todo	pse1 the full (-> String String) converse crosses a peer and its String result escapes main
 todo	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope
 todo	read of malformed text is a coded reject, not a wrong value
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result

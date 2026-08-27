@@ -1977,6 +1977,7 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
+pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -7156,8 +7157,10 @@ pass	pas1 PASCAL'S TRIANGLE row advanced through effect state — next rebuilds 
 pass	passing one newtype where a different newtype is expected names both nominal types
 pass	pattern matching over AST distinguishes forms
 pass	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
+pass	pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes
 pass	pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route
 pass	pbr2 THREE-way match-branch resumes — each residue class answers and strides differently, three dispatches walk the classes
+pass	pby1 a peer BYTES result escapes the entrypoint via the with-methods fused envelope
 pass	pca1 a map argument crosses INBOUND to a peer and its length is read there
 pass	pca2 a set argument crosses INBOUND to a peer and its length is read there
 pass	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
@@ -7297,6 +7300,8 @@ pass	promoting a Float32 literal to Float64 promotes the binary32 VALUE, not the
 pass	promoting a Float32 to Float64 is exact
 pass	prs1 TWIN parking meters — feed adds coins times the seed rate to one meter answering its minutes, tick decrements BOTH clamped at zero answering how many now read expired, and the slower rate expires meter one two ticks earlier walking the expired count up to two while the faster rate holds at one
 pass	ps1 a 100k-iteration tail loop that PERFORMS every iteration — dispatch itself must run in constant stack
+pass	psc1 chained peer String ops flow a result into an arg then the second result escapes
+pass	pse1 the full (-> String String) converse crosses a peer and its String result escapes main
 pass	psr1 a PREPEND-rope accumulator — each push prepends its piece so the OLDEST piece rides at the END, the closing slice proves the reversal order and the piece width varies by seed
 pass	pst1 a POSTMARK desk where every stamp weight is a LET CHAIN COMPUTED AT THE PERFORM SITE — the second stamp's argument let-binds the first answer's tens digit doubled-plus-one, the third stamp's argument chains two lets folding the second answer's low digit with the audit's remainder before a mod-seven clamp, stamp folds the weight into the total counting stamps and echoing weight and count, audit reads the total mod one hundred, and the seed sets the first weight so every downstream let chain carries different bindings between the runs
 pass	ptr1 a peer compound (tuple) result escapes the entrypoint via the fused envelope

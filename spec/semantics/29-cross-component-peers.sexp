@@ -448,3 +448,54 @@
               (def (main (: x Int64)) (host (M) (host (P) (M.neg (. (P.pair x) 0))))) (export main)))
   (call   main (: 9 Int64))
   (output (: -9 Int64)))
+; ── the WITH-METHODS fused envelope: a String / Bytes RESULT (a byte-leaf heap rep carrying
+; len/is-empty/to-bytes) escapes the entrypoint while reaching a peer op. This is the live model-call
+; boundary (Bedrock-as-peer): a prompt crosses IN, a completion RETURNS OUT and escapes. Uses the
+; methods-carrying fused assembler (emit_runtime_bytes_resource), distinct from the plain compound
+; escape (ptr1/plr1). Migrated from the in-crate rcdzc PL39/PL40/PL41/PL42.
+(case "pse1 the full (-> String String) converse crosses a peer and its String result escapes main"
+  (doc    "THE FULL MODEL-CALL SHAPE: peer op `converse : String -> String` gets a prompt IN and the
+           entrypoint RETURNS the completion (escapes as a resource-WITH-METHODS via the fused envelope,
+           the String ARG emit composed with the String-RESULT escape). converse(\"hi\") = \"hihi\";
+           main RETURNS it → escapes as its String value form.")
+  (peer   "cadenza:model/api" (do (def (converse (: prompt String)) (String.concat prompt prompt)) (export converse)))
+  (input  (do (effect M (op converse (-> String String))) (bind M "cadenza:model/api")
+              (def (main) (host (M) (M.converse "hi"))) (export main)))
+  (call   main)
+  (output (: "hihi" String)))
+
+(case "psc1 chained peer String ops flow a result into an arg then the second result escapes"
+  (doc    "The agentic-pipeline shape `tag(converse(prompt))`: a String is BOTH a peer result (handle out
+           of converse) AND a peer argument (handle into tag) in one body, then the second op's result
+           escapes. Two ops on ONE interface. converse(\"hi\")=\"hihi\"; tag(\"hihi\")=\"T:hihi\"; main
+           RETURNS it → escapes.")
+  (peer   "cadenza:model/api" (do (def (converse (: p String)) (String.concat p p))
+                                   (def (tag (: s String)) (String.concat "T:" s))
+                                   (export converse) (export tag)))
+  (input  (do (effect M (op converse (-> String String)) (op tag (-> String String))) (bind M "cadenza:model/api")
+              (def (main) (host (M) (M.tag (M.converse "hi")))) (export main)))
+  (call   main)
+  (output (: "T:hihi" String)))
+
+(case "pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes"
+  (doc    "THE REALISTIC BEDROCK SHAPE: peer op `converse : (Tuple String Int64) -> String` — a request
+           record {prompt, max-tokens} crosses IN as ONE handle, the peer projects the prompt field (. r 0)
+           and doubles it, and the entrypoint RETURNS the String completion (escapes). The production
+           model-call signature, not the toy String->String. converse((\"hi\",64)) reads \"hi\" → \"hihi\"
+           → escapes.")
+  (peer   "cadenza:model/api" (do (def (converse (: r (Tuple String Int64))) (String.concat (. r 0) (. r 0))) (export converse)))
+  (input  (do (effect M (op converse (-> (Tuple String Int64) String))) (bind M "cadenza:model/api")
+              (def (main) (host (M) (M.converse (tuple "hi" 64)))) (export main)))
+  (call   main)
+  (output (: "hihi" String)))
+
+(case "pby1 a peer BYTES result escapes the entrypoint via the with-methods fused envelope"
+  (doc    "The binary-result sibling of pse1: a Bytes result crosses via the SAME with-methods fused
+           envelope as a String (both are the byte-leaf heap rep) but decodes to the Bytes value form
+           `(: b\"…\" Bytes)`, NOT the String form. The shape a model op returning a binary blob (an
+           embedding, an image) takes. mk = String.to-bytes \"hi\"; main RETURNS it → escapes as b\"hi\".")
+  (peer   "cadenza:blob/api" (do (def (mk (: _x Int64)) (String.to-bytes "hi")) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 Bytes))) (bind M "cadenza:blob/api")
+              (def (main (: x Int64)) (host (M) (M.mk x))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: b"hi" Bytes)))
