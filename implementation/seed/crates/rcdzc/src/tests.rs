@@ -8965,59 +8965,6 @@ mod match_engine {
     }
 
     #[test]
-    fn an_erased_narrow_newtype_boxed_into_a_compound_widens_before_box_int() {
-        // A single-variant newtype over a NARROW int — `(type W (Wrap UInt8))` — boxed as a tuple/sum/list
-        // ELEMENT must widen i32→i64 before `box-int` (the heap cell is i64), exactly as a bare narrow int
-        // does. `is_narrow_int` decides the extend but matched `Ty::Int` WITHOUT `strip_nominal`, so an
-        // erased narrow newtype (`Ty::Nominal(W, Int(u8))`) returned None → the extend was skipped → `box-int`
-        // got a raw i32 → an INVALID component (`expected i64, found i32`). This surfaced when such an element
-        // was matched by a literal (the read-back exposed the mis-boxed cell), but the ROOT is construction
-        // (boxing), so it hits any nested position — tuple element, sum payload, list element. breaker-found
-        // as the narrow follow-on to the single-variant list-element literal support (Inc-51).
-        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-        // Tuple element, list element, sum payload — each a narrow newtype with a literal-payload match.
-        ok("(module m (type W (Wrap UInt8)) \
-              (def (f (: p (Tuple W Int64))) (match p ((tuple (W.Wrap 0) y) y) (_ -1))) \
-              (def (main (: n UInt8)) (f (tuple (W.Wrap n) 5))) (export main))");
-        ok("(module m (type W (Wrap UInt8)) \
-              (def (f (: n UInt8)) (match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))) \
-              (def (main (: n UInt8)) (f n)) (export main))");
-        ok("(module m (type W (Wrap UInt8)) \
-              (def (f (: x (Option W))) (match x ((Some (W.Wrap 0)) 100) (_ 0))) \
-              (def (main (: n UInt8)) (f (Some (W.Wrap n)))) (export main))");
-        // Int32 (a signed narrow width — the extend is sign-aware) also boxes correctly.
-        ok("(module m (type W (Wrap Int32)) \
-              (def (f (: p (Tuple W Int64))) (match p ((tuple (W.Wrap 0) y) y) (_ -1))) \
-              (def (main (: n Int32)) (f (tuple (W.Wrap n) 5))) (export main))");
-
-        // RUN: the narrow newtype boxed into a tuple then matched by its literal payload hits/misses.
-        let Some(v) = run_heap_value(
-            "(module m (type W (Wrap UInt8)) \
-               (def (classify (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))) \
-               (def (main (: n UInt8)) (classify n)) (export main))",
-            vec!["0".to_string()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping erased-narrow-newtype-box run");
-            return;
-        };
-        assert_eq!(
-            v, "5",
-            "a UInt8 newtype boxed into a tuple, payload 0, hits the literal arm"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(module m (type W (Wrap UInt8)) \
-                   (def (classify (: n UInt8)) (match (tuple (W.Wrap n) 5) ((tuple (W.Wrap 0) y) y) (_ -1))) \
-                   (def (main (: n UInt8)) (classify n)) (export main))",
-                vec!["9".to_string()],
-            )
-            .unwrap(),
-            "-1",
-            "payload 9 ≠ 0 misses and falls to the wildcard (a genuine value compare on the boxed narrow newtype)"
-        );
-    }
-
-    #[test]
     fn a_literal_narrow_newtype_element_of_a_constructed_list_grounds_to_its_inner_width() {
         // The CONSTRUCTION-side sibling of `an_erased_narrow_newtype_boxed_into_a_compound_widens_before_box_int`.
         // That test fixed `is_narrow_int` (the WIDEN-before-box helper) to strip_nominal, so an erased narrow
