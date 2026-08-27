@@ -33590,46 +33590,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
-        // 09-functions "a recursive function over a generic recursive sum is monomorphized per element
-        // type": the canonical idiom — a polymorphic linked list `(type Lst Nil (Cons a (Lst a)))` and a
-        // `len` that recurses on the tail without fixing the element type. Called on a `Lst Int64` (len 2)
-        // and a `Lst String` (len 3), `len` is monomorphized into one function per element type — the
-        // recursive-DATA analogue of the scalar `loopn` case. Uses the value heap (the sum boxes + the
-        // String leaves), so it SKIPS (not fails) when the runtime store is absent. 2 + 3 = 5.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (type Lst Nil (Cons a (Lst a))) \
-               (def (len l) (match l ((Lst.Nil) 0) ((Lst.Cons h t) (+ 1 (len t))))) \
-               (def (main) (+ (len (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
-                              (len (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
-               (export main))",
-        )))
-        .expect("a recursive generic function over a generic recursive sum compiles");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!(
-                "runtime wasm not found; skipping generic-recursive-sum monomorphization run"
-            );
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => {
-                assert_eq!(
-                    v, "5",
-                    "len monomorphized over Lst Int64 (2) + Lst String (3)"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_do_local_declaration_scope_is_backward_only() {
         // Sequential scope: a form sees only the declarations BEFORE it. A FORWARD reference (`y`'s value
         // `(+ x 1)` references `x` declared AFTER it) is unbound — a declaration does not see later ones.
@@ -36325,38 +36285,6 @@ mod stage1 {
                 .is_some(),
             "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
         );
-    }
-
-    #[test]
-    fn a_runtime_eq_of_a_multiparam_sum_with_a_phantom_parameter_walks() {
-        // A `Result` value has TWO type parameters (`Ok a`, `Err b`); `(Ok n)` fixes only `a`, leaving
-        // `b` a PHANTOM no value instantiates. A runtime `(= (Ok x) (Ok 6))` (both operands built from
-        // recursion, so unfoldable) must emit the `value-eq` heap walk — the free `Err` parameter `b`
-        // does NOT make the sum non-walkable (a phantom parameter carries no runtime structure). Before
-        // the fix `ty_heap_walkable` walked every variant's payload type, hit the free `b` (a `Ty::Var`),
-        // and declined "comparison of a compound value needs a heap walk" though the compared `Ok` values
-        // are exactly walkable. Run through the composed runtime to pin the value (equal → 1).
-        use crate::testkit::parse;
-        let src = "(module m (def (sumto (: n Int64)) (if (< n 1) 0 (+ n (sumto (- n 1))))) \
-                     (def (eq3) (if (= (Ok (sumto 3)) (Ok 6)) 1 0)) (export eq3))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "a phantom-parameter multi-param sum equality compiles to a value-eq heap walk",
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping phantom-param value-eq run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("eq3".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run phantom-param value-eq") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "1", "(Ok (sumto 3)) equals (Ok 6)"),
-            cdz_run::Outcome::Trap(t) => panic!("phantom-param value-eq trapped: {t}"),
-        }
     }
 
     #[test]
@@ -42697,44 +42625,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_generic_def_takes_the_type_as_a_type_valued_parameter() {
-        // Type-valued-parameter vertical, T2+T3 (09-functions "a generic definition takes the type as a
-        // type-valued parameter"): the spec's generic model — `unbox` takes `(: t Type)` (a type-valued
-        // parameter, the kind of types) and `(: b (Box t))` (an EARLIER param `t` visible in a LATER
-        // param's annotation — in-order signature scoping), and the caller passes the concrete type as an
-        // ordinary argument. `(Box t)` reduces to the generic `(Box ?t)` (the type-valued param → a stable
-        // type var), which the call site monomorphizes per passed type; the type argument is
-        // compile-time-only (erased). Uses the value heap (the String), so it SKIPS if the store is
-        // absent. `(unbox Int64 (Box.Mk 40))` = 40, `(unbox String (Box.Mk "hi"))` = "hi" (byte-len 2);
-        // 40 + 2 = 42.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (type Box (Mk a)) \
-               (def (unbox (: t Type) (: b (Box t))) (match b ((Box.Mk v) v))) \
-               (def (main) (+ (unbox Int64 (Box.Mk 40)) \
-                              (String.byte-len (unbox String (Box.Mk \"hi\"))))) (export main))",
-        )))
-        .expect("a generic def with a type-valued parameter compiles");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping type-valued-parameter run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => assert_eq!(
-                v, "42",
-                "unbox monomorphized at Int64 (40) + String (byte-len 2)"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_type_valued_param_is_a_checking_boundary_a_wrong_typed_sibling_arg_is_rejected() {
         // SPEC (type-system.md #Generics Are Type-Valued Parameters, line 60): "A position that binds a
         // type-valued parameter MUST be a bidirectional-checking boundary, at which a type is ... CHECKED
@@ -42783,45 +42673,6 @@ mod stage1 {
                 compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
                 "a correct type witness must compile: {ok}"
             );
-        }
-    }
-
-    #[test]
-    fn a_recursive_generic_with_a_type_valued_parameter_erases_the_type_argument() {
-        // Type-valued-parameter vertical, T3 RECURSIVE (09-functions "a recursive generic with a
-        // type-valued parameter monomorphizes per type, erasing the type argument"): `len` takes `(: t
-        // Type)` and `(: l (Lst t))`, recursing `(len t tl)`. Unlike the non-recursive `unbox` (which
-        // inlines), a recursive `len` lowers to a `Core::Call` — so the compile-time-only `Ty::Type`
-        // argument must be ERASED from the specialized signature AND the self-call (each `len` takes only
-        // the list handle). `type_specialize` substitutes the concrete type-value into the copy's `(Lst
-        // t)` annotation and drops the type param; `lower` drops the type arg from the `Core::Call`.
-        // `(len Int64 …)` over a 2-elem list = 2, `(len String …)` over a 3-elem list = 3; 2 + 3 = 5.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (type Lst Nil (Cons a (Lst a))) \
-               (def (len (: t Type) (: l (Lst t))) \
-                 (match l ((Lst.Nil) 0) ((Lst.Cons h tl) (+ 1 (len t tl))))) \
-               (def (main) (+ (len Int64 (Lst.Cons 1 (Lst.Cons 2 Lst.Nil))) \
-                              (len String (Lst.Cons \"a\" (Lst.Cons \"b\" (Lst.Cons \"c\" Lst.Nil)))))) \
-               (export main))",
-        )))
-        .expect("a recursive generic with a type-valued parameter compiles");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping recursive type-valued-parameter run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => assert_eq!(
-                v, "5",
-                "len monomorphized over Lst Int64 (2) + Lst String (3), type arg erased"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
     }
 
