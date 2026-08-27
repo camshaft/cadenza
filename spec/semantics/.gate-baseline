@@ -1981,6 +1981,7 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
+pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -2671,6 +2672,10 @@ pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
 pass	a map with values of two different types is a type error
 pass	a map-over-map rebuild transforms every retrieved value into a NEW trie in one walk
+pass	a map-pattern literal value at one key plus a bare binder at another both match
+pass	a map-pattern literal value sub-pattern falls through when the value differs
+pass	a map-pattern literal value sub-pattern selects the arm when the value matches
+pass	a map-pattern non-matching literal value falls through even if the other key matches
 pass	a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
 pass	a map-via-effects walk — each element transformed by a dispatch, output order preserved
@@ -6406,6 +6411,10 @@ pass	fe4 float comparisons route an integer match — the sign of the second dra
 pass	fe5 Float64 arguments HALVED in the arm — exact binary fractions cross dispatch both directions, count folds in
 pass	fe6 a Float64 TUPLE state — one slot advances additively, the other doubles, both exact across two dispatches
 pass	ffs1 a FIRST-FREE-SLOT allocator over an Int64 bitmask — alloc scans for the lowest clear bit via a recursive probe answering its index, free clears a bit answering whether it was live, and the SEED pre-occupies slots so the two runs allocate around different holes
+pass	fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)
+pass	fi2 runtime float division of a negative by zero produces -infinity (self-equal)
+pass	fi3 a runtime 0.0/0.0 NaN is CANONICAL: byte-equal to the literal, self-equal, Set-findable
+pass	fi4 a runtime infinity-minus-infinity NaN is canonical (byte-equal to the literal)
 pass	fib1 the FIBONACCI recurrence as a state transition — (a,b) becomes (b,a+b) per dispatch, five draws walk the sequence
 pass	filter-via-effects — a STATEFUL predicate dispatch decides each element's survival
 pass	first-match-wins holds with a duplicate string-literal arm
@@ -8842,6 +8851,8 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
+todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
+todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
@@ -8887,7 +8898,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)
-pass	fi2 runtime float division of a negative by zero produces -infinity (self-equal)
-pass	fi3 a runtime 0.0/0.0 NaN is CANONICAL: byte-equal to the literal, self-equal, Set-findable
-pass	fi4 a runtime infinity-minus-infinity NaN is canonical (byte-equal to the literal)

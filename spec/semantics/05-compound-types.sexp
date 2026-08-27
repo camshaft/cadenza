@@ -22702,3 +22702,43 @@
   (input  (do (def (pair (: xss (List (List Int64)))) (match xss ((list (list a b) .. r2) (+ a b)) (_ -1)))
               (def (main) (pair (list (list 1 2 3)))) (export main)))
   (output (: -1 Int64)))
+
+; ── map-pattern VALUE sub-patterns: a value sub-pattern MAY be a refutable LITERAL — `(map ("a" 0) …)`
+;    matches only a map whose value at "a" is 0 (desugar_map_value_subpatterns lifts it to a body match on
+;    a fresh binder bound at that key: matching value runs the body, non-matching falls through). Runtime maps.
+(case "a map-pattern literal value sub-pattern selects the arm when the value matches"
+  (doc    "`(map (\"a\" 0) .. rest)` matches only a map whose value at key \"a\" is 0. Over a RUNTIME map
+           `{\"a\": 0}` (built by a conditional so not const-folded) the literal sub-pattern matches → 1.")
+  (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) .. rest) 1) (_ -1)))
+              (def (main (: n Int64)) (look (pick n))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a map-pattern literal value sub-pattern falls through when the value differs"
+  (doc    "The refutation face: over `{\"a\": 9}` the value at \"a\" is not the literal 0, so the
+           `(map (\"a\" 0) …)` arm does not fire and the match falls through to the catch-all → -1.")
+  (input  (do (def (pick (: n Int64)) (Map.insert (Map.empty) "a" n))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) .. rest) 1) (_ -1)))
+              (def (main (: n Int64)) (look (pick n))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "a map-pattern literal value at one key plus a bare binder at another both match"
+  (doc    "`(map (\"a\" 0) (\"b\" y) .. rest)` fires only when \"a\"'s value is the literal 0 AND \"b\" is
+           present, binding `y` to \"b\"'s value. Over `{\"a\": 0, \"b\": 5}` → binds y = 5.")
+  (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) ("b" y) .. rest) y) (_ -1)))
+              (def (main (: a Int64)) (look (pick a))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 5 Int64)))
+
+(case "a map-pattern non-matching literal value falls through even if the other key matches"
+  (doc    "The refutation face of the mixed case: `(map (\"a\" 0) (\"b\" y) …)` over `{\"a\": 1, \"b\": 5}` —
+           \"b\" is present but \"a\"'s value 1 is not the literal 0, so the whole arm is refuted and the match
+           falls through to the catch-all → -1 (a literal value sub-pattern gates the WHOLE arm).")
+  (input  (do (def (pick (: a Int64)) (Map.insert (Map.insert (Map.empty) "a" a) "b" 5))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" 0) ("b" y) .. rest) y) (_ -1)))
+              (def (main (: a Int64)) (look (pick a))) (export main)))
+  (call   main (: 1 Int64))
+  (output (: -1 Int64)))
