@@ -20432,3 +20432,46 @@
   (call main (: 0 Int64))
   (output (: -1 Int64))
   (live-objects known-leak 1))
+
+; -- breaker batch 465 (2026-08-27): three measurements that SHAPE the site-B′ release placement
+; (the design's open question: release at the Some-unwrap vs no-dup at the extraction op). xop1:
+; a LET-BOUND extracted Option matched TWICE leaks 6 = 2x the single-match 3 — the unpaired dup is
+; PER-UNWRAP (each Some-payload bind re-dups), so a release at each unwrap is one-to-one (no
+; double-release hazard), and no-dup-at-op ALONE cannot fix the live-Option case. xop2: even the
+; bounds-MISS None path leaks 1 cell. xop3: the leak follows the unwrap across a def boundary.
+
+(case "xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9))))
+            (o (List.at xs 1)))
+        (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
+           (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64))
+  (live-objects known-leak 6))
+
+(case "xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (match (List.at xs 9)
+          ((Option.Some inner) (List.len inner))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: -1 Int64))
+  (live-objects known-leak 1))
+
+(case "xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap"
+  (input (do
+    (def (unwrap (: o (Option (List Int64))))
+      (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (unwrap (List.at xs 1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak 3))

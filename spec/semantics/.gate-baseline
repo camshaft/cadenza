@@ -7986,3 +7986,6 @@ pass	dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf throug
 pass	dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type
 pass	dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks
 pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
+pass	xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap
+pass	xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell
+pass	xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap
