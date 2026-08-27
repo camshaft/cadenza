@@ -3131,6 +3131,8 @@ pass	a recursive performer of a nested-handler op whose resume performs the oute
 pass	a recursive performer whose recursion result feeds a HELPER call folds — no slot-less spec-body param
 pass	a recursive predicate with the self-call in the else branch is a Bool condition
 pass	a recursive predicate with the self-call in the then branch is a Bool condition
+pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)
+pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, SHALLOW (2 frames)
 pass	a recursive reader decodes a CBOR application tree and evaluates it by head index
 pass	a recursive resolver transforms one runtime sum tree into another, then consumes it
 pass	a recursive resolver whose dead arm builds a trapping compound compiles
@@ -6186,6 +6188,9 @@ pass	pf1 an AGGREGATOR arm — the op returns the running sum of every value fed
 pass	pfx1 a PREFIX-SUM table state — add appends the running total to the list, range answers pre[j]-pre[i] via two fallible reads with an out-of-bounds sentinel
 pass	pg1 a PUT/GET store — put returns the value it displaces, a counter tracks writes, get reads the survivor
 pass	pgn1 a PAGINATION cursor over a seed-sized collection — next serves up to the page size answering the count actually served (the LAST page runs short), a drained cursor answers -1, rewind resets answering the pages served, and the smaller collection drains one page EARLIER so its short page and its -1 land at different rows
+pass	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
+pass	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
+pass	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 pass	phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there
 pass	pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
@@ -7658,5 +7663,3 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, SHALLOW (2 frames)
-pass	a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)
