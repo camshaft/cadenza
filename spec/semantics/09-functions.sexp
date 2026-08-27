@@ -6135,6 +6135,33 @@
             (export main)))
   (output (: 5 Int64))
   (live-objects known-leak 36))
+
+; The AGGREGATE-RESULT face: the threaded closure's RESULT is a compound (a tuple), not a scalar.
+; `(fn (x) (tuple x x))` maps Int64 -> (Tuple Int64 Int64) while `(fn (s) (String.concat s s))` maps
+; String -> String in the same program, so `gmap` instantiates at two distinct domains AND a closure whose
+; body builds a compound. This mis-grounded the closure-result tuple elements to Unit at the OUTER
+; generic-call node (rust E0308) until v-inference propagated the structural-aggregate closure-result
+; element type (PR 4319); rust acceptance is pinned by a dedicated rcdzc unit test.
+
+(case "a recursive-generic transformer maps a closure to an aggregate result at two distinct domains"
+  (doc    "`gmap` threads a closure whose RESULT is an aggregate: `(fn (x) (tuple x x))` (Int64 -> tuple)
+           over [1,2] and `(fn (s) (String.concat s s))` (String -> String) over [\"a\",\"b\"], counting
+           each mapped iterator = 2 + 2 = 4. Pins the closure-aggregate-result tie at two domains.")
+  (input  (do
+            (type GIter (Nil) (Cons a (GIter a)))
+            (def (from-list xs)
+              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t)))))
+            (def (count it)
+              (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest)))))
+            (def (gmap it f)
+              (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f)))))
+            (def (main)
+              (+ (count (gmap (from-list (list 1 2)) (fn (x) (tuple x x))))
+                 (count (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
+            (export main)))
+  (output (: 4 Int64))
+  (live-objects known-leak 32))
+
 (case "a recursive-generic filter threading a predicate closure composes at two element types"
   (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
            recursing over a generic `Iter`. The predicate's domain is tied to the element type (the same
