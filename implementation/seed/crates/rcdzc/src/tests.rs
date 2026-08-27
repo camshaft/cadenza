@@ -7808,124 +7808,6 @@ fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
     }
 }
 
-/// A callee whose body is `(let ((r (handle E seed …))) r)` where the handle SEED is a CALLER RUNTIME ARG,
-/// called with that runtime arg — the let-wrapped-handle-seed CDZ0101 (v-verification 2026-07-20, blocked
-/// their `@ensures`-over-handle-body, whose `verify_enforce` injects exactly this `(let ((ret BODY)) …)`).
-/// `f`'s body binds a `(handle St x …)` whose seed `x` is `f`'s param; `main(k)` calls `(f k)`, so the inline
-/// substitutes the seed `x ↦ k` (main's runtime param). The tail-resumptive arm `(resume s (+ s 1))` reads
-/// its state binder `s` TWICE, so the `thread` fold splices the seed at both sites and `deep_fresh_copy`s each
-/// to break sharing — which re-pushed the pinned `k` UNPINNED, re-resolving it against the folded orphan →
-/// spurious CDZ0101 "unbound k". The fix let-binds a NON-CONSTANT seed once at the fold entry (`(let ((#seed
-/// init)) folded)`) so each threaded `s` is a fresh internal ref to that `let` and the capture `k` sits in one
-/// place, grafted under the handle site to resolve up the live chain. `main 5` = 5 (tick returns the seed;
-/// the +1 next-state is discarded). Pins BOTH that it compiles (no CDZ0101) AND runs to the seed value — a
-/// regression here would re-break runtime contract enforcement over any handle-bodied def with a runtime arg.
-#[test]
-fn a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs() {
-    use crate::testkit::parse;
-    let src = "(module m \
-        (effect St (op tick (-> Unit Int64))) \
-        (def (f (: x Int64)) \
-          (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
-        (def (main (: k Int64)) (f k)) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a let-bound handle whose seed is a caller runtime arg must fold, not CDZ0101 unbound",
-    );
-    let runtime = find_runtime_wasm();
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["5".to_string()],
-        runtime,
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(s, "5", "tick returns the seed (the caller's runtime arg)")
-        }
-        cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
-    }
-}
-
-/// EDGE PINS for the seed let-lift fix ([`a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs`]):
-/// the fix let-binds a NON-CONSTANT handle seed once at the `thread`-fold entry so a caller-runtime-arg seed
-/// threaded to a multi-use state binder is not orphaned by the per-splice `deep_fresh_copy`. These pin the
-/// SHAPE of the fix across the family it must cover, each running to its VALUE (a compile-only check would miss
-/// a fold that emits wrong code): (1) an EXPRESSION seed `(+ x 1)` (the seed is not a bare arg — the let-lift
-/// binds the whole expression, `tick` returns k+1); (2) state used THREE times in the arm (more splice sites);
-/// (3) a body with TWO performs (the seed is threaded AND advanced — `(+ (St.tick) (St.tick))` = seed +
-/// (seed+1)); (4) a CONSTANT seed stays byte-identical (the gate `seed_is_shareable_constant` skips the wrap).
-/// A regression in any would mean the seed-capture fix narrowed — these lock the whole class.
-#[test]
-fn a_let_bound_handle_seed_capture_edges_fold_and_run() {
-    use crate::testkit::parse;
-    let run = |src: &str, arg: &str| -> String {
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a runtime-arg handle seed must fold, not CDZ0101 unbound");
-        let runtime = find_runtime_wasm();
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![arg.to_string()],
-            runtime,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
-        }
-    };
-    // (1) EXPRESSION seed `(+ x 1)`: tick returns the seed = k+1 = 6.
-    assert_eq!(
-        run(
-            "(module m (effect St (op tick (-> Unit Int64))) \
-               (def (f (: x Int64)) \
-                 (let ((r (handle St (+ x 1) ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
-               (def (main (: k Int64)) (f k)) (export main))",
-            "5"
-        ),
-        "6",
-        "expression seed folds to k+1"
-    );
-    // (2) state used 3× in the arm body.
-    assert_eq!(
-        run(
-            "(module m (effect St (op tick (-> Unit Int64))) \
-               (def (f (: x Int64)) \
-                 (let ((r (handle St x ((tick (u) s (resume s (+ s (+ s 1))))) (St.tick)))) r)) \
-               (def (main (: k Int64)) (f k)) (export main))",
-            "5"
-        ),
-        "5",
-        "thrice-used state still folds to the seed"
-    );
-    // (3) TWO performs in the body: first tick = seed (5), advances to 6; second tick = 6. 5 + 6 = 11.
-    assert_eq!(
-        run(
-            "(module m (effect St (op tick (-> Unit Int64))) \
-               (def (f (: x Int64)) \
-                 (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (+ (St.tick) (St.tick))))) r)) \
-               (def (main (: k Int64)) (f k)) (export main))",
-            "5"
-        ),
-        "11",
-        "two performs thread + advance the seed"
-    );
-    // (4) CONSTANT seed — the wrap is skipped (byte-identical path); tick returns the const 0.
-    assert_eq!(
-        run(
-            "(module m (effect St (op tick (-> Unit Int64))) \
-               (def (f (: x Int64)) \
-                 (let ((r (handle St 0 ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
-               (def (main (: k Int64)) (f k)) (export main))",
-            "5"
-        ),
-        "0",
-        "constant seed stays byte-identical, folds to the const"
-    );
-}
-
 /// A handler seeded with a `(Qty T u)` (quantity) state whose arm resumes with an INLINE-ARITHMETIC
 /// next-state `(resume value (+ s s))` must NOT false-reject CDZ0201. The state binder `s` is the arm's
 /// ELEMENT-2 binder (not in the params list), so `handle_arm_param_ty` returns `None` for it — before the
@@ -8413,10 +8295,7 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
             "the re-performing escaping-k decline must not leak an internal state-param name, got: {}",
             e.message
         ),
-        // If a future increment (B2) folds it, the value MUST be correct — never a miscompile: apply(k,10)
-        // runs C=(+ □ (A.a)) whose own (A.a) re-enters the handler → (+ 10 10) = 20. That post-flip value
-        // guard belongs in the corpus (a 14-effects run case with `(output (: 20 Int64))` added when B2
-        // lands); this pin only guards the current CLEAN-DECLINE, so it stays wasmtime-free.
+        // A future increment (B2) may fold this; the clean-decline is all this pin guards.
         Ok(_bytes) => {}
     }
 }
@@ -8527,10 +8406,7 @@ fn a_continuation_filed_through_a_recursive_pqueue_insert_folds_or_declines_neve
              got: {}",
             e.message
         ),
-        // If the base-arm recursion-unfold folds it, the value MUST be the direct-form oracle 5e9 — never a
-        // miscompile. That post-flip value guard belongs in the corpus (a 14-effects run case with
-        // `(output (: 5000000000 Int64))` added when the recursion-unfold lands); this pin only guards the
-        // current CLEAN-DECLINE, so it stays wasmtime-free.
+        // The base-arm recursion-unfold may later fold this; the clean-decline is all this pin guards.
         Ok(_bytes) => {}
     }
 }
@@ -8585,12 +8461,8 @@ fn a_genuinely_recursive_pqueue_insert_declines_cleanly_never_folds_the_wrong_en
              got: {}",
             e.message
         ),
-        // If a FUTURE increment folds a genuinely-recursive insert, it must pop the HEAD (waketime 1) whose
-        // continuation resumes `(Instant 1)`, so `now` reads 1 — NEVER the inserted 5e9 entry (which sorts
-        // after the head and is not popped). Anything else — especially 5e9 — is a miscompile. That post-flip
-        // wrong-entry guard belongs in the corpus (a 14-effects run case with `(output (: 1 Int64))` — NOT
-        // 5e9 — added when the recursion machinery lands); this pin only guards the current CLEAN-DECLINE,
-        // so it stays wasmtime-free.
+        // If a FUTURE increment folds a genuinely-recursive insert it must pop the earlier head (waketime 1)
+        // and read 1 — never the later inserted 5e9 entry. This pin only guards the current clean-decline.
         Ok(_bytes) => {}
     }
 }

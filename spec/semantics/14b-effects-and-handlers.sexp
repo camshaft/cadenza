@@ -1796,6 +1796,58 @@
   (call   main (: 5 Int64))
   (output (: 5 Int64)))
 
+(case "a let-bound handle whose seed is an EXPRESSION over the caller's runtime arg folds"
+  (doc    "Edge of the seed let-lift fix (the caller-runtime-arg-seed case above): the seed is not a bare arg
+           but an EXPRESSION `(+ x 1)`, so the let-lift binds the whole expression once at the fold entry.
+           `tick` returns the seed = k+1. main(5) = 6.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (f (: x Int64))
+              (let ((r (handle St (+ x 1) ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64)))
+
+(case "a let-bound runtime-arg handle seed with the state used three times in the arm folds"
+  (doc    "Edge of the seed let-lift fix: the state binder is spliced at THREE sites in the arm body
+           `(resume s (+ s (+ s 1)))`, so the once-bound seed must reach every splice without orphaning.
+           `tick` returns the seed unchanged. main(5) = 5.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (f (: x Int64))
+              (let ((r (handle St x ((tick (u) s (resume s (+ s (+ s 1))))) (St.tick)))) r))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "a let-bound runtime-arg handle seed with two performs threads and advances the seed"
+  (doc    "Edge of the seed let-lift fix: the body performs TWICE `(+ (St.tick) (St.tick))`, so the seed is
+           threaded AND advanced — first tick reads the seed (5) and advances to 6, second tick reads 6, and
+           5 + 6 = 11. main(5) = 11.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (f (: x Int64))
+              (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (+ (St.tick) (St.tick))))) r))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "a let-bound CONSTANT handle seed stays byte-identical and folds to the constant"
+  (doc    "Edge of the seed let-lift fix: a CONSTANT seed `0` takes the byte-identical path (the let-lift wrap
+           is skipped for a shareable constant), so `tick` returns the constant. The caller's arg is ignored.
+           main(5) = 0.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (f (: x Int64))
+              (let ((r (handle St 0 ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r))
+            (def (main (: k Int64)) (f k))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 0 Int64)))
+
 (case "an effect resolves past an intermediate frame that installs no handler"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically
            Determined: the call chain is `main` (handles `Ping`) -> `mid` (no handler) -> `leaf`
