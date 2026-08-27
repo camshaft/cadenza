@@ -1253,6 +1253,7 @@ pass	a bare built-in generic in a VALUE annotation needs a type argument
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
+pass	a bare effect declaration that is never performed is well-formed
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
