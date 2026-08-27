@@ -221,6 +221,43 @@ def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
 
+/-- The recognized binary ORDERING operator heads (three-way relational, spec §A Total Order). -/
+def cmpOps : List String := ["<", ">", "<=", ">="]
+
+/-- Lexicographic comparison of two byte sequences by UNSIGNED byte value (spec §Ordering: a `Bytes`/
+`String` value orders content-lexicographically over its unsigned bytes; a proper prefix compares less).
+Total; bounded by the shorter length then a length tie-break. -/
+partial def cmpBytes (a b : ByteArray) : Ordering :=
+  let rec go (i : Nat) : Ordering :=
+    if i < a.size then
+      if i < b.size then
+        let x := a[i]!; let y := b[i]!
+        if x < y then .lt else if x > y then .gt else go (i + 1)
+      else .gt            -- b is a proper prefix of a → a is greater
+    else
+      if i < b.size then .lt else .eq   -- a exhausted: a is a prefix (less) or equal
+  go 0
+
+/-- The total-order three-way comparison for the ORDERED value types (spec §Ordering Where Offered Is
+Total): integers numerically, `Bool` with false < true, `String`/`Char` content-lexicographically. A
+float (no total order — IEEE partial order) or a compound/unmodeled value → `none` (a sound skip; the
+oracle never claims an ordering a type does not offer). -/
+def compareVals : Value → Value → Option Ordering
+  | .int a, .int b => some (compare a b)
+  | .bool a, .bool b => some (compare (a == true) (b == true))  -- false < true
+  | .str a, .str b => some (cmpBytes a b)
+  | .char a, .char b => some (cmpBytes a b)
+  | _, _ => none
+
+/-- Whether a relational operator holds given the three-way `Ordering` of its operands. -/
+def cmpHolds (op : String) : Ordering → Bool
+  | o => match op with
+         | "<" => o == .lt
+         | ">" => o == .gt
+         | "<=" => o != .gt
+         | ">=" => o != .lt
+         | _ => false
+
 /-- If an operand node is a `(: e T)` ascription with an integer type `T`, that type — so an operation
 takes its width from its operands (e.g. `(+ (: v UInt64) (: 0 UInt64))` is UInt64 arithmetic, not the
 ambient default). A minimal bottom-up inference for the scalar core. -/
@@ -272,6 +309,11 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
         else match String.fromUTF8? h with
              | some hs => if arithOps.contains hs then evalArith m env ty fuel hs children
+                          else if hs == "=" then evalEq m env fuel children
+                          else if cmpOps.contains hs then evalCmp m env fuel hs children
+                          else if hs == "not" then evalNot m env fuel children
+                          else if hs == "and" then evalAndOr m env fuel children true
+                          else if hs == "or" then evalAndOr m env fuel children false
                           else .unsupported s!"eval: operator/application {hs} not yet modeled"
              | none => .unsupported "eval: non-UTF8 head"
       | none => .unsupported "eval: headless list"
@@ -377,6 +419,76 @@ partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array 
       | .value v => go rest (acc.push v)
       | other => other
   go (children.extract 1 children.size).toList #[]
+
+/-- Evaluate two operands, propagating a non-value outcome by precedence unsupported > diverges > trap
+> value (an unmodeled sibling keeps a case a coverage-gap, never a spurious result); on two values,
+apply `k`. Shared by `=` and the ordering operators. -/
+partial def evalBinValues (m : Module) (env : Env) (fuel : Nat) (aId bId : Nat)
+    (k : Value → Value → Outcome) : Outcome :=
+  let oa := evalNode m env defaultIntTy fuel aId
+  let ob := evalNode m env defaultIntTy fuel bId
+  match oa, ob with
+  | .unsupported r, _ => .unsupported r
+  | _, .unsupported r => .unsupported r
+  | .diverges, _ => .diverges
+  | _, .diverges => .diverges
+  | .trap t, _ => .trap t
+  | _, .trap t => .trap t
+  | .value va, .value vb => k va vb
+
+/-- `(= a b)` — structural equality (spec §Equality Is Structural: value equality agrees with the
+canonical byte form). Modeled by the `Value` domain's structural `BEq`, which is byte-canonical by
+construction. A float operand is unmodeled → propagates `unsupported` (sound skip). -/
+partial def evalEq (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]? with
+  | some aId, some bId =>
+    if children.size != 3 then .unsupported "eval: = expects 2 operands"
+    else evalBinValues m env fuel aId bId (fun va vb => .value (.bool (va == vb)))
+  | _, _ => .unsupported "eval: malformed ="
+
+/-- `(< a b)` / `(> …)` / `(<= …)` / `(>= …)` — a relational operator via the type's three-way total
+order (`compareVals`). An unordered/unmodeled operand type (float, compound, unit) → `unsupported`. -/
+partial def evalCmp (m : Module) (env : Env) (fuel : Nat) (op : String) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]? with
+  | some aId, some bId =>
+    if children.size != 3 then .unsupported s!"eval: {op} expects 2 operands"
+    else evalBinValues m env fuel aId bId (fun va vb =>
+      match compareVals va vb with
+      | some ord => .value (.bool (cmpHolds op ord))
+      | none => .unsupported "eval: ordering on a type that offers no total order (float/compound)")
+  | _, _ => .unsupported s!"eval: malformed {op}"
+
+/-- `(not a)` — boolean negation; a non-boolean value is a typecheck error we do not model → skip. -/
+partial def evalNot (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]? with
+  | some aId =>
+    if children.size != 2 then .unsupported "eval: not expects 1 operand"
+    else match evalNode m env defaultIntTy fuel aId with
+         | .value (.bool b) => .value (.bool (!b))
+         | .value _ => .unsupported "eval: not of a non-boolean (typecheck not modeled)"
+         | other => other
+  | none => .unsupported "eval: malformed not"
+
+/-- `(and a b)` / `(or a b)` — the SHORT-CIRCUITING boolean connectives (spec §Boolean Connectives
+Short-Circuit): `and` evaluates the right operand only when the left is true, `or` only when the left
+is false — so a connective shields a trapping/unmodeled right operand exactly as an unselected `if`
+branch does (soundness-load-bearing: a right operand that would trap or is unmodeled is NOT forced when
+the left decides the result). `isAnd` selects the connective. -/
+partial def evalAndOr (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) (isAnd : Bool) : Outcome :=
+  match children[1]?, children[2]? with
+  | some aId, some bId =>
+    if children.size != 3 then .unsupported "eval: and/or expects 2 operands"
+    else match evalNode m env defaultIntTy fuel aId with
+         | .value (.bool l) =>
+           -- short-circuit: `and` on false → false; `or` on true → true (right operand not evaluated)
+           if l == !isAnd then .value (.bool l)
+           else match evalNode m env defaultIntTy fuel bId with
+                | .value (.bool r) => .value (.bool r)
+                | .value _ => .unsupported "eval: and/or right operand is non-boolean"
+                | other => other
+         | .value _ => .unsupported "eval: and/or left operand is non-boolean"
+         | other => other
+  | _, _ => .unsupported "eval: malformed and/or"
 end
 
 /-- Evaluate the program's `main` body, or `unsupported` if the program shape is not the modeled
