@@ -27,6 +27,13 @@ inductive Value where
   | str (bytes : ByteArray)       -- UTF-8 string content
   | char (bytes : ByteArray)      -- UTF-8 of exactly one scalar
   | unit
+  -- compound values (their canonical forms, per `cdz-run`'s render): Option, Result, tuple, list
+  | some (v : Value)
+  | none
+  | ok (v : Value)
+  | err (v : Value)
+  | tuple (elems : Array Value)
+  | list (elems : Array Value)
   deriving Inhabited, BEq
 
 namespace Value
@@ -43,39 +50,44 @@ partial def natToBeBytes (n : Nat) : ByteArray :=
 /-- The `unit` value's canonical spelling — the `unit` name atom (there is no unit leaf kind). -/
 def unitName : ByteArray := "unit".toUTF8
 
-/-- The canonical leaf for a scalar value (total). Integers take decimal radix + minimal magnitude;
-zero is the empty magnitude with a positive kind. -/
-def toLeaf : Value → Leaf
-  | .int n => .intLit (n < 0) .dec (natToBeBytes n.natAbs)
-  | .bool b => .boolLit b
-  | .str b => .str b
-  | .char b => .char b
-  | .unit => .name unitName
+/-- The canonical leaf for a SCALAR value; `none` for a compound value (which has no single leaf).
+Integers take decimal radix + minimal magnitude; zero is the empty magnitude with a positive kind. -/
+def toLeaf? : Value → Option Leaf
+  | .int n => Option.some (.intLit (n < 0) .dec (natToBeBytes n.natAbs))
+  | .bool b => Option.some (.boolLit b)
+  | .str b => Option.some (.str b)
+  | .char b => Option.some (.char b)
+  | .unit => Option.some (.name unitName)
+  | _ => Option.none  -- compound values are not leaf-backed
 
 /-- Interpret a leaf as a scalar value, if it is one. A `name "unit"` leaf is the unit value; other
 name/symbol/float/bytes/suffixed leaves are not scalar values here. -/
 def ofLeaf : Leaf → Option Value
   | .intLit neg _ mag =>
     let n := Int.ofNat (beBytesToNat mag)
-    some (.int (if neg then -n else n))
-  | .boolLit b => some (.bool b)
-  | .str b => some (.str b)
-  | .char b => some (.char b)
-  | .name b => if b == unitName then some .unit else none
-  | _ => none
+    Option.some (.int (if neg then -n else n))
+  | .boolLit b => Option.some (.bool b)
+  | .str b => Option.some (.str b)
+  | .char b => Option.some (.char b)
+  | .name b => if b == unitName then Option.some .unit else Option.none
+  | _ => Option.none
 
-/-- A value as its standalone canonical value-AST module: root atom → the value's leaf. -/
+/-- A SCALAR value as its standalone canonical value-AST module (root atom → the value's leaf). A
+compound value is not leaf-encoded here (the scalar round-trip gate never encodes one); it degenerates
+to an empty module. -/
 def toModule (v : Value) : Module :=
-  { leaves := #[v.toLeaf], nodes := #[Node.atom 0], root := 0 }
+  match v.toLeaf? with
+  | Option.some l => { leaves := #[l], nodes := #[Node.atom 0], root := 0 }
+  | Option.none => { leaves := #[], nodes := #[], root := 0 }
 
 /-- Interpret a module whose root is an atom → leaf as a scalar value. -/
 def ofModule? (m : Module) : Option Value :=
   match m.nodes[m.root]? with
-  | some (Node.atom lid) =>
+  | Option.some (Node.atom lid) =>
     match m.leaves[lid]? with
-    | some l => ofLeaf l
-    | none => none
-  | _ => none
+    | Option.some l => ofLeaf l
+    | Option.none => Option.none
+  | _ => Option.none
 
 /-- Encode a value to its canonical value-AST bytes (`cdzast\x00\x01`). -/
 def encode (v : Value) : ByteArray := Ast.encode v.toModule
@@ -85,8 +97,8 @@ def encode (v : Value) : ByteArray := Ast.encode v.toModule
 def decode (bytes : ByteArray) : Except String Value := do
   let m ← Ast.decode bytes
   match ofModule? m with
-  | some v => .ok v
-  | none => .error "value: not a canonical scalar value-AST (root is not an atom to a scalar leaf)"
+  | Option.some v => .ok v
+  | Option.none => .error "value: not a canonical scalar value-AST (root is not an atom to a scalar leaf)"
 
 end Value
 
