@@ -7159,9 +7159,11 @@ pass	pcm3 a peer-returned map enumerates via Map.to-list and its values fold to 
 pass	pcm4 a peer op returning an EMPTY map crosses and reads length zero
 pass	pcm5 a peer op returning a map of lists crosses and a value list's length is read
 pass	pcm6 a peer-returned map enumerates in canonical key order regardless of insert order
+pass	pcm7 a peer-returned map accepts a further local insert over the shared runtime
 pass	pcs1 a peer op returning a set crosses as a handle and its length is read
 pass	pcs2 membership of a peer-returned set is queried for a present and an absent element
 pass	pcs3 a peer op returning an EMPTY set crosses and reads length zero
+pass	pcs4 a peer-returned set unions with a locally-built set over the shared runtime
 pass	pd1 a list shared into a RECORD field survives an update through the original binding
 pass	pd10 a shared BYTES operand survives a concat — both views keep their own len
 pass	pd11 a shared STRING operand survives a concat — both views keep their own byte-len
