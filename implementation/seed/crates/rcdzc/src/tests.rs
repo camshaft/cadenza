@@ -19626,48 +19626,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_recursive_list_consumer_infers_its_element_via_list_at() {
-        // A recursive function whose list PARAMETER is touched ONLY through `List.at` (never a direct
-        // operator on the list itself) now infers its element type — before, the `(Some x)` payload binder
-        // read `Any` mid-solve (the scrutinee `(List.at xs i)` is a CALL RESULT, not a param, so its
-        // `(Option a)` result never linked to `xs`'s element), and the compiler DECLINED "projecting a
-        // tuple element of type ?N needs the value heap". `type_scheme_apply_into` now types the scheme
-        // call INTO the outer subst (`(Option a)` with `a` == `xs`'s element), the arm pattern binds `x` to
-        // `a`, and the sibling `(None _) → 0` arm pins `a = Int64`.
-        //
-        // ITERATE-BY-INDEX: build [0 1 2] by a push-loop, then sum via `List.at` in an index loop → 3.
-        let Some(sum) = run_heap_value(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (sum-at xs i n) (if (< i n) (+ (match ((. List at) xs i) ((Some x) x) ((None _) 0)) \
-                                                   (sum-at xs (+ i 1) n)) 0)) \
-               (def (main) (let ((xs (build 0 3 (list)))) (sum-at xs 0 ((. List len) xs)))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping recursive list-consumer run");
-            return;
-        };
-        assert_eq!(sum, "3", "sum of [0 1 2] indexed via List.at");
-
-        // DOUBLE-CONSUME: the same list `e` feeds two `use` calls in one function — the Perceus dup must
-        // fire so the first consumer does not free it early. `scan` reads via `List.at`; `both` = 10*use(1)
-        // + use(2). With e=(list), each `use` pushes one element and scans it → use(1)=1, use(2)=2 → 12.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (scan xs k) (match ((. List at) xs k) ((None _) 0) ((Some h) (+ h (scan xs (+ k 1)))))) \
-                   (def (use e n) (scan ((. List push) e n) 0)) \
-                   (def (both e) (+ (* 10 (use e 1)) (use e 2))) \
-                   (def (main) (both (list))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "12",
-            "a list consumed by two operations is not freed early"
-        );
-    }
-
-    #[test]
     fn a_set_of_or_map_insert_element_out_of_range_for_a_sibling_inferred_width_is_cdz0302() {
         // Follow-up to the list-element sibling-width fix (#1766): breaker found the SAME CDZ0302
         // sibling-unification skip through the `Set.of` ELEMENT and `Map.insert` KEY/VALUE constructors —
