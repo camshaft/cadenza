@@ -4088,6 +4088,8 @@ pass	a stateful handler threads its state across three sequential performs, the 
 pass	a stateful perform inside the arm of a fused match on a call result threads state once
 pass	a stored continuation is popped from a time-ordered pqueue (tuple-payload match) and resumed
 pass	a straight-line tuple built from callee params is projected in the caller
+pass	a stray resume in a plain def body (no enclosing arm) is rejected CDZ0201
+pass	a stray resume nested in a strict operand (no enclosing arm) is rejected CDZ0201
 pass	a strength-reduced multiply nested as an operand computes in place
 pass	a strict greater-than of equal operands is false
 pass	a strict less-than of equal operands is false
@@ -4690,6 +4692,7 @@ pass	an abortive arm READS the heap LIST op argument it was handed — the paylo
 pass	an abortive arm returns a MAP built FROM its heap op argument as the handle's value
 pass	an abortive arm that READS a heap-typed (List) handler state folds — the List face
 pass	an abortive arm that READS a heap-typed (Map) handler state folds — seed-let-lift on the abort path
+pass	an abortive arm whose value type mismatches the op RESULT type declines
 pass	an abortive arm yields a RECURSIVE-SUM spine as the handle's value
 pass	an abortive arm yields a heap LIST built in the arm as the handle's value
 pass	an abortive handler ISSUES a host call sequenced BEFORE the abort in its discarded body

@@ -9618,6 +9618,38 @@
             (export main)))
   (declines))
 
+(case "an abortive arm whose value type mismatches the op RESULT type declines"
+  (doc    "An abortive arm materializes its body as the abort value, which lands in the position the perform
+           occupied — typed by the op's declared RESULT type (a perform is typed by its result, never by the
+           arm value). If the body type differs — `bail : Int64 -> Bool` but the arm yields `n : Int64` — the
+           abort value does not fit (in `(if c (Bail.bail 7) false)` it disagrees with the `false` sibling,
+           an ill-typed `if`). The checker misses this gap, so the fold declines rather than emit invalid wasm.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Bool)))
+            (def (main (: x Int64)) (handle Bail false ((bail (n) s n)) (if (< x 5) (Bail.bail 7) false)))
+            (export main)))
+  (declines))
+
+(case "a stray resume in a plain def body (no enclosing arm) is rejected CDZ0201"
+  (doc    "A `resume` hands a value back to the point that performed a handler arm's operation, so it is
+           meaningful ONLY inside a handler arm's body. A `resume` in a plain def body — no enclosing arm —
+           is malformed; `collect_faults` rejects it CDZ0201 naming the resume form (it used to resolve
+           leniently and decline silently at lowering, a check≡compile gap).")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (resume 1 0))
+            (export main)))
+  (error  CDZ0201 (message "resume")))
+
+(case "a stray resume nested in a strict operand (no enclosing arm) is rejected CDZ0201"
+  (doc    "The nested face of the stray-resume reject: `(+ 1 (resume 2 0))` in a plain def body still has no
+           enclosing arm to return into, so it is rejected CDZ0201 naming the resume form.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (+ 1 (resume 2 0)))
+            (export main)))
+  (error  CDZ0201 (message "resume")))
+
 (case "a pure one-hole continuation body reads an enclosing function parameter and folds"
   (doc    "The pure one-hole fold synthesizes the folded body with the perform replaced by the resume value;
            an outer name in the body — the enclosing function PARAMETER `x` — must re-anchor to the handle's
