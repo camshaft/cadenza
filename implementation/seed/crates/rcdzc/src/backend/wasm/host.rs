@@ -1493,6 +1493,8 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Param { .. }
         | Core::Captured { .. }
         | Core::LocalRef { .. }

@@ -1739,6 +1739,8 @@ fn binding_escapes_dup_aware(
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
@@ -2428,6 +2430,8 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Captured { .. }
         | Core::Poison(_) => {}
     }
@@ -3178,6 +3182,8 @@ fn mark_binder_dups_inner(
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
@@ -5185,6 +5191,8 @@ fn collect_used_ops_into_seen(
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Param { .. }
         | Core::LocalRef { .. }
         | Core::Poison(_) => {}
@@ -13766,6 +13774,34 @@ fn emit(
             // so it validates in ANY result position (the runtime counterpart of `trap`'s `Never` type,
             // exactly as `SumExpect`'s absent branch emits below). The `String` message is already dropped
             // at lowering (the wasm trap carries no text).
+            out.push(Lir::Unreachable);
+            Ok(())
+        }
+        // A KIND-PRESERVING divide-by-zero trap (demoted from a const `(/ 1 0)` in a conditional branch —
+        // `lower::demote_conditional_trap`). Emit a guaranteed-trapping division so the runtime surfaces its
+        // NATIVE reason ("integer divide by zero", which `trap_kind` canonicalizes to `div-by-zero`) rather
+        // than the bare "unreachable" `Core::Trap` reports: `i64.const 0; i64.const 0; i64.div_s` always traps
+        // ÷0 regardless of the dividend. The `unreachable` after it keeps the stack POLYMORPHIC (the div_s
+        // leaves an i64 that never survives the trap), so this validates in ANY result position exactly like
+        // `Core::Trap` — the branch's own type (an integer division result, but possibly a heap Rational, so a
+        // bare `Core::Arith` would mis-type the slot) is satisfied by the polymorphic `unreachable`.
+        Core::TrapDivZero => {
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::ConstI64(0));
+            out.push(Lir::I64DivS);
+            out.push(Lir::Unreachable);
+            Ok(())
+        }
+        // A KIND-PRESERVING integer-overflow trap (demoted from a const arithmetic overflow in a conditional
+        // branch — `lower::demote_conditional_trap`). `i32.const i32::MIN; i32.const -1; i32.div_s` is the one
+        // arithmetic op wasm traps as "integer overflow" (the same trick `Lir::IfIntegerOverflowEnd` uses),
+        // so the runtime surfaces the "overflow" kind rather than the bare "unreachable" `Core::Trap` reports.
+        // The `unreachable` after it keeps the stack POLYMORPHIC (the div_s result never survives the trap),
+        // valid in ANY result position exactly like `Core::Trap`.
+        Core::TrapOverflow => {
+            out.push(Lir::ConstI32(i32::MIN));
+            out.push(Lir::ConstI32(-1));
+            out.push(Lir::I32DivS);
             out.push(Lir::Unreachable);
             Ok(())
         }

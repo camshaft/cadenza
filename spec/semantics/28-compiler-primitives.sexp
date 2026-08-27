@@ -2285,21 +2285,23 @@
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb2 the SAME divide-by-zero branch traps at RUNTIME when the condition takes it"
-  (doc    "The runtime face of dzb1: at n≤0 the else-branch IS taken, so the demoted trap fires at RUNTIME — a bare
-           `unreachable` (the demote target is `Core::Trap`, exactly as a taken `(trap ...)` lowers; cf. cn02a's
-           `(trap \"unreachable\")`). Pins that the demote PRESERVES the trap — deferred to runtime, not dropped.")
+  (doc    "The runtime face of dzb1: at n≤0 the else-branch IS taken, so the demoted trap fires at RUNTIME with the
+           PRESERVED divide-by-zero KIND (operator ruling 2026-08-27, Lean-oracle finding): the demote target is
+           `Core::TrapDivZero`, so the const `(/ 1 0)` reads identically to a runtime `(/ n 0)` at the trap site
+           (`divide by zero`, not the bare `unreachable` a plain `Core::Trap` would report). Pins that the demote
+           PRESERVES both the trap AND its kind — deferred to runtime, not dropped, not kind-erased.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "unreachable")
+  (trap   "divide by zero")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb3 a const divide-by-zero in a MATCH arm traps at runtime, not at compile (the match twin)"
   (doc    "`(match n (0 (/ 1 0)) (_ 7))` — the `(/ 1 0)` arm is conditionally reached (only at n=0), so it demotes to
-           a runtime trap: the match COMPILES (no CDZ0304), and taking the trapping arm at n=0 traps at runtime (a
-           bare `unreachable`). Pins the match-arm demote alongside the `if`-branch one.")
+           a runtime trap: the match COMPILES (no CDZ0304), and taking the trapping arm at n=0 traps at runtime with
+           the PRESERVED `divide by zero` kind (`Core::TrapDivZero`, the match twin of dzb2's `if`-branch demote).")
   (input  (do (def (main (: n Int64)) (match n (0 (/ 1 0)) (_ 7))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "unreachable")
+  (trap   "divide by zero")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzw1 an EXPLICIT user (trap …) in a runtime branch does NOT warn CDZ0309 (only const-fold-origin traps warn)"
@@ -2319,6 +2321,44 @@
            that the demote is scoped to conditionally-reached (guarded) positions, not the unconditional spine.")
   (input  (do (def (main) (/ 1 0)) (export main)))
   (error  CDZ0304 (message "divide by zero")))
+
+; -- overflow-demote family (operator 2026-08-27: "add a dedicated overflow core op as well … we should
+; really be better about tagging traps that we've inserted so it's clear what happened"). The overflow
+; twin of dzb: a const arithmetic OVERFLOW in a conditionally-reached branch demotes to a KIND-PRESERVING
+; runtime trap (`Core::TrapOverflow`) that surfaces the "integer overflow" kind — NOT the bare
+; "unreachable" a plain `Core::Trap` reports — so a fold-provable const overflow reads identically to its
+; runtime counterpart at the trap site. ovb3 pins the discrimination: a shift-COUNT-out-of-range (which
+; wasm masks — no native overflow trap) still demotes to the kind-less `unreachable`.
+
+(case "ovb1 a const OVERFLOW branch not taken computes the taken branch (the value face, like dzb1)"
+  (doc    "`(if (> n 0) 7 (* MAX MAX))` — the else multiplies Int64.max by itself (a compile-provable OVERFLOW),
+           but it is CONDITIONALLY reached, so it demotes to a runtime trap rather than failing the build (CDZ0304).
+           At n>0 the else is untaken → returns 7. Warns CDZ0309 (the fold-synthesized trap could fire on the else path).")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 7 Int64))
+  (warns  CDZ0309 (message "potentially reachable trap")))
+
+(case "ovb2 the SAME overflow branch traps 'integer overflow' at RUNTIME when the condition takes it"
+  (doc    "The runtime face of ovb1: at n≤0 the else IS taken, so the demoted trap fires at RUNTIME with the
+           PRESERVED overflow KIND (operator ruling 2026-08-27) — `Core::TrapOverflow`, so the const `(* MAX MAX)`
+           reads identically to a runtime checked-multiply overflow at the trap site ('integer overflow', not the
+           bare 'unreachable' a plain `Core::Trap` would report). Pins the overflow twin of dzb2's div-by-zero demote.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "integer overflow")
+  (warns  CDZ0309 (message "potentially reachable trap")))
+
+(case "ovb3 a shift-COUNT-out-of-range branch stays the kind-less 'unreachable' (the discrimination)"
+  (doc    "The kind IS a deterministic function of the operation: a shift whose COUNT is out of range 0..64 is NOT
+           surfaced as an overflow — wasm MASKS the shift count (no native trap), so the compiler's guard is a bare
+           `unreachable`, and the cause names an out-of-range count, not 'overflow'. So `(<< 1 100)` demotes to the
+           kind-less `Core::Trap`, unlike ovb2's true arithmetic overflow. Pins that only genuine overflow gets the
+           overflow kind. (Still a fold-synthesized reachable trap → CDZ0309.)")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (<< 1 100))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "unreachable")
+  (warns  CDZ0309 (message "potentially reachable trap")))
 
 ; -- breaker batch 431 (2026-08-26): #3799 complement pins — a const Map with CHAR keys to-lists
 ; key-sorted (the Set face is owner-pinned), and the sorted Char head surfaces a taken trap as

@@ -3849,6 +3849,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // panic carrying its own op-named reason, not `Core::Trap`, so this literal is only the non-
         // arithmetic explicit trap, whose canonical kind IS `unreachable`.)
         Core::Trap => Ok("panic!(\"unreachable\")".to_string()),
+        // A KIND-PRESERVING divide-by-zero trap (demoted from a const `(/ 1 0)` in a conditional branch).
+        // `panic!` returns `!` (coerces to any position, like `Core::Trap`), but with a reason that
+        // `trap_kind` classifies as `div-by-zero` — agreeing with the wasm side's native `i64.div_s` ÷0 trap
+        // — so a `(trap "divide by zero")` case grades PASS identically on both backends (operator ruling).
+        Core::TrapDivZero => Ok("panic!(\"divide by zero\")".to_string()),
+        // A KIND-PRESERVING integer-overflow trap (demoted from a const arithmetic overflow in a conditional
+        // branch). `panic!` returns `!` (any position, like `Core::Trap`) with a reason `trap_kind`
+        // classifies as `overflow` — agreeing with the wasm side's native `i32.div_s` MIN/-1 overflow trap.
+        Core::TrapOverflow => Ok("panic!(\"integer overflow\")".to_string()),
         // Runtime BigInt ops → `cdz_num::Big` value ops (the SAME bignum the wasm runtime uses, shared by
         // source via the `cdz-num` crate). `Big` methods BORROW their operands and return an owned `Big`.
         // `BigInt.of x` on a runtime fixed-width int — widen the i64-slot value into a `Big`. (A CONSTANT

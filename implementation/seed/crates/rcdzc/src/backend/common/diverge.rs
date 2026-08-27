@@ -21,7 +21,10 @@ use crate::ty::Ty;
 /// `if`, and every arm of a `match`/`match-list`/`match-sum`.
 pub(crate) fn body_diverges(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::Trap => true,
+        // All trap forms diverge — `Core::TrapDivZero`/`Core::TrapOverflow` are `Core::Trap`s that preserve
+        // the divide-by-zero / integer-overflow kind (`lower::demote_conditional_trap`); each halts on every
+        // path exactly the same.
+        Core::Trap | Core::TrapDivZero | Core::TrapOverflow => true,
         // A sequence's value is its tail; the statements run for effect. Diverges iff the tail does.
         Core::Seq { tail, .. } => body_diverges(db, tail),
         // A `let`'s value is its body; the bindings are evaluated first. Diverges iff the body does.

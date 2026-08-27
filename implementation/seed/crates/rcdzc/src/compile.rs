@@ -4951,6 +4951,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         | Core::ConstFloatNan
         | Core::ConstFloatInf
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Unit => {}
     }
 }
@@ -5581,13 +5583,24 @@ fn collect_reachable_const_trap_warnings(db: &mut Db) -> Vec<Diagnostic> {
 /// Warn (CDZ0309) if `branch` — an occurrence in a CONDITIONALLY-reached position — folds to a `ConstTrap`
 /// (a const-fold-origin provable trap; NOT an explicit `Core::Trap`, which never enters here).
 fn warn_reachable_const_trap(db: &mut Db, branch: StructId, out: &mut Vec<Diagnostic>) {
-    if matches!(core_of(db, branch), Core::Poison(r) if r.code == Some(Code::ConstTrap)) {
+    if let Core::Poison(r) = core_of(db, branch)
+        && r.code == Some(Code::ConstTrap)
+    {
         let at = dropped_trap_anchor(db, branch).filter(|&n| db.is_user_node(n));
+        // Name the SPECIFIC trap kind (operator 2026-08-27: "say what kind of trap it is" — the same
+        // tag-the-trap intent behind `Core::TrapDivZero`/`TrapOverflow`). The `ConstTrap` message leads with
+        // the cause ("divide by zero — …", "the result overflows Int64 — …", "shift count N is out of range
+        // 0..64 — …"); take the phrase before the " — " repair hint as the kind label so the author is told
+        // WHICH trap the demoted operation will raise. Keeps the "potentially reachable trap" wording the
+        // CDZ0309 corpus grade matches on (a `contains` check).
+        let kind = r.message.split(" — ").next().unwrap_or(&r.message).trim();
         out.push(Diagnostic::warning(
             Code::ReachableTrap,
-            "this operation resulted in a potentially reachable trap: it always traps when this branch is \
-             taken, and whether the branch is taken depends on a runtime value — guard the operand or remove \
-             the operation",
+            format!(
+                "this operation resulted in a potentially reachable trap ({kind}): it always traps when this \
+                 branch is taken, and whether the branch is taken depends on a runtime value — guard the \
+                 operand or remove the operation"
+            ),
             at,
         ));
     }
