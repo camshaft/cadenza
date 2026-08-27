@@ -4040,6 +4040,39 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "an effectful helper performing in an if CONDITION folds in a self-call arg"
+  (doc    "The condition-position sibling of the branch case above: the inlined helper's perform sits in the
+           `if` CONDITION rather than a branch — `(if (= (B.b x) 1) (+ acc 1) acc)`. When `turn` inlines into
+           the self-call arg, the condition perform must fold and re-resolve against the specialized sig, not
+           leak an internal `$s0`. run(4,0): only fuel==1's `B.b 1` (resume hands the arg back → 1) makes the
+           condition true, so acc = 0 + 1 = 1.")
+  (input  (do
+            (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc))))
+            (def (main)
+              (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x)))
+                (run 4 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "an effectful helper performing in a NESTED if branch folds in a self-call arg"
+  (doc    "The nested-conditional sibling: the perform sits in a branch of a NESTED `if` inside the inlined
+           helper — `(if (= x 1) (if (= x 1) (+ acc (B.b x)) acc) acc)`. The per-branch fresh-copy must reach
+           through the nesting so the inner branch's perform re-resolves cleanly. run(4,0): only fuel==1
+           reaches the inner `(B.b 1)` → 1, so acc = 0 + 1 = 1.")
+  (input  (do
+            (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64)))
+            (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (if (= x 1) (+ acc (B.b x)) acc) acc))
+            (def (run (: fuel Int64) (: acc Int64))
+              (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc))))
+            (def (main)
+              (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x)))
+                (run 4 0)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg"
   (doc    "Name-collision edge: the helper's OWN param is named `acc` — the same name as `run`'s driver
            param — and the helper performs on it: `turn(acc) = acc + Tools.dispatch acc`, called `(turn acc)`
