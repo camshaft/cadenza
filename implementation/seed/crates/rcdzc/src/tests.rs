@@ -10335,49 +10335,6 @@ mod runtime_ops {
             0,
             "the inner (> x 3) under x==5 folds away, got: {cmp:?}"
         );
-
-        // VALUE PARITY (both signednesses; then + else).
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(5)]),
-            6
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(if (= x 5) (+ x 1) 0)", &[Val::S64(3)]),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (= x 5) (if (> x 3) 1 2) 0)",
-                &[Val::S64(5)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (= x 5) (if (> x 3) 1 2) 0)",
-                &[Val::S64(9)]
-            ),
-            0
-        );
-        // Unsigned equality guard refines too.
-        assert_eq!(
-            run::<u8>(
-                "(: x UInt8)",
-                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
-                &[Val::U8(200)]
-            ),
-            201
-        );
-        assert_eq!(
-            run::<u8>(
-                "(: x UInt8)",
-                "(: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)",
-                &[Val::U8(50)]
-            ),
-            0
-        );
     }
 
     #[test]
@@ -11487,55 +11444,6 @@ mod runtime_ops {
             3,
             "an overlapping inner comparison must NOT be folded, got: {overlap:?}"
         );
-
-        // VALUE PARITY. Disjoint: b<a always true when the guards pass; guards failing → 0.
-        let dj = "(if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0)";
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                dj,
-                &[Val::S64(200), Val::S64(10)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                dj,
-                &[Val::S64(200), Val::S64(49)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                dj,
-                &[Val::S64(200), Val::S64(60)]
-            ),
-            0
-        ); // b<50 fails
-        assert_eq!(
-            run::<i64>("(: a Int64) (: b Int64)", dj, &[Val::S64(50), Val::S64(10)]),
-            0
-        ); // a>100 fails
-        // Overlap: the real `b < a` decides — both outcomes must be correct.
-        let ov = "(if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0)";
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                ov,
-                &[Val::S64(400), Val::S64(300)]
-            ),
-            1
-        ); // b<a
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                ov,
-                &[Val::S64(200), Val::S64(300)]
-            ),
-            0
-        ); // b>a
     }
 
     #[test]

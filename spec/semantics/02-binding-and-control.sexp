@@ -7808,3 +7808,32 @@
   (call oelse (: 50 Int64)) (output (: 49 Int64))
   (call two   (: 5 Int64) (: 3 Int64)) (output (: 6 Int64))
   (call othen (: -9223372036854775808 Int64)) (trap "overflow"))
+
+; -- range-vs-range fold + unsigned equality-guard arith-shed (behavioral halves migrated from rcdzc
+; 2026-08-27; the white-box Lir compare-count / guard-count inspections stay wasmtime-free rcdzc unit tests).
+
+(case "a branch refinement folds a comparison of two disjoint refined ranges (value parity)"
+  (doc    "When two DIFFERENT variables are each refined by an enclosing branch so their ranges are
+           DISJOINT, a comparison BETWEEN them is decided: under `a > 100` and `b < 50`, `b < a` is always
+           true, so the innermost `if` collapses. An OVERLAPPING refinement (`b < 500`, so b∈[…,499] and
+           a∈[101,…] overlap) leaves `b < a` undecided and computes normally. rcdzc:
+           a_branch_refinement_folds_a_comparison_of_two_disjoint_refined_ranges.")
+  (input  (do
+            (def (dj (: a Int64) (: b Int64)) (if (> a 100) (if (< b 50) (if (< b a) 1 0) 0) 0))
+            (def (ov (: a Int64) (: b Int64)) (if (> a 100) (if (< b 500) (if (< b a) 1 0) 0) 0))
+            (export dj) (export ov)))
+  (call dj (: 200 Int64) (: 10 Int64)) (output (: 1 Int64))
+  (call dj (: 200 Int64) (: 49 Int64)) (output (: 1 Int64))
+  (call dj (: 200 Int64) (: 60 Int64)) (output (: 0 Int64))
+  (call dj (: 50 Int64)  (: 10 Int64)) (output (: 0 Int64))
+  (call ov (: 400 Int64) (: 300 Int64)) (output (: 1 Int64))
+  (call ov (: 200 Int64) (: 300 Int64)) (output (: 0 Int64)))
+
+(case "an unsigned equality guard pins the exact value so a then-branch arith sheds its guard (value parity)"
+  (doc    "The UNSIGNED companion of the equality point-fact arith-guard shed: under `(= x 200)` on a
+           UInt8, `x` pins to [200,200], so `(+ x 1) = 201` provably fits UInt8 and sheds its overflow
+           guard; any other x takes the else 0. rcdzc:
+           an_equality_guard_pins_the_variable_to_the_exact_value_in_the_then_branch (unsigned face).")
+  (input  (do (def (main (: x UInt8)) (: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)) (export main)))
+  (call main (: 200 UInt8)) (output (: 201 UInt8))
+  (call main (: 50 UInt8))  (output (: 0 UInt8)))
