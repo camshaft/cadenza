@@ -1204,7 +1204,10 @@ fn core_module_impl(
     // functype at `import_count + n + extra + n_wrap + n_realloc` (the last one laid above). `n_init == 0` →
     // no entry, byte-identical.
     if n_init == 1 {
-        uleb128((import_count + n + extra + n_wrap + n_realloc) as u64, &mut func_items);
+        uleb128(
+            (import_count + n + extra + n_wrap + n_realloc) as u64,
+            &mut func_items,
+        );
     }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
