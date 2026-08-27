@@ -3945,6 +3945,19 @@
   (call   main (: 9223372036854775807 Int64) (: 2 Int64))
   (trap   "overflow"))
 
+(case "a recursive multiplication overflow traps across the call chain"
+  (doc    "The recursion companion of the runtime mul-overflow above: `fac(25)` = 25! exceeds 2^63, and the
+           overflow surfaces on the checked multiply DEEP in the recursive call chain (the value only exists
+           at run time as the calls unwind — the recursion is emitted, not β-reduced to a compile-time
+           CDZ0304). Proves the call ABI carries a real trap across frames, not only on a single emitted op
+           over entry parameters. Both backends trap on `overflow`.")
+  (input  (do
+            (def (fac (: n Int64)) (if (= n 0) 1 (* n (fac (+ n -1)))))
+            (def (main) (fac 25))
+            (export main)))
+  (call   main)
+  (trap   "overflow"))
+
 (case "a genuinely-runtime subtraction underflow at the minimum traps"
   (doc    "`(- a b)` with a = Int64.min, b = 1 underflows past the checked range and traps on the emitted
            subtract at run time, over true entry parameters. Both backends. The runtime-emit twin of the
