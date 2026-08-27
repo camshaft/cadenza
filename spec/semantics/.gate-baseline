@@ -1662,6 +1662,7 @@ pass	a const collection recursively folded UNROLLS to its result at compile time
 pass	a const list recursively FILTERED (conditional include) folds to a constant
 pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
 pass	a const parameter rejects an argument that depends on runtime data
+pass	a const top-bit-set u64 bin binding folds unsigned
 pass	a const-folded RECORD descriptor holds a recursive-transform result, projected at compile time
 pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant +(-1) add (negative constant) traps only at Int64.min
@@ -2576,6 +2577,8 @@ pass	a matching-width handler state folds across two sequential performs
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a member access with no field operand is rejected, not a crash
 pass	a member read of an if-selected record selects the branch's field by name
+pass	a memoize helper on a pre-populated key takes the hit branch and does not re-put
+pass	a memoize helper's on-miss put threads to a later read of the same key
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
@@ -4550,6 +4553,7 @@ pass	an OPTION payload quantity renders scaled to its reference in the value for
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an OVERFLOWING literal to a narrow effect-op parameter is rejected
 pass	an Ok carrying a bare None type-checks under a whole-expression annotation
+pass	an Option (sum) entry argument is marshalled as a native Option
 pass	an Option built by an if with the nullary branch first type-checks
 pass	an Option built by an if with the payload branch first type-checks (the control)
 pass	an Option built by one dispatch is STORED into the tuple state and drained by a later dispatch — Some and None both persist
@@ -7199,6 +7203,9 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves
+pass	spx1 a Bool entry param selects a branch
+pass	spx3 a UInt64 entry param increments in its own width
+pass	spx4 Int8 and Int16 entry params sign-extend and sum
 pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
 pass	sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispatch, multiplies on 1-bits mod 1000, the n-bit's effect observed by a final read
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
@@ -7772,6 +7779,7 @@ pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
 pass	two closures from one factory capture distinct values
 pass	two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min
+pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two crossed LISTS compare structurally in the arm — same content from different builders
@@ -7857,6 +7865,7 @@ pass	two sequential lookups on the same Map with perform-threaded keys stay inde
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
+pass	two sibling memoize demands of one key: the first's put threads to the second
 pass	two sibling modules may each define a private helper of the same name
 pass	two slices of one parent both read after the parent is dead
 pass	two specializations of one driver on different closures do not collide in the spec memo
@@ -8069,7 +8078,6 @@ todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b l
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
-pass	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
@@ -8101,14 +8109,9 @@ todo	phr1 an export returning its lifted List param verbatim declines (ownership
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 todo	read of malformed text is a coded reject, not a wrong value
+todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	spx1 a Bool entry param selects a branch
-todo	spx2 a Char entry param declines pending a boundary representation
-pass	spx3 a UInt64 entry param increments in its own width
-pass	spx4 Int8 and Int16 entry params sign-extend and sum
-pass	a const top-bit-set u64 bin binding folds unsigned
-pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned
