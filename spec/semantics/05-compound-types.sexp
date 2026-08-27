@@ -21695,3 +21695,18 @@
 (export main)))
   (call main)
   (output (: 42 Int64)))
+
+(case "a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype"
+  (doc    "REGRESSION (compile error 'compound match switch path has no solved type'): a constructor pattern nesting a NULLARY variant TWO+ constructor layers deep — `(match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))` — where `IntTy` is a SINGLE-variant sum erased to `Ty::Nominal`. The switch on `Sign` sits at `[Payload, Payload, Elem(0)]`: TyInt's boxed-sum Payload seeds `[Payload]` = IntTy, but the INNER Payload (the erased IntTy newtype unwrap) was NOT seeded, and `type_from_seeded_prefix`'s `Payload` arm unconditionally declined → no solved type. Fix peels a `Ty::Nominal` Payload in the suffix walk so the switch resolves through the erased inner layer. Runtime-chosen inner (`mk` picks Signed/Unsigned from k) defeats the const-fold: k=-1 → Signed two ctor layers deep → arm fires (1); k=1 → Unsigned → falls to the wildcard (0). Combined `10*1 + 0` = 10.")
+  (input (do
+(type Sign (Signed) (Unsigned) (SignDef))
+(type Width (WFixed Int64) (WidthDef))
+(type IntTy (IntTy Sign Width))
+(type Ty (TyInt IntTy) (TyBool) (TyErr))
+(def (probe (: t Ty)) (match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0)))
+(def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned)))
+(def (run (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef)))))
+(def (main) (+ (* 10 (run -1)) (run 1)))
+(export main)))
+  (call main)
+  (output (: 10 Int64)))
