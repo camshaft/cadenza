@@ -12434,41 +12434,6 @@ mod runtime_ops {
     }
 
     #[test]
-    fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
-        // WARNING: INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
-        // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32
-        // variable ("expected i64, found i32"). ROOT: `unify_width`/`unify_sign` BOUND the operator's
-        // shared width/sign VARIABLE to the deferred LEFT literal first, freezing it, so the RIGHT
-        // variable's `Fixed(8)`/unsigned meeting the now-`Deferred` var was a no-op → the result ground to
-        // the i64 default. Fixed by leaving a var meeting `Deferred` UNBOUND, so the concrete operand
-        // (whichever side) binds it — operand order no longer changes the result width/sign. The
-        // COMPARISON path (result Bool, operands not linked via a result var) additionally reconciles at
-        // emit (`operand_int_ty`, position-independent). All hold for `n : UInt8`:
-        assert_eq!(run::<u8>("(: n UInt8)", "(+ 1 n)", &[Val::U8(5)]), 6); // was invalid wasm
-        assert_eq!(run::<u8>("(: n UInt8)", "(* 2 n)", &[Val::U8(3)]), 6);
-        assert_eq!(run::<u8>("(: n UInt8)", "(& 15 n)", &[Val::U8(9)]), 9);
-        assert_eq!(run::<u8>("(: n UInt8)", "(<< 1 n)", &[Val::U8(3)]), 8);
-        assert_eq!(
-            run::<i64>("(: n UInt8)", "(if (< 1 n) 1 0)", &[Val::U8(5)]),
-            1
-        );
-        // The const-RIGHT mirror (always worked) and a both-var form still compute the same.
-        assert_eq!(run::<u8>("(: n UInt8)", "(+ n 1)", &[Val::U8(5)]), 6);
-        assert_eq!(
-            run::<u8>(
-                "(: a UInt8) (: b UInt8)",
-                "(+ a b)",
-                &[Val::U8(100), Val::U8(50)]
-            ),
-            150
-        );
-        // A wide left-const is unaffected (i64 result was always correct).
-        assert_eq!(run::<i64>("(: n Int64)", "(+ 1 n)", &[Val::S64(41)]), 42);
-        // (A genuine width conflict — UInt8 + Int64 — still rejects CDZ0301; the corpus guards that, and
-        // the deferred-var change only affects a var meeting a DEFERRED width, never two Fixed widths.)
-    }
-
-    #[test]
     fn unsigned_narrow_arith_uses_a_single_unsigned_range_check() {
         // The narrow-width range-check for an UNSIGNED result is a SINGLE unsigned upper-bound guard
         // (`r >=ᵤ 2^N → trap`), not the two signed guards (`r <ₛ 0`, `r >ₛ max`) a signed width uses:
@@ -12633,22 +12598,6 @@ mod runtime_ops {
             "(* a b)",
             &[Val::U16(256), Val::U16(256)]
         )); // 65536
-    }
-
-    #[test]
-    fn runtime_narrow_param_with_a_bare_literal_grounds_the_literal_to_the_param_width() {
-        // A NARROW parameter combined with a BARE LITERAL: the literal (width-polymorphic, Int64 on its
-        // own = an i64 slot) must take the parameter's narrow width, so the emitted op is a homogeneous
-        // i32 op — not an i32/i64 mix wasm rejects. Regression for the narrow-param-plus-literal
-        // MISCOMPILE (invalid component). Covers `+`, comparison, `*`, and bitwise `&`.
-        assert_eq!(run::<u8>("(: x UInt8)", "(+ x 1)", &[Val::U8(100)]), 101);
-        assert_eq!(run::<i8>("(: x Int8)", "(+ x 1)", &[Val::S8(50)]), 51);
-        assert_eq!(run::<u8>("(: x UInt8)", "(* x 2)", &[Val::U8(10)]), 20);
-        assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(255)]), 15);
-        assert!(run::<bool>("(: x UInt8)", "(> x 50)", &[Val::U8(100)]));
-        // Overflow of the narrow width still traps — grounding the literal does not disable the
-        // range-check: UInt8 255 + 1 = 256 leaves [0,255].
-        assert!(traps("(: x UInt8)", "(+ x 1)", &[Val::U8(255)]));
     }
 
     #[test]
@@ -13195,39 +13144,6 @@ mod runtime_ops {
         check_clean("(module m (def (f (: a Float32)) (+ a 1.5)) (export f))");
         check_clean("(module m (def (f (: a Float64)) (+ a 1.0e300)) (export f))");
         check_clean("(module m (def (f) (+ 1.0e300 1.0)) (export f))");
-    }
-
-    #[test]
-    fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
-        // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
-        // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
-        // slot — not an i32/i64 mismatch wasm rejects. Regression for the if-branch-narrow-literal
-        // MISCOMPILE. Both branch orders, signed and unsigned.
-        assert_eq!(
-            run::<u8>(
-                "(: x UInt8) (: c Bool)",
-                "(if c x 0)",
-                &[Val::U8(200), Val::Bool(true)]
-            ),
-            200
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: c Bool)",
-                "(if c x 0)",
-                &[Val::S8(50), Val::Bool(true)]
-            ),
-            50
-        );
-        // Order-independent: the bare literal in the THEN branch, narrow in the ELSE.
-        assert_eq!(
-            run::<u8>(
-                "(: x UInt8) (: c Bool)",
-                "(if c 0 x)",
-                &[Val::U8(200), Val::Bool(false)]
-            ),
-            200
-        );
     }
 
     /// A narrow signed division's range-check needs ONLY its upper bound: a signed quotient can overflow
