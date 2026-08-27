@@ -9214,43 +9214,9 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::I32Eq | Lir::I64Eq | Lir::I64ExtendI32U)),
             "the materialize-then-compare is folded away, got: {c:?}"
         );
-        // VALUE PARITY across the four shapes (both K and both branch orders).
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 1 0) 1)",
-            &[Val::S64(-1)]
-        )); // c → true
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 1 0) 1)",
-            &[Val::S64(5)]
-        ));
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 1 0) 0)",
-            &[Val::S64(-1)]
-        )); // !c
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 1 0) 0)",
-            &[Val::S64(5)]
-        ));
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 0 1) 1)",
-            &[Val::S64(-1)]
-        )); // flipped → !c
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 0 1) 1)",
-            &[Val::S64(5)]
-        ));
-        // A constant OTHER than 0/1 does NOT use this fold (range fold makes it false): (= bool-int 5).
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (if (< x 0) 1 0) 5)",
-            &[Val::S64(-1)]
-        ));
+        // The VALUE PARITY (the four shapes + the non-0/1 constant) is the corpus case "a bool-materialized
+        // (if c 1 0) compared to 0 or 1 folds to the condition" in 06-numeric-model — this stays a
+        // white-box Lir fold check.
     }
 
     #[test]
@@ -9312,24 +9278,8 @@ mod runtime_ops {
             "(= (if c 0 1) (if d 0 1)) → (= c d), got: {both:?}"
         );
 
-        // VALUE PARITY: every polarity over the full truth table.
-        for (body, f) in [
-            ("(= (if c 1 0) (if d 1 0))", 0u8), // c == d
-            ("(= (if c 0 1) (if d 1 0))", 1),   // (not c) == d
-            ("(= (if c 0 1) (if d 0 1))", 0),   // c == d
-            ("(= (if c 1 0) (if d 0 1))", 1),   // c == (not d)
-        ] {
-            for c in [true, false] {
-                for d in [true, false] {
-                    let want = if f == 0 { c == d } else { c != d };
-                    assert_eq!(
-                        run::<bool>("(: c Bool) (: d Bool)", body, &[Val::Bool(c), Val::Bool(d)]),
-                        want,
-                        "{body} @c={c},d={d}"
-                    );
-                }
-            }
-        }
+        // The VALUE PARITY (every polarity over the full truth table) is the corpus case "two
+        // bool-materialized ints compared fold to a boolean equality" in 06-numeric-model.
         // NON-fold guards: a non-0/1 branch pair keeps a real `if`/`select` (both compares run); a bool-int
         // vs a genuine runtime int is not this fold.
         let kept = lir(
@@ -9397,24 +9347,9 @@ mod runtime_ops {
                 "{body} drops the const+eq, got: {code:?}"
             );
         }
-        // VALUE PARITY: the full truth table, all four operand orders, c ∈ {true, false}.
-        for (body, at_true, at_false) in [
-            ("(= c true)", true, false),
-            ("(= true c)", true, false),
-            ("(= c false)", false, true),
-            ("(= false c)", false, true),
-        ] {
-            assert_eq!(
-                run::<bool>("(: c Bool)", body, &[Val::Bool(true)]),
-                at_true,
-                "{body} @true"
-            );
-            assert_eq!(
-                run::<bool>("(: c Bool)", body, &[Val::Bool(false)]),
-                at_false,
-                "{body} @false"
-            );
-        }
+        // The VALUE PARITY (full truth table, all four operand orders) is the corpus case "a boolean
+        // compared to a true/false literal folds to the boolean or its negation (both orders)" in
+        // 06-numeric-model.
         // A DERIVED bool operand composes: `(= (< x 0) true)` → `(< x 0)`, `(= (< x 0) false)` → `(>= x 0)`
         // (the negation folds into the complementary comparison — one compare, no eq/eqz).
         let dt = lir("(: x Int64)", "(= (< x 0) true)");
@@ -9433,26 +9368,8 @@ mod runtime_ops {
                     .any(|i| matches!(i, Lir::I32Eq | Lir::I32Eqz | Lir::ConstI32(_))),
             "(= (< x 0) false) → (>= x 0), got: {df:?}"
         );
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(= (< x 0) true)",
-            &[Val::S64(-5)]
-        ));
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (< x 0) true)",
-            &[Val::S64(5)]
-        ));
-        assert!(!run::<bool>(
-            "(: x Int64)",
-            "(= (< x 0) false)",
-            &[Val::S64(-5)]
-        ));
-        assert!(run::<bool>(
-            "(: x Int64)",
-            "(= (< x 0) false)",
-            &[Val::S64(5)]
-        ));
+        // The DERIVED-operand value parity is the corpus case "a derived boolean compared to a literal
+        // composes into the complementary comparison" in 06-numeric-model.
     }
 
     #[test]
@@ -9643,87 +9560,6 @@ mod runtime_ops {
                 &[Val::S64(0)]
             ),
             "an unsatisfiable equality must still trap on a div-by-zero operand"
-        );
-    }
-
-    #[test]
-    fn if_with_one_zero_branches_materializes_the_boolean() {
-        // `(if c 1 0)` is the condition coerced to the result's integer width — `(if c 0 1)` its
-        // negation — with NO `select` and NO branch. The emitted shape is checked in select.rs's Lir
-        // tests; here we confirm the VALUE is identical to the branchy form across widths and both a
-        // comparison condition and a bare bool param.
-        // (if (< a b) 1 0) : Int64
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 1 0)",
-                &[Val::S64(3), Val::S64(9)]
-            ),
-            1
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 1 0)",
-                &[Val::S64(9), Val::S64(3)]
-            ),
-            0
-        );
-        // (if (< a b) 0 1) : the negation.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 0 1)",
-                &[Val::S64(3), Val::S64(9)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 0 1)",
-                &[Val::S64(9), Val::S64(3)]
-            ),
-            1
-        );
-        // A bare BOOL param condition (not a comparison) — `(if p 1 0)` = p as an int.
-        assert_eq!(
-            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(true)]),
-            1
-        );
-        assert_eq!(
-            run::<i64>("(: p Bool)", "(if p 1 0)", &[Val::Bool(false)]),
-            0
-        );
-        assert_eq!(
-            run::<i64>("(: p Bool)", "(if p 0 1)", &[Val::Bool(true)]),
-            0
-        );
-        // A narrow Int32-operand comparison still materializes to the correct 0/1.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int32) (: b Int32)",
-                "(if (< a b) 1 0)",
-                &[Val::S32(1), Val::S32(2)]
-            ),
-            1
-        );
-        // A NON-0/1 constant pair keeps the ordinary select — value parity holds there too.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 5 7)",
-                &[Val::S64(1), Val::S64(2)]
-            ),
-            5
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (< a b) 5 7)",
-                &[Val::S64(2), Val::S64(1)]
-            ),
-            7
         );
     }
 
