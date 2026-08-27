@@ -7969,3 +7969,5 @@ pass	df4 prelude Option at a scalar payload deforests completely (the leak needs
 pass	dfr1 a generic sum's TUPLE payload destructured to scalars leaks its shells
 pass	dfr2 a generic sum's RECORD payload destructured to a field leaks its shells
 pass	dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly
+pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
+pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
