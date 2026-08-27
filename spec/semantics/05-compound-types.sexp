@@ -21099,3 +21099,32 @@
   (call main)
   (output (: 15 Int64))
   (live-objects known-leak 11))
+
+; -- breaker batch 511 (2026-08-27): the Tuple/Record members of the static-data fence family,
+; verified the hour incr6 (#4181) landed (build-once immortal emit for constant Tuples/Records).
+; Same contract as sbd/ssd/csd/mrd: double-occurrence with runtime equality across the pair and
+; drops between (ctd1 — the hoisted immortal survives both drops, census-excluded), and 50-frame
+; construct+drop amplification (ctd2 — deforests today; a hoist regression that leaked per-eval
+; reads >=50, one that freed the shared static corrupts frames).
+
+(case "ctd1 two occurrences of one constant tuple — branch-selected use, projections, and runtime equality across the pair"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (= n 1) (tuple 10 20 30) (tuple 9 9 9)))
+          (b (tuple 10 20 30)))
+      (+ (* 100 (. a 0)) (+ (. b 2) (if (= a b) 1000 0)))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 2030 Int64))
+  (live-objects 0))
+
+(case "ctd2 a fifty-frame recursion re-evaluating a constant record each frame reclaims to zero"
+  (input (do
+    (def (frames (: k Int64))
+      (if (= k 0) 0
+          (let ((r (if (= (% k 2) 0) (record (= x 7) (= y 8)) (record (= x 1) (= y 2)))))
+            (+ (. r x) (frames (- k 1))))))
+    (def (main (: n Int64)) (frames n))
+    (export main)))
+  (call main (: 50 Int64))
+  (output (: 200 Int64))
+  (live-objects 0))

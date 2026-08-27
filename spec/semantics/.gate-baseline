@@ -8439,3 +8439,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
+pass	ctd1 two occurrences of one constant tuple — branch-selected use, projections, and runtime equality across the pair
+pass	ctd2 a fifty-frame recursion re-evaluating a constant record each frame reclaims to zero
