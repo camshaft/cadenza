@@ -42,12 +42,20 @@ lower / eval) that no rcdzc-vs-rcdzc check ever will. That independence is the w
 
 ## 1. The oracle's shape (DECIDED)
 
-### 1.1 The oracle is a pure function
+### 1.1 Two stages: const-evaluate to minimal form, THEN execute an input
+
+The oracle mirrors the two things rcdzc actually does — a **compile-time const-evaluation** that reduces
+a program to its minimal form (rcdzc's `Meta.apply` / constant-folding, `eval.rs`), and a **runtime
+execution** of an input against that reduced program. Modeling them as *separate* stages is what lets the
+oracle assert the compiler matches behavior at each (operator directive, PR #4120 review):
 
 ```
-oracle : (modules : List BinaryAstModule) × (trials : List Trial) → List TrialVerdict
+reduce  : BinaryAstModule → Reduced                 -- compile-time: const-fold to minimal/normal form
+execute : Reduced × Trial → Outcome                 -- runtime: run an input against the reduced program
 
-Trial       = { entry : ExportName, args : List Value, hostResponses : List HostResponse }
+oracle  : (modules : List BinaryAstModule) × (trials : List Trial) → List TrialVerdict
+
+Trial        = { entry : ExportName, args : List Value, hostResponses : List HostResponse }
 TrialVerdict = { outcome : Outcome, hostCalls : List HostCall }   -- hostCalls: ordered, verified
 
 Outcome =
@@ -58,11 +66,23 @@ Outcome =
   | Unsupported (reason)                  -- oracle declines: feature not yet modeled [skip]
 ```
 
-It is **pure and deterministic** in `(modules, args, hostResponses)`: no IO, no clock, no wasm. Host
-effects are modeled by feeding the fixed `hostResponses` in call order (exactly the corpus
+The corpus already draws this exact line, so the oracle grades each case against the stage rcdzc uses:
+- A **bare `(input E)`** (no `(call …)`) is graded on the **const-eval** result — rcdzc folds it to a
+  constant at compile time, so the oracle compares `reduce`'s residual value to `(output …)`.
+- A **`(call entry args)`** trial supplies *runtime* argument values that **defeat constant-folding**
+  (corpus README), so the oracle compares `execute`'s result. A case may interleave several `(call …)`
+  trials over one reduced program.
+
+Separating the stages buys a second, independent check on top of the rcdzc cross-check: **stage parity** —
+const-evaluating a closed program MUST equal executing it. The oracle can hold itself to that (and rcdzc
+to it too: a fold-vs-run divergence in the compiler is a miscompile the oracle surfaces directly).
+
+Both stages are **pure and deterministic** in `(modules, args, hostResponses)`: no IO, no clock, no wasm.
+Host effects are modeled by feeding the fixed `hostResponses` in call order (exactly the corpus
 `(host-responses …)` fixture) and recording the `hostCalls` made (exactly `(host-calls …)`). That is what
 makes a program with effects a pure function of its inputs — and what lets a disagreement be reproduced
-deterministically.
+deterministically. (Const-evaluation is effect-free by construction; only `execute` can perform host
+ops, consuming `hostResponses` in order.)
 
 ### 1.2 The verdict algebra aligns 1:1 with the corpus grader
 
@@ -116,13 +136,17 @@ additive-only, so the boundary is stable.
 
 ### Phase L1 — the pure-total-core evaluator + FIRST integration (corpus conformance)
 
-- **L1.1 — evaluate the pure total core.** From the binary AST: resolve names, then evaluate Int64 / width
-  ints / Bool, arithmetic with overflow + div-by-zero traps, comparisons/ordering, `let`, `if`, curried
-  `fn`/closures + application, tuple/record/sum construction, `match` (first-match; non-exhaustive or
-  unmodeled shape → `Unsupported`), and a minimal prelude (`Option`/`Result`/`Ordering`). Anything outside
-  the covered subset → `Unsupported(reason)`. A **fuel budget** bounds evaluation → `Diverges`.
-  **Gate:** Lean unit tests + the L1.2 harness green on files `01-literals`, `02-binding-and-control`,
-  `06-numeric-model` (integer subset), `09-functions`, and the tuple/sum subset of `05-compound-types`.
+- **L1.1 — the pure-total-core semantics as `reduce` + `execute` (§1.1).** From the binary AST: resolve
+  names, then define the shared evaluation over Int64 / width ints / Bool, arithmetic with overflow +
+  div-by-zero traps, comparisons/ordering, `let`, `if`, curried `fn`/closures + application, tuple/record/
+  sum construction, `match` (first-match; non-exhaustive or unmodeled shape → `Unsupported`), and a minimal
+  prelude (`Option`/`Result`/`Ordering`). Expose it as the **two stages**: `reduce` (const-fold a closed
+  program to minimal form — grades bare `(input E)`) and `execute` (run a `(call …)` trial against the
+  reduced program). Anything outside the covered subset → `Unsupported(reason)`. A **fuel budget** bounds
+  evaluation → `Diverges`, in both stages. **Gate:** Lean unit tests (incl. a stage-parity check —
+  `reduce` of a closed term equals `execute` with no args) + the L1.2 harness green on files `01-literals`,
+  `02-binding-and-control`, `06-numeric-model` (integer subset), `09-functions`, and the tuple/sum subset
+  of `05-compound-types`.
 - **L1.2 — the corpus-conformance harness (`cargo xtask oracle-check`).** Shred each `spec/semantics/*.sexp`
   case via `cdz-corpus` into `(modules, trials, hostResponses)` (reusing `normalize_program`), invoke
   `cdz-oracle`, and compare each verdict to the **recorded expectation** using the `grade_trial` taxonomy
@@ -214,6 +238,10 @@ permanently grows the executable semantics.
 - **Generation:** **extend `cdz-smith`** (not a standalone harness). Seed the fuzz corpus from the real
   corpus (assertions stripped); mutate/generate **at the binary-AST level**; the fuzzer generates several
   call-inputs per program; Lean is the **third differential Side**.
+- **Two stages (PR #4120 review):** the oracle must **separate compile-time const-evaluation of the
+  program to its minimal form from runtime execution of an input** — `reduce` mirrors rcdzc's const-fold
+  (grades bare `(input E)`), `execute` runs a `(call …)` trial. This is how the oracle matches what the
+  compiler does at each stage and asserts fold-vs-run parity (§1.1).
 - **Loop guard:** a fuel-based **`Diverges`** verdict is required (random programs will loop).
 - **North star:** assert **everything** matches — values, traps, **diagnostics + error codes** — a
   verifiable Lean model of the language, **excluding** wasm/multi-backend/portability constraints.
