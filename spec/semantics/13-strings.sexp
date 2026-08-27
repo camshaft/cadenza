@@ -4777,3 +4777,28 @@
   (call   main (: 50 Int64))
   (output (: 925 Int64))
   (live-objects 0))
+
+; -- runtime String rope conversions (behavioral migration from rcdzc bytes/string cdz-run tests, 2026-08-27):
+; concat+byte-len, from-bytes decode/ill-formed, to-bytes encode, all built through a tail-recursive appender
+; so the string stays genuinely runtime (opaque to the fold, imports the value-heap runtime).
+
+(case "a runtime String.concat then byte-len measures the built rope"
+  (input (do (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+             (def (main) (String.byte-len (rep "" 3))) (export main)))
+  (call main) (output (: 3 Int64)))
+
+(case "a runtime String.from-bytes decodes a recursively built buffer"
+  (input (do (def (rep (: acc Bytes) (: n Int64)) (if (= n 0) acc (rep (Bytes.concat acc b"\x69") (- n 1))))
+             (def (main) (Option.expect (String.from-bytes (rep b"\x68" 3)) "utf8")) (export main)))
+  (call main) (output (: "hiii" String))
+  (live-objects known-leak 2))
+
+(case "a runtime String.from-bytes of ill-formed bytes takes the None arm"
+  (input (do (def (rep (: acc Bytes) (: n Int64)) (if (= n 0) acc (rep (Bytes.concat acc b"\xff") (- n 1))))
+             (def (main) (match (String.from-bytes (rep b"" 2)) ((Some s) (String.byte-len s)) ((None _) (- 0 1)))) (export main)))
+  (call main) (output (: -1 Int64)))
+
+(case "a runtime String.to-bytes encodes a recursively built string"
+  (input (do (def (rep (: acc String) (: n Int64)) (if (= n 0) acc (rep (String.concat acc "a") (- n 1))))
+             (def (main) (Bytes.len (String.to-bytes (rep "" 3)))) (export main)))
+  (call main) (output (: 3 Int64)))

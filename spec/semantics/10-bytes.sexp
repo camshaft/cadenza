@@ -2365,3 +2365,23 @@
   (call main (: 1 Int64))
   (output (: 20 Int64))
   (live-objects 0))
+
+; -- adv-54/adv-54b runtime slice-view to-bytes read-twice soundness (behavioral migration from rcdzc, 2026-08-27):
+; a let-bound to-bytes / Bytes.concat of a RUNTIME String.slice view, read MORE THAN ONCE, must see the right
+; bytes on every read (the op must be named once, not copy-propagated + recomputed off a consumed buffer).
+
+(case "adv54 a let-bound to-bytes of a runtime string slice read twice sees both bytes"
+  (input (do (def (main (: k Int64)) (let ((s (String.concat "ab" "cdé")))
+    (match (String.slice s 3 5) ((Some tail) (let ((b (String.to-bytes tail)))
+      (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
+      ((None _u) -1)))) (export main)))
+  (call main (: 0 Int64)) (output (: 295 Int64))
+  (live-objects known-leak 2))
+
+(case "adv54b a let-bound Bytes.concat of slice-view to-bytes read twice sees the concatenated bytes"
+  (input (do (def (main (: k Int64)) (let ((s (String.concat "ab" "cdé")))
+    (match (String.slice s (+ 3 k) (+ 5 k)) ((Some tail) (let ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail))))
+      (+ (Int64.of (Option.expect (Bytes.at b 0) "b0")) (Int64.of (Option.expect (Bytes.at b 3) "b3")))))
+      ((None _u) -1)))) (export main)))
+  (call main (: 0 Int64)) (output (: 200 Int64))
+  (live-objects known-leak 1))
