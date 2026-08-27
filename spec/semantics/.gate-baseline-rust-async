@@ -3265,6 +3265,9 @@ pass	a recursive scalar-walk over a guest-built rope classifies characters on ev
 pass	a recursive scan counts a runtime string's matching characters
 pass	a recursive sum as op ARGUMENT — the arm dispatches on its shape
 pass	a recursive sum built then folded by a NESTED recursive call composes on every backend
+pass	a recursive sum carrying a Float32 renders its full runtime spine
+pass	a recursive sum carrying a Float64 renders its full runtime spine
+pass	a recursive sum carrying a String renders its full runtime spine
 pass	a recursive sum constructor with a CHECKED-ARITH payload and a recursive-call sibling payload
 pass	a recursive sum consumer whose arguments are recursive sum producers compiles
 pass	a recursive sum recurses THROUGH a record-typed payload

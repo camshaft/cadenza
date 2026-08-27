@@ -41916,43 +41916,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_nullary_recursive_sum_return_renders_via_the_value_encode_walker() {
-        // A NULLARY `main` returning a RECURSIVE sum built at runtime (`count 3` → an `IntList` whose
-        // spine length is decided at run time) now COMPILES: its `encode()` bakes the shape descriptor and
-        // calls the runtime `value-encode` op to render the unbounded-depth value form
-        // (DESIGN-recursive-sum-escape-walker.md). Previously this declined "needs a value-form walker
-        // that loops to a runtime-determined depth". The escaping component IMPORTS the runtime (the
-        // walker calls `value-encode`/`bytes-*`); the end-to-end render is corpus-gated
-        // (05-compound-types "renders its full runtime spine"). Here we pin that it compiles + imports the
-        // runtime rather than declining.
-        use crate::testkit::parse;
-        let src = "(module m (type IntList (Cons (Tuple Int64 IntList)) Nil) \
-                     (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) \
-                        (IntList.Cons (tuple n (count (- n 1)))))) \
-                     (def (main) (count 3)) (export main))";
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a nullary recursive-sum return compiles via the value-encode walker");
-    }
-
-    #[test]
-    fn a_recursive_sum_carrying_a_string_renders_via_the_value_encode_walker() {
-        // A recursive sum whose payload carries a STRING (a `StrList` — the shape of an AST node with an
-        // identifier, a JSON tree) now COMPILES its value-encode escape. Previously `sum_shape_descriptor`
-        // DECLINED on the `Ty::String` payload (`shape_of` returned None → no descriptor → the escape fell
-        // through), so a string-bearing recursive value could not cross the host boundary at all — even
-        // though the codec wire format has KIND_STR. `shape_of` now emits `ShapeNode::Str` (descriptor tag
-        // 3) and the runtime `value-encode` renders a KIND_STR leaf (guarded byte-exact in cdz-runtime's
-        // `value_encode_renders_a_string_leaf`). Pin that it compiles + imports the runtime.
-        use crate::testkit::parse;
-        let src = "(module m (type StrList (Cons (Tuple String StrList)) Nil) \
-                     (def (build (: n Int64)) (if (< n 1) (StrList.Nil ()) \
-                        (StrList.Cons (tuple \"x\" (build (- n 1)))))) \
-                     (def (main) (build 2)) (export main))";
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a recursive sum carrying a String compiles via the value-encode walker");
-    }
-
-    #[test]
     fn a_recursive_sum_carrying_bytes_renders_via_the_value_encode_walker() {
         // A recursive sum whose payload carries BYTES (a `BytesList` — a parse tree, a binary structure)
         // now COMPILES its value-encode escape. Previously `shape_of` DECLINED on `Ty::Bytes`; it now emits
@@ -41965,41 +41928,6 @@ mod stage1 {
                      (def (main) (build 2)) (export main))";
         compile_component(&crate::codec::encode(&parse(src)))
             .expect("a recursive sum carrying Bytes compiles via the value-encode walker");
-    }
-
-    #[test]
-    fn a_recursive_sum_carrying_a_float64_renders_via_the_value_encode_walker() {
-        // A recursive sum whose payload carries a FLOAT64 (a `FloatList` — a numeric tree) now COMPILES its
-        // value-encode escape. This required TWO gaps to close together: (1) `box_op_ty`/`get_op_ty` now
-        // box a Float64 element via `box-float`/`get-float` (coercion-free — an f64 slot IS box-float's
-        // arg), so a Float64 can live in a compound at all; (2) `shape_of` emits `ShapeNode::Float`
-        // (descriptor tag 2) and the runtime `value-encode` renders a KIND_FLOAT decimal leaf (guarded
-        // byte-exact + round-trip in cdz-runtime). Float32 still declines at the box layer (needs a
-        // promote/demote), so this uses Float64.
-        use crate::testkit::parse;
-        let src = "(module m (type FloatList (Cons (Tuple Float64 FloatList)) Nil) \
-                     (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ()) \
-                        (FloatList.Cons (tuple 1.5 (build (- n 1)))))) \
-                     (def (main) (build 2)) (export main))";
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a recursive sum carrying a Float64 compiles via the value-encode walker");
-    }
-
-    #[test]
-    fn a_recursive_sum_carrying_a_float32_renders_via_the_value_encode_walker() {
-        // The LAST value-encode gap closed: a recursive sum carrying a FLOAT32 now compiles its escape.
-        // Float32 gets its OWN 4-byte leaf (`box-float32`/`get-float32`), so `box_op_ty`/`get_op_ty` box
-        // it coercion-free and `shape_of` emits `ShapeNode::Float32` (descriptor tag 14); the runtime
-        // `value-encode` renders the f32's SHORTEST decimal (guarded in cdz-runtime's
-        // `value_encode_renders_a_float32_as_the_f32_shortest_decimal` — `0.1f32` → `0.1`, not the
-        // f64-promotion precision).
-        use crate::testkit::parse;
-        let src = "(module m (type F32List (Cons (Tuple Float32 F32List)) Nil) \
-                     (def (build (: n Int64)) (if (< n 1) (F32List.Nil ()) \
-                        (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1)))))) \
-                     (def (main) (build 2)) (export main))";
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a recursive sum carrying a Float32 compiles via the value-encode walker");
     }
 
     #[test]
