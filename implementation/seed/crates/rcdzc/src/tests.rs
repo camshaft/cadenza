@@ -17865,38 +17865,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_homogeneity_violation_is_cdz0201_uniformly() {
-        // collections-and-text.md §A Collection's Homogeneity Violation Is A Malformed Collection — a list
-        // whose elements do not share one type is a MALFORMED COLLECTION (CDZ0201), UNIFORMLY, regardless
-        // of HOW the element types differ: a cross-KIND scalar clash (Int64 vs Bool), a distinct-NUMERIC
-        // mix (Int64 vs Float64, no silent promotion), or two SAME-KIND-DIFFERENT-SHAPE compounds (records
-        // of different field sets, tuples of different arity). All four take CDZ0201 — the same code the
-        // map/set homogeneity checks and `List.push`/`update`/`concat` use. (CDZ0203 is for a
-        // two-types-must-AGREE unification conflict — an `if`/annotation/cross-shape comparison — not a
-        // collection's internal heterogeneity.)
-        for src in [
-            "(module m (def (main) (list 1 true)) (export main))", // Int64 vs Bool — cross-kind scalar
-            "(module m (def (main) (list 1 2.5)) (export main))", // Int64 vs Float64 — distinct numeric
-            "(module m (def (main) (list (record (a 1)) (record (b 2)))) (export main))", // diff field sets
-            "(module m (def (main) (list (tuple 1 2) (tuple 1 2 3))) (export main))", // diff arity
-        ] {
-            assert_eq!(
-                reject_code(src).as_deref(),
-                Some("CDZ0201"),
-                "a list-homogeneity violation must be CDZ0201 uniformly: {src}"
-            );
-        }
-        // A HOMOGENEOUS list still compiles + runs (the guard fires only on a genuine mismatch).
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) ((. List len) (list 1 2 3))) (export main))"),
-                "main"
-            ),
-            3
-        );
-    }
-
-    #[test]
     fn a_mixed_list_anchors_at_the_outlier_element_not_the_whole_list() {
         // The homogeneity reject anchors at the OUTLIER element (the one that broke homogeneity against the
         // established first-element type), not the enclosing `(list …)` — so the editor squiggle lands on
@@ -22682,37 +22650,6 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0201")
-        );
-    }
-
-    #[test]
-    fn constant_list_push_concat_update_fold_and_escape() {
-        // A `List.push`/`concat`/`update` over COMPILE-TIME-VISIBLE list literals FOLDS to a constant
-        // `(list …)` — no runtime heap — so the result escapes the boundary as its value form (like a
-        // written literal). `List.at`/`len` of the folded list also fold; here each is measured by
-        // `List.len` (a scalar Int64 across the boundary) to pin the folded length without the compound
-        // escape ABI: push 3+1 = 4, concat 2+2 = 4, in-range update keeps length 3.
-        for (prog, want) in [
-            ("((. List push) (list 1 2 3) 4)", 4),
-            ("((. List concat) (list 1 2) (list 3 4))", 4),
-            ("((. List update) (list 10 20 30) 1 99)", 3),
-        ] {
-            let src = format!("(module m (def (main) ((. List len) {prog})) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "constant list op folds: {prog}"
-            );
-        }
-        // An OUT-OF-RANGE constant `List.update` index is a PROVABLE trap — rejected at compile time
-        // (CDZ0304), NOT a shipped runtime trap (matches the runtime `vec-update` OOB trap).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. List len) ((. List update) (list 1 2 3) 5 99))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0304"),
-            "a constant out-of-range List.update is a provable trap (CDZ0304)"
         );
     }
 

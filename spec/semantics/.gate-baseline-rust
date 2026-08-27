@@ -1711,6 +1711,7 @@ pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-lhs and whose right operand aborts desugars and folds to the arm value
 pass	a constant-returning closure threads through a recursive-generic HOF
+pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a constant-try helper folds and its result feeds a handler arm's resume
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
@@ -5076,6 +5077,7 @@ pass	an underscore-prefixed match-arm binder is a usable binding, not a wildcard
 pass	an underscore-prefixed token is an identifier, not an integer
 pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
+pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
 pass	an unimported sibling definition is not in scope
 pass	an unknown member name is rejected with a did-you-mean (CDZ0201)
 pass	an unknown module operation too far for a confident typo lists the module's operations
@@ -5370,6 +5372,7 @@ pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
 pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	clp1 a SATURATING counter — the arm clamps every transition to 0..10 via a pure helper, both bounds hit in one run
+pass	clu1 an in-range constant List.update replaces a slot and keeps the length
 pass	cm01 (const ...) in a resume ANSWER position folds
 pass	cm02 closed MULTI-dispatch handle with LIST state folds under (const ...)
 pass	cm02c (const ...) closed handle with STRING state
@@ -6209,6 +6212,10 @@ pass	lfs1 an EIGHT-BIT Fibonacci LFSR — step shifts right injecting the XOR of
 pass	lft1 an ELEVATOR load limiter — board adds the passenger's weight answering the load or REFUSING with the negated overage when the seed-shaped capacity would be exceeded (the load untouched), alight subtracts clamped at empty, trips counts refusals, and the same boarding sequence is refused ONCE on the roomy car and TWICE on the tight one with different overage readings
 pass	lgt1 a TRAFFIC light with a demand sensor — tick counts down green-three yellow-one red-seed cycling on zero (answers pack color-times-ten plus remaining), demand during a LONG red shortens the remainder to one answering a hundred plus the old value (otherwise it just reads), and the seed-shaped red length changes both the red row and the demand's rebate
 pass	lhn1 a LUHN checksum accumulator — feed doubles every second digit by POSITION PARITY subtracting nine from two-digit doubles, chk answers 1 on a multiple of ten else the residue, and the seed-fed digit doubles on both runs but only one crosses the subtract-nine threshold
+pass	lhv1 a list mixing Int64 and Bool is a malformed collection (CDZ0201)
+pass	lhv2 a list mixing Int64 and Float64 is malformed — no silent numeric promotion (CDZ0201)
+pass	lhv3 a list of records with different field sets is malformed (CDZ0201)
+pass	lhv4 a list of tuples of different arity is malformed (CDZ0201)
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
 pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
@@ -8132,5 +8139,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
-pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds
