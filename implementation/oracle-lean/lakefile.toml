@@ -1,0 +1,18 @@
+name = "oracle"
+defaultTargets = ["cdz-oracle"]
+testDriver = "oracle-selftest"
+
+# The Lean reference interpreter for Cadenza, used as an independent differential oracle.
+# Design: implementation/design/DESIGN-lean-differential-oracle.md. Dependency-free (Lean stdlib
+# only) so the Nix build (`.#oracle-lean`) is hermetic — no `lake update` / network fetch.
+
+[[lean_lib]]
+name = "Oracle"
+
+[[lean_exe]]
+name = "cdz-oracle"
+root = "Main"
+
+[[lean_exe]]
+name = "oracle-selftest"
+root = "OracleTest"

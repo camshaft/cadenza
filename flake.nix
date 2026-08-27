@@ -2481,6 +2481,60 @@
             runHook postInstall
           '';
         };
+
+        # ── oracle-lean (L0.1): the Lean reference interpreter as an independent differential oracle ─
+        #
+        # A pure Lean 4 model of Cadenza semantics over the frozen binary AST, cross-checked against
+        # rcdzc to scale compiler bug-finding (design: implementation/design/DESIGN-lean-differential-
+        # oracle.md). Its OWN Lake project under implementation/oracle-lean/ (mirrors cdz-smith being
+        # its own workspace) — the `cdz-oracle` exe reads a request frame on stdin + writes verdicts on
+        # stdout. It is Lean-stdlib-only (no `lake` deps), so this build is hermetic — no network fetch.
+        #
+        # `pkgs.stdenv` (NOT stdenvNoCC): Lean's `leanc` links the compiled exe with a C compiler, so
+        # the derivation needs the matching nix `cc`/`ld` on PATH — building outside a nix stdenv links
+        # against the host glibc + `/usr/bin/ld` and fails on `__isoc23_*` symbol mismatches.
+        # `LEAN_ABORT_ON_PANIC=1` keeps a Lean panic a hard failure. The fileset is enumerated (never
+        # the `.lake` build dir) so a local `lake build` can't leak stale artifacts into the sandbox.
+        oracleLeanSrc = pkgs.lib.fileset.toSource {
+          root = ./implementation/oracle-lean;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/oracle-lean/lakefile.toml
+            ./implementation/oracle-lean/lean-toolchain
+            ./implementation/oracle-lean/Oracle.lean
+            ./implementation/oracle-lean/Main.lean
+            ./implementation/oracle-lean/OracleTest.lean
+            ./implementation/oracle-lean/Oracle
+          ];
+        };
+        oracleLean = pkgs.stdenv.mkDerivation {
+          pname = "cdz-oracle-lean";
+          version = "0.0.0";
+          src = oracleLeanSrc;
+          nativeBuildInputs = [ pkgs.lean4 ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            # fileset.toSource copies are read-only; lake writes .lake/ into the tree.
+            chmod -R u+w .
+            lake build cdz-oracle oracle-selftest
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out/bin"
+            install -m755 .lake/build/bin/cdz-oracle "$out/bin/cdz-oracle"
+            install -m755 .lake/build/bin/oracle-selftest "$out/bin/oracle-selftest"
+            runHook postInstall
+          '';
+        };
+        # L0.1 gate witness: build the oracle + run the self-test (a smoke request round-trips through
+        # the frame codec + the declining handler, yielding one Unsupported verdict). Non-zero exit
+        # from the self-test fails the derivation.
+        oracleLeanSmoke = pkgs.runCommand "oracle-lean-smoke"
+          { nativeBuildInputs = [ oracleLean ]; } ''
+          oracle-selftest
+          echo "ok: oracle-lean smoke — cdz-oracle builds + selftest round-trips (Unsupported)" > "$out"
+        '';
       in
       {
         # N1: the value-heap runtime components as NORMAL (input-addressed) derivations — `nix build
@@ -2535,6 +2589,10 @@
 
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
+
+        # oracle-lean (L0.1): the Lean differential oracle. `nix build .#oracle-lean` →
+        # result/bin/{cdz-oracle,oracle-selftest}.
+        packages.oracle-lean = oracleLean;
 
         # rcdzc→wasm: the compiler as a wasm artifact for the agent kernel's blob store. `.#rcdzc-wasm`
         # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
@@ -2956,6 +3014,12 @@
             # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
             example-project-tests = exampleProjectTests;
 
+            # oracle-lean (L0.1): build the Lean differential oracle + run its self-test (a smoke
+            # request round-trips through the frame codec + the declining handler → one Unsupported
+            # verdict). Standalone/advisory — NOT in the required local-gate set; `nix flake check`
+            # runs it and CI can build `.#checks.<sys>.oracle-lean-smoke` in isolation.
+            oracle-lean-smoke = oracleLeanSmoke;
+
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until
             # v-fleet-tooling's required-set cutover retires the hand-wired ones.
@@ -3088,10 +3152,15 @@
           #                   was produced with, so the devShell build reproduces the committed hash.
           # NOT added: anything a specific later derivation needs — those go in that derivation's
           # own inputs (N1+), not this shared shell, to keep cache invalidation fine-grained.
+          #   lean4         : the Lean 4 toolchain (lean + lake) for the oracle-lean differential
+          #                   oracle (implementation/oracle-lean/). `nix develop` then has `lake` so
+          #                   the oracle can be built/edited in-shell (design L0.1). It is otherwise
+          #                   scoped to its own `.#oracle-lean` derivation for fine-grained caching.
           packages = [
             rustToolchain
             pkgs.wasm-tools
             pkgs.cargo-component
+            pkgs.lean4
           ];
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
