@@ -362,6 +362,21 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
        enclosing-match binder at the sibling-return arm is sound (the binder is dead there; the returned
        `acc` is a disjoint scalar). Acceptance = value-wrong-grep + flap-detection; fence = must not touch the
        recursive arm (where `xt`/`yt` ARE consumed).
+     - **WAT EVIDENCE (2026-08-27, `cdz compile /tmp/zipprog.sexp -t wasm` → `wasm-tools print`).** `zip-sum`
+       is func 16 `(param i32 i32 i64)` = (xs-vec, ys-vec, acc). The list is a **vec-of-arr with boxed-int
+       elements** (`box-int`/`get-int`/`vec-get`/`vec-drop` imports; a `(List Int64)` element is a heap box).
+       The **recursive arm emits `call vec-drop` for BOTH `xs` (local 0) and `ys` (local 1)** before the
+       `return_call` — proving both operands are owned-and-droppable in this frame. **The two empty-match
+       exit arms (`((list) acc)`, each `local.get 2; return`) emit NO `vec-drop`** — that is the entire leak.
+       (`ys` = `(list 10 20 30)` is a #4270-immortal constant → its drop no-ops → only the runtime-built `xs`
+       leaks in the pinned case.) ⇒ **fix: emit the SAME `vec-drop` at the empty-match exit arm that the
+       sibling recursive arm already emits, for each list operand not referenced by the returned expr.**
+     - **SOUNDNESS BY PARITY (self-sufficient for ZIP — no new v-runtime fact needed):** the recursive arm
+       ALREADY `vec-drop`s `xs`/`ys` after reading their heads, so they are provably uniquely-owned-droppable
+       in this function (each frame owns its `xs` = the prior `xt`; top frame owns the freshly-built list).
+       Emitting the identical drop at the exit arm is symmetric-safe. The escape gate (`binding_escapes`)
+       guards the general case (a returned expr that DOES reference the operand keeps its drop suppressed).
+       mts1's borrow-into-`m` question is DISTINCT and still needs v-runtime; ZIP does not.
 3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
    + `code.dup_sites` count out of `emit_loop_iteration`).
 
