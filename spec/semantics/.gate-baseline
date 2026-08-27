@@ -8693,3 +8693,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)
+pass	irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)
