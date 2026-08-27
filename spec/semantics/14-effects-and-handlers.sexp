@@ -1685,15 +1685,14 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 348 Int64)))
 
-(case "a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly"
+(case "a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform folds (the inner state re-binds to the slot param)"
   (doc    "The state-reading companion of the fold above. Here the inner `B.step` arm's resume VALUE reads the
            inner state binder `t` around the outer perform — `(step (u) t (resume (A.tick (+ t u)) t))`. The
-           pre-spec-lift only lifts an inner-op call whose resume value is FREE of the inner state binder (the
-           lift substitutes op params but not the state); lifting a state-reading value would orphan `t` onto
-           the outer body spine (a CDZ0101 leak on a valid program — the github-liaison/Copilot #2077 review).
-           So this shape is left UN-lifted and declines cleanly (the honest not-yet-reducible todo — threading
-           an inner-state-reading resume value onto the outer body is the full spec-lift fold, a later
-           increment). Pins that the state-reading face declines rather than leaks.")
+           pre-spec-lift now lifts it: alongside substituting the op params, it RE-BINDS `arm.state` (`t`) to
+           the inner slot's threaded state PARAM (`state_names[k]`, keyed by the inner op's decl), so the lifted
+           `(A.tick (+ t u))` reads the spec's inner-slot state instead of an orphaned `t` (the #2077 orphan
+           this used to decline to avoid). Sound because the `next == arm.state` guard ensures the inner op
+           does not ADVANCE its state, so the incoming slot param is the value to read. Answers 218.")
   (input  (do
             (effect A (op tick (-> Int64 Int64)))
             (effect B (op step (-> Int64 Int64)))

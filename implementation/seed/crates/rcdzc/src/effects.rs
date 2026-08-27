@@ -9734,7 +9734,13 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
         // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
         let orig_body = if ctx.slots.len() > 1 {
-            lift_inner_op_arm_outer_perform(db, orig_body, ctx, caller_observes_outstate)
+            lift_inner_op_arm_outer_perform(
+                db,
+                orig_body,
+                ctx,
+                caller_observes_outstate,
+                &state_names,
+            )
         } else {
             orig_body
         };
@@ -10146,6 +10152,7 @@ fn lift_inner_op_arm_outer_perform(
     node: StructId,
     ctx: &HandlerCtx,
     caller_observes_outstate: bool,
+    state_names: &[String],
 ) -> StructId {
     // Is this node an inner-op call whose arm resume-value performs an outer op with trivial inner-state?
     if let Resolved::Apply { head, args } = resolved_of(db, node)
@@ -10158,20 +10165,14 @@ fn lift_inner_op_arm_outer_perform(
         && db.ast.as_name(next) == db.ast.as_name(arm.state)
         // the resume value performs a DIFFERENT discharged op (an outer merged slot).
         && performs_discharged_op_other_than(db, val, ctx, (decl.0, idx))
-        // …AND the resume value does NOT read the inner arm's STATE binder. The `next == arm.state` guard
-        // above ensures the NEXT-state is trivial, but says NOTHING about `val` itself. If `val` references
-        // `arm.state` — `(step (u) t (resume (A.tick t) t))`, the outer perform arg reads the inner state —
-        // the substitution below covers `arm.params` but NOT `arm.state`, so the lifted+`deep_fresh_copy`'d
-        // value carries an ORPHANED `t` ref (its inner-handler binder is gone once lifted onto the body
-        // spine) → CDZ0101 `unbound name t` at lowering: a LEAK on a valid program, strictly worse than a
-        // clean decline (github-liaison/Copilot review of #2077, VERIFIED-PLAUSIBLE; the same state-binder-
-        // scope failure as this arc's #1933 orphan). Threading an inner-state-reading resume value onto the
-        // outer body correctly is the full spec-lift fold (a later increment — it must re-bind `t` to the
-        // inner slot's threaded state); until then, leaving this node UN-lifted makes `specialize_recursive`
-        // decline cleanly downstream (the pre-spec-lift floor breaker verified is silent-wrong-value-free),
-        // the honest "not yet reducible" todo. The safe shape (`val` free of `arm.state`, the landed →21
-        // witness `(resume (A.tick) t)`) is UNAFFECTED — it lifts and folds as before.
-        && !subtree_references_binder(db, val, arm.state)
+        // NOTE: `val` MAY read the inner arm's STATE binder — `(step (u) t (resume (A.tick (+ t b)) t))`,
+        // the outer perform arg reads the inner state `t`. The substitution below RE-BINDS `arm.state` to the
+        // inner slot's threaded state PARAM (`state_names[k]`), so the lifted value reads the spec's inner-slot
+        // state rather than an ORPHANED `t` (its inner-handler binder is gone once lifted onto the body spine
+        // — the #2077 orphan this used to decline to avoid). The `next == arm.state` guard above ensures the
+        // inner op does not ADVANCE its state, so the incoming slot param is the right value to read. (The
+        // former unconditional decline of a state-reading `val` was the pre-spec-lift floor; re-binding to the
+        // slot param is the "later increment" that comment anticipated — nestop/xhsRec.)
         // …AND the resume value's own performed op does NOT ITSELF have an arm that performs a further outer
         // op — i.e. this is a DEPTH-2 chain, not depth-3+. rn3 (breaker): `loop` performs `C.hop`; C's arm
         // resumes `(B.step)`; B's arm resumes `(A.tick)`. Lifting `(C.hop)`→`(B.step)` in ONE step leaves
@@ -10207,6 +10208,16 @@ fn lift_inner_op_arm_outer_perform(
                 }
             }
         }
+        // RE-BIND the inner arm's state binder to its slot's threaded state PARAM. A resume value reading the
+        // inner state (`(A.tick (+ t b))`) would otherwise orphan `t` when lifted onto the outer body; mapping
+        // `arm.state` to the inner slot's `state_names[k]` ref makes it read the spec's inner-slot state param
+        // instead. The inner op's decl always owns a slot in the merged ctx, so the position is total.
+        if subtree_references_binder(db, val, arm.state)
+            && let Some(k) = ctx.slots.iter().position(|s| s.decl == decl.0)
+        {
+            let state_ref = db.push_name(&state_names[k]);
+            subst.insert(arm.state, state_ref);
+        }
         let reduced = if subst.is_empty() {
             val
         } else {
@@ -10219,7 +10230,15 @@ fn lift_inner_op_arm_outer_perform(
         Struct::List(children) => {
             let lifted: Vec<StructId> = children
                 .iter()
-                .map(|&c| lift_inner_op_arm_outer_perform(db, c, ctx, caller_observes_outstate))
+                .map(|&c| {
+                    lift_inner_op_arm_outer_perform(
+                        db,
+                        c,
+                        ctx,
+                        caller_observes_outstate,
+                        state_names,
+                    )
+                })
                 .collect();
             if lifted == children {
                 node
