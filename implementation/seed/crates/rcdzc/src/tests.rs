@@ -14484,37 +14484,6 @@ mod match_engine {
     }
 
     #[test]
-    // `3.14` is a chosen bare decimal, not an intended π approximation (see the sibling test) — silence
-    // clippy's approx_constant on the `3.14f64` oracle value.
-    #[allow(clippy::approx_constant)]
-    fn a_default_float_pragma_leaves_an_annotated_literal_and_an_integer_alone() {
-        // (1) AN EXPLICIT ANNOTATION WINS (`numeric-model.md` §"An explicit annotation … takes precedence
-        //     over the module's declared default"): `(: 3.14 Float64)` in a `default-float Float32` module
-        //     stays `Float64` — no spurious CDZ0203 from the fixed-width default unifying against the
-        //     annotation. Read back as an `f64` at the binary64 value.
-        let annotated = run_returns::<f64>(
-            &component(
-                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) (: 3.14 Float64))) ((. m x) unit))) (export main))",
-            ),
-            "main",
-        );
-        assert_eq!(
-            annotated.to_bits(),
-            3.14f64.to_bits(),
-            "an explicit Float64 annotation overrides the default-float=Float32 without a mismatch"
-        );
-        // (2) A default-float pragma governs DECIMAL literals only — a bare INTEGER literal keeps its
-        //     integer default (Int64), unaffected. `(+ 1 2)` type-checks clean as Int64 arithmetic.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) (+ 1 2))) ((. m x) unit))) (export main))"
-            ),
-            None,
-            "a default-float pragma leaves an integer literal at its Int64 default"
-        );
-    }
-
-    #[test]
     fn a_default_fraction_pragma_takes_precedence_over_default_float() {
         // Both pragmas in one module: the EXACT-fraction default is the stronger statement (exact by
         // default), so a bare decimal grounds to `Rational` (`0.5` → `1/2`), NOT the `default-float` width.
