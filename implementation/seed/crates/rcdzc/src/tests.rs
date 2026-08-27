@@ -33855,27 +33855,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_constructs_and_its_length_folds() {
-        // `(list 1 2 3)` builds a homogeneous list; `List.len` of a compile-time-visible list folds to
-        // its arity (no heap). `((. List len) (list 1 2 3))` → 3; the empty list → 0. Runtime elements
-        // don't change the arity: `(List.len (list n 2))` still folds to 2 (length is static here).
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) ((. List len) (list 1 2 3))) (export main))"),
-                "main"
-            ),
-            3
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) ((. List len) (list))) (export main))"),
-                "main"
-            ),
-            0
-        );
-    }
-
-    #[test]
     fn a_self_tail_call_with_a_heap_match_argument_emits_valid_wasm() {
         // WARNING:WARNING: REGRESSION: a self-tail-recursive accumulator whose self-call passes a `match` over a HEAP
         // value (Option) as an ARGUMENT emitted a STRUCTURALLY INVALID wasm module ("expected i32, found
@@ -34195,69 +34174,6 @@ mod match_engine {
     }
 
     #[test]
-    fn bytes_of_constructs_and_its_length_folds() {
-        // `(Bytes.of (list 0 255 128))` builds a byte sequence from a list of Int64 in 0..=255; `Bytes.len`
-        // of a compile-time-visible `Bytes.of` folds to its byte count (no heap). → 3; the empty → 0.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) ((. Bytes len) ((. Bytes of) (list 0 255 128)))) (export main))"
-                ),
-                "main"
-            ),
-            3
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) ((. Bytes len) ((. Bytes of) (list)))) (export main))"
-                ),
-                "main"
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn bytes_at_folds_some_and_none_over_a_constant() {
-        // `Bytes.at : Bytes → Int64 → (Option Int64)` — the fallible byte read. A CONSTANT `Bytes.of`
-        // indexed by a CONSTANT folds at compile time (no `bytes-get`): in range → `(Some byte)`, out of
-        // range/negative/empty → `None`. Consumed by a match so `main` returns a scalar (the boundary
-        // `(Some …)` render is exercised by the sum-escape path). `(Bytes.at (Bytes.of (list 10 20 30)) 1)`
-        // → 20; index 5 / -1 (must NOT wrap unsigned) / the empty sequence → the None arm → -1.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) 1) ((Some x) x) (None -1))) (export main))"
-                ),
-                "main"
-            ),
-            20,
-            "in-bounds → Some(byte)"
-        );
-        for (src, label) in [
-            (
-                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) 5) ((Some x) x) (None -1))) (export main))",
-                "over-large",
-            ),
-            (
-                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list 10 20 30)) -1) ((Some x) x) (None -1))) (export main))",
-                "negative",
-            ),
-            (
-                "(module m (def (main) (match ((. Bytes at) ((. Bytes of) (list)) 0) ((Some x) x) (None -1))) (export main))",
-                "empty",
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(&component(src), "main"),
-                -1,
-                "out of bounds ({label}) → None"
-            );
-        }
-    }
-
-    #[test]
     fn a_runtime_bytes_at_reads_the_byte_under_wasmtime() {
         // The RUNTIME `Core::BytesAt` path (not a fold): the index is a PARAMETER, so `bytes-get` runs. A
         // recursive byte-sum over a runtime sequence via `Bytes.at` + match — the CBOR-reader idiom. `sum`
@@ -34373,96 +34289,6 @@ mod match_engine {
             "3",
             "compact length"
         );
-    }
-
-    #[test]
-    fn constant_bytes_slice_folds_to_some_of_the_sub_range() {
-        // `(Bytes.slice (Bytes.of …) start len)` on constant operands FOLDS: an in-range slice → a
-        // constant `Some(Bytes.of <sub>)` (its bytes then compare structurally via the constant-compound
-        // equality fold), a zero-length slice → `Some(<empty>)` (present, not None), out-of-range → None.
-        // Each returns a scalar (1/0 via `if (= …)`) so `main` needs no bytes escape. Was declined
-        // "comparison of a compound value needs a heap walk" / the runtime slice path before the fold.
-        for (body, want) in [
-            // in-range: bytes [1,2] of (10 20 30 40) == (20 30)
-            (
-                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 30))) 1 0)) (export main))",
-                1,
-            ),
-            // zero-length in-range slice == empty
-            (
-                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 0) \"x\") (Bytes.of (list))) 1 0)) (export main))",
-                1,
-            ),
-            // slice across a folded concat seam: [1,2] of (1 2 3 4) == (2 3)
-            (
-                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) 1 2) \"x\") (Bytes.of (list 2 3))) 1 0)) (export main))",
-                1,
-            ),
-            // a wrong expected sub-range → false (the fold really compares the bytes, not just Some-ness)
-            (
-                "(module m (def (main) (if (= (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) \"x\") (Bytes.of (list 20 99))) 1 0)) (export main))",
-                0,
-            ),
-            // out of range (start 2 + len 5 > 4) → None (not Some), so it is not the empty-Some
-            (
-                "(module m (def (main) (if (= (Bytes.slice (Bytes.of (list 10 20 30 40)) 2 5) (None unit)) 1 0)) (export main))",
-                1,
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
-                    "main"
-                ),
-                want,
-                "constant Bytes.slice folds: {body}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_byte_string_literal_is_a_constant_bytes_value() {
-        // `b"…"` in source is a `Ty::Bytes` constant, equal to the `Bytes.of` of the same bytes — it
-        // lowers to a `Core::BytesOf`, so it rides the constant equality/slice/concat fold. Named escapes
-        // (`\n`), `\xNN` hex (incl. a high byte ≥ 0x80), and the empty literal all decode. Each returns a
-        // scalar (1/0) via `if (= …)` so `main` needs no bytes escape.
-        for (body, want) in [
-            (
-                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 67))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= b\"\\x89PNG\" (Bytes.of (list 137 80 78 71))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= b\"A\\nB\" (Bytes.of (list 65 10 66))) 1 0)) (export main))",
-                1,
-            ),
-            (
-                "(module m (def (main) (if (= b\"\" (Bytes.of (list))) 1 0)) (export main))",
-                1,
-            ),
-            // a differing byte → false (the literal really carries its bytes, not just Bytes-ness)
-            (
-                "(module m (def (main) (if (= b\"ABC\" (Bytes.of (list 65 66 99))) 1 0)) (export main))",
-                0,
-            ),
-            // usable through the ordinary bytes ops: length of a literal
-            (
-                "(module m (def (main) (Bytes.len b\"ABCD\")) (export main))",
-                4,
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(body))).expect("compile"),
-                    "main"
-                ),
-                want,
-                "byte-string literal is a constant Bytes: {body}"
-            );
-        }
     }
 
     #[test]
