@@ -80,29 +80,100 @@ def mainBody? (m : Module) : Option Nat := do
     find
   | _ => none
 
-/-- Evaluate a node to an `Outcome`. L1.1a: a scalar-literal atom → its `Value`; anything else →
-`unsupported`. `fuel` bounds the (future) recursion. -/
-def evalNode (m : Module) (fuel : Nat) (i : Nat) : Outcome :=
+/-- A lexical environment: names (as raw bytes) bound to values, innermost first. -/
+abbrev Env := List (ByteArray × Value)
+
+/-- Look up a name in the environment (innermost binding wins). -/
+def Env.lookup? (env : Env) (name : ByteArray) : Option Value :=
+  (env.find? (fun (n, _) => n == name)).map (·.2)
+
+/-- The name a bare-name atom node references, if it is one. -/
+def nameOf? (m : Module) (i : Nat) : Option ByteArray :=
+  match m.nodes[i]? with
+  | some (Node.atom lid) =>
+    match m.leaves[lid]? with
+    | some (Leaf.name b) => some b
+    | _ => none
+  | _ => none
+
+mutual
+/-- Evaluate a node under `env` to an `Outcome`. Models the pure-core FLOOR: scalar literals,
+variable references, `let` (sequential bindings), and `if` (boolean condition). Anything else →
+`unsupported`. `fuel` bounds recursion (→ `diverges`). -/
+partial def evalNode (m : Module) (env : Env) (fuel : Nat) (i : Nat) : Outcome :=
   match fuel with
   | 0 => .diverges
-  | _ + 1 =>
+  | fuel + 1 =>
     match m.nodes[i]? with
     | some (Node.atom lid) =>
       match m.leaves[lid]? with
+      | some (Leaf.name b) =>
+        -- a bare name: a bound variable, or (unmodeled) a free/prelude name
+        match env.lookup? b with
+        | some v => .value v
+        | none => .unsupported "eval: free name (variable not bound; prelude/global not yet modeled)"
       | some l =>
         match Value.ofLeaf l with
         | some v => .value v
-        | none => .unsupported "eval: non-scalar atom (name/symbol/float/bytes not yet modeled)"
+        | none => .unsupported "eval: non-scalar leaf (float/bytes/symbol not yet modeled)"
       | none => .unsupported "eval: atom leaf index out of range"
-    | some (Node.list _) =>
-      .unsupported "eval: compound expression not yet modeled (L1.1a = literals only)"
+    | some (Node.list children) =>
+      match m.headName? (Node.list children) with
+      | some h =>
+        if h == "let".toUTF8 then evalLet m env fuel children
+        else if h == "if".toUTF8 then evalIf m env fuel children
+        else .unsupported "eval: application/operator not yet modeled (L1.1b = let/if/vars/literals)"
+      | none => .unsupported "eval: headless list"
     | none => .unsupported "eval: node index out of range"
+
+/-- `(let (bindings) body)`: bind each `(name val)` SEQUENTIALLY (a later binding sees the earlier),
+then evaluate `body` in the extended environment. -/
+partial def evalLet (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  -- children = [letHead, bindingsListId, bodyId]
+  match children[1]?, children[2]? with
+  | some bindingsId, some bodyId =>
+    match m.nodes[bindingsId]? with
+    | some (Node.list pairs) =>
+      -- fold the bindings left-to-right, extending env; short-circuit on a non-value binding
+      let rec bind (env : Env) (ps : List Nat) : Except Outcome Env := do
+        match ps with
+        | [] => .ok env
+        | pid :: rest =>
+          match m.nodes[pid]? with
+          | some (Node.list pc) =>
+            match pc[0]?, pc[1]? with
+            | some nId, some vId =>
+              match nameOf? m nId with
+              | some nm =>
+                match evalNode m env fuel vId with
+                | .value v => bind ((nm, v) :: env) rest
+                | other => .error other  -- a trap/diverges/unsupported binding value propagates
+              | none => .error (.unsupported "eval: let binding target is not a name")
+            | _, _ => .error (.unsupported "eval: malformed let binding pair")
+          | _ => .error (.unsupported "eval: malformed let binding")
+      match bind env pairs.toList with
+      | .ok env' => evalNode m env' fuel bodyId
+      | .error o => o
+    | _ => .unsupported "eval: let bindings are not a list"
+  | _, _ => .unsupported "eval: malformed let"
+
+/-- `(if cond then else)`: `cond` must evaluate to a boolean value. -/
+partial def evalIf (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  -- children = [ifHead, condId, thenId, elseId]
+  match children[1]?, children[2]?, children[3]? with
+  | some condId, some thenId, some elseId =>
+    match evalNode m env fuel condId with
+    | .value (.bool b) => evalNode m env fuel (if b then thenId else elseId)
+    | .value _ => .unsupported "eval: if condition is not a boolean (typecheck not modeled)"
+    | other => other  -- trap/diverges/unsupported in the condition propagates
+  | _, _, _ => .unsupported "eval: malformed if"
+end
 
 /-- Evaluate the program's `main` body, or `unsupported` if the program shape is not the modeled
 `(do (def (main) BODY) (export main))`. -/
 def evalMain (m : Module) (fuel : Nat) : Outcome :=
   match mainBody? m with
-  | some b => evalNode m fuel b
+  | some b => evalNode m [] fuel b
   | none => .unsupported "eval: program is not a (do (def (main) BODY) (export main)) form"
 
 end Eval
