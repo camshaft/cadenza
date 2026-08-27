@@ -94740,3 +94740,52 @@ fn constant_bytes_value_covers_the_baked_const_bytes_leaf_too() {
         bytes.len()
     );
 }
+
+/// §2d STATIC strings (`DESIGN-static-data.md` increment 5 groundwork). Pins
+/// [`crate::lower::constant_string_value`]: a `Core::ConstStr` yields its exact UTF-8 bytes (the payload
+/// the build-once-global mechanism hoists — a constant String is a flat UTF-8 byte-leaf built by the same
+/// `bytes-alloc`+`bytes-set` as a `Bytes`), and a non-string node yields `None`. A constant String and a
+/// constant `Bytes` with the same bytes extract to EQUAL vectors (they share the same runtime leaf rep),
+/// so they can intern to one global at the string increment.
+#[test]
+fn constant_string_value_extracts_utf8_bytes_of_a_string_literal() {
+    use crate::db::Db;
+    use crate::lower::{constant_bytes_value, constant_string_value};
+    let str_bytes = |src: &str, def: &str| -> Option<Vec<u8>> {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let body = db.defs[d].body.expect("body");
+        constant_string_value(&mut db, body)
+    };
+    // A string literal → its exact UTF-8 bytes (incl. a multibyte char).
+    assert_eq!(
+        str_bytes("(module m (def (main) \"AB\") (export main))", "main"),
+        Some(vec![b'A', b'B']),
+        "a string literal must extract to its UTF-8 bytes"
+    );
+    assert_eq!(
+        str_bytes("(module m (def (main) \"é\") (export main))", "main"),
+        Some("é".as_bytes().to_vec()),
+        "a multibyte string literal must extract to its full UTF-8 encoding"
+    );
+    // A non-string node (a scalar) → None.
+    assert_eq!(
+        str_bytes("(module m (def (main) 42) (export main))", "main"),
+        None,
+        "a scalar is not a Core::ConstStr → no string bytes"
+    );
+    // A constant String and a constant Bytes with the same content extract to EQUAL vectors (same flat
+    // UTF-8 leaf rep → internable to one global).
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (s) \"AB\") (def (b) (Bytes.of (list 65 66))) (def (main) 0) (export main))",
+    ));
+    let sd = db.def_by_name("s").expect("def s");
+    let s_body = db.defs[sd].body.expect("s body");
+    let bd = db.def_by_name("b").expect("def b");
+    let b_body = db.defs[bd].body.expect("b body");
+    assert_eq!(
+        constant_string_value(&mut db, s_body),
+        constant_bytes_value(&mut db, b_body),
+        "a constant String \"AB\" and constant Bytes 65,66 must extract to equal byte vectors"
+    );
+}
