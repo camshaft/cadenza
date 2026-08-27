@@ -17644,6 +17644,19 @@
               (export main)))
   (output (: 3 Int64)))
 
+(case "a record field binder shadowing a param in a called def binds the field"
+  (doc    "The record-pattern face of the variant-payload-binder shadow (the sum cases 'a variant-payload
+           binder shadowing a param in a called def binds the payload'): a record match arm's field binder
+           `a` shadows the enclosing def's param `a`. `(def (f (: a Int64)) (match (record (x 10)) ((record
+           (= x a)) a)))` — the arm binder `a` must bind the FIELD (10), NOT resolve to the shadowed param
+           99 that `main` passes. Pins that a record field binder resolves as a fresh binder scoped to its
+           arm, exactly as a variant-payload binder does — the record face of the shadow-in-a-called-def
+           fix.")
+  (input  (do (def (f (: a Int64)) (match (record (= x 10)) ((record (= x a)) a)))
+              (def (main) (f 99))
+              (export main)))
+  (output (: 10 Int64)))
+
 (case "a record match field may be a LITERAL that probes the field by equality"
   (doc    "A record match field's value may be a LITERAL, which probes that field by equality (like a
            literal tuple element or variant payload): `(record (x 3) (y b))` matches only a record whose `x`
@@ -21214,6 +21227,22 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 104 Int64)))
+
+(case "rcw5 a wide record reads every field and sums them at their sorted indices"
+  (doc    "The read-EVERY-field companion to rcw2 (which projects only the first and last of a hundred
+           fields): a sixteen-field record whose fields are summed field-by-field over a BALANCED `+` tree
+           (balanced, not a deep linear nest, to stay under the expression descent cap). Field `f0` is
+           seeded from the runtime param `n` so the record is materialized rather than const-folded; the
+           rest are `f{i} = i`. Every field must project at its correct SORTED index — a per-field index
+           miscompute that rcw2's first+last read would miss is caught here. n=0 → f0 + (1+2+…+15) = 0 +
+           120.")
+  (input (do
+    (def (main (: n Int64))
+      (let ((r (record (= f0 n) (= f1 1) (= f2 2) (= f3 3) (= f4 4) (= f5 5) (= f6 6) (= f7 7) (= f8 8) (= f9 9) (= f10 10) (= f11 11) (= f12 12) (= f13 13) (= f14 14) (= f15 15))))
+        (+ (+ (+ (+ (. r f0) (. r f1)) (+ (. r f2) (. r f3))) (+ (+ (. r f4) (. r f5)) (+ (. r f6) (. r f7)))) (+ (+ (+ (. r f8) (. r f9)) (+ (. r f10) (. r f11))) (+ (+ (. r f12) (. r f13)) (+ (. r f14) (. r f15)))))))
+    (export main)))
+  (call main (: 0 Int64))
+  (output (: 120 Int64)))
 
 (case "rcw3 a fifty-element tuple projects its first and last positions"
   (input (do

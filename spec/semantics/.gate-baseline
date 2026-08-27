@@ -3435,6 +3435,7 @@ pass	a record carrying a field the annotation does not name is rejected
 pass	a record carrying an Ast-typed field materializes as a WHOLE runtime value and its Ast field is matched
 pass	a record field VALUE referencing the parameter still substitutes
 pass	a record field VALUE still reads the parameter it names after the call
+pass	a record field binder shadowing a param in a called def binds the field
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record field holding a sum is projected then matched
 pass	a record field holding a via-remove map equals the direct-field record
@@ -7530,6 +7531,7 @@ pass	rcw1 a hundred-constructor sum dispatches to the seventy-seventh arm
 pass	rcw2 a hundred-field record projects its first and last fields
 pass	rcw3 a fifty-element tuple projects its first and last positions
 pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
+pass	rcw5 a wide record reads every field and sums them at their sorted indices
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed

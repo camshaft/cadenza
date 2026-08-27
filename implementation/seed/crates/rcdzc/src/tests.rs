@@ -4567,44 +4567,6 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
     }
 }
 
-/// A WIDE record read field-by-field compiles correctly AND cheaply — the correctness guard for
-/// `Core::Record`'s `Rc<BTreeMap>` field map (cloning a `Core::Record` is a refcount bump, not a deep
-/// map copy). `core_of` clones the record's `Core` on every memo read, and the recursive Core-tree walks
-/// (`collect_host_arg_strings`, layout, select) re-read it per node, so an owned map made a record read
-/// field-by-field O(N²) (32 fields here; at 3200 it was ~2.8s, ~50% in `BTreeMap::clone`). The value must
-/// still be exact: build a 32-field record and sum every field — `f_i = i`, so the total is
-/// `0+1+…+31 = 496`. A dropped/misindexed field (or a shared-Rc aliasing bug) would compute a wrong sum.
-#[test]
-fn a_wide_record_read_field_by_field_sums_correctly() {
-    use crate::testkit::parse;
-    let n = 32;
-    let fields: String = (0..n).map(|i| format!(" (f{i} {i})")).collect();
-    // A balanced `+` tree over all field reads (avoids a deep linear nest hitting the descent cap).
-    let mut terms: Vec<String> = (0..n).map(|i| format!("(. r f{i})")).collect();
-    while terms.len() > 1 {
-        let mut next = Vec::new();
-        let mut it = terms.chunks_exact(2);
-        for pair in it.by_ref() {
-            next.push(format!("(+ {} {})", pair[0], pair[1]));
-        }
-        if let [last] = it.remainder() {
-            next.push(last.clone());
-        }
-        terms = next;
-    }
-    let src = format!(
-        "(module m (def (main) (let ((r (record{fields}))) {})) (export main))",
-        terms[0]
-    );
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide record");
-    assert_eq!(
-        run_returns::<i64>(&bytes, "main"),
-        (0..n as i64).sum::<i64>(),
-        "sum of fields f0..f31 = 0+1+…+31 = 496"
-    );
-}
-
 /// A COMPOSED call over a record-transforming function whose field is a CHECKED-ARITH op compiles to a
 /// VALID module and runs to the right value — the regression guard for the record-field slot-collision
 /// miscompile (`adv-nested-call-multifield-record-arith-field-invalid-wasm`). `f` takes a ≥2-field
@@ -5001,69 +4963,6 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
         "nested-field decline should name the feature, got: {}",
         nested.message
     );
-}
-
-/// A RECORD MATCH pattern (the match twin of the record binding pattern) — `(match r ((record (x a) (y b))
-/// …))` destructures a record scrutinee BY FIELD, binding `a`/`b` to the `x`/`y` fields. A record has no
-/// discriminant (like a tuple), so a record arm imposes no probe; each field binder resolves to a
-/// projection of the scrutinee at that field (`a` ≡ `(. r x)` → `Core::Proj` at the sorted slot). Covers
-/// the basic single-arm match, a PARTIAL pattern (naming a subset), OUT-OF-ORDER fields (bound by name,
-/// not position), a RUNTIME record scrutinee (a real heap read), and a WILDCARD field value.
-/// A record match arm composes with a following WILDCARD alternative, and its field binders shadow
-/// correctly. A record arm + a `_` alternative type-checks (the record arm covers the record shape, `_`
-/// the rest). A field binder `a` shadowing an outer param `a` binds the FIELD, not the param. A GUARDED
-/// record arm also LOWERS (the guard-cond field-binder resolution, Case 6recg, was already in place; the
-/// missing piece was a borrow fix so the guard-cond's field Proj borrows the materialized record scrutinee
-/// rather than reclaiming it — the arm body's field reads then see a live handle. Its end-to-end run
-/// values are corpus-pinned in 05-compound-types.sexp, which links the value-heap runtime a record-value
-/// scrutinee imports; run_returns here can't link it, so this only pins it lowers without a decline).
-#[test]
-fn a_record_match_pattern_composes_with_wildcard_and_shadowing() {
-    use crate::testkit::parse;
-    let run_i64 = |src: &str| {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        run_returns::<i64>(&bytes, "main")
-    };
-    // record arm + wildcard alternative
-    assert_eq!(
-        run_i64(
-            "(module m (def (f p) (match p ((record (x a)) a) (_ 99))) \
-               (def (main) (f (record (x 3)))) (export main))"
-        ),
-        3
-    );
-    // a field binder shadows an outer param — binds the field (10), not the param (99)
-    assert_eq!(
-        run_i64(
-            "(module m (def (f a) (match (record (x 10)) ((record (x a)) a))) \
-               (def (main) (f 99)) (export main))"
-        ),
-        10
-    );
-    // a GUARDED record arm LOWERS cleanly (no decline) — the borrow fix (a Proj over the materialized
-    // record scrutinee borrows, not reclaims) removed the guard-cond→body use-after-free. Its runtime
-    // values (guard-holds → sum, guard-fails → fall-through) are corpus-pinned; here we pin only that it
-    // compiles rather than declining.
-    let guarded = "(module m (def (f (: r (Record (x Int64) (y Int64)))) \
-               (match r ((guard (record (x a) (y b)) (> a 0)) (+ a b)) (_ 0))) \
-               (def (main (: k Int64)) (f (record (x k) (y (+ k 1))))) (export main))";
-    compile_component(&crate::codec::encode(&parse(guarded)))
-        .expect("a guarded record match arm lowers cleanly (borrow fix landed)");
-
-    // A LITERAL field value probes that field by equality, and the EMPTY record pattern always fires.
-    // Both COMPILE cleanly (their end-to-end run values — the literal-field probe hit/miss and the empty
-    // pattern always-match — are corpus-pinned in 05-compound-types.sexp, which links the value-heap
-    // runtime a record-value scrutinee imports; run_returns here would need that link). Pin that they
-    // lower without a decline.
-    for src in [
-        "(module m (def (main) \
-           (match (record (x 3) (y 4)) ((record (x 3) (y b)) b) (_ -1))) (export main))",
-        "(module m (def (main) \
-           (match (record (x 5)) ((record) 0) (_ 1))) (export main))",
-    ] {
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a literal-field / empty record match pattern lowers cleanly");
-    }
 }
 
 /// A record match pattern's faults are actionable and LOCKSTEP with resolve: a field the scrutinee's
