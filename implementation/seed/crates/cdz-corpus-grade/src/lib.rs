@@ -514,6 +514,11 @@ pub fn is_ice_signature(message: &str) -> bool {
         || m.contains("is a compiler bug")
         || m.contains("no bound rust identifier")
         || m.contains("sum match sub-value has no declaration")
+        // An UNREACHABLE-by-construction defensive fallthrough: `lower_quantity_combine`'s caller filters `op`
+        // to exactly {Add,Sub,Lt,Gt,Le,Ge,Eq} (all handled by the combine fold), so this `_ =>` arm is a
+        // "can't happen" guard — if it ever fires, the caller-filter and the fold-match diverged (a bug), not
+        // a capability gap (breaker-flagged, adjudicated internal-invariant). Zero current-corpus reach.
+        || m.contains("unexpected op in mixed-unit")
         || m.contains("panicked")
         || m.contains("internal error")
 }
@@ -1097,6 +1102,17 @@ mod tests {
         ));
         assert!(is_artifact_ice("failed to instantiate component"));
         assert!(!is_artifact_ice("integer divide by zero"));
+        // is_ice_signature covers the compile-decline ICE shapes, incl. the unreachable-by-construction
+        // "unexpected op in mixed-unit …" defensive fallthrough (breaker-adjudicated internal-invariant);
+        // an honest capability decline ("has no machine representation") is NOT an ICE.
+        assert!(is_ice_signature("parameter reference has no local slot"));
+        assert!(is_ice_signature("unexpected op in mixed-unit int combine"));
+        assert!(is_ice_signature(
+            "unexpected op in mixed-unit float combine"
+        ));
+        assert!(!is_ice_signature(
+            "a function parameter's type has no machine representation"
+        ));
         // A VALUE expectation already FAILs any trap actual (regression guard, unchanged).
         assert!(matches!(
             grade_trial(&GExpect::Output("(: 60 Int64)".into()), &ice),
