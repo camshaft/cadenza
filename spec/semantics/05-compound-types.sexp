@@ -20919,3 +20919,46 @@
   (call main (: 5 Int64))
   (output (: 99005 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 501 (2026-08-27): the ruf1 two-sided fence GENERALIZED to the other sum kinds
+; (same contract: today 99005/known-leak-3 → correct 2c.1 flips the clause to 0 with the value
+; unchanged; an over-release reads 99099 via FBIP in-place reuse). Every MatchSum kind the
+; repeat-unwrap fix must balance now carries its own answer-discriminating fence: Option (ruf1),
+; Result (ruf2), user generic (ruf3).
+
+(case "ruf2 the two-sided balance fence over a twice-unwrapped Result Ok payload"
+  (input (do
+    (def (main (: n Int64))
+      (let ((o (: (if (> n 0) (Ok (list n (+ n 1))) (Err "no")) (Result (List Int64) String))))
+        (match o
+          ((Ok in1)
+            (match o
+              ((Ok in2)
+                (let ((upd (List.update in1 0 99)))
+                  (+ (* 1000 (match (List.at upd 0) ((Option.Some v) v) ((Option.None) -1)))
+                     (match (List.at in2 0) ((Option.Some w) w) ((Option.None) -1)))))
+              ((Err _) -2)))
+          ((Err _) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 99005 Int64))
+  (live-objects known-leak 3))
+
+(case "ruf3 the two-sided balance fence over a twice-unwrapped user-generic payload"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (let ((o (: (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
+        (match o
+          ((GBox.GFull in1)
+            (match o
+              ((GBox.GFull in2)
+                (let ((upd (List.update in1 0 99)))
+                  (+ (* 1000 (match (List.at upd 0) ((Option.Some v) v) ((Option.None) -1)))
+                     (match (List.at in2 0) ((Option.Some w) w) ((Option.None) -1)))))
+              (_ -2)))
+          (_ -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 99005 Int64))
+  (live-objects known-leak 3))
