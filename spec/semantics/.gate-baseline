@@ -277,6 +277,7 @@ pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the minimum first)
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
+pass	Map.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF
 pass	Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	Map.to-list over an owned-temporary runtime map reclaims the source, leaving no live heap objects
@@ -387,6 +388,7 @@ pass	Set.to-list over Option elements enumerates Some-first per the declared ord
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over STRING elements orders by content with a rope participating
 pass	Set.to-list over a 100-element trie enumerates strictly increasing end to end
+pass	Set.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
@@ -803,6 +805,7 @@ pass	a LIST of strategies is walked recursively, each applied to a fresh perform
 pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
 pass	a LIST-literal scrutinee with performing elements — draws fire once, bind by position
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
+pass	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a List.concat of a checked-arith list with a recursive-call list is disjoint-slotted
@@ -5200,12 +5203,6 @@ pass	ce02 checked addition over a RUNTIME operand yields None on overflow
 pass	ce03 Record.merge of two RUNTIME-built records projects the merged field
 pass	ce04 Tuple.concat of RUNTIME tuples destructures to the joined fields
 pass	ce06 Bytes.of of a NON-literal (branch-selected) list lowers
-pass	sbd1 two occurrences of one constant Bytes literal — branch-selected use, length reads, and runtime equality across the pair
-pass	sbd2 a fifty-frame recursion re-evaluating a constant Bytes literal each frame reclaims to zero
-pass	mrd1 a byte-string literal and a const-folded Bytes.of with identical content compare equal at runtime
-pass	mrd2 a Blake3-baked constant Bytes used twice with drops between — equal hashes, thirty-two bytes each, no live objects
-pass	ssd1 two occurrences of one constant String literal — branch-selected use, byte-length reads, and runtime equality across the pair
-pass	ssd2 a fifty-frame recursion re-evaluating a constant String literal each frame reclaims to zero
 pass	ce07 literal-tuple pattern matches a RUNTIME tuple
 pass	ce08 equality of two RUNTIME-built Maps
 pass	ce09 equality of two RUNTIME-built Sets
@@ -5676,6 +5673,17 @@ pass	ed3 a RECURSIVE def that handles per frame, called from a handled main — 
 pass	ed4 one shared performing helper called under TWO different live handlers — each call homes to its caller's region
 pass	effect state threads across a successful `?`
 pass	egy1 EGYPTIAN multiplication — each step tests the multiplier's low bit (accumulating the doubled multiplicand when odd) answering odd*100 plus the running product's low digits, acc reads the exact product, and the seeds' bit patterns (all-ones versus alternating) fire the accumulation on different steps
+pass	el2 TWO List entry params measure independently
+pass	el3 an EMPTY List entry param has length zero
+pass	el4 a List entry param's element read by a non-recursive List.at
+pass	el5 a List-of-UInt8 entry param measures and reads an element
+pass	el6 a List-of-Int32 entry param measures and reads an element
+pass	el7 a List-of-Float64 entry param measures and compares an element
+pass	elc1 a local closure captures the lifted List entry param and is invoked twice
+pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
+pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
+pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
+pass	ele3 the lifted List entry param SEEDS the handler state
 pass	ema1 an INTEGER EMA state — each dispatch blends (3*ema + 100*v)/4 at 100x scale, convergence toward the fed value from both sides
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -6229,6 +6237,8 @@ pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od adva
 pass	mr3 the NEXT callee in the mutual group is picked by draw parity — the descent path itself follows the thread
 pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, od triples it plus a draw, alternating scales
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
+pass	mrd1 a byte-string literal and a const-folded Bytes.of with identical content compare equal at runtime
+pass	mrd2 a Blake3-baked constant Bytes used twice with drops between — equal hashes, thirty-two bytes each, no live objects
 pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
 pass	mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
@@ -6960,6 +6970,8 @@ pass	sb1 String.to-bytes of a draw-picked string read at a draw index — the te
 pass	sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler
 pass	sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance
 pass	sb4 the innermost seed is a COMPOSITE of two effects' dispatches — B's draw feeds A's add, the result seeds a fresh B shadow
+pass	sbd1 two occurrences of one constant Bytes literal — branch-selected use, length reads, and runtime equality across the pair
+pass	sbd2 a fifty-frame recursion re-evaluating a constant Bytes literal each frame reclaims to zero
 pass	sc1 STRING literal-arm dispatch on a draw — the hi arm re-performs and measures, the lo arm is constant
 pass	sc1 a THREE-link seed CHAIN of DISTINCT effects — each handle's whole region value seeds the next
 pass	sc2 EQUALITY of two string draws routes the branch — the n=3 row crosses the threshold between draws
@@ -7085,6 +7097,8 @@ pass	ss3 nested SAME-effect handlers with independent STRING states — inner se
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	ssd1 two occurrences of one constant String literal — branch-selected use, byte-length reads, and runtime equality across the pair
+pass	ssd2 a fifty-frame recursion re-evaluating a constant String literal each frame reclaims to zero
 pass	ssm2 the SEISMOGRAPH at three readings — deviation over four logs an event (peak by inline max, baseline nudged up), quiet drifts one signed step, and the seeds disagree on whether the THIRD reading is an aftershock event or a quiet drift so even the event counts split
 pass	st1 a handle expression as ONE operand of an enclosing pure sum — the pure operand and the handled region compose
 pass	st1 the SAME effect handled at THREE depths — each draw resolves to the innermost open frame, outer frames resume as inner ones close
@@ -7810,6 +7824,10 @@ pass	widening a runtime UNSIGNED narrow integer to Int64 zero-extends (total, em
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
+pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
+pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
+pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
+pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
 pass	wlkC single-wall control — reflect only at the floor, ceiling unguarded
 pass	wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps
 pass	wnw1 a BISECTION searcher whose starting window is picked by a MATCH IN THE HANDLE'S INIT POSITION — the init destructures a seed tuple and an if ladder inside the match arm chooses among three windows, narrow halves the window toward the guess counting probes and answering side midpoint and count, a CLOSED window answers a frozen readout without probing, span reads the gap, and the tight seed window closes two probes early so its last narrows freeze while the wide window is still hunting
@@ -7888,7 +7906,6 @@ todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
-pass	a List entry argument is marshalled as a vec!
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
@@ -7916,28 +7933,9 @@ todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — th
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
-pass	el2 TWO List entry params measure independently
-pass	el3 an EMPTY List entry param has length zero
-pass	el4 a List entry param's element read by a non-recursive List.at
-pass	el5 a List-of-UInt8 entry param measures and reads an element
-pass	el6 a List-of-Int32 entry param measures and reads an element
-pass	el7 a List-of-Float64 entry param measures and compares an element
 todo	el8 a nested List-of-List entry param measures both levels
-pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
-pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
-pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
-pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
-todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
-todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
-todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
-todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
-pass	elc1 a local closure captures the lifted List entry param and is invoked twice
-pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	elc4 List.concat consumes two lifted List entry params into one measured list
-pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
-pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
-pass	ele3 the lifted List entry param SEEDS the handler state
 todo	eo1 an Option entry param delivers its Some payload
 todo	eo2 an Option entry param takes the None arm
 todo	eo3 an Option param BETWEEN scalars keeps positions
@@ -7946,4 +7944,8 @@ todo	er1 a Rational entry param in exact arithmetic
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
+todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
+todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
+todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
+todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
