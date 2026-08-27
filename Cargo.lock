@@ -1913,6 +1913,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rcdzc-wasmtime-tests"
+version = "0.0.0"
+dependencies = [
+ "cadenza-syntax",
+ "cdz-num",
+ "cdz-rt",
+ "cdz-run",
+ "rcdzc",
+ "wasm-encoder 0.239.0",
+ "wasmparser 0.239.0",
+ "wasmtime",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
