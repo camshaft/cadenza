@@ -8963,7 +8963,17 @@ fn expr_rematches_scrutinee(
     if !seen.insert(id) {
         return false;
     }
-    if let Core::MatchSum { scrutinee: s2, .. } = core_of(db, id) {
+    // A nested match — Sum, List, OR scalar — RE-MATCHING the same scrutinee (by node id, or by binder when
+    // the scrutinee is a `Param`/`LocalRef`). Covers Class-B for both `MatchSum` (cb3-5) and `MatchList`
+    // (breaker's runtime-list re-match UAF): the inner match reclaims/re-reads the shared owned scrutinee, so
+    // the enclosing reclaim must be suppressed.
+    let nested_scrut = match core_of(db, id) {
+        Core::MatchSum { scrutinee: s2, .. }
+        | Core::MatchList { scrutinee: s2, .. }
+        | Core::Match { scrutinee: s2, .. } => Some(s2),
+        _ => None,
+    };
+    if let Some(s2) = nested_scrut {
         if s2 == scrutinee {
             return true;
         }
@@ -8976,6 +8986,27 @@ fn expr_rematches_scrutinee(
     core_child_ids(db, id)
         .into_iter()
         .any(|c| expr_rematches_scrutinee(db, scrutinee, tgt_binder, c, seen))
+}
+
+/// Whether the outer `MatchList`'s `scrutinee` is RE-MATCHED (appears as the scrutinee of a NESTED match)
+/// within any arm body/guard — the list analogue of [`cont_rematches_scrutinee`]. Used by
+/// [`list_shell_reclaim_slot`] to SUPPRESS the enclosing list shell-reclaim so the shared owned list is not
+/// deep-dropped while a nested `match xs` still reads it (breaker's Class-B runtime-list re-match UAF).
+fn list_arms_rematch_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[crate::core::ListArm],
+) -> bool {
+    let tgt_binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    let mut seen = HashSet::new();
+    arms.iter().any(|a| {
+        expr_rematches_scrutinee(db, scrutinee, tgt_binder, a.body, &mut seen)
+            || a.guard
+                .is_some_and(|g| expr_rematches_scrutinee(db, scrutinee, tgt_binder, g, &mut seen))
+    })
 }
 
 /// Whether EVERY variant of the sum type `sum` carries either NO payload (nullary) or a SCALAR payload
@@ -16888,6 +16919,13 @@ fn list_shell_reclaim_slot(
         arm_borrows_heap_subvalue(db, a.body)
             || a.guard.is_some_and(|g| arm_borrows_heap_subvalue(db, g))
     }) {
+        return None;
+    }
+    // Class-B UAF (breaker's nested runtime-list re-match): a scrutinee RE-MATCHED by a nested `match xs`
+    // in an arm is read by that inner match, so deep-dropping the shell here (the enclosing reclaim) frees a
+    // handle the inner match still needs → double-free. Suppress — the innermost match's reclaim is the sole
+    // drop. Mirrors `sum_shell_reclaim_ok`'s `cont_rematches_scrutinee` guard for the MatchSum case (cb3-5).
+    if list_arms_rematch_scrutinee(db, scrutinee, arms) {
         return None;
     }
     matches!(

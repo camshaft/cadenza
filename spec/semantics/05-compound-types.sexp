@@ -23307,3 +23307,24 @@
   (call main (: 1 Int64))
   (output (: 139 Int64))
   (live-objects 0))
+
+(case "clb1 a nested match RE-MATCHES the same owned runtime list scrutinee — Class-B LIST re-match reclaim (no double-free, no leak)"
+  (doc "The list analog of the MatchSum Class-B UAF (#4459): an OWNED runtime list `xs` matched by an outer
+        `(match xs …)` whose `(list a .. rest)` arm body RE-MATCHES the SAME `xs` with a nested `(match xs …)`.
+        The inner match reads `xs` again, so the enclosing list shell-reclaim must be SUPPRESSED (the inner
+        match's reclaim is the sole drop) — else the outer reclaim deep-drops `xs` while the inner match still
+        reads it = double-free/UAF. Value witnesses no-UAF (a freed read corrupts it); heap-balance witnesses
+        no leak (reclaims to 0). n=3 → xs=[0,1,2]: outer a=0, inner b=0, rest2=[1,2] len 2 → 0+(0+10*2)=20.")
+  (input (do
+    (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+      (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+    (def (f (: xs (List Int64)))
+      (match xs
+        ((list) 0)
+        ((list a .. rest)
+          (match xs
+            ((list) 0)
+            ((list b .. rest2) (+ a (+ b (* 10 ((. List len) rest2)))))))))
+    (def (main (: n Int64)) (f (build 0 n (list))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 20 Int64)))
