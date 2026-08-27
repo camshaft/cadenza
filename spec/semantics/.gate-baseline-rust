@@ -2118,6 +2118,9 @@ pass	a generic sum with a type parameter inside a record payload constructs and 
 pass	a generic sum with a type parameter inside a tuple payload constructs and destructures
 pass	a generic sum with a type parameter nested inside another sum payload matches through both
 pass	a generic tuple-wrapper referenced mid-solve in a recursive group then at a second type
+pass	a generic type parameter inside a List payload resolves and the value computes
+pass	a generic type parameter inside a Tuple payload threads and the value computes
+pass	a generic type parameter used twice in one variant unifies both fields
 pass	a generic unwrap helper consumes a fallible Bytes.at result
 pass	a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another
 pass	a genuinely-escaping continuation (deferred resume-thunk) resumes cross-activation at the advanced clock

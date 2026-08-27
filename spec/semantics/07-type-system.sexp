@@ -357,6 +357,37 @@
   (call   main)
   (output (: 9 Int64)))
 
+; A generic type parameter that appears inside a NESTED payload shape (not just a bare `(Mk a)`) must
+; thread through the inner container and let the value compute: a param inside a built-in List payload, a
+; param used TWICE in one variant (both positions unify at one type), and a param inside a Tuple payload.
+
+(case "a generic type parameter inside a List payload resolves and the value computes"
+  (doc    "`(type (Box a) (Mk (List a)))` puts the parameter `a` inside a built-in List; `(Mk (list 1 2))`
+           instantiates `a = Int64` and `(match … ((Mk xs) (List.len xs)))` reads the list back = 2.")
+  (input  (do
+            (type (Box a) (Mk (List a)))
+            (def (main) (match (Mk (list 1 2)) ((Mk xs) (List.len xs))))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "a generic type parameter used twice in one variant unifies both fields"
+  (doc    "`(type (Pair a) (P a a))` uses the parameter `a` in BOTH payload positions; `(P 1 2)` unifies
+           both at Int64 and `(match … ((P x y) (+ x y)))` reads them back = 3.")
+  (input  (do
+            (type (Pair a) (P a a))
+            (def (main) (match (P 1 2) ((P x y) (+ x y))))
+            (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a generic type parameter inside a Tuple payload threads and the value computes"
+  (doc    "`(type (T a) (W (Tuple a a)))` threads the parameter `a` into a Tuple payload; `(W (tuple 1 2))`
+           instantiates `a = Int64` and `(match … ((W t) (+ (. t 0) (. t 1))))` projects both = 3.")
+  (input  (do
+            (type (T a) (W (Tuple a a)))
+            (def (main) (match (W (tuple 1 2)) ((W t) (+ (. t 0) (. t 1)))))
+            (export main)))
+  (call   main) (output (: 3 Int64)))
+
 ; The arity rejects above (a non-generic type over-applied, and a generic type over-/under-supplied) are
 ; about the NUMBER of type arguments. The dual slip is a legitimately GENERIC type constructor — one that
 ; DOES take a type parameter — applied to a VALUE where a type belongs: `(Option 5)`, `(List 5)`. Here the

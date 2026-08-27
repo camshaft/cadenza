@@ -9017,49 +9017,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_generic_type_param_resolves_through_nested_payload_shapes_and_computes() {
-        // Coverage-hardening for generic type-parameter resolution when the param appears in a NESTED
-        // payload shape (not just a bare `(Mk a)`): the param must thread through the inner container and
-        // the value must compute. Three untested faces, each construct + match + run:
-        //   (1) param inside a built-in LIST payload — `(type (Box a) (Mk (List a)))`;
-        //   (2) the SAME param used TWICE in one variant — `(type (Pair a) (P a a))` (both positions unify);
-        //   (3) param inside a TUPLE payload — `(type (T a) (W (Tuple a a)))`.
-        // (1) (Mk (list 1 2)) → List.len = 2.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Box a) (Mk (List a))) \
-                       (def (main) (match (Mk (list 1 2)) ((Mk xs) (List.len xs)))) (export main))"
-                ),
-                "main"
-            ),
-            2
-        );
-        // (2) (P 1 2) → 1 + 2 = 3 (the repeated param `a` unifies both fields at Int64).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Pair a) (P a a)) \
-                       (def (main) (match (P 1 2) ((P x y) (+ x y)))) (export main))"
-                ),
-                "main"
-            ),
-            3
-        );
-        // (3) (W (tuple 1 2)) → (. t 0) + (. t 1) = 3 (param threads into the Tuple payload).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (T a) (W (Tuple a a))) \
-                       (def (main) (match (W (tuple 1 2)) ((W t) (+ (. t 0) (. t 1))))) (export main))"
-                ),
-                "main"
-            ),
-            3
-        );
-    }
-
-    #[test]
     fn a_wrong_arity_generic_in_a_variant_payload_is_cdz0203_at_the_declaration() {
         // FIX: a type constructor applied at the WRONG ARITY in a VARIANT PAYLOAD position — `(type W (Wrap
         // (Box Int64 Bool)))` where `(Box a)` takes 1, or a built-in `(Option Int64 Bool)` — was SILENTLY
