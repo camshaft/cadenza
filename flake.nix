@@ -1809,6 +1809,20 @@
             else
               printf '%s' "$?" > "$out/compile.status"
             fi
+            # (peer) CROSS-COMPONENT cases (L3): a case may ship provider PEERS the consumer imports via
+            # `(extern …)`. Each `peer-N.ast` is a STANDALONE provider program compiled EXACTLY like
+            # `program.ast` but with `--component-name <iface>` (from the `peer-N.iface` sidecar) — that is
+            # how a world-less provider exports its interface. Compile each into this (content-addressed)
+            # build output so the exec composes them via `cdz-run --peer`; a peer compile failure appends to
+            # `compile.err` (the exec grades the consumer's outcome). The iface has `:`/`/` (not
+            # filename-safe) so it rides the `.iface` sidecar, not the stem.
+            for p in "$case"/peer-*.ast; do
+              [ -e "$p" ] || continue
+              pn=$(basename "$p" .ast)                 # peer-N
+              cdz-compile "ast:main=$p" --component-name "$(cat "$case/$pn.iface")" -t wasm \
+                -o "$out/$pn.wasm" 2>>"$out/compile.err" || true
+              cp "$case/$pn.iface" "$out/$pn.iface"
+            done
             # Forward the run metadata so exec depends ONLY on this build output (+ cdzRun) — compiler-free.
             cp "$case/test-run.ast" "$out/test-run.ast"
             cp "$case/expect-kind" "$out/expect-kind"
@@ -1834,6 +1848,13 @@
                   --baseline ${./spec/semantics/.gate-baseline})
             if [ -e ${build}/emit.wasm ]; then args=(${build}/emit.wasm "''${args[@]}"); fi
             if [ -e ${build}/component-name ]; then args+=(--component-name "$(cat ${build}/component-name)"); fi
+            # (peer) L3: compose each provider peer the build compiled — `--peer <iface>=<peer-wasm>` binds
+            # the peer's exported interface into the consumer's like-named `(extern …)` (run_with_peers).
+            for pw in ${build}/peer-*.wasm; do
+              [ -e "$pw" ] || continue
+              pn=$(basename "$pw" .wasm)               # peer-N
+              args+=(--peer "$(cat ${build}/$pn.iface)=$pw")
+            done
             # HEAP-BALANCE (opt-out heap-liveness): under the opt-out default EVERY heap-importing case must
             # end at its expected live-cell count (0 by default, or the case's explicit / known-leak N), so
             # every wasm exec runs on the DEBUG-COUNTERS runtime — the shipped one reports 0 vacuously, only
