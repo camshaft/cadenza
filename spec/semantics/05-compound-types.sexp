@@ -21343,3 +21343,36 @@
                ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0)))))
            (export main)))
   (call main) (output (: 7 Int64)))
+; -- a list annotation checks the element type (migrated from rcdzc a_list_annotation_checks_the_element_type):
+; `(List T)` in type position checks the element type — a value/annotation element clash is CDZ0203, a
+; matching annotation is transparent.
+(case "lae1 a list annotation with a conflicting element type is rejected (CDZ0203)"
+  (doc    "`(: (list 1 2) (List Bool))` — the value is List Int64 but the annotation says List Bool; the
+           element types conflict → CDZ0203.")
+  (input (do (def (main) (: (list 1 2) (List Bool))) (export main)))
+  (error CDZ0203))
+
+(case "lae2 a matching list annotation is transparent"
+  (doc    "`(List.len (: (list 1 2) (List Int64)))` = 2 — a matching `(List Int64)` annotation folds away.")
+  (input  (List.len (: (list 1 2) (List Int64))))
+  (output (: 2 Int64)))
+
+; -- a list-element literal pattern of the wrong type is a type error (migrated from rcdzc
+; a_list_element_literal_pattern_of_the_wrong_type_is_a_type_error): a refutable LITERAL leading element
+; whose type clashes with the list's element type is CDZ0201 (naming both types), not a silently-never-
+; matching guard; a well-typed literal element dispatches by value.
+(case "lep1 a String literal list-element pattern on an Int64 list is a type error (CDZ0201)"
+  (doc    "`(match (list 1 2 3) ((list \"x\" .. r) 1) (_ 0))` writes a String where the list's Int64
+           elements are required → CDZ0201 naming both element types.")
+  (input (do (def (main) (match (list 1 2 3) ((list "x" .. r) 1) (_ 0))) (export main)))
+  (error CDZ0201 (message "list-element pattern is String")))
+
+(case "lep2 an Int literal list-element pattern on a String list is a type error (CDZ0201)"
+  (input (do (def (main) (match (list "a" "b") ((list 5 .. r) 1) (_ 0))) (export main)))
+  (error CDZ0201))
+
+(case "lep3 a well-typed list-element literal pattern dispatches by value"
+  (doc    "`(match (list 1 2 3) ((list 1 .. _r) 10) (_ 0))` = 10 — an Int literal element on an Int list
+           matches and dispatches.")
+  (input  (match (list 1 2 3) ((list 1 .. _r) 10) (_ 0)))
+  (output (: 10 Int64)))
