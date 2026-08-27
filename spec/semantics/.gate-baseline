@@ -8737,3 +8737,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	ope1 an Option.expect payload consumed per-iteration is retained (no drift)
+pass	ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained
+pass	ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)
+pass	ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)

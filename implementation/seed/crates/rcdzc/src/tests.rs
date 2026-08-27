@@ -19976,26 +19976,14 @@ mod match_engine {
     }
 
     #[test]
-    fn an_option_expect_payload_consumed_while_the_option_is_live_is_retained() {
-        // The `SumExpect` (`Option.expect`) twin of the sum-payload retain — the shape the compiler-in-ML
-        // port hits threading an env Option through its walkers (breaker finding, wasm-only miscompile).
-        // `Option.expect s` reads `sum-payload` (a BORROW); consuming it with `List.push` while `s` is
-        // threaded UNCHANGED to the self-call FBIP-mutated the shared payload at rc==1 → drift (per-iter len
-        // 3,4,5,6 → 18 not 12; Rust backend was correct). Fix: the `SumExpect` arm of `mark_binder_dups`
-        // marks a child-dup + the `SumExpect` emit dups the extracted compound payload.
-        // `main` is nullary (bakes d=7) so `run_on_heap` drives it directly.
-        let looped = "(module m \
-               (def (go (: s (Option (List Int64))) (: n Int64) (: acc Int64)) \
-                 (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) s \"v\") 9)))))) \
-               (def (main) (go (Option.Some ((. List push) ((. List push) (list) 7) 8)) 4 0)) \
-               (export main))";
-        if let Some(out) = run_on_heap(looped) {
-            assert_eq!(
-                out, "12",
-                "an Option.expect payload consumed per iteration must not drift (4 × 3)"
-            );
-        }
-        // FBIP fast path: a single-consume expect with a dead scrutinee must NOT import `dup`.
+    fn a_single_consume_option_expect_with_a_dead_scrutinee_stays_dup_free() {
+        // FBIP fast-path bench guard (backend-shape witness, NOT corpus-expressible): `Option.expect s`
+        // reads `sum-payload` (a BORROW). When that payload is consumed EXACTLY ONCE and the Option is NOT
+        // otherwise live, the retain must NOT fire — the module must stay `dup`-free (a `dup` import here is
+        // a perf regression, invisible to a value or live-objects check). The drift-CORRECTNESS run cases
+        // (Option.expect payload consumed while `s` is threaded live → 12, single + chained) and the
+        // Unit-payload sentinel-drop validity cases (→ 4) live in corpus 05 as `ope1`..`ope4`; this keeps
+        // only the dup-absence guard the corpus cannot express.
         let linear = "(module m \
                (def (f (: s (Option (List Int64)))) ((. List len) ((. List push) ((. Option expect) s \"v\") 9))) \
                (def (main (: d Int64)) (f (Some ((. List push) (list) d)))) (export main))";
@@ -20003,41 +19991,6 @@ mod match_engine {
             !component_imports_op(&component(linear), "dup"),
             "a single-consume Option.expect with a dead scrutinee must not import `dup` (FBIP fast path)"
         );
-        // CHAINED extraction: `(Option.expect (Option.expect s))` over a threaded `(Option (Option (List)))`.
-        // The outer expect's scrutinee is the INNER expect — `payload_or_proj_chain_roots_at_binder` must
-        // follow `SumExpect` links too (not just Proj/SumPayload) to reach the root `s`, else the consuming
-        // push gets no retain and the shared inner list drifts (per-iter 3,4,5,6 → 18 not 12 before the fix).
-        let chained = "(module m \
-               (def (go (: s (Option (Option (List Int64)))) (: n Int64) (: acc Int64)) \
-                 (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) ((. Option expect) s \"v\") \"w\") 9)))))) \
-               (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) (list) 7) 8))) 4 0)) \
-               (export main))";
-        if let Some(out) = run_on_heap(chained) {
-            assert_eq!(
-                out, "12",
-                "a chained Option.expect(Option.expect s) consumed per iteration must not drift"
-            );
-        }
-        // UNIT-PAYLOAD guard (Copilot PR#441): `get_op` returns `None` for BOTH a compound handle AND a
-        // `Unit` payload. The SumExpect/SumPayload child-dup fast path keys on `unboxed.is_none()`, so a
-        // Unit-typed extraction that got marked a dup-site would SKIP `emit_heap_read_tail` — leaving the
-        // `IMM_UNIT` sentinel un-dropped on the stack → INVALID WASM. The `!unit_leaf` guard routes a Unit
-        // payload through `emit_heap_read_tail` (which drops the sentinel). These Unit-payload SumExpect /
-        // sum-match shapes must COMPILE to valid wasm (a Unit has no heap cell to alias, so no dup is ever
-        // needed for it).
-        let unit_expect = "(module m \
-               (def (u2 (: x Unit) (: y Int64)) y) \
-               (def (go (: s (Option Unit)) (: n Int64) (: acc Int64)) \
-                 (if (= n 0) acc (go s (- n 1) (+ acc (u2 ((. Option expect) s \"v\") (match s ((Some _) 1) ((None) 0))))))) \
-               (def (main) (go (Option.Some unit) 4 0)) (export main))";
-        // `component` asserts a valid, linkable module (it `.expect("compile")`s + the harness validates).
-        let _ = component(unit_expect);
-        let unit_chained = "(module m \
-               (def (u (: x Unit)) 1) \
-               (def (go (: s (Option (Option Unit))) (: n Int64) (: acc Int64)) \
-                 (if (= n 0) acc (go s (- n 1) (+ acc (u ((. Option expect) ((. Option expect) s \"v\") \"w\")))))) \
-               (def (main) (go (Option.Some (Option.Some unit)) 4 0)) (export main))";
-        let _ = component(unit_chained);
     }
 
     #[test]
