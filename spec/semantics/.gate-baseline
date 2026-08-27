@@ -1842,6 +1842,7 @@ pass	a default-integer pragma makes a bare literal take the declared integer typ
 pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds
+pass	a deferred resume-thunk filed by a non-recursive helper then popped folds
 pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
 pass	a definition named like a variant shadows the bare-variant constructor
 pass	a delegated capability is not itself an export field
@@ -2650,6 +2651,7 @@ pass	a module-exported recursive performer called from a HANDLER ARM homes under
 pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
+pass	a multi-arg non-recursive helper filing a resume-thunk folds, substituting all its args
 pass	a multi-argument call node is evaluated by iterating its payload arg list
 pass	a multi-argument closure among distinct-signature exports
 pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
