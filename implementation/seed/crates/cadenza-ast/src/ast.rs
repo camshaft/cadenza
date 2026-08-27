@@ -1311,6 +1311,36 @@ impl Builder {
         self.atom(id)
     }
 
+    /// Build a native-compound-data literal `(<ctor-leaf> child…)` — a `List` whose HEAD is an `Atom` of
+    /// the reserved [`Leaf::Ctor`] leaf kind for `ctor`, followed by `children` in order. This is the
+    /// M2 EMIT primitive: a compound literal's head is the ctor LEAF KIND (recognized by kind identity,
+    /// [`Arenas::compound_ctor`]), NOT a `Name`/`Str` head text. `children` are the collection elements
+    /// (positional for list/tuple/set; `field_pair`s for a record; entry pairs for a map). The dual of
+    /// [`Arenas::compound_ctor`] + the child-tail readers.
+    pub fn compound(&mut self, ctor: CompoundCtor, children: &[StructId]) -> StructId {
+        let mut nodes = Vec::with_capacity(1 + children.len());
+        nodes.push(self.atom_leaf(Leaf::Ctor(ctor)));
+        nodes.extend_from_slice(children);
+        self.list(nodes)
+    }
+
+    /// Build a record/map ENTRY `(= key value)` — a `List` whose HEAD is an `Atom` of the payloadless
+    /// [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind, distinct from the equality
+    /// operator `Name("=")`), then the key and value nodes. The M2 EMIT primitive for a record field or a
+    /// map entry.
+    pub fn field_pair(&mut self, key: StructId, value: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::FieldPair);
+        self.list(vec![head, key, value])
+    }
+
+    /// Build a member-access `(. obj key)` — a `List` whose HEAD is an `Atom` of the payloadless
+    /// [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind, distinct from any `Name(".")`),
+    /// then the object and key nodes. The M2 EMIT primitive for a member-access projection.
+    pub fn member(&mut self, obj: StructId, key: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Member);
+        self.list(vec![head, obj, key])
+    }
+
     fn push(&mut self, s: Struct) -> StructId {
         let id = StructId(self.structure.len() as u32);
         self.structure.push(s);
@@ -1729,6 +1759,61 @@ impl Arenas {
         CompoundCtor::from_spelling(self.head_ctor(id)?)
     }
 
+    /// The [`CompoundCtor`] this `List` node denotes via its native ctor-LEAF-KIND head — the M2 read
+    /// primitive, recognized by leaf-kind IDENTITY ([`Leaf::Ctor`]) rather than by head text. `None` if
+    /// the head is not a ctor-leaf atom. The dual of the emit primitive [`Builder::compound`]; coexists
+    /// with the transitional string-head recognizer [`compound_ctor`] during the migration (M3 removes the
+    /// latter). See `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor_leaf(&self, id: StructId) -> Option<CompoundCtor> {
+        match self.get(id) {
+            Struct::List(items) => match self.leaf(self.atom_leaf_id(*items.first()?)?) {
+                Leaf::Ctor(c) => Some(*c),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `(key, value)` of a native `(= key value)` record/map ENTRY — a `List` of exactly three whose
+    /// head is the [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind). `None` otherwise.
+    /// The dual of [`Builder::field_pair`].
+    pub fn field_pair_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(items) if items.len() == 3 => {
+                match self.leaf(self.atom_leaf_id(items[0])?) {
+                    Leaf::FieldPair => Some((items[1], items[2])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The `(obj, key)` of a native `(. obj key)` MEMBER-ACCESS projection — a `List` of exactly three
+    /// whose head is the [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind). `None`
+    /// otherwise. The dual of [`Builder::member`].
+    pub fn member_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(items) if items.len() == 3 => {
+                match self.leaf(self.atom_leaf_id(items[0])?) {
+                    Leaf::Member => Some((items[1], items[2])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The [`LeafId`] of `id` if it is an `Atom` occurrence, else `None` — a small accessor the native
+    /// ctor-head recognizers ([`compound_ctor_leaf`], [`field_pair_parts`], [`member_parts`]) use to reach
+    /// a head node's leaf without re-borrowing.
+    fn atom_leaf_id(&self, id: StructId) -> Option<LeafId> {
+        match self.get(id) {
+            Struct::Atom(l) => Some(*l),
+            _ => None,
+        }
+    }
+
     /// If `id` is a `List` headed by the name `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1898,6 +1983,61 @@ mod tests {
                 "ctor_head_key name `{spelling}`"
             );
         }
+    }
+
+    #[test]
+    fn native_ctor_leaf_emit_api_round_trips_through_the_read_helpers_and_the_codec() {
+        // The M2 emit primitives (`Builder::compound`/`field_pair`/`member`) build ctor-LEAF-KIND heads,
+        // and the read primitives (`compound_ctor_leaf`/`field_pair_parts`/`member_parts`) recognize them
+        // by leaf-kind identity — never by head text. Emit each shape, recognize it back, and confirm it
+        // survives the binary codec unchanged (the wire carries the ctor-leaf head).
+        let mut b = Builder::new();
+        let one = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_bigint(&BigInt::from(1)),
+            radix: Radix::Dec,
+        });
+        let two = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_bigint(&BigInt::from(2)),
+            radix: Radix::Dec,
+        });
+        let key = b.name("x");
+        // A `(= x 2)` field pair, a `(. x k)` member access, and one compound of each collection kind.
+        let fp = b.field_pair(key, two);
+        let mem = b.member(key, one);
+        let list = b.compound(CompoundCtor::List, &[one, two]);
+        let tuple = b.compound(CompoundCtor::Tuple, &[one, two]);
+        let record = b.compound(CompoundCtor::Record, &[fp]);
+        let map = b.compound(CompoundCtor::Map, &[fp]);
+        let set = b.compound(CompoundCtor::Set, &[one, two]);
+        let root = b.list(vec![list, tuple, record, map, set, fp, mem]);
+        let a = b.finish(root);
+
+        // Read side recognizes each ctor by LEAF KIND.
+        assert_eq!(a.compound_ctor_leaf(list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_leaf(tuple), Some(CompoundCtor::Tuple));
+        assert_eq!(a.compound_ctor_leaf(record), Some(CompoundCtor::Record));
+        assert_eq!(a.compound_ctor_leaf(map), Some(CompoundCtor::Map));
+        assert_eq!(a.compound_ctor_leaf(set), Some(CompoundCtor::Set));
+        // A native ctor-leaf head is NOT a string/name head, so the transitional `compound_ctor`
+        // (string-head) recognizer does not see it — the two recognizers are disjoint during migration.
+        assert_eq!(a.compound_ctor(list), None);
+        assert_eq!(a.head_ctor(list), None);
+        assert_eq!(a.head_name(list), None);
+        // Field-pair / member parts read back in order.
+        assert_eq!(a.field_pair_parts(fp), Some((key, two)));
+        assert_eq!(a.member_parts(mem), Some((key, one)));
+        // A collection node is not a field pair / member, and vice-versa.
+        assert_eq!(a.field_pair_parts(list), None);
+        assert_eq!(a.member_parts(fp), None);
+        assert_eq!(a.compound_ctor_leaf(fp), None);
+
+        // The whole tree survives the binary codec (the ctor-leaf heads ride the wire).
+        let back = crate::codec::decode(&crate::codec::encode(&a))
+            .expect("decode of an arena with native ctor-leaf heads");
+        assert!(
+            a.structurally_eq(&back),
+            "ctor-leaf arena survives the codec"
+        );
     }
 
     /// Helper: the ctor_head_key of a lone NAME atom spelled `s` (for the negative case).
