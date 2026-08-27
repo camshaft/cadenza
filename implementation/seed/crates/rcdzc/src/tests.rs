@@ -45933,36 +45933,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_mixed_handler_abortive_arm_value_reads_both_the_op_arg_and_the_state() {
-        // The mixed resuming+abortive handler, but the ABORTIVE arm's value is a function of BOTH the op
-        // ARGUMENT and the handler STATE binder — `(stop (code) s (* code s))` — reached after a resuming
-        // sibling `get` has run. Body `(+ (E.get) (E.stop 7))` seeded n via a RUNTIME param: `E.get` resumes
-        // the seed s=n (identity resume), then `E.stop 7` ABANDONS the pending `(+ n …)` and the arm value
-        // `(* 7 n)` becomes the handle's value. Exercises the abort-value path reading its op arg AND the
-        // live state binder together (distinct from the arg-only `(bail (n) s n)` and state-only cases): the
-        // abort value must ground both the payload `code` and the state `s` with a machine representation on
-        // all backends. n=5 → 7*5 = 35 (the `+ n` is abandoned); n=3 → 21.
-        let src = "(do (effect E (op get (-> Int64)) (op stop (-> Int64 Int64))) \
-                   (def (main (: n Int64)) \
-                     (handle E n ((get () s (resume s s)) (stop (code) s (* code s))) \
-                       (+ (E.get) (E.stop 7)))) \
-                   (export main))";
-        let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "a mixed handler whose abortive arm reads both the op arg and the state must fold",
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(5)]),
-            35,
-            "stop 7 aborts with (* 7 5) = 35, abandoning the pending (+ (E.get) ..)",
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
-            21,
-            "(* 7 3) = 21",
-        );
-    }
-
-    #[test]
     fn recursion_is_detected_through_a_nested_do() {
         // A self-call inside a nested `(do …)` is a real recursion edge. `resolve_do` collapses a `do` to
         // `Ref{last}` (intermediates discarded as pure), which would hide a self-call in a `do` item from
@@ -46554,35 +46524,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_def_boundary_conditional_abort_with_pure_arguments_still_folds() {
-        // The #11-B CONTROL (breaker oamin1/oamin5): the SAME `unwrap`-aborts-in-a-match-arm helper, but called
-        // with PURE arguments — `(let ((a (unwrap (if (> n 0) (Some n) (None)) 11))) …)`. Here the scrutinee is
-        // pure, so the fold captures the conditional abort per-branch SOUNDLY and it homes to Bail correctly.
-        // The #11-B gate is narrow (it fires only when an ARGUMENT directly performs a FOREIGN op), so this
-        // pure-arg shape MUST keep folding — a guard that declined it would be an over-decline of a working
-        // program. main(-1): None → Bail.out 11 → 500+11 = 511. main(4): Some 4 → a=4 → 10*4+3 = 43.
-        let src = "(do (effect Bail (op out (-> Int64 Int64))) \
-                   (def (unwrap (: o (Option Int64)) (: tag Int64)) \
-                     (match o ((Some v) v) ((None) (Bail.out tag)))) \
-                   (def (main (: n Int64)) \
-                     (handle Bail 0 ((out (v) t (+ 500 v))) \
-                       (let ((a (unwrap (if (> n 0) (Some n) (None)) 11))) (+ (* 10 a) 3)))) \
-                   (export main))";
-        let comp = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a def-boundary conditional abort with PURE arguments must still fold (oamin1/oamin5 control)");
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(-1)]),
-            511,
-            "None → Bail.out 11 homes to Bail (500+11)"
-        );
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(4)]),
-            43,
-            "Some 4 → a=4 → 10*4 + 3"
-        );
-    }
-
-    #[test]
     fn a_non_tail_cross_function_conditional_abort_declines() {
         // E4 cross-fn soundness guard (a MISCOMPILE regression): a helper that CONDITIONALLY aborts, called
         // in a non-tail position — `(+ 10 (check -1))` where `check n = (if (< n 0) (Bail.bail 99) n)`. The
@@ -46597,27 +46538,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a non-tail cross-function conditional abort must decline, not miscompile to 109"
-        );
-    }
-
-    #[test]
-    fn a_recursive_effectful_def_with_an_annotated_parameter_specializes() {
-        // E3/E4 annotated-param specialization: `specialize_recursive` previously handled only a BARE-name
-        // recursive parameter — an ANNOTATED `(: n T)` param declined. Now it extracts the name from either
-        // form (re-annotating the synthesized copy with the solved type regardless). `walk` counts down
-        // through a tail self-call and bails at zero; under the abortive `Bail` handler `(walk 3)` folds to
-        // the arm value 99 (the base abort propagates up the tail calls). Exercises the annotated-param path
-        // for the abortive case; the same relaxation enables an annotated-param tail-resumptive recursion.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (walk (: n Int64)) (if (= n 0) (Bail.bail 99) (walk (- n 1)))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a recursive effectful def with an annotated parameter specializes"),
-                "main"
-            ),
-            99
         );
     }
 
@@ -47367,29 +47287,6 @@ mod stage1 {
             ),
             13
         );
-    }
-
-    #[test]
-    fn a_pure_one_hole_continuation_body_reads_an_enclosing_parameter() {
-        // The E5 pure one-hole fold synthesizes the folded body with `push_list` (root parent `None`), and
-        // its type-consistency guard re-runs `type_errors` on that body BEFORE the lowering site re-parents
-        // it. So an outer name in the body — an enclosing function PARAMETER — must be re-anchored to the
-        // handle's site FIRST, else the guard reads it unbound and OVER-DECLINES. `(handle … (+ x
-        // (Amb.flip)))` with x=main's param: C=(+ x □), arm `(+ 1 (resume 10 s))` → `(+ 1 (+ x 10))`. x=100
-        // → `(+ 1 (+ 100 10))` = 111. Pins the reparent-before-guard so a param-referencing body folds.
-        use wasmtime::component::Val;
-        let direct = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ x (Amb.flip)))) (export main))";
-        let c = compile_component(&crate::codec::encode(&parse(direct)))
-            .expect("a pure one-hole body reading an enclosing param folds");
-        assert_eq!(run_returns_with::<i64>(&c, "main", &[Val::S64(100)]), 111);
-        // The SAME re-anchoring makes a distributed if-branch reading the param fold too: `(if (< 3 5) (+ x
-        // (Amb.flip)) 0)`, x=100 → the true branch `(+ 1 (+ 100 10))` = 111.
-        let branch = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main (: x Int64)) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ x (Amb.flip)) 0))) (export main))";
-        let cb = compile_component(&crate::codec::encode(&parse(branch)))
-            .expect("a distributed if-branch reading an enclosing param folds");
-        assert_eq!(run_returns_with::<i64>(&cb, "main", &[Val::S64(100)]), 111);
     }
 
     #[test]

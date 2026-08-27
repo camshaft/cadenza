@@ -8468,3 +8468,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
+pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
+pass	a pure one-hole continuation body reads an enclosing function parameter and folds
+pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
