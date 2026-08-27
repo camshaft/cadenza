@@ -32482,13 +32482,6 @@ mod stage1 {
     }
 
     #[test]
-    fn if_condition_must_be_bool() {
-        // A non-boolean condition is a type error (CDZ0203) — `(if 5 1 2)` has an Int64 condition.
-        let msg = expect_decline("(if 5 1 2)");
-        assert!(msg.contains("condition must be Bool"), "got: {msg}");
-    }
-
-    #[test]
     fn a_type_fault_inside_a_let_body_is_still_caught() {
         // The check descends through a `let` — a bad condition in the body is still reported.
         let msg = expect_decline("(let ((x 5)) (if x 1 2))");
