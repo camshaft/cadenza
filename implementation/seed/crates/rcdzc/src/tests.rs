@@ -41124,52 +41124,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_recursive_callee_with_a_pending_handle_body_continuation_declines_not_miscompiles()
-     {
-        // adv-52 (breaker, HIGH soundness). The recursive callee `go` is itself TAIL-recursive and bails at
-        // the base, so the `recursive_self_calls_all_tail` guard PASSES — but `go` is called at a NON-TAIL
-        // position in the handle body: `(+ (go 2) 999999)`. The abort must ABANDON the pending `(+ _ 999999)`
-        // (bail's arm value 500 → the handle's value, +7 outside → 507). The specialized `go#ctx` returns 500
-        // as an ORDINARY return, which the pending `+ 999999` consumes → 500+999999+7 = 1000506, a silent
-        // wrong value on ALL backends. Abandoning past a pending continuation at the OUTER call site needs the
-        // br-out-of-handle non-local-exit convention (a later vertical); until then this MUST decline cleanly.
-        // The fix: `call_reaches_conditional_abortive` now FOLLOWS a recursive callee's body (it stopped at
-        // `is_recursive` before), so `body_has_unsound_abortive_perform` denies the non-tail operand
-        // capturable-tail and `reduce_handle` declines. (The zero-recursion `(go 0)` shape miscompiled too —
-        // it is a compile-time shape mis-specialization, not a runtime-depth bug.)
-        let src = "(do (effect Mx (op bail (-> Int64 Int64))) \
-                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
-                   (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 2) 999999)) 7)) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an abortive recursive callee feeding a pending handle-body continuation must decline, not miscompile to 1000506"
-        );
-        // The zero-dynamic-recursion shape `(go 0)` (base case hit immediately) must ALSO decline — the
-        // trigger is the static self-recursive SHAPE, not actual recursion depth.
-        let zero = "(do (effect Mx (op bail (-> Int64 Int64))) \
-                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
-                   (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 0) 999999)) 7)) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(zero))).is_err(),
-            "the zero-recursion (go 0) shape must decline too (compile-time shape mis-specialization)"
-        );
-        // CONTRAST — the sound cases must still FOLD (the guard must not over-decline): the same recursive
-        // abortive callee as the handle body's TAIL (no pending continuation) folds to 500.
-        let tail_ok = "(do (effect Mx (op bail (-> Int64 Int64))) \
-                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
-                   (def (main) (handle Mx 0 ((bail (v) s (* v 100))) (go 2))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(tail_ok)))
-                    .expect("a recursive abortive callee as the handle-body tail folds"),
-                "main"
-            ),
-            500,
-            "the recursive abortive callee as the handle-body tail must still fold to 500 (no over-decline)"
-        );
-    }
-
-    #[test]
     fn a_block_wrapped_branch_perform_in_a_nested_arm_resume_value_declines_not_miscompiles() {
         // adv-69 a3 sub-face (breaker probe-a3, block-outstate battery). The SAME block-boundary out-state
         // drop as the let-init floor, but at a NESTED handler's arm RESUME-VALUE performing the OUTER op:
@@ -41200,65 +41154,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(direct))).is_err(),
             "a direct branch perform in a nested arm resume-value must decline too, not miscompile to 33"
-        );
-    }
-
-    #[test]
-    fn a_block_wrapped_outer_perform_in_a_let_init_inside_a_nested_handle_body_declines() {
-        // adv-69 a4 sub-face (v-effects self-probe). A block-wrapped branch perform of the OUTER effect (A) in
-        // a `let`-init INSIDE a nested inner (B) handle's body, with the continuation re-reading A:
-        // `(handle A 3 ((ga …)) (handle B 100 ((gb …)) (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v)
-        // (A.ga)))))`. The single-handle version declines via the let-init floor, but the intervening nested B
-        // handle made the OUTER A reduction's scanner STOP at the inner `Handle` and miss the block-wrapped
-        // A-perform in B's body → silent 33 vs 34. Fix: the scanner descends into a nested handle's BODY (not
-        // its arms) keeping the outer ctx, so it fires only on an OUTER-effect perform (an inner B-effect
-        // perform never matches → no over-decline of B's own shapes).
-        let src = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
-                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
-                     (handle B 100 ((gb (u) t (resume t t))) \
-                       (let ((v (let ((k true)) (if k (A.ga) 9)))) (+ (* 10 v) (A.ga)))))) \
-                   (export main))";
-        // Site 6 (through-block commuting conversion) now FOLDS this: it floats the pure wrapper `k` out of
-        // the `let`-init, exposing the direct conditional that Site 4 distributes — the outer-A branch advance
-        // threads through the nested B handle → 10*3 + 4 = 34 (was the safe-floor decline / silent 33).
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect(
-                    "a block-wrapped outer-perform in a let-init inside a nested handle body folds"
-                ),
-                "main"
-            ),
-            34,
-            "the through-block fold threads the outer-A advance through the nested handle → 34"
-        );
-        // CONTROL — the DIRECT-conditional twin (no block wrapper) at the same position folds (Site 4 lifts a
-        // direct init even through the nested handle), so the fix must NOT over-decline it.
-        let direct = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
-                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
-                     (handle B 100 ((gb (u) t (resume t t))) \
-                       (let ((v (if true (A.ga) 9))) (+ (* 10 v) (A.ga)))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(direct))).expect(
-                    "a direct outer-perform in a let-init inside a nested handle body folds"
-                ),
-                "main"
-            ),
-            34,
-            "the direct-init twin must still fold to 34 (no over-decline through the nested handle)"
-        );
-        // a4-init (liaison/Copilot on #1933): the block-wrapped OUTER perform in the inner handle's INIT (the
-        // init is evaluated in the outer extent). The a4 fix scanned the inner body but early-returned without
-        // the init — this closes that gap (scan the init node directly + recurse into both init and body).
-        let init_face = "(do (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64))) \
-                   (def (main) (handle A 3 ((ga (u) s (resume s (+ s 1)))) \
-                     (handle B (let ((k true)) (if k (A.ga) 9)) ((gb (u) t (resume t t))) \
-                       (+ (* 10 (B.gb)) (A.ga))))) \
-                   (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(init_face))).is_err(),
-            "a block-wrapped outer perform in a nested handle's init must decline, not miscompile to 33"
         );
     }
 

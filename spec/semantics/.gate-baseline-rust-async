@@ -709,6 +709,7 @@ pass	a DEPTH-3 op-arg chain threads across two handler layers
 pass	a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
 pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
+pass	a DIRECT-conditional OUTER-effect perform in a let-init inside a nested handler body folds (adv-69 a4 control)
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
@@ -1814,6 +1815,7 @@ pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deep rope indexes by scalar at both extremes
 pass	a deep trie built BETWEEN two host calls reads correctly after the second
 pass	a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels
+pass	a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
@@ -3286,6 +3288,8 @@ pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — dup
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
 pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
+pass	a recursive abortive callee as the handle-body TAIL folds to the arm value
+pass	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
 pass	a recursive bool predicate types as Bool with the self-call in either branch order
 pass	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
@@ -7702,6 +7706,7 @@ pass	the without-extend chain on a NESTED-map-borne record computes (boundary �
 pass	the wrapping additive and multiplicative identities preserve a boundary operand exactly
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
+pass	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three DISCARDED performs on a do-spine still advance the state
@@ -8196,4 +8201,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype

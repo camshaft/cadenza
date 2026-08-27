@@ -9425,6 +9425,41 @@
   (call   main (: -1 Int64)) (output (: 511 Int64))
   (call   main (: 4 Int64)) (output (: 43 Int64)))
 
+(case "a recursive abortive callee as the handle-body TAIL folds to the arm value"
+  (doc    "A tail-recursive callee `go` that bails at the base, called as the handle-body TAIL (no pending
+           continuation): the abort propagates up the tail calls to the handle value. `go 2` counts down to
+           `(Mx.bail 5)`; the arm `(* v 100)` → 500.")
+  (input  (do
+            (effect Mx (op bail (-> Int64 Int64)))
+            (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1))))
+            (def (main) (handle Mx 0 ((bail (v) s (* v 100))) (go 2)))
+            (export main)))
+  (output (: 500 Int64)))
+
+(case "a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly"
+  (doc    "The recursive callee `go` is tail-recursive and bails, but is called at a NON-TAIL position in the
+           handle body: `(+ (go 2) 999999)`. The abort must ABANDON the pending `(+ _ 999999)` (arm value
+           500 → handle value), but a specialized ordinary return would let the pending `+` consume it → a
+           silent 1000506. Abandoning past a pending continuation at the outer call site needs the
+           br-out-of-handle convention (a later increment); until then this declines cleanly.")
+  (input  (do
+            (effect Mx (op bail (-> Int64 Int64)))
+            (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1))))
+            (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 2) 999999)) 7))
+            (export main)))
+  (declines))
+
+(case "the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)"
+  (doc    "The zero-dynamic-recursion twin `(go 0)` (base case hit immediately) must ALSO decline — the
+           trigger is the static self-recursive SHAPE fed to a pending non-tail continuation, not actual
+           recursion depth.")
+  (input  (do
+            (effect Mx (op bail (-> Int64 Int64)))
+            (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1))))
+            (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 0) 999999)) 7))
+            (export main)))
+  (declines))
+
 (case "a pure one-hole continuation body reads an enclosing function parameter and folds"
   (doc    "The pure one-hole fold synthesizes the folded body with the perform replaced by the resume value;
            an outer name in the body — the enclosing function PARAMETER `x` — must re-anchor to the handle's

@@ -438,6 +438,20 @@
             (export main)))
   (call   main) (output (: 34 Int64)))
 
+(case "a DIRECT-conditional OUTER-effect perform in a let-init inside a nested handler body folds (adv-69 a4 control)"
+  (doc    "The direct-conditional twin of the a4 through-block fold (no block wrapper) at the same position:
+           Site 4 lifts a direct `let`-init even through the nested B handle, so the outer-A branch advance
+           threads and the trailing `(A.ga)` reads the advanced state → 10*3 + 4 = 34. Pins that the a4
+           through-block fix does not over-decline the already-working direct-init path.")
+  (input  (do
+            (effect A (op ga (-> Unit Int64))) (effect B (op gb (-> Unit Int64)))
+            (def (main)
+              (handle A 3 ((ga (u) s (resume s (+ s 1))))
+                (handle B 100 ((gb (u) t (resume t t)))
+                  (let ((v (if true (A.ga) 9))) (+ (* 10 v) (A.ga))))))
+            (export main)))
+  (call   main) (output (: 34 Int64)))
+
 (case "a block-wrapped OUTER-effect perform in a let-init THREE handlers deep folds through the block (adv-69 a4-depth3)"
   (doc    "adv-69 a4 at DEPTH-3 (breaker nh5 escalation, block-outstate battery): the a4 nested-handle-body
            drop, but the block-wrapped OUTER-effect (`A`) perform sits in a `let`-init THREE handlers deep —
