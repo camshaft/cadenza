@@ -21258,3 +21258,33 @@
   (call main (: 5 Int64))
   (output (: 32 Int64))
   (live-objects 0))
+
+; -- list homogeneity is CDZ0201 uniformly (migrated from rcdzc a_list_homogeneity_violation_is_cdz0201_
+; uniformly): a list whose elements do not share one type is a malformed collection (CDZ0201) regardless
+; of HOW they differ — a cross-kind scalar clash, a distinct-numeric mix (no silent promotion), or two
+; same-kind-different-shape compounds. (The homogeneous run `(List.len (list 1 2 3))`=3 is covered by the
+; List.len cases; the outlier-anchor squiggle-position checks stay as rcdzc white-box tests.)
+(case "lhv1 a list mixing Int64 and Bool is a malformed collection (CDZ0201)"
+  (input (do (def (main) (list 1 true)) (export main)))
+  (error CDZ0201))
+
+(case "lhv2 a list mixing Int64 and Float64 is malformed — no silent numeric promotion (CDZ0201)"
+  (input (do (def (main) (list 1 2.5)) (export main)))
+  (error CDZ0201))
+
+(case "lhv3 a list of records with different field sets is malformed (CDZ0201)"
+  (input (do (def (main) (list (record (a 1)) (record (b 2)))) (export main)))
+  (error CDZ0201))
+
+(case "lhv4 a list of tuples of different arity is malformed (CDZ0201)"
+  (input (do (def (main) (list (tuple 1 2) (tuple 1 2 3))) (export main)))
+  (error CDZ0201))
+
+; -- an in-range constant List.update keeps the length (migrated from rcdzc constant_list_push_concat_
+; update_fold_and_escape; push-len/concat-len are covered @1768/@1896, the OOB-update CDZ0304 reject is
+; covered by the out-of-range constant-update case @13861 — this pins the remaining observable):
+(case "clu1 an in-range constant List.update replaces a slot and keeps the length"
+  (doc    "`(List.len (List.update (list 10 20 30) 1 99))` = 3 — an in-range update replaces one element
+           and folds, the length unchanged.")
+  (input  (List.len (List.update (list 10 20 30) 1 99)))
+  (output (: 3 Int64)))
