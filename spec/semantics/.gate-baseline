@@ -8592,3 +8592,7 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)
 pass	mhn2 fifty frames persistently updating THROUGH the projection of a constant tuple's 33-element list child never corrupt the constant
 pass	mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct
+pass	mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair
+pass	mps2 fifty frames alternating two constant Maps reclaim to zero
+pass	mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)
+pass	sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)
