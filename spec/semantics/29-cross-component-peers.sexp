@@ -632,3 +632,16 @@
               (def (main (: x Int64)) (host (M P) (+ (M.add x x) (P.neg x)))) (export main)))
   (call   main (: 5 Int64))
   (trap   "type mismatch"))
+
+(case "a peer result handle passes straight through to another peer's arg without local inspection"
+  (doc    "A (cadenza:pairs/api) mints a tuple `pair(x) = (tuple x (+ x 1))`; that tuple handle flows STRAIGHT
+           into B (cadenza:adder/api) `sum(t) = (. t 0) + (. t 1)` as its argument — the consumer never
+           inspects it locally: main(x) = S.sum(P.pair x). main(9) = sum((9,10)) = 19. A peer RESULT handle
+           crosses directly into ANOTHER peer's ARG over the shared runtime (peer→peer passthrough).")
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x (+ x 1))) (export pair)))
+  (peer   "cadenza:adder/api" (do (def (sum (: t (Tuple Int64 Int64))) (+ (. t 0) (. t 1))) (export sum)))
+  (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (effect S (op sum (-> (Tuple Int64 Int64) Int64)))
+              (bind P "cadenza:pairs/api") (bind S "cadenza:adder/api")
+              (def (main (: x Int64)) (host (P) (host (S) (S.sum (P.pair x))))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 19 Int64)))

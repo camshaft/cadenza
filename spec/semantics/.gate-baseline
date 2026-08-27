@@ -3237,6 +3237,7 @@ pass	a peer missing a bound op is rejected naming the op
 pass	a peer op arity mismatch is rejected at compose time, not a trap
 pass	a peer op returning a tuple result is projected to a scalar over the shared runtime
 pass	a peer op type mismatch is rejected at compose time (same arity, different type)
+pass	a peer result handle passes straight through to another peer's arg without local inspection
 pass	a peer string result is consumed in-program via equality and byte-len
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
@@ -7886,6 +7887,7 @@ pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	scc1 a HIGH-WATER STRING state — the arm compares each drawn string lexicographically against the champion, keeps the max, and the final read exposes the winner's length
 pass	sd1 a draw COUNT drives string repetition through a recursion — String.byte-len pins how many times the thread said to concat
+pass	sd1 the #set literal resolves first-class (D2): membership, len, and order-independent equality with an insert-built set
 pass	sd2 draw parity picks WHICH string each op returns — the concat order of two draws is visible in content equality
 pass	sd3 a draw-bounded String.slice window — start and end both come from the thread, byte-len pins the window width
 pass	se1 a SET handler state with dedup dynamics — re-adding an existing element leaves the size fixed
@@ -8975,4 +8977,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	sd1 the #set literal resolves first-class (D2): membership, len, and order-independent equality with an insert-built set
