@@ -80216,57 +80216,17 @@ mod closure_host_resource {
     /// closure-parameter path (the hand-emitted `own<closure>` param ABI is the next increment).
     #[test]
     fn a_closure_handle_round_trips_through_a_consumer_export() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_roundtrip_component(&roundtrip_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("round-trip closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make");
-        let apply_idx = instance
-            .get_export_index(&mut store, Some(&iface), "apply")
-            .expect("apply");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let apply = instance
-            .get_func(&mut store, apply_idx)
-            .expect("apply func");
-
-        // make() → a closure handle the HOST holds…
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make");
-        make.post_return(&mut store).expect("post_return");
-        assert!(
-            matches!(handle[0], Val::Resource(_)),
-            "make returns a resource handle, got {:?}",
-            handle[0]
-        );
-        // …then threads it BACK into the consumer `apply(handle, 5)` — the round trip. = (fn (x) (+ x 1))(5)
-        // = 6, dispatched through the guest's call_indirect from a handle that crossed OUT and back IN.
-        let mut out = [Val::Bool(false)];
-        apply
-            .call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
-            .expect("apply(handle, 5)");
-        apply.post_return(&mut store).expect("post_return");
-        assert_eq!(
-            out[0],
-            Val::S64(6),
-            "the host handed our closure back into `apply`, which dispatched it: (+ x 1)(5) = 6"
-        );
+        // The RUN behavior (make → a closure resource handle the host holds; apply(handle, 5) threads it BACK
+        // into the consumer export and dispatches it = (+ x 1)(5) = 6 — the round trip) is now covered by
+        // spec/semantics/21-host-closures.sexp ("a produced closure is handed back into a consumer export (the
+        // round trip)" + non-leading/multi variants). Per the wasmtime dev-dep drop (v-wasmtime-migration),
+        // this keeps only the STRUCTURAL oracle-validity check (wasmparser, no wasmtime).
     }
 
     /// C-HOST-1 (compiler serializer): `serialize::closure_resource_core_module` — the PRODUCTION core
