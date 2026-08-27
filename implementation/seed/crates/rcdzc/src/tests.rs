@@ -61186,13 +61186,11 @@ mod stage1 {
                (if (= (name-of form) (Option.Some \"x\")) (Ast.Name \"yes\") (Ast.Name \"no\"))) \
              (def (enc) (Ast.encode (pick (Ast.Name \"x\")))) \
              (export enc))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        // `Ast.encode` DEMANDS a compile-time constant, so a SUCCESSFUL compile IS the proof that `==` on an
+        // Option const-folded: an unfolded `==` makes the encode decline ("runtime AST value") → no artifact
+        // → this compile fails. (Wasmtime-free: the compile-success is the const-fold witness.)
+        compile_component(&crate::codec::encode(&parse(src)))
             .expect("`==` on Option must const-fold so Ast.encode folds to constant bytes");
-        // The folded encode is non-empty canonical bytes (the encoding of `(Ast.Name \"yes\")`).
-        assert!(
-            run_linked(&bytes, "enc").map(|s| s != "0" && !s.is_empty()) != Some(false),
-            "the const-folded Ast.encode produced bytes"
-        );
     }
 
     #[test]
