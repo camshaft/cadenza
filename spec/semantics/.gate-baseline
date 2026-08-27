@@ -1172,6 +1172,7 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String literal pattern over a Symbol scrutinee is rejected at the nominal boundary
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
+pass	a String match with no wildcard is non-exhaustive
 pass	a String op RESULT selected by the op argument, composed via concat
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String slice OF a slice over a MULTIBYTE concat rope composes scalar offsets
@@ -4855,6 +4856,7 @@ pass	an Instant and a Duration are DISTINCT nominal types — a point cannot be 
 pass	an Int 12 sum past its maximum is rejected CDZ0304
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an Int-literal pattern over a String scrutinee is a type error
 pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	an Int32 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an Int64 sum-payload literal-match needs no widening (width control)
@@ -7797,6 +7799,8 @@ pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	structural equality on an Ast.List is element-COUNT sensitive
 pass	structural equality on an Ast.List is element-ORDER sensitive
 pass	sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)
+pass	sts2 fifty frames of runtime-indexed membership over a 40-element constant Set hit every element and the miss cells
+pass	sts3 fifty frames of runtime-keyed Set.insert against a 40-element constant Set never corrupt it (sibling stays without the key)
 pass	stt1 a SET-OF-TUPLES state seeded by Set.of — structural dedup across dispatches: the repeated pair does not grow the set and the order-swapped pair only counts when the components differ
 pass	su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter
 pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised
@@ -8689,5 +8693,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	sts2 fifty frames of runtime-indexed membership over a 40-element constant Set hit every element and the miss cells
-pass	sts3 fifty frames of runtime-keyed Set.insert against a 40-element constant Set never corrupt it (sibling stays without the key)

@@ -17753,26 +17753,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_string_match_is_well_formed_or_rejected() {
-        // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
-        // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (match \"hi\" (\"hi\" 1) (\"yo\" 2))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210")
-        );
-        // A pattern whose type disagrees with the scrutinee — an Int literal against a String scrutinee —
-        // is a shape/type error (CDZ0201), checked structurally before the fold.
-        assert_eq!(
-            reject_code("(module m (def (main) (match \"hi\" (5 1) (_ 0))) (export main))")
-                .as_deref(),
-            Some("CDZ0201")
-        );
-    }
-
-    #[test]
     fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
         // `(E 5)` applies an EFFECT name as a function. The head's type is the effect's SYNTHESIZED record,
         // so rendering it dumped an internal representation at the user (`cannot apply a value of type
