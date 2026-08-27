@@ -93,20 +93,85 @@ This is a liveness-at-drop-point analysis over the Perceus dup/drop/reuse placem
 lane. The scalar-only floors are the current sound under-approximation; the goal is to widen them to
 the destructure-to-scalar cases without admitting an FBIP/threaded alias.
 
+## The Perceus-literature technique (operator-directed 2026-08-27)
+
+The operator pointed us at the Perceus / Koka literature before we invent a bespoke invariant — this is a
+solved problem there, and the papers reframe it in a way that dissolves the "static alias proof" we kept
+failing to build. Sources: **Perceus: Garbage-Free Reference Counting with Reuse** (Reinking, Xie, de Moura,
+Leijen — PLDI 2021); **Reference Counting with Frame-Limited Reuse** (Lorenzen & Leijen — ICFP 2022, the
+`borrow` extension); **FP²: Fully in-Place Functional Programming** (Lorenzen, Leijen, Swierstra — ICFP 2023);
+FBIP as described in the Koka docs.
+
+**The reframe.** Perceus never *statically suppresses* a drop to stay clear of a UAF. It **always drops an
+owned value at its last use**, and makes the free *runtime-conditional* on `rc == 1` — exactly what our
+`op_drop` already does (cascade-free at rc 1, decrement otherwise). Soundness comes from the **dup/drop
+balance**, not from a static liveness proof:
+
+- A matched owned value is *consumed* by the match. Every binding extracted from it that **outlives the
+  match** — escapes into the result, into threaded/handler state, into `resume`, into a rebuilt constructor,
+  or into the next loop iteration — is **`dup`'d at its bind site** (ownership transfer). Given correct dups,
+  dropping the shell is *always* sound: the runtime frees only genuinely-unique cells and leaves any
+  still-referenced payload alone.
+- **Reuse (FBIP)** is then an *optimization*, not a safety gate: `drop-reuse x; Con(…)` fuses into an
+  in-place update **iff `x` is unique at runtime** (the reuse token is null otherwise and `Con` allocs
+  fresh). It is never load-bearing for soundness.
+
+**Why our two attempts trapped.** We treated `arm_borrows_heap_subvalue` (and the missing FBIP-rebuild
+detector) as a switch to *decline* the shell drop. Perceus says the opposite: if a payload is aliased out /
+rebuilt / threaded, it will have been **`dup`'d**, so dropping the shell is safe regardless. `mts1` (tuple
+rebuild), `mmx1`/`rrb1` (threaded compound state) trapped because we widened the *drop* without inserting the
+corresponding *dup* on the escaping payload — a **missing dup**, not a should-not-drop. The bug is dup
+placement, not a liveness gap.
+
+**The adopted invariant (feeds v-core-opt's dup/drop-placement lane):**
+
+> Drop a matched owned shell at its last use. `dup` every binding projected out of it that escapes the match
+> (result / state / resume / rebuild / next iteration). Emit the shell drop *unconditionally* — the
+> runtime-conditional free (rc==1) is the safety net; FBIP reuse is the fast path when unique.
+
+This is precisely breaker's ref-accounting ("every bind-dup pairs with an arm-exit release; unbalanced =
+(#unwraps−1) + (1 if extraction)") stated as the Perceus dup-at-bind / drop-at-last-use rule. It explains
+both sites uniformly:
+
+- **Site A (loop back-edge).** `match xs { Cons h t -> go(t, …) }`: the match consumes `xs`; `t` (and any
+  used `h`) is dup'd because it escapes into the recursive call; the **cons shell** is then dropped on the
+  `br` path — a *shell* decrement (children already owned via their dups), not a deep drop of the whole
+  list. That nets exactly one cons cell freed per iteration. Our naive slot-drop failed because it deep-drops
+  a whole-list slot whose rc≥2 (the multi-use dups), never reaching the shell. `list_shell_reclaim_slot`
+  must emit the shell drop for `Tail(Some(_))` too, and the escaping `t` must be dup'd — which it already is.
+- **Site B (heap-payload sum-match).** Same rule: dup the payload where it escapes/rebuilds/threads, then
+  drop the sum shell unconditionally. `mts1`/`mmx1`/`rrb1` become sound *because* the rebuild/threaded
+  payload is dup'd, so the shell drop can't free a live cell. Repeat-unwrap (`xop4`: matched twice) leaks
+  today because each match dups the payload but only **one** shell-drop fires — the fix is a per-match shell
+  drop, in the *general* `MatchSum` path (not per-sum-kind — breaker #3892 proved `Result`/user-generic leak
+  the identical 3).
+
 ## Acceptance set + fence (ready witnesses, all in the corpus queue)
 
 - **Reclaim-to-zero (must become `live-objects 0`):** `d4` (minimal Option), `dm1`/`d3` (scaling),
   `rs1` (Result twin), `rs2` (nested Option), `ap1` (arm/handler position); plus the self-loop
-  `fold`/`count` family for site A.
+  `fold`/`count` family for site A. Finalized B-prime surface (breaker #3892): extraction
+  `{lar1,mlr1,mlr2,xar1,xar3,osx3,xop2,xop3}` + repeat-unwrap `{xop1,xop4,xop5,ruw1,ruw2,ruw3}` → 0.
 - **Fence (must STAY correct — guards over-correction):** `dst2`/`dst5`/`dst6` (user-sum controls),
-  `rs3` (whole-binding), and the three trap witnesses `mts1`/`mmx1`/`rrb1` (must NOT be reclaimed
-  until the analysis proves them safe — a leak is strictly better than the UAF they take today).
+  `rs3` (whole-binding), `lar2`/`mlr3` (borrow-only shell controls), `d6` (deforestation control),
+  `dt2`, and the three trap witnesses `mts1`/`mmx1`/`rrb1` (with correct dup placement these become
+  *reclaimable*, not fenced — but they must never be freed while a payload alias is live; a leak beats
+  the UAF until dups are proven correct).
+- **Census caveat (breaker #3892):** `live-objects` counts OBJECTS, not refs. A half-balanced
+  implementation can leave a stray unbalanced ref that is *invisible* to the reading until it pins
+  additional structure (`ruw3` — fresh Option matched three times — still reads 3, not 4+, because the
+  extra ref doesn't pin a distinct object; `xop1` reads 6 because its extraction ref pins the container
+  graph). Acceptance therefore needs one **ref-level** assertion (or a witness shaped so every stray ref
+  pins distinct structure) to catch a half-balanced dup/drop — an unchanged object count is not
+  sufficient proof of balance.
 - Repros: `queue/adv-option-nested-payload-destructure-leak.sexp` (breaker) + the fold baselines.
 
 ## Non-goals / discipline
 
 - A leak beats a UAF. Until the analysis is complete, these families stay `(live-objects known-leak N)`
   (breaker banked them); the markers retire only when a witness provably reclaims.
-- No incremental gate tweak that widens the reclaim without the rebuild/FBIP-aware alias check — twice
-  it has trapped. The fix is one place (the shared shell-reclaim/loop-back-edge decision) fed by the
-  complete analysis.
+- No incremental gate tweak that widens the *drop* without the matching *dup* on escaping payloads —
+  twice it has trapped, and the Perceus reframe (above) identifies exactly why: those were missing-dup
+  bugs, not should-not-drop cases. The fix is one place (the shared shell-reclaim/loop-back-edge
+  decision) that emits the shell drop unconditionally AND guarantees every escaping bind is dup'd; the
+  rc==1 runtime free is the safety net, FBIP reuse the fast path.
