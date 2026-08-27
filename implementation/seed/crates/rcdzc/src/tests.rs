@@ -10788,50 +10788,7 @@ mod runtime_ops {
 
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
-    #[test]
-    fn runtime_left_shift_multiplies_and_traps_on_overflow() {
-        // << is exact ×2^count: 1<<7=128. An overflowing shift TRAPS (not a silent wrap): 2^62 << 2 = 2^64
-        // overflows Int64. An out-of-range count (≥64, or negative) traps rather than masking.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(<< a b)",
-                &[Val::S64(1), Val::S64(7)]
-            ),
-            128
-        );
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(<< a b)",
-            &[Val::S64(1i64 << 62), Val::S64(2)]
-        ));
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(<< a b)",
-            &[Val::S64(1), Val::S64(64)]
-        ));
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(<< a b)",
-            &[Val::S64(1), Val::S64(-1)]
-        ));
-        // count = 63, the largest in-range count and the Int64 edge: -1<<63 is exactly Int64.min (in
-        // range, must NOT trap), while 1<<63 is +2^63 (out of range, must trap). A folder that builds
-        // the 2^count factor with a signed `1<<63` = i64::MIN would get both backwards.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(<< a b)",
-                &[Val::S64(-1), Val::S64(63)]
-            ),
-            i64::MIN
-        );
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(<< a b)",
-            &[Val::S64(1), Val::S64(63)]
-        ));
-    }
+    // runtime_left_shift_multiplies_and_traps_on_overflow: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rls1 left shift multiplies by 2^count; value overflow and out-of-range count trap" (wasmtime-drop).
 
     /// adv-67 wasm-side ORACLE PIN (v-rust-backend fixed the RUST half in #1681; wasm is the CORRECT oracle,
     /// pinned here so a future emit change can't silently regress it — the "pin an edge even if it passes"
@@ -10917,96 +10874,14 @@ mod runtime_ops {
             "a bare `<< 4` must keep its overflow guard, got: {bare:?}"
         );
 
-        // VALUE PARITY across signs + widths: clearing the low k bits, MIN/MAX boundaries, no false trap.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (<< (: (>> x 4) Int64) 4) Int64)",
-                &[Val::S64(255)]
-            ),
-            240
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (<< (: (>> x 4) Int64) 4) Int64)",
-                &[Val::S64(-1)]
-            ),
-            -16
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (<< (: (>> x 4) Int64) 4) Int64)",
-                &[Val::S64(i64::MIN)]
-            ),
-            i64::MIN,
-            "MIN cleared of its (already-zero) low bits stays MIN — no overflow"
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (<< (: (>> x 4) Int64) 4) Int64)",
-                &[Val::S64(i64::MAX)]
-            ),
-            i64::MAX - 15
-        );
-        // Narrow Int8: `(<< (>> x 3) 3)` clears the low 3 bits; MIN stays MIN (no overflow).
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8)",
-                "(: (<< (: (>> x 3) Int8) 3) Int8)",
-                &[Val::S8(127)]
-            ),
-            120
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8)",
-                "(: (<< (: (>> x 3) Int8) 3) Int8)",
-                &[Val::S8(-128)]
-            ),
-            -128
-        );
-        // The idiom NEVER traps (even at MAX, where a bare `<< 4` would); a genuine `<< 4` overflow still does.
-        assert!(!traps(
-            "(: x Int64)",
-            "(: (<< (: (>> x 4) Int64) 4) Int64)",
-            &[Val::S64(i64::MAX)]
-        ));
-        assert!(traps(
-            "(: x Int64)",
-            "(: (<< x 4) Int64)",
-            &[Val::S64(1i64 << 60)]
-        ));
+        // VALUE PARITY (clear-low-bits idiom values + no-false-trap, and the bare `<< 4` overflow) is
+        // migrated to spec/semantics/06-numeric-model.sexp cases "clb1 the clear-low-bits idiom
+        // (<< (>> x k) k) computes and never overflows" + "clb2 a bare left shift (not the
+        // clear-low-bits idiom) still overflows" (wasmtime-drop); the Lir guard-shape assertions above
+        // are the wasmtime-free coverage and stay here.
     }
 
-    #[test]
-    fn constant_count_shift_folds_the_count_guard() {
-        // A shift by a COMPILE-TIME-CONSTANT count folds the runtime `count >= width` guard (the
-        // condition is decided at compile time). It must behave IDENTICALLY to the runtime-count form:
-        //   - a valid count (0 <= k < N): the guard is elided but the << overflow round-trip stays, so
-        //     the value computes and an overflowing shift still traps;
-        //   - an out-of-range constant count (k >= N or negative): the shift ALWAYS traps (a bare
-        //     `unreachable`), exactly as the runtime guard would.
-        // `a` is a runtime param so the shift is not fully folded; only the COUNT is constant.
-        assert_eq!(run::<i64>("(: a Int64)", "(<< a 7)", &[Val::S64(1)]), 128);
-        assert_eq!(run::<i64>("(: a Int64)", "(<< a 3)", &[Val::S64(5)]), 40);
-        assert_eq!(run::<i64>("(: a Int64)", "(>> a 2)", &[Val::S64(40)]), 10);
-        // -1 << 63 = Int64.min (in range, computes); 1 << 63 = +2^63 (overflow, traps) — same edge the
-        // runtime test pins, now on the constant-count path.
-        assert_eq!(
-            run::<i64>("(: a Int64)", "(<< a 63)", &[Val::S64(-1)]),
-            i64::MIN
-        );
-        assert!(traps("(: a Int64)", "(<< a 63)", &[Val::S64(1)]));
-        // Overflow with a small constant count still traps (round-trip guard survives the elision).
-        assert!(traps("(: a Int64)", "(<< a 2)", &[Val::S64(1i64 << 62)]));
-        // Out-of-range constant count → unconditional trap (the shift can never be valid).
-        assert!(traps("(: a Int64)", "(<< a 64)", &[Val::S64(1)]));
-        assert!(traps("(: a Int64)", "(<< a 100)", &[Val::S64(0)]));
-        assert!(traps("(: a Int64)", "(<< a -1)", &[Val::S64(1)]));
-    }
+    // constant_count_shift_folds_the_count_guard: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp cases "ccs1".."ccs5" (constant-count shift value/trap parity) (wasmtime-drop).
 
     #[test]
     fn a_masked_runtime_shift_count_elides_the_count_guard() {
@@ -11213,73 +11088,11 @@ mod runtime_ops {
         ));
     }
 
-    #[test]
-    fn runtime_shift_with_a_nested_value_operand() {
-        // `(<< (+ a b) c)` — the shift's VALUE operand is a nested checked add, so `emit_operand_into`
-        // routes it through `emit_checked_arith_to` writing the shift's value slot directly. Both the
-        // add's overflow guard and the shift's count/overflow guards must still fire. (1+2)<<3 = 24.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64) (: c Int64)",
-                "(<< (+ a b) c)",
-                &[Val::S64(1), Val::S64(2), Val::S64(3)]
-            ),
-            24
-        );
-        // The inner add overflows before the shift runs → trap.
-        assert!(traps(
-            "(: a Int64) (: b Int64) (: c Int64)",
-            "(<< (+ a b) c)",
-            &[Val::S64(i64::MAX), Val::S64(1), Val::S64(0)]
-        ));
-        // The shift overflows Int64 (1 << 63 = +2^63, out of range) → trap.
-        assert!(traps(
-            "(: a Int64) (: b Int64) (: c Int64)",
-            "(<< (+ a b) c)",
-            &[Val::S64(1), Val::S64(0), Val::S64(63)]
-        ));
-    }
+    // runtime_shift_with_a_nested_value_operand: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rsn1 a shift with a nested checked-add value operand keeps both guards" (wasmtime-drop).
 
-    #[test]
-    fn runtime_signed_right_shift_is_arithmetic() {
-        // >> on a signed type is ARITHMETIC (sign-extending): -256 >> 7 = -2 (a logical shift would give a
-        // huge positive value). An out-of-range count traps.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(>> a b)",
-                &[Val::S64(256), Val::S64(7)]
-            ),
-            2
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(>> a b)",
-                &[Val::S64(-256), Val::S64(7)]
-            ),
-            -2
-        );
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(>> a b)",
-            &[Val::S64(256), Val::S64(64)]
-        ));
-    }
+    // runtime_signed_right_shift_is_arithmetic: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rsr1 a signed right shift is arithmetic (sign-extending)" (wasmtime-drop).
 
-    #[test]
-    fn runtime_unsigned_right_shift_is_logical() {
-        // >> on an UNSIGNED type is LOGICAL (zero-filling): UInt64.max >> 1 = 2^63-1. A signed shr_s would
-        // sign-extend (reading the operand as -1) and answer -1 = UInt64.max — the sign selects the shift.
-        assert_eq!(
-            run::<u64>(
-                "(: a UInt64) (: b UInt64)",
-                "(>> a b)",
-                &[Val::U64(u64::MAX), Val::U64(1)]
-            ),
-            u64::MAX >> 1
-        );
-    }
+    // runtime_unsigned_right_shift_is_logical: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rur1 an unsigned right shift is logical (zero-filling)" (wasmtime-drop).
 
     // ── unsigned checked +/-/*: the unsigned overflow guards (carry/borrow) ───────────────────────
 

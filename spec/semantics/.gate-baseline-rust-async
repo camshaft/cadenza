@@ -5082,6 +5082,11 @@ pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADO
 pass	cc7 a draw-capturing closure threaded through a RECURSIVE helper — applied per frame, the leaf applies it to a fresh draw
 pass	cc8 a closure carried in a TUPLE beside a scalar — destructured in one match and applied around advancing draws
 pass	cc9 a closure capturing a value computed UNDER a handler escapes and applies after the handle
+pass	ccs1 a constant-count left shift: the Int64.min edge is in range, +2^63 overflows
+pass	ccs2 a valid constant-count right shift computes
+pass	ccs3 a small constant-count left shift computes but still traps on value overflow
+pass	ccs4 an out-of-range constant shift count traps unconditionally
+pass	ccs5 a negative constant shift count traps
 pass	cd1 a closure CAPTURES a draw then is called after LATER draws — the captured value must not re-read state
 pass	cd4 a captured draw crosses a HIGHER-ORDER def boundary — helper applies the closure twice with different args
 pass	cdf1 recursive AST leaf-count via Option-threaded walk under an explicit (const ...) demand surfaces the taken trap
@@ -5153,6 +5158,8 @@ pass	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the 
 pass	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 pass	cl1 a NARROWING clamp arm — the [lo,hi] window shrinks by one each side per dispatch, three args meet three windows
 pass	cla1 the arm runs a PURE data-dependent-depth recursion on the crossed ARGUMENT — collatz length computed wholly inside one dispatch frame, the state accumulates the lengths and a final read exposes the total
+pass	clb1 the clear-low-bits idiom (<< (>> x k) k) computes and never overflows
+pass	clb2 a bare left shift (not the clear-low-bits idiom) still overflows
 pass	closures built one per iteration each capture their OWN loop value
 pass	closures capture successive SNAPSHOTS of a growing heap list
 pass	closures extracted from a list by RUNTIME index and applied dispatch correctly
@@ -6672,6 +6679,7 @@ pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 ro
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run
 pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
+pass	rls1 left shift multiplies by 2^count; value overflow and out-of-range count trap
 pass	rlyB single-use arm-perform control (answer only, state untouched) — B's handler arm PERFORMS the outer A (same op name, same signature) doubling the argument and folding A's answer into B's state, so every relay draw advances BOTH threads and the identity question routes THROUGH an arm-perform under schema-hash-only dispatch
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
@@ -6744,7 +6752,9 @@ pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — 
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
 pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
 pass	rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume
+pass	rsn1 a shift with a nested checked-add value operand keeps both guards
 pass	rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot
+pass	rsr1 a signed right shift is arithmetic (sign-extending)
 pass	rsv1 DETERMINISTIC reservoir sampling — an LCG threaded beside the reservoir decides keep-or-replace by count-modulus, seeds route which offers displace the kept element
 pass	rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the state passes the payload — both variants cross and unwrap
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
@@ -6793,6 +6803,7 @@ pass	runtime unsigned division is by magnitude and traps on divide-by-zero
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
 pass	runtime-payload `?`s in BOTH branches of a runtime if take their own continuations
+pass	rur1 an unsigned right shift is logical (zero-filling)
 pass	rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler
 pass	rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state
 pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing outer draw
