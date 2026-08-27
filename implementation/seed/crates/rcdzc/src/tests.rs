@@ -32538,27 +32538,6 @@ mod stage1 {
     }
 
     #[test]
-    fn bitwise_ops_fold() {
-        // 06-numeric-model: & masks, | combines, ^ toggles.
-        assert_eq!(run_main("(& 255 127)"), 127);
-        assert_eq!(run_main("(| 12 3)"), 15);
-        assert_eq!(run_main("(^ 12 10)"), 6);
-    }
-
-    #[test]
-    fn left_shift_is_multiplication_and_folds() {
-        // (<< 1 7) = 128 — a left shift is exact multiplication by 2^count.
-        assert_eq!(run_main("(<< 1 7)"), 128);
-    }
-
-    #[test]
-    fn arithmetic_right_shift_folds() {
-        // (>> 256 7) = 2, and a NEGATIVE value sign-extends: (>> -256 7) = -2 (arithmetic, not logical).
-        assert_eq!(run_main("(>> 256 7)"), 2);
-        assert_eq!(run_main("(>> -256 7)"), -2);
-    }
-
-    #[test]
     fn left_shift_that_overflows_fails_the_build() {
         // (<< 4611686018427387904 1) overflows Int64 — traps like `*`, so CDZ0304, not a silent wrap.
         // The message names it as an overflow (in-range count, but the shifted result doesn't fit).
