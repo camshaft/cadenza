@@ -7985,3 +7985,4 @@ pass	tph1 a generic ctor with TWO list payloads destructures both through nested
 pass	dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf through the carried type
 pass	dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type
 pass	dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks
+pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
