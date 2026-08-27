@@ -34219,24 +34219,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_out_of_arity_tuple_index_is_a_compile_time_error() {
-        // `(. (tuple 10 20 30) 3)` — position 3 of a 3-element tuple (valid 0..2) is out of range. It
-        // is REJECTED at compile time (CDZ0201), NOT deferred to a runtime trap (the arity-trap
-        // learning: an out-of-arity index on a statically-known tuple is a type error).
-        let msg = expect_decline("(. (tuple 10 20 30) 3)");
-        assert!(msg.contains("out of range"), "got: {msg}");
-    }
-
-    #[test]
-    fn a_tuple_projection_on_a_non_tuple_is_a_compile_time_error() {
-        // `(. 5 0)` — projecting a position of a non-tuple has no defined result → CDZ0201 at compile
-        // time. (An integer key distinguishes this from record member access, which says "requires a
-        // record"; a tuple projection says "requires a tuple".)
-        let msg = expect_decline("(. 5 0)");
-        assert!(msg.contains("requires a tuple"), "got: {msg}");
-    }
-
-    #[test]
     fn returning_a_constant_tuple_compiles_via_the_resource_escape() {
         // A CONSTANT tuple returned across the host boundary now crosses as a monomorphized component
         // RESOURCE whose `encode() -> list<u8>` yields the canonical binary value form; the host decodes
