@@ -4386,6 +4386,20 @@
   (call   main (: 1 Int64)) (output (: 8 Int64))
   (live-objects 0))
 
+(case "a collection-carrying recursion whose base arm reads via a raw match compiles"
+  (doc    "The raw-`match` face of the fallible-base collection-recursion above (companion to the two
+           Option.expect cases): the base arm materializes the i32 Option handle via a plain `(match
+           (Bytes.at b p) ((Some x) x) ((None) -1))` rather than `Option.expect` — a distinct arm body
+           (returns -1 on None instead of trapping), but the SAME i32-handle-vs-i64-recursion-temp scratch
+           collision, so it too must emit valid wasm. byte 0 of `b\"\\x05\"` = 5.")
+  (input  (do
+            (def (loop (: b Bytes) (: p Int64) (: n Int64))
+              (if (= n 0) (match (Bytes.at b p) ((Some x) x) ((None) (- 0 1))) (loop b p (- n 1))))
+            (def (main (: p Int64)) (loop b"\x05" p 0))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects 0))
+
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
            argument. Multi-parameter syntax (fn (x y) body) desugars to (fn x (fn y body)). Partial
