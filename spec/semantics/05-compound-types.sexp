@@ -6078,6 +6078,29 @@
   (call   main (: 3 Int64))
   (output (: 0 Int64)))
 
+(case "two guarded list-match arms over the same length classify by the head's sign"
+  (doc    "TWO `(guard (list x .. r) …)` arms over the SAME length shape, gating on the head's SIGN, plus a
+           catch-all — first-match-wins with each arm's guard gating: a positive head takes the first arm
+           (→ 1), a negative head fails the first guard and takes the SECOND (→ 2), and a zero head fails
+           BOTH and falls through to the catch-all (→ 0). The list is built at run time (`List.push (list) h`)
+           so the match cannot fold. Pins multi-guarded-arm dispatch over one runtime list — distinct from the
+           single-guarded-arm body-binder / fall-through / runtime-gate cases above. Relocated from the
+           in-crate rcdzc `a_list_match_arm_may_carry_a_guard` (its single-arm observations are covered by the
+           three cases above; this is the uncovered two-arm sign-classification observation).")
+  (input  (do (def (sign (: xs (List Int64)))
+                (match xs
+                  ((guard (list x .. r) (> x 0)) 1)
+                  ((guard (list x .. r) (< x 0)) 2)
+                  (_ 0)))
+              (def (main (: h Int64)) (sign (List.push (list) h)))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64))
+  (call   main (: -5 Int64))
+  (output (: 2 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
 (case "a guard on a literal-element list pattern reads an enclosing let binding through inlining"
   (doc    "A user guard on a list pattern with a LITERAL leading element (`0`), whose guard cond `(> x lim)`
            reads an enclosing `let` binding `lim` — checked through the INLINING path (`main` calls `f`, so
