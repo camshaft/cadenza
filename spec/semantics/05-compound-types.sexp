@@ -23042,3 +23042,34 @@
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: true Bool))
   (output (: 3 Int64)))
+
+; ── a map-pattern VALUE sub-pattern that INTRODUCES BINDERS (a tuple/ctor) over a RUNTIME map: after the
+;    Map.lookup unwrap, synth_value_path_read walks the value sub-path at run time ((. __mv i) per tuple
+;    element, a (match __mv ((Ctor __p) __p) …) per ctor payload). Key present + value shape matches → binds.
+(case "a map-pattern tuple value sub-pattern binds both elements over a runtime map"
+  (doc    "`(map (\"a\" (tuple x y)) .. rest)` over a RUNTIME map `{\"a\": (k, 4)}` binds x=k, y=4 → (+ x y).
+           With k=3 → 7.")
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (tuple k 4)) (Map.empty)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" (tuple x y)) .. rest) (+ x y)) (_ -1)))
+              (def (main (: k Int64)) (look (pick true k))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: 7 Int64)))
+
+(case "a map-pattern tuple value sub-pattern falls through when the key is absent"
+  (doc    "An ABSENT key falls through to the catch-all — the presence test fails before the value read. Here
+           `pick false` → empty map, so the `\"a\"` arm's key is absent → -1.")
+  (input  (do (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (tuple k 4)) (Map.empty)))
+              (def (look (: m (Map String (Tuple Int64 Int64)))) (match m ((map ("a" (tuple x y)) .. rest) (+ x y)) (_ -1)))
+              (def (main (: k Int64)) (look (pick false k))) (export main)))
+  (call   main (: 3 Int64))
+  (output (: -1 Int64)))
+
+(case "a map-pattern single-variant ctor value sub-pattern binds its payload over a runtime map"
+  (doc    "`(map (\"a\" (Box.Mk n)) .. rest)` over a RUNTIME map `{\"a\": Box.Mk k}` binds the ctor payload
+           n = k (the value read walks the ctor payload after the Map.lookup unwrap). With k=9 → 9.")
+  (input  (do (type Box (Mk Int64))
+              (def (pick (: b Bool) (: k Int64)) (if b (Map.insert (Map.empty) "a" (Box.Mk k)) (Map.empty)))
+              (def (look (: m (Map String Box))) (match m ((map ("a" (Box.Mk n)) .. rest) n) (_ -1)))
+              (def (main (: k Int64)) (look (pick true k))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
