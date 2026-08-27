@@ -8166,3 +8166,7 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
+todo	rpp1 a scalar-fielded Record entry param projects both fields
+todo	rpp2 an open-row helper projects a field of the boundary Record param
+todo	rpp3 a Record entry param with a heap list field measures both
+todo	rpp4 a scalar Tuple entry param projects both positions
