@@ -8657,3 +8657,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a signed narrow-width newtype boxed as a tuple element matches by its literal payload
+pass	tle5 fifty frames of persistent update against a hoisted 33-element (multi-level trie) constant never corrupt it
