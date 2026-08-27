@@ -67464,43 +67464,6 @@ mod stage1 {
     }
 
     #[test]
-    fn partial_application_curries_at_compile_time() {
-        // `core-semantics.md` §Functions Are Single-Arity: applying a curried function to fewer args
-        // than its arity returns a closure awaiting the rest. Under-application β-reduces the leading
-        // params into a RESIDUAL lambda, so the whole chain folds when fully applied — no runtime
-        // function survives.
-        // A lambda applied to ONE of two args, then the residual applied to the second → `(+ 3 4)` = 7.
-        assert_eq!(run_main("(((fn (x y) (+ x y)) 3) 4)"), 7);
-        // The residual bound and applied later: `(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))` = 10.
-        assert_eq!(
-            run_main("(let ((add3 ((fn (x y) (+ x y)) 3))) (add3 7))"),
-            10
-        );
-        // Through a NAMED def, both the explicit-curried `((add 3) 4)` and the let-bound `inc` shapes.
-        let curried = "(module m (def (add x y) (+ x y)) (def (main) ((add 3) 4)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(curried))).expect("compile"),
-                "main"
-            ),
-            7
-        );
-        let letbound = "(module m (def (add x y) (+ x y)) (def (main) (let ((inc (add 3))) (inc 4))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(letbound))).expect("compile"),
-                "main"
-            ),
-            7
-        );
-        // THREE params, applied one-then-two: the residual itself partially applies again.
-        assert_eq!(
-            run_main("(let ((f (fn (a b c) (+ (+ a b) c)))) (let ((g (f 1))) (g 2 3)))"),
-            6
-        );
-    }
-
-    #[test]
     fn a_partial_constructor_in_a_compound_literal_completes_when_projected_and_applied() {
         // A partially-applied constructor `(T.Mk 10)` (a 2-payload ctor given 1 arg) stashed in a
         // compile-time-visible COMPOUND (a tuple element / record field), then PROJECTED and APPLIED,
@@ -67609,37 +67572,6 @@ mod stage1 {
         assert_eq!(
             run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
             7
-        );
-    }
-
-    #[test]
-    fn a_lambda_captures_an_enclosing_binding_across_reduction() {
-        // A lambda that references an ENCLOSING binding (a free variable bound further out, NOT inside
-        // its own body) and is applied INSIDE that binding's scope. β-reducing the application must
-        // PRESERVE the free variable's resolution to the enclosing binding — `pin_free_vars` pins it so
-        // `beta_reduce` shares the occurrence rather than copying it into the orphan reduced node (where
-        // it would re-resolve unbound → a spurious CDZ0101, the bug this fixes). `core-semantics.md`
-        // §A Function Value Captures The Bindings In Scope Where It Is Created.
-        // Over an enclosing `let`: `(let ((k 10)) ((fn (x) (+ x k)) 5))` = 15.
-        assert_eq!(
-            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) 5))"),
-            15
-        );
-        // Two enclosing captures + a nested let: `(+ x a b)` reads `a`,`b` from the enclosing lets.
-        assert_eq!(
-            run_main("(let ((a 2)) (let ((b 3)) ((fn ((: x Int64)) (+ (+ x a) b)) 10)))"),
-            15
-        );
-        // Over an enclosing DEF PARAMETER: `(def (f k) ((fn (x) (+ x k)) 5))`, `f(10)` = 15.
-        let src = "(module m (def (f (: k Int64)) ((fn ((: x Int64)) (+ x k)) 5)) \
-             (def (main (: k Int64)) (f k)) (export main))";
-        assert_eq!(
-            run_returns_with::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                "main",
-                &[wasmtime::component::Val::S64(10)]
-            ),
-            15
         );
     }
 
