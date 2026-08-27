@@ -2485,6 +2485,7 @@ pass	a let-bound if-selected partial constructor is applied and reclaimed once (
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
 pass	a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)
+pass	a let-bound peer compound is read twice (both live) then reclaimed
 pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound record with an extra field capturing a let-local is projected and applied

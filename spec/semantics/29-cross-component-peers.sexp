@@ -659,3 +659,14 @@
               (def (main (: x Int64)) (host (P) (host (S) (S.sum (P.pair x))))) (export main)))
   (call   main (: 9 Int64))
   (output (: 19 Int64)))
+
+(case "a let-bound peer compound is read twice (both live) then reclaimed"
+  (doc    "A peer op `pair(x) = (tuple x x)` @cadenza:pairs/api returns a runtime tuple; the consumer LET-binds
+           the crossed tuple and reads it TWICE — `(+ (. t 0) (. t 1))` — both reads must see a LIVE tuple (no
+           premature drop between them), then the dead binding reclaims at scope end. pair(9) = (9,9) →
+           9 + 9 = 18.")
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (input  (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
+              (def (main (: x Int64)) (host (P) (let ((t (P.pair x))) (+ (. t 0) (. t 1))))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 18 Int64)))
