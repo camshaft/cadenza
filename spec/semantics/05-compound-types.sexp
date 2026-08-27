@@ -22969,3 +22969,41 @@
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
               (def (main) (match (Map.lookup (map ((add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
   (output (: 42 Int64)))
+
+; ── breaker batch 551: the #4597 §5 sum-spine reclaim BOUNDARY. The fix (dup(rest)+drop(old
+; shell) on the self-loop-tail back-edge) reclaims direct-payload spines (reconciled rows dropped
+; 5001→1) but does NOT reach the TUPLE-payload Cons shape (rsl1's class): the tail walk leaks the
+; full spine identically to the non-tail walk (11 = 5 Cons + 5 tuples + Nil), and per-frame
+; amplification is LINEAR (50 frames → 550). Calibration for the next §5 increment: ss1/ss3 flip
+; (11→~0, 550→~0) when the tuple-payload back-edge reclaim lands; ss2 keys the non-tail sibling.
+
+(case "ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)"
+  (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
+(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons (tuple h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
+(def (main (: n Int64)) (smt (count n) 0))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
+
+(case "ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)"
+  (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
+(def (sm (: xs IntList)) (match xs ((IntList.Cons (tuple h t)) (+ h (sm t))) ((IntList.Nil u) 0)))
+(def (main (: n Int64)) (sm (count n)))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
+
+(case "ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)"
+  (input (do (type IntList (Cons (Tuple Int64 IntList)) Nil)
+(def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
+(def (smt (: xs IntList) (: acc Int64)) (match xs ((IntList.Cons (tuple h t)) (smt t (+ acc h))) ((IntList.Nil u) acc)))
+(def (frames (: k Int64)) (if (= k 0) 0 (+ (smt (count 5) 0) (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 750 Int64))
+  (live-objects known-leak 550))
