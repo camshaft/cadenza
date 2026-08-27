@@ -393,7 +393,7 @@ pub fn validate(component_bytes: &[u8]) -> Result<()> {
 /// export with the (coerced) arguments, and return the rendered outcome. The OBSERVED host calls are
 /// discarded; use [`run_capturing`] to also get the ordered list of host operations the run performed.
 pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
-    run_capturing(component_bytes, opts).map(|(o, _calls)| o)
+    run_capturing(component_bytes, opts, None).map(|(o, _calls)| o)
 }
 
 /// Run a RAW CORE wasm MODULE (not a component): instantiate `module_bytes` with NO imports, invoke the
@@ -477,6 +477,7 @@ fn compose_and_instantiate(
 pub fn run_with_live_objects(
     component_bytes: &[u8],
     opts: &RunOpts,
+    second_call: Option<&[String]>,
 ) -> Result<(Outcome, Vec<String>, Option<u32>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -509,7 +510,7 @@ pub fn run_with_live_objects(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
 
-    let outcome = run_export(&engine, &component, &mut store, &linker, opts)?;
+    let outcome = run_export(&engine, &component, &mut store, &linker, opts, second_call)?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
     // heap balance is ill-defined AND the runtime instance may be unusable after the guest trap (calling
@@ -912,14 +913,18 @@ pub fn capture_escaped_value_doc(
 /// [`run`], additionally returning the ordered list of HOST OPERATIONS the run performed (each a dotted
 /// `E.op`, in call order) — so a caller (the corpus gate) can verify the observed host-call sequence
 /// against a case's recorded `(host-calls …)`. Empty for a program that makes no host call.
-pub fn run_capturing(component_bytes: &[u8], opts: &RunOpts) -> Result<(Outcome, Vec<String>)> {
+pub fn run_capturing(
+    component_bytes: &[u8],
+    opts: &RunOpts,
+    second_call: Option<&[String]>,
+) -> Result<(Outcome, Vec<String>)> {
     // The one-shot path: JIT-compile the bytes, then run once. A caller that runs the SAME component many
     // times (the `cdz test` per-@test loop) should instead `compile_component` ONCE and call
     // `run_capturing_compiled` per run — `Component::new` is the dominant cost (measured ~8s for the
     // self-host test component vs ~0.1s to run it), so re-JITing identical bytes per test is the multiplier
     // to avoid. This wrapper keeps the existing single-run API (the corpus/oracle callers) byte-identical.
     let compiled = compile_component(component_bytes)?;
-    run_capturing_compiled(&compiled, opts)
+    run_capturing_compiled(&compiled, opts, second_call)
 }
 
 /// A wasmtime-JIT-COMPILED component, ready to run — the reusable half of a run, split from the per-run
@@ -949,6 +954,7 @@ pub fn compile_component(component_bytes: &[u8]) -> Result<CompiledComponent> {
 pub fn run_capturing_compiled(
     compiled: &CompiledComponent,
     opts: &RunOpts,
+    second_call: Option<&[String]>,
 ) -> Result<(Outcome, Vec<String>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -972,7 +978,7 @@ pub fn run_capturing_compiled(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, component, &mut linker, opts, &observed, &[])?;
 
-    let outcome = run_export(&engine, component, &mut store, &linker, opts)?;
+    let outcome = run_export(&engine, component, &mut store, &linker, opts, second_call)?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
 }
@@ -1351,7 +1357,7 @@ fn run_composition_hosted_capturing(
         bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
     }
 
-    let outcome = run_export(&engine, consumer, &mut store, &linker, opts)?;
+    let outcome = run_export(&engine, consumer, &mut store, &linker, opts, None)?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
     let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
@@ -1523,7 +1529,7 @@ where
         Ok(())
     })?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None)
 }
 
 /// Like [`run_agent`], but ALSO binds an AUTHORIZATION op — the full agent-harness shape where the
@@ -1665,7 +1671,7 @@ where
         })?;
     }
 
-    run_export(&engine, &consumer, &mut store, &linker, opts)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None)
 }
 
 /// Verify a consumer's imported authz op `authz_iface`.`authz_op` has the `(u32) -> s64` boundary shape
@@ -1774,7 +1780,7 @@ pub fn run_agent_hosted(
 
     bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None)
 }
 
 /// Shape-check each [`HostOpBinding`] against the consumer's declared import (a clear up-front error,
@@ -1975,6 +1981,9 @@ fn run_export(
     store: &mut Store<()>,
     linker: &Linker<()>,
     opts: &RunOpts,
+    // A `(then …)` two-call-on-one-handle continuation for a CLOSURE export (see `run_closure_resource`);
+    // `None` on every non-closure / one-call path. Only the closure-escape dispatch below consults it.
+    second_call: Option<&[String]>,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -2070,6 +2079,7 @@ fn run_export(
             &instance,
             opts.export.as_deref(),
             &opts.args,
+            second_call,
         );
     }
 
@@ -2936,6 +2946,13 @@ fn run_roundtrip_closure(
 /// the first N go to `make` (the EXPORT's parameters, e.g. `adder`'s `k`), the rest to `call` (the
 /// CLOSURE's own arguments, e.g. `x`). A nullary export (N=0) sends all args to `call`. So
 /// `(call adder (: 10 Int64) (: 5 Int64))` → `make(10)` then `call(5)` = 15.
+///
+/// TWO-CALL-ON-ONE-HANDLE (`second_call = Some(args2)`, from a corpus `(then …)` clause): a `borrow<t>`
+/// closure does NOT consume its handle, so it is REPEATABLE — after `make` + the first `call`, the SAME
+/// handle serves a SECOND `call(handle, args2…)`, and the two results render as a tuple `(tuple r1 r2)`
+/// (see [`render_two_call_result`]). This pins that a borrowed closure handle stays live across calls (an
+/// `own<t>` closure would trap "unknown handle index" on the second call). Applies to the bare/multi-export
+/// `call` and the distinct-signature `call-g<n>`; the round-trip path (no `call`/`call-g`) ignores it.
 fn run_closure_resource(
     engine: &Engine,
     component: &Component,
@@ -2943,6 +2960,7 @@ fn run_closure_resource(
     instance: &wasmtime::component::Instance,
     export: Option<&str>,
     arg_strs: &[String],
+    second_call: Option<&[String]>,
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
@@ -3044,17 +3062,34 @@ fn run_closure_resource(
             .iter()
             .map(|(_, t)| t.clone())
             .collect();
-        let coerced = coerce_args(&arg_strs[n_make..], param_types.get(1..).unwrap_or(&[]))?;
+        let arg_types = param_types.get(1..).unwrap_or(&[]);
+        let coerced = coerce_args(&arg_strs[n_make..], arg_types)?;
         let mut call_args = vec![handle[0].clone()];
         call_args.extend(coerced);
         let mut out = [Val::Bool(false)];
-        return match call.call(&mut *store, &call_args, &mut out) {
-            Ok(()) => {
-                let _ = call.post_return(&mut *store);
-                Ok(Outcome::Value(render_closure_call_result(out.first())))
-            }
-            Err(e) => Ok(Outcome::Trap(trap_message(&e))),
-        };
+        if let Err(e) = call.call(&mut *store, &call_args, &mut out) {
+            return Ok(Outcome::Trap(trap_message(&e)));
+        }
+        let _ = call.post_return(&mut *store);
+        // A `(then …)` continuation: call `call-g<n>` a SECOND time on the SAME handle (repeatable under
+        // `borrow<t>`), rendering the pair as a tuple.
+        if let Some(args2) = second_call {
+            let coerced2 = coerce_args(args2, arg_types)?;
+            let mut call_args2 = vec![handle[0].clone()];
+            call_args2.extend(coerced2);
+            let mut out2 = [Val::Bool(false)];
+            return match call.call(&mut *store, &call_args2, &mut out2) {
+                Ok(()) => {
+                    let _ = call.post_return(&mut *store);
+                    Ok(Outcome::Value(render_two_call_result(
+                        out.first(),
+                        out2.first(),
+                    )))
+                }
+                Err(e) => Ok(Outcome::Trap(trap_message(&e))),
+            };
+        }
+        return Ok(Outcome::Value(render_closure_call_result(out.first())));
     }
     // The make function to call: a single-export program publishes a bare `make`; a MULTI-EXPORT program
     // publishes `make-<name>` per closure export, and the corpus `(call <name> …)` picks which. Try
@@ -3120,13 +3155,30 @@ fn run_closure_resource(
     let mut call_args = vec![handle[0].clone()];
     call_args.extend(coerced);
     let mut out = [Val::Bool(false)];
-    match call.call(&mut *store, &call_args, &mut out) {
-        Ok(()) => {
-            let _ = call.post_return(&mut *store);
-            Ok(Outcome::Value(render_closure_call_result(out.first())))
-        }
-        Err(e) => Ok(Outcome::Trap(trap_message(&e))),
+    if let Err(e) = call.call(&mut *store, &call_args, &mut out) {
+        return Ok(Outcome::Trap(trap_message(&e)));
     }
+    let _ = call.post_return(&mut *store);
+    // A `(then …)` continuation: call `call` a SECOND time on the SAME handle (a `borrow<t>` closure keeps
+    // it live across calls — an `own<t>` one would trap "unknown handle index" here), rendering the pair
+    // as a tuple. Covers both the bare single-export `make`/`call` and the multi-export `make-<name>`/`call`.
+    if let Some(args2) = second_call {
+        let coerced2 = coerce_args(args2, arg_types)?;
+        let mut call_args2 = vec![handle[0].clone()];
+        call_args2.extend(coerced2);
+        let mut out2 = [Val::Bool(false)];
+        return match call.call(&mut *store, &call_args2, &mut out2) {
+            Ok(()) => {
+                let _ = call.post_return(&mut *store);
+                Ok(Outcome::Value(render_two_call_result(
+                    out.first(),
+                    out2.first(),
+                )))
+            }
+            Err(e) => Ok(Outcome::Trap(trap_message(&e))),
+        };
+    }
+    Ok(Outcome::Value(render_closure_call_result(out.first())))
 }
 
 /// Run a resource-escape program: reach `make`/`encode` inside the `cadenza:run/run` instance, call
@@ -3227,6 +3279,52 @@ fn render_closure_call_result(v: Option<&Val>) -> String {
             render_val(v.unwrap())
         }
         Some(other) => render_val(other),
+    }
+}
+
+/// Render a two-call-on-one-handle result (the `(then …)` drive): the pair of `call` results as a
+/// tuple value-form `(tuple <v1> <v2>)`. Each result is rendered by [`render_closure_call_result`] and
+/// then UNWRAPPED to its bare value — a compound result comes back as the annotated `(: <value> <type>)`
+/// form, so we strip the `(: … )` envelope to embed only `<value>` (a scalar renders bare already). The
+/// corpus grades this against `(output (: (tuple <v1> <v2>) (Tuple T T)))`, whose `expected_value` is the
+/// same `(tuple <v1> <v2>)`. Both calls share ONE handle (a `borrow<t>` closure keeps it live), so a
+/// matching tuple proves repeatability + the two results' relationship.
+fn render_two_call_result(out1: Option<&Val>, out2: Option<&Val>) -> String {
+    let v1 = bare_value_form(&render_closure_call_result(out1));
+    let v2 = bare_value_form(&render_closure_call_result(out2));
+    format!("(tuple {v1} {v2})")
+}
+
+/// Strip an outer `(: <value> <type>)` value-form annotation to its bare `<value>` (the same balanced-token
+/// extraction the gate's `expected_value` does), leaving a scalar / already-bare form unchanged. Used to
+/// embed a call result inside a `(tuple …)` without a nested type annotation.
+fn bare_value_form(rendered: &str) -> String {
+    let s = rendered.trim();
+    let Some(rest) = s.strip_prefix("(:") else {
+        return s.to_string();
+    };
+    let rest = rest.trim();
+    let bytes = rest.as_bytes();
+    if bytes.first() == Some(&b'(') {
+        let mut depth = 0i32;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return rest[..=i].to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest.to_string()
+    } else {
+        match rest.find(char::is_whitespace) {
+            Some(idx) => rest[..idx].to_string(),
+            None => rest.trim_end_matches(')').to_string(),
+        }
     }
 }
 

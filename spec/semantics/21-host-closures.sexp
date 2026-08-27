@@ -118,6 +118,25 @@
   (output (: 107 Int64))
   (live-objects known-leak 1))
 
+; TWO-CALL-ON-ONE-HANDLE — a `borrow<t>` closure `call` does NOT consume its handle, so it is REPEATABLE:
+; the host makes the closure ONCE, then calls it TWICE on the SAME handle. A `(then <arg>…)` continuation
+; after the `(call …)` supplies the second call's arguments; the first `(call …)` args split by `make`'s
+; arity as usual (make's params, then the FIRST call's args). The two results render as a tuple
+; `(tuple <r1> <r2>)`. An `own<t>` closure would trap "unknown handle index" on the second call, so a
+; matching tuple pins that the borrowed handle stays live across calls (the production single-export `call`
+; ABI is `borrow<t>`). The handle is made once → the same known borrow leak of 1 cell as a one-call case.
+
+(case "a borrowed closure handle is called twice on the same handle (repeatable)"
+  (doc    "`adder(10)` makes a closure capturing k=10; `call(handle, 5)` = 15, then `(then (: 7))` calls the
+           SAME handle again `call(handle, 7)` = 17. The results render as `(tuple 15 17)`: the borrowed
+           handle served BOTH calls (an `own<t>` handle would be consumed after the first, trapping the
+           second). Arg split: 10 → make's `k`, 5 → the first call's `x`, 7 → the second call's `x`.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 10 Int64) (: 5 Int64))
+  (then   (: 7 Int64))
+  (output (: (tuple 15 17) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
+
 ; C-HOST-3 — a MULTI-ARGUMENT closure. `(-> Int64 (-> Int64 Int64))` (curried sugar `(fn (a b) …)`)
 ; crosses as a resource whose `call` takes BOTH arguments: `call : (self, a: s64, b: s64) -> s64`. The
 ; guest's lifted body is `(env, a, b) -> result`, so `call` pushes both args before the `call_indirect`.

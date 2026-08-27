@@ -1663,6 +1663,16 @@ fn run_program_wasm(
         for arg in &call.args {
             run.arg("--arg").arg(arg);
         }
+        // A `(then …)` continuation drives a SECOND call on the same closure handle (borrow<t>
+        // repeatability): `--call-twice` puts cdz-run in two-call mode (make ONCE, call twice, render the
+        // pair as a tuple), and each `--then-arg` is a second-call argument. A nullary `(then)` passes
+        // `--call-twice` alone. Absent for the ordinary one-call form.
+        if let Some(second) = &call.second_call {
+            run.arg("--call-twice");
+            for arg in second {
+                run.arg("--then-arg").arg(arg);
+            }
+        }
     }
     // HOST-CALL RESPONSES (E2h): a program that delegates an effect to the host consumes these in order.
     // Each `(op, value)` becomes `--host-response op=value`; `cdz-run` binds the imported ops to return
@@ -4392,6 +4402,11 @@ struct Trial {
 struct Call {
     export: String,
     args: Vec<String>,
+    /// A `(then <arg>…)` continuation (two-call-on-one-handle, `borrow<t>` repeatability): the SECOND
+    /// call's arguments, or `None` for the ordinary one-call form. `Some` (possibly empty) drives
+    /// `cdz-run --call-twice` so the same closure handle serves both calls; the run renders both results
+    /// as a tuple.
+    second_call: Option<Vec<String>>,
 }
 
 /// Run `cdz-corpus records <file>` and parse its record stream.
@@ -4427,6 +4442,9 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let (mut wit_world, mut component_name): (Option<String>, Option<String>) = (None, None);
     let mut live_objects: Option<u32> = None;
     let (mut call_export, mut call_args): (Option<String>, Vec<String>) = (None, Vec::new());
+    // The pending `(then …)` continuation's args (two-call-on-one-handle), or `None` until a `then-call`
+    // marker line opens it. Flushed into the trial's `Call` alongside `call_args` on the `expect` line.
+    let mut second_call: Option<Vec<String>> = None;
     for line in text.lines() {
         if line == "---" {
             records.push(CorpusRecord {
@@ -4445,6 +4463,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
             // Defensive: a well-formed record ends every trial with an `expect`, so nothing is pending.
             call_export = None;
             call_args.clear();
+            second_call = None;
             continue;
         }
         if let Some((key, val)) = line.split_once('\t') {
@@ -4460,11 +4479,23 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 }
                 "call" => call_export = Some(val.to_string()),
                 "arg" => call_args.push(val.to_string()),
+                // `then-call\t<n>` opens a two-call continuation (n = its arg count, unused — the args
+                // arrive as `then-arg` lines); a bare `(then)` emits `then-call\t0` and no `then-arg`, so
+                // `Some(vec![])` (a nullary second call) is distinct from `None` (no second call).
+                "then-call" => second_call = Some(Vec::new()),
+                "then-arg" => {
+                    if let Some(sc) = second_call.as_mut() {
+                        sc.push(val.to_string());
+                    }
+                }
                 "expect" => {
-                    // The `expect` closes a trial: pair the pending call (if any) with this payload.
+                    // The `expect` closes a trial: pair the pending call (if any) with this payload,
+                    // carrying any `(then …)` second-call args.
+                    let sc = second_call.take();
                     let call = call_export.take().map(|export| Call {
                         export,
                         args: std::mem::take(&mut call_args),
+                        second_call: sc,
                     });
                     call_args.clear();
                     trials.push(Trial {
