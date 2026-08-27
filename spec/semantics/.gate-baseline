@@ -7978,3 +7978,6 @@ pass	mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the ex
 pass	mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)
 pass	osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view
 pass	osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)
+pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance
+pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
+todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
