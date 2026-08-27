@@ -21738,3 +21738,14 @@
 (export main)))
   (call main)
   (output (: 10 Int64)))
+
+(case "a nested match on a recursive sum with a statically-known outer disc reads the inner payload at the right depth"
+  (doc    "REGRESSION (silent MISCOMPILE): a match nesting a variant of the SAME recursive sum, when the scrutinee's OUTER disc is statically known (a literal/inlined ctor), matched the WRONG branch. `(type T (I Int64) (W T))`, `(match (W (I n)) ((W (I 7)) 1) (_ 0))`: the `known_disc` fold drops the outer `W` switch, so emit never records W's payload type at `[Payload]`; the inner `(I 7)` lit-test's payload-type walk then FELL BACK to variant 0 (`I`'s payload `Int64`), so the SECOND `Payload` step saw `cur = Int64` (not a Sum) and was erased as a nominal no-op — `get-int` read at `[Payload]`, not `[Payload, Payload]` → garbage. Fix recovers the entered variant from the scrutinee's const value when the fold left `sum_path_types` unseeded. This is the shape EVERY recursive-AST/tree walk takes, latent under any inlined/const scrutinee. Outer `W` is a literal ctor (known disc → the bug path) while the inner payload/disc are RUNTIME (defeats const-fold, forces the emit-layer read). f(7)=1 (leaf read at [Payload,Payload], = 7), f(8)=0 (payload 8≠7 → wildcard), h(1)=1 (runtime inner I → matches), h(-1)=0 (runtime inner W, not I → wildcard). `1000*1 + 100*0 + 10*1 + 1*0` = 1010.")
+  (input (do
+(type T (I Int64) (W T))
+(def (f (: n Int64)) (match (W (I n)) ((W (I 7)) 1) (_ 0)))
+(def (h (: b Int64)) (match (W (if (< b 0) (W (I 7)) (I 7))) ((W (I 7)) 1) (_ 0)))
+(def (main) (+ (* 1000 (f 7)) (+ (* 100 (f 8)) (+ (* 10 (h 1)) (h -1)))))
+(export main)))
+  (call main)
+  (output (: 1010 Int64)))

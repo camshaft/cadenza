@@ -2971,6 +2971,7 @@ pass	a nested map pattern with a malformed rest names the shape, not an unbound 
 pass	a nested match missing an inner variant under a DISC-≥1 variant is non-exhaustive
 pass	a nested match on a recursive sum falls through when the inner variant differs (known outer disc)
 pass	a nested match on a recursive sum with a KNOWN outer discriminant reads the right payload depth
+pass	a nested match on a recursive sum with a statically-known outer disc reads the inner payload at the right depth
 pass	a nested match on a runtime scrutinee
 pass	a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm
 pass	a nested module and a sibling def in the same outer module both stay reachable
@@ -6083,6 +6084,10 @@ pass	dqe12 eq-only nested operands confined to a callee scope (nothing escapes) 
 pass	dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)
 pass	dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)
 pass	dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean
+pass	dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once
+pass	dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only
+pass	dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — leg-2 requires the walker condition
+pass	dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller
 pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
 pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
 pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
@@ -8650,7 +8655,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once
-pass	dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only
-pass	dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — leg-2 requires the walker condition
-pass	dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller
