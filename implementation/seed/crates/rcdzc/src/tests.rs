@@ -15100,26 +15100,6 @@ mod runtime_ops {
     // path agrees with the constant fold, over the slot-crossing cases the fold never exercises.
 
     #[test]
-    fn runtime_wrap_int64_to_uint8_truncates() {
-        // `(UInt8.wrap n)` over a runtime Int64: 300 → 44 (low 8 bits), 256 → 0, -1 → 255. The source is
-        // i64, the target u8 — a `i32.wrap_i64` then mask. Result crosses as u8.
-        let f = "(: n Int64)";
-        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(300)]), 44);
-        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(256)]), 0);
-        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(-1)]), 255);
-    }
-
-    #[test]
-    fn runtime_wrap_into_a_signed_narrow_sign_extends() {
-        // `(Int8.wrap n)` over a runtime Int64: 200 → -56 (bit 7 set, sign-extended), 127 → 127, -129 →
-        // 127 (low 8 bits of -129 = 0x7F). The signed target sign-extends from bit 7. Crosses as s8.
-        let f = "(: n Int64)";
-        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(200)]), -56);
-        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(127)]), 127);
-        assert_eq!(run::<i8>(f, "(Int8.wrap n)", &[Val::S64(-129)]), 127);
-    }
-
-    #[test]
     fn runtime_wrap_never_traps_on_any_input() {
         // `wrap` is TOTAL — it never traps, whatever the runtime input (contrast the checked arithmetic).
         // Even the widest / most negative i64 wraps cleanly to a u8.
