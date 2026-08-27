@@ -8177,3 +8177,5 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
+pass	ruf2 the two-sided balance fence over a twice-unwrapped Result Ok payload
+pass	ruf3 the two-sided balance fence over a twice-unwrapped user-generic payload
