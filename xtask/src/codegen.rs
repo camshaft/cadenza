@@ -33,7 +33,7 @@ use crate::{Paths, build_component_with_features, content_address};
 use cadenza_ast::ast::{Arenas, Struct, StructId};
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use wit_parser::{Resolve, Type as WitType};
 use xshell::Shell;
 
@@ -399,7 +399,7 @@ fn generate_contracts(paths: &Paths, check: bool) {
             std::process::exit(1);
         }
 
-        let identity = contract_identity(&arenas);
+        let identity = contract_identity(paths, &stage, staged_str, &name);
         let body = format_tokens(render_schema(&arenas, &decls, &name, identity.as_ref()));
         let source = format!("{}{body}", contract_banner(&name));
         let summary = format!("{} type declarations, from {}", decls.len(), src.display());
@@ -591,24 +591,46 @@ fn render_schema(
     }
 }
 
-/// Read a contract module's identity — its `@!contract` name and its `@!input` / `@!output` type
-/// references — from the decoded source, or `None` if it declares no `@!contract` pragma (not a contract).
-/// The three pragmas are top-level `(pragma <key> <arg>)` forms of the `(do …)` module (each possibly
-/// comment-wrapped); `contract`'s arg is a string, `input`/`output`'s a type name. Mirrors
-/// `cdz_contract::contract_from_module`'s reading so the generated `contract()` computes the same id.
-fn contract_identity(arenas: &Arenas) -> Option<(String, String, String)> {
-    let forms = arenas.as_form(arenas.root, "do")?;
-    let arg = |key: &str| -> Option<StructId> {
-        forms.iter().copied().find_map(|f| {
-            let f = unwrap_comment(arenas, f);
-            let args = arenas.as_form(f, "pragma")?;
-            (args.len() == 2 && arenas.as_name(args[0]) == Some(key)).then_some(args[1])
-        })
-    };
-    let name = arenas.as_str(arg("contract")?)?.to_string();
-    let input = arenas.as_name(arg("input")?)?.to_string();
-    let output = arenas.as_name(arg("output")?)?.to_string();
-    Some((name, input, output))
+/// Read a contract's identity — its NAME and its INPUT / OUTPUT type-name references — by COMPILING and
+/// EXECUTING the contract's `descriptor()` and reading the folded descriptor record (operator 2026-08-27:
+/// "the codegen should call the compiled module, get the descriptor, and then codegen rust based on the
+/// descriptor that calls the `Contract::new`"). This REPLACES the former `@!contract`/`@!input`/`@!output`
+/// pragma read (those module pragmas are deprecated and removed — the identity now flows through the guest's
+/// own `descriptor()` self-reflection, the single source of truth). The `staged` contract is compiled together
+/// with the staged `contract-id` lib it imports into a component exporting `descriptor`, run with `cdz run
+/// --format binary-ast` (which emits the descriptor record as the canonical binary AST — the universal
+/// `cadenza-ast` exchange form), and decoded; `cdz_contract::identity_from_descriptor` reads the name +
+/// input/output type names out (the descriptor's `input`/`output` fields are `Ast.encode(Ast.Name(<type>))`,
+/// decoded back to the type-name symbol). The generated `contract()` still calls `Contract::new(name, types,
+/// input, output)` — the Rust runtime `Contract` — from these, so the id it computes is byte-identical to what
+/// the pragma read produced. Every kernel contract exports `descriptor()`, so a compile/run failure here is a
+/// hard error (a kernel contract must have a runnable descriptor), via `run_cdz`/`run_cdz_capture`.
+fn contract_identity(
+    paths: &Paths,
+    stage: &Path,
+    staged_str: &str,
+    name: &str,
+) -> Option<(String, String, String)> {
+    let wasm = stage.join(format!("{name}.wasm"));
+    let wasm_str = wasm.to_str().expect("a UTF-8 staged wasm path");
+    let lib = stage.join("contract-id.cdz");
+    let lib_str = lib.to_str().expect("a UTF-8 staged lib path");
+    // Compile the contract + the staged `contract-id` lib it imports into a component exporting `descriptor`.
+    run_cdz(
+        paths,
+        &[
+            "compile", staged_str, lib_str, "--entry", name, "-o", wasm_str,
+        ],
+        &format!("compile {name} to execute its descriptor()"),
+    );
+    // Run it, emitting the descriptor record as canonical binary AST, then decode + read (name, input, output).
+    let doc = run_cdz_capture(
+        paths,
+        &["run", wasm_str, "--format", "binary-ast"],
+        &format!("execute the descriptor() of {name}"),
+    );
+    let value = cadenza_ast::codec::decode(&doc)?;
+    cdz_contract::identity_from_descriptor(&value)
 }
 
 /// A declared constructor's shape, as introspected from a `(type T …)` declaration.
