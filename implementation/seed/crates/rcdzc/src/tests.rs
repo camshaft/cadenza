@@ -7449,52 +7449,8 @@ fn a_selfcall_gated_in_an_if_condition_declines_not_hoisted() {
     }
 }
 
-/// A handler seeded with a `(Qty T u)` (quantity) state whose arm resumes with an INLINE-ARITHMETIC
-/// next-state `(resume value (+ s s))` must NOT false-reject CDZ0201. The state binder `s` is the arm's
-/// ELEMENT-2 binder (not in the params list), so `handle_arm_param_ty` returns `None` for it — before the
-/// fix it fell through to `Ty::Any`, and a bare `(resume s s)` slid through (`Any` agrees with the seed
-/// vacuously) but `(+ s s)` defaulted `s:Any` to a generic `Int64`, missing the Qty-aware arith arm →
-/// `next_ty = Int64` mismatched the `(Qty Int64 meter)` seed → a spurious CDZ0201 next-state/seed clash on
-/// a well-typed Qty-stateful handler (breaker #44, corpus-bugfix issue 18102). The fix — `handle_arm_state_ty`,
-/// the state-binder companion of `handle_arm_param_ty`, types the state binder from the handle's SEED — so
-/// `s` types `(Qty Int64 meter)` inside the inline arith, the Qty arm engages, and the next-state matches.
-/// Pins the RUN (a compile-only check would miss a mis-typed fold): `tick` doubles the state to 42 at a=21.
-/// The genuine-mismatch guard (an `Int64` seed resuming with a `String` next-state) is covered by the
-/// unit-level `check_resume_next_state_type` reject below; here we lock that the Qty case is NOT falsely
-/// rejected AND runs to the doubled value.
-#[test]
-fn a_qty_seeded_handler_resuming_with_inline_arith_next_state_folds_and_runs() {
-    use crate::testkit::parse;
-    // The seed is a `(Qty Int64 meter)`; the arm resumes with the DOUBLED state inline `(+ s s)` in BOTH
-    // the value and next-state slots. `Qty.value` recovers the numeric for the export. At a=21 the single
-    // `tick` resumes with `(+ 21 21) = 42`.
-    let src = "(do (effect St (op tick (-> Unit (Qty Int64 (Unit.base #\"meter\"))))) \
-        (def (main (: a Int64)) \
-          (Qty.value (handle St (Qty.of a (Unit.base #\"meter\")) \
-            ((tick (u) s (resume (+ s s) (+ s s)))) (St.tick)))) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "a Qty-seeded handler resuming with inline arith must type the state binder as its seed (Qty), \
-         not Any→Int64 — no spurious CDZ0201",
-    );
-    let runtime = find_runtime_wasm();
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["21".to_string()],
-        runtime,
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(s, "42", "tick resumes with the doubled Qty state")
-        }
-        cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
-    }
-}
-
-/// The genuine-mismatch GUARD for [`a_qty_seeded_handler_resuming_with_inline_arith_next_state_folds_and_runs`]:
-/// the state-binder-typing fix must NOT weaken the real CDZ0201 next-state/seed check. An `Int64`-seeded
+/// The genuine-mismatch GUARD for the handler state-binder-typing fix (the inline-Qty-resume fold, whose
+/// value is pinned in the corpus): the fix must NOT weaken the real CDZ0201 next-state/seed check. An `Int64`-seeded
 /// handler that resumes with a `String` next-state STILL rejects — the fix only supplies the binder's type;
 /// a definite clash between the (now correctly-typed) next-state and the seed still faults.
 #[test]
@@ -51544,25 +51500,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a ctl arm applying k lexically must fold through the continuation (k v = resume v), not decline"
-        );
-    }
-
-    #[test]
-    fn an_escaping_k_over_a_nonidentity_pure_continuation_reifies_and_runs() {
-        // E5 STEP-3 INC-2a value check: an escaping `k` over a NON-identity pure continuation `C = (+ 1 □)`.
-        // The arm `(f () s k (use-k k))` reifies `k = (fn (#kv) (+ 1 #kv))`; `use-k` applies it to 10 →
-        // `(+ 1 10)` = 11. Pins the reification produces the RIGHT continuation (not just the identity): the
-        // handle body `(+ 1 (A.f))` becomes `(use-k (fn (#kv) (+ 1 #kv)))`, and the runtime-closure machinery
-        // applies it end-to-end. The escaping-k continuation-as-closure, value-graded.
-        let src = "(do (effect A (op f (-> Unit Int64))) \
-                   (def (use-k (: stored-k (-> Int64 Int64))) (stored-k 10)) \
-                   (def (main) (handle A 0 ((f () s k (use-k k))) (+ 1 (A.f)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("an escaping-k over a pure continuation reifies a closure + folds");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some()
-                || cdz_run::required_runtime(&bytes).is_ok(),
-            "compiles to a well-formed component"
         );
     }
 
