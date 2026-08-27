@@ -7883,6 +7883,48 @@
   (call main (: (list (list 1) (list 2 3)) (List (List Int64))))
   (output (: 202 Int64)))
 
+; -- breaker batch 449 (2026-08-27): slice-2a COMPOSITION probes — what the escape-gate admits and
+; declines when the lifted list param meets other subsystems. Admitted (borrow-shaped): a local
+; closure CAPTURING the param (elc1), and that capture crossing a higher-order call boundary (elc5)
+; — both reclaim to zero. Declined on wasm (consumer-shaped, the List analogs of el1's recursive
+; escape): List.concat consuming two lifted params (elc4) and Map.insert keying by the param (elc2)
+; — rungs for the escaping/consuming slice, rust-pass auto-flip rows.
+
+(case "elc1 a local closure captures the lifted List entry param and is invoked twice"
+  (input (do
+    (def (main (: xs (List Int64)))
+      (let ((f (fn ((: k Int64)) (+ k (List.len xs)))))
+        (+ (f 10) (f 100))))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 116 Int64)))
+
+(case "elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations"
+  (input (do
+    (def (twice (: f (-> Int64 Int64)) (: k Int64)) (+ (f k) (f (* k 10))))
+    (def (main (: xs (List Int64)))
+      (twice (fn ((: k Int64)) (+ k (List.len xs))) 1))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 17 Int64)))
+
+(case "elc2 a Map keyed by the lifted List entry param answers its value on lookup"
+  (input (do
+    (def (main (: xs (List Int64)))
+      (let ((m (Map.insert (Map.insert Map.empty xs 7) (list 9 9) 5)))
+        (match (Map.lookup m xs) ((Option.Some v) v) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 4 5 6) (List Int64)))
+  (output (: 7 Int64)))
+
+(case "elc4 List.concat consumes two lifted List entry params into one measured list"
+  (input (do
+    (def (main (: a (List Int64)) (: b (List Int64)))
+      (List.len (List.concat a b)))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)) (: (list 9 8) (List Int64)))
+  (output (: 5 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
