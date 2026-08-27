@@ -7915,6 +7915,7 @@ pass	xhsA the binder feeds the outer perform and the answer but the state thread
 pass	xhsB the binder feeds the outer perform and the threaded state but the answer is only the note result — boundary variant
 pass	xhsC the outer perform takes a CONSTANT while the binder feeds answer and state — boundary variant
 pass	xhsD the DROPPED-frozen-arg complement — the outer note arm IGNORES its op param (answers the count, threads count plus one) while the inner step arm still let-binds the advanced column performs the outer note with it and resumes packing both; the frozen argument is dropped not escaped, and the fold is CORRECT
+pass	xhsE the COMPUTED perform-arg variant — the inner arm let-binds the advanced column but performs the outer note with the binder PLUS ONE (a compound of the binder, not the binder itself), resuming and threading as before; the freeze inlines the compound's arm-local refs to their drain-safe inits so it folds
 pass	xhsF the MULTI-PERFORM variant — the inner step arm performs the outer note TWICE with the same shared binder before resuming with both answers' low digits and threading the binder; two frozen arguments must drain-bind independently in one arm
 pass	xhsG CONDITIONAL mid-arm foreign perform — the note rides only the THEN branch
 pass	xhsGGrow conditional mid-arm foreign perform WITH a growing List.push next-state — composition of the conditional-selector freeze (7106ad497) and the growing-state correct-fold (95f5ab8d2)

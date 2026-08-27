@@ -10253,7 +10253,16 @@ fn freeze_foreign_perform_args(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
         for (i, &a) in orig.iter().enumerate().skip(1) {
             let init = match resolved_of(db, a) {
                 Resolved::Ref { value } => Some(value),
-                _ if matches!(db.ast.get(a), Struct::List(_)) => Some(a),
+                // A COMPUTED perform-arg (a compound of the shared binder, `(+ c2 1)` — xhsE) freezes the
+                // EXPRESSION rather than a single `let`-ref's init. Freezing it RAW keeps its arm-local `let`
+                // refs (`c2`), which then dangle at drain level (materialized OUTSIDE the arm) → CDZ0101. The
+                // bare-ref case above is drain-safe for free because `Ref { value }` IS the binding's init
+                // (already `col`→`#st`/`#seed`-substituted); do the same for the compound by INLINING each
+                // arm-local `let`-ref inside it to that same drain-safe init, so the frozen expr references
+                // only drain-level names (`#st`/`#seed`), op params, and enclosing params.
+                _ if matches!(db.ast.get(a), Struct::List(_)) => {
+                    Some(inline_arm_local_let_refs(db, a))
+                }
                 _ => None,
             };
             if let Some(init) = init {
@@ -10309,6 +10318,44 @@ fn freeze_foreign_perform_args(db: &mut Db, node: StructId, ctx: &HandlerCtx) ->
         }
     }
     node
+}
+
+/// Replace every bare `let`-binding reference in `node` with that binding's INIT (its resolved `Ref { value }`),
+/// leaving drain-safe names (`#`-prefixed: `#st`/`#seed`/`#fa`), op params, and enclosing params untouched (a
+/// `Param` does not resolve to `Ref`, so it is never inlined). Used by the foreign-perform-arg freeze to make a
+/// COMPUTED arg (`(+ c2 1)`) drain-safe before it is bound at drain level: substituting `c2` by its init
+/// (already `col`→`#st`-substituted in the combined) yields an expression with no arm-local refs, exactly the
+/// drain-safe form the bare-`Ref` path binds directly.
+///
+/// The substitution is ONE LEVEL — a matched ref becomes its `value` verbatim, WITHOUT recursing into that
+/// value. This mirrors the bare-`Ref` freeze path (which binds `value` as-is because it is already drain-safe)
+/// and, critically, avoids nontermination: a state binder's init resolves to a `Ref` whose value transitively
+/// re-references the binder (the threaded-state fixpoint), so descending into substituted values stack-overflows
+/// (xhsE). Recursion is over the ORIGINAL node's list STRUCTURE only, to reach each ref; it never re-enters a
+/// value it just spliced in. Preserves node sharing when nothing changes.
+fn inline_arm_local_let_refs(db: &mut Db, node: StructId) -> StructId {
+    if let Some(name) = db.ast.as_name(node) {
+        if !name.starts_with('#')
+            && let Resolved::Ref { value } = resolved_of(db, node)
+        {
+            return value;
+        }
+        return node;
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let rebuilt: Vec<StructId> = children
+                .iter()
+                .map(|&c| inline_arm_local_let_refs(db, c))
+                .collect();
+            if rebuilt == children {
+                node
+            } else {
+                db.push_list(rebuilt)
+            }
+        }
+        Struct::Atom(_) => node,
+    }
 }
 
 /// Freeze each arm-local `let`-ref in an if-CONDITION or match-SCRUTINEE to a drain-bound `#fac` name (xhsG /
