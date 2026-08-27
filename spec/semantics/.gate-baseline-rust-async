@@ -2342,6 +2342,7 @@ pass	a let binder shadowing a parameter rebinds within its scope (same type)
 pass	a let binder shadowing a parameter with a DIFFERENT type rebinds correctly
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
+pass	a let binding shadows a built-in type-module name in value position
 pass	a let binding shadows the record constructor in application-head position
 pass	a let binding shadows the tuple constructor in application-head position
 pass	a let binding whose value references a parameter compiles under a call
@@ -7152,6 +7153,9 @@ pass	same-payload different-variant sum keys are DISTINCT map keys
 pass	same-variant sums order by PAYLOAD when the discriminant ties
 pass	sar1 a recursion-built set accumulator to-list reads its sorted head under the trap detector (CDZ0304)
 pass	sar2 a recursive const walk SUMS a folded Set.to-list
+pass	sat1 reading through an empty-PREFIX split-at folds to the projected element
+pass	sat2 reading through an empty-SUFFIX split-at folds to the projected element
+pass	sat3 an interior split's suffix element is read correctly (not an empty-side-only fold)
 pass	sb1 String.to-bytes of a draw-picked string read at a draw index — the text-to-bytes bridge follows the thread twice
 pass	sb1 an op ARG drawn at a shadow boundary — both the arg draw and the consuming dispatch home to the INNER handler
 pass	sb3 the op ARG draws from effect B while the dispatch homes to effect A — two paired dispatches, both states advance
@@ -8201,4 +8205,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a let binding shadows a built-in type-module name in value position

@@ -1593,3 +1593,25 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 10 Int64)))
+
+; -- reading THROUGH an empty-side split-at folds like the equivalent literal (migrated from rcdzc
+; accessing_through_an_empty_side_split_at_folds_like_the_literal): a split at k=0/k=arity has a Unit empty
+; side, yielding (Tuple Unit (Tuple …)); projecting THROUGH it (.1 .0 / .0 .0) once declined ("a Unit tuple
+; element needs the value heap") but now folds through the constant tuple split-at produces, reaching the
+; same representation the byte-identical literal does. (The split-at operation itself is covered @982/@989.)
+(case "sat1 reading through an empty-PREFIX split-at folds to the projected element"
+  (doc    "`(Tuple.split-at (tuple 10 20) 0)` = (tuple unit (tuple 10 20)); `.1 .0` reads the suffix's first
+           element = 10.")
+  (input  (. (. (Tuple.split-at (tuple 10 20) 0) 1) 0))
+  (output (: 10 Int64)))
+
+(case "sat2 reading through an empty-SUFFIX split-at folds to the projected element"
+  (doc    "`(Tuple.split-at (tuple 10 20) 2)` = (tuple (tuple 10 20) unit); `.0 .0` reads the prefix's first
+           element = 10.")
+  (input  (. (. (Tuple.split-at (tuple 10 20) 2) 0) 0))
+  (output (: 10 Int64)))
+
+(case "sat3 an interior split's suffix element is read correctly (not an empty-side-only fold)"
+  (doc    "`(Tuple.split-at (tuple 10 20 30) 2)` = (tuple (tuple 10 20) (tuple 30)); `.1 .0` = 30.")
+  (input  (. (. (Tuple.split-at (tuple 10 20 30) 2) 1) 0))
+  (output (: 30 Int64)))
