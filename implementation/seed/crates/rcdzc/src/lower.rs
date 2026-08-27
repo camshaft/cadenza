@@ -18,7 +18,7 @@
 //! binding it introduces is keyed by an existing source occurrence.
 
 use crate::arena::Slot;
-use crate::ast::{IntValue, StructId};
+use crate::ast::{CompoundCtor, IntValue, StructId};
 use crate::core::Core;
 use crate::db::Db;
 use crate::diag::{Code, Fix, Reject};
@@ -6174,8 +6174,7 @@ fn desugar_saturating_bool_list_elements(
         }
         let Some(es) = db
             .ast
-            .as_ctor_form(pat, "list")
-            .or_else(|| db.ast.as_form(pat, "list"))
+            .compound_form_of(pat, CompoundCtor::List)
             .map(<[_]>::to_vec)
         else {
             bool_lead.push(None);
@@ -6221,8 +6220,7 @@ fn desugar_saturating_bool_list_elements(
         }
         let es = db
             .ast
-            .as_ctor_form(pat, "list")
-            .or_else(|| db.ast.as_form(pat, "list"))
+            .compound_form_of(pat, CompoundCtor::List)
             .map(<[_]>::to_vec)
             .expect("the saturating arm is a bare list pattern");
         let list_head = match db.ast.get(pat) {
@@ -6287,8 +6285,7 @@ fn desugar_refutable_literal_list_elements(
         };
         let Some(es) = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)
         else {
             continue;
@@ -6318,8 +6315,7 @@ fn desugar_refutable_literal_list_elements(
         };
         let list_es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec);
         let Some(es) = list_es else {
             // Not a list pattern (a bare binder / `_` catch-all) — reuse the arm verbatim.
@@ -6558,8 +6554,7 @@ fn wrap_bare_member_element(db: &mut Db, elem: StructId) -> StructId {
 fn list_pattern_with_wrapped_lead(db: &mut Db, pat: StructId) -> StructId {
     let Some(es) = db
         .ast
-        .as_ctor_form(pat, "list")
-        .or_else(|| db.ast.as_form(pat, "list"))
+        .compound_form_of(pat, CompoundCtor::List)
         .map(<[_]>::to_vec)
     else {
         return pat;
@@ -6620,8 +6615,7 @@ fn desugar_saturating_ctor_list_elements(
         }
         let Some(es) = db
             .ast
-            .as_ctor_form(pat, "list")
-            .or_else(|| db.ast.as_form(pat, "list"))
+            .compound_form_of(pat, CompoundCtor::List)
             .map(<[_]>::to_vec)
         else {
             ctor_lead.push(None);
@@ -6671,8 +6665,7 @@ fn desugar_saturating_ctor_list_elements(
         }
         let es = db
             .ast
-            .as_ctor_form(pat, "list")
-            .or_else(|| db.ast.as_form(pat, "list"))
+            .compound_form_of(pat, CompoundCtor::List)
             .map(<[_]>::to_vec)
             .expect("the saturating arm is a bare list pattern");
         let list_head = match db.ast.get(pat) {
@@ -6774,8 +6767,7 @@ fn desugar_refutable_ctor_list_elements(
         };
         let es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
         let lead = es
             .iter()
@@ -6805,8 +6797,7 @@ fn desugar_refutable_ctor_list_elements(
         };
         let list_es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec);
         let Some(es) = list_es else {
             new_arms.push(db.push_list(vec![pat, body]));
@@ -6934,10 +6925,7 @@ fn desugar_refutable_ctor_list_elements(
 /// `desugar_refutable_nested_list_elements`. The ZERO-LEADING rest form `(list .. r)` matches every inner
 /// list (irrefutable, handled inline by `list_element_irrefutable_or_decline`) → `None`.
 fn refutable_nested_list_element(db: &Db, elem_pat: StructId) -> Option<(usize, bool)> {
-    let es = db
-        .ast
-        .as_form(elem_pat, "list")
-        .or_else(|| db.ast.as_ctor_form(elem_pat, "list"))?;
+    let es = db.ast.compound_form_of(elem_pat, CompoundCtor::List)?;
     match es.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
         // A rest form: refutable iff ≥1 leading element (misses the empty inner list); zero-leading is
         // irrefutable (returns None). `inner_lead` = the count before `..`, not fixed.
@@ -6977,8 +6965,7 @@ fn desugar_refutable_nested_list_elements(
         };
         let es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
         let lead = es
             .iter()
@@ -7007,8 +6994,7 @@ fn desugar_refutable_nested_list_elements(
         };
         let list_es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec);
         let Some(es) = list_es else {
             new_arms.push(db.push_list(vec![pat, body]));
@@ -7198,8 +7184,7 @@ fn ctor_pattern_with_wildcard_payloads(db: &mut Db, ctor_pat: StructId) -> Struc
 fn map_pattern_with_wildcard_values(db: &mut Db, map_pat: StructId) -> StructId {
     let tail = db
         .ast
-        .as_ctor_form(map_pat, "map")
-        .or_else(|| db.ast.as_form(map_pat, "map"))
+        .compound_form_of(map_pat, CompoundCtor::Map)
         .map(<[_]>::to_vec)
         .unwrap_or_default();
     let map_head = match db.ast.get(map_pat) {
@@ -7257,8 +7242,7 @@ fn desugar_refutable_map_list_elements(
         };
         let es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec)?;
         let lead = es
             .iter()
@@ -7286,8 +7270,7 @@ fn desugar_refutable_map_list_elements(
         };
         let list_es = db
             .ast
-            .as_ctor_form(inner, "list")
-            .or_else(|| db.ast.as_form(inner, "list"))
+            .compound_form_of(inner, CompoundCtor::List)
             .map(<[_]>::to_vec);
         let Some(es) = list_es else {
             new_arms.push(db.push_list(vec![pat, body]));
@@ -7400,8 +7383,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             };
             let Some(es) = db
                 .ast
-                .as_ctor_form(inner, "list")
-                .or_else(|| db.ast.as_form(inner, "list"))
+                .compound_form_of(inner, CompoundCtor::List)
                 .map(<[_]>::to_vec)
             else {
                 continue;
@@ -7510,11 +7492,7 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
             classified.push(Arm::Wild(guard, body));
             continue;
         }
-        match db
-            .ast
-            .as_ctor_form(pat, "list")
-            .or_else(|| db.ast.as_form(pat, "list"))
-        {
+        match db.ast.compound_form_of(pat, CompoundCtor::List) {
             Some(es) => {
                 let es = es.to_vec();
                 // LINEARITY across the WHOLE list pattern (`core-semantics.md §145`: "the whole pattern
@@ -7797,8 +7775,7 @@ fn list_element_irrefutable_or_decline(
     if is_list_pattern(db, elem_pat) {
         let has_leading = db
             .ast
-            .as_form(elem_pat, "list")
-            .or_else(|| db.ast.as_ctor_form(elem_pat, "list"))
+            .compound_form_of(elem_pat, CompoundCtor::List)
             .map(|es| {
                 let dd = es.iter().position(|&e| db.ast.as_name(e) == Some(".."));
                 match dd {
@@ -9227,8 +9204,7 @@ pub(crate) fn check_binding_pattern(
         check_pattern_linear(db, pat)?;
         let elems: Vec<StructId> = db
             .ast
-            .as_form(pat, "tuple")
-            .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+            .compound_form_of(pat, CompoundCtor::Tuple)
             .unwrap_or(&[])
             .to_vec();
         // A binding position is IRREFUTABLE: each tuple ELEMENT sub-pattern must itself be irrefutable.
@@ -9388,8 +9364,7 @@ pub(crate) fn check_binding_pattern(
     //# Each element position and the rest binder MUST be a binder position in the sense of *Patterns Compose*, so an element MAY itself be any pattern (a wildcard, a name, a tuple pattern, a constructor pattern, or a nested element pattern) matched recursively, and the whole pattern MUST remain linear (`CDZ0102`).
     if let Some(elems) = db
         .ast
-        .as_form(pat, "list")
-        .or_else(|| db.ast.as_ctor_form(pat, "list"))
+        .compound_form_of(pat, CompoundCtor::List)
         .map(<[_]>::to_vec)
     {
         // Linearity across the WHOLE list pattern (CDZ0102) — the same check the tuple case runs.
@@ -9946,8 +9921,7 @@ fn pattern_constraints(
     if is_tuple_pattern(db, pat) {
         let elems: Vec<StructId> = db
             .ast
-            .as_form(pat, "tuple")
-            .or_else(|| db.ast.as_ctor_form(pat, "tuple"))
+            .compound_form_of(pat, CompoundCtor::Tuple)
             .unwrap_or(&[])
             .to_vec();
         // A `..` REST MARKER in a tuple pattern — `(tuple a .. r)` — is meaningless: a tuple has FIXED
@@ -10049,8 +10023,7 @@ fn pattern_constraints(
     if is_list_pattern(db, pat) {
         let raw: Vec<StructId> = db
             .ast
-            .as_form(pat, "list")
-            .or_else(|| db.ast.as_ctor_form(pat, "list"))
+            .compound_form_of(pat, CompoundCtor::List)
             .unwrap_or(&[])
             .to_vec();
         // Split off a trailing `.. rest`: a `..` MARKER followed by exactly one binder as the final two
@@ -10175,8 +10148,7 @@ fn pattern_constraints(
     //# A record pattern MAY name a subset of the fields, ignoring the rest.
     if let Some(fields) = db
         .ast
-        .as_form(pat, "record")
-        .or_else(|| db.ast.as_ctor_form(pat, "record"))
+        .compound_form_of(pat, CompoundCtor::Record)
         .map(<[_]>::to_vec)
     {
         // The scrutinee's record field types by name→sorted-slot. When the type is a solved record, each
