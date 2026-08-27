@@ -3629,6 +3629,9 @@ pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple orders lexicographically by field
 pass	a runtime tuple whose component is a list compares the list element-wise in order
 pass	a runtime tuple with a boolean element is returned as a result
+pass	a runtime two-operand Int16 multiplication range-checks its product
+pass	a runtime two-operand Int8 multiplication range-checks its product
+pass	a runtime two-operand UInt16 multiplication range-checks its product
 pass	a runtime two-operand UInt8 addition range-checks at the width boundary
 pass	a runtime two-operand UInt8 multiplication range-checks its product
 pass	a runtime unsigned division at the maximum by 1 does not trap
@@ -7875,9 +7878,11 @@ todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
+todo	a runtime Ast value round-trips through the R2 value codec (Value.encode/decode)
 todo	a runtime Bytes value exposes a repeatable is-empty member (call-method)
 todo	a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)
 todo	a runtime Bytes value's encode member still renders after other member calls (call-method)
+todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
@@ -7959,5 +7964,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-todo	a runtime Ast value round-trips through the R2 value codec (Value.encode/decode)
-todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec
