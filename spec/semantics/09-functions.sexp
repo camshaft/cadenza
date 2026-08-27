@@ -9560,3 +9560,11 @@
             (def (r1 (: s String) (: a Int64) (: b Int64)) (let ((j (+ a b))) (if (< a 1) (+ j j) (r0 s (- a 1) b))))
             (def (main) (r0 "z" 4 6)) (export main)))
   (output (: 10 Int64)))
+
+(case "a self-referential-shaped HOF that is not actually recursive folds"
+  (doc    "`(twice f v) = (f (f v))` nests the SAME non-recursive function twice — a legitimate TERMINATING
+           fold, NOT recursion. The static recursion check must NOT false-positive on it (an old
+           body-on-stack set did, blocking a valid higher-order fold). `(twice (fn (x) (+ x 1)) 5)` folds to
+           (+ (+ 5 1) 1) = 7.")
+  (input  (do (def (main) (let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))) (export main)))
+  (output (: 7 Int64)))
