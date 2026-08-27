@@ -8326,6 +8326,8 @@ todo	a consumer bound to two distinct peer interfaces combines their results
 todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
+todo	a fallible Result peer op result crosses and its Err arm matches
+todo	a fallible Result peer op result crosses and its Ok arm matches
 todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 todo	a middle peer is both a consumer and a provider (A to B to C chain)
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
@@ -8337,6 +8339,7 @@ todo	a peer missing a bound op is rejected naming the op
 todo	a peer op arity mismatch is rejected at compose time, not a trap
 todo	a peer op returning a tuple result is projected to a scalar over the shared runtime
 todo	a peer op type mismatch is rejected at compose time (same arity, different type)
+todo	a peer string result is consumed in-program via equality and byte-len
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
@@ -8352,7 +8355,9 @@ todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value 
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
+todo	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time
 todo	a string argument crosses to a peer and the doubled result byte-len is read
+todo	a symbol argument crosses to and from a peer as a runtime handle like a string
 todo	a type-value flows through nested let bindings and crosses as its own type-of-types
 todo	a versioned interface name agrees across both sides and runs
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
@@ -8451,7 +8456,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-todo	a peer string result is consumed in-program via equality and byte-len
-todo	a fallible Result peer op result crosses and its Ok arm matches
-todo	a fallible Result peer op result crosses and its Err arm matches
-todo	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time

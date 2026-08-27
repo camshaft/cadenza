@@ -4434,6 +4434,7 @@ pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING termi
 pass	a supplementary-plane char literal matches by scalar value
 pass	a surviving closure capturing a heap List reclaims its env cell and captured handle (no live objects)
 pass	a swapped-operand ordering pair is a contradiction that does not mis-fold to one comparison
+pass	a symbol argument crosses to and from a peer as a runtime handle like a string
 pass	a symbol compared to a number is a kind-boundary type error
 pass	a symbol compared to a string is a type error
 pass	a symbol converts back to its content string
