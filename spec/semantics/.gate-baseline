@@ -8713,3 +8713,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	ieh1 an immortal 33-element list as handler STATE threads unchanged across three resumes (runtime-indexed reads)
+pass	ieh2 an immortal 33-element list as an op ARGUMENT crosses the dispatch seam (runtime-indexed read in the handler; miss cell via the small twin)
+pass	ieh3 MIXED handler state (mortal counter + immortal list in a tuple) advances the counter and re-threads the immortal across resumes
