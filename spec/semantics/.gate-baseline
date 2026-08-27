@@ -7548,6 +7548,7 @@ pass	set union is associative on generated inputs (the order merges are grouped 
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
+pass	several same-shaped recursive defs each resolve their own parameter
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
 pass	sfl1 a PERFECT-SHUFFLE position tracker — each shuffle doubles the tracked card's position mod seven (the out-shuffle orbit on eight cards, position seven fixed), where packs position and shuffle count, and the two seeds ride the SAME 3-cycle orbit entered at different points so the rows are rotations of each other
