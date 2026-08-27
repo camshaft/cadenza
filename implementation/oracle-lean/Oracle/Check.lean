@@ -113,6 +113,7 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
     | Option.some "None" => Option.some Value.none
     | Option.some "tuple" => (seqVals m (cs.extract 1 cs.size)).map Value.tuple
     | Option.some "list" => (seqVals m (cs.extract 1 cs.size)).map Value.list
+    | Option.some "map" => (mapEntries m (cs.extract 1 cs.size)).bind (fun es => (Eval.canonMap es).map Value.map)
     | Option.some "record" => Option.none   -- record output not modeled here (compared via `=` only)
     | Option.some ctor =>
       -- a prelude/user sum VARIANT value `(Ctor payload)` — bare ctor head + one payload child
@@ -127,6 +128,23 @@ partial def seqVals (m : Module) (ids : Array Nat) : Option (Array Value) :=
     match acc, expectedValue? m id with
     | Option.some vs, Option.some v => Option.some (vs.push v)
     | _, _ => Option.none) (Option.some #[])
+
+/-- Interpret map ENTRY nodes — each a raw positional `(k v)` (current corpus) or a `(= k v)` field-pair
+(dual-read, the settled target form) — as (key, value) pairs; `none` if any entry is malformed/unmodeled. -/
+partial def mapEntries (m : Module) (ids : Array Nat) : Option (Array (Value × Value)) :=
+  ids.foldl (fun acc id =>
+    match acc with
+    | Option.none => Option.none
+    | Option.some es =>
+      match m.nodes[id]? with
+      | Option.some (Node.list ec) =>
+        let (kId, vId) := match m.headName? (Node.list ec) with
+          | Option.some h => if h == "=".toUTF8 && ec.size == 3 then (ec[1]?, ec[2]?) else (ec[0]?, ec[1]?)
+          | Option.none => (ec[0]?, ec[1]?)
+        match kId.bind (expectedValue? m), vId.bind (expectedValue? m) with
+        | Option.some k, Option.some v => Option.some (es.push (k, v))
+        | _, _ => Option.none
+      | _ => Option.none) (Option.some #[])
 end
 
 /-- Parse one `(trial (call <export>)? (arg <val>)* (expect-… …))`. -/
