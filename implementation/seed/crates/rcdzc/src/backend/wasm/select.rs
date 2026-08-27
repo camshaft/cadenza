@@ -8226,6 +8226,23 @@ fn ty_is_enum_disc(db: &Db, ty: &crate::ty::Ty) -> bool {
 /// as the FALLBACK for an unrecorded `Payload` step (the root switch, whose current type IS the scrutinee's
 /// own — so variant 0 is correct there); a nested switch resolves the ACTUAL entered variant via the
 /// recorded `sum_path_types`.
+/// The type of element/field `i` of a tuple/record container — used to track the sub-value type `cur` down
+/// a `SumPayload` `Elem` walk so a SUBSEQUENT `Elem` into a nested `List` field picks `vec-get` (not the
+/// default `arr-get` on the RRB vec, which reads garbage → an `unreachable` trap). A record's `Elem` slot is
+/// its SORTED-field index (the `BTreeMap` iterates sorted), matching how the value is laid out. `Ty::Any`
+/// for a non-tuple/record container or an out-of-range index (the walk then falls back to `arr-get`).
+fn elem_field_ty(cur: &crate::ty::Ty, i: usize) -> crate::ty::Ty {
+    match cur.strip_nominal() {
+        crate::ty::Ty::Tuple(elems) => elems.get(i).cloned().unwrap_or(crate::ty::Ty::Any),
+        crate::ty::Ty::Record(fields) => fields
+            .values()
+            .nth(i)
+            .cloned()
+            .unwrap_or(crate::ty::Ty::Any),
+        _ => crate::ty::Ty::Any,
+    }
+}
+
 fn sum_single_payload_ty(db: &mut Db, sum: &crate::ty::Ty) -> Option<crate::ty::Ty> {
     let stripped = sum.strip_nominal().clone();
     let crate::ty::Ty::Sum { decl, .. } = &stripped else {
@@ -12940,7 +12957,12 @@ fn emit(
                         } else {
                             out.push(Lir::ConstI32(*i as i32));
                             out.push(Lir::CallImport(OP_ARR_GET)); // → [elem-handle]
-                            cur = Ty::Any;
+                            // Resolve `cur` to the ELEMENT's type (not `Any`), so a SUBSEQUENT `Elem` into a
+                            // nested LIST field picks `vec-get` (else it defaults to `arr-get` on the vec — the
+                            // multi-payload variant-with-a-list-field miscompile: `(Both (list a b) c)` walks
+                            // `[Payload, Elem(0)→list, Elem(0)→elem]`; without this the list-field's element read
+                            // mis-picked arr-get on the RRB vec → unreachable trap).
+                            cur = elem_field_ty(&cur, *i);
                         }
                     }
                     crate::core::PathStep::RestFrom(k) => {
