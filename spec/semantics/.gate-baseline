@@ -7927,6 +7927,9 @@ pass	elc1 a local closure captures the lifted List entry param and is invoked tw
 pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	elc4 List.concat consumes two lifted List entry params into one measured list
+pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
+pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
+pass	ele3 the lifted List entry param SEEDS the handler state
 todo	eo1 an Option entry param delivers its Some payload
 todo	eo2 an Option entry param takes the None arm
 todo	eo3 an Option param BETWEEN scalars keeps positions

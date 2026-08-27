@@ -7925,6 +7925,41 @@
   (call main (: (list 1 2 3) (List Int64)) (: (list 9 8) (List Int64)))
   (output (: 5 Int64)))
 
+; -- breaker batch 450 (2026-08-27): slice-2a × the effects fold. The lifted list param read from
+; each position of a guest handler — the HANDLE BODY, the HANDLER ARM (a fold-scope closure over a
+; boundary-lifted vec, the seam the escaped-closure recovery fixes hardened), and the SEED state.
+; All three fold, answer exactly, and reclaim to zero.
+
+(case "ele1 the lifted List entry param is read in a handle BODY alongside a dispatch"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: xs (List Int64)))
+      (handle St 3 ((get (u) s (resume s s)))
+        (+ (St.get) (List.len xs))))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 6 Int64)))
+
+(case "ele2 the lifted List entry param is read inside a handler ARM feeding the resume value"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: xs (List Int64)))
+      (handle St 10 ((get (u) s (resume (+ s (List.len xs)) s)))
+        (St.get)))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 13 Int64)))
+
+(case "ele3 the lifted List entry param SEEDS the handler state"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: xs (List Int64)))
+      (handle St (List.len xs) ((get (u) s (resume s s)))
+        (St.get)))
+    (export main)))
+  (call main (: (list 1 2 3) (List Int64)))
+  (output (: 3 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
