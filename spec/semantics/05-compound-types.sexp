@@ -21781,3 +21781,26 @@
   (call main (: 50 Int64))
   (output (: 50000 Int64))
   (live-objects 0))
+; -- a partial constructor in a compound literal completes when projected and applied (migrated from rcdzc
+; a_partial_constructor_in_a_compound_literal_completes_when_projected_and_applied): a partially-applied
+; ctor (T.Mk 10) stashed in a compile-time-visible compound (tuple element / record field), then projected
+; and applied, completes to the flat variant. Before, the projected partial ctor lowered to a malformed
+; SumNew and the application call_indirect'd a sum handle as a closure -> INVALID WASM (a real miscompile);
+; running these pins the completion.
+(case "pcc1 a partial ctor in an inline tuple completes when projected and applied"
+  (doc    "`(. (tuple (T.Mk 10) 0) 0)` projects the partial `(T.Mk 10)`; applying it to 5 completes
+           `(T.Mk 10 5)`, matched to a+b = 15.")
+  (input (do (type T (Mk Int64 Int64))
+    (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b)))) (export main)))
+  (call main) (output (: 15 Int64)))
+
+(case "pcc2 a partial ctor in a let-bound tuple completes when projected and applied"
+  (input (do (type T (Mk Int64 Int64))
+    (def (main) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) (export main)))
+  (call main) (output (: 15 Int64)))
+
+(case "pcc3 a partial ctor in a record field completes when projected and applied"
+  (doc    "`(. r f)` projects the partial `(T.Mk 7)` from the record field; applied to 3 → `(T.Mk 7 3)` → 10.")
+  (input (do (type T (Mk Int64 Int64))
+    (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
+  (call main) (output (: 10 Int64)))

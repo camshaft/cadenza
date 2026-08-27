@@ -45882,48 +45882,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_partial_constructor_in_a_compound_literal_completes_when_projected_and_applied() {
-        // A partially-applied constructor `(T.Mk 10)` (a 2-payload ctor given 1 arg) stashed in a
-        // compile-time-visible COMPOUND (a tuple element / record field), then PROJECTED and APPLIED,
-        // completes to the flat variant — `peel_ref_annot` follows the projection into the visible compound
-        // to the ctor spine, which reaches full arity and builds a flat `(T.Mk 10 5)`. Before this, the
-        // projected partial ctor lowered to a MALFORMED `SumNew` (too-few payloads) and the application
-        // `call_indirect`'d a sum handle as a closure → INVALID WASM (a real miscompile). The compound-
-        // element boundary companion of the let-ref / HOF partial-ctor completion.
-        let cases: &[(&str, i64)] = &[
-            // Inline tuple: element 0 is (T.Mk 10); (. tuple 0) then applied to 5 → T.Mk(10,5) → 15.
-            (
-                "(module m (type T (Mk Int64 Int64)) \
-                   (def (main) (match ((. (tuple (T.Mk 10) 0) 0) 5) ((T.Mk a b) (+ a b)))) (export main))",
-                15,
-            ),
-            // let-bound tuple, runtime completing arg.
-            (
-                "(module m (type T (Mk Int64 Int64)) \
-                   (def (main) (let ((p (tuple (T.Mk 10) 0))) (match ((. p 0) 5) ((T.Mk a b) (+ a b))))) \
-                 (export main))",
-                15,
-            ),
-            // Record field holding the partial ctor.
-            (
-                "(module m (type T (Mk Int64 Int64)) \
-                   (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) \
-                 (export main))",
-                10,
-            ),
-        ];
-        for (src, want) in cases {
-            let bytes = compile_component(&crate::codec::encode(&parse(src)))
-                .unwrap_or_else(|e| panic!("compile partial-ctor-in-compound: {e:?} for `{src}`"));
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                *want,
-                "a partial ctor projected from a compound literal must complete to the flat variant: `{src}`"
-            );
-        }
-    }
-
-    #[test]
     fn over_applying_a_function_is_a_coded_type_error() {
         // OVER-application (more args than arity) is a TYPE ERROR (CDZ0203), not a silent argument drop
         // nor a to-do decline — the SAME code an over-applied CONSTRUCTOR uses. `((fn (x) (+ x 1)) 5 9)`

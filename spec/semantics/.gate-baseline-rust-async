@@ -8208,3 +8208,6 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	a signed narrow-width newtype boxed as a tuple element matches by its literal payload
+pass	pcc1 a partial ctor in an inline tuple completes when projected and applied
+pass	pcc2 a partial ctor in a let-bound tuple completes when projected and applied
+pass	pcc3 a partial ctor in a record field completes when projected and applied
