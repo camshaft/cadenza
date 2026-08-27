@@ -1122,6 +1122,26 @@ impl Builder {
         self.list(vec![eq, key, value])
     }
 
+    /// Build a native-compound-data literal `(<ctor-leaf> child…)` — a `List` whose HEAD is an `Atom` of
+    /// the reserved [`Leaf::Ctor`] leaf kind for `ctor`, then `children` in order. The M2 EMIT primitive:
+    /// the compound head is the ctor LEAF KIND (recognized by kind identity via [`Arenas::compound_ctor_leaf`]),
+    /// NOT a `Name`/`Str` head text. `children` are the collection elements (positional for list/tuple/set;
+    /// field pairs for a record; entry pairs for a map). See `DESIGN-native-ast-compound-data.md`.
+    pub fn compound(&mut self, ctor: CompoundCtor, children: &[StructId]) -> StructId {
+        let mut nodes = Vec::with_capacity(1 + children.len());
+        nodes.push(self.atom_leaf(Leaf::Ctor(ctor)));
+        nodes.extend_from_slice(children);
+        self.list(nodes)
+    }
+
+    /// Build a member-access `(. obj key)` — a `List` whose HEAD is an `Atom` of the payloadless
+    /// [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind, distinct from a `Name(".")`), then
+    /// the object and key nodes. The M2 EMIT primitive for a member-access projection.
+    pub fn member(&mut self, obj: StructId, key: StructId) -> StructId {
+        let dot = self.atom_leaf(Leaf::Member);
+        self.list(vec![dot, obj, key])
+    }
+
     // ── Canonical WIT schema-descriptor builders (schema-hash-only effect identity) ──────────────
     //
     // COPY, DON'T DEPEND (rcdzc/Cargo.toml directive): these are a VERBATIM copy of the WIT-descriptor
@@ -1451,6 +1471,63 @@ impl Arenas {
         }
     }
 
+    /// The [`CompoundCtor`] this `List` node denotes via its native ctor-LEAF-KIND head — the M2 read
+    /// primitive, recognized by leaf-kind IDENTITY ([`Leaf::Ctor`]) rather than by head text. `None` if
+    /// the head is not a ctor-leaf atom. The dual of the emit primitive [`Builder::compound`]; coexists
+    /// with the transitional string-head [`compound_ctor`] / dual-read [`compound_ctor_either`] during the
+    /// migration (M3 removes those). See `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor_leaf(&self, id: StructId) -> Option<CompoundCtor> {
+        let Struct::List(items) = self.get(id) else {
+            return None;
+        };
+        match self.get(*items.first()?) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Ctor(c) => Some(*c),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `(key, value)` of a native `(= key value)` record/map ENTRY — a `List` of exactly three whose
+    /// head is the [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind). `None` otherwise.
+    /// The leaf-kind read primitive; distinct from the transitional name-headed `(= …)` the current
+    /// [`Builder::field_pair`] emits (flipped at M2b).
+    pub fn field_pair_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        let Struct::List(items) = self.get(id) else {
+            return None;
+        };
+        if items.len() != 3 {
+            return None;
+        }
+        match self.get(items[0]) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::FieldPair => Some((items[1], items[2])),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `(obj, key)` of a native `(. obj key)` MEMBER-ACCESS projection — a `List` of exactly three
+    /// whose head is the [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind). `None`
+    /// otherwise. The dual of [`Builder::member`].
+    pub fn member_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        let Struct::List(items) = self.get(id) else {
+            return None;
+        };
+        if items.len() != 3 {
+            return None;
+        }
+        match self.get(items[0]) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Member => Some((items[1], items[2])),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
     /// EITHER head spelling (the transitional dual-read of [`compound_ctor_either`]) — the tag-typed twin
     /// of the `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
@@ -1750,6 +1827,48 @@ mod tests {
         assert_eq!(a.compound_ctor(name_list), None);
         // A non-ctor head is neither.
         assert_eq!(a.compound_ctor_either(non_ctor_form), None);
+    }
+
+    #[test]
+    fn native_ctor_leaf_emit_api_is_recognized_by_the_leaf_kind_read_helpers() {
+        // The M2 emit primitives (`Builder::compound`/`member`) build ctor-LEAF-KIND heads, and the read
+        // primitives (`compound_ctor_leaf`/`field_pair_parts`/`member_parts`) recognize them by leaf-kind
+        // identity — never by head text. (The codec round-trip of these leaves is pinned in `codec.rs`.)
+        let mut b = Builder::new();
+        let x = b.name("x");
+        let y = b.name("y");
+        let list = b.compound(CompoundCtor::List, &[x, y]);
+        let tuple = b.compound(CompoundCtor::Tuple, &[x, y]);
+        let record = b.compound(CompoundCtor::Record, &[x]);
+        let map = b.compound(CompoundCtor::Map, &[x]);
+        let set = b.compound(CompoundCtor::Set, &[x, y]);
+        let mem = b.member(x, y);
+        // A native `(= x y)` field pair with the FIELD_PAIR leaf head, built directly — the current
+        // `Builder::field_pair` still emits the transitional `Name("=")` head (flipped at M2b), so exercise
+        // the leaf-kind reader against a leaf-headed node.
+        let fp_head = b.atom_leaf(Leaf::FieldPair);
+        let fp = b.list(vec![fp_head, x, y]);
+        let root = b.list(vec![list, tuple, record, map, set, mem, fp]);
+        let a = b.finish(root);
+
+        // Each collection is recognized by LEAF KIND.
+        assert_eq!(a.compound_ctor_leaf(list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_leaf(tuple), Some(CompoundCtor::Tuple));
+        assert_eq!(a.compound_ctor_leaf(record), Some(CompoundCtor::Record));
+        assert_eq!(a.compound_ctor_leaf(map), Some(CompoundCtor::Map));
+        assert_eq!(a.compound_ctor_leaf(set), Some(CompoundCtor::Set));
+        // A native ctor-leaf head is disjoint from the transitional string/name-head recognizers.
+        assert_eq!(a.compound_ctor(list), None);
+        assert_eq!(a.compound_ctor_either(list), None);
+        assert_eq!(a.head_ctor(list), None);
+        assert_eq!(a.head_name(list), None);
+        // Field-pair / member parts read back in order.
+        assert_eq!(a.field_pair_parts(fp), Some((x, y)));
+        assert_eq!(a.member_parts(mem), Some((x, y)));
+        // Disjoint shapes: a collection is not a field pair / member and vice-versa.
+        assert_eq!(a.field_pair_parts(list), None);
+        assert_eq!(a.member_parts(fp), None);
+        assert_eq!(a.compound_ctor_leaf(fp), None);
     }
 
     #[test]
