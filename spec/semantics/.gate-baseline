@@ -1890,6 +1890,8 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
 pass	a do item OBSERVED by the final expression keeps its trap
+pass	a do-def NOT in the perform argument stays in scope for a later reference
+pass	a do-def passed to a performing helper stays in scope
 pass	a do-def referenced twice WITHIN one resume operand compiles (the within-slot control)
 pass	a do-def shadowing a LET binding rebinds and its init evaluates
 pass	a do-def shadowing a function parameter is a well-defined shadow
@@ -4447,6 +4449,7 @@ pass	abm2 the ABORT ARM ITSELF PERFORMS ON AN OUTER HANDLER — the bail arm bui
 pass	abmin10 TWO nested foreign abort-only handles under the conditional abort
 pass	abmin12 BOTH branches abort (to different handlers) — no value path remains
 pass	abmin2 outer-abort under a LET+IF inside the unrelated inner handle
+pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
 pass	abmin4 if WITHOUT let
 pass	abmin9 the RESUMPTIVE flip of abmin4 — A's arm resumes, so 900307 IS the correct answer here
 pass	abr1 an abortive arm drops the LIST handler state (no live objects)
@@ -5517,6 +5520,7 @@ pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
 pass	cp1 a capture-once closure CAPTURED by a nested closure folds via the deep-copy hoist hygiene
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
+pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpf1 a performing nullary factory called once and applied once folds capture-once
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
@@ -6566,6 +6570,8 @@ pass	ordering two integers of different sign is rejected, not silently reinterpr
 pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
 pass	org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch
+pass	orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time
+pass	orp2 an open-row helper projects a field carrying a performing draw through the fold
 pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
 pass	osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view
 pass	osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)
@@ -7051,6 +7057,7 @@ pass	rsw1 the arm's Ok/Err verdict FLIPS between two identical performs as the s
 pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of the falling state flips Ok to Err
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
 pass	rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm
+pass	ruf1 a twice-unwrapped payload persistently updated through one binding reads original through the other (the two-sided balance fence)
 pass	run-length encode/decode round-trips a runtime list of tuples
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
@@ -7560,6 +7567,7 @@ pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
 pass	the let-bound-after-helper observation is state-type-general (scalar counter)
 pass	the let-form of the dual-resume-slot arm computes (the always-worked oracle twin)
+pass	the let-twin of the do-def-into-perform-arg body computes the same value
 pass	the logical-shift-drops-all-bits fold does not discard a trapping runtime operand
 pass	the magnitude of a bare-scaled quantity reads back
 pass	the manifest is DERIVED from what entrypoints delegate, not from effect declarations
@@ -8132,7 +8140,6 @@ todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow
 todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
-pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
 todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
@@ -8159,17 +8166,13 @@ todo	phr1 an export returning its lifted List param verbatim declines (ownership
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
 todo	read of malformed text is a coded reject, not a wrong value
+todo	rpp1 a scalar-fielded Record entry param projects both fields
+todo	rpp2 an open-row helper projects a field of the boundary Record param
+todo	rpp3 a Record entry param with a heap list field measures both
+todo	rpp4 a scalar Tuple entry param projects both positions
 todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
-todo	rpp1 a scalar-fielded Record entry param projects both fields
-todo	rpp2 an open-row helper projects a field of the boundary Record param
-todo	rpp3 a Record entry param with a heap list field measures both
-todo	rpp4 a scalar Tuple entry param projects both positions
-pass	orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time
-pass	orp2 an open-row helper projects a field carrying a performing draw through the fold
-pass	ruf1 a twice-unwrapped payload persistently updated through one binding reads original through the other (the two-sided balance fence)
