@@ -2067,6 +2067,7 @@ pass	a generic recursive HOF taking a closure is monomorphized at two distinct c
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
 pass	a generic result flows into a second generic call
+pass	a generic same-name constructor inlined into a caller resolves to the constructor not the type
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a generic sum instantiated at a HEAP payload ((Box (List Int64))) crosses resume
 pass	a generic sum type constructor applied to a value is rejected
