@@ -8479,3 +8479,40 @@
     (export main)))
   (call main (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)) (: (list 1 2) (List Int64)))
   (output (: 18 Int64)))
+
+; -- breaker batch 471 (2026-08-27): COMPOUND RETURNS from an export — the formerly un-checkable
+; class, pinned with exact live-object clauses. A returned compound is REACHABLE at report time,
+; so the reading equals the value's representation cell count (list-of-3-scalars = shell+node = 2;
+; tuple/Some/String/record = 1) — these are NOT leaks and must NOT carry known-leak markers. When
+; the reachability-aware live-objects driver lands (subtract reachable-from-return), these clauses
+; flip to (live-objects 0) — that flip IS the driver's acceptance.
+
+(case "crr1 an export returns a three-element list (reachable return = shell plus node, two cells)"
+  (input (do (def (main (: n Int64)) (list n (+ n 1) (* n 2))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (list 5 6 10) (List Int64)))
+  (live-objects 2))
+
+(case "crr2 an export returns a pair tuple (one reachable cell)"
+  (input (do (def (main (: n Int64)) (tuple n (+ n 1))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple 5 6) (Tuple Int64 Int64)))
+  (live-objects 1))
+
+(case "crr3 an export returns a Some-wrapped scalar (one reachable cell)"
+  (input (do (def (main (: n Int64)) (if (> n 0) (Option.Some n) Option.None)) (export main)))
+  (call main (: 5 Int64))
+  (output (: (Some 5) (Option Int64)))
+  (live-objects 1))
+
+(case "crr4 an export returns a runtime-concatenated String (one reachable cell)"
+  (input (do (def (main (: n Int64)) (if (> n 0) (String.concat "ab" "c") "z")) (export main)))
+  (call main (: 5 Int64))
+  (output (: "abc" String))
+  (live-objects 1))
+
+(case "crr5 an export returns a two-field record (one reachable cell)"
+  (input (do (def (main (: n Int64)) (record (= x n) (= y (+ n 1)))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (record (= x 5) (= y 6)) (Record (: x Int64) (: y Int64))))
+  (live-objects 1))
