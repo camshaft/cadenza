@@ -7840,3 +7840,6 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a state-destructuring arm under a multi-perform body folds to 6
+pass	a single-perform body over a state-destructuring arm folds to 6
+pass	a branch-divergent next-state under a multi-perform body folds to 18
