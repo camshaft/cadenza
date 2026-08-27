@@ -3013,6 +3013,7 @@ pass	a peephole rewrite rule reads in the shape of the code it rewrites
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a per-element perform in a cross-function fold threads to a read-out in the base case
+pass	a perform BEFORE the self-call in a subtraction folds via the single-return path
 pass	a perform BETWEEN two `?`s advances state that survives the second's cut
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
@@ -3857,6 +3858,8 @@ pass	a second same-signature closure export shares the one call method
 pass	a seconds quantity is rejected by a meter-typed import at the call site
 pass	a select between a base map and its derived generation frees the loser but not shared nodes
 pass	a self-applying term is declined at the reduction budget, not hung on
+pass	a self-call and a sibling perform as direct list-push operands thread out-state via multi-value return
+pass	a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
 pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
