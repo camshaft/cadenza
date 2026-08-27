@@ -23238,3 +23238,38 @@
   (call main (: 1 Int64))
   (output (: 1 Int64))
   (live-objects 0))
+
+; ── breaker batch 563: the FBIP REMOVE fences (insert is fenced by mps3/mps5; remove — the other
+; persistent CHAMP mutation — was not). mrf1 = fifty frames of Map.remove against the immortal
+; 40-key deep CHAMP: the removal must COPY (the sibling binding keeps the key every frame — an
+; in-place remove on the immortal corrupts the sibling read loudly). mrf2 = the runtime-map
+; remove basics (len drop, removed-key miss, neighbor hit).
+
+(case "mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30) 4 40) 5 50) 6 60) 7 70) 8 80) 9 90) 10 100) 11 110) 12 120) 13 130) 14 140) 15 150) 16 160) 17 170) 18 180) 19 190) 20 200) 21 210) 22 220) 23 230) 24 240) 25 250) 26 260) 27 270) 28 280) 29 290) 30 300) 31 310) 32 320) 33 330) 34 340) 35 350) 36 360) 37 370) 38 380) 39 390) 40 400))
+            (u (Map.remove (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.empty) 1 10) 2 20) 3 30) 4 40) 5 50) 6 60) 7 70) 8 80) 9 90) 10 100) 11 110) 12 120) 13 130) 14 140) 15 150) 16 160) 17 170) 18 180) 19 190) 20 200) 21 210) 22 220) 23 230) 24 240) 25 250) 26 260) 27 270) 28 280) 29 290) 30 300) 31 310) 32 320) 33 330) 34 340) 35 350) 36 360) 37 370) 38 380) 39 390) 40 400) 1)))
+        (+ (+ (match (Map.lookup c 1) ((Some v) v) ((None u2) -1))
+              (match (Map.lookup u 1) ((Some w) w) ((None u3) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 450 Int64))
+  (live-objects 0))
+
+(case "mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors"
+  (input (do
+(def (bld (: i Int64) (: m (Map Int64 Int64))) (if (= i 0) m (bld (- i 1) (Map.insert m i (* i 10)))))
+(def (main (: n Int64))
+  (let ((m (bld 5 (Map.empty))))
+    (let ((u (Map.remove m n)))
+      (+ (* 100 (Map.len u))
+         (+ (match (Map.lookup u n) ((Some v) v) ((None u2) -1))
+            (match (Map.lookup u (+ n 1)) ((Some w) w) ((None u3) -99)))))))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 439 Int64))
+  (live-objects 0))
