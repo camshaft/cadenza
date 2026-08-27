@@ -6784,6 +6784,8 @@ pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 ro
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run
 pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
+pass	rlv0 a returned 2-element list keeps exactly its own 2 cells alive
+pass	rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result
 pass	rlyB single-use arm-perform control (answer only, state untouched) — B's handler arm PERFORMS the outer A (same op name, same signature) doubling the argument and folding A's answer into B's state, so every relay draw advances BOTH threads and the identity question routes THROUGH an arm-perform under schema-hash-only dispatch
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
@@ -7021,6 +7023,7 @@ pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
 pass	sk1 a FILTERED fold — only even draws accumulate but every draw advances the thread, kept-count and span both pinned
 pass	sk4 a Set of TUPLES as handler state with three arms — insert in one arm, contains in a sibling
+pass	sk4c a closure through the one-shot helper capturing an outer let binder folds via the escaped-closure recovery (pinned-capture memo preserved)
 pass	sky1 SKYLINE visibility with demolition — feeds answer whether the building tops all before it, demolish removes EVERY copy of the max forcing the threshold to recompute from survivors
 pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix
 pass	slicing a byte sequence built at run time yields Some of the sub-range
@@ -7907,5 +7910,3 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
 todo	read of malformed text is a coded reject, not a wrong value
-pass	rlv0 a returned 2-element list keeps exactly its own 2 cells alive
-pass	rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result
