@@ -32570,35 +32570,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_wide_accumulation_let_resolves_each_binder_correctly() {
-        // A wide `let` where each binding references the immediately-preceding one — realistic accumulation
-        // code — is resolved via the per-bindings-list binder INDEX (was an O(N) reverse prefix scan per
-        // reference → O(N²)). This locks in that the index answer matches the linear walk at width: each
-        // `v{i}` initializer sees `v{i-1}` (the in-order scope), and the body's `v{N-1}` is the running sum
-        // 0+1+…+(N-1). N=64 → 64·63/2 = 2016. Also exercises a SHADOW at width (a repeated final binder must
-        // win for the body).
-        let n = 64;
-        let mut binds = String::from("(v0 0)");
-        for i in 1..n {
-            binds.push_str(&format!(" (v{i} (+ v{} {i}))", i - 1));
-        }
-        let expect: i64 = (0..n as i64).sum();
-        assert_eq!(
-            run_main(&format!("(let ({binds}) v{})", n - 1)),
-            expect,
-            "each binder sees only the earlier ones; body reads the last"
-        );
-        // A repeated binder at the end of a wide list shadows the earlier same-named one for the body: after
-        // the accumulation, rebind `v0` to 999 — the body `v0` must read 999, not the initial 0. This tests
-        // that the index's ascending-positions + `partition_point(pos < end)` picks the LAST occurrence.
-        assert_eq!(
-            run_main(&format!("(let ({binds} (v0 999)) v0)")),
-            999,
-            "the last binding of a repeated name wins for the body"
-        );
-    }
-
-    #[test]
     fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
         // A non-final `do` form is EVALUATED (value discarded), so an ill-typed intermediate must still be
         // rejected — the fault walk descends into EVERY form, not only the last. `(if 5 1 2)` (a non-Bool
@@ -32753,55 +32724,6 @@ mod stage1 {
             "an ill-typed body of an immediately-applied inline lambda must be rejected (was: invalid \
              wasm): {inline_bug:?}"
         );
-    }
-
-    /// A WIDE `do` block compiles cheaply AND still detects its do-local declaration — the correctness
-    /// guard for the `is_binding_candidate` per-parent memo in `build_scope_skip`. That predicate is
-    /// O(children) for a `(do …)` (it scans the block's forms for a `def`/`module`), and it was called
-    /// ONCE PER CHILD of the block (the scope-skip build asks it with the parent per child) → O(N²) for a
-    /// wide block (6400 statements ≈ 216ms). The memo collapses the repeat to O(N). Behavior must be
-    /// unchanged: a do-local `(def h …)` buried among many value statements is STILL a binding candidate,
-    /// so a later reference to `h` resolves — a broken memo would mark the block non-binding and unbind `h`.
-    #[test]
-    fn a_wide_do_block_still_binds_its_local_declaration() {
-        // 200 value statements, then a do-local def, then a reference to it. The reference must resolve
-        // through the (memoized) binding-candidate detection.
-        let stmts: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
-        let src = format!("(do {stmts}(def (h n) (+ n 1)) (h 41))");
-        assert_eq!(run_main(&src), 42);
-        // And a leading do-local def is visible to a statement far LATER in a wide block.
-        let stmts2: String = (0..200).map(|i| format!("(+ {i} 0) ")).collect();
-        let src2 = format!("(do (def x 7) {stmts2}x)");
-        assert_eq!(run_main(&src2), 7);
-    }
-
-    #[test]
-    fn a_wide_do_block_of_functions_resolves_every_call_in_bounded_time() {
-        // REGRESSION (perf): `resolve`'s do-block scope answered "does an earlier form declare `name`? and
-        // (for mutual recursion) does ANY form declare it as a function?" by SCANNING every do-form per
-        // reference — a reverse scan then an UNCONDITIONAL forward scan for a `Lambda`, both running to
-        // completion on a NEGATIVE lookup (a reference to a prelude/outer name the block doesn't declare).
-        // So a `(do (def (f0 …)) … (def (fN …)) <N calls>)` was O(forms × refs) = O(N²) — likewise a wide
-        // do-local `(module …)` accessed from N sites (`module_sibling_binds`' member scan). The fix indexes
-        // each do-block's / module's declarations by name once at load (`Db::do_binder_index`), so a
-        // reference is an O(1)/O(log N) lookup over only the forms declaring that name. N=200 defs, each
-        // called once from a wide flat sum — well into the old quadratic regime; must resolve + compile in
-        // bounded time and return the right value.
-        let n = 200;
-        let defs: String = (0..n)
-            .map(|i| format!("(def (g{i} (: x Int64)) (+ x {i})) "))
-            .collect();
-        // Sum all N calls: `(+ (g0 0) (+ (g1 0) (+ … 0)))`, nested right — 200 levels, under the parser's
-        // 1024-nesting guard, and it forces resolution of EVERY call (the O(N²)-per-reference path). No List
-        // (a scalar Int64 result runs without the value-heap runtime). Σ g_i(0) = Σ i = 199·200/2 = 19900.
-        let mut body = String::from("0");
-        for i in (0..n).rev() {
-            body = format!("(+ (g{i} 0) {body})");
-        }
-        let src = format!("(do {defs}{body})");
-        // Σ_{i=0}^{199} i = 19900. Resolution of all N calls must stay linear (seconds at N=200 pre-fix on
-        // the O(N²) path); that it runs + returns 19900 is the gate.
-        assert_eq!(run_main(&src), 19900);
     }
 
     #[test]

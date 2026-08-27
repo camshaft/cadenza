@@ -1508,6 +1508,7 @@ pass	a capturing closure whose surviving map store and direct call both feed the
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a catch-all after the specific arms already cover a finite type is unreachable and earns a CDZ0213 warning
+pass	a chain of let bindings each referencing the immediately-preceding one accumulates
 pass	a chain of perform-fed let inits — each binding feeds the next perform's argument
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
@@ -6563,6 +6564,9 @@ pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — oute
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
 pass	iso-b a let-bound escaped-closure helper-call answer inside the handle body folds — the recovery forces the re-parented load-time ref onto the structural walk so it resolves against the rebuilt let (was a false CDZ0101)
+pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
+pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
+pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
 pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
@@ -6786,6 +6790,8 @@ pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested patt
 pass	mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair
 pass	mps2 fifty frames alternating two constant Maps reclaim to zero
 pass	mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)
+pass	mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell
+pass	mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)
 pass	mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed
 pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
 pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
@@ -7638,6 +7644,7 @@ pass	set union is associative on generated inputs (the order merges are grouped 
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
+pass	several independent do-local functions each resolve their own call
 pass	several same-shaped recursive defs each resolve their own parameter
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
@@ -8677,8 +8684,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
-pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
-pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
-pass	mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell
-pass	mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)
