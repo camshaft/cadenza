@@ -4014,3 +4014,35 @@
             (def (main) (Set.len (Set.insert (Set.of (list)) (rep "hi" 3))))
             (export main)))
   (call   main) (output (: 1 Int64)) (live-objects 0))
+
+; -- breaker batch 503 (2026-08-27): the #3964/#3967 to-list ORDER folds, fresh-surface verified
+; by fold-vs-runtime consistency (const build vs branch-selected runtime build, results compared
+; by =). Tuple elements (element-wise lexicographic), sum elements, and sum MAP KEYS
+; (discriminant-then-payload) all agree const-vs-runtime, 0-leak.
+
+(case "tlf1 Set.to-list of TUPLE elements orders identically const and runtime"
+  (input (do (def (main (: n Int64))
+    (let ((cs (Set.to-list (Set.of (list (tuple 2 1) (tuple 1 9) (tuple 1 2)))))
+          (rs (Set.to-list (Set.of (list (tuple (+ n (- 0 3)) 1) (tuple (- n 4) 9) (tuple (- n 4) 2))))))
+      (if (= cs rs) 1 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)"
+  (input (do (def (main (: n Int64))
+    (let ((cs (Set.to-list (Set.of (list (Option.Some 2) Option.None (Option.Some 1)))))
+          (rs (Set.to-list (Set.of (list (Option.Some (- n 3)) Option.None (Option.Some (- n 4)))))))
+      (if (= cs rs) 1 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
+
+(case "tlf3 Map.to-list with SUM keys orders identically const and runtime"
+  (input (do (def (main (: n Int64))
+    (let ((cm (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty (Option.Some 2) 20) Option.None 30) (Option.Some 1) 10)))
+          (rm (Map.to-list (Map.insert (Map.insert (Map.insert Map.empty (Option.Some (- n 3)) 20) Option.None 30) (Option.Some (- n 4)) 10))))
+      (if (= cm rm) 1 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
