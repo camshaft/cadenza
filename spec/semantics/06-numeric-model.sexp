@@ -942,6 +942,26 @@
   (call   main (: 7 Int64))
   (output (: 101 Int64)))
 
+; The RECURSIVE face of the Float32 match-arm family. When the match is the body of a SELF-recursive
+; function, the Rust backend compiles the function to a `loop` and each non-recursive tail arm `break`s its
+; value out; the recursive arm `continue`s. The loop's break leaves used to be grounded ONLY from the group's
+; INT result type, so a Float32 result left a bare `ConstFloat` arm (default Float64) breaking `f64::from_bits`
+; out of an `-> f32` loop → a hard rustc type mismatch (E0308: `expected f32, found f64`; the artifact did not
+; build). The fix carries a float twin of the loop's result width and grounds each break leaf to it (the
+; tail-position sibling of the non-tail match-arm float grounding). `f` returns `0.5` (grounded f32) for every
+; input, since the recursive arm counts down to the `0` arm. Pins the tail-loop break-leaf float grounding at
+; the value level. Both backends (the wasm side already lowers this via its own select/probe grounding).
+(case "a Float32 bare-literal match arm over a self-recursive fn grounds each tail-loop break to f32"
+  (doc    "The recursive/tail-loop face of the Float32 match-arm family: `(def (f (: n Int64)) (: (match n
+           (0 0.5) (_ (f (- n 1)))) Float32))`. The Rust backend compiles `f` to a `loop`; arm-0's bare
+           literal `0.5` is `break`ed as the loop result and must ground to the function's f32 result width
+           (it defaulted to f64 → `break f64::from_bits(…)` out of an `-> f32` loop, rustc E0308, artifact
+           did not build). The recursive `_` arm counts down to the `0` arm, so `f n` = 0.5 for all n ≥ 0.
+           Pins the tail-loop break-leaf float grounding.")
+  (input  (do (def (f (: n Int64)) (: (match n (0 0.5) (_ (f (- n 1)))) Float32)) (export f)))
+  (call   f (: 0 Int64)) (output (: 0.5 Float32))
+  (call   f (: 3 Int64)) (output (: 0.5 Float32)))
+
 (case "a Float32-overflowing literal in a runtime match arm is rejected at check"
   (doc    "The match face of the Float32 branch descent: `(: (match n (0 0.5) (_ 1.0e300)) Float32)` over
            runtime `n` — the wildcard arm's `1.0e300` overflows Float32. The annotation grounds the whole
