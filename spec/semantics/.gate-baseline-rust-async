@@ -7694,3 +7694,5 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
+todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)

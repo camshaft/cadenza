@@ -18427,3 +18427,38 @@
     (export main)))
   (call main (: 2 Int64))
   (output (: 6 Int64)))
+
+; -- breaker batch 484 (2026-08-27): the xar5 scoping gap's WIDTH (companions to the xar5 fence;
+; root cause per v-effects = specialize_recursive lifts the performer to a TOP-LEVEL def and
+; splices the arm's resume-value into it, where main-locals are out of scope). xas1: a SCALAR
+; main-local LET capture hits the same bogus CDZ0101 — the gap is any handle-body-local LET
+; binder, not heap-only. xas2: the arm capturing main's PARAM directly WORKS (params are threaded
+; into the lifted def) — the safe-floor check's exact boundary is "arm captures a main-local LET",
+; params excluded. xas1 flips (oracle 12 = two draws of m=6 at n=2) with the thread-free-vars fix.
+
+(case "xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (let ((m (* n 3)))
+        (handle St 0
+          ((get (u) s (resume m s)))
+          (loop2 n))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 12 Int64)))
+
+(case "xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (handle St 0
+        ((get (u) s (resume n s)))
+        (loop2 n)))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 4 Int64)))
