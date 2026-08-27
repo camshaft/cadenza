@@ -3136,8 +3136,19 @@ mod tests {
         // `to_f64_bits` is the inverse of `from_f64` for every finite f64 — the property both the
         // compiler fold and the runtime op93 float path rely on (they share this file). A whole value,
         // a fraction, a negative, a negative zero, and a subnormal-ish magnitude all round-trip bit-exact.
-        for f in [0.0f64, -0.0, 1.0, -1.0, 1.5, 0.1, 300.0, -2.5e-1, 1e300, 1e-300, 0.30000000000000004]
-        {
+        for f in [
+            0.0f64,
+            -0.0,
+            1.0,
+            -1.0,
+            1.5,
+            0.1,
+            300.0,
+            -2.5e-1,
+            1e300,
+            1e-300,
+            0.30000000000000004,
+        ] {
             let d = Decimal::from_f64(f).expect("finite f64 has a Decimal");
             assert_eq!(
                 d.to_f64_bits(),
