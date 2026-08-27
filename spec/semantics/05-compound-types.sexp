@@ -22494,3 +22494,40 @@
               (export main)))
   (call   main (: -1 Int64))
   (output (: -1 Int64)))
+
+; ── breaker batch 544: List.at bounds-elision boundary cells (#4557 touched the elision; an
+; over-applied elision reads OOB garbage instead of returning None — memory unsafety). All three
+; verified value-exact under the UAF detector. Census riders are truthful: the recursive
+; borrow-param shapes retain the list's 2 cells (the mts1 borrow class), the inline-let shape
+; reclaims.
+
+(case "ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (probe (: xs (List Int64)) (: k Int64))
+  (if (> k 4) 0 (+ (match (List.at xs k) ((Option.Some v) v) ((Option.None) -1)) (probe xs (+ k 1)))))
+(def (main (: n Int64)) (probe (bld n) 0))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 4 Int64))
+  (live-objects known-leak 2))
+
+(case "ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (frames (: xs (List Int64)) (: k Int64))
+  (if (= k 0) 0 (+ (match (List.at xs (% k (List.len xs))) ((Option.Some v) v) ((Option.None) -99)) (frames xs (- k 1)))))
+(def (main (: n Int64)) (frames (bld n) 50))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 101 Int64))
+  (live-objects known-leak 2))
+
+(case "ba3 the exact bounds edge: index len-1 answers the last element, index len answers None"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (let ((xs (bld n)))
+    (+ (* 1000 (match (List.at xs (- (List.len xs) 1)) ((Option.Some v) v) ((Option.None) -1)))
+       (match (List.at xs (List.len xs)) ((Option.Some v) v) ((Option.None) -1)))))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 2999 Int64))
+  (live-objects 0))

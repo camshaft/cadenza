@@ -8865,3 +8865,6 @@ pass	an annotation whose type is a reduced (Int 64) constructor grounds the valu
 pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
 pass	lbe2 List.at over a runtime list at a masked index past the end yields None
 pass	lbe3 List.at over a runtime list at a plain negative index yields None
+pass	ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)
+pass	ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)
+pass	ba3 the exact bounds edge: index len-1 answers the last element, index len answers None
