@@ -5292,6 +5292,12 @@
             (def (main) (f (list (A.N "h") (A.I 7) (A.I 9)))) (export main)))
   (output (: 7 Int64)))
 
+(case "a tuple of two rest-lists binds each leading head (two rest markers in one arm are linear)"
+  (doc    "A tuple scrutinee whose two elements are each a `(list h .. rest)` — `((tuple (list a .. r1) (list b .. r2)) (+ a b))` — is a WELL-FORMED arm: the `..` is a syntactic rest MARKER (the binder is the name AFTER it), so two `..` across sibling sub-patterns are NOT a duplicate binding (a linearity walker that read `..` as a bare name would falsely fault CDZ0102). Each leading binder reads element 0 of its rest-list: `(tuple [1,2] [3,4])` → a=1, b=3 → 4. (A reused rest BINDER `r` across the two sublists IS non-linear — CDZ0102 — but that is the compile-time linearity face, unit-pinned in rcdzc.)")
+  (input  (do (def (f (: p (Tuple (List Int64) (List Int64)))) (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0)))
+              (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main)))
+  (call   main) (output (: 4 Int64)))
+
 (case "a list arm's constructor element that does not match the tag falls through"
   (doc    "The refutability of the constructor element: the same `((list (A.I x) b c) x)` arm against a list
            whose HEAD is an `A.N` (not `A.I`) does NOT match — the length holds but the discriminant test on

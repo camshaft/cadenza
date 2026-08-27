@@ -17051,15 +17051,9 @@ mod match_engine {
             None,
             "two rest markers across sibling sub-patterns are linear (no CDZ0102)"
         );
-        // And the value is correct — the leading binders `a`,`b` read element 0 of each rest-list. 1+3=4.
-        if let Some(v) = run_heap_value(
-            "(module m (def (f (: p (Tuple (List Int64) (List Int64)))) \
-               (match p ((tuple (list a .. r1) (list b .. r2)) (+ a b)) (_ 0))) \
-             (def (main) (f (tuple (list 1 2) (list 3 4)))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(v, "4", "two-rest-list tuple binds each leading head");
-        }
+        // The value (the leading binders `a`,`b` read element 0 of each rest-list, 1+3=4) is confirmed
+        // end-to-end by corpus 05 "a tuple of two rest-lists binds each leading head" — this keeps only the
+        // compile-time linearity witness (`reject_code`, no runtime).
         // The linearity check still fires for a GENUINE repeat that spans a nested rest sub-pattern (the
         // rest BINDER `r` is reused, not the `..` marker): `(tuple (list a .. r) (list b .. r))` → CDZ0102.
         assert_eq!(
