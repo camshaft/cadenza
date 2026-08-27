@@ -3342,3 +3342,41 @@
   (call main (: 1 Int64))
   (output (: 100000 Int64))
   (live-objects 0))
+
+; ── breaker batch 525: KIND/CONSUMER narrowing of the dual-borrow leak (issue leg-1) — only the
+; TUPLE positional-index projection mints the never-dropped dup. The exact leaking shape flips
+; clean when the extraction is a match-destructure (dqe13, same shape as dqe4), a record field
+; read (dqe14, heap field), or a sum match-extract (dqe15, heap payload). 0-controls: must STAY
+; 0 through the fix, values fence an over-drop on the correctly-releasing paths.
+
+(case "dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (match a ((tuple p q) (match q ((tuple r s) (match s ((tuple t u) u)))))))
+       (if (= a b) 100000 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 101000 Int64))
+  (live-objects 0))
+
+(case "dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)"
+  (input (do (def (main (: n Int64))
+  (let ((a (record (= x n) (= y (list n 5))))
+        (b (record (= x n) (= y (list n 5)))))
+    (+ (* 1000 (List.len (. a y))) (if (= a b) 100000 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102000 Int64))
+  (live-objects 0))
+
+(case "dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean"
+  (input (do (def (main (: n Int64))
+  (let ((a (Option.Some (list n 5)))
+        (b (Option.Some (list n 5))))
+    (+ (* 1000 (match a ((Option.Some t) (List.len t)) ((Option.None) -1)))
+       (if (= a b) 100000 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102000 Int64))
+  (live-objects 0))

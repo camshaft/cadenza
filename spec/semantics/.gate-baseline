@@ -8643,3 +8643,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)
+pass	dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)
+pass	dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean
