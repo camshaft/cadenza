@@ -8775,3 +8775,32 @@
   (input (do (def (main (: n Int64)) #"hot") (export main)))
   (call main (: 5 Int64))
   (output (: ((. Symbol of) "hot") Symbol)))
+
+; -- breaker batch 477 (2026-08-27): the Option-entry slice (#3923) flip-verified + its edges.
+; eo1-3 rows flipped todo->pass. eop1 pins the Option-param x effects-fold composition (0-leak).
+; The landing note claimed option AND result params lift, but a Result param still DECLINES
+; ("crosses the host boundary only as a single nullary export's result" — honest message, scope
+; gap reported): erp1 pins that rung. eop2 pins the Option-of-COMPOUND payload rung (behind the
+; nested lift). Both wasm-todo / rust-pass.
+
+(case "eop1 an Option entry param read inside a handle body composes with the fold"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: o (Option Int64)))
+      (handle St 10 ((get (u) s (resume s s)))
+        (+ (St.get) (match o ((Option.Some v) v) ((Option.None) 0)))))
+    (export main)))
+  (call main (: (Some 7) (Option Int64)))
+  (output (: 17 Int64)))
+
+(case "erp1 a Result entry param delivers its Ok payload"
+  (input (do (def (main (: r (Result Int64 String)))
+    (match r ((Ok v) (* v 2)) ((Err _) -1))) (export main)))
+  (call main (: (Ok 21) (Result Int64 String)))
+  (output (: 42 Int64)))
+
+(case "eop2 an Option-of-list entry param measures its Some payload"
+  (input (do (def (main (: o (Option (List Int64))))
+    (match o ((Option.Some xs) (List.len xs)) ((Option.None) -1))) (export main)))
+  (call main (: (Some (list 4 5 6)) (Option (List Int64))))
+  (output (: 3 Int64)))

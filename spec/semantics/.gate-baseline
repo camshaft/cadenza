@@ -8042,9 +8042,9 @@ todo	elc4 List.concat consumes two lifted List entry params into one measured li
 todo	eln1 an EMPTY nested-list entry param has outer length zero
 todo	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
 todo	eln3 a THREE-level nested-list entry param reads a leaf through two descents
-todo	eo1 an Option entry param delivers its Some payload
-todo	eo2 an Option entry param takes the None arm
-todo	eo3 an Option param BETWEEN scalars keeps positions
+pass	eo1 an Option entry param delivers its Some payload
+pass	eo2 an Option entry param takes the None arm
+pass	eo3 an Option param BETWEEN scalars keeps positions
 todo	ep1 TWO String entry params concat in declaration order
 todo	er1 a Rational entry param in exact arithmetic
 todo	expect on an overflowing checked add traps
@@ -8062,3 +8062,6 @@ todo	trm5 an export with a scalar param returning a CONSTANT Symbol declines (re
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	eop1 an Option entry param read inside a handle body composes with the fold
+todo	erp1 a Result entry param delivers its Ok payload
+todo	eop2 an Option-of-list entry param measures its Some payload
