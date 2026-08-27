@@ -22901,24 +22901,11 @@ mod match_engine {
     }
 
     #[test]
-    fn a_standard_unit_abbreviation_names_the_same_unit_as_its_canonical_spelling() {
-        // The ML quantity-literal surface reads for the terse SI/metric symbols a calculator user reaches
-        // for, so a standard ABBREVIATION resolves to the SAME family unit as its canonical spelling:
-        // `km` = `kilometer`, `m` = `meter`, `ms` = `millisecond`. `1.0 km + 500.0 m` converts km + m to
-        // the meter reference and sums to 1500 m. Before the abbreviation aliases these failed as unknown
-        // units — the operator hit `5 km` / `100 m` directly. Compiles + RUNS. (The operator's `5 km /
-        // 100 m` ratio also resolves both units; it yields a dimensionless `Qty`, exercised via `calc`.)
-        let sum = "(do (def (main) ((. Qty value) \
-                   (+ ((. Qty of) 1.0 ((. Unit of) #\"km\")) \
-                      ((. Qty of) 500.0 ((. Unit of) #\"m\"))))) (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(sum)))
-                    .expect("a km+m abbreviation sum compiles and runs"),
-                "main"
-            ),
-            1500.0
-        );
+    fn a_standard_unit_abbreviation_registry_aliases_its_canonical_spelling() {
+        // A standard ABBREVIATION resolves to the SAME family unit as its canonical spelling (`km` =
+        // `kilometer`, `m` = `meter`, `ms` = `millisecond`). The converting-SUM RUN half (`1.0 km + 500.0 m`
+        // = 1500 m) is corpus-covered by 18-units-of-measure "a standard unit abbreviation resolves to its
+        // canonical unit in a converting sum"; this rcdzc test keeps the direct family-table registry check.
         // The registry carries the abbreviations across dimensions, each aliasing its canonical row's
         // conversion (one source of truth) — a direct check that the family table resolves them.
         let fams = crate::prelude::unit_families();

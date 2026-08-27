@@ -146,6 +146,17 @@
   (input  (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))
   (output (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float64 (Unit.base #"meter")))))
 
+(case "a standard unit abbreviation resolves to its canonical unit in a converting sum"
+  (doc    "A terse SI/metric abbreviation resolves to the SAME family unit as its canonical spelling —
+           `km` = `kilometer`, `m` = `meter` — so `(Unit.of #\"km\")` and `(Unit.of #\"m\")` name real units
+           and `1.0 km + 500.0 m` converts both to the meter reference and sums: 1000 + 500 = 1500 m. Pins
+           that the abbreviation surface a calculator user reaches for (`5 km`, `100 m`) resolves, not just
+           the canonical long spelling. `Qty.value` unwraps the summed quantity to its bare Float64 magnitude
+           at the reference.")
+  (input  (do (def (main) (Qty.value (+ (Qty.of 1.0 (Unit.of #"km")) (Qty.of 500.0 (Unit.of #"m"))))) (export main)))
+  (call   main)
+  (output (: 1500.0 Float64)))
+
 (case "a NEGATIVE prefixed quantity carries its sign through the reference scale-fold"
   (doc    "`-5 kilometer` = `(Qty.of -5.0 (Unit.prefix kilo meter))` DISPLAYS as `-5000.0 meter`: the
            reference scale-fold (×1000) applies to a NEGATIVE magnitude with the sign preserved — the scale
