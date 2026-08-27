@@ -20323,6 +20323,66 @@ mod tests {
         assert_eq!(live_nodes() - base_b, 0, "(B) balanced");
     }
 
+    /// Extends the tuple-payload reclaim rc-model to a BOXED head (a bigint — a real node) to settle the
+    /// UAF gate question: is the head cascade-free unconditionally sound, or does the reclaim need a
+    /// head-escape gate? Proves it is UNCONDITIONALLY SOUND given correct rc placement:
+    ///  (1) a boxed head UNIQUELY owned by the tuple box (rc 1) is cascade-freed by `drop(Cons)` — it is
+    ///      dead (nothing else holds it), so no dangling ref.
+    ///  (2) a boxed head that ESCAPED with a proper OWNED dup (rc 2) SURVIVES the cascade (2→1) — the
+    ///      escapee's ref is intact, no premature free.
+    /// `op_drop` is rc-aware, so the head drop is safe in BOTH cases — no head-escape gate is needed,
+    /// PROVIDED every owned escape dups. A borrow-projection read (`op_sum_payload`/`op_arr_get`) never
+    /// transfers ownership, so it cannot silently leave an un-dup'd escapee at rc 1.
+    #[test]
+    fn tuple_payload_boxed_head_cascade_free_is_sound_unique_and_escaped() {
+        const BIG: i64 = 1 << 40; // out of the fixnum window → a boxed head node
+        // (1) unique boxed head → cascade-freed with the tuple box.
+        let base = live_nodes();
+        let head = op_box_int(BIG);
+        assert!(!is_immediate(head), "a large int must be a boxed node (a real head cell)");
+        let tail = bytes_leaf(&[1, 2, 3]);
+        let tup = op_arr_alloc(2);
+        op_arr_set(tup, 0, head);
+        op_arr_set(tup, 1, tail);
+        let cons = op_sum_new(0, tup);
+        assert_eq!(live_nodes() - base, 4, "Cons + tuple box + boxed head + tail");
+        op_dup(op_sum_payload(cons)); // materialize the tuple box (rc 2), mirroring the arm
+        let t = op_arr_get(op_sum_payload(cons), 1);
+        op_dup(t); // carry the tail
+        op_drop(op_sum_payload(cons)); // drop the materialized tuple-box ref (rc 2→1)
+        op_drop(cons); // free Cons → cascade frees tuple box (1→0) → boxed head + tail(dup-protected)
+        assert_eq!(
+            live_nodes() - base,
+            1,
+            "(1) unique boxed head cascade-freed with the tuple box; only the dup'd tail survives"
+        );
+        op_drop(t);
+        assert_eq!(live_nodes() - base, 0, "(1) balanced");
+
+        // (2) ESCAPED boxed head (a proper owned dup, rc 2) → survives the cascade.
+        let base2 = live_nodes();
+        let head2 = op_box_int(BIG);
+        let tail2 = bytes_leaf(&[4, 5, 6]);
+        let tup2 = op_arr_alloc(2);
+        op_arr_set(tup2, 0, head2);
+        op_arr_set(tup2, 1, tail2);
+        let cons2 = op_sum_new(0, tup2);
+        // Read the head via borrow-projection, then OWN it (a proper escape dups): head rc 1→2.
+        let escaped_head = op_arr_get(op_sum_payload(cons2), 0);
+        op_dup(escaped_head);
+        let t2 = op_arr_get(op_sum_payload(cons2), 1);
+        op_dup(t2); // carry the tail
+        op_drop(cons2); // cascade: tuple box 1→0 free → head2 (2→1 SURVIVES) + tail2 (dup-protected)
+        assert_eq!(
+            live_nodes() - base2,
+            2,
+            "(2) escaped boxed head (rc 2) SURVIVES the cascade; head + tail remain"
+        );
+        op_drop(escaped_head); // release the escapee → head freed
+        op_drop(t2);
+        assert_eq!(live_nodes() - base2, 0, "(2) balanced — no premature free, no leak");
+    }
+
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
     /// leaf, a ROPE (which must flatten first), and the empty input. This pins the RUNTIME half of the
     /// design's §9 byte-identity invariant (DESIGN-compiler-primitives.md): the compile-time `Blake3.of`
