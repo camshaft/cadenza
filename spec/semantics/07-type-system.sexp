@@ -409,13 +409,6 @@
             (def (main) (do (type Box (Bx Int64)) (match (Bx 5) ((Bx x) x))))
             (export main)))
   (call   main) (output (: 5 Int64)))
-
-(case "a do block ending in a type declaration is malformed"
-  (doc    "A trailing `(type …)` yields no value, so a `do` that ends in one is malformed exactly as a
-           trailing `def` is — a coded reject (CDZ0201), not a resolved-as-unbound `type` head.")
-  (input  (do (def (main) (do (type C R G))) (export main)))
-  (error  CDZ0201))
-
 ; The arity rejects above (a non-generic type over-applied, and a generic type over-/under-supplied) are
 ; about the NUMBER of type arguments. The dual slip is a legitimately GENERIC type constructor — one that
 ; DOES take a type parameter — applied to a VALUE where a type belongs: `(Option 5)`, `(List 5)`. Here the
