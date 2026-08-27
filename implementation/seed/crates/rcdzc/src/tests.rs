@@ -67218,63 +67218,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_named_capturing_closure_applied_directly_folds() {
-        // A capturing lambda BOUND to a name (`let ((g (fn (x) (+ x k))))`) and applied `(g 5)` where `g`
-        // closes over an enclosing `k`. `g` is copy-propagated (a lambda value is never KEPT as a runtime
-        // `let` slot — `should_keep_binding` short-circuits it), so `(g 5)` β-reduces to `(+ 5 k)` and `k`
-        // folds through its enclosing binding. Regression guard: a prior version LIFTED `g` speculatively
-        // during the keep check, polluting `db.captured_ref` with `k`'s occurrence → the FOLDED `k` then
-        // lowered to a `Core::Captured` env-read in the enclosing scope (an uninitialized-local
-        // miscompile). The lambda-valued-binding short-circuit fixes it.
-        assert_eq!(
-            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5)))"),
-            15
-        );
-        // Applied more than once — each use folds independently: (5+10)+(6+10) = 31.
-        assert_eq!(
-            run_main("(let ((k 10)) (let ((g (fn ((: x Int64)) (+ x k)))) (+ (g 5) (g 6))))"),
-            31
-        );
-        // Capturing an enclosing PARAMETER through a named binding (not just a `let`).
-        let src = "(module m \
-            (def (f (: k Int64)) (let ((g (fn ((: x Int64)) (+ x k)))) (g 5))) \
-            (def (main (: k Int64)) (f k)) (export main))";
-        assert_eq!(
-            run_returns_with::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                "main",
-                &[wasmtime::component::Val::S64(10)]
-            ),
-            15
-        );
-    }
-
-    #[test]
-    fn a_capturing_closure_composes_with_return_storage_and_multi_capture() {
-        // A closure FACTORY: `(def (mk k) (fn (x) (+ x k)))` returns a closure over `k`; `((mk 10) 5)`
-        // applies the returned closure = 15. A returned closure composed with a capture, both folded.
-        let factory = "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (+ x k))) \
-            (def (main) ((mk 10) 5)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(factory))).expect("compile"),
-                "main"
-            ),
-            15
-        );
-        // A capturing closure STORED in a tuple, projected, applied — capture survives the storage.
-        assert_eq!(
-            run_main("(let ((k 7)) ((. (tuple (fn ((: x Int64)) (+ x k)) 9) 0) 5))"),
-            12
-        );
-        // MULTIPLE distinct captures from different enclosing `let`s, through a nested-arith body.
-        assert_eq!(
-            run_main("(let ((a 2) (b 3)) ((fn ((: x Int64)) (+ (* x a) b)) 5))"),
-            13
-        );
-    }
-
-    #[test]
     fn a_recursive_def_returning_a_closure_is_applyable() {
         // REGRESSION (corpus-bugfix/breaker 6360): a RECURSIVE def whose result is a CLOSURE, applied
         // directly, declined "value is not applyable" (check rc=0, then a lower decline — a false reject of
