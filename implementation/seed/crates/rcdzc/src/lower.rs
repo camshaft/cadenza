@@ -14762,64 +14762,37 @@ pub fn is_constant_compound(db: &mut Db, id: StructId) -> bool {
     }
 }
 
-/// Whether the node at `id` is a fully COMPILE-TIME-CONSTANT `Bytes` literal — a `Core::BytesOf`
-/// whose every element folds to a constant byte (`Core::ConstInt` in `0..=255`). This is the
-/// static-once CANDIDATE predicate for §2d STATIC bytes (`DESIGN-static-data.md` increment 1): such
-/// a value never varies across evaluations, so once the build-once machinery is active (increment 2:
-/// the GLOBAL + START sections) it is materialized ONCE into a module global and read with
-/// `global.get` at each use — rather than the per-call `bytes-alloc` + a `bytes-set` per byte the
-/// backend emits today (`select.rs` `Core::BytesOf`). A `BytesOf` with even one RUNTIME element (a
-/// `UInt8` param, `(UInt8.wrap n)`) is NOT constant — it must build per call — so a single runtime
-/// element disqualifies the whole literal.
+/// Whether the node at `id` is a fully COMPILE-TIME-CONSTANT `Bytes` value — the static-once CANDIDATE
+/// predicate for §2d STATIC bytes (`DESIGN-static-data.md`). Covers BOTH representations of a constant
+/// byte sequence, exactly as the backend emit does: a `Core::BytesOf` whose every element folds to a
+/// constant byte in `0..=255` (a `b"…"` literal / `Bytes.of` of constants) AND a baked `Core::ConstBytes`
+/// leaf (the `Ast.encode` / `Blake3.of` / const-transform fold). Such a value never varies across
+/// evaluations, so once the build-once machinery is active it is materialized ONCE into a module global
+/// and read with `global.get` at each use — rather than the per-call `bytes-alloc` + a `bytes-set` per
+/// byte both arms emit today. A `BytesOf` with even one RUNTIME element (a `UInt8` param, `(UInt8.wrap n)`)
+/// is NOT constant — it must build per call — so a single runtime element disqualifies the whole literal.
 ///
 /// Kept DELIBERATELY SEPARATE from [`is_constant_compound`] rather than folded into it: recognizing
-/// bytes there would flip the `Core::Tuple` short-circuit in `is_runtime_computation` (a tuple
-/// holding only a constant bytes literal would stop being kept as a `Core::Let` binding, so each
-/// projection would re-emit the `BytesOf` construction — a behavior change AND a pessimization until
-/// the build-once global actually exists). This predicate only CLASSIFIES; it changes no emission on
-/// its own (increment 1 is byte-neutral — detection is wired into build-once emit in increment 2).
+/// bytes there would flip the `Core::Tuple` short-circuit in `is_runtime_computation` (a tuple holding
+/// only a constant bytes literal would stop being kept as a `Core::Let` binding, so each projection would
+/// re-emit the construction — a behavior change AND a pessimization until the build-once global exists).
 pub fn is_constant_bytes(db: &mut Db, id: StructId) -> bool {
-    match core_of(db, id) {
-        Core::BytesOf { elems } => elems.iter().all(|&e| {
-            matches!(
-                core_of(db, e),
-                Core::ConstInt(v) if v.to_i64().is_some_and(|n| (0..=255).contains(&n))
-            )
-        }),
-        _ => false,
-    }
+    const_byte_slice(db, id).is_some()
 }
 
-/// The BYTE CONTENT of a fully-constant `Bytes` literal at `id` — `Some(bytes)` when [`is_constant_bytes`]
-/// holds (a `Core::BytesOf` whose every element folds to a constant byte in `0..=255`), else `None`. This
-/// is the material the build-once path (`DESIGN-static-data.md` increment 2) needs beyond the boolean
-/// predicate: the byte sequence is BOTH the interning KEY (two literals with identical content share one
-/// module global — the constant-CSE the design calls for) AND the `(data …)` segment PAYLOAD the init
-/// materializes the handle from (the hybrid mechanism for the flat-byte-payload kinds). Returns the same
-/// bytes the inline `Core::BytesOf` emit (`select.rs`) would `bytes-set` into a fresh buffer per call —
-/// so a build-once global reading these bytes is observably identical, just allocated once.
+/// The BYTE CONTENT of a fully-constant `Bytes` value at `id` — `Some(bytes)` when [`is_constant_bytes`]
+/// holds, else `None`. This is the material the build-once path (`DESIGN-static-data.md` increment 2)
+/// needs beyond the boolean predicate: the byte sequence is BOTH the interning KEY (two literals with
+/// identical content share one module global — the constant-CSE the design calls for) AND the `(data …)`
+/// segment PAYLOAD the init materializes the handle from. Returns the same bytes both constant-`Bytes`
+/// emit arms (`Core::BytesOf` of constants, `Core::ConstBytes`) would `bytes-set` into a fresh buffer per
+/// call — so a build-once global reading these bytes is observably identical, just allocated once.
 ///
-/// `None` (not a panic) for any node that is not an all-constant `BytesOf`: a bare scalar, a `BytesOf`
-/// with a runtime element, or a non-bytes compound. A byte proven `0..=255` by `is_constant_bytes` fits a
-/// `u8`, so the cast is lossless.
+/// Delegates to [`const_byte_slice`], the single canonical constant-`Bytes` reader every fold site uses,
+/// so the two representations stay interchangeable here exactly as they are at every fold. `None` for any
+/// node that is not a fully-constant `Bytes` (a scalar, a runtime-element `BytesOf`, a non-bytes compound).
 pub fn constant_bytes_value(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
-    match core_of(db, id) {
-        Core::BytesOf { elems } => {
-            let mut bytes = Vec::with_capacity(elems.len());
-            for &e in elems.iter() {
-                match core_of(db, e) {
-                    Core::ConstInt(v) => match v.to_i64() {
-                        Some(n) if (0..=255).contains(&n) => bytes.push(n as u8),
-                        // A runtime or out-of-range element: not a constant-bytes literal.
-                        _ => return None,
-                    },
-                    _ => return None,
-                }
-            }
-            Some(bytes)
-        }
-        _ => None,
-    }
+    const_byte_slice(db, id)
 }
 
 /// The CANONICAL BINARY VALUE FORM of a fully-constant compound at `id` — the bytes the resource escape
