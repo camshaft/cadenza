@@ -8741,11 +8741,11 @@
 ; -- breaker batch 476 (2026-08-27): the return-side TYPE matrix completed (extends crr/nrr).
 ; Collection and value-form returns from a scalar-param export: Set (its constructor-application
 ; encode form), Map, BigInt, Rational all cross and reclaim to their reachable cells. Symbol is
-; the ODD ONE OUT: its resource-lowering guard declines ANY parameterized Symbol-returning export
-; — even a CONSTANT symbol with an Int64 param — with a diagnostic whose claim ("a parameter with
-; no scalar boundary type") is factually false for the scalar param. Wrong-diagnostic filed to
-; v-rust-backend; trm5 pins the rung (flips when the guard admits scalar-param symbol returns or
-; the message becomes truthful — retitle then). The no-param constant Symbol works (deforested).
+; the ODD ONE OUT: a parameterized export cannot yet return it (the value form is emitted only
+; for a nullary constant export; a runtime value-encode render needs a Shape::Sym, routed to
+; v-runtime). The original guard FALSELY blamed the scalar param — fixed in #3932 to a truthful
+; result-naming message ("the scalar parameters are fine"); trm5 stays the decline rung and flips
+; when the runtime Sym render lands. The no-param constant Symbol works (deforested).
 
 (case "trm1 an export returns a two-element Set (one reachable cell, constructor-application render)"
   (input (do (def (main (: n Int64)) (Set.of (list n (+ n 1)))) (export main)))
@@ -8771,7 +8771,7 @@
   (output (: 5/2 Rational))
   (live-objects 3))
 
-(case "trm5 an export with a scalar param returning a CONSTANT Symbol declines (resource-guard rung)"
+(case "trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render"
   (input (do (def (main (: n Int64)) #"hot") (export main)))
   (call main (: 5 Int64))
   (output (: ((. Symbol of) "hot") Symbol)))
