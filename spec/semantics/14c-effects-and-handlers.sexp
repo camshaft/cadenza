@@ -18493,3 +18493,39 @@
     (export main)))
   (call main (: 2 Int64))
   (output (: 4 Int64)))
+
+; -- breaker batch 509 (2026-08-27): fresh-surface of #4147's let-threading (the hour it landed;
+; xar5→6 and xas1→12 flip-verified at their oracles). xat1 = TWO scalar lets captured thread
+; correctly (deforests). xat2 = a HEAP list + scalar MIXED capture answers correctly BUT LEAKS the
+; threaded list's cells (2 = shell+node of a main-local list that should reclaim at exit) — the
+; spec-param retain is unbalanced; value-correct reclaim-short, reported to v-effects
+; (reclaim-family adjacent; flips to 0 when the threaded-capture drop is balanced).
+
+(case "xat1 TWO scalar main-local lets captured by the arm thread as extra spec params"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (let ((m (* n 3)) (p (+ n 1)))
+        (handle St 0
+          ((get (u) s (resume (+ m p) s)))
+          (loop2 n))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 18 Int64)))
+
+(case "xat2 a mixed HEAP-list + scalar capture threads and answers but leaks the threaded list"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (let ((ys (if (> n 0) (list n (+ n 1) 9) (list 1))) (m (* n 3)))
+        (handle St 0
+          ((get (u) s (resume (+ (List.len ys) m) s)))
+          (loop2 n))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 18 Int64))
+  (live-objects known-leak 2))

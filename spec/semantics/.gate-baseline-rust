@@ -8001,3 +8001,4 @@ pass	a nested narrow Int8 arith with a multiply inner op computes at the consumi
 pass	a triply-nested narrow Int8 add computes at the consuming width
 pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
 pass	the Int64 control: a nested wide add with if operands needs no normalization
+pass	xat1 TWO scalar main-local lets captured by the arm thread as extra spec params
