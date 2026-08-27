@@ -759,6 +759,7 @@ pass	a GENERIC user sum ((Box Int64)) as op result — nominal tag + instantiate
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
+pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
@@ -1728,6 +1729,7 @@ pass	a context-typed empty float map accepts a runtime float key insert
 pass	a context-typed empty float map needs no key inserted to ground its wrapper type
 pass	a context-typed empty float set grounds its element wrapper type
 pass	a context-typed empty float32 map grounds the narrow-float wrapper
+pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
 pass	a contradictory ARROW annotation on a function value is rejected
 pass	a contradictory arrow annotation on a function INSIDE a compound is rejected
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
@@ -2567,6 +2569,7 @@ pass	a mixed-match tail loop whose Option payload is a heap String finds and rea
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns
 pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
+pass	a mixed-scale combine over a computed BigInt quantity operand converts across scales
 pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversion (5000 m = 5 km)
 pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
@@ -8034,5 +8037,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles
-pass	a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry

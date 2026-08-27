@@ -3415,3 +3415,15 @@
                         (Qty.of n Unit.one)) 1 0)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 11 Int64)))
+
+(case "a mixed-scale combine over a computed BigInt quantity operand converts across scales"
+  (doc    "`(Qty.value (+ (* (Qty.of (BigInt.of n) km) 2) (Qty.of 500 m)))`: a COMPUTED (2x-scaled) km
+           quantity operand combines with a metre quantity across scales — n=3 → 3km*2=6000m + 500m = 6500m.")
+  (input (do
+    (def (main (: n Int64))
+      ((. Qty value) (+ (* ((. Qty of) ((. BigInt of) n) ((. Unit prefix) kilo ((. Unit base) #"meter")))
+                           ((. BigInt of) 2))
+                        ((. Qty of) ((. BigInt of) 500) ((. Unit base) #"meter")))))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 6500 BigInt))
+  (live-objects known-leak 1))
