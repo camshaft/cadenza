@@ -5632,3 +5632,33 @@
   (call-method encode)
   (output (: b"\xe5\x8e&" Bytes))
   (live-objects known-leak 1))
+
+; VM-2 — the value-resource's OTHER emitted members: `is-empty : borrow<t> -> bool` and
+; `to-bytes : borrow<t> -> list<u8>` (besides `len`/`encode`, backend/wasm/mod.rs). Same `(call-method
+; <member>)` drive, different result shapes: a bool (rendered directly) and a raw byte sequence (rendered
+; as the bare list, not a value-form). Pins that a value-resource member of a NON-u32 result type crosses.
+
+(case "a runtime Bytes value's is-empty member crosses (call-method, bool result)"
+  (doc    "`(uleb 624485)` = the 3-byte Bytes `E5 8E 26`; `(call-method is-empty)` reaches its emitted
+           `is-empty` member -> false (non-empty). Pins a value-resource member with a Bool result.")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method is-empty)
+  (output (: false Bool))
+  (live-objects known-leak 5))
+
+(case "a runtime Bytes value's to-bytes member crosses (call-method, raw bytes result)"
+  (doc    "`(uleb 624485)` = the 3-byte Bytes `E5 8E 26`; `(call-method to-bytes)` reaches its emitted
+           `to-bytes` member -> the raw byte sequence 229 142 38. Pins a value-resource member with a raw
+           list<u8> result (rendered as the bare byte list, not a decoded value-form).")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method to-bytes)
+  (output (: (229 142 38) (List UInt8)))
+  (live-objects known-leak 1))
