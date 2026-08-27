@@ -294,6 +294,7 @@ pass	OR-then-mask absorption does not discard a trapping runtime operand
 pass	OR-then-mask absorption folds to the mask constant on a runtime operand
 pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee
 pass	Ok carrying a Some keeps both variant tags
+pass	Option.expect over a dead-after-borrowed String.slice leaks the Some shell each iteration
 pass	Option.expect over an owned Some shell from List.at reclaims the shell across a loop (no live objects)
 pass	Option.expect over an owned Some shell from Map.lookup reclaims the shell across a loop (no live objects)
 pass	Ordering values order Less below Equal below Greater
