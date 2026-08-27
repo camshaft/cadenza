@@ -2158,7 +2158,7 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 9 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; Byte-string-literal pattern WELL-FORMEDNESS edges — the same rules a scalar/String match obeys, keyed
 ; per-arm on the pattern's own kind (a byte-string pattern expects `Bytes`, a text pattern expects

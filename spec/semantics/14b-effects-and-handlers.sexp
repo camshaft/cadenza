@@ -8808,7 +8808,7 @@
             (export main)))
   (call   main (: 65 Int64)) (output (: 1 Int64))
   (call   main (: 200 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "the PASSING FLOOR of adv-20's bisection — a state byte LET-bound as a Bytes and consumed by Bytes.len (NO decode-match) in a tail-resumptive arm folds correctly"
   (doc    "adv-20 bisection floor (v-effects lane): the PASSING control that isolates the finding-#20 decline
