@@ -46157,56 +46157,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_generic_transformer_maps_a_closure_to_an_aggregate_result_at_two_distinct_domains() {
-        // INFERENCE FIX (v-inference): a recursive-generic TRANSFORMER `gmap` threading a closure whose
-        // result is an AGGREGATE (a tuple / user-sum), instantiated at TWO DISTINCT element (domain) types
-        // in one program, was DECLINED at monomorphize (CDZ0201 "type variable this call cannot determine")
-        // — `cdz check` PASSED but `cdz test`/compile REJECTED. Root: a bare closure param types as
-        // `Ty::Any` (not a var), so `solved_lambda_arrow_under` binding the param's expected domain via a
-        // var-subst could not reach an aggregate body — `(fn (x) (x, x))` typed `(Tuple Any Any)`, and with
-        // the enclosing HOF staying polymorphic across ≥2 domains, `type_specialize` rejected the `Any`.
-        // Fix: `solved_lambda_arrow_under` now ALSO seeds each param's concrete expected domain into
-        // `db.param_types` (save+restore) so `type_of` of the aggregate body reads the param at its domain
-        // type, giving `(Tuple Int64 Int64)`. This was the real root of v-iterators' misnamed
-        // "instantiation-pressure ceiling" (flatten was a red herring; it is this closure-aggregate tie).
-        // `gmap [1,2] (x -> (x,x))` (Int64→tuple) + `gmap ["a","b"] (s -> concat s s)` (String→String),
-        // counting each: 2 + 2 = 4. Uses the value heap (GIter), so SKIP if the store is absent.
-        let src = "(module m \
-            (type GIter (Nil) (Cons a (GIter a))) \
-            (def (from-list xs) \
-              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t))))) \
-            (def (count it) \
-              (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest))))) \
-            (def (gmap it f) \
-              (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f))))) \
-            (def (main) \
-              (+ (count (gmap (from-list (list 1 2)) (fn (x) (tuple x x)))) \
-                 (count (gmap (from-list (list \"a\" \"b\")) (fn (s) (String.concat s s)))))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "a generic transformer mapping a closure to an aggregate at two domains compiles",
-        );
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping aggregate-result transformer run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => assert_eq!(
-                v, "4",
-                "gmap at Int64→tuple (count 2) + String→String (count 2) = 4"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_generic_transformer_closure_aggregate_result_grounds_its_element_on_rust_not_unit() {
         // INFERENCE FIX (v-inference, breaker gtx1 family / issue BUG-generic-transformer-closure-
         // compound-result-grounds-elements-to-unit, routed by v-rust-backend as a rust-visible miscompile).

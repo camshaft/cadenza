@@ -3545,6 +3545,7 @@ pass	a recursive-generic producer wrapping elements in a user sum is consumed at
 pass	a recursive-generic producer's element is usable at each instantiation
 pass	a recursive-generic producer's result is consumed by an element-typed consumer
 pass	a recursive-generic transformer composes with itself
+pass	a recursive-generic transformer maps a closure to an aggregate result at two distinct domains
 pass	a recursive-generic transformer threading a closure composes at two element types
 pass	a recursive-generic transformer threading an IDENTITY closure composes at TWO element types
 pass	a recursive-generic transformer threading an IDENTITY closure composes at a single element type
