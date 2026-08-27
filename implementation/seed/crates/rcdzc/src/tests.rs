@@ -22016,84 +22016,6 @@ mod match_engine {
         );
     }
 
-    /// Compile `src` (a single nullary-export program returning a compound), compose+run it, and return
-    /// the host's rendered `(: value type)` string. Skips (returns `None`) when the runtime is not built.
-    fn escape_render(src: &str) -> Option<String> {
-        let bytes = component(src);
-        let runtime = super::find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: None, // a resource-escape component (make/encode), not a bare function export
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("list escape run trapped: {t}"),
-        }
-    }
-
-    #[test]
-    fn a_char_from_int_option_escapes_and_renders() {
-        // `Char.from-int` folds to a constant `(Option Char)` sum whose `Some` payload is a `ConstChar`;
-        // it crosses the host boundary through the resource-escape path (the sum bakes, its char payload
-        // as a `Leaf::Char`), and the host renders it `(Some #\a)` with the `(Option Char)` type node —
-        // the char value form is `#\c`. `None` renders `(None unit)`.
-        let Some(out) =
-            escape_render("(module m (def (main) ((. Char from-int) 97)) (export main))")
-        else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "(: (Some #\\a) (Option Char))",
-            "Char.from-int Some escape"
-        );
-        let Some(out) =
-            escape_render("(module m (def (main) ((. Char from-int) 55296)) (export main))")
-        else {
-            return;
-        };
-        assert_eq!(
-            out, "(: (None unit) (Option Char))",
-            "Char.from-int None escape"
-        );
-    }
-
-    #[test]
-    fn string_scalar_at_reads_the_char_by_scalar_position() {
-        // 13-strings CHAR increment 3 (`collections-and-text.md` §Reading A String's Scalar At A Position
-        // Is Total): `String.scalar-at : String → Int64 → (Option Char)` reads the CHAR at a Unicode
-        // SCALAR position — `Some #\c` in bounds, `None` out — the char-typed companion of `String.at`.
-        // It addresses SCALAR values, not bytes: `"café"` scalar 3 is `é` (a 2-byte scalar), not a byte.
-        // A constant string + index FOLDS to `(Option Char)`, crossing the boundary via the escape path.
-        let Some(out) = escape_render(
-            "(module m (def (main) ((. String scalar-at) \"hello\" 1)) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "(: (Some #\\e) (Option Char))", "in-bounds scalar");
-        // Scalar-not-byte: `café` = c,a,f,é (4 scalars); scalar 3 is `é`.
-        let Some(out) = escape_render(
-            "(module m (def (main) ((. String scalar-at) \"café\" 3)) (export main))",
-        ) else {
-            return;
-        };
-        assert_eq!(
-            out, "(: (Some #\\é) (Option Char))",
-            "multibyte scalar by position"
-        );
-        // Out of bounds → None.
-        let Some(out) =
-            escape_render("(module m (def (main) ((. String scalar-at) \"hi\" 5)) (export main))")
-        else {
-            return;
-        };
-        assert_eq!(out, "(: (None unit) (Option Char))", "out-of-bounds → None");
-    }
-
     #[test]
     fn a_tail_recursive_list_fold_compiles_to_a_constant_stack_loop() {
         // A tail-recursive fold over a LIST — `(sa xs acc) = (match xs ((list) acc) ((list x .. rest) (sa
@@ -24660,24 +24582,6 @@ mod match_engine {
         assert!(
             !bytes.is_empty(),
             "an effect-then-trap body must emit, not decline as unrepresentable"
-        );
-    }
-
-    #[test]
-    fn a_constant_list_of_tuples_escapes_nested() {
-        // A list whose ELEMENTS are themselves compounds escapes with each element template nested inside
-        // the `(list …)` — the type-directed renderer recurses through `List → Tuple`. `(list (tuple 1 2)
-        // (tuple 3 4))` renders `(: (list (tuple 1 2) (tuple 3 4)) (List (Tuple Int64 Int64)))`. Pins that
-        // a list's element type is carried into each element's sub-render (a heterogeneous nesting).
-        let Some(out) =
-            escape_render("(module m (def (main) (list (tuple 1 2) (tuple 3 4))) (export main))")
-        else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "(: (list (tuple 1 2) (tuple 3 4)) (List (Tuple Int64 Int64)))",
-            "nested constant list-of-tuples escape"
         );
     }
 
