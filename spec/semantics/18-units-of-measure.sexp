@@ -304,6 +304,34 @@
   (input  (Unit.in (Unit.of #"inch") (Qty.of 5 (Unit.of #"foot"))))
   (output (: 60 Int64)))
 
+; A same-DIMENSION quantity annotation is a PURE DIMENSION CHECK — it must NOT re-label the value's unit
+; (breaker's adv-annotation-rebrands-quantity-scale repro): `(: (Qty.of 1 kilometer) (Qty Int64 meter))`
+; stays 1 KM downstream, NOT silently reinterpreted as 1 meter. The annotation names the dimension; it does
+; not normalize/coerce the magnitude to the annotation's unit. (A rebrand inverted the units-safety promise:
+; 1 km read as 1 m — a silent wrong-value miscompile. `type_of`'s Annot arm keeps the EXPRESSION's type.)
+(case "a same-dimension quantity annotation does not rebrand: annotated 1 km converts to 1000 m"
+  (doc    "`(: (Qty.of 1 kilometer) (Qty Int64 meter))` is 1 km annotated at the meter dimension; converting
+           it to meters is 1000 (not the rebranded 1). Pins that the annotation checks the dimension without
+           re-labelling the value's km unit as meter.")
+  (input  (Unit.in (Unit.of #"meter") (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))))
+  (output (: 1000 Int64)))
+
+(case "a same-dimension-annotated quantity converts back to its own unit as the identity"
+  (doc    "The sharpest no-rebrand witness: `(: (Qty.of 1 kilometer) (Qty Int64 meter))` converted BACK to
+           kilometer is 1 (the identity) — a rebrand to `1 meter` would give 0 (1 m in km truncates). Pins
+           that the annotated value retains its km scale.")
+  (input  (Unit.in (Unit.of #"kilometer") (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))))
+  (output (: 1 Int64)))
+
+(case "a same-dimension-annotated quantity combines at its own scale: 1 km + 2 km = 3000 m"
+  (doc    "The annotated `(: (Qty.of 1 kilometer) (Qty Int64 meter))` combined with a real `2 km` sums at km
+           scale: 1 km + 2 km = 3 km = 3000 m. A rebrand (annotated entering as 1 m via a silent mixed-scale
+           bypass) gave 2001; the correct no-rebrand result is 3000.")
+  (input  (Unit.in (Unit.of #"meter")
+            (+ (: (Qty.of 1 (Unit.of #"kilometer")) (Qty Int64 (Unit.of #"meter")))
+               (Qty.of 2 (Unit.of #"kilometer")))))
+  (output (: 3000 Int64)))
+
 ; Unit extraction — `(Qty.unit q)` recovers a quantity's UNIT as a first-class compile-time unit value,
 ; the inverse of `Qty.of`'s unit argument. It lets a program construct another quantity in the SAME unit
 ; as an existing one — `(Qty.of new (Qty.unit y))` — without re-spelling the unit expression. The unit is

@@ -3962,7 +3962,10 @@ pass	a runtime-woven Ast and its quote twin resolve to ONE Map key
 pass	a runtime-woven Ast compares structurally equal to an equivalent quote
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
+pass	a same-dimension quantity annotation does not rebrand: annotated 1 km converts to 1000 m
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
+pass	a same-dimension-annotated quantity combines at its own scale: 1 km + 2 km = 3000 m
+pass	a same-dimension-annotated quantity converts back to its own unit as the identity
 pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
