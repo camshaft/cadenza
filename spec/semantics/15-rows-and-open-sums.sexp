@@ -1566,3 +1566,30 @@
     (export main)))
   (call main (: 21 Int64))
   (output (: 1 Int64)))
+
+; -- breaker batch 497 (2026-08-27): open-row COMPOSITIONS. orp1 = an open-row projection that
+; IGNORES a heap-list sibling — the dead heap field is eliminated at compile time (the whole
+; record folds; branch-select does not stop it), a correct dead-heap elimination through row
+; polymorphism. orp2 = an open-row helper projecting a field whose value is a performing DRAW —
+; the effects fold composes with row-poly projection.
+
+(case "orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time"
+  (input (do
+    (def (get-x r) (. r x))
+    (def (main (: n Int64))
+      (let ((rec (if (> n 0) (record (= x n) (= ys (list n (+ n 1)))) (record (= x 9) (= ys (list 1))))))
+        (get-x rec)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 5 Int64)))
+
+(case "orp2 an open-row helper projects a field carrying a performing draw through the fold"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (get-x r) (. r x))
+    (def (main (: n Int64))
+      (handle St 10 ((get (u) s (resume s s)))
+        (get-x (record (= x (St.get)) (= y n)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64)))

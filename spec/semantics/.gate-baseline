@@ -8170,3 +8170,5 @@ todo	rpp1 a scalar-fielded Record entry param projects both fields
 todo	rpp2 an open-row helper projects a field of the boundary Record param
 todo	rpp3 a Record entry param with a heap list field measures both
 todo	rpp4 a scalar Tuple entry param projects both positions
+pass	orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time
+pass	orp2 an open-row helper projects a field carrying a performing draw through the fold
