@@ -18529,3 +18529,25 @@
   (call main (: 2 Int64))
   (output (: 18 Int64))
   (live-objects known-leak 2))
+
+; -- breaker batch 510 (2026-08-27): the closure-capture-in-arm cell of #4147's threading. The arm
+; APPLIES a main-local closure per discharged op and it threads correctly (12) — contrast chr1,
+; where a closure passed as a PARAM to the recursive def still declines: the boundary is
+; capture-in-arm (threads) vs def-param (doesn't). The threaded-capture LEAK generalizes: the
+; closure cell doesn't reclaim (known-leak 1; xat2's list was 2) — any threaded HEAP capture
+; leaks its cells, one flip-set with xat2.
+
+(case "xcl1 the arm applies a main-local CLOSURE per dispatch through the recursive specialization (leaks the threaded cell)"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (let ((f (fn ((: x Int64)) (* x 2))))
+        (handle St 3
+          ((get (u) s (resume (f s) s)))
+          (loop2 n))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
