@@ -3523,9 +3523,20 @@ fn inline_escaped_worker(db: &mut Db, node: StructId, arm_ops: &[(u32, u32)]) ->
         && let Some((params, hbody)) = crate::eval::lambda_params_and_body(db, head)
         && !crate::eval::is_recursive(db, hbody)
         && params.len() == args.len()
-        && params
-            .iter()
-            .all(|&p| count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1)
+        // DUPLICATION-SAFETY. Originally a strict one-shot bound (every param referenced `<= 1`), which
+        // rejected a closure APPLIED MULTIPLE TIMES through the helper (`apply-twice(g) = (+ (g 1) (g 2))`,
+        // pclos) — yet that duplication is exactly correct: each `(g i)` is an independent application, so
+        // inlining to `(+ (Src.read 1) (Src.read 2))` reproduces the two per-application performs + state
+        // advances the un-inlined program has. Relax it: a param may be referenced more than once when its
+        // argument is safe to duplicate at each reference — a LAMBDA closure (each reference is an
+        // application) or a SIMPLE-PURE name/atom (no effect to duplicate). The following clause already
+        // constrains EVERY arg to exactly those two shapes, and the recovery's post-fold re-check (no
+        // residual leak + non-poison core, `lower.rs`) is the correctness net that rejects any misfold.
+        && params.iter().zip(args.iter()).all(|(&p, &a)| {
+            count_param_refs(db, hbody, crate::eval::param_name_occ(db, p)) <= 1
+                || arg_is_lambda_valued(db, a)
+                || arg_is_simple_pure(db, a)
+        })
         && args
             .iter()
             .all(|&a| arg_is_lambda_valued(db, a) || arg_is_simple_pure(db, a))
