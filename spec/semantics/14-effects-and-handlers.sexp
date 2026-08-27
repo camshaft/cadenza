@@ -6021,6 +6021,56 @@
   (call   main (: 3 Int64))
   (output (: true Bool)))
 
+(case "a constant-lhs and whose right operand aborts desugars and folds to the arm value"
+  (doc    "The constant-condition fold of the short-circuit-operand abort (the runtime companion is above):
+           `(and true (Bail.bail 7))` with `Bail.bail : Int64 -> Bool` and arm `(< n 0)` — the constant-true
+           left selects the right operand, which aborts, so the handle folds to the arm value `(< 7 0)` =
+           false. Pins the const-fold path of the connective-right-operand abort desugar.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Bool)))
+            (def (main)
+              (handle Bail true ((bail (n) s (< n 0))) (and true (Bail.bail 7)))) (export main)))
+  (output (: false Bool)))
+
+(case "a non-tail conditional abort hoists out of a strict operand and folds per branch"
+  (doc    "An abortive perform under a NON-tail conditional — `(+ 1 (if c (Bail.bail 7) 0))` — is lifted by
+           distributing the enclosing strict `+` into both branches: `(if c (+ 1 (Bail.bail 7)) (+ 1 0))`.
+           The abort then sits in a branch tail, so the true branch yields the arm value 7 (the abort
+           abandons the `+ 1`); the false branch is `(+ 1 0)` = 1. Sound because the sibling `1` is pure.
+           Two constant-condition cases pin both branches.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 99 ((bail (n) s n)) (+ 1 (if true (Bail.bail 7) 0)))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a non-tail conditional abort in the untaken branch folds to the pure sibling sum"
+  (doc    "The false-branch companion of the non-tail conditional abort hoist: `(+ 1 (if false (Bail.bail 7)
+           0))` distributes to `(if false (+ 1 (Bail.bail 7)) (+ 1 0))`; the false branch is taken, no abort
+           fires, and the handle folds to `(+ 1 0)` = 1. Pins that the hoist leaves the non-aborting branch
+           computing its ordinary value.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 99 ((bail (n) s n)) (+ 1 (if false (Bail.bail 7) 0)))) (export main)))
+  (output (: 1 Int64)))
+
+(case "an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction"
+  (doc    "The abortive hoist requires PURE siblings, but here the sibling `(Get.get 0)` is effectful — under
+           a NESTED inner `Get` handle, beneath an abortive outer `Bail`. `reduce_handle` PRE-REDUCES the
+           inner `Get` handle first, folding `(Get.get 0)` to the constant 5; the body becomes `(+ 5 (if true
+           (Bail.bail 7) 50))`, a pure sibling 5 alongside the conditional abort, which hoists to `(if true
+           (+ 5 (Bail.bail 7)) (+ 5 50))`. The abort homes to `Bail` (arm value 7), and `Get.get` runs
+           exactly once (folded before the abort). Pins the inner-handle pre-reduction that unblocks the
+           hoist without a miscompile.")
+  (input  (do
+            (effect Get (op get (-> Int64 Int64)))
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 0 ((bail (n) s n))
+                (handle Get 0 ((get (n) s (resume 5 s))) (+ (Get.get 0) (if true (Bail.bail 7) 50))))) (export main)))
+  (output (: 7 Int64)))
+
 (case "a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)"
   (doc    "The soundness half of the short-circuit connective: when the LEFT operand short-circuits, the
            RIGHT operand's perform MUST NOT run — short-circuit evaluation elides it. `(or (> 5 3)
