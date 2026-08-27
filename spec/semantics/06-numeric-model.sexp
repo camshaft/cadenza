@@ -10822,3 +10822,19 @@
     (export main)))
   (call main (: 2 Int64)) (output (: 0 Int64))
   (call main (: 0 Int64)) (trap "divide by zero"))
+; -- mask-covering-a-shifted-range elision parity (migrated from rcdzc runtime_ops
+; a_mask_covering_a_shifted_values_range_is_elided, 2026-08-27; the Lir mask-elision / signed-shift-keeps
+; assertions stay as the wasmtime-free rcdzc unit test): a logical `>>ᵤ` bounds the result, so a mask
+; covering that whole range is redundant and elided; a narrower mask is kept and still masks.
+(case "mcs1 a mask covering a logical-shift's proven range is elided (value parity)"
+  (doc    "`(& (>> x 4) 15)` on UInt8: the logical shift lands in [0,15], so `& 15` is redundant and elided;
+           the value is still the plain shift — 200>>4 = 12, 255>>4 = 15.")
+  (input (do (def (main (: x UInt8)) (& (>> x 4) 15)) (export main)))
+  (call main (: 200 UInt8)) (output (: 12 UInt8))
+  (call main (: 255 UInt8)) (output (: 15 UInt8)))
+
+(case "mcs2 a mask narrower than the shifted range still masks (not elided)"
+  (doc    "`(& (>> x 4) 7)` on UInt8: the shift lands in [0,15] but `& 7` is narrower, so the mask is kept;
+           255>>4 = 15, & 7 = 7.")
+  (input (do (def (main (: x UInt8)) (& (>> x 4) 7)) (export main)))
+  (call main (: 255 UInt8)) (output (: 7 UInt8)))
