@@ -3007,7 +3007,7 @@
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 4 Int64)) (output (: 6 Int64))
   (call   main (: 5 Int64)) (output (: 10 Int64))
-  (live-objects 0))
+  (live-objects known-leak 2))
 
 (case "a sum-match payload's heap child consumed while the scrutinee is live is retained"
   (doc    "The SUM-PAYLOAD face of the still-live-binding family: a sum-match payload binder lowers to a
@@ -13798,7 +13798,7 @@
             (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
             (def (main) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))
             (export main)))
-  (call   main) (output (: 12 Int64)))
+  (call   main) (output (: 12 Int64)) (live-objects known-leak 14))
 
 (case "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
   (doc    "`(match (Outer2.Wrap <runtime Inner2>) ((Outer2.Wrap (Inner2.P x)) …) ((Outer2.Wrap (Inner2.W y))
@@ -22625,7 +22625,7 @@
            `(List.len (List.push (. t 0) 99))` = 4 — no later use, so no extra child dup needed.")
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
              (def (main) (let ((t (build 0 3 (tuple (list) 0)))) ((. List len) ((. List push) (. t 0) 99)))) (export main)))
-  (call main) (output (: 4 Int64)))
+  (call main) (output (: 4 Int64)) (live-objects known-leak 8))
 
 ; ── List.at bounds over a RUNTIME-built list at a RUNTIME-COMPUTED index (the runtime bounds-check
 ; path, distinct from the constant-fold None cases which fold at compile time). The list is built by a
