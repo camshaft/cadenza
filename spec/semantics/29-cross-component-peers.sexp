@@ -499,3 +499,18 @@
               (def (main (: x Int64)) (host (M) (M.mk x))) (export main)))
   (call   main (: 1 Int64))
   (output (: b"hi" Bytes)))
+
+(case "a middle peer is both a consumer and a provider (A to B to C chain)"
+  (doc    "B is a MIDDLE component: it BINDS cadenza:pairs/api (consuming A's compound pair) AND publishes its
+           own cadenza:mid/api (providing to C). Two (peer …) clauses ship A (pairs/api) and B (mid/api); the
+           top consumer C binds only cadenza:mid/api. A value flows A→B→C: C.main(9) → B.mid(9) →
+           (A.pair(9)=(9,9)).0 + 1 = 10 — B both consumes A and provides to C over the fused envelope, and
+           the harness wires A into B's linker (transitive peer dependency). Relocated from rcdzc
+           u11_a_middle_component_is_both_consumer_and_provider — its white-box mid-publishes+imports pin stays.")
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (peer   "cadenza:mid/api" (do (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:pairs/api")
+                                 (def (mid (: x Int64)) (host (P) (+ (. (P.pair x) 0) 1))) (export mid)))
+  (input  (do (effect M (op mid (-> Int64 Int64))) (bind M "cadenza:mid/api")
+              (def (main (: x Int64)) (host (M) (M.mid x))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 10 Int64)))

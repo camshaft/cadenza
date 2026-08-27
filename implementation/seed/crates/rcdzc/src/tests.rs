@@ -57262,37 +57262,16 @@ mod cross_component_oracle {
             let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
             v.validate_all(&consumer).expect("chain consumer validates");
         }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U11] runtime wasm not found; skipping");
-            return;
-        };
-        // Peers in DEPENDENCY ORDER: A first (B imports it), then B (C imports it).
-        let peers = vec![
-            cdz_run::Peer {
-                bytes: a,
-                interface: "cadenza:pairs/api".to_string(),
-            },
-            cdz_run::Peer {
-                bytes: b,
-                interface: "cadenza:mid/api".to_string(),
-            },
-        ];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["9".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts).expect("an A->B->C chain runs") {
-            // C.main(9) → B.mid(9) → (A.pair(9)=(9,9)).0 + 1 = 9 + 1 = 10. A value flows A→B→C, with B both
-            // consuming A and providing to C over the fused envelope.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "10",
-                "a value flows through the A->B->C chain (B is both consumer and provider)"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("chain run trapped: {t}"),
-        }
+        // The RUN half (compose A + B + C; C.main(9) → B.mid(9) → (A.pair(9)=(9,9)).0 + 1 = 10, a value
+        // flowing A→B→C with B both consumer AND provider, and the runner wiring A into B's linker in
+        // dependency order) is covered by corpus `spec/semantics/29-cross-component-peers.sexp` — "a middle
+        // peer is both a consumer and a provider (A to B to C chain)". This in-crate test now pins the
+        // WHITE-BOX claims only: the MIDDLE B publishes cadenza:mid/api AND imports cadenza:pairs/api (above),
+        // and provider A publishes its own interface — which the corpus run confirms behaviorally.
+        assert!(
+            contains_bytes(&a, b"cadenza:pairs/api"),
+            "provider A publishes cadenza:pairs/api"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
