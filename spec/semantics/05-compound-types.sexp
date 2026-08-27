@@ -20475,3 +20475,35 @@
   (call main (: 5 Int64))
   (output (: 2 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 466 (2026-08-27): the REPEAT-UNWRAP gap, distinct from extraction (site B′).
+; A FRESH compound-payload Option matched ONCE reclaims (d6 = 0), but matched TWICE leaks its
+; payload (xop4/xop5 = 3, local-built and helper-built alike) — the borrow-only shell reclaim
+; balances exactly ONE unwrap's bind-dup; each ADDITIONAL unwrap leaks one payload ref. The ref
+; accounting unifies the whole family: unbalanced refs = (#unwraps - 1) + (1 if extraction-built);
+; xop1's 6 objects = 2 unbalanced refs pinning the payload AND its containing structure. So the
+; complete fix needs BOTH the extraction-retain release (inc2b) AND repeat-unwrap bind balancing
+; (this cell — MatchSum lane).
+
+(case "xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)"
+  (input (do
+    (def (main (: n Int64))
+      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+        (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
+           (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64))
+  (live-objects known-leak 3))
+
+(case "xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload"
+  (input (do
+    (def (mk (: n Int64)) (if (> n 0) (Option.Some (list n (+ n 1))) Option.None))
+    (def (main (: n Int64))
+      (let ((o (mk n)))
+        (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
+           (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64))
+  (live-objects known-leak 3))
