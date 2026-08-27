@@ -107,7 +107,12 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
     | Option.some "None" => Option.some Value.none
     | Option.some "tuple" => (seqVals m (cs.extract 1 cs.size)).map Value.tuple
     | Option.some "list" => (seqVals m (cs.extract 1 cs.size)).map Value.list
-    | _ => Option.none
+    | Option.some "record" => Option.none   -- record output not modeled here (compared via `=` only)
+    | Option.some ctor =>
+      -- a prelude/user sum VARIANT value `(Ctor payload)` — bare ctor head + one payload child
+      -- (nullary renders `(Ctor unit)`); every other name-headed value node is a variant in canonical form
+      ((cs[1]?).bind (expectedValue? m)).map (fun p => Value.variant ctor.toUTF8 p)
+    | Option.none => Option.none
   | _ => Option.none
 
 /-- Interpret each node as a value; `none` if any element is not a modeled value. -/

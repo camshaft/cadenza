@@ -340,7 +340,7 @@ the value unchanged. -/
 partial def observeDeep (v : Value) : Outcome :=
   match v with
   | .poison d => deferredToOutcome d
-  | .some x | .ok x | .err x =>
+  | .some x | .ok x | .err x | .variant _ x =>
     match observeDeep x with | .value _ => .value v | other => other
   | .tuple es | .list es =>
     match es.findSome? (fun e => match observeDeep e with | .value _ => Option.none | o => Option.some o) with
@@ -349,6 +349,73 @@ partial def observeDeep (v : Value) : Outcome :=
     match fs.findSome? (fun kv => match observeDeep kv.2 with | .value _ => Option.none | o => Option.some o) with
     | Option.some o => o | Option.none => .value v
   | _ => .value v
+
+/-- Prelude SUM constructors modeled as generic `variant` values (name, arity). Sign + Ordering are the
+nullary monomorphic prelude sums (rcdzc sums.rs). Option/Result use the dedicated built-in Some/Ok/Err/
+None path; Bool renders as scalar true/false; Ast is qualified-only and deferred. -/
+def preludeSumCtors : List (String × Nat) :=
+  [("Neg", 0), ("Zero", 0), ("Pos", 0), ("Less", 0), ("Equal", 0), ("Greater", 0)]
+
+/-- Per top-level `(type T v1 v2 …)` statement: (typeName, [(ctorName, arity)]). Each variant `vi` is a
+list `(Ci τ1…τk)` (arity k; nullary `(Ci)` = 0) or a bare name atom (arity 0); a `(doc …)` is skipped. -/
+def variantSpecs (m : Module) (specs : Array Nat) : List (ByteArray × Nat) :=
+  specs.toList.filterMap (fun sid =>
+    match m.nodes[sid]? with
+    | some (Node.list vc) =>
+      match m.headName? (Node.list vc) with
+      | some h => if h == "doc".toUTF8 then none else some (h, vc.size - 1)
+      | none => none
+    | some (Node.atom lid) => match m.leaves[lid]? with | some (Leaf.name b) => some (b, 0) | _ => none
+    | none => none)
+
+/-- Scan the program's top-level `(type T …)` statements → per-type (typeName, [(ctor, arity)]). -/
+def userSumTypes (m : Module) : List (ByteArray × List (ByteArray × Nat)) :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.toList.filterMap (fun sid =>
+      match m.nodes[sid]? with
+      | some (Node.list tc) =>
+        match m.headName? (Node.list tc) with
+        | some h => if h == "type".toUTF8 then (nameOf? m (tc[1]!)).map (fun tn => (tn, variantSpecs m (tc.extract 2 tc.size))) else none
+        | none => none
+      | _ => none)
+  | _ => []
+
+/-- Top-level `(def (name …) …)` names — a bare ctor name shadowed by such a def is NOT a constructor
+(scope-first resolution: def/let/param bind before a bare ctor name; spec-confirmed via corpus 0683). -/
+def defNames (m : Module) : List ByteArray :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.toList.filterMap (fun sid => (asDef? m sid).bind (fun dc => defName? m dc))
+  | _ => []
+
+/-- The arity of a name if it is a modeled generic-`variant` constructor: a prelude Sign/Ordering ctor,
+or a scanned USER sum ctor — EXCLUDING (→ `none`, a sound skip): a def-shadowed name; a NEWTYPE ctor (the
+sole variant of its type with arity 1 — such a value is SCALAR-ERASED to its payload, corpus 0292/0598,
+not modeled here); and a multi-field ctor (arity ≥ 2, curried payload tuple — not modeled). -/
+def variantCtorArity? (m : Module) (name : ByteArray) : Option Nat :=
+  if (defNames m).contains name then none
+  else match (preludeSumCtors.find? (fun p => name == p.1.toUTF8)).map (·.2) with
+  | some ar => some ar
+  | none =>
+    (userSumTypes m).findSome? (fun (_, ctors) =>
+      (ctors.find? (fun c => c.1 == name)).bind (fun c =>
+        let isNewtype := ctors.length == 1 && c.2 == 1
+        if isNewtype || c.2 ≥ 2 then none else some c.2))
+
+/-- The constructor NAME an application/pattern head denotes: a bare name head `C`, or a qualified
+member-access head `(. T C)` → `C`. -/
+def ctorAppName? (m : Module) (children : Array Nat) : Option ByteArray :=
+  match children[0]? with
+  | some hid =>
+    match m.nodes[hid]? with
+    | some (Node.atom lid) => match m.leaves[lid]? with | some (Leaf.name b) => some b | _ => none
+    | some (Node.list hc) =>
+      match m.headName? (Node.list hc) with
+      | some dh => if dh == ".".toUTF8 then (hc[2]?).bind (nameOf? m) else none
+      | none => none
+    | none => none
+  | none => none
 
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
@@ -373,6 +440,12 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         | none => .unsupported "eval: non-scalar leaf (float/bytes/symbol not yet modeled)"
       | none => .unsupported "eval: atom leaf index out of range"
     | some (Node.list children) =>
+      -- variant CONSTRUCTION first: a head (bare `C` or qualified `(. T C)`) resolving to a modeled
+      -- prelude/user sum constructor (not shadowed by a local binding) → construct the tagged variant.
+      match (ctorAppName? m children).bind (fun c =>
+               if (env.lookup? c).isSome then none else (variantCtorArity? m c).map (fun ar => (c, ar))) with
+      | some (cname, arity) => evalVariantCtor m env fuel cname arity children
+      | none =>
       match m.headName? (Node.list children) with
       | some h =>
         if h == "let".toUTF8 then evalLet m env ty fuel children
@@ -523,6 +596,15 @@ partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Arra
   match children[1]? with
   | some eId => .value (wrap (outcomeToValue (evalNode m env defaultIntTy fuel eId)))
   | none => .unsupported "eval: malformed unary constructor"
+
+/-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
+→ `variant C payload` (payload deferred as a `poison` if non-value, like a tuple/record field — spec Q2). -/
+partial def evalVariantCtor (m : Module) (env : Env) (fuel : Nat) (cname : ByteArray) (arity : Nat) (children : Array Nat) : Outcome :=
+  match arity with
+  | 0 => .value (.variant cname .unit)
+  | _ => match children[1]? with
+         | some pId => .value (.variant cname (outcomeToValue (evalNode m env defaultIntTy fuel pId)))
+         | none => .value (.variant cname .unit)
 
 /-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element, storing a non-value
 element as a `poison` (deferred) rather than propagating it — an element that is never observed
@@ -682,6 +764,16 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       | none => .error (.unsupported "eval: match literal pattern is a non-scalar leaf")
     | none => .error (.unsupported "eval: match pattern leaf out of range")
   | some (Node.list pc) =>
+    -- a generic variant pattern `(C subpat)` / `((. T C) subpat)` / nullary `(C)` — the head (bare or
+    -- qualified) resolves to a modeled prelude/user sum constructor (newtype/multi-field/shadowed skipped).
+    match (ctorAppName? m pc).bind (fun c => (variantCtorArity? m c).map (fun _ => c)) with
+    | some cname =>
+      match subj with
+      | .variant tag payload =>
+        if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some []))
+        else .ok none
+      | _ => .ok none
+    | none =>
     match m.headName? (Node.list pc) with
     | some ph =>
       if ph == "Some".toUTF8 then (match subj, pc[1]? with | .some p, some sp => matchPat m sp p | .some _, none => .error (.unsupported "eval: malformed Some pattern") | _, _ => .ok none)
