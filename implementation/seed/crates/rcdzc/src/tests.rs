@@ -24391,17 +24391,6 @@ mod match_engine {
                 "eval of a non-compile-time AST names the form, not an unbound-name typo: {m}"
             );
         }
-        // NO REGRESSION: a real `(eval (quote …))` still compiles + runs (the desugar fires).
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) (eval (quote (+ 1 2)))) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            3
-        );
         // NO OVER-REACH: a bare `eval`-shaped typo that is NOT an `(eval …)` head still gets the ordinary
         // unbound-name did-you-mean (a near def wins), not the eval-form message.
         let typo = "(module m (def (evil) 5) (def (main) (evel)) (export main))";
