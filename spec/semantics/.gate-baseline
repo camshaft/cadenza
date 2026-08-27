@@ -8915,3 +8915,4 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	mde1 the two #map entry spellings (raw pair and = pair) build EQUAL maps (the #4589 dual-read; operator: maps+records unify on =)
