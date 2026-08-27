@@ -267,6 +267,7 @@ pass	Map.to-list over Float64 KEYS enumerates by canonical byte key order
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	Map.to-list over TUPLE keys enumerates in lexicographic key order (the minimum first)
 pass	Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)
+pass	Map.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF
 pass	Map.to-list over a MULTI-LEVEL trie enumerates all 100 keys fully sorted
 pass	Map.to-list over a RUNTIME-built map enumerates entries in canonical key order (first key is min)
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
@@ -369,6 +370,7 @@ pass	Set.to-list over Option elements enumerates Some-first per the declared ord
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over STRING elements orders by content with a rope participating
 pass	Set.to-list over a 100-element trie enumerates strictly increasing end to end
+pass	Set.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF
 pass	Set.to-list over a RUNTIME-built set yields canonical order (first element is the minimum)
 pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list over an all-nullary sum enumerates in discriminant order
@@ -5402,18 +5404,10 @@ pass	el5 a List-of-UInt8 entry param measures and reads an element
 pass	el6 a List-of-Int32 entry param measures and reads an element
 pass	el7 a List-of-Float64 entry param measures and compares an element
 pass	el8 a nested List-of-List entry param measures both levels
-pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
-pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
-pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
-pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
-pass	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
-pass	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
-pass	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
-pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 pass	elc1 a local closure captures the lifted List entry param and is invoked twice
-pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 pass	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 pass	elc4 List.concat consumes two lifted List entry params into one measured list
+pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 pass	ele1 the lifted List entry param is read in a handle BODY alongside a dispatch
 pass	ele2 the lifted List entry param is read inside a handler ARM feeding the resume value
 pass	ele3 the lifted List entry param SEEDS the handler state
@@ -5630,6 +5624,10 @@ pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	grh1 a GREENHOUSE auto-vent — sunshine heats the house and crossing thirty with the vents SHUT trips them open (an eight-hundred alarm row with the temperature's low digits), misting adds three humidity but an open vent bleeds one back (a nine-tagged row), the read packs temperature humidity and vents, and the seed's starting warmth trips the auto-vent on the FIRST sun for one run and the SECOND for the other so every later humidity row shifts
 pass	grw1 PLANT growth with pruning stress — day grows by the current rate, prune cuts back to the target answering the clippings AND slows the rate by one (bottoming at one) but only when it actually cut, and the fast grower gets pruned TWICE (stressed twice) while the slow one skips the first prune entirely as a zero-clip row
+pass	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
+pass	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
+pass	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
+pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
@@ -7444,6 +7442,10 @@ pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
+pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)
+pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
+pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
+pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
 pass	wlkC single-wall control — reflect only at the floor, ceiling unguarded
 pass	wnd1 a WIND-CHILL stepper — gust sets the wind answering temp minus twice the wind CLAMPED at minus thirty (extremes counted), warm raises the temperature answering it, ext reads the extreme count, and only the cold seed drives one gust past the clamp so its rows ride deep negative while the warm seed never clamps
 pass	wnw1 a BISECTION searcher whose starting window is picked by a MATCH IN THE HANDLE'S INIT POSITION — the init destructures a seed tuple and an if ladder inside the match arm chooses among three windows, narrow halves the window toward the guess counting probes and answering side midpoint and count, a CLOSED window answers a frozen readout without probing, span reads the gap, and the tight seed window closes two probes early so its last narrows freeze while the wide window is still hunting

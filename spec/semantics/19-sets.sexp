@@ -3586,6 +3586,42 @@
   (call   main (: 500 Int64)) (output (: 1500 Int64))
   (live-objects 0))
 
+(case "Map.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF"
+  (doc    "Companion to the owned-temporary reclaim cases above: here the map is a PARAM threaded UNCHANGED
+           through the loop, so the ONE caller-owned map is BORROWED by `Map.to-list mp` every iteration and
+           reused on the next -- it is NOT a fresh temp. If `to-list` CONSUMED its source, iteration 2 would
+           read a freed map (UAF / double-free trap); running 500x -> 1500 (3 entries each) with no trap
+           proves it only borrows. The fresh RESULT list `List.len` borrows each iter must still reclaim --
+           so the live count stays a CONSTANT 1, not ~500 result lists. That residual 1 is the borrowed param
+           map itself, dead after the loop but not dropped on the terminal tail arm (the self-loop-tail
+           back-edge reclaim gap -- known-leak, tracked separately).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert mp i (* i 10))) mp))
+            (def (loop (: j Int64) (: n Int64) (: mp (Map Int64 Int64)) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n mp (+ tot (List.len (Map.to-list mp)))) tot))
+            (def (main (: n Int64)) (loop 0 n (build 0 3 Map.empty) 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects known-leak 1))
+
+(case "Set.to-list over a BORROWED param source reused across a loop borrows it (no consume) -- value-correct, no UAF"
+  (doc    "Set companion to the borrowed-param Map.to-list case above: a SET param threaded UNCHANGED through
+           the loop, borrowed by `Set.to-list s` every iteration and reused on the next. If `to-list` consumed
+           its source, iteration 2 would UAF; 500x -> 1500 with no trap proves it only borrows. The fresh
+           result list is reclaimed after the borrowing `List.len`, so the live count stays a CONSTANT 1 --
+           the borrowed param set itself, dead after the loop but not dropped on the terminal tail arm (the
+           self-loop-tail back-edge reclaim gap -- known-leak, tracked separately).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (loop (: j Int64) (: n Int64) (: s (Set Int64)) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n s (+ tot (List.len (Set.to-list s)))) tot))
+            (def (main (: n Int64)) (loop 0 n (build 0 3 (Set.of (list))) 0))
+            (export main)))
+  (call   main (: 500 Int64)) (output (: 1500 Int64))
+  (live-objects known-leak 1))
+
 (case "Set.union over two owned-temporary runtime sets reclaims both operands and the result (no live objects)"
   (doc    "`build` recurses inserting the runtime loop counter so each set is a genuine opaque runtime value
            (no const-fold). {0,1,2} u {2,3,4} = {0,1,2,3,4}, Set.len -> 5. The union CONSUMES both owned
