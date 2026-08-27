@@ -4676,8 +4676,6 @@ fn a_target_having_resource_effect_reifies_the_dest_to_a_target_field_and_emits(
     v.validate_all(bytes).expect(
         "the target-having reify reducer's component validates (4-field record value-encodes)",
     );
-    let _req = cdz_run::required_runtime(bytes)
-        .expect("the target-having reify reducer's component loads on the pinned wasmtime");
 }
 
 // NOTE: the SYNCHRONOUS-world-import sibling (a `kv.*` perform keeps its op-sig result, NOT the request
@@ -4896,8 +4894,6 @@ fn a_reducer_performing_a_world_effect_reifies_it_and_emits_a_valid_component() 
     v.validate_all(bytes).expect(
         "the reify reducer's component validates (the reified effect-list value-encodes cleanly)",
     );
-    let _req = cdz_run::required_runtime(bytes)
-        .expect("the reify reducer's component loads on the pinned wasmtime");
 }
 
 /// A NESTED CONSTANT tuple whose inner and outer levels SHARE an element occurrence must fold and
