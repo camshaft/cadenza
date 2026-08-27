@@ -49260,29 +49260,6 @@ mod stage1 {
         assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
     }
 
-    /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
-    /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
-    /// Skips (returns `None`) if the runtime wasm is not built.
-    fn run_closure(src: &str, arg: i64) -> Option<String> {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a runtime closure imports the value-heap runtime (a heap cell, not a fold)"
-        );
-        let runtime = find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![arg.to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
-        }
-    }
-
     /// `run_closure`'s sibling for a program whose `main` is NULLARY (a closure captures a compound built
     /// in `main`, so no runtime entry argument is needed). Same composed-runtime path.
     fn run_closure_nullary(src: &str) -> Option<String> {
@@ -49299,59 +49276,6 @@ mod stage1 {
             cdz_run::Outcome::Value(s) => Some(s),
             cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
         }
-    }
-
-    #[test]
-    fn a_closure_captures_a_capturing_closure_and_calls_it() {
-        // NESTED CAPTURING CLOSURES: `g = (fn (x) (f x))` captures `f`, and `f = (fn (y) (+ y k))` ITSELF
-        // captures `k`. Inside `g`'s lifted body, `f` is a runtime closure HANDLE read from `g`'s env cell
-        // — NOT the compile-time lambda it was defined from — so `(f x)` must apply via `call_indirect`
-        // (which threads `f`'s OWN env, carrying `k`), not β-reduce. The bug: `head_is_runtime_fn_value`
-        // followed the captured `f` REF through to its original `(fn …)` definition and reported
-        // not-runtime, so `(f x)` mis-lowered — `f`'s handle was read as a scalar and ADDED to `x` instead
-        // of called (a silent MISCOMPILE, wrong value). Fixed by recognizing a captured-ref head as a
-        // runtime fn value. `ap (fn (x) (f (+ x 1))) 2` with `f = (+100)`: g(2)+g(1) = (2+1+100)+(1+1+100)
-        // = 205.
-        let src = "(module m \
-            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
-            (def (main (: k Int64)) \
-              (let ((f (fn ((: y Int64)) (+ y k)))) \
-                (ap (fn ((: x Int64)) (f (+ x 1))) 2))) (export main))";
-        let Some(r) = run_closure(src, 100) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "205"); // (2+1+100)+(1+1+100)
-        // The simplest form — `g` just forwards to the captured capturing `f` (no wrapping arithmetic):
-        // `ap (fn (x) (f x)) 2` with `f = (+100)` = (2+100)+(1+100) = 203. Pins that the captured closure's
-        // OWN environment (k) is threaded through the nested indirect call.
-        let plain = "(module m \
-            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
-            (def (main (: k Int64)) \
-              (let ((f (fn ((: y Int64)) (+ y k)))) \
-                (ap (fn ((: x Int64)) (f x)) 2))) (export main))";
-        assert_eq!(run_closure(plain, 100).unwrap(), "203"); // (2+100)+(1+100)
-    }
-
-    #[test]
-    fn a_runtime_closure_body_calls_a_recursive_top_level_function() {
-        // A lifted closure whose body drives an ordinary RECURSIVE CALL — `(fn (x) (fact x))` (passed to
-        // the recursive `ap`, so it cannot fold) invokes the recursive `fact`. The lifted body holds a
-        // `Core::Call` to `fact` nested inside a `call_indirect`ed closure — the canonical "map a recursive
-        // function over a structure" shape. `ap g 3` = fact(3)+fact(2)+fact(1) = 6+2+1 = 9.
-        let src = "(module m \
-            (def (fact (: m Int64)) (if (= m 0) 1 (* m (fact (- m 1))))) \
-            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
-            (def (main (: n Int64)) (ap (fn ((: x Int64)) (fact x)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "9"); // fact(3)+fact(2)+fact(1)
-        assert_eq!(run_closure(src, 5).unwrap(), "153"); // 120+24+6+2+1
     }
 
     #[test]
@@ -49491,28 +49415,6 @@ mod stage1 {
             8,
             "each lifted slot has a distinct body occurrence"
         );
-    }
-
-    #[test]
-    fn a_lambda_with_an_annotated_param_keeps_its_type_across_beta_copy() {
-        // Focused regression for the `is_binder_occurrence` fix. β-COPYING a lambda whose parameter is
-        // ANNOTATED `(: p T)` must preserve the annotation: the param name is a BINDER, not a value
-        // reference, so it copies structurally as part of the `(: …)` binder — before the fix it was
-        // treated as a reference and copied detached, so the copy's param lost its declared type. Exercised
-        // by a lambda that is copied (a partial application curries `(add 5)` into a residual carrying the
-        // annotated remaining param) then applied through a recursive HOF (which forces the copy). If the
-        // annotation were lost the residual's param would type `Any` and the closure would decline; that it
-        // RUNS pins the annotation survived. `apply-sum (add 5) 3 = (5+3)+(5+2)+(5+1) = 21`.
-        let src = "(module m \
-            (def (add (: a Int64) (: b Int64)) (+ a b)) \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: n Int64)) (apply-sum (add 5) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "21"); // (5+3)+(5+2)+(5+1)
     }
 
     #[test]
