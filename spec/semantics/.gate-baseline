@@ -8156,3 +8156,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	cnw1 a capture-once closure wrapped by two nesting closures folds through all three layers
+pass	cnw2 a factory taking TWO performing args draws each once and shares both across applications

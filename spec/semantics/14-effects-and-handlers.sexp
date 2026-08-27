@@ -8796,3 +8796,33 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 150 Int64)))
+
+; -- breaker batch 493 (2026-08-27): fresh-surface pins the hour #4006 landed (deep_fresh_copy
+; cracked the nested-capture resolution blocker; cp1/cc3 flipped). Two edges past the flipped
+; rungs, both folding correctly: TRIPLE-nested capture (cnw1 — one draw shared through three
+; closure layers; cp1 was depth two) and a factory taking TWO performing ARGS (cnw2 — each drawn
+; once, in order, shared across both applications; cc3 was single-arg).
+
+(case "cnw1 a capture-once closure wrapped by two nesting closures folds through all three layers"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((g (let ((a (St.next))) (fn ((: x Int64)) (* a x)))))
+          (let ((h (fn ((: y Int64)) (+ (g y) 1))))
+            (let ((k (fn ((: z Int64)) (* (h z) 2))))
+              (k 10))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 102 Int64)))
+
+(case "cnw2 a factory taking TWO performing args draws each once and shares both across applications"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (mk2 (: m Int64) (: p Int64)) (fn ((: x Int64)) (+ (* x m) p)))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((f (mk2 (St.next) (St.next)))) (+ (f 10) (f 20)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 162 Int64)))
