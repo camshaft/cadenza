@@ -187,6 +187,15 @@
   (input  (Rational.of 2 4))
   (output (: 1/2 Rational)))
 
+; A CONSTANT `(Rational.of 1 0)` is a compile-provable trap — the rational analogue of a constant ÷0 —
+; rejected with CDZ0304 at compile time, not deferred to a runtime trap. The diagnostic must not dead-end at
+; the bare fault; like the sibling divide-by-zero CDZ0304 it NAMES THE REPAIR ("use a nonzero denominator"):
+; a rational n/d denotes a number only when d is nonzero. (The runtime zero-denominator trap — a `Rational.of`
+; with a runtime-zero denominator — is pinned separately by the List.len trap-preservation case below.)
+(case "a constant rational with a zero denominator is rejected and names the nonzero-denominator repair"
+  (input  (Rational.of 1 0))
+  (error  CDZ0304 (message "use a nonzero denominator")))
+
 (case "a rational's numerator and denominator are read as BigInt from the normalized pair"
   (doc    "`Rational.numerator`/`denominator : Rational → BigInt` read the components of the NORMALIZED
            (lowest-terms, denominator > 0) pair. `(Rational.of n 4)` at n=6 is 6/4, which reduces to 3/2, so
@@ -208,6 +217,16 @@
 ; otherwise unwitnessed; this pins it on the const-fold path.
 (case "a rational's denominator reads the reduced pair's positive denominator, folded from a constant"
   (input  (do (def (main) (Int64.of (Rational.denominator (Rational.of 6 4)))) (export main)))
+  (output (: 2 Int64)))
+
+; The RUNTIME face of the denominator read (the numerator case above pins the runtime `rational-num` op; this
+; pins the runtime `rational-den` op). A RUNTIME rational built from the parameter `n` — `(Rational.of n 4)`
+; at n=6 is 6/4 → 3/2 — so `Rational.denominator` reads the REDUCED denominator 2 (not 4), via the runtime op
+; rather than the const fold above.
+(case "a rational's denominator reads the reduced pair's positive denominator at runtime"
+  (input  (do (def (main (: n Int64))
+                (Int64.of (Rational.denominator (Rational.of n 4)))) (export main)))
+  (call   main (: 6 Int64))
   (output (: 2 Int64)))
 
 ; `Rational.truncate : Rational → Int64` — the integer part of a rational TOWARD ZERO, narrowed to a fixed

@@ -1687,6 +1687,7 @@ pass	a constant modulo over a high UInt64 operand folds to the remainder
 pass	a constant multi-payload variant match binds both payloads and folds to a scalar
 pass	a constant multi-payload variant match on the IA-variant nested payload folds to the right depth
 pass	a constant multi-payload variant match reaches each payload and dispatches a nested variant
+pass	a constant rational with a zero denominator is rejected and names the nonzero-denominator repair
 pass	a constant shift count at or beyond the width over a high UInt64 still rejects
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
@@ -3143,6 +3144,7 @@ pass	a rational truncates to its integer part toward zero, narrowed to Int64
 pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational with the Int64 minimum as denominator normalizes past the i64 sign-flip
+pass	a rational's denominator reads the reduced pair's positive denominator at runtime
 pass	a rational's denominator reads the reduced pair's positive denominator, folded from a constant
 pass	a rational's numerator and denominator are read as BigInt from the normalized pair
 pass	a rational's sign is normalized onto the numerator
