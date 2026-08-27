@@ -927,7 +927,7 @@
   (input (const (match (Map.lookup (Map.insert Map.empty (Option.Some 5) 42) (Option.Some 5)) ((Option.Some v) v) ((Option.None) 0))))
   (output (: 42 Int64)))
 
-; --- Primitive 2: const execution — a const Set.to-list FOLDS in CANONICAL VALUE ORDER (Map still declines) --
+; --- Primitive 2: const execution — a const Set.to-list AND Map.to-list FOLD in CANONICAL VALUE ORDER ---------
 ; A to-list is ORDER-EXPOSING, so folding it is sound ONLY if the compiler bakes the SAME order the runtime op
 ; produces. That order is NOT a presumed CHAMP layout: `collections-and-text.md` §Set/Map Iteration Is
 ; Deterministic pins it MUST-level as the canonical VALUE total order (the visit order MUST agree with the
