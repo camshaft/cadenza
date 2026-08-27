@@ -16811,66 +16811,6 @@ mod match_engine {
         }
     }
 
-    /// `Symbol.of` on a GENUINELY-RUNTIME string interns by CANONICALIZING its bytes — a Symbol is a String
-    /// byte-leaf at run time (tagless heap, no intern table), so two symbols of equal content compare equal
-    /// because both are canonical flat leaves. The runtime-string→Symbol intern gap corpus-bugfix filed;
-    /// the intern analogue of the runtime String.slice byte-walk. `Symbol.to-string` of a runtime symbol is
-    /// the inverse retag. Both reuse `bytes-compact` (no new op, frozen hash unchanged). The runtime string
-    /// is built with a `rep` concat loop (a byte-rope, unfoldable) — the same idiom the runtime `String.at`
-    /// tests use — so the operand genuinely reaches the runtime emit rather than const-folding.
-    #[test]
-    fn a_runtime_string_interns_to_a_symbol_by_content() {
-        use crate::testkit::parse;
-        // Compose against the real runtime wasm (the string-op path needs `bytes-alloc`/`bytes-compact`);
-        // skip gracefully if it is not built, exactly like the sibling runtime-String.concat test.
-        let run = |src: &str| -> Option<String> {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            let runtime = crate::tests::find_runtime_wasm()?;
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => Some(s),
-                cdz_run::Outcome::Trap(t) => panic!("runtime Symbol op trapped (miscompile?): {t}"),
-            }
-        };
-        // `(rep "" 3)` builds "xxx" as a runtime rope; `Symbol.of` interns it, compared to `#"xxx"` by
-        // CONTENT → true (both canonical byte leaves). A different-length build → not equal.
-        let rep = "(def (rep s n) (if (< n 1) s (rep ((. String concat) s \"x\") (- n 1))))";
-        let Some(eq_same) = run(&format!(
-            "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 3)) #\"xxx\") 1 0)) (export main))"
-        )) else {
-            eprintln!(
-                "runtime wasm not found (run `cargo xtask build`); skipping runtime Symbol.of run"
-            );
-            return;
-        };
-        assert_eq!(
-            eq_same, "1",
-            "runtime Symbol.of of \"xxx\" matches #\"xxx\" by content"
-        );
-        assert_eq!(
-            run(&format!(
-                "(module m {rep} (def (main) (if (= (Symbol.of (rep \"\" 2)) #\"xxx\") 1 0)) (export main))"
-            )).unwrap(),
-            "0",
-            "runtime Symbol.of of \"xx\" does NOT match #\"xxx\""
-        );
-        // The round-trip: `Symbol.to-string (Symbol.of s)` recovers the String from the runtime rope,
-        // observed via byte-len — exercises BOTH runtime retags in one chain. "xx"+3 → "xxxxx" → 5 bytes.
-        assert_eq!(
-            run(&format!(
-                "(module m {rep} (def (main) ((. String byte-len) (Symbol.to-string (Symbol.of (rep \"xx\" 3))))) (export main))"
-            )).unwrap(),
-            "5",
-            "Symbol.of then Symbol.to-string of a runtime rope round-trips to the same bytes"
-        );
-    }
-
     /// A Symbol as a TUPLE ELEMENT of a runtime compound `=` — a Symbol IS a String byte-leaf handle at run
     /// time, so a Symbol element boxes/reads-back/compares exactly like a String element (which already
     /// worked). Before, `box_op_ty`/`get_op_ty` lacked `Ty::Symbol` (only `Ty::String`), so a Symbol tuple
@@ -20640,37 +20580,6 @@ mod match_engine {
             reject_code("(module m (def (main) \"\\n\") (export main))"),
             None
         );
-    }
-
-    #[test]
-    fn a_bare_constant_string_escapes_across_the_boundary() {
-        // Once the reader's strict-escape marker is in place, a bare/matched CONSTANT string may cross
-        // the host boundary via the resource escape (its bytes baked, the value form `(: "…" String)`) —
-        // the same path a `(Some "hi")` payload uses, just for a top-level String export. Verified via a
-        // composed run: the rendered value is the quoted text.
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!(
-                "runtime wasm not found (run `cargo xtask build`); skipping const-string escape run"
-            );
-            return;
-        };
-        let bytes = component("(module m (def (main) \"hello\") (export main))");
-        let opts = cdz_run::RunOpts {
-            export: None, // a String escape is a RESOURCE component, auto-detected by cdz-run
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "(: \"hello\" String)",
-                    "a bare constant string escapes + renders"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("const-string escape run trapped: {t}"),
-        }
     }
 
     #[test]

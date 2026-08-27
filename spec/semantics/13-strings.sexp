@@ -4802,3 +4802,7 @@
   (input (do (def (rep (: acc String) (: n Int64)) (if (= n 0) acc (rep (String.concat acc "a") (- n 1))))
              (def (main) (Bytes.len (String.to-bytes (rep "" 3)))) (export main)))
   (call main) (output (: 3 Int64)))
+
+(case "a bare constant string escapes across the boundary and renders"
+  (input (do (def (main) "hello") (export main)))
+  (call main) (output (: "hello" String)))

@@ -1277,6 +1277,7 @@ pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare built-in generic in a VALUE annotation needs a type argument
 pass	a bare conditional keyword is rejected, not a crash
+pass	a bare constant string escapes across the boundary and renders
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare effect declaration that is never performed is well-formed
@@ -1804,6 +1805,7 @@ pass	a def BODY that itself binds `ret` in an inner let composes soundly with @e
 pass	a def parameter may be a record pattern that destructures by field
 pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body
+pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-float pragma naming a non-float integer type is rejected
 pass	a default-float pragma naming a non-float rational type is rejected
@@ -1867,6 +1869,7 @@ pass	a distinct-signature round-trip alongside a plain export — the plain expo
 pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
+pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
 pass	a distributed match arm re-resolves its pattern binder inside the pushed handle
 pass	a diverging expression unifies with an integer position
 pass	a dividend provably below its divisor folds div to zero and rem to the dividend
@@ -2567,6 +2570,7 @@ pass	a min-heap in a list — push sifts UP, popmin sifts DOWN — the finding-2
 pass	a missed literal tag falls to a BINDER bin arm that decodes the scrutinee
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
+pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
 pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
@@ -2810,6 +2814,9 @@ pass	a nested module's function export is applied through the projection chain
 pass	a nested modulo by a dividing constant collapses to one modulo (across signs)
 pass	a nested modulo by a multiple collapses to a single modulo on a runtime operand
 pass	a nested modulo does NOT collapse when the inner divisor does not divide the outer
+pass	a nested narrow (Int8) addition computes at the consuming width
+pass	a nested narrow (Int8) arith range-checks the INNER op and traps on inner overflow
+pass	a nested narrow (Int8) multiply operand computes at the consuming width
 pass	a nested narrow Int8 add with two if operands computes at the consuming width
 pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
 pass	a nested narrow Int8 arith with a multiply inner op computes at the consuming width
@@ -3065,6 +3072,7 @@ pass	a pure closure-driver call beside a perform in one handle body
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure non-final do-statement whose value is discarded compiles but earns a CDZ0307 discarded-value warning
+pass	a pure one-hole continuation body reads an enclosing function parameter and folds
 pass	a pure one-hole continuation folds with pure siblings around the hole
 pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
 pass	a pure shared subexpression computes the same value however the backend optimizes it
@@ -3486,6 +3494,9 @@ pass	a runtime String.from-bytes result is read twice and both reads see the dec
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime String.to-bytes encodes a recursively built string
+pass	a runtime Symbol.of of a different-length rope does not equal the literal
+pass	a runtime Symbol.of of a rope equals a symbol literal by content
+pass	a runtime Symbol.of then Symbol.to-string round-trips the bytes
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime UInt8 left shift range-checks the count and the result
 pass	a runtime UInt8 subtraction underflowing below zero traps
@@ -8066,10 +8077,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
-pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
-pass	a pure one-hole continuation body reads an enclosing function parameter and folds
-pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
-pass	a nested narrow (Int8) addition computes at the consuming width
-pass	a nested narrow (Int8) multiply operand computes at the consuming width
-pass	a nested narrow (Int8) arith range-checks the INNER op and traps on inner overflow
