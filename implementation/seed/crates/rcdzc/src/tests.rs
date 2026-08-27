@@ -10095,33 +10095,7 @@ mod runtime_ops {
         // A non-power-of-two signed divide keeps div_s.
         assert!(lir("(: a Int64)", "(/ a 3)").contains(&Lir::I64DivS));
 
-        // Value parity: the shift/mask computes the same unsigned quotient/remainder as the divide.
-        assert_eq!(run::<u64>("(: a UInt64)", "(/ a 4)", &[Val::U64(17)]), 4);
-        assert_eq!(run::<u64>("(: a UInt64)", "(% a 4)", &[Val::U64(17)]), 1);
-        assert_eq!(
-            run::<u64>("(: a UInt64)", "(/ a 2)", &[Val::U64(u64::MAX)]),
-            u64::MAX / 2,
-            "the shift is UNSIGNED — the top bit is not treated as a sign"
-        );
-        assert_eq!(run::<u32>("(: a UInt32)", "(/ a 8)", &[Val::U32(100)]), 12);
-        assert_eq!(run::<u32>("(: a UInt32)", "(% a 8)", &[Val::U32(100)]), 4);
-
-        // SIGNED value parity — the bias sequence must truncate toward ZERO like `div_s`/`rem_s`, and
-        // agree for negatives (where a bare arithmetic shift would round toward −∞). `-17/4 = -4` (not
-        // -5), `-17%4 = -1`; positives and exact multiples too.
-        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(17)]), 4);
-        assert_eq!(run::<i64>("(: a Int64)", "(/ a 4)", &[Val::S64(-17)]), -4);
-        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(17)]), 1);
-        assert_eq!(run::<i64>("(: a Int64)", "(% a 4)", &[Val::S64(-17)]), -1);
-        assert_eq!(run::<i64>("(: a Int64)", "(/ a 8)", &[Val::S64(-8)]), -1);
-        assert_eq!(run::<i64>("(: a Int64)", "(% a 8)", &[Val::S64(-8)]), 0);
-        assert_eq!(
-            run::<i64>("(: a Int64)", "(/ a 2)", &[Val::S64(i64::MIN)]),
-            i64::MIN / 2,
-            "the bias sequence is exact at the signed MIN boundary"
-        );
-        assert_eq!(run::<i32>("(: a Int32)", "(/ a 8)", &[Val::S32(-100)]), -12);
-        assert_eq!(run::<i32>("(: a Int32)", "(% a 8)", &[Val::S32(-100)]), -4);
+        // The VALUE parity (unsigned + signed power-of-two div/rem, magnitude, truncate-toward-zero, narrow) is the corpus cases "unsigned power-of-two div/rem strength-reduces ...", "signed power-of-two div/rem truncates toward zero ...", and siblings in 06-numeric-model.
     }
 
     #[test]
@@ -10192,58 +10166,7 @@ mod runtime_ops {
             "hi 15 !< 15 → keep rem"
         );
 
-        // VALUE PARITY: folded cases + the un-folded case compute the real result.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (& x 7) Int64) 100) Int64)",
-                &[Val::S64(255)]
-            ),
-            7
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (/ (: (& x 7) Int64) 100) Int64)",
-                &[Val::S64(255)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (& x 15) Int64) 16) Int64)",
-                &[Val::S64(200)]
-            ),
-            8
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (& x 15) Int64) 15) Int64)",
-                &[Val::S64(255)]
-            ),
-            0
-        ); // 15%15
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (& x 15) Int64) 15) Int64)",
-                &[Val::S64(200)]
-            ),
-            8
-        ); // 8%15
-
-        // TRAP PRESERVATION: the `/` fold DISCARDS its dividend, so a trapping dividend keeps its trap —
-        // `(& (/ 100 z) 7)` contains a ÷z that must still trap at z=0 (the fold declines, `x` not trap-free).
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(: (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100) Int64)",
-                &[Val::S64(0)]
-            ),
-            "a trapping dividend keeps its trap (the discarding / fold declines)"
-        );
+        // The VALUE + TRAP parity (mod-identity/div-zero when dividend<divisor; derived-range remainder; trapping dividend kept) is the corpus cases "a dividend provably below its divisor ..." and "a derived-range remainder ..." and "a dividend-below-divisor div fold keeps a trapping dividend's trap" in 06-numeric-model.
     }
 
     #[test]
@@ -10307,49 +10230,7 @@ mod runtime_ops {
             "10 | 10 → one rem"
         );
 
-        // VALUE PARITY across signs; the non-dividing case computes its (distinct) real result.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (% x 100) Int64) 10) Int64)",
-                &[Val::S64(12347)]
-            ),
-            7
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (% x 100) Int64) 10) Int64)",
-                &[Val::S64(-25)]
-            ),
-            -5
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (% x 100) Int64) 10) Int64)",
-                &[Val::S64(-105)]
-            ),
-            -5
-        );
-        // 7 ∤ 100: (101 % 100) % 7 = 1 % 7 = 1 (NOT 101 % 7 = 3) — the non-collapse is the correct answer.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (% (: (% x 100) Int64) 7) Int64)",
-                &[Val::S64(101)]
-            ),
-            1
-        );
-        // TRAP PRESERVATION: `v` stays the operand, so a trapping `(/ 100 z)` inside still ÷0-traps.
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(% (: (% (: (/ 100 z) Int64) 100) Int64) 10)",
-                &[Val::S64(0)]
-            ),
-            "the nested-modulo collapse keeps a trapping operand's trap"
-        );
+        // The VALUE + TRAP parity (nested-modulo collapse across signs; non-dividing no-collapse; trapping operand) is the corpus cases "a nested modulo by a dividing constant collapses ..." and "... does NOT collapse ..." in 06-numeric-model.
     }
 
     #[test]

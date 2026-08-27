@@ -1821,6 +1821,7 @@ pass	a depth-3 transitive arm-perform cascade threads the innermost state end to
 pass	a derived boolean compared to a literal composes into the complementary comparison
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
 pass	a derived-range < 16 tautology keeps a trapping div operand
+pass	a derived-range remainder keeps the modulo when the range is not strictly below the divisor
 pass	a derived-unit type annotation in INPUT position round-trips and the param computes
 pass	a destructuring let over a runtime value binds its parts
 pass	a destructuring record let over a runtime value binds its fields
@@ -1841,6 +1842,8 @@ pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a distributed match arm re-resolves its pattern binder inside the pushed handle
 pass	a diverging expression unifies with an integer position
+pass	a dividend provably below its divisor folds div to zero and rem to the dividend
+pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
 pass	a do item OBSERVED by the final expression keeps its trap
@@ -2758,7 +2761,9 @@ pass	a nested match on a runtime scrutinee
 pass	a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm
 pass	a nested module's exported member IS reachable through the chain despite a private sibling
 pass	a nested module's function export is applied through the projection chain
+pass	a nested modulo by a dividing constant collapses to one modulo (across signs)
 pass	a nested modulo by a multiple collapses to a single modulo on a runtime operand
+pass	a nested modulo does NOT collapse when the inner divisor does not divide the outer
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
@@ -6160,6 +6165,7 @@ pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the
 pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
 pass	mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument
 pass	narrow Int32 (if cmp 1 0) materializes correctly and a non-0/1 branch pair keeps its values
+pass	narrow signed power-of-two div/rem truncates toward zero (Int32)
 pass	narrow unsigned comparison division and remainder compose unsigned over a high-bit operand
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -6911,6 +6917,8 @@ pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	sie1 a SIEVE SEGMENT — each sieve dispatch clears every multiple of its prime by STRIDED List.update writes in one recursive walk, count answers survivors, probes read prime and composite slots
 pass	signed 8-bit addition that overflows its width is rejected at compile time
+pass	signed div by two is exact at Int64.min
+pass	signed power-of-two div/rem truncates toward zero (Int64 + narrow Int32)
 pass	signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)
 pass	signed-zero Float32 tuple-key components stay distinct at binary32 width
 pass	signed-zero float components make DISTINCT tuple keys
@@ -7649,6 +7657,9 @@ pass	unsigned 8-bit addition that overflows its width is rejected at compile tim
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	unsigned comparison orders by magnitude, not by signed interpretation
 pass	unsigned comparisons against zero simplify and agree with the true comparison
+pass	unsigned div by two is magnitude at UInt64.max
+pass	unsigned power-of-two div/rem strength-reduces (UInt32)
+pass	unsigned power-of-two div/rem strength-reduces (UInt64, by magnitude)
 pass	unsigned subtraction below zero is rejected at compile time
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
