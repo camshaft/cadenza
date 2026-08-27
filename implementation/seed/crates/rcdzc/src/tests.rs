@@ -19956,42 +19956,16 @@ mod match_engine {
     }
 
     #[test]
-    fn a_sum_payload_heap_child_consumed_while_the_scrutinee_is_live_is_retained() {
-        // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): a sum-match payload binder lowers to
-        // `Core::SumPayload` = a BORROW of the scrutinee's payload (no rc++). Consuming that heap child
-        // (`List.push`) WHILE the scrutinee is still live (matched again / threaded to a self-call)
-        // FBIP-mutated it in place → the still-live scrutinee read the grown value (drift). The RestFrom
-        // step already dups for this; the Payload/Elem-extracted-child case did not. Fix: the `SumPayload`
-        // arm of `mark_binder_dups` marks a child-dup site (mirror `Proj`), + `is_heap_type` now counts a
-        // `Ty::Nominal` (a single-variant newtype ERASES to its heap inner, so `bx : Box` is a retain
-        // candidate). STRAIGHT-LINE: want len(push(xs,99))=3 + len(bx's payload)=2 = 5; drifted to 6.
-        let straight = "(module m \
-               (type Box (B (List Int64))) \
-               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) (let ((bx (B (mb 0 2 (list))))) \
-                             (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) \
-                                ((. List len) (match bx ((B ys) ys)))))) (export main))";
-        if let Some(out) = run_on_heap(straight) {
-            assert_eq!(
-                out, "5",
-                "a payload consumed by List.push must not corrupt the still-live scrutinee (3 + 2)"
-            );
-        }
-        // Loop form: `bx` threaded unchanged, its payload consumed each iteration → 3 each of 4 iters.
-        let looped = "(module m \
-               (type Box (B (List Int64))) \
-               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (loop j m bx tot) \
-                 (if (< j m) (loop (+ j 1) m bx (+ tot ((. List len) ((. List push) (match bx ((B xs) xs)) 99)))) tot)) \
-               (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main))";
-        if let Some(out) = run_on_heap(looped) {
-            assert_eq!(
-                out, "12",
-                "a threaded sum's payload consumed per-iteration must not drift"
-            );
-        }
-        // FBIP fast path: a payload consumed EXACTLY ONCE with the scrutinee NOT otherwise live must stay
-        // dup-free (the retain only fires when the scrutinee is still live).
+    fn a_single_consume_sum_payload_with_a_dead_scrutinee_stays_dup_free() {
+        // FBIP fast-path bench guard (backend-shape witness, NOT corpus-expressible): a sum-match payload
+        // binder lowers to `Core::SumPayload` = a BORROW of the scrutinee's payload. When that payload is
+        // consumed EXACTLY ONCE and the scrutinee is NOT otherwise live, the retain must NOT fire — the
+        // module must stay `dup`-free (a `dup` import here is a perf regression, invisible to a value or
+        // live-objects check since dup vs no-dup give the same result). The drift-CORRECTNESS run cases
+        // (payload consumed while the scrutinee is still live → 5 / 12) live in corpus 05 as `spr1`/`spr2`;
+        // this keeps the dup-absence guard the corpus cannot express. (`is_heap_type` counting a
+        // `Ty::Nominal` — a single-variant newtype erasing to its heap inner — is the retain-candidate
+        // rule the corpus run cases exercise.)
         let linear = "(module m (type Box (B (List Int64))) \
                (def (f bx) ((. List len) ((. List push) (match bx ((B xs) xs)) 9))) \
                (def (main) (f (B (list 1 2)))) (export main))";

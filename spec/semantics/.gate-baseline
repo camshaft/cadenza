@@ -7773,6 +7773,8 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves
+pass	spr1 a sum payload heap child consumed while the scrutinee is live is retained
+pass	spr2 a threaded sum's payload consumed per-iteration is retained (no drift)
 pass	spx1 a Bool entry param selects a branch
 pass	spx3 a UInt64 entry param increments in its own width
 pass	spx4 Int8 and Int16 entry params sign-extend and sum
