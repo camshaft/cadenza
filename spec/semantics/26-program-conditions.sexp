@@ -470,7 +470,7 @@
                        (match nonground  ((Option.None) true) ((Option.Some _) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 11))
+  (live-objects known-leak 9))
 
 ; ── SOUNDNESS PIN: a ground add that OVERFLOWS during discharge TRAPS, it does not wrap-and-forge ────
 ; (breaker overflow-axis vectors, 2026-07-17 — folded here rather than promoted separately.)
@@ -779,7 +779,7 @@
                     ((Option.None) true)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 8))
+  (live-objects known-leak 7))
 
 ; ── b4c(conjunctive): a TWO-hypothesis precondition — both @requires flow to the discharge + hyps-subset ─
 ; b4a records STACKED @requires as a Vec (a conjunction). This pins the multi-hypothesis path the earlier
@@ -3034,7 +3034,7 @@
   (call sq (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
   (call sq (: 3 Int64) (: 0 Int64)) (trap "unreachable")
   (call sq (: 0 Int64) (: 4 Int64)) (trap "unreachable")
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; ── @invariant ESTABLISH over a SINGLE-VARIANT MULTI-PAYLOAD newtype: the tuple-erase construct path ─────────
 ; The third establish shape. `(type Range (Mk Int64 Int64))` is a single-variant, MULTI-payload newtype — it

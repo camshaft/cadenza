@@ -472,7 +472,7 @@
                 (_ -1)))
             (export main)))
   (output (: 40 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a runtime-built BigInt sum-payload literal probe matches its constructor"
   (doc    "The runtime-scrutinee companion (no quote/Ast): a plain sum `(type W (Mk BigInt))` whose payload
@@ -487,7 +487,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 40 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload"
   (doc    "The miss companion: the same `(match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1))` at k=2 does NOT
@@ -501,7 +501,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor"
   (doc    "The CONSTANT-scrutinee companion of the runtime probes above (breaker FINDING #22 FACE-B): a

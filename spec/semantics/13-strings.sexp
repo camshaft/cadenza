@@ -145,7 +145,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 1190 Int64))
   (call   main (: 0 Int64)) (output (: -910 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 15))
 
 (case "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
   (doc    "The depth counter above suffices for ONE bracket type; with three, the counter is provably
@@ -2876,7 +2876,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "encoding a decoded string round-trips to the same bytes"
   (doc    "For well-formed bytes `b`, decoding then re-encoding yields `b`: matching the `(Some s)` arm of
@@ -4528,7 +4528,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "String.byte-len of a runtime rope agrees with Bytes.len of its to-bytes image"
   (doc    "The runtime-rope face of the const agreement pin: byte-len and Bytes.len∘to-bytes must agree on a concat-built value (6 for café+s).")
@@ -4691,7 +4691,7 @@
                   ((None _u) 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; ── Reclaim (known-leak): Option.expect over a dead-after-borrowed String.slice leaks the Some shell (migrated from rcdzc) ──
 (case "Option.expect over a dead-after-borrowed String.slice leaks the Some shell each iteration"

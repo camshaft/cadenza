@@ -900,7 +900,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (raw (list 1 2 3 4 5)) V)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 5 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ;; -- variant host RESULTS with COMPOUND payloads: list payload measured, record payload projected (breaker batch 397a; the #3655 flip) --
 (case "cvp1 a variant host RESULT with a LIST payload lifts and is measured"
@@ -917,7 +917,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (items (list 5 6 7)) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "cvp2 a variant host RESULT with a RECORD payload lifts and projects"
   (wit-world (world w (export iface (member f (func (param m ("record" (x (s64)))) (result (s64)))))
@@ -933,7 +933,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (host-responses (respond hosti.get (: (tag (record (= a 40) (= b 2))) r)))
   (host-calls (call cadenza:demo/hosti.get))
   (output (: 42 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ; -- breaker batch 404 (2026-08-26): in-guest-handler x host-import COMBINATION faces (cr01-cr03d:
 ; two exports in one interface, exported body running a handled effect, handler+host-call in

@@ -2537,7 +2537,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
   (call   main (: false Bool)) (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "the full contract-descriptor record (Bytes/String/Ast fields) materializes whole at runtime; scalar fields read"
   (doc    "The full self-describing descriptor shape `Record(id: Bytes, name: String, input: Ast, output: Ast,

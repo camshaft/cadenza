@@ -4200,7 +4200,7 @@
             (def (pair n) (tuple n n))
             (def (main) (match (go 3 0) ((tuple a b) a))) (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a tail-recursive function returning a tuple is tuple-valued"
   (doc    "The MINIMAL isolation of the case above — no accumulator, no helper, no heap: a tail-recursive
@@ -4217,7 +4217,7 @@
             (def (go n) (if (< n 1) (tuple 0 0) (go (- n 1))))
             (def (main) (match (go 3) ((tuple a b) (+ a b)))) (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched"
   (doc    "The MUTUAL-RECURSION sibling of the tail-recursive tuple return above. `dn` (decode-node) and
@@ -4421,7 +4421,7 @@
   (call   main (: 1 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 100 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a def parameter may be a record pattern that destructures by field"
   (doc    "`(def (f (record (x a) (y b))) (+ a b))` destructures its single record argument by field,

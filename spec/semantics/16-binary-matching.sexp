@@ -1923,7 +1923,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a runtime bin match decodes a FINAL utf8 segment at a NON-ZERO static offset"
   (doc    "The static-offset companion of the final constant-size utf8 pin (:1878, which reads utf8 at
@@ -2396,7 +2396,7 @@
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
   (call main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "cu02 runtime FINAL dependent-size utf8 segment decodes"
   (input (do
@@ -2409,7 +2409,7 @@
     (export main)))
   (call main (: 105 UInt8)) (output (: 2 Int64))
   (call main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "cu03 CONTROL runtime non-final dependent-size BYTES segment"
   (input (do
