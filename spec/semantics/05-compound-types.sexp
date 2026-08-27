@@ -20331,3 +20331,45 @@
   (call main (: 5 Int64))
   (output (: 20 Int64))
   (live-objects known-leak 6))
+
+; -- breaker batch 463 (2026-08-27): depth-3 walks through the #3879 type-carry (fresh-surface
+; probes the hour after the fix). The carried field type must survive consecutive interior walks —
+; list-of-TUPLE, list-of-RECORD, and list-of-LIST payloads of a generic multi-payload ctor all
+; destructure correctly to the leaf. Residual known-leaks are the generic-sum x heap-payload
+; reclaim family scaling with depth (joins the inc2 flip-set).
+
+(case "dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf through the carried type"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list (tuple n (+ n 1))) 9) (GNil unit)) (GPair (List (Tuple Int64 Int64)) Int64))
+        ((Both (list (tuple a b)) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (live-objects known-leak 5))
+
+(case "dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list (record (= v n))) 9) (GNil unit)) (GPair (List (Record (: v Int64))) Int64))
+        ((Both (list (record (= v a))) c) (+ a c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 14 Int64))
+  (live-objects known-leak 5))
+
+(case "dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list (list n (+ n 1))) 9) (GNil unit)) (GPair (List (List Int64)) Int64))
+        ((Both (list (list a b)) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (live-objects known-leak 6))
