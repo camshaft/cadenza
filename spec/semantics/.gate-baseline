@@ -8791,3 +8791,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a peer op arity mismatch is rejected at compose time, not a trap
+pass	a peer op type mismatch is rejected at compose time (same arity, different type)
+pass	a peer missing a bound op is rejected naming the op
