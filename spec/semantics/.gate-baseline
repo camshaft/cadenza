@@ -6455,6 +6455,7 @@ pass	lsu2 a mask covering a UInt32 high-nibble logical shift is elided
 pass	lsu3 a mask that does not cover the shifted range is kept (UInt64 x>>8)
 pass	lt1 the arm SWAPS its list state's ends per dispatch — the head alternates between the original ends
 pass	lt2 the arm DOUBLES every list element per dispatch (via a projection helper) — the sum geometrically grows
+pass	lus1 a runtime List.update traps on a wrapping or out-of-bounds index, succeeds in bounds
 pass	lv1 a List of TUPLES from the empty (list) literal seed — pushed in one arm, indexed in a sibling
 pass	m2m1 a MAP-OF-MAPS handler state — each dispatch bumps a (category key) cell, the drain reads across both levels
 pass	main returns Float64.Infinity as a boundary value
@@ -7272,6 +7273,7 @@ pass	rs1 a RESULT built from draw parity crosses dispatch as an op ARGUMENT — 
 pass	rs2 the arm updates the record state via Record.with — field b is held by the functional update across dispatches
 pass	rs3 a NESTED record state — the arm functionally updates the inner record's x by y and bumps the outer counter
 pass	rsl1 a Result whose Ok payload is a HEAP LIST snapshot of the state — the first snap Errs on the empty list, the second Oks the grown snapshot, both cross resume
+pass	rsl1 a recursive-sum linked list is built and folded at runtime
 pass	rsn1 a shift with a nested checked-add value operand keeps both guards
 pass	rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot
 pass	rsr1 a signed right shift is arithmetic (sign-extending)
