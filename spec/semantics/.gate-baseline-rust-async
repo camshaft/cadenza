@@ -8132,3 +8132,5 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
+pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds

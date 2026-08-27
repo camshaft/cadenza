@@ -9617,6 +9617,30 @@
               ((None) 0)))
   (error    CDZ0210))
 
+(case "an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match"
+  (doc    "The compile control for the guarded-variant reject cases above: adding an UNGUARDED `(Some y)`
+           arm after the guarded `(Some x)` one covers the `Some` variant unconditionally, so the match is
+           exhaustive and COMPILES (no CDZ0210). It also runs correctly over a runtime scrutinee: for a
+           positive payload the guard holds and the guarded body wins (f(Some 5) = 5); for a non-positive
+           one the guard fails and control falls through to the unguarded arm (f(Some -3) = -3). Pins that
+           the exhaustiveness rejection is specific to the MISSING unguarded arm, not the guard itself.")
+  (input  (do
+            (def (f (: o (Option Int64))) (match o ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0)))
+            (def (main (: n Int64)) (f (Some n))) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: -3 Int64)) (output (: -3 Int64)))
+
+(case "a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds"
+  (doc    "The fold control paired with the const-fold-true REJECT above: the SAME `(Some 5)` constant
+           scrutinee, but now WITH the unguarded `(Some y)` fall-through — so the match is exhaustive and
+           the guard-folds-true path folds to the guarded body (5), unchanged. Pins that adding the
+           fall-through both restores exhaustiveness AND leaves the constant fold intact (the exhaustiveness
+           check on the guard-true path does not disturb the fold).")
+  (input  (do
+            (def (main) (match (Some 5) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0)))
+            (export main)))
+  (output (: 5 Int64)))
+
 ; The single-guarded-arm case above pins that a guarded arm covers no variant. These pin that the checker
 ; treats guards as fully OPAQUE — it does NOT reason about whether a SET of guards is jointly total, nor
 ; treat a trivially-`true` guard as unconditional. The classic exhaustiveness-soundness trap is a checker
