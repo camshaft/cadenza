@@ -4936,6 +4936,34 @@
   (output (: 60 Int64))
   (live-objects known-leak 7))
 
+(case "a single-variant nominal value escapes to the host as its erased payload tagged with the nominal name"
+  (doc    "A single-variant sum is a NOMINAL NEWTYPE (a struct) whose box ERASES: the runtime value IS the
+           payload — here a 3-field tuple — with NO discriminant, and it crosses the host boundary as that
+           underlying tuple TAGGED with the nominal name. `(type Rec (Mk Int64 Int64 Int64))`, `(Rec.Mk 1 2
+           3)` renders `(: (tuple 1 2 3) Rec)` — the erased escape, NOT the boxed `(Mk 1 2 3)` a
+           multi-VARIANT sum's variant would render. Pins construction + escape of an erased struct.")
+  (input  (do (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main)))
+  (output (: (tuple 1 2 3) Rec)))
+
+(case "a newtype over a sum escapes to the host as its erased underlying sum value-form"
+  (doc    "A newtype over a sum — `(type Cached (Mk (Option Int64)))` — erases its `Mk` box to nothing, so a
+           value returned to the host renders as the UNDERLYING sum `(: (Some 7) (Option Int64))`, not the
+           nominal `Cached`. The `(if …)` keeps the payload RUNTIME (a constant would fold through a
+           type-agnostic path). Pins that the escape routes on the ERASED (stripped) result type, reaching
+           the sum-escape path rather than the scalar decline.")
+  (input  (do (type Cached (Mk (Option Int64))) (def (main) (Mk (Some (if true 7 0)))) (export main)))
+  (output (: (Some 7) (Option Int64)))
+  (live-objects known-leak 1))
+
+(case "a recursive newtype escapes to the host tagged with its own name at each recursion point"
+  (doc    "A RECURSIVE newtype returned to the host escapes via the recursive-sum shape walker, routed on the
+           UN-stripped nominal so its OWN name tags the value (`Lst`, not the inner `Option`); the recursion
+           point (the nested `Mk None`) is tagged `Lst` too. `(type Lst (Mk (Option (Tuple Int64 Lst))))`,
+           `(Mk (Some (tuple 7 (Mk None))))` renders `(: (Some (tuple 7 (: (None unit) Lst))) Lst)`.")
+  (input  (do (type Lst (Mk (Option (Tuple Int64 Lst)))) (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main)))
+  (output (: (Some (tuple 7 (: (None unit) Lst))) Lst))
+  (live-objects known-leak 3))
+
 (case "a recursive NEWTYPE traversal recurses on its projected recursive field"
   (doc    "The single-variant NEWTYPE form of the linked-list traversal: `(type Lst (Mk (Option (Tuple
            Int64 Lst))))` wraps the recursive spine in a nominal `Mk`. `sm` matches out the `Mk`, then the
