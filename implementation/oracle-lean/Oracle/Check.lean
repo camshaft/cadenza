@@ -100,6 +100,12 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
   match m.nodes[s]? with
   | Option.some (Node.atom lid) => (m.leaves[lid]?).bind Value.ofLeaf
   | Option.some (Node.list cs) =>
+    if Eval.qualHead? m cs == Option.some ("Set".toUTF8, "of".toUTF8) then
+      -- a Set value `((. Set of) (list e…))` — parse the list arg, canonicalize (sort + dedupe)
+      match (cs[1]?).bind (expectedValue? m) with
+      | Option.some (Value.list elems) => (Eval.canonSet elems).map Value.set
+      | _ => Option.none
+    else
     match headStr? m s with
     | Option.some "Some" => ((cs[1]?).bind (expectedValue? m)).map Value.some
     | Option.some "Ok" => ((cs[1]?).bind (expectedValue? m)).map Value.ok
