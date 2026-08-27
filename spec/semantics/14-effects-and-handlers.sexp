@@ -5232,7 +5232,7 @@
                 (St.cut (String.concat "a" "édc"))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "a mid-scalar byte window crosses to the arm and String.from-bytes declines it"
   (doc    "The adversarial byte/char face: slicing é's continuation byte alone (`Bytes.slice b 1 1`

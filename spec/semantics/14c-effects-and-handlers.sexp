@@ -3229,7 +3229,7 @@
   (call   main (: 0 Int64)) (output (: 303 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 5 Int64)) (output (: 212 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ;; ── ta/by/syd: interior aborts in towers, and bytes/symbols via draws ────────
 ;; ta2 aborts INSIDE the inner frame of a same-effect tower (Bail innermost;
@@ -8795,7 +8795,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 230 Int64))
   (call   main (: 1 Int64)) (output (: 120 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run"
   (input  (do

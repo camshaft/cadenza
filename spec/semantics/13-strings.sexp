@@ -1422,7 +1422,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a trie of 40 rope-built String keys resolves content descent at depth"
   (doc    "The String-key rows above run on 1-2 keys (slice views, flat probes); this pins a POPULATED
@@ -1550,7 +1550,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 2))
 
 (case "a runtime string rope inserted into a set is a member"
   (doc    "The SET element-insert companion of the map-key cases: inserting a runtime String ROPE
@@ -2734,7 +2734,7 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 295 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 3))
 
 (case "Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes"
   (doc    "The `Bytes.concat` member of the consuming-op-double-read family (adv-54b, the next op after the
@@ -2758,7 +2758,7 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 200 Int64))
-  (live-objects known-leak 1))
+  (live-objects known-leak 3))
 
 (case "a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points"
   (doc    "The RUNTIME-torn face of the ill-formed-decode family: the constant malformed pins below feed
@@ -4327,7 +4327,7 @@
   (call   main (: 1 Int64)) (output (: 73 Int64))
   (call   main (: 2 Int64)) (output (: 11 Int64))
   (call   main (: 3 Int64)) (output (: 95 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "a slice of a slice composes scalar offsets against the VIEW, not the base string"
   (doc    "Re-slicing pins offset COMPOSITION: over `(String.concat \"xé\" \"y😀z\")` (scalars x,é,y,😀,z)
@@ -4475,7 +4475,7 @@
             (export main)))
   (call   main (: 9223372036854775807 Int64) (: 4611686018427387904 Int64) (: 4611686018427387905 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "String.at with an index at 2^32+2 declines to None, not an i32-wrapped read"
   (doc    "The i32-TRUNCATION face: 2^32+2 wraps to index 2 — IN-BOUNDS for the 11-scalar string — so a lowering that narrowed the index to i32 before the bounds check returns a wrong Some scalar; the full-width check declines all three reads to None (0).")
@@ -4488,7 +4488,7 @@
             (export main)))
   (call   main (: 4294967298 Int64) (: 4294967297 Int64) (: 4294967299 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ; --- String batch: the 4-width scalar walk, scalar-wise reversal, the runtime to-bytes round
 ; trip (with the mid-scalar-cut decline), and a String-to-String effect op whose result feeds

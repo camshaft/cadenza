@@ -17114,6 +17114,15 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::BytesConcat { .. }
         | Core::BytesSlice { .. }
         | Core::BytesCompact { .. }
+        // `str-slice` (`String.slice`) returns a FRESH owned `(Option String)` — a fallible read that copies
+        // the slice range into a new `Some(str)` (or `None`), exactly like `BytesAt`/`BytesSlice` above. So a
+        // `String.slice` result used as a MatchSum SCRUTINEE is an OWNED computed boxed-sum, and its shell +
+        // consumed payload must be reclaimed by the shell-reclaim child-dup path. WITHOUT this arm it fell to
+        // the `_ => decline` ("ownership this backend cannot yet prove") default, so `sum_shell_reclaim_ok` /
+        // `collect_shell_reclaim_child_dups` bailed and a payload CONSUMED MORE THAN ONCE off the slice (the
+        // adv54b class: `tail` = `String.slice`'s payload fed to two `String.to-bytes` under one
+        // `Bytes.concat`) got NO child-`dup` → the shared payload's ref was released twice → DOUBLE-FREE.
+        | Core::StrSlice { .. }
         | Core::StrFromBytes { .. }
         | Core::StrToBytes { .. }
         // `str-nfc-normalize` (FINDING #23) hands out a FRESH owned String handle: it CONSUMES its operand and
