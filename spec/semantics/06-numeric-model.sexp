@@ -6449,6 +6449,32 @@
   (call   f (: 200 UInt8)) (output (: -56 Int8))
   (call   f (: 100 UInt8)) (output (: 100 Int8)))
 
+(case "a widening runtime wrap extends a SIGNED source by its source sign"
+  (doc    "`(UInt64.wrap n)` over a runtime Int8 is a narrow->wide slot move: the s8 source is extended to
+           i64 by its SOURCE sign before the (full-width, no-op) mask, so -1:Int8 -> UInt64 2^64-1 and 5 ->
+           5. Pins that the i32->i64 widening honors the SOURCE signedness (the emit twin of the narrowing
+           wraps above, which the corpus otherwise only covers narrowing/same-width).")
+  (input  (do (def (f (: n Int8)) (UInt64.wrap n)) (export f)))
+  (call   f (: -1 Int8))  (output (: 18446744073709551615 UInt64))
+  (call   f (: 5 Int8))   (output (: 5 UInt64)))
+
+(case "a widening runtime wrap ZERO-extends an UNSIGNED source"
+  (doc    "The unsigned-source companion: `(UInt64.wrap n)` over a runtime UInt8 zero-extends, so 255:UInt8
+           -> 255 (NOT sign-extended to a huge value) and 0 -> 0. Pins that the i32->i64 widening honors an
+           UNSIGNED source, distinct from the signed-source sign-extend above.")
+  (input  (do (def (f (: n UInt8)) (UInt64.wrap n)) (export f)))
+  (call   f (: 255 UInt8)) (output (: 255 UInt64))
+  (call   f (: 0 UInt8))   (output (: 0 UInt64)))
+
+(case "a runtime wrap never traps at the widest input boundary and reads the low byte"
+  (doc    "`wrap` is TOTAL — it never traps whatever the runtime input, unlike checked arithmetic. Even
+           the most extreme i64 wraps cleanly to a UInt8: i64::MIN (a multiple of 256) -> 0 and i64::MAX
+           -> 255 (its low byte). Pins wrap's totality at the input boundary that would tempt a range-check
+           trap.")
+  (input  (do (def (f (: n Int64)) (UInt8.wrap n)) (export f)))
+  (call   f (: -9223372036854775808 Int64)) (output (: 0 UInt8))
+  (call   f (: 9223372036854775807 Int64))  (output (: 255 UInt8)))
+
 (case "a narrowing wrap of a wider wrap elides the inner wrap"
   (doc    "`(Int8.wrap (Int16.wrap x))` over a runtime Int32 — the outer width 8 <= the inner 16, so the
            inner wrap is redundant (the outer keeps only the low 8 bits, unchanged by the inner) and is
