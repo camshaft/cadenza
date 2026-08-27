@@ -94823,3 +94823,33 @@ fn collect_static_bytes_interns_distinct_constant_bytes_literals() {
         "a constant bytes literal nested in a record field must be collected by the descent"
     );
 }
+
+/// §2d STATIC bytes (`DESIGN-static-data.md` — the `Core::ConstBytes` representation).
+/// `constant_bytes_value` / `is_constant_bytes` must cover BOTH constant-`Bytes` representations, exactly
+/// as the backend emit does: a `Core::BytesOf` of constants AND a baked `Core::ConstBytes` leaf (produced
+/// by the `Ast.encode` / `Blake3.of` folds). The `ConstBytes` arm re-emits the same per-eval
+/// `bytes-alloc`+`bytes-set`, so it is an equally valid build-once hoist target — a regression that missed
+/// it would leave those literals re-allocating. Delegating to `const_byte_slice` (the canonical dual-repr
+/// reader) is what gives this coverage; this pins it.
+#[test]
+fn constant_bytes_value_covers_the_baked_const_bytes_leaf_too() {
+    use crate::db::Db;
+    use crate::lower::{constant_bytes_value, is_constant_bytes};
+    // `(Ast.encode (Ast.Bool true))` folds to a `Core::ConstBytes` leaf (a compile-time-known byte
+    // sequence baked as one leaf), NOT a `Core::BytesOf` of per-byte `ConstInt`s.
+    let src = "(module m (def (main) (Ast.encode (Ast.Bool true))) (export main))";
+    let mut db = Db::load(crate::testkit::parse(src));
+    let d = db.def_by_name("main").expect("def main");
+    let body = db.defs[d].body.expect("body");
+    assert!(
+        is_constant_bytes(&mut db, body),
+        "a baked `Core::ConstBytes` (the Ast.encode fold) must be recognized as constant Bytes"
+    );
+    let bytes = constant_bytes_value(&mut db, body)
+        .expect("a baked Core::ConstBytes must extract its raw payload");
+    assert!(
+        !bytes.is_empty(),
+        "the encoding of `(Ast.Bool true)` is a non-empty byte sequence, got {} bytes",
+        bytes.len()
+    );
+}
