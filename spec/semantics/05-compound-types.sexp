@@ -20507,3 +20507,44 @@
   (call main (: 5 Int64))
   (output (: 22 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 467 (2026-08-27): the repeat-unwrap map COMPLETED (extends xop4/xop5). The gap
+; generalizes across sum kinds — prelude Result (ruw1) and a user generic (ruw2) leak the same 3
+; twice-matched — and the TRIPLE-match calibration (ruw3, still 3) proves the census counts
+; OBJECTS not refs: extra unbalanced refs on the same payload do not raise the reading, so xop1's
+; 6 objects really are ADDITIONAL pinned structure (the container graph), not double-counting.
+
+(case "ruw1 a fresh Result Ok with a list payload matched twice leaks the payload like Option"
+  (input (do
+    (def (main (: n Int64))
+      (let ((o (: (if (> n 0) (Ok (list n (+ n 1))) (Err "no")) (Result (List Int64) String))))
+        (+ (match o ((Ok inner) (List.len inner)) ((Err _) -1))
+           (* 10 (match o ((Ok inner) (List.len inner)) ((Err _) -1))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64))
+  (live-objects known-leak 3))
+
+(case "ruw2 a fresh user-generic sum with a list payload matched twice leaks the payload identically"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (let ((o (: (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit)) (GBox (List Int64)))))
+        (+ (match o ((GBox.GFull inner) (List.len inner)) (_ -1))
+           (* 10 (match o ((GBox.GFull inner) (List.len inner)) (_ -1))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 22 Int64))
+  (live-objects known-leak 3))
+
+(case "ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs"
+  (input (do
+    (def (main (: n Int64))
+      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+        (+ (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1))
+           (+ (* 10 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))
+              (* 100 (match o ((Option.Some inner) (List.len inner)) ((Option.None) -1)))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 222 Int64))
+  (live-objects known-leak 3))
