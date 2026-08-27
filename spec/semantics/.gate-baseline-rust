@@ -1814,6 +1814,7 @@ pass	a distinct-signature round-trip alongside a plain export — the plain expo
 pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
+pass	a distributed match arm re-resolves its pattern binder inside the pushed handle
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
@@ -2119,6 +2120,8 @@ pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler arm with two lookup-matches and a computed perform key emits valid wasm (checked-arith scratch slot-width partition)
+pass	a handler distributes into an if whose BOTH branches perform
+pass	a handler distributes into an if whose ELSE branch performs
 pass	a handler folds a counter across the operations it discharges
 pass	a handler mixing arms of two different effects is rejected
 pass	a handler resumes its continuation at most once by default

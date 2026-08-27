@@ -7222,6 +7222,42 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 1 (0 5) (_ (+ 1 (Amb.flip)))))) (export main)))
   (output (: 12 Int64)))
 
+(case "a distributed match arm re-resolves its pattern binder inside the pushed handle"
+  (doc    "The distribution of the preceding match case, but the performing arm reads a PATTERN BINDER: the
+           binder must re-resolve inside the pushed sub-handle, not be lost when the arm body is wrapped.
+           `(match 7 (n (+ n (Amb.flip))))` — the wildcard-style binder `n` binds the scrutinee 7, and the
+           arm distributes to `(handle … (+ n (Amb.flip)))` with `C = (+ 7 [])`, so `(resume 10 s)` = 10 and
+           the arm `(+ 1 (+ 7 10))` = 18.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match 7 (n (+ n (Amb.flip)))))) (export main)))
+  (output (: 18 Int64)))
+
+(case "a handler distributes into an if whose ELSE branch performs"
+  (doc    "The else-branch face of the pure-if distribution: the taken branch is the ELSE, and it performs.
+           `(if (< 5 3) 0 (+ 1 (Amb.flip)))` — `(< 5 3)` is false, so the else branch `(handle … (+ 1
+           (Amb.flip)))` runs with `C = (+ 1 [])` → `(resume 10 s)` = 11, arm `(+ 1 11)` = 12; the then
+           branch is a pure body that does not run. Pins that distribution serves a performing else branch
+           exactly as it serves a performing then branch.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 5 3) 0 (+ 1 (Amb.flip))))) (export main)))
+  (output (: 12 Int64)))
+
+(case "a handler distributes into an if whose BOTH branches perform"
+  (doc    "Both branches of a pure-condition `if` perform; distribution folds each into its own sub-handle
+           and only the taken one runs. `(if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip)))` — `(< 3 5)` is true
+           → the then sub-handle `(+ 1 (+ 1 10))` = 12; the else sub-handle `(+ 1 (* 2 10))` = 21 folds too
+           but is dead. Pins that distribution handles a perform in EACH branch independently, taking only
+           the selected branch's value.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ 1 (Amb.flip)) (* 2 (Amb.flip))))) (export main)))
+  (output (: 12 Int64)))
+
 (case "a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand"
   (doc    "A perform in an `and`/`or` RIGHT operand (a conditionally-run position) folds by composition: the
            connective desugars to `if` — `(and l r)` is `(if l r false)`, `(or l r)` is `(if l true r)` —
