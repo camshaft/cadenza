@@ -18405,8 +18405,8 @@
 ; — inc2's fix must work in handler-arm scope, and this row's flip is the amplified acceptance.
 ; xar3: the same arm-extract with the dispatch crossing a NON-recursive helper def works (leak 3,
 ; single dispatch). The RECURSIVE-performer sibling (arm capturing any main-local heap binding,
-; extract not needed) is REJECTED with a bogus CDZ0101 "unbound name" for a lexically-bound name —
-; pinned as the todo fence xar5, filed to v-effects as a wrong-diagnostic (honest-decline bar).
+; extract not needed) once mis-rejected with a bogus CDZ0101 for a lexically-bound name — now it
+; FOLDS: specialize_recursive threads the captured main-local as an extra spec param (xar5 below).
 
 (case "xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance"
   (input (do
@@ -18437,7 +18437,7 @@
   (output (: 2 Int64))
   (live-objects 0))
 
-(case "xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers"
+(case "xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers (the threaded heap capture leaks per dispatch through the resume-escape fence)"
   (input (do
     (effect St (op get (-> Unit Int64)))
     (def (loop2 (: k Int64))
@@ -18449,17 +18449,25 @@
           (loop2 n))))
     (export main)))
   (call main (: 2 Int64))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  ; The captured heap list `ys` threads into the lifted spec def as an extra param, but the retain lives
+  ; INSIDE the resume value (`(List.len ys)` under `(resume … s)`) — Core-invisible to Perceus, so the
+  ; per-dispatch retain is not reclaimed (v-core-opt's resume-escape structural fence, the 2c.3 class).
+  ; Two dispatches at n=2 leak 2. The scalar sibling (xas1) has no heap capture and reclaims to 0.
+  (live-objects 2))
 
-; -- breaker batch 484 (2026-08-27): the xar5 scoping gap's WIDTH (companions to the xar5 fence;
-; root cause per v-effects = specialize_recursive lifts the performer to a TOP-LEVEL def and
-; splices the arm's resume-value into it, where main-locals are out of scope). xas1: a SCALAR
-; main-local LET capture hits the same bogus CDZ0101 — the gap is any handle-body-local LET
-; binder, not heap-only. xas2: the arm capturing main's PARAM directly WORKS (params are threaded
-; into the lifted def) — the safe-floor check's exact boundary is "arm captures a main-local LET",
-; params excluded. xas1 flips (oracle 12 = two draws of m=6 at n=2) with the thread-free-vars fix.
+; -- breaker batch 484 (2026-08-27): the xar5 scoping gap's WIDTH (companions to xar5; root cause
+; per v-effects = specialize_recursive lifts the performer to a TOP-LEVEL def and splices the arm's
+; resume-value into it, where main-locals were out of scope). xas1: a SCALAR main-local LET capture
+; hit the same gap — it is any handle-body-local LET binder, not heap-only. xas2: the arm capturing
+; main's PARAM directly always worked (params thread into the lifted def). The full fold (2026-08-27)
+; threads the captured main-local LET as an extra spec param too — validated post-thread by
+; handle_lift_escapes naming the precise escaping occurrence — so xas1 folds (oracle 12 = two draws
+; of m=6 at n=2, reclaims to 0) and xar5 folds (oracle 6 = two draws of List.len [2,3,9]=3), matching
+; xas2. xar5's heap capture leaks 2: the `ys` retain lives inside the resume value, Core-invisible to
+; Perceus (v-core-opt's resume-escape fence), so it is pinned as a known-leak — reclaim is v-core-opt's.
 
-(case "xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)"
+(case "xas1 a recursive performer with the arm capturing a main-local SCALAR let folds (threaded as an extra spec param)"
   (input (do
     (effect St (op get (-> Unit Int64)))
     (def (loop2 (: k Int64))

@@ -43407,81 +43407,68 @@ mod stage1 {
         );
     }
 
-    /// [specialize_recursive escape safe-floor] A recursive performer whose handler arm captures a
-    /// MAIN-LOCAL `let` binding escapes the lifted top-level def (`collect_captures` threads enclosing-fn
-    /// PARAMS but not a main-local `let` binder), so the captured name (`ys`/`m`) rides into the lifted def
-    /// out of scope and resolves unbound. Before the fix this surfaced as a BOGUS CDZ0101 "unbound name" —
-    /// a false rejection of a well-formed program. `handle_lift_escapes` (a resolved-form VALUE-POSITION
-    /// walk) flags the dangling main-local and DECLINES the fold cleanly (an uncoded "not yet reducible"
-    /// todo). The value-position walk skips member-access KEYS and `let`/param BINDERS (which also resolve
-    /// Poison but are not value references), so the captured-PARAM case (xas2) and a capture-free fold — and
-    /// a broad set of legitimate folds using List/Bytes/String ops, mutual recursion, and helper calls —
-    /// still fold (no over-decline). (chr1 — a capture-once closure through a PURE recursive HOF — is a
-    /// distinct site that never reaches specialize_recursive; parked.)
+    /// [specialize_recursive full fold — thread-the-let-local] A recursive performer whose handler arm
+    /// captures a MAIN-LOCAL `let` binding (`ys`/`m`) once escaped the lifted top-level def: `collect_captures`
+    /// threads enclosing-fn PARAMS as extra spec params but not a main-local `let` binder, so the captured
+    /// name rode into the lifted def out of scope (a bogus CDZ0101 false-reject). The full fold threads the
+    /// captured main-local as an EXTRA spec param too: after threading with the captures known so far,
+    /// `handle_lift_escapes` (a resolved-form VALUE-POSITION walk) names the PRECISE escaping occurrence on
+    /// the actual threaded body; that main-local is added to the capture set and the body is re-threaded, so
+    /// both the self-call and the initial call append the constant main-scope value (in scope at the caller).
+    /// The value-position walk skips member-access KEYS and `let`/param BINDERS, so a threaded-state / resume
+    /// / do-local reference is never mistaken for an escape. xar5 (`resume (List.len ys)`, ys a heap list) and
+    /// xas1 (`resume m`, m a scalar) now FOLD to the same answers the captured-PARAM case (xas2) always did;
+    /// an escape that is not a typed main-local candidate still declines cleanly (the honest floor). (chr1 —
+    /// a capture-once closure through a PURE recursive HOF — is a distinct site that never reaches
+    /// specialize_recursive; parked.)
     #[test]
-    fn specialize_recursive_main_local_capture_declines_cleanly_not_bogus_cdz0101() {
+    fn specialize_recursive_main_local_capture_folds_via_thread_the_let_local() {
         use crate::testkit::parse;
         let loop2 = "(effect St (op get (-> Unit Int64))) \
                      (def (loop2 (: k Int64)) (if (= k 0) 0 (+ (St.get) (loop2 (- k 1))))) ";
-        // xar5: arm captures a main-local HEAP list `ys` → escapes → clean uncoded decline (not CDZ0101).
-        let xar5 = compile_component(&crate::codec::encode(&parse(&format!(
+        let run2 = |src: &str| -> i64 {
+            let c = compile_component(&crate::codec::encode(&parse(src)))
+                .expect("must fold — the captured main-local threads as an extra spec param");
+            run_returns_with::<i64>(&c, "main", &[wasmtime::component::Val::S64(2)])
+        };
+        // xar5: arm captures a main-local HEAP list `ys` → threaded as an extra spec param → FOLDS.
+        // Assert it COMPILES (produces a component, no bogus CDZ0101); the runtime VALUE (6 = two draws of
+        // List.len [2,3,9]=3 at n=2) is checked by the corpus gate against the real value-heap runtime —
+        // this in-process wasmtime linker does not carry the heap runtime the `list`/`List.len` ops need.
+        compile_component(&crate::codec::encode(&parse(&format!(
             "(do {loop2}(def (main (: n Int64)) \
                (let ((ys (if (> n 0) (list n (+ n 1) 9) (list 1)))) \
                  (handle St 0 ((get (u) s (resume (List.len ys) s))) (loop2 n)))) (export main))"
         ))))
-        .expect_err("xar5 a main-local heap capture through a recursive performer must decline");
-        assert_ne!(
-            xar5.code.as_deref(),
-            Some("CDZ0101"),
-            "xar5 must be an HONEST decline, not a bogus CDZ0101 false-reject: {}",
-            xar5.message
-        );
-        assert!(
-            xar5.code.is_none(),
-            "xar5 must be an uncoded decline: {:?}",
-            xar5.code
-        );
-        // xas1: arm captures a main-local SCALAR let `m` → the same escape → clean uncoded decline.
-        let xas1 = compile_component(&crate::codec::encode(&parse(&format!(
-            "(do {loop2}(def (main (: n Int64)) \
-               (let ((m (* n 3))) \
-                 (handle St 0 ((get (u) s (resume m s))) (loop2 n)))) (export main))"
-        ))))
-        .expect_err("xas1 a main-local scalar capture through a recursive performer must decline");
-        assert_ne!(
-            xas1.code.as_deref(),
-            Some("CDZ0101"),
-            "xas1 must be an HONEST decline, not a bogus CDZ0101 false-reject: {}",
-            xas1.message
-        );
-        assert!(
-            xas1.code.is_none(),
-            "xas1 must be an uncoded decline: {:?}",
-            xas1.code
+        .expect("xar5 (arm captures a main-local heap list) must fold — the let-local threads as a spec param");
+        // xas1: arm captures a main-local SCALAR let `m` → threaded as an extra spec param → FOLDS.
+        // n=2 → m = 6, two draws → 6 + 6 = 12.
+        assert_eq!(
+            run2(&format!(
+                "(do {loop2}(def (main (: n Int64)) \
+                   (let ((m (* n 3))) \
+                     (handle St 0 ((get (u) s (resume m s))) (loop2 n)))) (export main))"
+            )),
+            12,
+            "xas1 (arm captures a main-local scalar let) must fold — the let-local threads as a spec param"
         );
         // xas2: the arm captures main's PARAM `n` directly → params thread into the lifted def → FOLDS (→4).
-        let run2 = |src: &str| -> i64 {
-            let c = compile_component(&crate::codec::encode(&parse(src)))
-                .expect("must fold — no escape");
-            run_returns_with::<i64>(&c, "main", &[wasmtime::component::Val::S64(2)])
-        };
         assert_eq!(
             run2(&format!(
                 "(do {loop2}(def (main (: n Int64)) \
                    (handle St 0 ((get (u) s (resume n s))) (loop2 n))) (export main))"
             )),
             4,
-            "xas2 (arm captures main's PARAM) must still fold — the value-position walk must not over-decline"
+            "xas2 (arm captures main's PARAM) must still fold — unchanged by the let-local extension"
         );
-        // A capture-free recursive fold (arm resumes a constant) still folds — the walk skips keys/binders
-        // (the member-key `get` and the loop2 binders are not value references).
+        // A capture-free recursive fold (arm resumes a constant) still folds — the walk flags no escape.
         assert_eq!(
             run2(&format!(
                 "(do {loop2}(def (main (: n Int64)) \
                    (handle St 0 ((get (u) s (resume 7 s))) (loop2 n))) (export main))"
             )),
             14,
-            "a capture-free recursive fold must still fold — the walk must not over-decline"
+            "a capture-free recursive fold must still fold — no spurious capture threaded"
         );
     }
 

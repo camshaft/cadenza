@@ -7849,6 +7849,8 @@ pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — varia
 pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers (the threaded heap capture leaks per dispatch through the resume-escape fence)
+pass	xas1 a recursive performer with the arm capturing a main-local SCALAR let folds (threaded as an extra spec param)
 pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
 pass	xc1 xor by the same value twice cancels to the operand (runtime, constant, commuted, masked w)
 pass	xc2 a trapping discarded xor operand keeps its trap (the cancellation must not drop it)
@@ -7991,8 +7993,6 @@ todo	vres1 a variant-with-payload host RESULT delivers the payload arm (w10c sha
 todo	vres2 a MIXED-WIDTH variant host RESULT delivers each arm across three dispatches
 todo	vres3 a NEGATIVE s64 payload through the variant host-result join
 todo	wen1 an enum host-import RESULT lifts and selects the guest arm
-todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
