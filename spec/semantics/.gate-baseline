@@ -8517,3 +8517,10 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a pure one-hole fold passes a PURE perform-arg the op reads
+pass	a pure one-hole arm reading the SEED state folds against a non-zero seed
+pass	a pure one-hole locates the hole at a NON-LEADING operand
+pass	a pure one-hole locates the hole NESTED several operators deep
+pass	a perform threads through a NOT / boolean one-operand form
+pass	a perform threads through a tuple PROJECTION one-operand form
+pass	a short-circuit connective with a perform in the RHS preserves short-circuit (rhs not run)
