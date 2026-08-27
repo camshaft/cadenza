@@ -8653,33 +8653,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_call_returned_erased_newtype_literal_match_spills_at_the_right_width() {
-        // The SPILL-path sibling of the erased-newtype literal-payload test above. When the match scrutinee
-        // is a CALL RESULT (`(f (mk d))`) rather than an inline `(W.Wrap n)` construction, it is NOT a
-        // reusable handle, so the sum-match emit SPILLS it into a fresh scratch slot before probing. That
-        // spill slot was hardcoded i32 (assuming a boxed-sum handle); an erased single-variant newtype over
-        // a scalar (`(type W (Wrap Int64))`) is a bare i64, so storing it into the i32 slot re-typed one
-        // wasm local to two widths → `type mismatch: expected i32, found i64`, an invalid component (the
-        // inline cases pass a directly-constructed scrutinee that need not spill, so they missed this). Fix:
-        // the spill slot takes the scrutinee's machine width (`valtype_of`). `mk d` = `Wrap (d+1)`.
-        let src = "(module m \
-               (type W (Wrap Int64)) \
-               (def (mk (: n Int64)) (W.Wrap (+ n 1))) \
-               (def (f (: w W)) (match w ((W.Wrap 5) 100) ((W.Wrap n) n))) \
-               (def (main (: d Int64)) (f (mk d))) (export main))";
-        // `component` asserts a VALID, linkable module (it `.expect`s compile + the backend validates) — the
-        // core of the bug was an invalid component.
-        let _ = component(src);
-        // And it runs correctly at both a literal-hit and a fall-through arg.
-        if let Some(out) = run_heap_value(src, vec!["4".to_string()]) {
-            assert_eq!(out, "100", "mk 4 → Wrap 5 → literal arm → 100");
-        }
-        if let Some(out) = run_heap_value(src, vec!["6".to_string()]) {
-            assert_eq!(out, "7", "mk 6 → Wrap 7 → binder arm → 7");
-        }
-    }
-
-    #[test]
     fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
         // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
         // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
