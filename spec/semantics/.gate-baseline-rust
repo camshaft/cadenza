@@ -1270,6 +1270,7 @@ pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare primitive operator passed as a first-class function value folds via the annotation see-through
+pass	a bare reference to a nullary function denotes its body value
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare under-applied generic nested as a type argument declines, does not stack-overflow the compiler
 pass	a bare user constructor is passed as a first-class function to a higher-order function
@@ -2778,6 +2779,7 @@ pass	a nullary do-local def followed by a use of it computes over its result
 pass	a nullary function called from another function's body
 pass	a nullary function returning a scalar is callable
 pass	a nullary helper called and used in arithmetic
+pass	a nullary lambda applied yields its body
 pass	a nullary module export applied to a non-unit argument is rejected
 pass	a nullary module export's non-unit argument does not swallow the argument's own fault
 pass	a nullary single-variant newtype is a nominal unit tag that matches unconditionally

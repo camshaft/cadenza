@@ -2982,6 +2982,20 @@
   (input  (do (def (g) 7) (def (f x) (+ x (g))) (def (main) (f 5)) (export main)))
   (output (: 12 Int64)))
 
+(case "a nullary lambda applied yields its body"
+  (doc    "`((fn () 7))` = 7 — a zero-parameter lambda applied to no arguments β-reduces to its body, the
+           lambda face of the nullary-def call above. Applying to no arguments is the identity, so the
+           result is the body value, not an attempt to apply 7 to zero arguments.")
+  (input  ((fn () 7)))
+  (output (: 7 Int64)))
+
+(case "a bare reference to a nullary function denotes its body value"
+  (doc    "`(def (g) 7)` then `(def (main) g)` — a bare reference to the nullary `g` (no call parens)
+           denotes its body value 7, agreeing with the call form `(g)`. Pins that `g` and `(g)` are the
+           same value for a nullary def: the reference IS the body, and the parens are the (identity) call.")
+  (input  (do (def (g) 7) (def (main) g) (export main)))
+  (output (: 7 Int64)))
+
 ; A NULLARY function that returns a compound value must be projectable exactly as a unary one is.
 ; The cases above return a structure from a function of one parameter; a nullary function `(def (mk)
 ; <compound>)` called as `(mk)` returns the same kind of value, and projecting a field/element from
