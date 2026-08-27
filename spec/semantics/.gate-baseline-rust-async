@@ -4818,6 +4818,7 @@ pass	an annotated tuple-pattern parameter still checks its annotation against th
 pass	an annotated value takes a narrower integer width
 pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation on a nested generic-call argument grounds the self-nested producer and it runs
+pass	an annotation on an arithmetic operand is transparent
 pass	an annotation that contradicts the value is rejected
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
@@ -7104,6 +7105,7 @@ pass	rlyB single-use arm-perform control (answer only, state untouched) — B's 
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
+pass	rnc1 a runtime Option carrying a user sum is matched by a nested constructor pattern
 pass	rop1 recursive const (Option Int64) param countdown reaching a trap folds to CDZ0304 (was a wasm hang)
 pass	rop2 recursive const (Option Int64) param recursion on the value path folds to 99
 pass	rop3 payload extracted to a bare Int64 const param before recursing folds (CDZ0304)
@@ -7359,6 +7361,7 @@ pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body des
 pass	sn2 TWO whole-state snapshots straddle interleaved bumps — the first snapshot is IMMUTABLE, the pair differ by exactly the bumps between them
 pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match
 pass	sos1 a SET-OF-STRINGS state with ARM-BUILT rope keys — the concat-built key dedups structurally against the FLAT seed literal, parity routes which inserts are no-ops
+pass	spj1 a single-use projected list consume stays on the FBIP fast path
 pass	splice flattens where unquote nests
 pass	splicing a non-list value into a quasiquote is a type error
 pass	splicing an integer literal directly is a type error
@@ -8315,5 +8318,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	rnc1 a runtime Option carrying a user sum is matched by a nested constructor pattern
-pass	spj1 a single-use projected list consume stays on the FBIP fast path

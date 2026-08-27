@@ -1132,6 +1132,14 @@
   (input  (: (+ 1 2) Int64))
   (output (: 3 Int64)))
 
+(case "an annotation on an arithmetic operand is transparent"
+  (doc    "The annotation position variant of the case above: `(+ (: 2 Int64) 3)` annotates an OPERAND
+           rather than the whole expression. The annotation agrees with the operand's type and erases, so
+           the arithmetic folds normally to 5 (type-system.md #Annotations Constrain, Never Contradict — an
+           agreeing annotation changes nothing, wherever it sits).")
+  (input  (+ (: 2 Int64) 3))
+  (output (: 5 Int64)))
+
 ; --- The compiler never crashes: a malformed core form is rejected, not a panic ----------
 ; A core special form applied with the wrong number of operands (`(if true)`, `(= 5)`, a `let` binding
 ; with no value, an empty `(quote)`, a bare tuple accessor) is not a program the compiler can compile —

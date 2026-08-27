@@ -33339,12 +33339,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_annotation_is_transparent_around_an_expression() {
-        // The annotation wraps any expression, not just a literal — `(: (+ 2 3) Int64)` = 5.
-        assert_eq!(run_main("(: (+ 2 3) Int64)"), 5);
-    }
-
-    #[test]
     fn an_annotation_grounds_a_width_via_int_ctor() {
         // The type side is a full type EXPRESSION reduced by the evaluator: `(: 5 (Int 64))` uses the
         // `(Int 64)` constructor application as the annotation type. Runs as 5.
@@ -33366,12 +33360,6 @@ mod stage1 {
             msg.contains("does not match") || msg.contains("Int") || msg.contains("Bool"),
             "got: {msg}"
         );
-    }
-
-    #[test]
-    fn an_annotation_inside_arithmetic_is_transparent() {
-        // `(+ (: 2 Int64) 3)` — the annotation on an operand erases; the arithmetic folds to 5.
-        assert_eq!(run_main("(+ (: 2 Int64) 3)"), 5);
     }
 
     #[test]
