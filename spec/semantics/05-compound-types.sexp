@@ -21128,3 +21128,36 @@
   (call main (: 50 Int64))
   (output (: 200 Int64))
   (live-objects 0))
+
+; -- breaker batch 513 (2026-08-27): the immortal × FBIP safety fence + a const-prop calibration.
+; ifb1 = fifty frames each persistently updating a fresh copy of a constant list while reading the
+; constant itself: the update must COPY every frame (an FBIP that ever misread an immortal/shared
+; constant as uniquely-owned would mutate the static and skew every later frame's sum — 5200 is
+; only reachable if all 50 frames read the pristine 5). ifb2 = a let-bound constant tuple
+; referenced twice in a return reads census 3: const-propagation inlines the constant into both
+; embedded slots (two allocations + outer), consistent with the imc scope calibration (embedded
+; positions allocate; sharing-by-let does not survive const-prop for constants).
+
+(case "ifb1 fifty frames of persistent update against a constant list never corrupt the constant"
+  (input (do
+    (def (frames (: k Int64))
+      (if (= k 0) 0
+          (let ((c (if (> k 0) (list 5 6) (list 9)))
+                (u (List.update (if (> k 0) (list 5 6) (list 9)) 0 99)))
+            (+ (+ (match (List.at u 0) ((Option.Some v) v) ((Option.None) -1))
+                  (match (List.at c 0) ((Option.Some w) w) ((Option.None) -1)))
+               (frames (- k 1))))))
+    (def (main (: n Int64)) (frames n))
+    (export main)))
+  (call main (: 50 Int64))
+  (output (: 5200 Int64))
+  (live-objects 0))
+
+(case "ifb2 a let-bound constant tuple referenced twice const-propagates into two embedded allocations"
+  (input (do (def (main (: n Int64))
+    (let ((t (tuple 1 2)))
+      (tuple t t)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple (tuple 1 2) (tuple 1 2)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (live-objects 3))
