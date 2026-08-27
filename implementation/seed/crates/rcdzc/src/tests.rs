@@ -32573,28 +32573,6 @@ mod stage1 {
         assert!(msg.contains("condition must be Bool"), "got: {msg}");
     }
 
-    #[test]
-    fn a_duplicate_written_literal_map_key_is_rejected() {
-        // collections-and-text.md §A Map Associates Keys With Values — each key at most once. A repeated
-        // WRITTEN literal is the ambiguous duplicate the spec forbids, across every direct-literal key
-        // kind (int, string, bool, unit) and independent of magnitude representation (`1` == `0x1`). The
-        // reject is CDZ0201 anchored at the map node. This LOCKS IN the semantics the O(N) hash-set
-        // duplicate scan (`map_duplicate_const_key` / `literal_key_token`) replaced the O(entries²)
-        // pairwise `const_compound_eq` scan under — a `(map (0 0) (1 1) …)` of N distinct integer keys
-        // was quadratic (N=1600 spent ~72% of the whole compile in `const_compound_eq`, re-deriving and
-        // deep-cloning each key's `Core` on every one of the ~N²/2 comparisons).
-        let dup = "a map contains each key at most once";
-        // Int keys — the same value twice, including two spellings of one value (dec `1` and hex `0x1`).
-        assert!(expect_decline("(map (1 10) (1 20))").contains(dup));
-        assert!(expect_decline("(map (1 10) (2 20) (0x1 30))").contains(dup));
-        // String keys.
-        assert!(expect_decline("(map (\"a\" 1) (\"a\" 2))").contains(dup));
-        // Bool keys.
-        assert!(expect_decline("(map (true 1) (true 2))").contains(dup));
-        // Unit keys.
-        assert!(expect_decline("(map (() 1) (() 2))").contains(dup));
-    }
-
     /// Whether the program shape `(module m (def (main) BODY) (export main))` COMPILES (no decline/reject)
     /// — a compile-time verdict, no runtime needed. The complement of `expect_decline` for this module.
     fn compiles_ok(body: &str) -> bool {

@@ -2554,7 +2554,11 @@ pass	a map with a String value is looked up and its value compared in the arm
 pass	a map with a String value: a missing key takes the None arm
 pass	a map with a String value: the looked-up value's byte length is read in the arm
 pass	a map with a computed key equals the same map with a constant key
+pass	a map with a duplicate bool key is a type error
+pass	a map with a duplicate int key is a type error
 pass	a map with a duplicate key is a type error
+pass	a map with a duplicate unit key is a type error
+pass	a map with a spelling-variant duplicate key is a type error
 pass	a map with a user-sum VALUE looks up and matches the stored variant
 pass	a map with record values of different field sets is a type error
 pass	a map with tuple values of different arities is a type error
