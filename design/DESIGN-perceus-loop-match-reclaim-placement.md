@@ -222,6 +222,41 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
      resumptive extraction-into-resume is even a UAF (single one-shot splice → dup-on-escape may already
      pair 1:1), and (b) whether the pure-consumer allowlist is the right fence given `resume` is
      Core-invisible. Unblocks v-rb's nested-lift (`el8`/`eln1-3`).
+2c. The remaining `MatchSum` shell leaks after Stage A+B, three DISTINCT mechanisms (proposed order —
+   tractable/safe first, UAF-critical last; each circulated + co-verified before its emit):
+   - **2c.1 REPEAT-UNWRAP (proposed FIRST — no `resume`, no threaded state, pure straight-line).**
+     `xop4`/`xop5`/`ruw1`/`ruw2`/`ruw3` all leak 3: a FRESH compound-payload sum (`Option.Some`/`Ok`/
+     generic `GFull`) bound to a `let` and MATCHED N TIMES. The scrutinee is a SHARED local (rc = N uses),
+     each unwrap `dup`s the payload to hand the arm a borrow, but only ONE shell-reclaim balances — the
+     leak is the `(N-1)` un-released per-unwrap `dup`s (the ref model's `(#unwraps-1)` term; `ruw3` matched
+     THREE times still reads 3 because the census counts OBJECTS not refs, so a half-balance HIDES). The
+     scrutinee is NOT an extraction (no dup-retain) and each arm BORROWS to a scalar (`List.len`). Fix
+     (v-runtime's runtime-reclaim call, my emit placement): model the `Some`-unwrap as releasing the
+     per-unwrap `dup` at the unwrap site so N unwraps net one shell + one payload, not N. The current gate
+     declines because a multiply-used `let` scrutinee is not `heap_operand_ownership == Owned` at any single
+     match; the reclaim must be at the LAST unwrap / the `let`-drop, accounting for all N `dup`s.
+     🚨 ACCEPTANCE needs a REF-LEVEL assertion or a distinct-structure witness (breaker), not the object
+     census — a half-balance (release N-2 of N-1) reads the SAME live-objects count as full balance.
+   - **2c.2 mts1 RESIDUAL (extraction `Some p`, payload PROJECTED to scalars + arm CONSTRUCTS a fresh
+     tuple).** `mts1` = 3 after Stage A. The `Map.lookup` `Some p` (a tuple) is matched
+     `((tuple c s) (tuple (+ c 1) (+ s v)))` — `p` is projected to scalars `c`,`s` (BORROW) and the arm
+     REBUILDS a fresh tuple from those scalars. Stage A/B decline it because the rebuild trips reuse-clean
+     (`sum_cont_arm_constructs_compound`), yet the rebuild reads only SCALARS — it cannot FBIP-reuse `p`'s
+     cell, and `p` is at rc >= 2 (extraction dup) so any reuse would path-copy anyway. So reuse-clean is
+     OVER-conservative here. Candidate fix: refine reuse-clean to not flag a construct whose operands are
+     all scalar-projections of the (rc >= 2) extraction payload. 🚨 `mts1` is the tick-27a TRAP witness —
+     re-verify empirically that the residual reclaims value-correct + no-trap BEFORE trusting the refinement;
+     the fresh `pair` threaded into `resume` + `Map.insert` is a SEPARATE value (not `p`), so reclaiming
+     `p`'s dead shell should not touch it, but confirm on the debug runtime.
+   - **2c.3 THREADED-STATE (`mmx1`/`rrb1`, NON-extraction, UAF-CRITICAL — proposed LAST).** The handler
+     STATE (`mmx1`: `Option (Tuple)`, `rrb1`: a `Tuple`) is matched, projected, a fresh state built, and
+     the OLD state shell is dead once the NEW state is produced and threaded into `resume` as the next
+     state. Reclaiming the old state shell requires proving it dead at the arm — but `resume` is REDUCED
+     AWAY before Core (`reduce_handle` splices it), so the "old state is replaced" signal is invisible at
+     select.rs, exactly like the Stage-B resume-thread. The scrutinee is NON-extraction (a threaded param),
+     so the extraction gate correctly excludes it today (that is why it is fenced). A reclaim here needs a
+     dup-on-escape on the threaded state with a structural fence that resume-invisibility does not defeat —
+     OPEN with v-runtime, likely the hardest of the arc; defer until 2c.1/2c.2 land.
 3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
    + `code.dup_sites` count out of `emit_loop_iteration`).
 
