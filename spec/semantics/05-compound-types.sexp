@@ -9458,6 +9458,34 @@
   (input      (= (map ("a" 1) ("a" 2)) (map ("a" 1) ("a" 2))))
   (error      CDZ0201))
 
+(case "a map with a duplicate int key is a type error"
+  (doc    "The int-key companion of the string-key duplicate above: `(map (1 10) (1 20))` repeats the key
+           `1`, so which value `1` holds is ambiguous and the compiler rejects it (CDZ0201). A map MUST
+           contain each key at most once (collections-and-text.md #A Map Associates Keys With Values) for
+           every literal key kind, not only strings.")
+  (input      (= (map (1 10) (1 20)) (map (1 10) (1 20))))
+  (error      CDZ0201))
+
+(case "a map with a spelling-variant duplicate key is a type error"
+  (doc    "Key identity is by VALUE, not textual spelling: `0x1` and `1` denote the same Int64, so
+           `(map (1 10) (2 20) (0x1 30))` repeats the key `1` and is rejected (CDZ0201). Pins that the
+           duplicate-key check canonicalizes numeric spellings before comparing, not a token compare — a
+           dec/hex spelling of one value is one key.")
+  (input      (= (map (1 10) (2 20) (0x1 30)) (map (1 10) (2 20) (0x1 30))))
+  (error      CDZ0201))
+
+(case "a map with a duplicate bool key is a type error"
+  (doc    "The bool-key companion: `(map (true 1) (true 2))` repeats the key `true`, rejected CDZ0201 —
+           the each-key-at-most-once rule holds for every literal key kind.")
+  (input      (= (map (true 1) (true 2)) (map (true 1) (true 2))))
+  (error      CDZ0201))
+
+(case "a map with a duplicate unit key is a type error"
+  (doc    "The unit-key companion: `(map (() 1) (() 2))` repeats the sole unit key `()`, rejected CDZ0201 —
+           even a type with one inhabitant cannot key a map twice.")
+  (input      (= (map (() 1) (() 2)) (map (() 1) (() 2))))
+  (error      CDZ0201))
+
 (case "comparing a map to a record is a type error"
   (doc    "Witnesses type-system.md #Structural Values Are Comparable Only When Their Shapes Match: a
            record and a map are DISTINCT types (a record's field set is fixed by its form; a map's key
