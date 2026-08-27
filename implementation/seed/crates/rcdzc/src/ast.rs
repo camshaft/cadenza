@@ -845,6 +845,20 @@ pub enum CompoundCtor {
     Map,
 }
 
+impl CompoundCtor {
+    /// Map a reserved compound-ctor head spelling to its typed tag — the single place this crate matches
+    /// the reserved compound vocabulary. `None` for any other spelling.
+    fn from_spelling(s: &str) -> Option<CompoundCtor> {
+        match s {
+            "record" => Some(CompoundCtor::Record),
+            "tuple" => Some(CompoundCtor::Tuple),
+            "list" => Some(CompoundCtor::List),
+            "map" => Some(CompoundCtor::Map),
+            _ => None,
+        }
+    }
+}
+
 /// Index into the leaf pool.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct LeafId(pub u32);
@@ -1387,11 +1401,23 @@ impl Arenas {
     /// program binding named `record`/`tuple`/`list`/`map` still shadows the alias. See
     /// `implementation/design/DESIGN-native-ast-compound-data.md`.
     pub fn compound_ctor(&self, id: StructId) -> Option<CompoundCtor> {
-        match self.head_ctor(id)? {
-            "record" => Some(CompoundCtor::Record),
-            "tuple" => Some(CompoundCtor::Tuple),
-            "list" => Some(CompoundCtor::List),
-            "map" => Some(CompoundCtor::Map),
+        CompoundCtor::from_spelling(self.head_ctor(id)?)
+    }
+
+    /// The compound constructor a `List` node denotes accepting EITHER head spelling — the unshadowable
+    /// STRING primitive (`("list" …)`) OR the shadowable NAME alias (`(list …)`). This is the transitional
+    /// DUAL-READ recognizer for consumers that already accept both spellings (the
+    /// `as_ctor_form(…).or_else(as_form(…))` idiom); it deliberately does NOT distinguish a shadowed name
+    /// binding, so use it only where a compound literal is already expected, NOT for structural dispatch
+    /// (that is [`compound_ctor`], the primitive-only form the resolver uses). See
+    /// `implementation/design/DESIGN-native-ast-compound-data.md` (M1 dual-read).
+    pub fn compound_ctor_either(&self, id: StructId) -> Option<CompoundCtor> {
+        match self.get(id) {
+            Struct::List(items) => {
+                let &h = items.first()?;
+                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
+                CompoundCtor::from_spelling(spelling)
+            }
             _ => None,
         }
     }
@@ -1641,6 +1667,30 @@ mod tests {
             let a = b.finish(node);
             assert_eq!(a.compound_ctor(node), Some(want), "tag for `{spelling}`");
         }
+    }
+
+    #[test]
+    fn compound_ctor_either_accepts_both_head_kinds() {
+        // The transitional DUAL-READ recognizer: unlike `compound_ctor` (STRING primitive only), this
+        // accepts EITHER the STRING primitive `("list" …)` OR the NAME alias `(list …)`.
+        let mut b = Builder::new();
+        let str_head = b.atom_leaf(Leaf::Str("list".into()));
+        let str_list = b.list(vec![str_head]);
+        let name_head = b.name("list");
+        let name_list = b.list(vec![name_head]);
+        let non_ctor = b.name("if");
+        let non_ctor_form = b.list(vec![non_ctor]);
+        let root = b.list(vec![str_list, name_list, non_ctor_form]);
+        let a = b.finish(root);
+
+        // Both spellings are recognized as List by the dual-read form...
+        assert_eq!(a.compound_ctor_either(str_list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_either(name_list), Some(CompoundCtor::List));
+        // ...but the primitive-only form still rejects the NAME alias (shadowing-safe).
+        assert_eq!(a.compound_ctor(str_list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor(name_list), None);
+        // A non-ctor head is neither.
+        assert_eq!(a.compound_ctor_either(non_ctor_form), None);
     }
 
     #[test]
