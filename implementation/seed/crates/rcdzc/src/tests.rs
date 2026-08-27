@@ -74016,6 +74016,92 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
     );
 }
 
+/// Pins [`crate::lower::is_markable_constant_small_list`]: a fully-constant `(list …)` of at most 32
+/// per-node-markable elements is a build-once hoist candidate; a `> 32` list (RRB 2-level — its internal
+/// node has no compile-time handle to mark), a list with a runtime element, a list whose element is itself
+/// a list, or a non-list root are NOT. The 32-element boundary is the RRB single-leaf cutoff.
+#[test]
+fn is_markable_constant_small_list_flags_small_all_const_lists_only() {
+    use crate::db::Db;
+    use crate::lower::is_markable_constant_small_list;
+    let markable = |src: &str, def: &str| -> bool {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let body = db.defs[d].body.expect("body");
+        is_markable_constant_small_list(&mut db, body)
+    };
+    let m = "(module m ";
+    // A small constant scalar list → markable.
+    assert!(
+        markable(
+            &format!("{m}(def (main) (list 1 2 3)) (export main))"),
+            "main"
+        ),
+        "a small constant scalar list must be markable"
+    );
+    // A constant list of Strings → markable (String leaf).
+    assert!(
+        markable(
+            &format!("{m}(def (main) (list \"a\" \"b\")) (export main))"),
+            "main"
+        ),
+        "a constant list of strings must be markable"
+    );
+    // A list of markable Tuples → markable (element recurses through the compound predicate).
+    assert!(
+        markable(
+            &format!("{m}(def (main) (list (tuple 1 2) (tuple 3 4))) (export main))"),
+            "main"
+        ),
+        "a constant list of markable tuples must be markable"
+    );
+    // Exactly 32 elements → still ONE leaf → markable.
+    let l32 = (1..=32)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        markable(
+            &format!("{m}(def (main) (list {l32})) (export main))"),
+            "main"
+        ),
+        "a 32-element constant list is still one leaf → markable"
+    );
+    // 33 elements → first 2-level RRB trie → NOT markable.
+    let l33 = (1..=33)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !markable(
+            &format!("{m}(def (main) (list {l33})) (export main))"),
+            "main"
+        ),
+        "a 33-element list builds a 2-level trie (internal node unmarkable) → NOT markable"
+    );
+    // A list with a RUNTIME element → NOT markable.
+    assert!(
+        !markable(
+            &format!("{m}(def (f (: n Int64)) (list n 2)) (def (main) 0) (export main))"),
+            "f"
+        ),
+        "a list with a runtime element must NOT be markable"
+    );
+    // A list whose element is itself a LIST → NOT markable (nested list not recursed for this slice).
+    assert!(
+        !markable(
+            &format!("{m}(def (main) (list (list 1 2) (list 3 4))) (export main))"),
+            "main"
+        ),
+        "a list of lists must NOT be markable (nested list excluded)"
+    );
+    // A bare scalar root → NOT a list.
+    assert!(
+        !markable(&format!("{m}(def (main) 42) (export main))"), "main"),
+        "a bare scalar is not a list"
+    );
+}
+
 /// §2d STATIC compounds (increment 6 — the collection pass). Pins
 /// [`crate::backend::wasm::collect_static_compounds`]: it gathers markable constant Tuple/Record ROOTS,
 /// does NOT descend into a collected root (its subtree is built inline), and skips runtime/non-markable
