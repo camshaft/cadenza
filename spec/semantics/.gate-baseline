@@ -8087,3 +8087,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	erp2 a Result entry param with two scalar payloads declines pending the Result lift
+todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
