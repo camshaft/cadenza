@@ -4773,7 +4773,7 @@
                 (+ (St.put n) (+ (St.put 7) (* 100 (St.get))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2212 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 2))
 
 (case "triple-nested same-op performs — each argument is the inner perform's result"
   (doc    "Perform-in-ARGUMENT-position chains freely with a single-site arm: `(St.dbl (St.dbl

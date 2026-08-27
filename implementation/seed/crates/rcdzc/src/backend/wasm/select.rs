@@ -8389,6 +8389,124 @@ fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<S
     }
 }
 
+/// Whether `id` is a FALLIBLE-READ extraction op (`List.at`/`Bytes.at`/`Map.lookup`/`Bytes.slice`/
+/// `String.at`/`String.slice`) — each returns a runtime `Option` and `dup`-RETAINS the extracted element
+/// into the `Some` (see `heap_operand_ownership`), holding the payload at rc >= 2 through the arm. inc2b
+/// keys on this: the rc >= 2 makes an in-place FBIP reuse of the payload PATH-COPY (never alias), and the
+/// Stage-B consume reclaim balances the extra retained ref against the shell deep-drop.
+fn scrutinee_is_fallible_extraction(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        core_of(db, id),
+        Core::ListAt { .. }
+            | Core::BytesAt { .. }
+            | Core::StrAt { .. }
+            | Core::StrSlice { .. }
+            | Core::BytesSlice { .. }
+            | Core::MapLookup { .. }
+    )
+}
+
+/// The allowlist of PURE PERSISTENT BUILDER ops for the inc2b Stage-B extraction-consume reclaim: each
+/// takes EXACTLY ONE owned reference to its input structure(s) and returns one fresh result that
+/// references the input once (structural-sharing `dup`s the shared nodes once). So when an extraction
+/// `Some`'s payload is CONSUMED by one of these, a single `dup`-on-escape (the site
+/// `collect_shell_reclaim_child_dups` marks) balances the shell deep-drop 1:1. An OPAQUE consumer
+/// (`Call`/`CallClosure`/`HostCall` — which includes a REDUCED `resume`-thread, `resume` being invisible
+/// in Core, and any multi-use/capturing consumer) is NOT provably single-reference at select.rs, so a
+/// payload consumed there DECLINES (leak beats UAF). Co-verified with v-runtime (runtime domain).
+fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        core_of(db, id),
+        Core::ListPush { .. }
+            | Core::ListConcat { .. }
+            | Core::ListUpdate { .. }
+            | Core::BytesConcat { .. }
+            | Core::MapInsert { .. }
+            | Core::SetInsert { .. }
+            | Core::SetAlgebra { .. }
+    )
+}
+
+/// Collect the DIRECT child node-ids of every allowlisted-builder node reachable in the arm continuation.
+/// A consuming scrutinee-payload site that is one of these children is consumed DIRECTLY by a builder
+/// (`mlr2`: `inner` is the `lhs` of `List.concat`); a site NOT in this set is consumed by an opaque node
+/// (a `Call`/`CallClosure`, or reached only through one) and must decline.
+fn collect_allowlisted_builder_children_cont(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    seen: &mut HashSet<StructId>,
+    out: &mut HashSet<StructId>,
+) {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            collect_allowlisted_builder_children_expr(db, *body, seen, out)
+        }
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            collect_allowlisted_builder_children_expr(db, *cond, seen, out);
+            collect_allowlisted_builder_children_expr(db, *body, seen, out);
+            collect_allowlisted_builder_children_cont(db, els, seen, out);
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            collect_allowlisted_builder_children_cont(db, then_, seen, out);
+            collect_allowlisted_builder_children_cont(db, els, seen, out);
+        }
+        crate::core::SumCont::Switch { arms, .. } => {
+            for a in arms {
+                collect_allowlisted_builder_children_cont(db, &a.cont, seen, out);
+            }
+        }
+    }
+}
+
+fn collect_allowlisted_builder_children_expr(
+    db: &mut Db,
+    id: StructId,
+    seen: &mut HashSet<StructId>,
+    out: &mut HashSet<StructId>,
+) {
+    if !seen.insert(id) {
+        return;
+    }
+    let is_builder = is_allowlisted_builder(db, id);
+    for c in core_child_ids(db, id) {
+        if is_builder {
+            out.insert(c);
+        }
+        collect_allowlisted_builder_children_expr(db, c, seen, out);
+    }
+}
+
+/// inc2b Stage B — reclaim an extraction-`Some` (`List.at`/`Map.lookup`/`Bytes.slice`, which `dup`-retains
+/// its payload) whose payload ESCAPES only by being CONSUMED by a pure persistent builder from the
+/// allowlist ([`is_allowlisted_builder`]). Fires iff the scrutinee is a fallible extraction AND there is
+/// at least one CONSUMING scrutinee-payload site AND every such site (the set
+/// `collect_shell_reclaim_child_dups` will `dup`) is a DIRECT child of an allowlisted builder — so each
+/// `dup` is balanced 1:1 by the builder's single-owned-ref move plus the shell deep-drop. A borrow-only
+/// arm (no consuming site) is left to Stage A's escape-clean branch; a payload consumed by an opaque
+/// `Call`/`CallClosure` (including a reduced `resume`-thread) is not a builder child, so the subset check
+/// fails and the shell declines (leak beats UAF). Reuse-clean is not required: the extraction holds the
+/// payload at rc >= 2, so any in-place FBIP reuse path-copies (v-runtime's Stage-A argument) and the
+/// allowlisted builder likewise path-copies its rc >= 2 input. Any imprecision in either set only
+/// OVER-DECLINES (a site missing from the builder set fails the subset check) — never over-reclaims.
+fn sum_cont_extraction_consume_allowlisted(
+    db: &mut Db,
+    root: &crate::core::SumCont,
+    scrutinee: StructId,
+) -> bool {
+    if !scrutinee_is_fallible_extraction(db, scrutinee) {
+        return false;
+    }
+    let mut consuming = HashSet::new();
+    collect_consuming_payload_sites_cont(db, root, scrutinee, &mut consuming);
+    if consuming.is_empty() {
+        return false;
+    }
+    let mut seen = HashSet::new();
+    let mut builder_children = HashSet::new();
+    collect_allowlisted_builder_children_cont(db, root, &mut seen, &mut builder_children);
+    consuming.iter().all(|s| builder_children.contains(s))
+}
+
 fn sum_shell_reclaim_ok(
     db: &mut Db,
     scrutinee: StructId,
@@ -8410,11 +8528,16 @@ fn sum_shell_reclaim_ok(
         // cascade merely decrements the extra retained ref (the source keeps its own ref). Verified on the
         // debug runtime: the extraction family reclaims value-correct with zero traps (mts1 6->3 no-trap,
         // p.rc>=2 held through the rebuild since the shell drop fires AFTER the arm body). The earlier
-        // scrutinee_is_fallible_extraction decline was over-conservative. (A CONSUME escape — escape_clean
-        // false, dup-marked — is the separate Stage B; a threaded-into-resume escape is out of scope.)
+        // scrutinee_is_fallible_extraction decline was over-conservative. Stage B (the third OR branch,
+        // sum_cont_extraction_consume_allowlisted) additionally reclaims an escape-clean=FALSE extraction
+        // Some whose payload is CONSUMED by a pure allowlisted builder (List.concat/push/insert/…): the
+        // builder is a single-owned-ref move, so the dup-on-escape balances the deep-drop 1:1. A consume by
+        // an opaque Call/CallClosure (incl. a reduced resume-thread — resume is invisible in Core) is NOT a
+        // builder child, so it declines (leak beats UAF).
         && (sum_has_only_scalar_payloads(db, scrut_ty)
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
-                && !sum_cont_arm_constructs_compound(db, root)))
+                && !sum_cont_arm_constructs_compound(db, root))
+            || sum_cont_extraction_consume_allowlisted(db, root, scrutinee))
         && matches!(stashed_slot, Some((_, ValType::I32)))
         && matches!(
             heap_operand_ownership(db, scrutinee),
