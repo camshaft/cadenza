@@ -2503,7 +2503,11 @@
             ./implementation/oracle-lean/Oracle.lean
             ./implementation/oracle-lean/Main.lean
             ./implementation/oracle-lean/OracleTest.lean
+            ./implementation/oracle-lean/OracleAstTest.lean
             ./implementation/oracle-lean/Oracle
+            # L0.2 round-trip fixtures: real corpus-derived `program.ast` blobs. Staged into the build
+            # so the derivation can install them for the oracle-lean-ast-roundtrip check.
+            ./implementation/oracle-lean/tests
           ];
         };
         oracleLean = pkgs.stdenv.mkDerivation {
@@ -2516,14 +2520,16 @@
             export HOME="$TMPDIR/home"; mkdir -p "$HOME"
             # fileset.toSource copies are read-only; lake writes .lake/ into the tree.
             chmod -R u+w .
-            lake build cdz-oracle oracle-selftest
+            lake build cdz-oracle oracle-selftest oracle-ast-roundtrip
             runHook postBuild
           '';
           installPhase = ''
             runHook preInstall
-            mkdir -p "$out/bin"
+            mkdir -p "$out/bin" "$out/share/oracle-lean-fixtures"
             install -m755 .lake/build/bin/cdz-oracle "$out/bin/cdz-oracle"
             install -m755 .lake/build/bin/oracle-selftest "$out/bin/oracle-selftest"
+            install -m755 .lake/build/bin/oracle-ast-roundtrip "$out/bin/oracle-ast-roundtrip"
+            cp tests/fixtures/*.ast "$out/share/oracle-lean-fixtures/"
             runHook postInstall
           '';
         };
@@ -2534,6 +2540,15 @@
           { nativeBuildInputs = [ oracleLean ]; } ''
           oracle-selftest
           echo "ok: oracle-lean smoke — cdz-oracle builds + selftest round-trips (Unsupported)" > "$out"
+        '';
+        # L0.2 gate witness: the binary-AST codec is byte-identical on real corpus-derived `program.ast`
+        # blobs (decode → re-encode == input). A codec-law check of the oracle's own decoder — every
+        # blob is a canonical `codec::encode` output, so decode∘encode must be the identity. Non-zero
+        # exit (decode error or byte mismatch) fails the derivation.
+        oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
+          { nativeBuildInputs = [ oracleLean ]; } ''
+          oracle-ast-roundtrip ${oracleLean}/share/oracle-lean-fixtures/*.ast
+          echo "ok: oracle-lean ast round-trip — binary-AST decode/encode byte-identical on corpus fixtures" > "$out"
         '';
       in
       {
@@ -3019,6 +3034,10 @@
             # verdict). Standalone/advisory — NOT in the required local-gate set; `nix flake check`
             # runs it and CI can build `.#checks.<sys>.oracle-lean-smoke` in isolation.
             oracle-lean-smoke = oracleLeanSmoke;
+            # oracle-lean (L0.2): the binary-AST codec is byte-identical on real corpus-derived
+            # program.ast blobs (decode → re-encode == input). Standalone/advisory, same as the smoke
+            # check.
+            oracle-lean-ast-roundtrip = oracleLeanAstRoundtrip;
 
             # Full-CI-in-nix increment 1: the LINT pair, mirroring checks.yml `fmt` + `clippy` exactly.
             # `nix flake check` now runs them; the checks.yml jobs stay in place (advisory overlap) until

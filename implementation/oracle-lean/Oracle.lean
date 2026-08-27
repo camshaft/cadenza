@@ -4,5 +4,6 @@
 the pieces of the library.
 -/
 import Oracle.Leb
+import Oracle.Ast
 import Oracle.Frame
 import Oracle.Handler

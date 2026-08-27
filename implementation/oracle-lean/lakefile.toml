@@ -16,3 +16,7 @@ root = "Main"
 [[lean_exe]]
 name = "oracle-selftest"
 root = "OracleTest"
+
+[[lean_exe]]
+name = "oracle-ast-roundtrip"
+root = "OracleAstTest"
