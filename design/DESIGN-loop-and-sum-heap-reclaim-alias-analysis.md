@@ -166,6 +166,25 @@ both sites uniformly:
   sufficient proof of balance.
 - Repros: `queue/adv-option-nested-payload-destructure-leak.sexp` (breaker) + the fold baselines.
 
+## Emit-site split (v-core-opt inc2a verify, 2026-08-27) — site B is TWO emit paths, not one
+
+A material finding: widening the `emit_sum_cont` shell-reclaim gate (v-core-opt's inc2a, escape-clean +
+extraction-retained guard) soundly reclaims **25 distinct COMPLEX/recursive-sum matches** (deep-nested
+variant, runtime-recursive-sum-by-spine-depth, list-pattern-in-variant, literal-mid-spine, sibling-two-sum,
+…) — all leak *reductions*, zero traps, zero value-wrong on both 05 and 14c. **But the named simple-Option
+acceptance (`d4`/`dm1`/`d3`/`drs1`/`drs2`/`df2`) is UNCHANGED — pre-guard and post-guard alike** — because a
+simple 2-arm sum match in tail position is lowered through a `br_table`/`select`-optimized emit path that
+**bypasses `emit_sum_cont` entirely**, so the widened gate never runs on it. `df2` (the generic-sum canonical
+witness) is the same shape.
+
+Consequence for sequencing: site B is really two emit sites with independent reclaim points.
+- **B-cont (`emit_sum_cont`)** — the complex/recursive family. inc2a lands here (25 sound reductions).
+- **B-select (`br_table`/`select`)** — the simple 2-arm tail-position Option/sum family (`d4` … `df2`), the
+  ORIGINAL #3833 pinned acceptance. Needs the same shell reclaim added at THAT site, as a separate increment
+  — its soundness must be re-proven for the select path (the `emit_sum_cont` proof does not transfer), under
+  the same dup-at-escape / drop-at-last-use invariant. This is the higher-priority increment (it is what
+  breaker + v-runtime pinned), so it gets its own focused pass, not a bolt-on to inc2a.
+
 ## Non-goals / discipline
 
 - A leak beats a UAF. Until the analysis is complete, these families stay `(live-objects known-leak N)`
