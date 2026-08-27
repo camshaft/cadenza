@@ -11449,3 +11449,20 @@
   (input (do (def (main (: n Int64)) (match n (1 (% 7 0)) (_ n))) (export main)))
   (call main (: 1 Int64)) (trap "divide by zero")
   (call main (: -1 Int64)) (output (: -1 Int64)))
+
+(case "tkp4 a const-demoted expect-on-None and its runtime twin trap IDENTICALLY (divergence fence)"
+  (doc    "Both faces of Option.expect-on-None in one program: the n=1 arm is a compile-provable
+           const None (demoted per cn02), the n=2 arm feeds a runtime-selected None. Today BOTH trap
+           the kind-less unreachable (consistent — unlike the div-kind erasure #4398 fixed, there is
+           no divergence here). If either face later gains a kind/message without the other, this
+           pair splits and fails: the demote-vs-runtime consistency invariant, fenced. n=0 answers.
+           Shift-count-OOR intentionally stays kind-less (wasm masks the count) — owner-pinned ovb rows.")
+  (input (do
+(def (pick (: n Int64)) (if (> n 1) (: Option.None (Option Int64)) (Option.Some (: 0 Int64))))
+(def (main (: n Int64))
+  (if (= n 1) (Option.expect (: Option.None (Option Int64)) "const")
+      (Option.expect (pick n) "runtime")))
+(export main)))
+  (call main (: 1 Int64)) (trap "unreachable")
+  (call main (: 2 Int64)) (trap "unreachable")
+  (call main (: 0 Int64)) (output (: 0 Int64)))
