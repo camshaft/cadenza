@@ -395,7 +395,10 @@ pub fn build_driver_source(
     // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
     // closure's FINAL result — peel the arrow to that type so `cdz_render_expr` renders it structurally
     // (a bare arrow would render as a closure and not compile). A non-factory export keeps its note.
-    let ret_ty = cdz_return_type(module, export).map(|t| {
+    // NOTE-KEY: the backend keys its `// cdz-*` notes by the emitted `rust_ident` (`cdz-return[mk_b]`),
+    // NOT the raw source name — so a HYPHENATED export (`mk-b`) must look up by `ident`, else the note
+    // misses, `ret_ty` is `None`, and the render falls to the bare-`Display` arm (E0277 on a `Vec`/compound).
+    let ret_ty = cdz_return_type(module, &ident).map(|t| {
         if is_factory {
             crate::sig::peel_arrow_result(&t)
         } else {
@@ -417,9 +420,9 @@ pub fn build_driver_source(
                 let newtypes = cdz_newtype_descriptors(module);
                 let sum_params = cdz_sum_params(module);
                 let qualified_heads = cdz_sum_qualified_heads(module);
-                let unit_form = cdz_unit_form(module, export);
-                let unit_scale = cdz_scale(module, export);
-                let qty_at = cdz_qty_at(module, export);
+                let unit_form = cdz_unit_form(module, &ident);
+                let unit_scale = cdz_scale(module, &ident);
+                let qty_at = cdz_qty_at(module, &ident);
                 let general = || {
                     cdz_render_expr(
                         ty,
@@ -1007,6 +1010,23 @@ mod tests {
         let d = build_driver_source(m, "f", &[], &[], &[], false);
         assert!(d.contains("let __r = prog::f()"), "binds the result: {d}");
         assert!(d.contains("println!"), "prints it");
+    }
+
+    #[test]
+    fn hyphenated_export_looks_up_notes_by_rust_ident_not_raw_name() {
+        // A HYPHENATED source export `mk-b`: the backend keys its `// cdz-*` notes by the emitted
+        // `rust_ident` (`cdz-return[mk_b]`), not the raw name. `build_driver_source` receives the RAW
+        // `mk-b` (as grade.rs passes it) and MUST look the note up by `ident` — else `ret_ty` is `None`,
+        // the render falls to the bare-`Display` arm, and a `Vec`/compound result fails to build (E0277).
+        // Regression for the corpus host-closure `mk-a`/`mk-b` List-result cases (21-host-closures);
+        // every pre-existing test used a non-hyphenated name so this class was unpinned.
+        let m = "// cdz-return[mk_b]: (List Int64)\npub fn mk_b() -> Vec<i64> { vec![7, 100] }";
+        let d = build_driver_source(m, "mk-b", &[], &[], &[], false);
+        assert!(
+            d.contains("let __r"),
+            "the (List Int64) note is found by rust_ident → result bound + structurally rendered, \
+             not the bare-Display fallback: {d}"
+        );
     }
 
     #[test]
