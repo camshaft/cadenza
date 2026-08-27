@@ -9,13 +9,13 @@
 // Reducer scaffolding (Outcome + the inert on-notification) is shared via reducer-lib. This guest has a
 // NON-inert on-response (it emits, echoing the response correlation), so it keeps its OWN on-response and
 // re-exports only the shared on-notification.
-import { Outcome, Error, on-notification } from "reducer-lib"
+import { Outcome, Error, request, on-notification } from "reducer-lib"
 
 def on-message(_msg) =
   { requests = [], outcome = Outcome.Continue }
 
 def on-response(resp) =
-  { requests = [{ contract = resp.contract, payload = resp.token, token = resp.token, deadlineNanos = None }],
+  { requests = [request(resp.contract, resp.token, resp.token)],
     outcome = Outcome.Continue }
 
 export { on-message, on-response, on-notification }

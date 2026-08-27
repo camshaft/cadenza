@@ -16,6 +16,13 @@ type Outcome = | Continue | Close(Record(schema: Bytes, reason: Bytes))
 // parameter type of `on-response` below, and a guest that builds an `answer` (e.g. deliver-response) imports it.
 type Error = | Timeout | MissingHandler | SchemaViolation | Faulted
 
+// Build an emit `request` (the reducer-world request record): a contract-id to emit on, a payload, and a
+// correlation token, with no deadline. Every reducer that emits repeats this 4-field literal with
+// `deadlineNanos = None`; this centralizes the request shape (the reducer-side companion to checker-lib's
+// `verdict-req`). A request that arms a deadline still builds the literal inline (none of the current guests do).
+def request(contract: Bytes, payload: Bytes, token: Bytes) =
+  { contract = contract, payload = payload, token = token, deadlineNanos = None }
+
 // The inert on-response / on-notification a message-only reducer shares — no requests, just continue. The
 // parameters are annotated to their concrete world shapes (response = {contract, token, answer:
 // Result(payload, Error)}, notification = {contract, payload}) so the world-export boundary can fix them
@@ -27,4 +34,4 @@ def on-response(_resp: Record(contract: Bytes, token: Bytes, answer: Result(Byte
 def on-notification(_note: Record(contract: Bytes, payload: Bytes)) =
   { requests = [], outcome = Outcome.Continue }
 
-export { Outcome.*, Error.*, on-response, on-notification }
+export { Outcome.*, Error.*, request, on-response, on-notification }

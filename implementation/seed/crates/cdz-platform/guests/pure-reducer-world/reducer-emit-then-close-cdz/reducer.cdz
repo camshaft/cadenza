@@ -8,10 +8,10 @@
 // capability set the kernel wires for a pure run. It does not re-declare an inline world (operator review on
 // #3153): a guest that touches nothing but its input/output shares this one world instead of repeating an
 // anonymous inline world block.
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
-  { requests = [{ contract = msg.contract, payload = msg.payload, token = msg.token, deadlineNanos = None }],
+  { requests = [request(msg.contract, msg.payload, msg.token)],
     outcome = Outcome.Close({ schema = msg.contract, reason = msg.payload }) }
 
 export { on-message, on-response, on-notification }

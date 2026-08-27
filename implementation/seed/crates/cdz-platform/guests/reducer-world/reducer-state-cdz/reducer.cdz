@@ -5,14 +5,14 @@
 // payload is a SET, writing that payload at the cell. Runs drive it with two messages (set, then get or
 // delete), so a returned value or an observed removal proves the store PERSISTED across folds. Delegates only
 // `state`, a floor import. on-response/on-notification are inert.
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   host state in
     (if (msg.payload == b"get") then
        (match state.get(b"cell") with
          | Some(v) =>
-             { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+             { requests = [request(msg.contract, v, b"")],
                outcome = Outcome.Continue }
          | None(_) =>
              { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) })
@@ -20,7 +20,7 @@ def on-message(msg) =
        ( state.delete(b"cell") ;
          (match state.get(b"cell") with
            | None(_) =>
-               { requests = [{ contract = msg.contract, payload = b"deleted", token = b"", deadlineNanos = None }],
+               { requests = [request(msg.contract, b"deleted", b"")],
                  outcome = Outcome.Continue }
            | Some(_) =>
                { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"delete-did-not-remove" }) }) )

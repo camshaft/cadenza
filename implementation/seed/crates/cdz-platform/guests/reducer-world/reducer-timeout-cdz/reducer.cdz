@@ -12,14 +12,14 @@
 //
 // Keeps its OWN on-response (it reacts); on-message / on-notification are the inert reducer-lib re-exports.
 // `Error` (the runtime message-fold error sum, with the Timeout variant) comes from reducer-lib.
-import { Outcome, Error, on-notification } from "reducer-lib"
+import { Outcome, Error, on-notification, request } from "reducer-lib"
 
 def on-message(_msg) = { requests = [], outcome = Outcome.Continue }
 
 def on-response(resp) =
   match resp.answer with
   | Err(Error.Timeout) =>
-      { requests = [{ contract = resp.contract, payload = b"timed-out", token = resp.token, deadlineNanos = None }],
+      { requests = [request(resp.contract, b"timed-out", resp.token)],
         outcome = Outcome.Continue }
   | _ => { requests = [], outcome = Outcome.Continue }
 

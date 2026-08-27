@@ -6,14 +6,14 @@
 // statements) + a COMPOUND (option<list<u8>>) host-call result the guest matches — distinct from the
 // single-op state runs (which each perform one op) and the two-message state run (put in one message, get in
 // another). Single host interface (state), reducer-world. on-response / on-notification inert.
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   host state in
     ( state.put(msg.token, msg.payload) ;
       (match state.get(msg.token) with
         | Some(v) =>
-            { requests = [{ contract = msg.contract, payload = v, token = msg.token, deadlineNanos = None }],
+            { requests = [request(msg.contract, v, msg.token)],
               outcome = Outcome.Continue }
         | None(_) =>
             { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-miss" }) }) )

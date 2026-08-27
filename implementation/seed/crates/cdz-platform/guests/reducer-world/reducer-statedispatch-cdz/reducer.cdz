@@ -20,10 +20,10 @@
 import { descriptor as sset_desc, SetRequest, SetResult } from "state-set"
 import { descriptor as sget_desc, GetRequest, GetResult } from "state-get"
 import { descriptor as sdel_desc, DeleteRequest, DeleteResult } from "state-delete"
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def emit-on(msg, bytes) =
-  { requests = [{ contract = msg.contract, payload = bytes, token = b"", deadlineNanos = None }], outcome = Outcome.Continue }
+  { requests = [request(msg.contract, bytes, b"")], outcome = Outcome.Continue }
 def reject(msg, reason) = { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = reason }) }
 
 def on-message(msg) =

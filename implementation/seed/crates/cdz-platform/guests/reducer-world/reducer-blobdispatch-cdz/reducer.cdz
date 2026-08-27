@@ -12,7 +12,7 @@
 // inert (reducer-lib).
 import { descriptor as bput_desc, PutRequest } from "blob-put"
 import { descriptor as bget_desc, GetRequest } from "blob-get"
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   host blobs in
@@ -20,15 +20,15 @@ def on-message(msg) =
        (match (Value.decode(msg.payload) : Option(PutRequest)) with
         | Some(PutRequest.Put(bytes)) =>
             (let h = blobs.put(bytes) in
-              { requests = [{ contract = msg.contract, payload = b"put-dispatched", token = b"", deadlineNanos = None }],
+              { requests = [request(msg.contract, b"put-dispatched", b"")],
                 outcome = Outcome.Continue })
         | None => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"put-decode-failed" }) })
      else if msg.contract == bget_desc().id then
        (match (Value.decode(msg.payload) : Option(GetRequest)) with
         | Some(GetRequest.Get(hash)) =>
             (match blobs.get(hash) with
-             | Some(v) => { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }], outcome = Outcome.Continue }
-             | None => { requests = [{ contract = msg.contract, payload = b"get-missing", token = b"", deadlineNanos = None }], outcome = Outcome.Continue })
+             | Some(v) => { requests = [request(msg.contract, v, b"")], outcome = Outcome.Continue }
+             | None => { requests = [request(msg.contract, b"get-missing", b"")], outcome = Outcome.Continue })
         | None => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"get-decode-failed" }) })
      else { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"unknown-contract" }) })
 

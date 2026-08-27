@@ -3,14 +3,14 @@
 // and emits the read-back value. A driven run records the BlobPut + BlobGet so a checker asserts the store
 // round-trip observably happened. Shares the reducer-interface scaffolding (Outcome + the inert handlers) from
 // reducer-lib; keeps only its own on-message. Targets reducer-world (the floor world that imports `blobs`).
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   host blobs in
     (let h = blobs.put(msg.payload) in
       (match blobs.get(h) with
         | Some(v) =>
-            { requests = [{ contract = msg.contract, payload = v, token = b"", deadlineNanos = None }],
+            { requests = [request(msg.contract, v, b"")],
               outcome = Outcome.Continue }
         | None =>
             { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"blob-get-miss" }) }))
