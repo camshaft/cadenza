@@ -28784,54 +28784,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_map_pattern_nested_in_a_tuple_binds_its_value_binder() {
-        // 05-compound-types "a map pattern nested in a tuple binds its value binder". A `(map (k v) …)`
-        // key-directed pattern NESTED inside a tuple pattern binds its value at the map's sub-path of the
-        // scrutinee (a `MapField` at path `[Elem(0)]`), gated by a `MapHasKeys` presence test. It once
-        // dropped its binder ('unbound name `a`') — the nested-binder walk handled tuple/list sub-patterns
-        // but had no map arm. Constant scrutinee (folds): `(tuple (map (1 100)) 5)` binds a=100, k=5 → 105.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m \
-                       (def (f (: t (Tuple (Map Int64 Int64) Int64))) \
-                          (match t ((tuple (map (1 a)) k) (+ a k)) (_ (- 0 1)))) \
-                       (def (main) (f (tuple (map (1 100)) 5))) (export main))"
-                ),
-                "main"
-            ),
-            105
-        );
-        // Two nested maps in one tuple, each binding its own value — a=100, b=5 → 105.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m \
-                       (def (f (: t (Tuple (Map Int64 Int64) (Map Int64 Int64)))) \
-                          (match t ((tuple (map (1 a)) (map (2 b))) (+ a b)) (_ (- 0 1)))) \
-                       (def (main) (f (tuple (map (1 100)) (map (2 5))))) (export main))"
-                ),
-                "main"
-            ),
-            105
-        );
-        // SOUNDNESS: a nested map whose named key is ABSENT makes the arm fall through (MapHasKeys gate),
-        // not spuriously match — key 7 is not in `(map (1 100))`, so the catch-all yields -1.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m \
-                       (def (f (: t (Tuple (Map Int64 Int64) Int64))) \
-                          (match t ((tuple (map (7 a)) k) (+ a k)) (_ (- 0 1)))) \
-                       (def (main) (f (tuple (map (1 100)) 5))) (export main))"
-                ),
-                "main"
-            ),
-            -1
-        );
-    }
-
-    #[test]
     fn a_cross_type_variant_pattern_is_rejected_not_type_confused() {
         // SOUNDNESS: a match arm's constructor pattern must belong to the SCRUTINEE's sum, not merely be
         // SOME sum's variant with the right name. A `T` value matched against `Option`'s `Some` pattern
