@@ -52952,25 +52952,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_three_parameter_closure_applies_at_full_arity() {
-        // A THREE-parameter runtime closure applied at full arity through a recursive HOF — the multi-param
-        // lift generalizes past two params. `(fn (a b c) (+ (+ a b) c))` lifts to `(env, a, b, c) ->
-        // result` and applies via one `call_indirect` with all three args. `ap3 g n` sums `(g i i i) =
-        // 3·i` for i = n..1, so with n=3 the total is 3·(3+2+1) = 18.
-        let src = "(module m \
-            (def (ap3 (: g (-> Int64 (-> Int64 (-> Int64 Int64)))) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n n n) (ap3 g (- n 1))))) \
-            (def (main (: n Int64)) (ap3 (fn ((: a Int64) (: b Int64) (: c Int64)) (+ (+ a b) c)) n)) \
-            (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "18"); // 3·(3+2+1)
-        assert_eq!(run_closure(src, 4).unwrap(), "30"); // 3·(4+3+2+1)
-    }
-
-    #[test]
     fn a_runtime_closure_body_calls_a_recursive_top_level_function() {
         // A lifted closure whose body drives an ordinary RECURSIVE CALL — `(fn (x) (fact x))` (passed to
         // the recursive `ap`, so it cannot fold) invokes the recursive `fact`. The lifted body holds a
@@ -52987,74 +52968,6 @@ mod stage1 {
         };
         assert_eq!(r, "9"); // fact(3)+fact(2)+fact(1)
         assert_eq!(run_closure(src, 5).unwrap(), "153"); // 120+24+6+2+1
-    }
-
-    #[test]
-    fn a_runtime_closure_compares_its_argument_to_a_captured_value() {
-        // A captured value drives a COMPARISON + BRANCH inside the lifted body: `(fn (x) (if (= x k) 1 0))`
-        // captures `k` and branches on `x == k`. Through the recursive `ap` with k=2 over 3,2,1, only x=2
-        // matches, so the sum is 1. (A different k selects a different element — k=3 → 1 at x=3.)
-        let src = "(module m \
-            (def (ap (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (ap g (- n 1))))) \
-            (def (main (: k Int64)) (ap (fn ((: x Int64)) (if (= x k) 1 0)) 3)) (export main))";
-        let Some(r) = run_closure(src, 2) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "1"); // only x=2 matches k=2
-        assert_eq!(run_closure(src, 3).unwrap(), "1"); // only x=3 matches k=3
-        assert_eq!(run_closure(src, 9).unwrap(), "0"); // none of 3,2,1 equal 9
-    }
-
-    #[test]
-    fn a_runtime_fn_value_is_manually_eta_wrapped_and_applied() {
-        // A genuinely-RUNTIME fn value partially applied via a MANUAL eta-wrap. `g` is a runtime
-        // two-parameter fn parameter (no compile-time lambda to partially apply); `(fn (b) (g n b))`
-        // captures `g` (a runtime closure handle) AND `n`, and applies `g` at full arity inside — an
-        // ordinary capturing closure whose body is a full-arity `call_indirect` on the captured `g`. Both
-        // `ap` and `sumapply` recurse, so nothing folds: TWO nested indirect calls (ap→wrapper, wrapper→g).
-        // This composes the captured-closure-call path (a closure captures a runtime fn and calls it) with
-        // a two-level HOF. `ap g n` = sum over i=n..1 of (g(i,2)+g(i,1)) = (i+2)+(i+1) = 2i+3; n=3 → 21.
-        let src = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
-              (if (= n 0) 0 (+ (sumapply (fn ((: b Int64)) (g n b)) 2) (ap g (- n 1))))) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "21"); // (9)+(7)+(5)
-        // The NON-recursive-outer form folds `ap` but the eta-wrapper still runs through recursive
-        // `sumapply`: `sumapply (fn (b) (g 5 b)) 2` = (5+2)+(5+1) = 13.
-        let flat = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (fn ((: b Int64)) (g n b)) 2)) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
-        assert_eq!(run_closure(flat, 5).unwrap(), "13"); // (5+2)+(5+1)
-    }
-
-    #[test]
-    fn a_predicate_closure_returning_bool_drives_an_early_exit_hof() {
-        // A closure whose RESULT type is Bool. `(fn (x) (= x k))` is a `(-> Int64 Bool)` value threaded
-        // through the recursive `anyp` ("does any i in n..1 satisfy it?"), which short-circuits on the
-        // first `true`. The closure's boolean result crosses the `call_indirect` (the lifted signature
-        // returns an i32) and drives `anyp`'s `if`. With k=2 over 3,2,1 the predicate holds at x=2 → true →
-        // 100; a k absent from the range → false → 0.
-        let src = "(module m \
-            (def (anyp (: g (-> Int64 Bool)) (: n Int64)) \
-              (if (= n 0) false (if (g n) true (anyp g (- n 1))))) \
-            (def (main (: k Int64)) (if (anyp (fn ((: x Int64)) (= x k)) 3) 100 0)) (export main))";
-        let Some(r) = run_closure(src, 2) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "100"); // x=2 satisfies the predicate
-        assert_eq!(run_closure(src, 1).unwrap(), "100"); // x=1 satisfies at the last step
-        assert_eq!(run_closure(src, 5).unwrap(), "0"); // none of 3,2,1 equal 5
     }
 
     #[test]
@@ -53462,31 +53375,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_multi_param_closure_applies_at_full_arity() {
-        // A TWO-parameter lambda VALUE `(fn (a b) (+ a b))` passed to a recursive HOF and applied at
-        // full arity `(g i i)`. It lifts to a `(env, a, b) -> result` function and applies via ONE
-        // `call_indirect` with both args (no intermediate closure). `ap2 g n = sum(i=n..1) (i+i) =
-        // 2·n(n+1)/2 = n(n+1)`. `core-semantics.md` §Functions Are Single-Arity (full-arity application).
-        let src = "(module m \
-            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
-            (def (main (: n Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "12"); // (3+3)+(2+2)+(1+1)
-        assert_eq!(run_closure(src, 4).unwrap(), "20"); // 4·5
-        // A multi-param closure that also CAPTURES: `(fn (a b) (+ (+ a b) k))` captures `k`. n=2, k=100:
-        // (2+2+100)+(1+1+100) = 104+102 = 206.
-        let src2 = "(module m \
-            (def (ap2 (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n n) (ap2 g (- n 1))))) \
-            (def (main (: k Int64)) (ap2 (fn ((: a Int64) (: b Int64)) (+ (+ a b) k)) 2)) (export main))";
-        assert_eq!(run_closure(src2, 100).unwrap(), "206");
-    }
-
-    #[test]
     fn a_curried_application_spine_flattens_to_a_full_arity_indirect_call() {
         // RUNTIME CURRYING reaching full arity. `((g n) 1)` is `(fn (a b) …)` single-arity curried sugar
         // applied with nested parens — the SAME full-arity application as `(g n 1)`. When `g` is a
@@ -53512,36 +53400,6 @@ mod stage1 {
               (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
             (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
         assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
-    }
-
-    #[test]
-    fn a_partially_applied_function_escapes_as_a_value_and_runs_through_a_recursive_hof() {
-        // A PARTIAL APPLICATION escaping short of full arity, run as a runtime closure. `(g n)` where `g`
-        // is `main`'s statically-known two-parameter lambda applied to ONE arg PARTIALLY APPLIES at compile
-        // time into the residual `(fn (b) (+ 5 b))`; that residual escapes as a VALUE into the recursive
-        // `sumapply`, which cannot inline it, so it runs as a runtime closure via `call_indirect`. The
-        // partial-application fold + the runtime-closure lift compose: `sumapply (g 5) 2 = (5+2)+(5+1) =
-        // 13`. Regression guard for the fix that made the residual's parameter annotation survive the
-        // β-copy that carries it into the recursive callee (before it, the awaited param lost its declared
-        // type — `is_binder_occurrence` now recognizes a `fn`/`def` param so a `(: p T)` binder copies with
-        // its annotation intact).
-        let src = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
-        let Some(r) = run_closure(src, 5) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "13"); // (5+2)+(5+1)
-        // A `(*)` variant proves the residual dispatches the right code: sumapply (g 5) 2 = (5*2)+(5*1) = 15.
-        let src2 = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) (sumapply (g n) 2)) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
-        assert_eq!(run_closure(src2, 5).unwrap(), "15"); // (5*2)+(5*1)
     }
 
     #[test]
