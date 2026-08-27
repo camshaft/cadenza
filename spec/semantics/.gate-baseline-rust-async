@@ -1564,6 +1564,7 @@ pass	a closure whose body applies a nested lambda in place runs through a recurs
 pass	a closure whose body calls a top-level helper function
 pass	a closure's captured perform result survives a LATER state advance (capture-time, not re-read)
 pass	a closure-driver result feeds a perform's ARGUMENT
+pass	a closure-payload sum built by an if-helper with a reused arg compiles and runs, not CDZ0101 (value parity)
 pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
@@ -1643,6 +1644,7 @@ pass	a const closure re-passed through a recursive driver specializes and comput
 pass	a const collection recursively folded UNROLLS to its result at compile time
 pass	a const list recursively FILTERED (conditional include) folds to a constant
 pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
+pass	a const param re-passed on a mixed-match recursive arm does not drop, single and two-const forms (value parity)
 pass	a const parameter rejects an argument that depends on runtime data
 pass	a const top-bit-set u64 bin binding folds unsigned
 pass	a const-folded RECORD descriptor holds a recursive-transform result, projected at compile time

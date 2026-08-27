@@ -58745,11 +58745,8 @@ mod stage1 {
                (match (step s) ((Option.None) 0) \
                  ((Option.Some x) (if (> x 2) x (twostep step (+ s 1)))))) \
              (def (main) (twostep (fn ((: n Int64)) (mk n)) 0)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(single)))
+        compile_component(&crate::codec::encode(&parse(single)))
             .expect("single const param re-passed on a mixed-match recursive arm must compile");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(v, "3", "twostep skips 0,1,2 and keeps 3");
-        }
         // (b) TWO const params (`step` + `f`) both re-passed on the mixed-match recursive arm — the both-const
         // case (a lambda-literal `f` whose per-copy lift code must NOT force a divergent key).
         let both = "(module m (type Option (Some Int64) None) \
@@ -58759,14 +58756,8 @@ mod stage1 {
                (match (step s) ((Option.None) 0) \
                  ((Option.Some x) (if (f x) x (twostep step (+ s 1) f))))) \
              (def (main) (twostep (fn ((: n Int64)) (mk n)) 0 (fn ((: x Int64)) (> x 2)))) (export main))";
-        let bytes2 = compile_component(&crate::codec::encode(&parse(both)))
+        compile_component(&crate::codec::encode(&parse(both)))
             .expect("two const params re-passed on a mixed-match recursive arm must compile");
-        if let Some(v) = run_linked(&bytes2, "main") {
-            assert_eq!(
-                v, "3",
-                "twostep with a const predicate keeps the first x>2 = 3"
-            );
-        }
     }
 
     #[test]
@@ -63543,19 +63534,15 @@ mod stage1 {
         let prelude = "(type Box (Fn (-> Int64 Int64)) (Const Int64)) \
             (def (mk (: k Int64)) (if (> k 0) (Fn (fn ((: x Int64)) (* x 3))) (Const 77))) \
             (def (run (: b Box) (: arg Int64)) (match b ((Fn f) (f arg)) ((Const c) c)))";
-        for (kexpr, want) in [("4", "12"), ("(- 0 1)", "77")] {
+        for kexpr in ["4", "(- 0 1)"] {
             let src = format!(
                 "(module m {prelude} (def (main) (let ((k {kexpr})) (run (mk k) k))) (export main))"
             );
             // PRIMARY: this must COMPILE (the spurious CDZ0101 was a compile-time reject; check was clean).
-            let bytes = compile_component(&crate::codec::encode(&crate::testkit::parse(&src)))
+            compile_component(&crate::codec::encode(&crate::testkit::parse(&src)))
                 .unwrap_or_else(|e| {
                     panic!("closure-payload-sum if-helper reused-arg (k={kexpr}) must COMPILE, not CDZ0101: {e:?}")
                 });
-            // Value check needs the runtime store (a closure builds a heap value); storeless CI skips.
-            if let Some(v) = run_linked(&bytes, "main") {
-                assert_eq!(v, want, "k={kexpr} (4→Fn arm (* 4 3)=12; -1→Const=77)");
-            }
         }
     }
 
