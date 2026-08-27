@@ -8857,6 +8857,18 @@
   (call main (: "abc" String) (: (Some 10) (Option Int64)))
   (output (: 13 Int64)))
 
+; eoi3 pins the NARROW-int Option payload: an `Option Int8` Some payload boxes an i32-slot value the sum
+; lift must i32->i64 EXTEND before `box-int` (the `SumArmPayload::Scalar{extend}` path; eo1-3 used full-width
+; Int64, which never exercises the extend). v-rust-backend confirmed (with the breaker) this emits+runs
+; correctly — the earlier apparent failure was only the cdz-run ARG coerce of the ASCRIBED `(Some (: 5 Int8))`
+; spelling; the BARE `(Some 5)` (the arg type already fixes the width) coerces and runs. Guards the extend path.
+
+(case "eoi3 an Option<Int8> entry param's narrow Some payload widens correctly"
+  (input (do (def (main (: o (Option Int8)))
+    (match o ((Option.Some v) v) ((Option.None) (: -1 Int8)))) (export main)))
+  (call main (: (Some 5) (Option Int8)))
+  (output (: 5 Int8)))
+
 ; -- breaker batch 482 (2026-08-27): sharing through DEF-CALL bindings — the pure-allocation
 ; contrast to the cp4 inline-duplication (a PERFORMING nullary call inlined per use loses its
 ; one-draw sharing; filed to v-inference). A def-call whose body merely ALLOCATES binds once:
