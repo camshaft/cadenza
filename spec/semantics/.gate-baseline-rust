@@ -4045,6 +4045,7 @@ pass	a single Map.swap reports the OLD prior value WHILE the new map holds the N
 pass	a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind
 pass	a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence
 pass	a single mixed handler uses only its resuming arm when the abortive op is never performed
+pass	a single-field variant whose one payload is a Tuple binds the whole payload with one sub-pattern
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-perform body over a state-destructuring arm folds to 6
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)

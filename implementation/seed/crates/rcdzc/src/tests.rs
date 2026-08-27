@@ -9327,17 +9327,11 @@ mod match_engine {
             "names the ctor + counts fields (the too-few twin): {}",
             too_few.message
         );
-        // CRITICAL: a genuinely SINGLE-field variant whose one payload is a compound VALUE is UNAFFECTED —
-        // `(Pt (Tuple Int64 Int64))` has declared arity 1, so `(Pt a)` binds the whole tuple payload and
-        // runs (the corpus-blessed `(Pt r)` form). Keying on the payload TYPE shape (a `Ty::Tuple`) instead
-        // of the DECLARED field count would wrongly reject this.
-        // (The single-tuple-payload value `(. a 0)` = 3 is ordinary tuple projection covered by the corpus;
-        // the guard here is only that this well-formed single-field destructure COMPILES, never rejected.)
-        compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (type R (Pt (Tuple Int64 Int64))) \
-               (def (main) (match (R.Pt (tuple 3 4)) ((R.Pt a) (. a 0)))) (export main))",
-        )))
-        .expect("a one-binder pattern on a single-tuple-payload variant binds the whole payload");
+        // The CRITICAL positive complement — a genuinely SINGLE-field variant whose one payload is a compound
+        // VALUE (`(Pt (Tuple Int64 Int64))`, declared arity 1) binds the whole tuple payload with one
+        // sub-pattern `(Pt a)` and RUNS to 3 (keying on the `Ty::Tuple` shape would wrongly reject it) — is
+        // corpus 05 "a single-field variant whose one payload is a Tuple binds the whole payload with one
+        // sub-pattern". This keeps only the diagnostics-message witness (`reject_full`, no runtime).
     }
 
     #[test]
