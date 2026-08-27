@@ -22199,3 +22199,28 @@
                (if (= n 0) acc (go s (- n 1) (+ acc (u ((. Option expect) ((. Option expect) s "v") "w"))))))
              (def (main) (go (Option.Some (Option.Some unit)) 4 0)) (export main)))
   (call main) (output (: 4 Int64)))
+
+; -- List.len reclaims an owned-temporary List.concat/List.update result (migrated from rcdzc
+; list_len_over_an_owned_temporary_list_concat_or_update_reclaims_it): List.concat/List.update return a
+; FRESH owned list, so List.len over one must drop it after the borrow (reclaim, live-objects 0); a
+; borrowed (let-bound) result read twice must not be freed early; a stress loop detects leak drift.
+(case "lcr1 List.len over an owned-temporary List.concat reclaims it (no leak)"
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (export main)))
+  (call main) (output (: 5 Int64)) (live-objects 0))
+
+(case "lcr2 List.len over an owned-temporary List.update reclaims it (no leak)"
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) ((. List len) ((. List update) (build 0 5 (list)) 2 99))) (export main)))
+  (call main) (output (: 5 Int64)) (live-objects 0))
+
+(case "lcr3 a borrowed List.concat result read twice is not freed early"
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) (let ((xs ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (+ ((. List len) xs) ((. List len) xs)))) (export main)))
+  (call main) (output (: 10 Int64)))
+
+(case "lcr4 20000 owned-temporary List.concat each reclaim (no leak drift)"
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list)))))) tot))
+             (def (main) (drive 0 20000 0)) (export main)))
+  (call main) (output (: 100000 Int64)) (live-objects 0))

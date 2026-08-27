@@ -19558,65 +19558,6 @@ mod match_engine {
     }
 
     #[test]
-    fn list_len_over_an_owned_temporary_list_concat_or_update_reclaims_it() {
-        // The LIST-PRODUCER faces of the owned-temporary reclaim: `List.concat` (`vec-concat`) and
-        // `List.update` (`vec-update`) each return a FRESH owned list handle, exactly like the `Bytes.concat`
-        // /`Bytes.slice` producers already in the Owned classifier — but they were NOT classified, so
-        // `heap_operand_ownership` fell to its `_ => decline` default → the reclaim gate never fired and a
-        // `List.len (List.concat …)` / `List.len (List.update …)` LEAKED the fresh list per call (value
-        // correct — a leak, not a miscompile). The `build`-via-`List.push` owned path already reclaimed; only
-        // these two producers slipped. Fix classifies them Owned; here we pin BOTH import `drop` (reclaim) and
-        // stay value-correct, plus a borrowed-read-twice guard (must NOT double-free) and a leak stress.
-        let concat_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) (export main))";
-        assert!(
-            component_imports_op(&component(concat_owned), "drop"),
-            "List.len over an owned-temporary List.concat must import `drop` (reclaim — leak fix)"
-        );
-        if let Some(out) = run_on_heap(concat_owned) {
-            assert_eq!(out, "5", "List.concat len unchanged by the reclaim (3+2)");
-        }
-        let update_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) ((. List len) ((. List update) (build 0 5 (list)) 2 99))) (export main))";
-        assert!(
-            component_imports_op(&component(update_owned), "drop"),
-            "List.len over an owned-temporary List.update must import `drop` (reclaim — leak fix)"
-        );
-        if let Some(out) = run_on_heap(update_owned) {
-            assert_eq!(
-                out, "5",
-                "List.update len unchanged by the reclaim (still 5 elems)"
-            );
-        }
-        // A BORROWED (let-bound) concat result read TWICE must not be freed by the first read (the `let`
-        // reclaims it once at scope end; a borrowing `List.len` never drops it) — else a double-free traps.
-        let concat_borrowed = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) (let ((xs ((. List concat) (build 0 3 (list)) (build 0 2 (list))))) \
-                             (+ ((. List len) xs) ((. List len) xs)))) (export main))";
-        if let Some(out) = run_on_heap(concat_borrowed) {
-            assert_eq!(
-                out, "10",
-                "a borrowed concat list read twice must not be freed early (5 + 5, no double-free)"
-            );
-        }
-        // Leak stress: 20000× a fresh owned concat read+discarded. A leaked vector per call would OOM/drift.
-        let concat_stress = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (drive j m tot) (if (< j m) \
-                   (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list)))))) tot)) \
-               (def (main) (drive 0 20000 0)) (export main))";
-        if let Some(out) = run_on_heap(concat_stress) {
-            assert_eq!(
-                out, "100000",
-                "20000 owned-temporary List.concat must each reclaim the fresh list (no leak drift)"
-            );
-        }
-    }
-
-    #[test]
     fn list_len_over_an_if_reclaims_when_both_arms_own_but_not_when_an_arm_borrows() {
         // The CONTROL-FLOW JOIN face of the owned-operand reclaim (`join_arm_ownership` in
         // `heap_operand_ownership`): when a borrowing op's operand is an `if`, its ownership is the JOIN of
