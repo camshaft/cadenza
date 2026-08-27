@@ -9533,3 +9533,18 @@
   (call main (: 1 Int64))
   (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects 2))
+
+(case "a mixed-width mutual-recursion SCC emits valid wasm (per-member scratch floor)"
+  (doc    "A mutual-recursion SCC compiles all members into ONE shared dispatch loop sharing the function's
+           local slots, so two members must not stash different-WIDTH temps in the SAME slot: r0's String `=`
+           tees an i32 handle into the floor slot, while r1's multi-use i64 `let j` would claim that same slot
+           → a local declared both i32 and i64 = invalid wasm. Per-member fresh scratch floors avoid the
+           collision (the mutual-SCC companion of the self-tail-recursive different-width valid-emit cases
+           above). r0(\"z\",4,6): \"zz\"≠\"xx\" → r1(3)→r0(2)→r1(1)→r0(0)→r1(-1): j=(-1+6)=5 → (+ j j)=10; the
+           run itself re-verifies valid emit (an invalid module would not compose or run). Relocated from rcdzc
+           a_mixed_width_mutual_scc_gives_each_member_a_fresh_scratch_floor.")
+  (input  (do
+            (def (r0 (: s String) (: a Int64) (: b Int64)) (if (= (String.concat s s) "xx") a (r1 s (- a 1) b)))
+            (def (r1 (: s String) (: a Int64) (: b Int64)) (let ((j (+ a b))) (if (< a 1) (+ j j) (r0 s (- a 1) b))))
+            (def (main) (r0 "z" 4 6)) (export main)))
+  (output (: 10 Int64)))
