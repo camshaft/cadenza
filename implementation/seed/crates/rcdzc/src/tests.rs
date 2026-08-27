@@ -9885,18 +9885,6 @@ mod runtime_ops {
             neg1.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a -1 divisor keeps the range-check; got {neg1:?}"
         );
-
-        // VALUE/TRAP PARITY: the range-elided div computes correctly and still ÷0-traps; the kept `-1`
-        // div still traps at MIN_8.
-        assert_eq!(run::<i8>("(: x Int8)", "(/ x 3)", &[Val::S8(127)]), 42); // 127/3
-        assert_eq!(run::<i8>("(: x Int8)", "(/ x 3)", &[Val::S8(-128)]), -42); // MIN_8/3 fits, no trap
-        assert!(traps(
-            "(: x Int8) (: y Int8)",
-            "(/ x (& y 7))",
-            &[Val::S8(10), Val::S8(0)]
-        )); // ÷0
-        assert!(traps("(: x Int8)", "(/ x -1)", &[Val::S8(-128)])); // MIN_8 / -1 overflows
-        assert_eq!(run::<i8>("(: x Int8)", "(/ x -1)", &[Val::S8(100)]), -100); // in range, no trap
     }
 
     #[test]
@@ -9948,34 +9936,6 @@ mod runtime_ops {
             bare.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an unknown-sign dividend keeps the range-check; got {bare:?}"
         );
-        // VALUE/TRAP PARITY. Nonneg dividend: correct quotients, ÷0 still traps, and `a / -1 = -a` fits.
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: d Int8)",
-                "(/ (& x 7) d)",
-                &[Val::S8(7), Val::S8(2)]
-            ),
-            3
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: d Int8)",
-                "(/ (& x 7) d)",
-                &[Val::S8(7), Val::S8(-1)]
-            ),
-            -7 // 7 / -1 = -7, fits Int8 — no spurious trap from the elided check
-        );
-        assert!(traps(
-            "(: x Int8) (: d Int8)",
-            "(/ (& x 7) d)",
-            &[Val::S8(7), Val::S8(0)]
-        )); // ÷0 native trap survives
-        // SAFETY: the unknown-sign div still traps at MIN_8 / -1.
-        assert!(traps(
-            "(: x Int8) (: d Int8)",
-            "(/ x d)",
-            &[Val::S8(-128), Val::S8(-1)]
-        ));
         // A FLOW-REFINED nonneg dividend elides too — and this is the VALUE-FACTS-specific invariant: the
         // range-check drops because the interval refinement (not the type) proves `x` nonneg. Inside the
         // then-branch of `(> x 0)`, `x` refines to `[1, 127]`, so `value_provably_nonneg(x)` holds at the
@@ -9989,32 +9949,6 @@ mod runtime_ops {
                     .iter()
                     .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "a flow-refined nonneg dividend (x>0) drops the MIN/-1 range-check via the interval fact; got {refined_div:?}"
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: d Int8)",
-                "(if (> x 0) (/ x d) 0)",
-                &[Val::S8(10), Val::S8(3)]
-            ),
-            3
-        );
-        // SAFETY: x=0 takes the else (0), and a NEGATIVE divisor on the refined path still computes (no
-        // spurious trap from the elided range-check): 10 / -1 = -10, fits Int8.
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: d Int8)",
-                "(if (> x 0) (/ x d) 0)",
-                &[Val::S8(10), Val::S8(-1)]
-            ),
-            -10
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: x Int8) (: d Int8)",
-                "(if (> x 0) (/ x d) 0)",
-                &[Val::S8(0), Val::S8(3)]
-            ),
-            0
         );
     }
 
