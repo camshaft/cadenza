@@ -21140,39 +21140,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_mixed_width_mutual_scc_gives_each_member_a_fresh_scratch_floor() {
-        // REGRESSION (mutrec-scc-growth-emits-invalid-wasm): a mutual-recursion SCC compiles all members'
-        // bodies inline into ONE shared dispatch loop, so their transient scratch shares the function's
-        // local slots. Each member sits in a mutually-EXCLUSIVE dispatch branch (`which == idx`), but a
-        // wasm local is FUNCTION-GLOBAL with ONE type — so two members must not stash different-WIDTH temps
-        // in the SAME slot. Before the per-member scratch-floor fix, every member was handed the shared
-        // `base` floor, so:
-        //   • `r0`'s first op is a String `=` → `value-eq` tees the compacted i32 handle into the floor slot;
-        //   • `r1`'s leading MULTI-USE `let j` (an i64, used twice so it can't inline) claims that SAME slot.
-        // → the one local was declared i32 (r0) AND i64 (r1) and the module failed validation with
-        // `type mismatch: expected i64, found i32` (the real `wasm[0]::function[N]` invalid-emit the
-        // in-cycle sread reader hit). Advancing each member to `(*high).max(base)` hands it never-typed
-        // slots. This is the minimal reduction of the 6-fn read-form SCC that surfaced the bug.
-        // r0("z",4,6): "zz" != "xx" → r1(3) → r0(2) → r1(1) → r0(0) → r1(-1): j=(-1+6)=5 → (+ j j)=10.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (r0 (: s String) (: a Int64) (: b Int64)) \
-                 (if (= ((. String concat) s s) \"xx\") a (r1 s (- a 1) b))) \
-               (def (r1 (: s String) (: a Int64) (: b Int64)) \
-                 (let ((j (+ a b))) (if (< a 1) (+ j j) (r0 s (- a 1) b)))) \
-               (def (main) (r0 \"z\" 4 6)) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping mixed-width mutual SCC run");
-            return;
-        };
-        assert_eq!(
-            v, "10",
-            "a mixed-width mutual SCC emits VALID wasm (per-member fresh scratch floor)"
-        );
-    }
-
-    #[test]
     fn a_set_of_or_map_insert_element_out_of_range_for_a_sibling_inferred_width_is_cdz0302() {
         // Follow-up to the list-element sibling-width fix (#1766): breaker found the SAME CDZ0302
         // sibling-unification skip through the `Set.of` ELEMENT and `Map.insert` KEY/VALUE constructors —

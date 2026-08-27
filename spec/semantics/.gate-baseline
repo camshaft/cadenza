@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -650,6 +651,7 @@ pass	a BigInt-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a BigInt-inner quantity grows past Int64.max without trapping
 pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a BigInt-inner quantity stored in a List reads back through List.at
+pass	a Bool annotation on a Bool value is transparent
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
 pass	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
@@ -2764,6 +2766,7 @@ pass	a mixed-scale equality finds GENUINE equality after a whole-ratio conversio
 pass	a mixed-scale equality is FALSE when the converted values differ (5000 m ≠ 6 km)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a mixed-width float tuple with a computed f32 NaN dedupes against the canonical spelling
+pass	a mixed-width mutual-recursion SCC emits valid wasm (per-member scratch floor)
 pass	a mode-REPLACING arm swaps the Symbol state; a conditional-value arm reads it
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module declaration binds its name in the enclosing scope
@@ -5064,6 +5067,7 @@ pass	an annotation by a reflected type that contradicts the value is rejected
 pass	an annotation on a nested generic-call argument grounds the self-nested producer and it runs
 pass	an annotation on an arithmetic operand is transparent
 pass	an annotation that contradicts the value is rejected
+pass	an annotation whose type is a reduced (Int 64) constructor grounds the value
 pass	an applied lambda whose body enters a mutually-recursive performing group folds
 pass	an applied lambda whose body performs an ABORTIVE op abandons the enclosing computation
 pass	an apply-site-homed lambda's perform result composes in the caller's arithmetic
@@ -5548,7 +5552,10 @@ pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT disc
 pass	b63a a UInt64 logical right shift by one halves the value
 pass	b63b a nonneg UInt64 logical shift satisfies the >= 0 tautology
 pass	b63c a mask covering the 2^63-1 range of a UInt64 >> 1 is a no-op
+pass	ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)
 pass	ba1 an EMPTY Bytes arg crosses the wasm host boundary
+pass	ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)
+pass	ba3 the exact bounds edge: index len-1 answers the last element, index len answers None
 pass	bar1 Bytes.at over an owned-temporary Bytes.concat result reclaims it
 pass	bar2 a borrowed bytes read by Bytes.at AND Bytes.len is not freed early
 pass	bar3 Bytes.at over an owned-temporary Bytes.slice result reclaims the slice
@@ -6682,6 +6689,9 @@ pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks t
 pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
+pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
+pass	lbe2 List.at over a runtime list at a masked index past the end yields None
+pass	lbe3 List.at over a runtime list at a plain negative index yields None
 pass	lbr1 a List entry param relayed to a helper def that only borrows its length
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
@@ -7641,8 +7651,11 @@ pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure 
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	rowacc5 the walk carries an ACCUMULATOR — the post-recursion read still sees the callee-advanced state (finding #12 accumulator face)
+pass	rp1 a 50-concat deep rope's byte-len walks the tree and the rope reclaims clean
 pass	rp1 two-site arm + a state-REPLACING second op over a SCALAR state
 pass	rp2 a RECORD op argument read by field beside an inner sum-state match — the record-payload face of the per-dispatch arm
+pass	rp2 a char-scan with String.at across every seam of a 50-concat rope counts exactly (per-read leak family at scale)
+pass	rp3 a slice SPANNING the seams of a deep rope reads exact length and content
 pass	rp3 the record payload carries a NESTED record — two-level field projection inside the arm beside the state match
 pass	rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by that increment (the XOR of old and new popcounted, the amortized-analysis witness), pop reads the live bit count, and the seeds start at 10 and 0 so the carry chains fire at different steps
 pass	rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds
@@ -8823,7 +8836,6 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
-fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
@@ -8860,14 +8872,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a Bool annotation on a Bool value is transparent
-pass	an annotation whose type is a reduced (Int 64) constructor grounds the value
-pass	lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds
-pass	lbe2 List.at over a runtime list at a masked index past the end yields None
-pass	lbe3 List.at over a runtime list at a plain negative index yields None
-pass	ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)
-pass	ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)
-pass	ba3 the exact bounds edge: index len-1 answers the last element, index len answers None
-pass	rp1 a 50-concat deep rope's byte-len walks the tree and the rope reclaims clean
-pass	rp2 a char-scan with String.at across every seam of a 50-concat rope counts exactly (per-read leak family at scale)
-pass	rp3 a slice SPANNING the seams of a deep rope reads exact length and content
