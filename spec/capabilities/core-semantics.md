@@ -222,6 +222,14 @@ A record pattern MAY name a subset of the fields, ignoring the rest.
 
 A map MUST associate keys with values as a dynamic homogeneous collection whose set of keys is not fixed by the value's form, distinct from a record's fixed field set.
 
+### A Record Field And A Map Entry Are Written As A Key-Value Pair
+
+A record field and a map entry MUST both be written as a key-value pair headed by the field-pair marker `=` — `(= <key> <value>)` — so that a record construction `(record (= x 1) (= y 2))` and a map construction `(map (= k1 v1) (= k2 v2))` share one uniform key-value entry form, the field-pair form of *A Compound Value Has A Symbol Constructor And A Shadowable Alias*, rather than two.
+
+An implementation MUST accept a map entry written as a bare positional pair `(<key> <value>)` without the `=` marker and MUST treat it as building the same map as the `(= <key> <value>)` form, so that the two spellings of a map entry are equivalent while programs are migrated to the uniform `=` form; this transitional acceptance applies to a map entry only, not to a record field, which is always the `(= <key> <value>)` form.
+
+The bare positional map-entry form is deprecated in favor of the `(= <key> <value>)` form, and an implementation MAY, once programs no longer rely on the bare form, reject a map entry that omits the `=` marker rather than accept it, so that the key-value entry form becomes a single uniform form across records and maps.
+
 ### Member Access Projects A Record Field
 
 Member access MUST project the field named by its key from the record it is applied to, evaluating to the value that field holds.
