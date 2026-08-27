@@ -1274,6 +1274,56 @@
   (call   go 0)
   (trap   "division by zero"))
 
+; --- Primitive 2: const LIST ordering folds — element-wise lexicographic, prefix-then-length tiebreak ---------
+; A List orders LEXICOGRAPHICALLY (element-wise, first non-equal decides; a proper prefix is less — shorter wins on
+; a common prefix), the runtime `value_cmp_shaped` List order (03-equality "a runtime list orders lexicographically"
+; + "a proper prefix orders less"; Rust `[T]: Ord`). `const_key_order`/`cval_key_order` gained a List arm, so a
+; fully-constant list comparison (`<`/`<=`/`>`/`>=`/`Ordering.of`) folds — bare lists and list-leaf compounds alike,
+; gated (like the other compound-ordering folds) on `is_orderable_compound` so a Char/Float-in-list still declines.
+
+(case "a const (<) of two constant LISTS folds element-wise under the const demand"
+  (doc    "`(< (list 1 2) (list 1 3))`: element 0 equal (1=1), element 1 decides 2 < 3 → true. The `(const ...)`
+           demand forces the compile-time Bool via `const_key_order`'s List arm, else it rejects. The const face of
+           03-equality:568 (which runs the runtime walk on inlined-const lists → same answer, now folded).")
+  (input  (do (def (main) (const (if (< (list 1 2) (list 1 3)) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a const list PREFIX orders less than its extension (shorter-is-less tiebreak) under the const demand"
+  (doc    "The prefix/length tiebreak: `[1]` is a proper prefix of `[1,2]`, so `(< (list 1) (list 1 2))` → true (a
+           shorter list on a common prefix is less — UNLIKE a fixed-arity tuple, where a length mismatch is a
+           different type). Pins the List arm's `len().cmp()` fallthrough. The const face of 03-equality:580.")
+  (input  (do (def (main) (const (if (< (list 1) (list 1 2)) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a const (Ordering.of) of two constant LISTS folds to an Ordering (longer-with-greater-tail)"
+  (doc    "`Ordering.of (list 3) (list 1)`: element 0 decides 3 > 1 → Greater (the length never matters once an
+           element differs). Folds via `const_key_order`'s List arm under the const demand → Greater → 3.")
+  (input  (do (def (main)
+                (const (match (Ordering.of (list 3) (list 1))
+                         ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3))))
+              (export main)))
+  (output (: 3 Int64)))
+
+(case "a const (<) of a LIST-leaf compound folds (nested list inside a tuple)"
+  (doc    "A list nested as a tuple element still folds: `(< (tuple 0 (list 1 2)) (tuple 0 (list 1 3)))` — tuple
+           field 0 equal (0=0), field 1 is a List deciding `[1,2] < [1,3]` → true. Pins that `const_key_order`
+           recurses tuple → list, and `is_orderable_compound` blesses a `(Tuple Int64 (List Int64))`.")
+  (input  (do (def (main)
+                (const (if (< (tuple 0 (list 1 2)) (tuple 0 (list 1 3))) 1 0)))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "cll1 a const list ordering agrees with the RUNTIME list walk (cross-check, §331)"
+  (doc    "Soundness cross-check: a RUNTIME list `<` (over a list with a runtime element `n`) equals the COMPILE-TIME
+           fold of the same constant lists — both order lexicographically. `go 2` builds `[1,2]` at runtime; `(< [1,n]
+           [1,3])` = true, and the const `(< [1,2] [1,3])` = true → equal. Pins the List arm matches the runtime
+           `value_cmp_shaped` order.")
+  (input  (do (def (run (: n Int64))
+                (= (< (list 1 n) (list 1 3)) (const (< (list 1 2) (list 1 3)))))
+              (export run)))
+  (call   run 2)
+  (output (: true Bool)))
+
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
 ; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
