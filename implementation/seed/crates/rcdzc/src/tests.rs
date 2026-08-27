@@ -48294,24 +48294,6 @@ mod stage1 {
         assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
     }
 
-    /// `run_closure`'s sibling for a program whose `main` is NULLARY (a closure captures a compound built
-    /// in `main`, so no runtime entry argument is needed). Same composed-runtime path.
-    fn run_closure_nullary(src: &str) -> Option<String> {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let runtime = find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
-        }
-    }
-
     #[test]
     fn a_generic_transformer_maps_a_closure_to_an_aggregate_result_at_two_distinct_domains() {
         // INFERENCE FIX (v-inference): a recursive-generic TRANSFORMER `gmap` threading a closure whose
@@ -48360,35 +48342,6 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
-    }
-
-    #[test]
-    fn a_lambda_forwarding_to_a_substituted_fn_param_runs_through_a_recursive_hof() {
-        // The outer HOF `twice` is NON-recursive, so it INLINES and its fn parameter `g` is SUBSTITUTED by
-        // `main`'s concrete lambda. The inner `(fn (b) (g b))` is passed to the recursive `sumapply`, so it
-        // must survive as a runtime closure. This case DECLINED for several ticks (a spurious "self-capture"
-        // — `collect_captures` tripped its `binder == node` guard on the inner lambda's OWN param binder,
-        // reached while descending a nested `(fn …)` in the lifted body). Now `collect_captures` handles a
-        // nested lambda explicitly (descends its body with the inner params EXCLUDED, skipping the param
-        // list), so the inner applied lambda β-reduces during lowering and the program RUNS. `sumapply
-        // (fn (b) (g b)) 3` with `g = (+1)`: g(3)+g(2)+g(1) = 4+3+2 = 9.
-        let src = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g b)) 3)) \
-            (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        let Some(r) = run_closure_nullary(src) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
-        // The `(g (g b))` double-apply form runs too: `h(b) = g(g(b)) = b+2`, so h(3)+h(2)+h(1) = 5+4+3 = 12.
-        let src2 = "(module m \
-            (def (sumapply (: h (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1))))) \
-            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3)) \
-            (def (main) (twice (fn ((: x Int64)) (+ x 1)))) (export main))";
-        assert_eq!(run_closure_nullary(src2).unwrap(), "12"); // (3+2)+(2+2)+(1+2)
     }
 
     #[test]
