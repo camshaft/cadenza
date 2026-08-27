@@ -180,6 +180,17 @@ def parseIntTy? (m : Module) (i : Nat) : Option IntTy :=
     | none => none
   | _ => none
 
+/-- Parse an integer TYPE NAME (`Int8`/`UInt64`/`BigInt`/…) to an `IntTy` — the name-leaf case, for
+recognizing a numeric-conversion module qualifier like `UInt8` in `(. UInt8 wrap)`. -/
+def parseIntTyName? (b : ByteArray) : Option IntTy :=
+  match String.fromUTF8? b with
+  | some "BigInt" => some { signed := true, width := .big }
+  | some s =>
+    if s.startsWith "Int" then (s.drop 3).toNat?.map (fun w => { signed := true, width := .bits w })
+    else if s.startsWith "UInt" then (s.drop 4).toNat?.map (fun w => { signed := false, width := .bits w })
+    else none
+  | none => none
+
 /-- A `def`/`main` parameter spec `(: name T)` (or a bare name) → its bound name + declared integer
 type (if `T` is one). The declared type flows the param's width into arithmetic on it. -/
 def paramSpec? (m : Module) (specId : Nat) : Option (ByteArray × Option IntTy) :=
@@ -830,7 +841,7 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
     some (match a1, a2 with
           | some (.value (.str bytes)), some (.value (.int i)) =>
             (match String.fromUTF8? bytes with
-             | some s => let cs := s.data
+             | some s => let cs := s.toList
                          if 0 ≤ i && i < Int.ofNat cs.length then .value (.some (.str (String.toUTF8 (cs[i.toNat]!).toString)))
                          else .value .none
              | none => .unsupported "String.at: invalid UTF-8")
@@ -864,6 +875,26 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "Map.remove: operand")
+  else if (parseIntTyName? qual).isSome && (mem == "wrap".toUTF8 || mem == "of".toUTF8) then
+    -- numeric conversion `(. <IntTy> wrap|of) x`: `wrap` reinterprets x mod 2^w (total); `of` is checked
+    -- (traps `overflow` if x is out of the target range); on BigInt both are identity. Value = int (type
+    -- stripped by the grader). Wrap-vs-of chosen per the member name.
+    let tty := (parseIntTyName? qual).get!
+    some (match a1 with
+          | some (.value (.int x)) =>
+            (match tty.width with
+             | .bits w =>
+               let modw : Int := (2 : Int) ^ w
+               if mem == "wrap".toUTF8 then
+                 let p := ((x % modw) + modw) % modw
+                 .value (.int (if tty.signed && p ≥ (2 : Int) ^ (w - 1) then p - modw else p))
+               else
+                 let lo : Int := if tty.signed then -((2 : Int) ^ (w - 1)) else 0
+                 let hi : Int := if tty.signed then (2 : Int) ^ (w - 1) else (2 : Int) ^ w
+                 if lo ≤ x && x < hi then .value (.int x) else .trap "overflow"
+             | _ => .value (.int x))            -- BigInt: identity (both wrap and of)
+          | some (.value _) => .unsupported "numeric conversion: non-integer operand"
+          | some o => o | none => .unsupported "numeric conversion arity")
   else none
 
 /-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
