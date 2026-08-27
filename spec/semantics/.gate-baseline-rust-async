@@ -3599,6 +3599,7 @@ pass	a runtime value under a const key binds through the map pattern
 pass	a runtime velocity multiplied by a time cancels back to the base dimension
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected
+pass	a runtime wrap never traps at the widest input boundary and reads the low byte
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
@@ -4210,6 +4211,8 @@ pass	a wide NEGATIVE integer literal pattern matches its runtime scrutinee
 pass	a wide fixed-size integer width is reserved, not yet a valid type
 pass	a wide multi-column literal match returns the matched arm's value over a runtime scrutinee (S2 emit-reshape value guard)
 pass	a wide multi-column match over a bound tuple PARAMETER returns the matched arm's value (S2 emit-reshape value guard, param shape)
+pass	a widening runtime wrap ZERO-extends an UNSIGNED source
+pass	a widening runtime wrap extends a SIGNED source by its source sign
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
@@ -5483,6 +5486,7 @@ pass	dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B
 pass	dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary
 pass	do-discarded outer performs inside a HELPER under an inner handle thread across the level
 pass	do1 ONE draw consumed by BOTH branches of an if with different weights — the binder is read exactly once per run
+pass	double negation of a comparison is the bare comparison
 pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
@@ -6176,6 +6180,9 @@ pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	no over-conservatism: a trap-free masked operand still folds the tautology
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
+pass	not over a narrow Int32 comparison folds to the complement
+pass	not over an unsigned comparison uses the unsigned op
+pass	not over each Int64 comparison folds to the complement (value parity)
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
 pass	nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance
 pass	ns1 a RECORD rides inside a sum payload through dispatch — the arm builds it from two draws, the body matches then projects
@@ -7602,6 +7609,7 @@ pass	unquote-splicing splices list elements into parent
 pass	unsigned 8-bit addition that overflows its width is rejected at compile time
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	unsigned comparison orders by magnitude, not by signed interpretation
+pass	unsigned comparisons against zero simplify and agree with the true comparison
 pass	unsigned subtraction below zero is rejected at compile time
 pass	updating a list index replaces that element, leaving others
 pass	updating a list slot with an element of a different type is a type error
@@ -7814,8 +7822,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	unsigned comparisons against zero simplify and agree with the true comparison
-pass	not over each Int64 comparison folds to the complement (value parity)
-pass	not over an unsigned comparison uses the unsigned op
-pass	not over a narrow Int32 comparison folds to the complement
-pass	double negation of a comparison is the bare comparison

@@ -15002,38 +15002,6 @@ mod runtime_ops {
     // (extend/wrap) plus a mask (+ sign-extend for a signed target). Never traps. These pin the emitted
     // path agrees with the constant fold, over the slot-crossing cases the fold never exercises.
 
-    #[test]
-    fn runtime_wrap_never_traps_on_any_input() {
-        // `wrap` is TOTAL — it never traps, whatever the runtime input (contrast the checked arithmetic).
-        // Even the widest / most negative i64 wraps cleanly to a u8.
-        let f = "(: n Int64)";
-        assert!(!traps(f, "(UInt8.wrap n)", &[Val::S64(i64::MAX)]));
-        assert!(!traps(f, "(UInt8.wrap n)", &[Val::S64(i64::MIN)]));
-        // And the value is the low 8 bits: i64::MIN = ...0x00, so → 0; i64::MAX = ...0xFF → 255.
-        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(i64::MIN)]), 0);
-        assert_eq!(run::<u8>(f, "(UInt8.wrap n)", &[Val::S64(i64::MAX)]), 255);
-    }
-
-    #[test]
-    fn runtime_wrap_narrow_to_wide_extends_by_source_sign() {
-        // `(UInt64.wrap n)` over a runtime Int8: the source (s8, in an i32 slot) is extended to i64 by
-        // its SOURCE sign before the (full-width, no-op) mask, so -1:Int8 → UInt64 2^64-1, and 5 → 5.
-        // Pins the i32→i64 slot move uses the source signedness. (Int8 param crosses as s8; result u64.)
-        let f = "(: n Int8)";
-        assert_eq!(run::<u64>(f, "(UInt64.wrap n)", &[Val::S8(-1)]), u64::MAX);
-        assert_eq!(run::<u64>(f, "(UInt64.wrap n)", &[Val::S8(5)]), 5);
-    }
-
-    #[test]
-    fn runtime_wrap_uint_source_zero_extends() {
-        // `(UInt64.wrap n)` over a runtime UInt8: an unsigned source zero-extends, so 255:UInt8 → 255
-        // (not sign-extended to a huge value). Pins the i32→i64 move honors an UNSIGNED source.
-        assert_eq!(
-            run::<u64>("(: n UInt8)", "(UInt64.wrap n)", &[Val::U8(255)]),
-            255
-        );
-    }
-
     // ── A-normal form: a multi-use runtime binding is NAMED (computed once), single-use is inlined ──
     //
     // The core is in A-normal form (`reference-compiler.md` §The Core Representation Is In A-Normal
