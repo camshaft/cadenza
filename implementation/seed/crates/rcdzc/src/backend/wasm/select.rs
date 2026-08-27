@@ -10638,8 +10638,45 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal-deep")); // [list] — transitively immortal (header/arr or spine/leaves + elems)
             Ok(())
         }
+        // A constant MAP — built EXACTLY like the runtime `Core::MapNew` arm (map-empty + per-entry box key/value
+        // by their types, rope-compact / list-key-canonicalize the key for CHAMP slot exactness, map-insert),
+        // then ONE `mark-immortal-deep` on the final root. `map-insert` CONSUMES map+key+value (moves them into the
+        // CHAMP, no copy), so there is no orphan-leak hazard — the deep-mark on the final root transitively marks
+        // the whole CHAMP (HAMT spine + data-entry key/value handles + nested payloads). The keys/values build via
+        // a FRESH minimal emit context (like `emit_immortal_elem`): empty slots, base 0, its own high-water +
+        // scratch-type map — and since `collect_static_compounds` does NOT descend into a collected map root, no
+        // key/value node is itself in `static_compounds`, so `emit` builds each inline (never routes to global.get).
+        Core::MapNew {
+            entries,
+            key_ty,
+            val_ty,
+        } => {
+            let slots: HashMap<StructId, u32> = HashMap::new();
+            let mut high = 0u32;
+            let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
+            out.push(Lir::CallImport(OP_MAP_EMPTY)); // [map]
+            for &(k, v) in entries.iter() {
+                let key_base = high; // start this entry's scratch above the running high-water (base 0 → high)
+                emit(db, k, &slots, key_base, &mut high, &mut scratch_ty, layout, out)?; // [map, key]
+                let key_boxed = box_op_for(db, k, &key_ty)?;
+                emit_heap_store_tail(db, k, key_boxed, out); // [map, key-handle]
+                if key_needs_compaction(db, k) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope key → canonical flat leaf
+                }
+                if key_needs_canonicalize(db, k) {
+                    emit_key_canonicalize(db, k, &key_ty, &mut high, &mut scratch_ty, out)?; // [map, canon-key]
+                }
+                let val_base = high;
+                emit(db, v, &slots, val_base, &mut high, &mut scratch_ty, layout, out)?; // [map, key, val]
+                let val_boxed = box_op_for(db, v, &val_ty)?;
+                emit_heap_store_tail(db, v, val_boxed, out); // [map, key, val-handle]
+                out.push(Lir::CallImport(OP_MAP_INSERT)); // → [map'] (consumes map, key, val)
+            }
+            out.push(Lir::CallImport("mark-immortal-deep")); // [map] — transitively immortal (CHAMP spine + k/v)
+            Ok(())
+        }
         _ => Err(Reject::decline(
-            "emit_immortal_static reached a non-markable node (only markable Tuple/Record/small-List are collected)"
+            "emit_immortal_static reached a non-markable node (only markable Tuple/Record/List/Map are collected)"
                 .to_string(),
         )),
     }
