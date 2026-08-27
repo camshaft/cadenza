@@ -824,6 +824,7 @@ pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
+pass	a MULTI-shot arm over a distributed match arm-body hole folds
 pass	a MULTI-shot arm over an if-condition hole duplicates the whole pure if safely
 pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list per resume
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
@@ -4048,6 +4049,7 @@ pass	a two-arm match does not evaluate the unselected arm's trapping body
 pass	a two-arm match whose wildcard binds the scrutinee and applies a trap-free op — selects, binder reads it
 pass	a two-arm match whose wildcard binds the scrutinee — the zero-probe arm
 pass	a two-constructor-element list arm falls through when the second tag differs
+pass	a two-hole perform in a match scrutinee AND an arm folds via the one-shot refold
 pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a two-level index reads an inner element of a list of lists
 pass	a two-op composition where the second op's String argument is BUILT from the first's result
@@ -4515,6 +4517,8 @@ pass	an effectful condition is performed exactly once under the operator hoist
 pass	an effectful condition of a same-constructor if is performed exactly once
 pass	an effectful helper called twice (nested) in a self-call arg folds each inline independently
 pass	an effectful helper performing UNDER A CONDITIONAL folds in a self-call arg
+pass	an effectful helper performing in a NESTED if branch folds in a self-call arg
+pass	an effectful helper performing in an if CONDITION folds in a self-call arg
 pass	an effectful helper reading TWO driver parameters folds in a self-call arg
 pass	an effectful helper that also reads an outer/driver parameter folds in a self-call arg
 pass	an effectful helper whose own parameter name shadows a driver parameter folds in a self-call arg
@@ -4734,6 +4738,7 @@ pass	an operation with a TUPLE parameter binds the compound and the arm projects
 pass	an operator applied inside a lambda passed to an annotated named HOF
 pass	an option value annotated with the wrong payload type is rejected
 pass	an option<s64> field in a record result crosses the export boundary on both arms
+pass	an or whose left operand short-circuits elides the performing right operand
 pass	an ordering < of two same-bits Float32 literals const-folds false
 pass	an ordering <= of two same-bits Float32 literals const-folds true
 pass	an ordering > of two same-bits Float32 literals const-folds false
@@ -7734,5 +7739,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	an effectful helper performing in an if CONDITION folds in a self-call arg
-pass	an effectful helper performing in a NESTED if branch folds in a self-call arg
