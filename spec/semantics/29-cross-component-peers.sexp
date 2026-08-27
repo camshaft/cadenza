@@ -435,6 +435,20 @@
   (call   main)
   (output (: 1 Int64)))
 
+(case "a scalar quantity argument crosses to and from a peer as its inner scalar"
+  (doc    "A scalar-inner Quantity crosses the peer boundary as its INNER scalar — the unit is a compile-time
+           value ERASED before codegen (`(Qty Int64 u)` has the same runtime rep as Int64), so it crosses BY
+           VALUE (not a handle), the guest's static type carrying the unit. PROVIDER `dbl` doubles the
+           magnitude (unit preserved); the CONSUMER passes `3 meter` INTO the peer op (crosses as the inner
+           Int64 3) and reads the returned Qty's magnitude with `Qty.value` → 6. Both arg and result cross as
+           the inner scalar. (The complementary HEAP-inner Qty — e.g. `(Qty Rational …)` — still crosses as a
+           handle; this pins the scalar half over a peer.)")
+  (peer   "cadenza:q/api" (do (def (dbl (: q (Qty Int64 (Unit.base #"meter")))) (Qty.of (* 2 (Qty.value q)) (Unit.base #"meter"))) (export dbl)))
+  (input  (do (effect Q (op dbl (-> (Qty Int64 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter"))))) (bind Q "cadenza:q/api")
+              (def (main) (host (Q) (Qty.value (Q.dbl (Qty.of 3 (Unit.base #"meter")))))) (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
 ; ── breaker batch 542: the two peer-matrix cells the landed coverage misses — the heap-ARG
 ; direction (consumer→provider lowering; the landed pcl/pcm cases are all RESULT-crossing) and
 ; the cross-boundary CENSUS (peer-returned heap consumed ×50 must reclaim on the consumer side;
