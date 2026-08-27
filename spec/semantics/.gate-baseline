@@ -8887,3 +8887,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	fi1 runtime float division by zero produces +infinity (huge, self-equal, positive)
+pass	fi2 runtime float division of a negative by zero produces -infinity (self-equal)
+pass	fi3 a runtime 0.0/0.0 NaN is CANONICAL: byte-equal to the literal, self-equal, Set-findable
+pass	fi4 a runtime infinity-minus-infinity NaN is canonical (byte-equal to the literal)
