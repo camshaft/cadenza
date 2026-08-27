@@ -8605,3 +8605,30 @@
             (export main)))
   (call   main (: -6 Int64)) (output (: 2 Int64))
   (live-objects known-leak 254))
+
+; -- breaker batch 473 (2026-08-27): the heap-return × lifted-param COMPOSITION gate (found probing
+; param→return flow). Lifted list param + scalar return works (el2); scalar param + heap return
+; works (crr/nrr); their COMBINATION declines with its own precise message ("a parameterized
+; heap-return export forwards scalar params and fixed-shape scalar tuple/record params only").
+; phr2 is the over-conservative ADMISSION edge: a FRESH compound return with the param merely
+; measured (no flow) still declines — the gate keys on param-type × return-kind, not actual flow.
+; phr3 adds extract-into-return (real flow, payload copied). phr1 is the true-escape FENCE: an
+; identity return is ownership TRANSFER to the harness — the wrapper must not drop what it
+; returns, so this rung stays declined until transfer semantics exist; a flip without them would
+; be a use-after-free in the harness read.
+
+(case "phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)"
+  (input (do (def (main (: xs (List Int64))) xs) (export main)))
+  (call main (: (list 4 5 6) (List Int64)))
+  (output (: (list 4 5 6) (List Int64))))
+
+(case "phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)"
+  (input (do (def (main (: xs (List Int64))) (list (List.len xs) 7)) (export main)))
+  (call main (: (list 4 5 6) (List Int64)))
+  (output (: (list 3 7) (List Int64))))
+
+(case "phr3 an export extracting a param element into a fresh returned list declines (copied flow)"
+  (input (do (def (main (: xs (List Int64)))
+    (match (List.at xs 1) ((Option.Some v) (list v v)) ((Option.None) (list -1)))) (export main)))
+  (call main (: (list 4 5 6) (List Int64)))
+  (output (: (list 5 5) (List Int64))))
