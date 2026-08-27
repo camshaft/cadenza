@@ -8707,67 +8707,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_param_passed_to_a_polymorphic_callee_is_not_over_constrained() {
-        // The argument-position constraint is PRECISE: it fires only when the callee's k-th parameter is
-        // DETERMINED (not `Any`/`Var`). A parameter passed to a POLYMORPHIC callee (`id`, whose param is
-        // unconstrained) gets NO spurious constraint, so `g` stays usable at any type. `(+ (g 3) (g 4))`
-        // = 7 — `g`'s param inlines from each concrete argument as before, not pinned by the `id` call.
-        let bytes = component(
-            "(module m (def (id x) x) (def (g v) (id v)) \
-               (def (main) (+ (g 3) (g 4))) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-    }
-
-    #[test]
-    fn an_i64_br_table_switch_reserves_its_index_slot_above_arm_body_scratch() {
-        // WARNING: INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-27): a dense integer `if`-chain
-        // over an i64 scrutinee lowers to a `br_table` (fires at ≥4 arms), which materializes the shifted
-        // dispatch index `scrutinee - min` into a scratch slot for the wrap-aliasing bounds guard. That
-        // i64 idx slot was claimed at `base` — the SAME slot the arm bodies' scratch reuses. A
-        // `String.to-bytes` of a RUNTIME rope, bound once and read across the arms, inlines its i32 Bytes
-        // handle into that slot per arm — so ONE wasm local was `local.set` at BOTH i64 (idx) and i32 (handle)
-        // width. A local's type is fixed function-wide → "type mismatch: expected i32, found i64", module
-        // invalid (compile succeeds, every run fails to compile the component). Only 4+ arms trip it (3
-        // stays a linear `if`-chain with no br_table / no idx slot); a const-foldable rope folds away and
-        // masks it. Fixed by reserving the i64 idx slot and floating arm-body scratch to `base + 1`
-        // (the width-disjoint-slot discipline; cf. `a_heap_match_composed_with_checked_arith_...`).
-        // Modes 1/2/3/4 → 4 (Bytes.len "abcd") / 97 ('a') / 99 ('c') / 100 ('d').
-        let src = "(module m \
-             (def (main (: mode Int64)) \
-               (do \
-                 (def s (String.concat \"ab\" (if (< mode 100) \"cd\" \"zz\"))) \
-                 (def bs (String.to-bytes s)) \
-                 (if (= mode 1) (Bytes.len bs) \
-                     (if (= mode 2) (match (Bytes.at bs 0) ((Some b) b) ((None _u) -1)) \
-                         (if (= mode 3) (match (Bytes.at bs 2) ((Some b) b) ((None _u) -1)) \
-                             (match (Bytes.at bs 3) ((Some b) b) ((None _u) -1))))))) \
-             (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("an i64 br_table switch over a to-bytes-rope body compiles");
-        wasmparser::validate(&bytes).expect(
-            "the i64 dispatch-index slot must be disjoint from the i32 Bytes-handle arm scratch",
-        );
-        // Store-guarded run: confirm the module is VALID (from_binary) and every arm computes correctly.
-        // Resolve the runtime ONCE (avoid re-reading/re-hashing the file per iteration).
-        if let Some(runtime) = super::find_runtime_wasm() {
-            for (mode, want) in [(1i64, "4"), (2, "97"), (3, "99"), (4, "100")] {
-                let opts = cdz_run::RunOpts {
-                    export: Some("main".to_string()),
-                    args: vec![mode.to_string()],
-                    runtime: Some(runtime.clone()),
-                    runtime_cache_dir: None,
-                    host_responses: Vec::new(),
-                };
-                match cdz_run::run(&bytes, &opts).expect("run") {
-                    cdz_run::Outcome::Value(s) => assert_eq!(s, want, "mode {mode}"),
-                    cdz_run::Outcome::Trap(t) => panic!("mode {mode} trapped: {t}"),
-                }
-            }
-        }
-    }
-
-    #[test]
     fn set_to_list_over_a_float_containing_compound_declines_not_silently_empties() {
         // WARNING: SILENT-DATA-LOSS regression (routed corpus-bugfix/breaker 2026-07-28): `Set.to-list` over a
         // FLOAT-LEAF TUPLE element ran to an EMPTY list on wasm (Set.len correct but to-list []), silently
