@@ -70,64 +70,6 @@ pub fn contract_id(
     )
 }
 
-/// The contract-id (§1) of a contract declared as a **Cadenza module** — the form a `.cdz` contract source
-/// takes and a directory of contracts is hashed from. A contract module carries its identity in three module
-/// pragmas (the language's `@!key arg` module attribute, "compatible with the rest of the language" —
-/// operator 2026-08-23) alongside its `type` declarations, so `cdz convert` yields a module value shaped:
-///
-/// ```text
-/// (do (pragma contract "cdz-platform.deliver")   ; the contract name (a string)
-///     (pragma input Envelope)                    ; the input type, by name
-///     (pragma output Outcome)                    ; the output type, by name
-///     (type Envelope …) (type Outcome …) …)      ; the declared types
-/// ```
-///
-/// This reads those pragmas and the `(type …)` forms, assembles the same
-/// `(contract <name> (types …) <input> <output>)` declaration [`contract_id`] builds, and hashes it — so a
-/// contract's id computed from its module source equals the one the platform computes from the same
-/// declaration. `None` if the module is not a well-formed contract (not a `(do …)`, or missing the
-/// `contract` / `input` / `output` pragma) — total, never a panic, so a malformed source is a rejected
-/// contract, not a crash.
-///
-/// The module AST is what `cadenza_ast::codec::decode` yields from `cdz convert --to binary` of the source;
-/// the caller supplies the decoded [`Arenas`] (this crate does no I/O and does not shell out).
-#[must_use]
-pub fn contract_id_from_module(module: &Arenas) -> Option<Hash> {
-    contract_from_module(module).map(|(_name, id)| id)
-}
-
-/// A contract's declared **name** and its [`contract_id`], read from its module source — the pair a
-/// directory→mapping tool emits (name → hash). Reads the `contract` / `input` / `output` pragmas and the
-/// `(type …)` forms of the `(do …)` module, assembles the canonical `(contract <name> (types …) <input>
-/// <output>)` declaration [`contract_id`] builds, and hashes it. `None` if the module is not a well-formed
-/// contract (not a `(do …)`, or missing a required pragma). The name is borrowed from `module`.
-#[must_use]
-pub fn contract_from_module(module: &Arenas) -> Option<(&str, Hash)> {
-    // The top-level forms — a module is a `(do <form>…)`; the forms are the children after the `do` head.
-    // Each may be wrapped in `(comment …)` nodes (a `//` doc-comment parses to `(comment <text> <form>)`,
-    // so a form preceded by comments is nested inside them), so every read peels the wrappers first — the
-    // same way `xtask codegen` extracts the type declarations, so the CLI's ids match the platform's.
-    let forms = module.as_form(module.root, "do")?;
-    let name = module.as_str(pragma_arg(module, forms, "contract")?)?;
-    let input = module.as_name(pragma_arg(module, forms, "input")?)?;
-    let output = module.as_name(pragma_arg(module, forms, "output")?)?;
-    // The declared types, grafted into the declaration builder so the assembled value is identical to the
-    // one `contract_id` builds from a native `types` closure (canonicalization makes the two structurally
-    // equal, so they hash the same).
-    let type_forms: Vec<StructId> = forms
-        .iter()
-        .map(|&f| unwrap_comment(module, f))
-        .filter(|&f| module.head_name(f) == Some("type"))
-        .collect();
-    let id = contract_id(
-        name,
-        |b| type_forms.iter().map(|&t| graft(b, module, t)).collect(),
-        input,
-        output,
-    );
-    Some((name, id))
-}
-
 /// The contract NAME and [`contract_id`] read from a contract's `descriptor()` RETURN VALUE — the canonical
 /// value form `(: (record (= id <bytes>) (= name <string>) …) <type>)` that `cdz run --format binary-ast`
 /// emits after COMPILING + EXECUTING a contract's exported `descriptor()`. This is the Option-B host
@@ -214,57 +156,13 @@ fn bytes_leaf(value: &Arenas, id: StructId) -> Option<&[u8]> {
     }
 }
 
-/// The single argument of the `(pragma <key> <arg>)` form with the given `key` among `forms`, or `None` if
-/// no such pragma (or it is not the two-element `key arg` shape). The module attribute `@!key arg` desugars
-/// to exactly this form. Each form is peeled of any `(comment …)` wrappers first, so a commented pragma is
-/// still found.
-fn pragma_arg(module: &Arenas, forms: &[StructId], key: &str) -> Option<StructId> {
-    forms.iter().copied().find_map(|f| {
-        let f = unwrap_comment(module, f);
-        let args = module.as_form(f, "pragma")?;
-        (args.len() == 2 && module.as_name(args[0]) == Some(key)).then_some(args[1])
-    })
-}
-
-/// Peel `(comment <text> <form>)` wrappers off a top-level form, returning the wrapped form — a `//`
-/// doc-comment nests the following form inside a comment node (chained for consecutive comment lines), and
-/// the wrapped form is the comment's last child. Mirrors `xtask codegen`'s comment-unwrapping so the two
-/// extract the same declarations.
-fn unwrap_comment(module: &Arenas, id: StructId) -> StructId {
-    let mut id = id;
-    while module.head_name(id) == Some("comment") {
-        match module.get(id) {
-            Struct::List(items) => match items.last() {
-                Some(&last) if last != id => id = last,
-                _ => break,
-            },
-            Struct::Atom(_) => break,
-        }
-    }
-    id
-}
-
-/// Copy the subtree rooted at `id` in `src` into `b`, returning the new id — a structural deep copy, since
-/// `cadenza-ast` has no cross-arena graft. Used to move a decoded `(type …)` declaration into the
-/// declaration builder verbatim; canonicalization then makes a grafted node equal to a natively-built one.
-fn graft(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
-    match src.get(id) {
-        Struct::Atom(leaf) => b.atom_leaf(src.leaf(*leaf).clone()),
-        Struct::List(children) => {
-            let kids: Vec<StructId> = children.iter().map(|&c| graft(b, src, c)).collect();
-            b.list(kids)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        contract_declaration, contract_id, contract_id_from_module, id_name_from_descriptor,
-        identity_from_descriptor,
+        contract_declaration, contract_id, id_name_from_descriptor, identity_from_descriptor,
     };
     use crate::{Hash, HashTag};
-    use cadenza_ast::ast::{Arenas, Leaf};
+    use cadenza_ast::ast::Leaf;
     use cadenza_ast::ast::{Builder, StructId};
     use std::sync::Arc;
 
@@ -343,135 +241,6 @@ mod tests {
         let base = contract_id("f", two_types, "A", "B");
         assert_ne!(base, contract_id("f", two_types, "B", "B"));
         assert_ne!(base, contract_id("f", two_types, "A", "A"));
-    }
-
-    /// A `(pragma <key> <arg>)` form, as `cdz convert` yields from `@!key arg`. `arg_is_name` picks a name
-    /// atom (`@!input Envelope`) vs a string leaf (`@!contract "…"`).
-    fn pragma(b: &mut Builder, key: &str, arg: &str, arg_is_name: bool) -> StructId {
-        let head = b.name("pragma");
-        let key = b.name(key);
-        let arg = if arg_is_name {
-            b.name(arg)
-        } else {
-            b.atom_leaf(Leaf::Str(Arc::from(arg)))
-        };
-        b.list(vec![head, key, arg])
-    }
-
-    /// Assemble a contract module `(do (pragma contract …) (pragma input …) (pragma output …) <types>…)`
-    /// with `temp_type`'s single `(type Temp …)` declaration — the shape `cdz convert` produces.
-    fn temp_module(name: &str, input: &str, output: &str) -> Arenas {
-        let mut b = Builder::new();
-        let do_head = b.name("do");
-        let c = pragma(&mut b, "contract", name, false);
-        let i = pragma(&mut b, "input", input, true);
-        let o = pragma(&mut b, "output", output, true);
-        let mut forms = vec![do_head, c, i, o];
-        forms.extend(temp_type(&mut b));
-        let root = b.list(forms);
-        b.finish(root)
-    }
-
-    #[test]
-    fn id_from_a_module_matches_the_direct_computation() {
-        // A contract read from its module source (pragmas + type decls) hashes to exactly what the direct
-        // `contract_id` computes from the same name/types/input/output — so the CLI's directory→hash mapping
-        // agrees with the platform. Grafting the decoded `(type …)` forms reproduces the declaration.
-        let module = temp_module("temp.celsius", "Temp", "Temp");
-        assert_eq!(
-            contract_id_from_module(&module),
-            Some(contract_id("temp.celsius", temp_type, "Temp", "Temp"))
-        );
-    }
-
-    #[test]
-    fn a_module_missing_a_required_pragma_is_none() {
-        // No `contract` pragma → not a well-formed contract module → None (a rejected contract, not a panic).
-        let mut b = Builder::new();
-        let do_head = b.name("do");
-        let i = pragma(&mut b, "input", "Temp", true);
-        let o = pragma(&mut b, "output", "Temp", true);
-        let mut forms = vec![do_head, i, o];
-        forms.extend(temp_type(&mut b));
-        let root = b.list(forms);
-        let module = b.finish(root);
-        assert_eq!(contract_id_from_module(&module), None);
-    }
-
-    #[test]
-    fn a_non_module_value_is_none() {
-        // A bare value that is not a `(do …)` module names no contract.
-        let mut b = Builder::new();
-        let root = b.atom_leaf(Leaf::Str(Arc::from("not a module")));
-        let module = b.finish(root);
-        assert_eq!(contract_id_from_module(&module), None);
-    }
-
-    #[test]
-    fn the_input_output_reference_is_read_from_its_pragma() {
-        // Two declared types, and the input/output pragmas select which is which — swapping them changes the
-        // id (the same nominal-identity property, now driven by the module's pragmas).
-        fn ab_module(input: &str, output: &str) -> Arenas {
-            let mut b = Builder::new();
-            let do_head = b.name("do");
-            let c = pragma(&mut b, "contract", "f", false);
-            let i = pragma(&mut b, "input", input, true);
-            let o = pragma(&mut b, "output", output, true);
-            // (type A (Mk Int64)) and (type B (Mk Bool))
-            let ta = {
-                let int = b.name("Int64");
-                let mk = form(&mut b, "Mk", vec![int]);
-                let name = b.name("A");
-                form(&mut b, "type", vec![name, mk])
-            };
-            let tb = {
-                let boolean = b.name("Bool");
-                let mk = form(&mut b, "Mk", vec![boolean]);
-                let name = b.name("B");
-                form(&mut b, "type", vec![name, mk])
-            };
-            let root = b.list(vec![do_head, c, i, o, ta, tb]);
-            b.finish(root)
-        }
-        let ab = contract_id_from_module(&ab_module("A", "B")).expect("well-formed");
-        let ba = contract_id_from_module(&ab_module("B", "A")).expect("well-formed");
-        assert_ne!(ab, ba);
-    }
-
-    #[test]
-    fn comment_wrapped_pragmas_and_types_are_read_the_same() {
-        // A `//` doc-comment parses to `(comment <text> <form>)`, nesting the form it precedes. The reader
-        // must peel those wrappers, or a commented contract source (every real one has comments) computes a
-        // different id than its clean equivalent. Wrap the contract pragma and the type decl in a comment
-        // and assert the id is unchanged.
-        let clean = temp_module("temp.celsius", "Temp", "Temp");
-        let wrapped = {
-            let mut b = Builder::new();
-            let do_head = b.name("do");
-            // (comment "doc" (pragma contract "temp.celsius"))
-            let c = {
-                let inner = pragma(&mut b, "contract", "temp.celsius", false);
-                let head = b.name("comment");
-                let text = b.atom_leaf(Leaf::Str(Arc::from("doc")));
-                b.list(vec![head, text, inner])
-            };
-            let i = pragma(&mut b, "input", "Temp", true);
-            let o = pragma(&mut b, "output", "Temp", true);
-            // (comment "doc" (type Temp (Mk f64)))
-            let ty = {
-                let inner = temp_type(&mut b).remove(0);
-                let head = b.name("comment");
-                let text = b.atom_leaf(Leaf::Str(Arc::from("doc")));
-                b.list(vec![head, text, inner])
-            };
-            let root = b.list(vec![do_head, c, i, o, ty]);
-            b.finish(root)
-        };
-        assert_eq!(
-            contract_id_from_module(&wrapped),
-            contract_id_from_module(&clean),
-            "comment wrappers must not change the contract-id"
-        );
     }
 
     #[test]
@@ -575,7 +344,7 @@ mod tests {
     #[test]
     fn a_non_descriptor_value_names_no_contract() {
         // A value that is not a `(: (record …) …)` with `id`+`name` fields → `None` (a rejected value, not a
-        // panic) — the total-parse contract, like `contract_id_from_module`.
+        // panic) — the total-parse discipline: a malformed descriptor names no contract.
         let mut b = Builder::new();
         let root = b.atom_leaf(Leaf::Str(Arc::from("not a descriptor")));
         let arenas = b.finish(root);
