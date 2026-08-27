@@ -2512,3 +2512,39 @@
   (input (do (def (main (: b Int64)) (Bytes.len (if (> b 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 4 5))))) (export main)))
   (call main (: 5 Int64))  (output (: 3 Int64))
   (call main (: -1 Int64)) (output (: 2 Int64)))
+
+; ── breaker batch 557: DEEP-Bytes rope cells (the rp1-3 string-depth analogs; 50-concat trees).
+; API note pinned in bdr3: `(Bytes.slice b start LENGTH)` (documented) — the String.slice twin
+; takes (start, END-exclusive); the divergence is the documented contract, and bdr3's oracle
+; exercises the LENGTH reading (slice(1, 52) of a 53-byte rope = 52 bytes).
+
+(case "bdr1 a 50-concat deep Bytes rope's len walks the tree and the rope reclaims clean"
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (main (: n Int64)) (Bytes.len (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 53 Int64))
+  (live-objects 0))
+
+(case "bdr2 a byte-scan with Bytes.at across every seam of a 50-concat rope counts exactly (scalar reads; fixed 1-cell residue)"
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (cnt (: b Bytes) (: i Int64) (: acc Int64))
+  (if (= i (Bytes.len b)) acc
+      (cnt b (+ i 1) (if (= (match (Bytes.at b i) ((Some v) v) ((None u) 0)) 7) (+ acc 1) acc))))
+(def (main (: n Int64)) (cnt (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50) 0 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 50 Int64))
+  (live-objects known-leak 1))
+
+(case "bdr3 a slice SPANNING the seams of a deep Bytes rope reads exact length and content (start+LENGTH contract)"
+  (input (do (def (grow (: b Bytes) (: k Int64)) (if (= k 0) b (grow (Bytes.concat b (Bytes.of (list 7))) (- k 1))))
+(def (main (: n Int64))
+  (let ((r (grow (if (> n 0) (Bytes.of (list 1 2 3)) (Bytes.of (list 9))) 50)))
+    (match (Bytes.slice r 1 (- (Bytes.len r) 1))
+      ((Some sl) (+ (* 100 (Bytes.len sl)) (match (Bytes.at sl 10) ((Some v) v) ((None u) -1))))
+      ((None u2) -99))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 5207 Int64))
+  (live-objects known-leak 2))
