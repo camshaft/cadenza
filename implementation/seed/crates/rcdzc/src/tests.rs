@@ -50291,43 +50291,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_partial_application_of_a_runtime_closure_declines_not_invalid_wasm() {
-        // MISCOMPILE→DECLINE (v-effects-surfaced): a boxed 2-param curried closure applied at PARTIAL arity
-        // (1 of 2 args) with the surviving intermediate let-bound then applied — `(let ((g (f 3))) (g 4))` —
-        // emitted an INVALID module (the residual 1-param closure's rep disagreed with the later apply's
-        // `call_indirect`; wasm-tools 'func N: expected i64 found i32'). The DIRECT `((f 3) 4)` works (the
-        // curried spine flattens to ONE `CallClosure{args:[3,4]}` = full arity), but a `let` breaks the
-        // flatten so `(f 3)` surfaces as a genuine 1-of-2 partial. `runtime_fn_spine` gathered 1 arg for a
-        // 2-arity closure and lowered an under-arity `CallClosure`; the emit has no residual-closure build,
-        // so it produced invalid wasm. FIX (lower.rs apply arm): a gathered arg count SHORT of the closure's
-        // curried arity (arrow-peel count) now DECLINES cleanly ('a partial application of a runtime closure
-        // … is not yet emittable'), never an invalid module. The residual-closure lift is a later capability.
-        let partial = "(module m \
-            (type Box (C (-> Int64 (-> Int64 Int64)))) \
-            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b))))) \
-            (def (main) (let ((p (mk))) (match p ((Box.C f) (let ((g (f 3))) (g 4)))))) (export main))";
-        let err = compile_component(&crate::codec::encode(&crate::testkit::parse(partial)))
-            .expect_err("a let-bound partial application of a runtime closure must DECLINE, not emit invalid wasm");
-        assert!(
-            err.message
-                .contains("partial application of a runtime closure"),
-            "the decline names the partial-application limitation, got: {}",
-            err.message
-        );
-        // GUARD: the DIRECT full-arity curried apply `((f 3) 4)` (spine-flattens to 2 args = arity) still
-        // COMPILES + runs → 7 — the arity check must NOT reject a full application.
-        let full = "(module m \
-            (type Box (C (-> Int64 (-> Int64 Int64)))) \
-            (def (mk) (Box.C (fn ((: a Int64)) (fn ((: b Int64)) (+ a b))))) \
-            (def (main) (match (mk) ((Box.C f) ((f 3) 4)))) (export main))";
-        compile_component(&crate::codec::encode(&crate::testkit::parse(full)))
-            .expect("the DIRECT full-arity curried apply must still compile (2 args == arity)");
-        if let Some(r) = run_closure_nullary(full) {
-            assert_eq!(r, "7", "((f 3) 4) = 3 + 4");
-        }
-    }
-
-    #[test]
     fn a_closure_captures_a_capturing_closure_and_calls_it() {
         // NESTED CAPTURING CLOSURES: `g = (fn (x) (f x))` captures `f`, and `f = (fn (y) (+ y k))` ITSELF
         // captures `k`. Inside `g`'s lifted body, `f` is a runtime closure HANDLE read from `g`'s env cell
@@ -50517,34 +50480,6 @@ mod stage1 {
             8,
             "each lifted slot has a distinct body occurrence"
         );
-    }
-
-    #[test]
-    fn a_curried_application_spine_flattens_to_a_full_arity_indirect_call() {
-        // RUNTIME CURRYING reaching full arity. `((g n) 1)` is `(fn (a b) …)` single-arity curried sugar
-        // applied with nested parens — the SAME full-arity application as `(g n 1)`. When `g` is a
-        // recursive HOF's runtime parameter it cannot β-reduce; the nested `Apply` spine must FLATTEN so
-        // `g` applies to both `n` and `1` in ONE `call_indirect` (not decline as an unbuilt intermediate
-        // closure). `ap g n = sum(i=n..1) (i+1)`; with `g = (+)`, n=3 → (3+1)+(2+1)+(1+1) = 9.
-        let src = "(module m \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
-              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (+ a b)) n)) (export main))";
-        let Some(r) = run_closure(src, 3) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "9"); // (3+1)+(2+1)+(1+1)
-        assert_eq!(run_closure(src, 1).unwrap(), "2"); // (1+1)
-        assert_eq!(run_closure(src, 5).unwrap(), "20"); // sum(i=1..5)(i+1) = 15+5
-        // A DIFFERENT lifted lambda through the same curried recursive HOF — `g = (*)` — proving the
-        // flattened spine's `call_indirect` carries the right code (the table slot selects the applied
-        // function): `ap g n = sum(i=n..1) (i*1) = sum(i=n..1) i`; n=4 → 4+3+2+1 = 10.
-        let src2 = "(module m \
-            (def (ap (: g (-> Int64 (-> Int64 Int64))) (: n Int64)) \
-              (if (= n 0) 0 (+ ((g n) 1) (ap g (- n 1))))) \
-            (def (main (: n Int64)) (ap (fn ((: a Int64) (: b Int64)) (* a b)) n)) (export main))";
-        assert_eq!(run_closure(src2, 4).unwrap(), "10"); // 4+3+2+1
     }
 
     #[test]

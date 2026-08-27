@@ -2407,6 +2407,7 @@ pass	a let-bound host result captured by two escaping closures fires the host op
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
+pass	a let-bound partial application of a runtime closure declines (residual-closure lift is a later capability)
 pass	a let-bound record produced by an if is read at both fields
 pass	a let-bound record produced by an if, two fields read, compiles and runs
 pass	a let-bound record with an extra field capturing a let-local is projected and applied
@@ -6401,6 +6402,8 @@ pass	if5 runtime division by zero produces Infinity and crosses the boundary
 pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	ifb1 fifty frames of persistent update against a constant list never corrupt the constant
 pass	ifb2 a let-bound constant tuple referenced twice const-propagates into two embedded allocations
+pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key
+pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
@@ -8534,5 +8537,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key
-pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
