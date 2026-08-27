@@ -1937,6 +1937,7 @@ pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
+pass	a doubled payload binder shares one read across a counter fold
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
 pass	a doubly-nested tuple map key containing a rope is found by its flat twin
@@ -3043,6 +3044,7 @@ pass	a pass-through parameter re-passed unchanged across a tail loop is not corr
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a payload binder read in two different subexpressions shares its read
 pass	a payload op arg feeds BOTH the resume value and the next-state through DIFFERENT operators, dispatched twice
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites

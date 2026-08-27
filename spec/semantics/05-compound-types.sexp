@@ -21979,3 +21979,25 @@
   (call main (: 50 Int64))
   (output (: 545 Int64))
   (live-objects 0))
+
+(case "a doubled payload binder shares one read across a counter fold"
+  (doc    "A pattern binder used MORE THAN ONCE — `(Some x)` then `(+ x x)` — has its payload read SHARED by the CSE (the SumPayload arm): `sum-payload ; get-int` runs once and the one slot feeds both operands. The VALUE must be right end-to-end (both operands read the same `x`): accumulate `2*x` over a counter — `go (Some 7) 4 0` = (7+7)*4 = 56. A sharing that read a stale/other slot for the second operand would drift the sum.")
+  (input (do
+(def (go (: o (Option Int64)) (: n Int64) (: acc Int64))
+  (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ x x))))) ((None) acc)))
+(def (main) (go (Some 7) 4 0))
+(export main)))
+  (call main)
+  (output (: 56 Int64))
+  (live-objects known-leak 1))
+
+(case "a payload binder read in two different subexpressions shares its read"
+  (doc    "The same shared-read guarantee with `x` used across DIFFERENT subexpressions — `(+ (* x 2) (* x 3))` = 5*x — still shares one `sum-payload ; get-int` (same scrutinee + path), and the value is unchanged by the sharing. `go (Some 4) 2 0` = (4*2 + 4*3)*2 = 40. Pairs with the doubled-binder case above: the read is shared whether the binder recurs in one op or across several.")
+  (input (do
+(def (go (: o (Option Int64)) (: n Int64) (: acc Int64))
+  (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ (* x 2) (* x 3)))))) ((None) acc)))
+(def (main) (go (Some 4) 2 0))
+(export main)))
+  (call main)
+  (output (: 40 Int64))
+  (live-objects known-leak 1))
