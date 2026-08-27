@@ -52,3 +52,34 @@
               (def (main (: x Int64)) (host (M) (+ (M.add x x) (M.sub x x)))) (export main)))
   (call   main (: 5 Int64))
   (trap   "does not export op"))
+
+; ── peer ops returning COLLECTIONS cross as handles and are read over the shared runtime ──────────
+; (migrated from the in-crate rcdzc run_with_peers list-result tests). A heap-RESULT peer op is
+; host-wrapped; the crossed collection is a runtime handle read back (len / at / field projection).
+(case "pcl1 a peer op returning a list crosses as a handle and its length is read"
+  (doc    "PROVIDER `dup` returns a 3-element list; the consumer binds it and reads List.len of the crossed
+           list over the shared runtime: dup(7)=[7,7,7] → 3.")
+  (peer   "cadenza:l/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (input  (do (effect L (op dup (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
+              (def (main (: x Int64)) (host (L) (List.len (L.dup x)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "pcl2 a peer op returning a tuple with a variable-length list element crosses, both fields read"
+  (doc    "PROVIDER `mk` returns `(tuple (list x (+ x 1) (+ x 2)) (* x 10))` — a runtime-built list paired
+           with a scalar; the consumer reads BOTH fields of the crossed tuple: mk(4)=([4,5,6],40),
+           List.len(field0)=3 + field1=40 = 43 (the dynamic-depth element survived the crossing).")
+  (peer   "cadenza:p/api" (do (def (mk (: x Int64)) (tuple (list x (+ x 1) (+ x 2)) (* x 10))) (export mk)))
+  (input  (do (effect P (op mk (-> Int64 (Tuple (List Int64) Int64)))) (bind P "cadenza:p/api")
+              (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) (export main)))
+  (call   main (: 4 Int64))
+  (output (: 43 Int64)))
+
+(case "pcl3 an element of a peer-returned list is read and used"
+  (doc    "PROVIDER `mklist(x)` = [x+1, x+2]; the consumer reads element 0 with List.at and unwraps the
+           Option to the scalar the entrypoint returns: mklist(7)=[8,9], List.at 0 → Some 8 → 8.")
+  (peer   "cadenza:e/api" (do (def (mklist (: x Int64)) (list (+ x 1) (+ x 2))) (export mklist)))
+  (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:e/api")
+              (def (main (: x Int64)) (host (L) (match (List.at (L.mklist x) 0) ((Some v) v) (None 0)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 8 Int64)))
