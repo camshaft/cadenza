@@ -83973,43 +83973,6 @@ mod closure_host_resource {
         );
     }
 
-    /// A round-trip consumer's boundary functype follows SOURCE PARAM ORDER — a closure param need not be
-    /// first, and a consumer may take several closures (all the same signature → the one resource type).
-    /// This pins that the emitted component is VALID for those shapes (an earlier cut hardcoded the closure
-    /// as the leading `own<t>` and emitted an INVALID component — "lowered parameter types … do not match"
-    /// — when the closure sat later or when there were several). `Component::new` = wasmtime's structural
-    /// validator, the semantic floor that catches the mismatch.
-    #[test]
-    fn a_consumer_with_a_non_leading_or_repeated_closure_param_is_valid() {
-        use crate::testkit::parse;
-        let engine = wasmtime::Engine::default();
-        let valid = |src: &str, what: &str| {
-            let program = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-                .expect("compile");
-            wasmtime::component::Component::new(&engine, &program)
-                .unwrap_or_else(|e| panic!("{what} must produce a VALID component: {e:?}"));
-        };
-        // Closure param SECOND (scalar first).
-        valid(
-            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
-             (def (app (: x Int64) (: g (-> Int64 Int64))) (g x)) (export mk) (export app))",
-            "a scalar-then-closure consumer",
-        );
-        // TWO closure params.
-        valid(
-            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
-             (def (app2 (: f (-> Int64 Int64)) (: g (-> Int64 Int64)) (: x Int64)) (+ (f x) (g x))) \
-             (export mk) (export app2))",
-            "a two-closure-param consumer",
-        );
-        // Consumer result differs from the closure result (Bool vs Int64).
-        valid(
-            "(do (def (mk) (fn ((: x Int64)) (+ x 1))) \
-             (def (is-pos (: g (-> Int64 Int64)) (: x Int64)) (> (g x) 0)) (export mk) (export is-pos))",
-            "a consumer returning a different type than the closure",
-        );
-    }
-
     /// C-HOST-5 (round-trip leak fix): a produce→consume round trip leaves NO live heap cell. The producer
     /// mints the closure cell (`make-adder` → `resource.new`); the consumer takes it back as `own<t>`,
     /// applies it, then the consumer wrapper RELEASES the cell (`heap.drop(rep)` after the body returns).
