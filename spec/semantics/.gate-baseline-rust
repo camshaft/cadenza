@@ -7725,3 +7725,9 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a bits pattern with a 3/5 split reads the high and low fields most-significant-first
+pass	a bit-field run spanning a byte boundary reads as one big-endian int split by field width
+pass	a leading literal bit-field tag that misses falls through to the catch-all
+pass	an integer segment after a byte-aligned bit-field run reads at the advanced offset
+pass	a bit-field sizes a dependent bytes segment
+pass	a bit-field-sized dependent bytes segment that overruns the input falls through

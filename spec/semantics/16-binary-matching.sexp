@@ -276,6 +276,66 @@
             (_ 0)))
   (output (: 7 Int64)))
 
+(case "a bits pattern with a 3/5 split reads the high and low fields most-significant-first"
+  (doc    "The packed byte `0b1010_0101` (= 165) matched against `(bin (bits a 3) (bits b 5))` reads the
+           high 3 bits into a and the low 5 into b most-significant-first: a = 0b101 = 5, b = 0b00101 = 5.
+           The composite `100*a + b` = 505 witnesses BOTH fields (a different field split than the 1/2/5
+           case above, so a decoder that hardcoded field widths would miss it).")
+  (input  (match (Bytes.of (list 165))
+            ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
+            (_ -1)))
+  (output (: 505 Int64)))
+
+(case "a bit-field run spanning a byte boundary reads as one big-endian int split by field width"
+  (doc    "A `(bits a 4) (bits b 12)` pattern run closes on two bytes: the run is read as one 16-bit
+           big-endian integer then split by field width. Over `(Bytes.of (list 171 205))` = 0xABCD, a is
+           the high nibble 0xA = 10 and b the low 12 bits 0xBCD = 3021; composite `10000*a + b` = 103021.
+           Pins that bit-field PATTERN decoding crosses a byte boundary the same way construction packs it.")
+  (input  (match (Bytes.of (list 171 205))
+            ((bin (bits a 4) (bits b 12)) (+ (* 10000 a) b))
+            (_ -1)))
+  (output (: 103021 Int64)))
+
+(case "a leading literal bit-field tag that misses falls through to the catch-all"
+  (doc    "A LITERAL bit-field segment gates the arm: `(bin (bits 1 1) (bits x 7))` matches only a byte
+           whose top bit is 1. Over `(Bytes.of (list 1))` = 0b0000_0001 the top bit is 0, so the arm does
+           NOT fire and the match takes the catch-all → -1. The const-scrutinee companion of the runtime
+           top-bit-tag dispatch; pins that a literal bit-field probe is a genuine gate, not always-true.")
+  (input  (match (Bytes.of (list 1))
+            ((bin (bits 1 1) (bits x 7)) x)
+            (_ -1)))
+  (output (: -1 Int64)))
+
+(case "an integer segment after a byte-aligned bit-field run reads at the advanced offset"
+  (doc    "Once a `bits` run closes on a byte boundary, a following `uNN` segment reads at the run's
+           advanced byte offset: `(bin (bits a 3) (bits b 5) (u8 c))` over `(Bytes.of (list 165 42))` reads
+           a = 5, b = 5 from byte 0 and c = 42 from byte 1; composite `100*a + b + c` = 547. Pins that a
+           fixed-width segment composes with a preceding bit-field run in PATTERN position.")
+  (input  (match (Bytes.of (list 165 42))
+            ((bin (bits a 3) (bits b 5) (u8 c)) (+ (+ (* 100 a) b) c))
+            (_ -1)))
+  (output (: 547 Int64)))
+
+(case "a bit-field sizes a dependent bytes segment"
+  (doc    "A `(bits n 8)` field can name the size of a following dependent `(bytes payload n)`: over
+           `(Bytes.of (list 2 65 66))` the 8-bit field reads n = 2, then binds 2 payload bytes → its
+           length is 2. The bit-field size read rides the same non-negative length floor a fixed-int size
+           does; the truncated companion below overruns and falls through.")
+  (input  (match (Bytes.of (list 2 65 66))
+            ((bin (bits n 8) (bytes payload n)) (Bytes.len payload))
+            (_ -1)))
+  (output (: 2 Int64)))
+
+(case "a bit-field-sized dependent bytes segment that overruns the input falls through"
+  (doc    "The miss companion: `(bin (bits n 8) (bytes payload n))` over `(Bytes.of (list 2 65))` reads
+           n = 2 but only one byte follows the prefix, so the dependent segment overruns and the arm does
+           not match → catch-all -1. Pins that a bit-field-named size is bounds-checked like a fixed-int
+           size, never a backward or out-of-range read.")
+  (input  (match (Bytes.of (list 2 65))
+            ((bin (bits n 8) (bytes payload n)) (Bytes.len payload))
+            (_ -1)))
+  (output (: -1 Int64)))
+
 (case "a u64 pattern segment reads eight big-endian bytes back into an integer"
   (doc    "The eight bytes `(list 0 0 0 0 0 0 1 2)` matched against `(bin (u64 n))` read back big-endian as
            n = 258, round-tripping the u64 construction case. Pins the widest fixed-width segment in pattern
