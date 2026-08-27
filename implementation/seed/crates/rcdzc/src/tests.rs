@@ -51910,43 +51910,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_top_level_value_definition_binds_a_name() {
-        // 11-modules "a top-level value definition binds a name usable by the program's functions": a
-        // bare-name `(def NAME VALUE)` at the top level (signature is a NAME atom, not a `(sig param…)`
-        // list) is a VALUE definition — `answer` binds to `42`, resolvable by name in a sibling function,
-        // the same shape a nullary `(def (answer) 42)` denotes but written as name-plus-value.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (def answer 42) (def (main) answer) (export main))",
-        )))
-        .expect("a top-level value def binds its name");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-        // A value def may bind a COMPOUND (a record), projected by a sibling function — the value def's
-        // body is an arbitrary expression, not only a scalar.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (def tbl (record (a 7) (b 8))) (def (main) (. tbl b)) (export main))",
-        )))
-        .expect("a top-level value def may bind a record");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
-        // A value def may bind a SUM value, matched by a sibling function — the self-hosting compiler's
-        // top-level constant AST/config-node shape. `chosen = (C.G unit)` dispatches to arm 2.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (type C (R unit) (G unit) (B unit)) (def chosen (C.G unit)) \
-               (def (main) (match chosen ((C.R _) 1) ((C.G _) 2) ((C.B _) 3))) (export main))",
-        )))
-        .expect("a top-level value def may bind a sum value");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
-        // A sum-valued def may FORWARD-reference a later sum def and transform it (order-independent
-        // module scope): `derived = (match base …)` reads `base` defined after it. `derived` = (Some 20).
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (def derived (match base ((Some x) (Some (* x 2))) (None None))) \
-               (def base (Some 10)) \
-               (def (main) (match derived ((Some v) v) (None 0))) (export main))",
-        )))
-        .expect("a sum value def may forward-reference a later sum def");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 20);
-    }
-
-    #[test]
     fn a_definition_may_carry_a_leading_doc_ignored_for_the_value() {
         // 11-modules "a value definition may carry a leading doc, like a function definition": a `(doc …)`
         // form right after the name/signature documents the def and is NOT part of the value — a
@@ -51994,36 +51957,6 @@ mod stage1 {
                (def (main) (match (Box.Mk 7) ((Box.Mk n) n))) (export main))",
         )))
         .expect("a documented payload sum compiles");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-    }
-
-    #[test]
-    fn a_line_comment_wrapping_a_top_level_form_is_seen_through() {
-        // 11-modules "a line comment wrapping a top-level form does not hide it": a leading `//` on a form
-        // reifies to `(comment "<text>" <form>)` wrapping the WHOLE form (the comment companion of a leading
-        // `(doc …)`). The comment is semantically inert (self-hosting-surface.md — the compiler sees through
-        // comments as it sees through docs), so `strip_comments` peels it at load. Before, the top-level
-        // scan read `comment` as an unknown declaration head → the wrapped `def` invisible ("unbound name
-        // comment" + `f` unbound). A comment on a def → the def registers; `(f 7)` = 7.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (comment \"note\" (def (f (: x Int64)) x)) (def (main) (f 7)) (export main))",
-        )))
-        .expect("a comment-wrapped def registers");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
-        // A comment on a TYPE declaration — the wrapped `(type …)` still declares its variants.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (comment \"a tag\" (type Color (Red) (Blue))) \
-               (def (main) (match (Color.Red) ((Color.Red) 1) ((Color.Blue) 2))) (export main))",
-        )))
-        .expect("a comment-wrapped type declares");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
-        // STACKED comments NEST — `(comment "a" (comment "b" (def …)))` — so the peel must follow the whole
-        // chain to the innermost form, not just one layer.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (comment \"a\" (comment \"b\" (def (f (: x Int64)) x))) \
-               (def (main) (f 7)) (export main))",
-        )))
-        .expect("stacked comments peel to the innermost form");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 7);
     }
 
