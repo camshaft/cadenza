@@ -208,6 +208,21 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
                 let al = str_leaf(&mut b, a);
                 tk.push(form(&mut b, "arg", vec![al]));
             }
+            // A `(then …)` two-call continuation: a `(then-call)` marker (present even for a nullary
+            // second call) plus one `(then-arg <v>)` per second-call argument — so the grade path drives
+            // the SAME closure handle twice (mirrors the direct-gate `--call-twice`/`--then-arg`).
+            if let Some(second) = &c.second_call {
+                tk.push(form(&mut b, "then-call", vec![]));
+                for a in second {
+                    let al = str_leaf(&mut b, a);
+                    tk.push(form(&mut b, "then-arg", vec![al]));
+                }
+            }
+            // A `(drop)` clause: a `(drop-handle)` marker so the grade path resource-drops the handle
+            // before reading the heap balance (mirrors the direct-gate `--drop-handle`).
+            if c.drop_handle {
+                tk.push(form(&mut b, "drop-handle", vec![]));
+            }
         }
         let e = expect_form(&mut b, &t.expect);
         tk.push(e);
@@ -425,6 +440,37 @@ mod tests {
         assert!(
             leak_tr.contains("(live-objects \"known-leak\" \"2\")"),
             "known-leak marker shreds distinctly: {leak_tr}"
+        );
+    }
+
+    /// A `(then …)` two-call continuation and a `(drop)` clause shred into the `test-run.ast` as
+    /// `(then-call)`/`(then-arg <v>)`/`(drop-handle)` trial nodes — so the nix GRADE path (which reads
+    /// this AST) drives the closure the same way the direct gate does. A case with neither emits none.
+    #[test]
+    fn shred_test_run_carries_then_and_drop() {
+        let recs = crate::read(
+            r#"(case "twodrop"
+                 (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+                 (call adder (: 10 Int64) (: 5 Int64))
+                 (then (: 7 Int64))
+                 (drop)
+                 (output (: (tuple 15 17) (Tuple Int64 Int64))))
+               (case "plain"
+                 (input (do (def (main (: x Int64)) (+ x 1)) (export main)))
+                 (call main (: 5 Int64)) (output (: 6 Int64)))"#,
+        )
+        .unwrap();
+        let tr = sexpr::print(&codec::decode(&test_run_ast(&recs[0])).unwrap());
+        assert!(tr.contains("(then-call)"), "then-call marker: {tr}");
+        assert!(
+            tr.contains("(then-arg \"7\")"),
+            "then-arg carries the second-call arg: {tr}"
+        );
+        assert!(tr.contains("(drop-handle)"), "drop-handle marker: {tr}");
+        let plain = sexpr::print(&codec::decode(&test_run_ast(&recs[1])).unwrap());
+        assert!(
+            !plain.contains("then-call") && !plain.contains("drop-handle"),
+            "an ordinary one-call case emits no then/drop nodes: {plain}"
         );
     }
 

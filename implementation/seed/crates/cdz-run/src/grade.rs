@@ -74,7 +74,14 @@ pub fn grade(
             runtime_cache_dir: runtime_cache_dir.clone(),
             host_responses: host_responses.clone(),
         };
-        let (outcome, observed, live) = run_with_live_objects(component_bytes, &opts, None)?;
+        // A `(then …)` two-call continuation and a `(drop)` clause on the trial's call drive the closure
+        // resource the same way the direct gate does (`--call-twice`/`--then-arg`, `--drop-handle`), so a
+        // `(then)`/`(drop)` case grades identically on the nix grade path — not first-call-only / undropped.
+        let second_call: Option<&[String]> =
+            trial.call.as_ref().and_then(|c| c.second_call.as_deref());
+        let drop_handle = trial.call.as_ref().map(|c| c.drop_handle).unwrap_or(false);
+        let (outcome, observed, live) =
+            run_with_live_objects(component_bytes, &opts, second_call, drop_handle)?;
         if first_live.is_none() {
             first_live = Some(live);
         }

@@ -138,6 +138,12 @@ pub struct Call {
     /// run renders both results as a tuple value-form `(tuple <r1> <r2>)`. This is how a case pins that a
     /// borrowed closure handle stays live across calls.
     pub second_call: Option<Vec<String>>,
+    /// A `(drop)` clause: after the closure call(s), the host RESOURCE-DROPS the minted handle before the
+    /// run reads its result / the heap balance. `call` BORROWS the handle (it does not consume it), so
+    /// without an explicit drop the cell stays live until store teardown (a `(live-objects 1)` known leak);
+    /// the drop fires the resource's `t-dtor`, reclaiming the cell, so a `(drop)` case can assert
+    /// `(live-objects 0)`. Default `false` (hold the handle — the historical leaks-1 behavior). Wasm-only.
+    pub drop_handle: bool,
 }
 
 /// The recorded primary result of a case — exactly one per the corpus vocabulary.
@@ -372,6 +378,11 @@ pub fn render(records: &[Record]) -> String {
                         out.push_str(arg);
                         out.push('\n');
                     }
+                }
+                // A `(drop)` clause: a bare `drop-handle` marker line so the gate driver resource-drops the
+                // minted closure handle before reading the result / heap balance. Absent by default.
+                if call.drop_handle {
+                    out.push_str("drop-handle\t1\n");
                 }
             }
             out.push_str("expect\t");
@@ -703,7 +714,18 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         export: export.to_string(),
                         args,
                         second_call: None,
+                        drop_handle: false,
                     });
+                }
+            }
+            Some("drop") => {
+                // `(drop)` — after the closure call(s), the host resource-drops the minted handle before the
+                // run reads the result / heap balance, reclaiming the closure cell (so a `(live-objects 0)`
+                // case can pin release). Sets a flag on the pending call; ignored with no pending call.
+                if a.as_form(clause, "drop").is_some()
+                    && let Some(call) = pending_call.as_mut()
+                {
+                    call.drop_handle = true;
                 }
             }
             Some("then") => {
@@ -1877,6 +1899,43 @@ mod tests {
             !plain.contains("then-call"),
             "one-call form has no then-call line"
         );
+    }
+
+    /// A `(drop)` clause sets `drop_handle` on the pending call and serializes to a `drop-handle` line;
+    /// a case without it stays `false` and emits no such line (back-compat).
+    #[test]
+    fn a_drop_clause_sets_drop_handle_and_serializes() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+                 (call adder (: 10 Int64) (: 5 Int64))
+                 (drop)
+                 (output (: 15 Int64))
+                 (live-objects 0))"#,
+        )
+        .unwrap();
+        let call = recs[0].trials[0].call.as_ref().unwrap();
+        assert!(call.drop_handle, "(drop) sets drop_handle");
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+                 (call adder (: 10 Int64) (: 5 Int64))
+                 (drop)
+                 (output (: 15 Int64)) (live-objects 0))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains("drop-handle\t1\n"),
+            "drop-handle line, got: {text:?}"
+        );
+        // A case without (drop) has no drop-handle line and drop_handle=false.
+        let plain = read(
+            r#"(case "y"
+                 (input (do (def (main (: x Int64)) (+ x 1)) (export main)))
+                 (call main (: 5 Int64)) (output (: 6 Int64)))"#,
+        )
+        .unwrap();
+        assert!(!plain[0].trials[0].call.as_ref().unwrap().drop_handle);
     }
 
     /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).

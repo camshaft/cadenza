@@ -118,6 +118,21 @@
   (output (: 107 Int64))
   (live-objects known-leak 1))
 
+; DROP — `call` BORROWS the handle, so a plain make+call HOLDS the closure cell (the known leak of 1 above).
+; A `(drop)` clause makes the host resource-drop the handle AFTER the call, firing the cell's `t-dtor` to
+; reclaim it — so the same `adder` make+call now leaves NO live cell. This contrasts the leaks-1 case above:
+; the only difference is the explicit drop.
+
+(case "a dropped closure handle leaves no live objects after make + call"
+  (doc    "`adder(10)` allocates a cell holding k=10; `call(5)` = 15 (borrowing the handle); the `(drop)`
+           clause then resource-drops the handle, whose t-dtor reclaims the cell. After make+call+drop
+           live-objects is 0 — the release the borrowed handle needs, versus the leaks-1 no-drop case.")
+  (input  (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k))) (export adder)))
+  (call   adder (: 10 Int64) (: 5 Int64))
+  (drop)
+  (output (: 15 Int64))
+  (live-objects 0))
+
 ; TWO-CALL-ON-ONE-HANDLE — a `borrow<t>` closure `call` does NOT consume its handle, so it is REPEATABLE:
 ; the host makes the closure ONCE, then calls it TWICE on the SAME handle. A `(then <arg>…)` continuation
 ; after the `(call …)` supplies the second call's arguments; the first `(call …)` args split by `make`'s

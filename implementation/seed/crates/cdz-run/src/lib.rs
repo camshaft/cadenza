@@ -393,7 +393,7 @@ pub fn validate(component_bytes: &[u8]) -> Result<()> {
 /// export with the (coerced) arguments, and return the rendered outcome. The OBSERVED host calls are
 /// discarded; use [`run_capturing`] to also get the ordered list of host operations the run performed.
 pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
-    run_capturing(component_bytes, opts, None).map(|(o, _calls)| o)
+    run_capturing(component_bytes, opts, None, false).map(|(o, _calls)| o)
 }
 
 /// Run a RAW CORE wasm MODULE (not a component): instantiate `module_bytes` with NO imports, invoke the
@@ -478,6 +478,7 @@ pub fn run_with_live_objects(
     component_bytes: &[u8],
     opts: &RunOpts,
     second_call: Option<&[String]>,
+    drop_handle: bool,
 ) -> Result<(Outcome, Vec<String>, Option<u32>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -510,7 +511,15 @@ pub fn run_with_live_objects(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, &component, &mut linker, opts, &observed, &[])?;
 
-    let outcome = run_export(&engine, &component, &mut store, &linker, opts, second_call)?;
+    let outcome = run_export(
+        &engine,
+        &component,
+        &mut store,
+        &linker,
+        opts,
+        second_call,
+        drop_handle,
+    )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
     // heap balance is ill-defined AND the runtime instance may be unusable after the guest trap (calling
@@ -917,6 +926,7 @@ pub fn run_capturing(
     component_bytes: &[u8],
     opts: &RunOpts,
     second_call: Option<&[String]>,
+    drop_handle: bool,
 ) -> Result<(Outcome, Vec<String>)> {
     // The one-shot path: JIT-compile the bytes, then run once. A caller that runs the SAME component many
     // times (the `cdz test` per-@test loop) should instead `compile_component` ONCE and call
@@ -924,7 +934,7 @@ pub fn run_capturing(
     // self-host test component vs ~0.1s to run it), so re-JITing identical bytes per test is the multiplier
     // to avoid. This wrapper keeps the existing single-run API (the corpus/oracle callers) byte-identical.
     let compiled = compile_component(component_bytes)?;
-    run_capturing_compiled(&compiled, opts, second_call)
+    run_capturing_compiled(&compiled, opts, second_call, drop_handle)
 }
 
 /// A wasmtime-JIT-COMPILED component, ready to run — the reusable half of a run, split from the per-run
@@ -955,6 +965,7 @@ pub fn run_capturing_compiled(
     compiled: &CompiledComponent,
     opts: &RunOpts,
     second_call: Option<&[String]>,
+    drop_handle: bool,
 ) -> Result<(Outcome, Vec<String>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -978,7 +989,15 @@ pub fn run_capturing_compiled(
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     bind_host_imports(&engine, component, &mut linker, opts, &observed, &[])?;
 
-    let outcome = run_export(&engine, component, &mut store, &linker, opts, second_call)?;
+    let outcome = run_export(
+        &engine,
+        component,
+        &mut store,
+        &linker,
+        opts,
+        second_call,
+        drop_handle,
+    )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
 }
@@ -1357,7 +1376,7 @@ fn run_composition_hosted_capturing(
         bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
     }
 
-    let outcome = run_export(&engine, consumer, &mut store, &linker, opts, None)?;
+    let outcome = run_export(&engine, consumer, &mut store, &linker, opts, None, false)?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
     let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
@@ -1529,7 +1548,7 @@ where
         Ok(())
     })?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
 }
 
 /// Like [`run_agent`], but ALSO binds an AUTHORIZATION op — the full agent-harness shape where the
@@ -1671,7 +1690,7 @@ where
         })?;
     }
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
 }
 
 /// Verify a consumer's imported authz op `authz_iface`.`authz_op` has the `(u32) -> s64` boundary shape
@@ -1780,7 +1799,7 @@ pub fn run_agent_hosted(
 
     bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None)
+    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
 }
 
 /// Shape-check each [`HostOpBinding`] against the consumer's declared import (a clear up-front error,
@@ -1984,6 +2003,7 @@ fn run_export(
     // A `(then …)` two-call-on-one-handle continuation for a CLOSURE export (see `run_closure_resource`);
     // `None` on every non-closure / one-call path. Only the closure-escape dispatch below consults it.
     second_call: Option<&[String]>,
+    drop_handle: bool,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -2054,7 +2074,7 @@ fn run_export(
             .map(|name| !names_a_top_level_func(&mut *store, name))
             .unwrap_or(true)
     {
-        return run_resource_escape(&mut *store, &instance, &opts.args);
+        return run_resource_escape(&mut *store, &instance, &opts.args, drop_handle);
     }
 
     // The CLOSURE ESCAPE (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a program whose result is a
@@ -2080,6 +2100,7 @@ fn run_export(
             opts.export.as_deref(),
             &opts.args,
             second_call,
+            drop_handle,
         );
     }
 
@@ -2953,6 +2974,14 @@ fn run_roundtrip_closure(
 /// (see [`render_two_call_result`]). This pins that a borrowed closure handle stays live across calls (an
 /// `own<t>` closure would trap "unknown handle index" on the second call). Applies to the bare/multi-export
 /// `call` and the distinct-signature `call-g<n>`; the round-trip path (no `call`/`call-g`) ignores it.
+///
+/// DROP (`drop_handle`, from a corpus `(drop)` clause): `call` BORROWS the handle, so the minted closure
+/// cell stays live after the call — a `--report-live-objects` run reports the leak of 1. When `drop_handle`
+/// is set, the host RESOURCE-DROPS the handle after the call(s), firing its `t-dtor` to reclaim the cell, so
+/// a `(live-objects 0)` case pins release. Applies to the bare/multi-export path.
+// The closure driver needs the full wasmtime run context (engine/component/store/instance) plus the
+// three drive knobs (export, args, and the second-call/drop options), so it genuinely takes 8 arguments.
+#[allow(clippy::too_many_arguments)]
 fn run_closure_resource(
     engine: &Engine,
     component: &Component,
@@ -2961,6 +2990,7 @@ fn run_closure_resource(
     export: Option<&str>,
     arg_strs: &[String],
     second_call: Option<&[String]>,
+    drop_handle: bool,
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
@@ -3170,15 +3200,29 @@ fn run_closure_resource(
         return match call.call(&mut *store, &call_args2, &mut out2) {
             Ok(()) => {
                 let _ = call.post_return(&mut *store);
-                Ok(Outcome::Value(render_two_call_result(
-                    out.first(),
-                    out2.first(),
-                )))
+                let rendered = render_two_call_result(out.first(), out2.first());
+                drop_handle_if(&mut *store, &handle[0], drop_handle)?;
+                Ok(Outcome::Value(rendered))
             }
             Err(e) => Ok(Outcome::Trap(trap_message(&e))),
         };
     }
-    Ok(Outcome::Value(render_closure_call_result(out.first())))
+    let rendered = render_closure_call_result(out.first());
+    // A `(drop)` clause: resource-drop the borrowed handle now (its `t-dtor` reclaims the cell) so a
+    // `(live-objects 0)` case reads a released heap. No-op unless `drop_handle`.
+    drop_handle_if(&mut *store, &handle[0], drop_handle)?;
+    Ok(Outcome::Value(rendered))
+}
+
+/// Resource-drop a closure/resource handle `Val` when `drop` is set (the `(drop)` clause), firing its
+/// `t-dtor` so the guest cell is reclaimed before the run reads the heap balance. A no-op when `drop` is
+/// false or the value is not a resource handle.
+fn drop_handle_if(store: &mut Store<()>, handle: &Val, drop: bool) -> Result<()> {
+    if drop && let Val::Resource(r) = handle.clone() {
+        r.resource_drop(&mut *store)
+            .map_err(|e| anyhow!("drop closure handle: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Run a resource-escape program: reach `make`/`encode` inside the `cadenza:run/run` instance, call
@@ -3191,6 +3235,10 @@ fn run_resource_escape(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
     args: &[String],
+    // A `(drop)` clause: `encode` BORROWS the handle (reads without consuming), so the escaped resource's
+    // cell stays live after encode. When set, resource-drop the handle after encode so a `(live-objects 0)`
+    // case pins that the escaped resource is reclaimed. No-op by default.
+    drop_handle: bool,
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, RUN_INTERFACE)
@@ -3247,9 +3295,11 @@ fn run_resource_escape(
     let arenas = cadenza_syntax::codec::decode(&bytes).ok_or_else(|| {
         anyhow!("resource escape: encode bytes are not a valid canonical value form")
     })?;
-    Ok(Outcome::Value(
-        cadenza_syntax::sexpr::print(&arenas).trim().to_string(),
-    ))
+    let rendered = cadenza_syntax::sexpr::print(&arenas).trim().to_string();
+    // A `(drop)` clause: reclaim the escaped resource's cell after encode (which only borrowed it), so a
+    // `(live-objects 0)` case reads a released heap.
+    drop_handle_if(&mut *store, &handle[0], drop_handle)?;
+    Ok(Outcome::Value(rendered))
 }
 
 /// Render a closure `call`'s result value. A scalar/String comes back directly; a `list<u8>` may be EITHER
