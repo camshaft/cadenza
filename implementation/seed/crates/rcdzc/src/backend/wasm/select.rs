@@ -3813,30 +3813,28 @@ fn sum_spine_reclaim_in_body(
     if !seen.insert(id) {
         return false;
     }
-    #[allow(clippy::collapsible_if)]
-    if let Core::Call { callee, args } = core_of(db, id) {
-        if members.contains(&callee) {
-            for (i, &arg) in args.iter().enumerate() {
-                if i >= param_slots.len() {
-                    continue;
+    if let Core::Call { callee, args } = core_of(db, id)
+        && members.contains(&callee)
+    {
+        for (i, &arg) in args.iter().enumerate() {
+            if i >= param_slots.len() {
+                continue;
+            }
+            let is_self_payload = matches!(core_of(db, arg), Core::SumPayload { scrutinee, ref path }
+                if matches!(path.last(), Some(crate::core::PathStep::Payload))
+                    && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
+                        if slot_of.get(&binder) == Some(&param_slots[i])));
+            if is_self_payload
+                && let Core::SumPayload { scrutinee, .. } = core_of(db, arg)
+                && let Core::Param { binder } | Core::LocalRef { binder } = core_of(db, scrutinee)
+            {
+                let mut cseen = HashSet::new();
+                let mut total = 0usize;
+                for &a in args.iter() {
+                    count_param_consumes(db, a, binder, &mut cseen, &mut total);
                 }
-                let is_self_payload = matches!(core_of(db, arg), Core::SumPayload { scrutinee, ref path }
-                    if matches!(path.last(), Some(crate::core::PathStep::Payload))
-                        && matches!(core_of(db, scrutinee), Core::Param { binder } | Core::LocalRef { binder }
-                            if slot_of.get(&binder) == Some(&param_slots[i])));
-                if is_self_payload
-                    && let Core::SumPayload { scrutinee, .. } = core_of(db, arg)
-                    && let Core::Param { binder } | Core::LocalRef { binder } =
-                        core_of(db, scrutinee)
-                {
-                    let mut cseen = HashSet::new();
-                    let mut total = 0usize;
-                    for &a in args.iter() {
-                        count_param_consumes(db, a, binder, &mut cseen, &mut total);
-                    }
-                    if total == 0 {
-                        return true;
-                    }
+                if total == 0 {
+                    return true;
                 }
             }
         }
@@ -8217,10 +8215,9 @@ fn emit_loop_iteration(
     // so it can be dropped AFTER the stores (off-stack) without interleaving with the parallel-move arg
     // stack. The save is a slot COPY (no rc change); the old shell stays owned in the scratch until its drop.
     let mut spine_old_scratch: Vec<u32> = Vec::new();
-    // Range-loop indexes `is_sumpayload_consume` AND `tl.param_slots` by `i` — the index is load-bearing.
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..args.len() {
-        if is_sumpayload_consume[i] {
+    // `i` still indexes `tl.param_slots`; iterate `is_sumpayload_consume` directly for the per-arg flag.
+    for (i, &consume) in is_sumpayload_consume.iter().enumerate() {
+        if consume {
             let sc = *high;
             *high = (*high).max(sc + 1);
             scratch_ty.insert(sc, ValType::I32);
@@ -8253,10 +8250,9 @@ fn emit_loop_iteration(
     // = rest, which the dup pre-bumped → rest lands at its owned rc. Net per iteration: the old S cell is
     // freed and rest is carried owned — the 10000-deep spine is reclaimed AS WALKED, no leak / no UAF.
     let mut spine_idx = 0usize;
-    // Range-loop indexes `is_sumpayload_consume` AND `tl.param_slots` by `i` — the index is load-bearing.
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..args.len() {
-        if is_sumpayload_consume[i] {
+    // `i` still indexes `tl.param_slots`; iterate `is_sumpayload_consume` directly for the per-arg flag.
+    for (i, &consume) in is_sumpayload_consume.iter().enumerate() {
+        if consume {
             let sc = spine_old_scratch[spine_idx];
             spine_idx += 1;
             out.push(Lir::LocalGet(tl.param_slots[i])); // [rest]
