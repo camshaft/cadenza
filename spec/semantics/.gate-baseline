@@ -8017,3 +8017,7 @@ todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	rcw1 a hundred-constructor sum dispatches to the seventy-seventh arm
+pass	rcw2 a hundred-field record projects its first and last fields
+pass	rcw3 a fifty-element tuple projects its first and last positions
+pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
