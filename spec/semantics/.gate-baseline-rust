@@ -7638,3 +7638,7 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
+pass	rbw1 a three-hundred-arm integer match dispatches to the right arm
+pass	rbw2 a four-hundred-binding let chain threads sequentially
+pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does not exhaust the stack)
