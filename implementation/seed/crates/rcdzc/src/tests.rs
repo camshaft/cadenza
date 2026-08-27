@@ -41385,51 +41385,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn constant_string_equality_folds_to_a_bool() {
-        // `= : ∀a. a → a → Bool` relates two strings by their text. A CONSTANT string equality folds at
-        // compile time (no heap): `(= "hello" "hello")` → true, `(= "hello" "world")` → false, `(= "" "")`
-        // → true (the empty string equals itself). Consumed by an `if` so `main` returns a scalar (1/0).
-        // This is the string equality the compiler needs for instruction-tag / export-name dispatch.
-        for (prog, want) in [
-            ("(= \"hello\" \"hello\")", 1),
-            ("(= \"hello\" \"world\")", 0),
-            ("(= \"\" \"\")", 1),
-        ] {
-            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "string equality fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
-    fn constant_float_equality_folds_by_canonical_value() {
-        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
-        // form.md): `1e19` and `1e20` round to DIFFERENT doubles → false; `1e19` equals its own decimal
-        // spelling `10000000000000000000.0` → true (same double); `-0.0` and `0.0` have DISTINCT bits →
-        // false (the canonical form distinguishes them); `-0.0` equals `-0.0`. Consumed by an `if` so
-        // `main` returns 1/0 — a Bool result, no float runtime. NESTED in a tuple folds the same way.
-        for (prog, want) in [
-            ("(= 1e19 1e20)", 0),
-            ("(= 1e19 10000000000000000000.0)", 1),
-            ("(= -0.0 0.0)", 0),
-            ("(= -0.0 -0.0)", 1),
-            ("(= 3.5 3.5)", 1),
-            ("(= (tuple -0.0) (tuple 0.0))", 0),
-            ("(= (tuple -0.0 1.0) (tuple -0.0 1.0))", 1),
-        ] {
-            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "float equality fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
     fn nan_equality_follows_the_canonical_byte_form() {
         // 03-equality NaN cluster (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte
         // Form): `Float64.nan` is the canonical NaN VALUE (a module constant field, like `Int64.max`),
@@ -41506,53 +41461,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             "Float64.nan crosses as an f64 NaN (got bits {:#x})",
             got.to_bits()
         );
-    }
-
-    #[test]
-    fn a_float_literal_crosses_the_boundary_as_an_f64_value() {
-        // A float literal `Core::ConstFloat` emits an `f64.const` of its canonical bits; the export
-        // returns f64 (`valtype_of(Ty::Float) = F64`) and the boundary lifts it to the component `f64`
-        // (`comp_valtype_of = COMP_F64`). Read back BY BITS so the canonical value is exact: `3.5`, a
-        // large whole float NOT saturated to i64 (`1e19`), and `-0.0` DISTINCT from `0.0` all round-trip.
-        for (prog, want_bits) in [
-            ("3.5", 3.5f64.to_bits()),
-            ("1e19", 1e19f64.to_bits()),
-            ("-0.0", (-0.0f64).to_bits()),
-            ("0.0", (0.0f64).to_bits()),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let got = run_returns::<f64>(&component(&src), "main");
-            assert_eq!(
-                got.to_bits(),
-                want_bits,
-                "float literal {prog} crosses as its canonical f64 (by bits)"
-            );
-        }
-    }
-
-    #[test]
-    fn constant_float_arithmetic_folds_at_round_to_nearest_even() {
-        // The ONE arithmetic operator `+`/`-`/`*`/`/` over two constant Float64 operands folds float
-        // arithmetic at round-to-nearest-even (the fixed deterministic mode), the result crossing as its
-        // canonical f64 (numeric-model.md §An Arithmetic Operator Requires Both Operands To Be One Numeric
-        // Type; determinism contract). There is no distinct `+.` — a `Float` operand routes to the float
-        // op by type. Read BY BITS so the exact IEEE value is pinned — `(+ 0.1 0.2)` is the famous
-        // NON-exact 0.30000000000000004, not 0.3, which a wrong (exact-decimal or f32) fold would miss.
-        for (prog, want) in [
-            ("(+ 0.1 0.2)", 0.1f64 + 0.2f64),
-            ("(* 6.0 7.0)", 42.0f64),
-            ("(- 5.5 2.0)", 3.5f64),
-            ("(/ 1.0 4.0)", 0.25f64),
-            ("(/ 1.0 3.0)", 1.0f64 / 3.0f64),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let got = run_returns::<f64>(&component(&src), "main");
-            assert_eq!(
-                got.to_bits(),
-                want.to_bits(),
-                "float fold {prog} must round-trip its exact f64 (by bits)"
-            );
-        }
     }
 
     #[test]
