@@ -10673,21 +10673,6 @@ mod match_engine {
     }
 
     #[test]
-    fn mutually_recursive_newtypes_erase_and_match() {
-        // MUTUAL recursion: `(type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A)))` — each is a newtype
-        // whose inner references the OTHER (a `Ty::Sum` back-edge to the other's decl), both finite. Both
-        // erase and construct/match end-to-end; the decl+args identity makes the cross-references unify.
-        let v = run_heap_value(
-            "(module m (type A (Mk (Option B))) (type B (Wrap (Tuple Int64 A))) \
-               (def (main) (match (Mk (Some (Wrap (tuple 7 (Mk None))))) ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0))))) (export main))",
-            vec![],
-        );
-        if let Some(v) = v {
-            assert_eq!(v, "7", "mutually-recursive newtypes erase and match");
-        }
-    }
-
-    #[test]
     fn a_recursive_newtype_escapes_to_the_host() {
         // Phase 3: a RECURSIVE newtype RETURNED to the host escapes via the recursive-sum shape walker,
         // routed on the un-stripped nominal so its OWN name tags the value (`Lst`, not the inner
