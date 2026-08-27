@@ -1,7 +1,3 @@
-@!contract "cdz-platform.lifecycle"
-@!input Event
-@!output Ack
-
 // The lifecycle contract — the schema of the control-plane notification the system delivers to a
 // reducer's watchers when a watched reducer terminates (design/cadenza-platform.md section 7). A
 // supervision link is a one-way subscription: it asks the system to deliver the watched reducer's

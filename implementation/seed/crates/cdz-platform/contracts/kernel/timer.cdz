@@ -1,7 +1,3 @@
-@!contract "cdz-platform.timer"
-@!input Envelope
-@!output Event
-
 // The timer contract — the kernel's one timer primitive (design/cadenza-platform.md section 6). Time is not
 // an input to a fold; it is an event a reducer receives. `fire-after(duration)` is the ONLY timer primitive:
 // a reducer arms it, and the runtime later wakes the session by delivering a `Fired` event carrying the

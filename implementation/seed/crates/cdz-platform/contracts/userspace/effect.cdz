@@ -1,7 +1,3 @@
-@!contract "cdz-platform.effect"
-@!input Effect
-@!output Ack
-
 // A neutral EXAMPLE application effect (design/cadenza-platform.md §4) — an ordinary effect a reducer
 // performs, carrying an opaque Bytes payload. It exists as a conformance FIXTURE: the §4 graph-routing runs
 // need an ordinary reducer to emit an effect on a contract that is NOT one of the kernel's special contracts

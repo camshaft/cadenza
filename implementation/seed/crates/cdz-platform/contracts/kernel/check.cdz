@@ -1,7 +1,3 @@
-@!contract "cdz-platform.check"
-@!input Envelope
-@!output Ack
-
 // The check contract — carries the whole observation log to the end-of-run CHECKER
 // (design/cadenza-platform.md section 9). The operator design is that the checker reuses the reducer
 // interface: it is a reducer-shaped wasm guest that is delivered the whole run's observation log as a

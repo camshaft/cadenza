@@ -1,7 +1,3 @@
-@!contract "temp.celsius"
-@!input Temp
-@!output Temp
-
 // The test-contract module for the P4 self-reflection routing run (design/cadenza-platform.md §1, P4). A
 // minimal single-type schema that SELF-REFLECTS its WHOLE contract as a STRUCTURED descriptor via the shared
 // `contract` lib on `Ast.module` (this module's own AST): `descriptor()` returns

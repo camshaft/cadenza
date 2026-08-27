@@ -1,7 +1,3 @@
-@!contract "cdz-platform.verdict"
-@!input Verdict
-@!output Ack
-
 // The verdict contract — what the end-of-run CHECKER emits to report the run's pass/fail
 // (design/cadenza-platform.md section 9). The checker (a reducer-shaped guest delivered the observation log
 // via the `check` contract) emits a `verdict` request; the harness — a driver, not a reducer, so it cannot

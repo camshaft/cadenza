@@ -1,7 +1,3 @@
-@!contract "cdz-platform.spawned"
-@!input Event
-@!output Ack
-
 // The spawned contract — the schema of the birth notification the system delivers to a reducer as its
 // very first event (design/cadenza-platform.md section 7). Before any message reaches it, a reducer is
 // told who it is: its own id and its parent's id. This file is the source of truth for that notification's

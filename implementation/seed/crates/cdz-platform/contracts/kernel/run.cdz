@@ -1,7 +1,3 @@
-@!contract "cdz-platform.run"
-@!input Request
-@!output Output
-
 // The run contract — the pure-function invocation primitive as an EFFECT (design/cadenza-platform.md
 // section 3). run(program, contract, input) -> output instantiates `program` with an empty capability set
 // and a null birth, folds `input` (delivered against `contract`), and returns its output. As this contract,

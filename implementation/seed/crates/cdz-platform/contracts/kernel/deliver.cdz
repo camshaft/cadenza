@@ -1,7 +1,3 @@
-@!contract "cdz-platform.deliver"
-@!input Envelope
-@!output Outcome
-
 // The deliver contract — the schema of the one built-in contract the kernel recognizes
 // (design/cadenza-platform.md section 4). This file is the source of truth for the schema and is real
 // Cadenza: `cargo xtask codegen` validates it with the `cdz` binary and generates

@@ -1,7 +1,3 @@
-@!contract "cdz-platform.state.get"
-@!input GetRequest
-@!output GetResult
-
 // The §7 session-state GET contract (design/cadenza-platform.md §7): read the value at a key in the session's
 // key-value state. A point-in-time lookup (a fold sees state as left by prior folds), so it either finds a
 // value or misses. Distinct from cdz-platform.state.set / .delete so a reducer dispatches by CONTRACT-ID.
