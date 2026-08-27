@@ -1585,6 +1585,16 @@
   (call   main (: 4 Int64))
   (output (: 5 Int64)))
 
+(case "a same-name monomorphic constructor over a COMPOUND payload in a called helper constructs"
+  (doc    "FACE B of the same-name-ctor helper case above, with a COMPOUND (tuple) payload rather than a scalar: `(type Pair (Pair (Tuple Int64 Int64)))` names the constructor after the type, and `(def (mk a) (Pair (tuple a a)))` builds it in a helper `main` CALLS. The β-copied `(Pair (tuple a a))` synth node must fire the head-position ctor rule for a monomorphic same-name sum whose payload is a Tuple — not only for a scalar payload like `(Meters a)` above. `mk 5` builds `(Pair (tuple 5 5))`; the pop destructures the boxed tuple → 5 + 5 = 10.")
+  (input  (do
+            (type Pair (Pair (Tuple Int64 Int64)))
+            (def (mk (: a Int64)) (Pair (tuple a a)))
+            (def (main (: a Int64)) (match (mk a) ((Pair t) (match t ((tuple x y) (+ x y))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64)))
+
 (case "a same-name multi-variant constructor in a called helper resolves to the constructor"
   (doc    "The multi-variant twin of the helper case above: `(type N (N Int64) (J Int64))` with `(def (mk a)
            (N a))` called from main. The β-copied `(N a)` in mk's body resolves to the VARIANT for a

@@ -8743,25 +8743,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_same_name_ctor_in_a_called_helper_with_a_compound_payload_constructs() {
-        // FACE B with a COMPOUND (tuple) payload, not just a scalar — the same-name-ctor β-copy fix
-        // (`same_name_monomorphic_ctor`) must reach a helper building `(Pair (tuple a a))` (a monomorphic
-        // same-name sum over a Tuple payload), not only the scalar `(Meters a)`. `mk 5` builds `(Pair (5 5))`
-        // via the called helper; the pop destructures the tuple → 5+5 = 10. Uses the value heap (a boxed
-        // tuple payload), so SKIP if the store is absent (storeless CI).
-        let src = "(module m (type Pair (Pair (Tuple Int64 Int64))) \
-               (def (mk (: a Int64)) (Pair (tuple a a))) \
-               (def (main) (match (mk 5) ((Pair t) (match t ((tuple x y) (+ x y)))))) (export main))";
-        // COMPILE must succeed (the FACE-B β-copy fix reaches a compound-payload same-name ctor too).
-        compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
-            .expect("a same-name ctor with a compound payload in a called helper must COMPILE");
-        // Value check needs the runtime store (a boxed tuple payload); storeless CI skips.
-        if let Some(v) = run_heap_value(src, Vec::new()) {
-            assert_eq!(v, "10", "mk 5 builds (Pair (5 5)); pop → 5 + 5");
-        }
-    }
-
-    #[test]
     fn file_of_binary_search_maps_every_files_nodes_to_the_right_file() {
         // REGRESSION (perf + correctness): `FileScopeTable::file_of` maps a node id to its package file,
         // consulted on EVERY file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`). It was a
