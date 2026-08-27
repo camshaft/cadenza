@@ -153,9 +153,15 @@ def trapKind (reason : String) : Option String :=
 
 /-- Assert one trial against the program: run it, compare the outcome to the expectation. -/
 def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
-  -- A no-argument trial is `reduce`; an argument-bearing call needs `execute` (argument application,
-  -- not yet modeled → Unsupported → skip).
-  let outcome := if t.args.isEmpty then Oracle.reduce prog else Oracle.execute prog #[]
+  -- A no-argument trial is `reduce`; an argument-bearing call binds the arg VALUES to main's params
+  -- via `execute`. Args are the trial's value-AST nodes (bare scalar values); a compound/non-scalar
+  -- arg the value domain doesn't model yet → skip (not every arg decodes).
+  let outcome :=
+    if t.args.isEmpty then Oracle.reduce prog
+    else
+      let argVals := t.args.filterMap (expectedValue? ot)
+      if argVals.size == t.args.size then Oracle.execute prog argVals
+      else .unsupported "execute: an argument is not a modeled scalar value"
   match t.expect with
   | .error _ | .declines => .skip "expect is a compile outcome (error/declines) — not modeled"
   | .trap kind =>
