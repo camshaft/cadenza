@@ -7033,6 +7033,30 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (_ 2)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a MULTI-shot arm over an if-condition hole duplicates the whole pure if safely"
+  (doc    "The one-hole if-condition continuation with a MULTI-SHOT arm: the arm resumes TWICE, so the whole
+           pure `if` continuation `C = (if (< [] 5) 100 2)` is duplicated once per resume with no effect
+           change (both branches are effect-free). `(* (resume 1 s) (resume 2 s))` → `(* C[1] C[2])` =
+           `(* (if (< 1 5) 100 2) (if (< 2 5) 100 2))` = `(* 100 100)` = 10000. Pins that a multi-shot
+           resume over a condition-hole context copies the pure branches soundly.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (if (< (Amb.flip) 5) 100 2))) (export main)))
+  (output (: 10000 Int64)))
+
+(case "a handler distributes into a match on a pure scrutinee whose selected arm performs"
+  (doc    "Handler distribution over a `match` whose SCRUTINEE is pure and whose selected ARM performs (the
+           non-uniform-continuation twin of the pure-scrutinee-hole case). `(match (< 3 5) (true (Amb.flip))
+           (false 2))` — the scrutinee `(< 3 5)` is pure → selects the `true` arm, which distributes to
+           `(handle … (Amb.flip))` = an identity slice, so `(resume 10 s)` = 10 and the arm `(+ 1 (resume 10
+           s))` = 11; the `false` arm is a pure body that does not run.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main)))
+  (output (: 11 Int64)))
+
 (case "a handler arm that resumes NON-tail folds when the perform is in an and lhs"
   (doc    "The pure one-hole continuation extends into a short-circuit connective's LHS — a strict,
            always-evaluated-first position. `C = (and (< [] 5) true)`; the arm `(not (resume 10 s))` produces

@@ -824,6 +824,7 @@ pass	a MULTI-shot arm folds a perform in a let-bound lambda applied in the body
 pass	a MULTI-shot arm folds a perform under a CURRIED lambda applied to pure arguments
 pass	a MULTI-shot arm folds a perform wrapped in an inline lambda application
 pass	a MULTI-shot arm keeps a pure applied lambda in its duplicated continuation
+pass	a MULTI-shot arm over an if-condition hole duplicates the whole pure if safely
 pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list per resume
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
@@ -2123,6 +2124,7 @@ pass	a handler arm that resumes NON-tail folds when the perform is in an and lhs
 pass	a handler arm that resumes NON-tail folds when the perform is in an if condition
 pass	a handler arm that resumes NON-tail folds when the perform is the whole body
 pass	a handler arm with two lookup-matches and a computed perform key emits valid wasm (checked-arith scratch slot-width partition)
+pass	a handler distributes into a match on a pure scrutinee whose selected arm performs
 pass	a handler distributes into an if whose BOTH branches perform
 pass	a handler distributes into an if whose ELSE branch performs
 pass	a handler folds a counter across the operations it discharges
