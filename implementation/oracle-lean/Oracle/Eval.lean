@@ -453,9 +453,20 @@ partial def evalAscribe (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (chil
   | _, _ => .unsupported "eval: malformed ascription"
 
 /-- `(op a b)` for a binary integer operator — evaluate both operands at `ty` and apply, trapping on
-overflow / divide-by-zero per the width. -/
+overflow / divide-by-zero per the width. Also handles the UNARY `(- e)` negation (spec: one-operand
+subtraction = `0 - e` at the operand's type, so it traps on the MIN-value overflow / an unsigned
+underflow exactly as `0 - e` does). -/
 partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : String) (children : Array Nat) : Outcome :=
-  match children[1]?, children[2]? with
+  if op == "-" && children.size == 2 then
+    match children[1]? with
+    | some eId =>
+      let opTy := ((operandTy? m eId).orElse (fun _ => (nameOf? m eId).bind (fun nm => (env.lookup? nm).bind (·.2)))).getD ty
+      match evalNode m env opTy fuel eId with
+      | .value (.int a) => evalArithOp "-" 0 a opTy    -- negation = 0 - a at the operand's width
+      | .value _ => .unsupported "eval: unary minus of a non-integer"
+      | other => other
+    | none => .unsupported "eval: malformed unary minus"
+  else match children[1]?, children[2]? with
   | some aId, some bId =>
     if children.size != 3 then .unsupported s!"eval: {op} expects 2 operands"
     else
