@@ -4879,6 +4879,17 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 40 Int64)) (output (: 0 Int64)))
 
+(case "a signature mixing a plain parameter and a tuple-pattern parameter binds both"
+  (doc    "A def signature may MIX an ordinary name parameter with a destructuring tuple-pattern parameter:
+           `(def (f x (tuple a b)) (+ x (+ a b)))` — `x` is a plain binder and `(tuple a b)` destructures
+           the SECOND argument. Keeping arity two (one per parameter), `x` and the tuple's halves all bind
+           without disturbing each other's slots. `(f x (tuple 2 4))` at x=10 = 10 + (2+4) = 16. Pins that a
+           plain binder and a destructuring binder coexist in one parameter list.")
+  (input  (do
+            (def (f x (tuple a b)) (+ x (+ a b)))
+            (def (main (: x Int64)) (f x (tuple 2 4))) (export main)))
+  (call   main (: 10 Int64)) (output (: 16 Int64)))
+
 (case "an annotated tuple-pattern parameter binds its pattern's names"
   (doc    "`(def (f (: (tuple a b) (Tuple Int64 Int64))) (+ a b))` is a destructuring tuple parameter that
            ALSO carries a type annotation. Its binders `a`/`b` must be in scope in the body, exactly as the

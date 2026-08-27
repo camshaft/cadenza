@@ -36807,43 +36807,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_def_parameter_may_be_a_tuple_pattern() {
-        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `def` parameter MAY be a
-        // tuple pattern naming the pair's parts, keeping ARITY ONE. `binding_params::lower` rewrites
-        // `(def (f (tuple a b)) BODY)` → `(def (f p$0) (let (((tuple a b) p$0)) BODY))` at load, so it
-        // reuses the (proven) destructuring-`let` path. A body reference to `a`/`b` resolves through the
-        // synthesized `let`; the fresh `p$0` binds the whole argument.
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            run_returns::<i64>(&bytes, "main")
-        };
-        // A single tuple param, a nested one, multiple tuple params, and a mixed name+tuple signature.
-        assert_eq!(
-            run(
-                "(module m (def (fst (tuple a b)) a) (def (main) (fst (tuple 7 8))) (export main))"
-            ),
-            7
-        );
-        assert_eq!(
-            run("(module m (def (f (tuple a (tuple b c))) (+ a (+ b c))) \
-                   (def (main) (f (tuple 1 (tuple 2 3)))) (export main))"),
-            6
-        );
-        assert_eq!(
-            run(
-                "(module m (def (f (tuple a b) (tuple c d)) (+ (+ a b) (+ c d))) \
-                   (def (main) (f (tuple 1 2) (tuple 3 4))) (export main))"
-            ),
-            10
-        );
-        assert_eq!(
-            run("(module m (def (f x (tuple a b)) (+ x (+ a b))) \
-                   (def (main) (f 10 (tuple 2 4))) (export main))"),
-            16
-        );
-    }
-
-    #[test]
     fn an_annotated_tuple_pattern_parameter_binds_and_checks() {
         // A tuple-pattern parameter that ALSO carries a type annotation — `(: (tuple a b) T)` — must both
         // BIND its pattern's names and CHECK the annotation. `binding_params::lower` peels the `(: <pattern>
