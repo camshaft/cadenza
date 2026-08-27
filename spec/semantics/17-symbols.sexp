@@ -534,7 +534,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 3211 Int64))
   (call main (: 2 Int64)) (output (: 3214 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a runtime string interns to a symbol matched by content"
   (doc    "`Symbol.of` on a GENUINELY-RUNTIME string — built by the `rep` concat loop `(rep \"\" 3)` =

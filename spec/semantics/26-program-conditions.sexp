@@ -2075,7 +2075,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 11 Int64))
   (call main (: 2 Int64)) (trap "unreachable")
-  (live-objects known-leak 5))
+  (live-objects known-leak 1))
 
 (case "STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition"
   (doc    "Both wrappers on ONE def: entry borrows xs (len>0), exit guards ret>=0, the value flows
@@ -2097,7 +2097,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 15 Int64))
   (call main (: 2 Int64)) (trap "unreachable")
-  (live-objects known-leak 7))
+  (live-objects known-leak 1))
 
 (case "a RELATIONAL @requires over two parameters enforces their order at entry"
   (doc    "The fn-level relational face (the type-level twin is the @invariant ordered-pair): one

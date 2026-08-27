@@ -726,7 +726,7 @@
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
   (output (: 11 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 8))
 
 ; --- Guards over quote patterns (subtree-equality rewrites). ---
 
