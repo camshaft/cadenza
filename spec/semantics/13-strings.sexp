@@ -4736,3 +4736,44 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 20 Int64))
   (live-objects known-leak 10))
+
+; -- breaker batch 446 (2026-08-27): PRE-DELIVERED acceptance fence for static-data increment 5
+; (constant-String build-once hoist; #3842 landed the byte-neutral payload-extractor groundwork).
+; The Bytes twin of this fence is sbd1/sbd2 in 10-bytes (pinning #3837). Green TODAY on the
+; per-eval allocation; the hoist must keep them green — a drop that freed the deduplicated shared
+; static would trap or misread the second occurrence, and a per-eval leak reads >=50 in the
+; amplification frame loop.
+
+(case "ssd1 two occurrences of one constant String literal — branch-selected use, byte-length reads, and runtime equality across the pair"
+  (doc    "`a` branch-selects (on the runtime arg) between the shared literal (byte-len 21) and a different
+           one; `b` is a second occurrence of the same literal. n=1: 100*21 + 21 + 1000 (a=b) = 3121. The
+           runtime `=` compares the literal against its own second occurrence with drops between the uses.
+           MUST be 3121, live-objects 0 — under a build-once hoist the shared static must survive both
+           drops.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((a (if (= n 1) "const-shared-payload!" "other"))
+                    (x (String.byte-len a))
+                    (b "const-shared-payload!"))
+                (+ (* 100 x) (+ (String.byte-len b) (if (= a b) 1000 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3121 Int64))
+  (live-objects 0))
+
+(case "ssd2 a fifty-frame recursion re-evaluating a constant String literal each frame reclaims to zero"
+  (doc    "Per-frame amplification: each frame branch-selects (parity of k) between the shared literal
+           (byte-len 21) and a second literal (byte-len 16), reads the byte-length, and drops. n=50 ->
+           25*21 + 25*16 = 925. A leak of even one object per evaluation reads >=50 here; a hoist whose
+           drop freed the build-once static would corrupt later frames. MUST be 925, live-objects 0.")
+  (input  (do
+            (def (frames (: k Int64))
+              (if (= k 0)
+                  0
+                  (let ((a (if (= (% k 2) 0) "const-shared-payload!" "odd-frame-string")))
+                    (+ (String.byte-len a) (frames (- k 1))))))
+            (def (main (: n Int64)) (frames n))
+            (export main)))
+  (call   main (: 50 Int64))
+  (output (: 925 Int64))
+  (live-objects 0))
