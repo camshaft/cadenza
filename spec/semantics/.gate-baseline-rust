@@ -7621,3 +7621,4 @@ pass	drs3 an Option with a STRING payload destructured by a whole-binding arm de
 pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
 pass	df3 the SAME generic sum at a scalar payload deforests completely
 pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
+pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works

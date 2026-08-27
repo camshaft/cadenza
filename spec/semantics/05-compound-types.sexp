@@ -20182,3 +20182,33 @@
   (call main (: 5 Int64))
   (output (: 102 Int64))
   (live-objects 0))
+
+; -- breaker batch 457 (2026-08-27): the multi-payload trap's SCOPE fences (companions to #3866's
+; dfr3d whole-binding control). tp1: the MONOMORPHIC mirror of the trapping shape works — the trap
+; is generic-instantiation-specific, same lowering path as the leak family. tp2: the same generic
+; multi-payload ctor with a TUPLE sub-pattern works (and leaks like the family) — the trap needs a
+; LIST sub-pattern specifically. Refined trigger for the filed bug: GENERIC multi-payload ctor x
+; nested LIST pattern.
+
+(case "mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works"
+  (input (do
+    (type MPair (MBoth (List Int64) Int64) (MNil unit))
+    (def (main (: n Int64))
+      (match (if (> n 0) (MPair.MBoth (list n (+ n 1)) 100) (MPair.MNil unit))
+        ((MPair.MBoth (list a b) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 111 Int64)))
+
+(case "mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (tuple n (+ n 1)) 100) (GNil unit)) (GPair (Tuple Int64 Int64) Int64))
+        ((Both (tuple a b) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 111 Int64))
+  (live-objects known-leak 3))
