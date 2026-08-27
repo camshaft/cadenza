@@ -19621,35 +19621,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_map_literal_with_a_runtime_key_is_not_const_folded_against_a_query() {
-        // A `(map …)` literal folds to a `Core::MapNew`, but it can carry a RUNTIME key (a call/param
-        // result that did not fold). A map operation that FOLDS against a `MapNew` by comparing keys with
-        // `const_compound_eq` (which reports a runtime key ABSENT — its compile-time equality is unknown)
-        // silently answers WRONG for a query equal to the runtime key. This is the map twin of the
-        // `Set.contains`/`Set.remove` runtime-element fold miscompile. `(add 2 3)` is a recursive call = 5
-        // at run time but non-foldable, so the map literal `(map ((add 2 3) 42))` carries a runtime key.
-        // `Map.lookup` never folded against the `MapNew` — it always compares keys by value at run time —
-        // so the lookup of the literal 5 must find 42 (a wrong `const_compound_eq` fold here would return
-        // None → -1). The map-MATCH twin now routes such a map to the runtime matcher (declines soundly
-        // rather than mis-folding); this pins the `Map.lookup` path that must simply stay correct.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
-               (def (main) (match (Map.lookup (map ((add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) \
-               (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime-key map-lookup run");
-            return;
-        };
-        assert_eq!(
-            v, "42",
-            "Map.lookup of a map literal whose key is a runtime value (add 2 3 = 5) must find 42 by value \
-             — never a const-fold that reports the runtime key absent"
-        );
-    }
-
-    #[test]
     fn a_guarded_map_arm_over_a_partial_const_map_resolves_its_value_binder_in_guard_and_body() {
         // WARNING: INVALID-ARTIFACT regression (v-patterns self-probe, both backends): a GUARDED map arm whose
         // LOOKED-UP key's value is a compile-time CONSTANT while the map as a whole is RUNTIME (another key

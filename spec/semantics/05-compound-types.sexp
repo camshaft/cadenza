@@ -22959,3 +22959,13 @@
   (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
               (def (main) (match (map ((add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
   (output (: -1 Int64)))
+
+(case "Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold"
+  (doc    "A `(map …)` literal folds to a Core::MapNew but may carry a RUNTIME (non-foldable) key. Map.lookup
+           always compares keys by VALUE at run time (it never const-folds against a MapNew), so looking up 5
+           in `(map ((add 2 3) 42))` — whose key `(add 2 3)` is 5 at run time — finds 42. A const_compound_eq
+           fold would report the runtime key absent → None → -1 (the map twin of the Set.contains runtime-
+           element fold miscompile).")
+  (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+              (def (main) (match (Map.lookup (map ((add 2 3) 42)) 5) ((Some v) v) ((None) (- 0 1)))) (export main)))
+  (output (: 42 Int64)))
