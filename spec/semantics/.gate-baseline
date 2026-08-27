@@ -8650,3 +8650,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once
+pass	dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only
+pass	dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — leg-2 requires the walker condition
+pass	dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller
