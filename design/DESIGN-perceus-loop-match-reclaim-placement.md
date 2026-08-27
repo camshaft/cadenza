@@ -198,9 +198,30 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
    `collect_shell_reclaim_child_dups` so consumed compound children are `dup`'d before the deep-drop.
    Flips `d4`/`dm1`/`d3`/`drs1`/`drs2`/`ap1`/`df2` → 0; `mts1`/`mmx1`/`rrb1` stay `known-leak`. Marker
    flip in the same PR.
-2b. Release the EXTRACTION-OP retain (site B′) on `Some` unwrap, on both the borrow and consume paths.
-   Flips `lar1`/`mlr1`/`mlr2`/`xar1`/`xar3`/`osx3` → 0; `lar2`/`mlr3` stay 0. Unblocks v-rb's nested-lift
-   (`el8`/`eln1-3`). Placement (unwrap vs extraction op) pending v-runtime's runtime-reclaim call.
+2b. Release the EXTRACTION-OP retain (site B′) on `Some` unwrap. Split into two stages by escape-clean:
+   - **Stage A (DONE, #3989 merged, v-runtime co-verified):** reclaim the escape-clean extraction-`Some`
+     shells — the borrow-to-scalar and `None`-path family. Flipped `lar1`/`mlr1`/`xar1`/`xar3`/`osx3`/`xop2`/
+     `xop3`/`xop1` → 0 (60 corpus cases), by widening the compound-reclaim branch to admit a fallible-
+     extraction scrutinee whose payload is at rc ≥ 2 (the extraction dup-retains it, so any FBIP rebuild
+     path-copies — no alias). `mts1` reduced 6 → 3, `mmx1`/`rrb1` stay `known-leak` (fence held).
+   - **Stage B (pending v-runtime placement call):** the CONSUME path — reclaim an escape-clean=FALSE
+     extraction-`Some` whose payload is moved into a consuming op. Post-Stage-A this collapses to `mlr2`
+     alone (`known-leak 3`): `(Some inner) → (List.len (List.concat inner (list 7)))`, `inner` consumed by
+     `List.concat`. 🚨 SAFETY: `resume` is REDUCED AWAY before Core (`reduce_handle`/`splice_context` in
+     `effects.rs` splice the resume value into the continuation context at the perform hole — there is NO
+     effect/resume node in Core), and `collect_consuming_payload_sites` marks a call-arg/tail/return
+     position (where a spliced continuation routes, via `Core::Call`/`CallClosure`) as consuming
+     IDENTICALLY to `List.concat`. So the dup-marking cannot distinguish a resume-thread from a pure
+     consume, and select.rs cannot key on `resume`. The current fence (`mmx1`/`rrb1`) holds ONLY because
+     they are NON-extraction (threaded-state `Some`), excluded by the extraction-scrutinee gate — NOT by
+     any resume check. Proposed fence for Stage B: reclaim iff every escaping payload binder is consumed
+     by a PURE structure-building op from a CLOSED allowlist (`ListConcat`/`ListPush`/`MapInsert`/
+     `SetInsert`/`vec-update`/`BytesConcat`/`SetAlgebra`), NOT via the default consuming arm
+     (`Call`/`CallClosure`/`HostCall`). This structurally excludes both a future extraction-payload-into-
+     resume case and `mmx1`/`rrb1`, while reclaiming `mlr2`. Open with v-runtime: (a) whether tail-
+     resumptive extraction-into-resume is even a UAF (single one-shot splice → dup-on-escape may already
+     pair 1:1), and (b) whether the pure-consumer allowlist is the right fence given `resume` is
+     Core-invisible. Unblocks v-rb's nested-lift (`el8`/`eln1-3`).
 3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
    + `code.dup_sites` count out of `emit_loop_iteration`).
 
