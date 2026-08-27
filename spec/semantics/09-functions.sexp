@@ -8972,3 +8972,46 @@
   (input (do (def (main (: a Int8) (: b Int16)) (+ (Int64.of a) (Int64.of b))) (export main)))
   (call main (: -5 Int8) (: 300 Int16))
   (output (: 295 Int64)))
+
+; SITE-A CallClosure owned-temp env-cell reclaim: an owned partial-ctor closure held in a compound and
+; APPLIED in-guest. The CallClosure emit drops the owned-temp env cell after the borrowing call, so the
+; closure-specific cells (env + boxed captures) reclaim; the residual is the general tuple/match-shell gap.
+; Value-correct; runtime `mk n` keeps the producer from const-folding. Flip to 0 when the shell-reclaim lands.
+
+(case "a SITE-A eta-closure held in a tuple is applied and its owned env cell reclaims (residual = shell gap)"
+  (doc    "`mk n` returns `(tuple (T.Mk 10) n)` (a partial ctor `(T.Mk 10)` awaiting one arg, tuple-stored so
+           it isn't beta-reduced); `((. p 0) 5)` applies it -> `(T.Mk 10 5)`, matched to `(+ a b)` = 15. The
+           CallClosure drops the owned env cell + boxed capture after the borrowing call; the remaining 2 are
+           the general tuple + match-shell reclaim gap (shared with a no-closure control), not closure-specific.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
+            (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main) (output (: 15 Int64))
+  (live-objects known-leak 2))
+
+(case "a SITE-A eta-closure stored in a SUM is applied and its owned env cell reclaims (residual = shell gap)"
+  (doc    "`mk n` returns `(Box.B (T.Mk 10))` behind a runtime if; the boxed partial ctor is extracted by the
+           `Box.B` match and applied `(f 5)` -> `(T.Mk 10 5)` -> 15. The CallClosure operand joins to Owned so
+           its cell is dropped; residual 2 = the general sum/tuple-shell gap.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (type Box (B (-> Int64 T)))
+            (def (mk (: n Int64)) (if (< n 0) (Box.B (T.Mk 0)) (Box.B (T.Mk 10))))
+            (def (main) (let ((b (mk 1))) (match (match b ((Box.B f) (f 5))) ((T.Mk a c) (+ a c)))))
+            (export main)))
+  (call   main) (output (: 15 Int64))
+  (live-objects known-leak 2))
+
+(case "a SITE-A two-arg-payload eta-closure is applied and its owned env cell reclaims (wider capture)"
+  (doc    "`(T.Mk 10 20)` awaits its 3rd arg (a WIDER two-slot capture than the single-arg shape); `((. p 0) 5)`
+           -> `(T.Mk 10 20 5)`, summed = 35. Confirms the CallClosure owned-env drop is arity-agnostic over the
+           boxed captures; residual 3 = the general tuple/match-shell gap (one more shell than the single-arg).")
+  (input  (do
+            (type T (Mk Int64 Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0 0)) (tuple (T.Mk 10 20))))
+            (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b c) (+ a (+ b c))))))
+            (export main)))
+  (call   main) (output (: 35 Int64))
+  (live-objects known-leak 3))

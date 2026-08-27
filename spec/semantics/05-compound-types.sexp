@@ -20805,3 +20805,15 @@
   (call main (: 50 Int64))
   (output (: 125 Int64))
   (live-objects 0))
+
+(case "a RECURSIVE runtime tuple escaping as a resource is reclaimed to zero after the host drop"
+  (doc    "`(def (f n) (if (= n 0) (tuple n 7) (f (- n 1))))` builds the tuple at RUN time (unfoldable), so it
+           crosses as a resource: the host make/encode-BORROWS it, then the `(drop)` clause resource-drops the
+           handle, whose t-dtor runs heap.drop(rep) to reclaim the compound (cascading to its boxed elements)
+           and balance make's alloc. The escaped value decodes to (tuple 0 7) AND after the drop NO heap cell
+           stays live. Without the drop the borrowed handle is retained (leaks 1); the (drop) is the release.")
+  (input  (do
+            (def (f (: n Int64)) (if (= n 0) (tuple n 7) (f (- n 1))))
+            (def (main) (f 3)) (export main)))
+  (call   main) (drop) (output (: (tuple 0 7) (Tuple Int64 Int64)))
+  (live-objects 0))
