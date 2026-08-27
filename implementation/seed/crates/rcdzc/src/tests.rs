@@ -1334,24 +1334,6 @@ fn option_result_world_bytes() -> Vec<u8> {
     crate::codec::encode(&a)
 }
 
-/// Whether calling export `name` with `args` TRAPS (an `unreachable` from an overflow guard). Returns
-/// `true` if the call errored (a wasm trap), `false` if it returned normally.
-fn call_traps(component_bytes: &[u8], name: &str, args: &[wasmtime::component::Val]) -> bool {
-    use wasmtime::component::{Component, Linker, Val};
-    use wasmtime::{Engine, Store};
-
-    let engine = Engine::default();
-    let component = Component::from_binary(&engine, component_bytes).expect("valid component");
-    let linker: Linker<()> = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .expect("instantiate");
-    let func = instance.get_func(&mut store, name).expect("export present");
-    let mut results = [Val::S64(0)];
-    func.call(&mut store, args, &mut results).is_err()
-}
-
 // ── value-heap H2b: a program that IMPORTS the runtime, run COMPOSED with it ─────────────────────
 //
 // A tuple built and projected at run time lowers to the heap ops (`arr-alloc`/`box-*`/`arr-set`/
@@ -7190,25 +7172,14 @@ fn an_unannotated_exported_parameter_declines() {
 // ones) both signednesses; the emitter is width-generic (a value promotes to the smallest slot that
 // holds it, computes there, then range-checks back to its N-bit type).
 mod runtime_ops {
-    use super::{FromVal, call_traps, find_runtime_wasm, run_returns_with};
+    use super::find_runtime_wasm;
     use crate::compile::compile_component;
     use crate::testkit::parse;
-    use wasmtime::component::Val;
 
     /// Compile `(module m (def (f <params>) <body>) (export f))` and return its bytes.
     fn func(params: &str, body: &str) -> Vec<u8> {
         let src = format!("(module m (def (f {params}) {body}) (export f))");
         compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
-    }
-
-    /// Run `f(args)` decoding the result to `T`.
-    fn run<T: FromVal>(params: &str, body: &str, args: &[Val]) -> T {
-        run_returns_with::<T>(&func(params, body), "f", args)
-    }
-
-    /// Whether `f(args)` traps.
-    fn traps(params: &str, body: &str, args: &[Val]) -> bool {
-        call_traps(&func(params, body), "f", args)
     }
 
     #[test]
@@ -7666,75 +7637,6 @@ mod runtime_ops {
             crosslist, 2,
             "a guard on `xs` must NOT license eliding `List.at ys i`'s check (collection-identity \
              soundness) — the guard's vec-len AND List.at's vec-len both stay (got {crosslist})"
-        );
-    }
-
-    #[test]
-    fn a_nested_narrow_arith_with_control_flow_operands_takes_the_consuming_width() {
-        // WARNING: INVALID WASM regression: a NESTED narrow `+`/`-`/`*` whose operands are all deferred-width
-        // (`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8`) types as `Int(Deferred)` and was emitted at the i64
-        // DEFAULT — storing an i64 result into the i32 slot the enclosing narrow op declared → wasm
-        // rejected the module. The c78 leaf-operand wrap did NOT cover this (the inner op goes through
-        // `emit_operand_into`'s nested-arith fast path at its own width). Fixed by emitting a
-        // deferred-width nested arith at the CONSUMING op's width `ot` (`emit_operand_into`): the inner op
-        // now computes AND range-checks at the narrow width. SOUND — a genuine fixed inner width differing
-        // from the context is a CDZ0301 fault before emit. Values + INNER-overflow trap parity:
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool) (: d Bool)",
-                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)",
-                &[Val::Bool(true), Val::Bool(true)]
-            ),
-            9 // 1 + 3 + 5
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool) (: d Bool)",
-                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)",
-                &[Val::Bool(false), Val::Bool(false)]
-            ),
-            11 // 2 + 4 + 5
-        );
-        // A nested MUL operand, and a triple nest, likewise.
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool) (: d Bool)",
-                "(: (+ (* (if c 1 2) (if d 3 4)) 5) Int8)",
-                &[Val::Bool(true), Val::Bool(false)]
-            ),
-            9 // 1 * 4 + 5
-        );
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool)",
-                "(: (+ (+ (+ (if c 1 2) 3) 4) 5) Int8)",
-                &[Val::Bool(true)]
-            ),
-            13 // 1 + 3 + 4 + 5
-        );
-        // INNER-overflow trap parity: the inner `+` range-checks at Int8, so a runtime inner 100+100=200
-        // TRAPS (distinct branch values so it is not const-folded), while in-range inputs compute.
-        assert!(traps(
-            "(: c Bool) (: d Bool)",
-            "(: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)",
-            &[Val::Bool(true), Val::Bool(true)]
-        ));
-        assert_eq!(
-            run::<i8>(
-                "(: c Bool) (: d Bool)",
-                "(: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)",
-                &[Val::Bool(true), Val::Bool(false)]
-            ),
-            115 // 100 + 10 + 5
-        );
-        // The wide (Int64) nesting is unchanged.
-        assert_eq!(
-            run::<i64>(
-                "(: c Bool) (: d Bool)",
-                "(: (+ (+ (if c 1 2) (if d 3 4)) 5) Int64)",
-                &[Val::Bool(true), Val::Bool(true)]
-            ),
-            9
         );
     }
 

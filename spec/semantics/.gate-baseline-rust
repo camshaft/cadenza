@@ -8070,3 +8070,6 @@ pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state bi
 pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
 pass	a pure one-hole continuation body reads an enclosing function parameter and folds
 pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
+pass	a nested narrow (Int8) addition computes at the consuming width
+pass	a nested narrow (Int8) multiply operand computes at the consuming width
+pass	a nested narrow (Int8) arith range-checks the INNER op and traps on inner overflow

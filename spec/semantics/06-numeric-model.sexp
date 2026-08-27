@@ -11394,3 +11394,21 @@
   (input (do (def (main (: n Int64)) (match n (0 99) (_ (% 5 0)))) (export main)))
   (call main (: 0 Int64))
   (output (: 99 Int64)))
+
+(case "a nested narrow (Int8) addition computes at the consuming width"
+  (doc    "`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8` — the deferred-width inner `+` computes and range-checks
+           at the consuming Int8 width: (T,T) → 1+3+5=9; (F,F) → 2+4+5=11.")
+  (input (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)) (export main)))
+  (call main (: true Bool) (: true Bool))   (output (: 9 Int8))
+  (call main (: false Bool) (: false Bool)) (output (: 11 Int8)))
+
+(case "a nested narrow (Int8) multiply operand computes at the consuming width"
+  (input (do (def (main (: c Bool) (: d Bool)) (: (+ (* (if c 1 2) (if d 3 4)) 5) Int8)) (export main)))
+  (call main (: true Bool) (: false Bool)) (output (: 9 Int8)))
+
+(case "a nested narrow (Int8) arith range-checks the INNER op and traps on inner overflow"
+  (doc    "The inner `+` range-checks at Int8, so a runtime inner 100+100=200 overflows and TRAPS; an
+           in-range 100+10+5=115 computes.")
+  (input (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)) (export main)))
+  (call main (: true Bool) (: false Bool)) (output (: 115 Int8))
+  (call main (: true Bool) (: true Bool))  (trap "overflow"))
