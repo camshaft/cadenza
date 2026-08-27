@@ -1971,6 +1971,7 @@ pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-
 pass	a floating-point literal
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
 pass	a flow-refined match scrutinee dispatches with the refinement-dead arm elided
+pass	a fold composes through a nested arithmetic tree
 pass	a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold
 pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuild idiom)
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
@@ -5041,6 +5042,7 @@ pass	and short-circuits at run time: a false left operand skips the trapping rig
 pass	angle units radian and degree are first-class and exact within their own dimension
 pass	annotating a quantity at a dimension the expression does not derive is an error
 pass	annotating a quantity at a same-dimension DIFFERENT unit is accepted (dimension checked, not scale)
+pass	ap1 an arm destructures an Option-of-list op ARGUMENT through the nested pattern
 pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
@@ -5050,6 +5052,7 @@ pass	arithmetic between a char and a BigInt is rejected with a working two-step 
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a Rational is rejected with a working two-step conversion fix
 pass	arithmetic between a char and an Int64 is rejected with the plain Char.to-int fix
+pass	arithmetic is generic over the integer type, sharing a built-in bound with itself
 pass	arithmetic on a bound Rational payload computes and escapes exactly
 pass	arithmetic on a let binding whose initializer diverges traps
 pass	arithmetic on an unusual UNSIGNED width enforces its own range at compile time
@@ -5481,6 +5484,10 @@ pass	cyc1 a BICYCLE cadence over four gear ratios — shift moves the gear clamp
 pass	cz1 COLLATZ-driven dispatch counting — the walk observes each step, the counter state tallies data-dependent iteration counts
 pass	d1 two-arm sum match where the FIRST ctor is disc 0 — the eqz leg of the branchless select, both orders
 pass	d2 three None-producing built-in reads in one expression — List.at in and out of range plus Map.lookup hit and miss
+pass	d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars
+pass	d4 Option wrapping a bare list (2 levels) destructured to scalars
+pass	d5 a USER sum with a list payload destructured to scalars deforests completely
+pass	d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims
 pass	da1 THREE draws inside one list literal passed to a helper — left-to-right element order, the post-call draw sees all three
 pass	da2 draws as MAP-literal keys and values — two entries built from three sequential draws
 pass	da3 draws as SET-literal elements — n=7 collides the first draw with the fixed element, n=6 collides the second
@@ -5503,6 +5510,9 @@ pass	dc1 a DEEP left-leaning concat chain — ten single-element concats build a
 pass	dc1 a THREE-hop def relay under ONE handler — each def draws then calls the next, weights pin the depth order
 pass	dc2 the relay call's ARGUMENT is a draw — the callee draws again and combines, argument-before-body order pinned
 pass	dc3 the MIDDLE relay hop is chosen by a draw — the branch decides between a two-draw and a one-draw callee, a tail draw pins the total
+pass	dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf through the carried type
+pass	dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type
+pass	dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks
 pass	dcy1 a FREQUENCY-DECAY tracker — every observe first HALVES all counts dropping the zeroed rows, then bumps the observed key by four; the whole-map transform and the single-key update compose in one arm
 pass	dd1 a FIVE-level nested delegation chain threads every level's state per inner dispatch
 pass	dd1b consecutive do-DEF draws — both binders hold their reads, the tail draw sees the doubled-twice state
@@ -5541,6 +5551,13 @@ pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
+pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
+pass	df2 a GENERIC user sum at a heap list payload leaks its shells like Option (the one non-fusing cell)
+pass	df3 the SAME generic sum at a scalar payload deforests completely
+pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
+pass	dfr1 a generic sum's TUPLE payload destructured to scalars leaks its shells
+pass	dfr2 a generic sum's RECORD payload destructured to a field leaks its shells
+pass	dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly
 pass	dg1 a DIGIT-extractor arm — each dispatch peels the low digit and floors the state by ten, three peels reverse the tail
 pass	dgn1 digit-peel of a NEGATIVE state — truncated division and dividend-sign remainder agree through the thread, three negative digits
 pass	dgr1 a DIGITAL-ROOT arm — nested fixed-point recursion (repeat digit-sum until single digit) runs wholly inside each dispatch, the accumulator's low digit rides along in the answer
@@ -5622,6 +5639,7 @@ pass	division of an integer and a float does not silently promote
 pass	division of the minimum integer by -1 overflows and traps
 pass	dl1 TEN chained lets each drawing once — position weights 1..10 pin every binder to its draw
 pass	dlt1 a DELTA encoder and decoder sharing ONE previous-value slot — enc answers the difference storing the raw value, dec answers the reconstruction storing it, interleaving them CROSS-TALKS through the shared slot by design, and after the seed washes out of the second row the tails converge exactly
+pass	dm1 a FOUR-level mixed destructure (option-list-tuple-record) reduces to scalars
 pass	dn1 a FIVE-deep same-effect shadow tower — one draw per level plus a doubled draw at the innermost
 pass	dn2b an abort under FOUR resumptive frames — the unwind abandons all four pending sums (extends the three-frame pin)
 pass	dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler
@@ -5639,6 +5657,9 @@ pass	dropping a rope built OVER a survivor must not free the shared child node
 pass	dropping a set derived by insert must not free members shared with the survivor
 pass	dropping an absent field from a record is rejected
 pass	dropping fields from a record leaves the remaining fields
+pass	drs1 Result Ok nested-payload destructure (the Option-leak sibling)
+pass	drs2 Option-in-Option nested destructure to scalars
+pass	drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely
 pass	ds1 FOUR discarded draws in a do-chain before the kept one — every discarded dispatch still advances the thread
 pass	ds2 the DISCARDED statement is itself an op-result chain — both hops advance the thread even though the value dies
 pass	ds3 a DISCARDED handle expression whose interior draws from the outer thread — the frame opens, draws, closes, and the value dies
@@ -5647,6 +5668,7 @@ pass	dsc1 a DISCARDED DIVISION NEVER TRAPS — the do-interior quotient is compu
 pass	dst2 THREE levels: list of tuples of records, no Option wrapper
 pass	dst5 a USER sum with a list payload destructured to scalars
 pass	dst6 CONTROL: Option payload bound WHOLE (not destructured) then consumed by List.len
+pass	dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims
 pass	dth1 a DEAD-MAN'S switch — beat resets the miss counter answering the uptime tick, poll counts a miss answering it until the seed-shaped threshold LATCHES the alarm, and once latched EVERY answer is -9 forever (beats cannot clear it); the lower threshold latches six rows early and the long -9 tail pins the latch as absorbing
 pass	du1 a DURATION newtype state accumulates seconds across dispatches — the arm unwraps, adds at nanosecond scale, rewraps
 pass	du2 UInt64 overflow at the top of a DURATION state traps at RUNTIME — the second dispatch crosses MAX, n=0 threads unchanged
@@ -5875,6 +5897,7 @@ pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard 
 pass	glb1 a GLASSBLOWER'S bench — each blow thins the wall by a third of the gather FLOORED at one and halves the gather (a would-be wall under two CRACKS instead, both fields frozen), heating adds gather, the read packs wall gather and cracks, and the seed's opening gather thins fast toward the crack line on one bench while the other's gentle thirds leave wall to spare
 pass	gld1 a GOLD-PANNING yield decay — pan answers the current yield then decays it by a third truncating plus one unguarded (the stream never hits the floor), move relocates resetting the yield to the seed base minus a wear cost that grows two per move, total accumulates, and the richer claim decays through DIFFERENT residues while both wear down in lockstep
 pass	gnd1 a GONDOLA on a reflecting cable — move advances the car by the signed direction held in state binding the new position ONCE in a let consumed by the terminus test both answers and both next-states, REFLECTS at either terminus by negating the direction and counting the trip, answers pack the let-bound position an arithmetic direction bit and the trip count, span reads position and trips without advancing, and the seed places the start so one run reflects mid-sequence while the other reaches the far terminus one move later
+pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
 pass	gp1 a PERFORMING guard on a wildcard pattern is a COMPILE ERROR (guards-side-effect-free, CDZ0407)
 pass	gp1 a match GUARD inside the handler ARM compares the op PAYLOAD against the live STATE binder — the guard routes admit/reject per dispatch
 pass	gp2 TWO guard arms where a guard PERFORMS — declines (multi-guard performing-condition fold gap)
@@ -6057,6 +6080,8 @@ pass	kgt1 a KADANE max-subarray tracker — feed extends or RESTARTS the running
 pass	knt1 a KNIGHT walker on an eight-by-eight board — hop attempts the L-move answering the landing square's index or -1 REFUSED off-board with the position held, cnt reads the completed-hop count, and the seed's starting rank makes the SAME move list bounce twice on one run and once on the other
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
+pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
+pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	lba1 an op taking a LIST argument — the arm folds the batch into the scalar state by recursion; the second batch is BUILT FROM the first's answer and the empty batch is a no-op
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
@@ -6213,6 +6238,9 @@ pass	mk3 the arm SHRINKS the map state via remove — re-removing the same key i
 pass	mki1 a MAP+KEYSET invariant pair — every put and remove maintains set = keys(map) across both structures in one transition, and paired membership checks verify both sides agree; the n=5 seed collapses the two puts into one key
 pass	mkv1 a MARKOV bigram counter — each feed keys the map by the (previous, current) PAIR built from the state and the argument, so the same value arriving after different predecessors lands in different buckets
 pass	ml1 a Map whose VALUES are tuples — a draw-keyed insert of a drawn pair, lookups destructure both hit and neighbor
+pass	mlr1 a Map.lookup-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
+pass	mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain
+pass	mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)
 pass	mm1 a MIN/MAX tracking arm — three feeds tighten the (lo,hi) tuple state, readers project the final spread
 pass	mml1 a MULTIMAP handler state — (Map Int64 (List Int64)) buckets grow per-key across dispatches; put answers the new bucket length and total sums a bucket later
 pass	mmx1 a LAZY-INIT extrema tracker — Option (Tuple min max) state starts None, the first feed initializes both bounds to the value, later feeds widen, range reads answer max-min with the uninitialized read answering zero
@@ -6231,6 +6259,8 @@ pass	modulo of two floats rejects — the operator is integer-only, not merely p
 pass	mp1 draws pick the Map INSERT key and the LOOKUP key — hit-old, hit-updated, and miss all reachable by input
 pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay the draw sequence through the map
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
+pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
+pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
 pass	mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed
 pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
 pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
@@ -6416,6 +6446,8 @@ pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
 pass	org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch
 pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
+pass	osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view
+pass	osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch
 pass	over-applying a constructor by several arguments is a type error
@@ -7390,10 +7422,13 @@ pass	the manifest is DERIVED from what entrypoints delegate, not from effect dec
 pass	the mark op's dup-flag RESULT counts repeats while the set state dedupes
 pass	the maximum Int64 in hexadecimal reads as an integer
 pass	the maximum Int64 literal reads as an integer
+pass	the maximum signed 64-bit value is a folding constant
+pass	the maximum signed 8-bit value is its per-width bound
 pass	the maximum unsigned 8-bit value is its per-width bound
 pass	the maximum valid scalar U+10FFFF round-trips through to-int
 pass	the minimum Int64 literal reads as an integer
 pass	the minimum integer scrutinee misses a zero-based jump table
+pass	the minimum signed 64-bit value is a folding constant
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the mirror per-arm mix — a crossing #sym sibling over a String scrutinee — is rejected
 pass	the mirrored subtract-then-add chain computes at both boundaries without a spurious trap
@@ -7570,6 +7605,7 @@ pass	tp2 a SWAP op exchanges the tuple-state slots — interleaved readers obser
 pass	tp3 a NESTED tuple state ((a b) c) — the arm rebuilds the inner Fibonacci pair and bumps the outer counter per dispatch
 pass	tp4 readers and a SPIN writer share one tuple state — sum flows into slot a while old a shifts to b
 pass	tpc1 TWO-PHASE COMMIT across two handlers — the coordinator prepares both sides, commits both only when both prepared, otherwise aborts both restoring the balances; the pass and fail paths both verified
+pass	tph1 a generic ctor with TWO list payloads destructures both through nested patterns
 pass	tpl1 a DELIMITER-JOIN rope builder — the first fragment lands bare, every later one is prefixed with the separator, the empty-vs-seeded start decides whether the FIRST dispatch takes the bare branch, and multibyte fragments keep the byte-length answers honest
 pass	tps1 a LETTERPRESS galley — setting a word takes its width plus a space when the twelve-em line holds it, else BREAKS the line (counted, the word opening the next line at its bare width), justifying pads the line to twelve recording the gap as respacing, the read packs lines width and respacing, and the seed's headline stub pushes one galley's words onto broken lines while the other sets them flush with a ZERO-gap justify
 pass	tpwJ a cross-scope shared-let in a resumptive arm — a let-bound NESTED-IF (outer cond reads a state field, inner reads the param) feeding 3+ consumers across 3+ dispatches with a state-reading second op, the thread-path no-local-slot face closed by 8276ad1a6
@@ -7863,6 +7899,8 @@ pass	wx3 Int64.min and Int64.max ride as SUM payloads through dispatch — varia
 pass	wx4 the ARM doubles its argument with wrapping-mul — MAX wraps to -2, MIN to 0, a small value stays exact, count rides along
 pass	wx5 the state STEPS by wrapping-sub of MAX each draw — two hops cross the seam in opposite directions
 pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam inside a nested three-op chain, count pins the trips
+pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance
+pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 pass	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
@@ -7887,6 +7925,9 @@ pass	xhsTwo two DISTINCT outer handlers — inner step performs O.note(c2) then 
 pass	xme1 an effect declared in a LIBRARY module is handled by the importing entry
 pass	xme3 TWO library modules share ONE effect — both performers route to the entry's single handler
 pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the entry only calls it
+pass	xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap
+pass	xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell
+pass	xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
@@ -7936,6 +7977,9 @@ todo	el1 a List entry param summed by an indexed walk
 todo	el8 a nested List-of-List entry param measures both levels
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
 todo	elc4 List.concat consumes two lifted List entry params into one measured list
+todo	eln1 an EMPTY nested-list entry param has outer length zero
+todo	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
+todo	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 todo	eo1 an Option entry param delivers its Some payload
 todo	eo2 an Option entry param takes the None arm
 todo	eo3 an Option param BETWEEN scalars keeps positions
@@ -7948,44 +7992,5 @@ todo	grx1 the entry List param flows through a two-deep non-recursive helper cha
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
-todo	eln1 an EMPTY nested-list entry param has outer length zero
-todo	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
-todo	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 todo	read of malformed text is a coded reject, not a wrong value
-pass	d4 Option wrapping a bare list (2 levels) destructured to scalars
-pass	dm1 a FOUR-level mixed destructure (option-list-tuple-record) reduces to scalars
-pass	d3 Option wrapping a list of records (3 levels, no tuples) destructured to scalars
-pass	dt2 THREE levels with NO Option wrapper (list of tuples of records) destructures and reclaims
-pass	drs1 Result Ok nested-payload destructure (the Option-leak sibling)
-pass	drs2 Option-in-Option nested destructure to scalars
-pass	d6 CONTROL: the Option payload bound WHOLE (not destructured) then consumed by List.len reclaims
-pass	d5 a USER sum with a list payload destructured to scalars deforests completely
-pass	drs3 an Option with a STRING payload destructured by a whole-binding arm deforests completely
-pass	ap1 an arm destructures an Option-of-list op ARGUMENT through the nested pattern
-pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
-pass	df2 a GENERIC user sum at a heap list payload leaks its shells like Option (the one non-fusing cell)
-pass	df3 the SAME generic sum at a scalar payload deforests completely
-pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
-pass	dfr1 a generic sum's TUPLE payload destructured to scalars leaks its shells
-pass	dfr2 a generic sum's RECORD payload destructured to a field leaks its shells
-pass	dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly
-pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
-pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
-pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
-pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
-pass	mlr1 a Map.lookup-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
-pass	mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain
-pass	mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)
-pass	osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view
-pass	osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)
-pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance
-pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	tph1 a generic ctor with TWO list payloads destructures both through nested patterns
-pass	dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf through the carried type
-pass	dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type
-pass	dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks
-pass	gnl1 the nil arm of a multi-payload generic whose other arm nests a list pattern leaks the nil cell
-pass	xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap
-pass	xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell
-pass	xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap

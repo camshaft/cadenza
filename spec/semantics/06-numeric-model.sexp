@@ -4173,6 +4173,21 @@
   (input  (* 6 7))
   (output (: 42 Int64)))
 
+(case "a fold composes through a nested arithmetic tree"
+  (doc    "`(* 2 (+ 3 4))` = 14 — the constant fold does not stop at the outermost operator: it reduces
+           the inner `(+ 3 4)` to 7 first, then the enclosing `(* 2 7)` to 14. Pins that folding
+           composes through the whole tree, not just one level.")
+  (input  (* 2 (+ 3 4)))
+  (output (: 14 Int64)))
+
+(case "arithmetic is generic over the integer type, sharing a built-in bound with itself"
+  (doc    "`(- Int64.max Int64.max)` = 0 — a built-in bound (`Int64.max`) and the same operand share the
+           subtraction operation with no hard-coded width. Both operands are the signed-64 instance, so
+           unification grounds the op at Int64 and it folds to 0. Pins that arithmetic is generic over the
+           integer type rather than fixed to a single width.")
+  (input  (- Int64.max Int64.max))
+  (output (: 0 Int64)))
+
 (case "integer division truncates toward zero"
   (input  (/ 7 2))
   (output (: 3 Int64)))
@@ -7037,6 +7052,28 @@
            (options/numeric-model/ boundary mapping).")
   (input  (: 200 UInt8))
   (output (: 200 UInt8)))
+
+(case "the maximum signed 64-bit value is a folding constant"
+  (doc    "`Int64.max` is 9223372036854775807 = 2^63 - 1 — the largest value the default signed 64-bit
+           type holds. It is reached by the same member-access-and-fold path as any per-width bound and
+           folds to the constant with no runtime op. Pins the Int64 upper bound that the per-width bounds
+           below are the analogue of.")
+  (input  Int64.max)
+  (output (: 9223372036854775807 Int64)))
+
+(case "the minimum signed 64-bit value is a folding constant"
+  (doc    "`Int64.min` is -9223372036854775808 = -2^63 — the smallest value the two's-complement Int64
+           holds (its range is asymmetric, one more negative than positive). Folds to the constant.")
+  (input  Int64.min)
+  (output (: -9223372036854775808 Int64)))
+
+(case "the maximum signed 8-bit value is its per-width bound"
+  (doc    "`Int8.max` is 127 — the largest value the two's-complement Int8 holds (its range is
+           -128..=127), the signed-narrow analogue of Int64.max and the companion of the Int8.min bound
+           below. A signed narrow width carries its own signed upper bound; it crosses the boundary as
+           the component model's s8.")
+  (input  Int8.max)
+  (output (: 127 Int8)))
 
 (case "the maximum unsigned 8-bit value is its per-width bound"
   (doc    "`UInt8.max` is 255 — the largest value UInt8 holds, the per-width analogue of Int64.max.
