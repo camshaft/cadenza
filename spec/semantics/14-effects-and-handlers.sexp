@@ -2978,6 +2978,51 @@
             (export main)))
   (output (: 21 Int64)))
 
+(case "the let-twin of the do-def-into-perform-arg body computes the same value"
+  (doc    "The always-worked `let` oracle for the do-def-into-perform-arg case above: `(let ((v (+ u 2)))
+           (+ (Ask.ask v) v))` — the `let` form was never orphaned, so it pins the target value the do-form
+           must match. `run 5`: v = 7, `(Ask.ask 7)` resumes 14, + 7 = 21.")
+  (input  (do
+            (effect Ask (op ask (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Ask 0
+                ((ask (n) s (resume (* n 2) s)))
+                (let ((v (+ u 2))) (+ (Ask.ask v) v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 21 Int64)))
+
+(case "a do-def NOT in the perform argument stays in scope for a later reference"
+  (doc    "The const-arg control of the do-def-into-perform-arg case: the do-def `v` is NOT in the perform
+           argument (`(Ask.ask 3)` takes a constant), but `v` is still referenced AFTER the perform. `run 5`:
+           v = 7, `(Ask.ask 3)` resumes 6, + v = 7 → 13. Pins that the do-def scoping holds when the perform
+           takes a constant arg, not only when the perform consumes the do-def.")
+  (input  (do
+            (effect Ask (op ask (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Ask 0
+                ((ask (n) s (resume (* n 2) s)))
+                (do (def v (+ u 2)) (+ (Ask.ask 3) v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 13 Int64)))
+
+(case "a do-def passed to a performing helper stays in scope"
+  (doc    "The via-helper face of the do-def-into-perform-arg case: the do-def `v` is passed to a HELPER
+           that performs — `(poke v)` where `poke a = Ask.ask a`. Inlining `poke` threads its performing
+           body with `v` as the arg; the do-def must stay in scope across the inline. `run 5`: v = 7,
+           `(poke 7)` = `(Ask.ask 7)` resumes 14, + 1 = 15.")
+  (input  (do
+            (effect Ask (op ask (-> Int64 Int64)))
+            (def (poke (: v Int64)) (Ask.ask v))
+            (def (run (: u Int64))
+              (handle Ask 0
+                ((ask (n) s (resume (* n 2) s)))
+                (do (def v (+ u 2)) (+ (poke v) 1))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 15 Int64)))
+
 (case "a do-def value in a handle body flows into an ABORTIVE perform's argument and stays in scope"
   (doc    "The ABORTIVE companion of the resume-arg pin above (breaker matrix row 1, previously held as a
            separate bug). Inside the handle body, `(def v (+ u 2))` is referenced from the ARGUMENT of an
