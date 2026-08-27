@@ -21400,6 +21400,24 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             f64::from_bits(a.to_f64_bits()).partial_cmp(&f64::from_bits(b.to_f64_bits()))
         }
         (Core::Poison(r), _) | (_, Core::Poison(r)) => return Core::Poison(r),
+        // A CONSTANT COMPOUND pair (a tuple/record/sum of constant leaves) folds through the shared
+        // canonical value order — `const_key_order`, the SAME order `Set.to-list`/`Map.to-list`/equality
+        // use, recursing element-/field-/payload-wise through every orderable shape. It mirrors the runtime
+        // `value_cmp_shaped` the compound `Core::ValueCmp { op: Compare }` walk below uses, so the constant
+        // fold and the runtime walk report the SAME Ordering (§331 — the two surfaces cannot diverge).
+        //
+        // GUARD: only fold when BOTH operands are FULLY-constant values. This fold DISCARDS the operands
+        // (it returns a bare nullary Ordering variant), so a non-constant subterm — e.g. `(Some (/ 1 k))`,
+        // whose construction can TRAP or perform an effect — must not be dropped. `const_key_order` can
+        // decide the order from an early differing DISCRIMINANT (or an earlier differing field) WITHOUT ever
+        // reading a deeper payload, so its own `Some` is NOT proof the operands are effect-free: the explicit
+        // `is_const_value` check is what prevents eliding a live subterm. Two fully-constant operands have no
+        // construction effect to preserve, so discarding them is sound. A non-constant (or runtime) operand
+        // falls through to the runtime `ValueCmp` walk UNCHANGED; a const compound with a float/set/map leaf
+        // yields `None` from `const_key_order` and then reaches the `is_orderable_compound`/float declines
+        // below exactly as before. The scalar arms above take precedence (match order), preserving their
+        // i64-range / NaN-partial semantics.
+        _ if is_const_value(db, lhs) && is_const_value(db, rhs) => const_key_order(db, lhs, rhs),
         _ => None,
     };
     match ord {
