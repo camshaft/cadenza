@@ -1961,6 +1961,104 @@ fn ctl_arm_lexical_k_to_resume(db: &mut Db, arm: &HandleArm) -> Option<StructId>
     Some(substitute_nodes(db, arm.body, &sub))
 }
 
+/// [cp4] CTX-FREE creation-wrapper capture-closure detector — whether `node` is a `(let (binds)
+/// <returns-lambda>)` where SOME binding's init reaches an EFFECT-OP application AND the returned lambda
+/// references that binder's NAME (the draw happens at closure CREATION, outside the returned lambda, and is
+/// captured). CTX-FREE (any op, run before the discharged set is known). Excludes cx8 (perform INSIDE the
+/// returned lambda → its body is a bare `fn`, not a `let` → false) and a list-returning factory (case-5 →
+/// `body_returns_lambda` false). Mirrors `init_is_performing_capture_closure`'s direct-`let` case.
+fn inlined_body_is_performing_capture_creation_wrapper(db: &mut Db, node: StructId) -> bool {
+    let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec()) else {
+        return false;
+    };
+    if form.len() != 2 || !body_returns_lambda(db, form[1]) {
+        return false;
+    }
+    let Struct::List(pairs) = db.ast.get(form[0]).clone() else {
+        return false;
+    };
+    fn reaches_effect_op(db: &mut Db, n: StructId) -> bool {
+        if crate::eval::effect_op_of(db, n).is_some() {
+            return true;
+        }
+        if let Resolved::Apply { head, .. } = resolved_of(db, n)
+            && crate::eval::effect_op_of(db, head).is_some()
+        {
+            return true;
+        }
+        match db.ast.get(n).clone() {
+            Struct::List(ch) => ch.iter().any(|&c| reaches_effect_op(db, c)),
+            Struct::Atom(_) => false,
+        }
+    }
+    fn refs_name(db: &Db, n: StructId, name: &str) -> bool {
+        if db.ast.as_name(n) == Some(name) {
+            return true;
+        }
+        match db.ast.get(n) {
+            Struct::List(ch) => ch.iter().any(|&c| refs_name(db, c, name)),
+            Struct::Atom(_) => false,
+        }
+    }
+    pairs.iter().any(|&pair| match db.ast.get(pair).clone() {
+        Struct::List(kv) if kv.len() == 2 => {
+            let performs = reaches_effect_op(db, kv[1]);
+            let refs = db
+                .ast
+                .as_name(kv[0])
+                .map(str::to_string)
+                .is_some_and(|nm| refs_name(db, form[1], &nm));
+            performs && refs
+        }
+        _ => false,
+    })
+}
+
+/// [cp4 SILENT-MISCOMPILE GUARD, v-inference×v-effects pair] Whether the handle body binds a MULTI-USE
+/// `let`-local to a NULLARY factory-call `(mk)` whose VERBATIM body is a performing-capture creation-wrapper
+/// closure `(let ((a <perform>)) (fn …a…))`. Reducing `(f X)` inlines `(mk)` per use via
+/// `apply_lambda`/`lambda_of`, whose `Let`-capture arm SUBSTITUTES the performing init `(St.next)` INTO the
+/// returned lambda body (creation-time capture → per-application perform), so a local used ≥2× re-draws per
+/// use (breaker cp4: 170 instead of the capture-once 150). The correct fix is v-effects' capture-once fold
+/// (draw once, close over the result — the whole `(let ((f (mk))) …)` becomes ca1m which #3894 already
+/// folds); the bind-once REWRITE that would produce it hits the resolution-hygiene wall blocking that fold
+/// family. Until it lands, `reduce_handle` DECLINES this shape (bind-once-or-reject: fail-loud, never a
+/// silent wrong value — operator NO-silent-miscompile). NARROW: multi-use only (a single application draws
+/// once = correct, cpf1 folds 50), NULLARY factory only (the arg-factory cc3 is v-effects' `reduce_handle`
+/// layer), gated on the creation-wrapper shape (excludes cx8 [perform inside the lambda] and pure factories
+/// idc1/idc2 [callee returns non-lambda / no perform]).
+fn handle_body_has_multiuse_nullary_performing_factory(db: &mut Db, body: StructId) -> bool {
+    let Some(form) = db.ast.as_form(body, "let").map(|t| t.to_vec()) else {
+        return false;
+    };
+    if form.len() != 2 {
+        return false;
+    }
+    let (bindings_occ, inner) = (form[0], form[1]);
+    let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
+        return false;
+    };
+    pairs.iter().any(|&pair| {
+        let Struct::List(kv) = db.ast.get(pair).clone() else {
+            return false;
+        };
+        if kv.len() != 2 || count_param_refs(db, inner, kv[1]) < 2 {
+            return false; // multi-use only (a single application draws once — cpf1 folds 50)
+        }
+        let Struct::List(items) = db.ast.get(kv[1]).clone() else {
+            return false;
+        };
+        if items.len() != 1 {
+            return false; // NULLARY factory call `(mk)` only; the arg-factory (cc3) is v-effects' layer
+        }
+        let head = items[0];
+        let Some(mk_body) = crate::eval::lambda_body_of_nullary(db, head) else {
+            return false;
+        };
+        inlined_body_is_performing_capture_creation_wrapper(db, mk_body)
+    })
+}
+
 /// are the resolved handle's children.
 pub fn reduce_handle(
     db: &mut Db,
@@ -1977,6 +2075,13 @@ pub fn reduce_handle(
     // is bounded separately by `THREAD_INLINE_LIMIT` in `thread_bounded`.)
     let mut guard = db.enter_reduction()?;
     let db = guard.db();
+    // [cp4] DECLINE a multi-use nullary performing-factory let-local before the fold's per-use inline
+    // collapses its creation-time capture into a per-application perform (silent 170 vs the capture-once
+    // 150). Fail-loud interim (v-effects' capture-once fold flips this to 150 later); no-op unless the exact
+    // narrow shape is present (see `handle_body_has_multiuse_nullary_performing_factory`).
+    if handle_body_has_multiuse_nullary_performing_factory(db, body) {
+        return None;
+    }
     // Build the operation→arm map, keyed by each arm's operation identity (read off the arm's op
     // projection's `(meta effect-op)`). An arm whose op is not an effect operation (a malformed arm) or
     // whose op the effect does not declare (CDZ0403 — reported elsewhere) makes the fold decline.
