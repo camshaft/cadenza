@@ -3447,6 +3447,16 @@
   (input  (do (def (main) 3.14) (export main)))
   (call   main) (output (: 3.14 Float64)))
 
+(case "an explicit annotation overrides the default-float pragma"
+  (doc    "An EXPLICIT annotation takes precedence over the module's declared default: `(: 3.14 Float64)` inside a `(pragma default-float Float32)` module STAYS Float64 (renders 3.14, the binary64 value), not the pragma's Float32 (which would render 3.140000104904175) — and there is no spurious CDZ0203 from the fixed-width default unifying against the annotation. The annotation-wins face of the pragma EFFECT above.")
+  (input  (do (module m (pragma default-float Float32) (def (x) (: 3.14 Float64))) (def (main) ((. m x) unit)) (export main)))
+  (call   main) (output (: 3.14 Float64)))
+
+(case "a default-float pragma leaves a bare integer literal at its Int64 default"
+  (doc    "The default-float pragma governs DECIMAL literals ONLY — a bare INTEGER literal `(+ 1 2)` in a `(pragma default-float Float32)` module keeps its ordinary Int64 default and computes as Int64 arithmetic → 3 (no float grounding, no reject). Pins that the pragma's reach is the decimal domain, not integers.")
+  (input  (do (module m (pragma default-float Float32) (def (x) (+ 1 2))) (def (main) ((. m x) unit)) (export main)))
+  (call   main) (output (: 3 Int64)))
+
 ; The default-FLOAT pragma domain reject family — the float twin of the default-integer/fraction rejects
 ; above. `(pragma default-float <T>)` names the type bare decimal literals ground to, so <T> MUST be a
 ; float type; a non-float type is the numeric-domain CDZ0303, a missing/extra argument is the structural

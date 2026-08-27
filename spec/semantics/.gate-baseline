@@ -1898,6 +1898,7 @@ pass	a def-bound perform composes with a recursive performing loop in one handle
 pass	a def-boundary conditional abort with PURE arguments folds and homes to its handler
 pass	a def-boundary conditional abort with a FOREIGN op-result argument declines cleanly
 pass	a def-returning-lambda partial application passes through a HOF parameter
+pass	a default-float pragma leaves a bare integer literal at its Int64 default
 pass	a default-float pragma naming a non-float integer type is rejected
 pass	a default-float pragma naming a non-float rational type is rejected
 pass	a default-float pragma naming an unbound type is rejected as unbound
@@ -5174,6 +5175,7 @@ pass	an evaluated quasiquote builds a HEAP value the surrounding code consumes
 pass	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
+pass	an explicit annotation overrides the default-float pragma
 pass	an explicit annotation overrides the default-fraction pragma
 pass	an explicit annotation overrides the default-integer pragma
 pass	an explicit conversion makes the operation well-typed
@@ -7506,6 +7508,8 @@ pass	rha2 a resumed op with an in-program STRING argument reclaims
 pass	rha3 heap ARG and heap STATE together in one dispatch — both reclaim
 pass	rha4 an op ARGUMENT becomes the next STATE — the replaced state reclaims
 pass	rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump
+pass	rla1 a runtime List.at in bounds reads the element (Some)
+pass	rla2 a runtime List.at out of bounds takes the None arm
 pass	rle1 RUN-LENGTH tracking — the 3-tuple state carries (last,run,best); the n=5 seed extends one run to five, n=7 breaks it at two
 pass	rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run
 pass	rlm1 a SLIDING-WINDOW rate limiter — allow prunes expired timestamps then admits only under the cap of two per ten ticks; the seeded third request either bounces inside the window or lands beyond it and steals a later slot
@@ -8779,5 +8783,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	rla1 a runtime List.at in bounds reads the element (Some)
-pass	rla2 a runtime List.at out of bounds takes the None arm
