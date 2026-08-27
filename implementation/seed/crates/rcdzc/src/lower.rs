@@ -25891,6 +25891,47 @@ fn const_eval_apply(
                 }
             }));
         }
+        // Three-way `Ordering.of` (`Prim::Compare`) — the const_eval twin of `core_of`'s `lower_compare`.
+        // `apply_const_prim` carries no Compare arm and the delegation below cannot rebuild this member-headed
+        // op, so a three-way compare threaded through a RECURSION (a const comparator / sort / min-max) declined.
+        // Build the nullary Ordering variant at the RESULT type's discs — `ordering_discs(node)` reads
+        // Less/Equal/Greater by NAME (never a hardcoded 0/1/2). A BARE leaf orders via `cval_key_order`
+        // directly (Int/Str/Bool/Char/Bytes; a Float leaf has no total order → `None` → declines, as it must).
+        // A COMPOUND operand orders through the SAME canonical order ONLY when it is orderable at the runtime
+        // vocabulary (`is_orderable_compound` — a Char/Float-in-compound leaf declines, matching `lower_compare`;
+        // `cval_key_order` alone is more permissive since it blesses Char for the Set/Map to-list enumeration).
+        if prim == Prim::Compare
+            && let [a, b] = &vs[..]
+        {
+            let is_compound = matches!(
+                a,
+                CVal::Tuple(_) | CVal::Record(_) | CVal::List(_) | CVal::Sum { .. }
+            );
+            let ord = if is_compound {
+                let ty = crate::infer::type_of(db, args[0]);
+                if is_orderable_compound(db, &ty) {
+                    cval_key_order(a, b)
+                } else {
+                    None
+                }
+            } else {
+                cval_key_order(a, b)
+            };
+            if let Some(ord) = ord
+                && let Some((lt, eq, gt)) = ordering_discs(db, node)
+            {
+                let disc = match ord {
+                    std::cmp::Ordering::Less => lt,
+                    std::cmp::Ordering::Equal => eq,
+                    std::cmp::Ordering::Greater => gt,
+                };
+                trace!(target: "rcdzc::fold", node = node.0, ?ord, disc, "const_eval folds a three-way Ordering.of to its Ordering variant");
+                return Some(CVal::Sum {
+                    disc,
+                    payloads: Vec::new(),
+                });
+            }
+        }
         if let Some(r) = apply_const_prim(prim, &vs) {
             return Some(r);
         }
@@ -26255,6 +26296,14 @@ fn const_pattern_matches(db: &mut Db, pat: StructId, v: &CVal) -> Option<bool> {
         // later stage (decline rather than mis-decide).
         let payloads = payloads.clone();
         if subpats.len() != payloads.len() {
+            // A NULLARY variant (no payload) written with placeholder sub-pattern(s) — e.g. the corpus
+            // convention `(Ordering.Less _)` / `(Ordering.Greater _)` for the payload-less Ordering variants
+            // (core_of's matcher tolerates the `_`; `lower_compare` builds them with EMPTY payloads). A
+            // wildcard/binder sub-pattern over an empty payload binds nothing and matches vacuously — the disc
+            // already matched above. Any OTHER arity mismatch (a real payload-count disagreement) declines.
+            if payloads.is_empty() && subpats.iter().all(|&sp| db.ast.as_name(sp).is_some()) {
+                return Some(true);
+            }
             return None;
         }
         return all_match(db, &subpats, &payloads);

@@ -1490,6 +1490,40 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "cso1 a three-way (Ordering.of) MATCHED in a const recursion folds (const_eval Compare arm + nullary-Ordering match)"
+  (doc    "`apply_const_prim` had no Compare arm, so a three-way `Ordering.of` threaded through a recursion declined
+           — even though `core_of` folds it directly. `grow` gates each Set.insert on `(match (Ordering.of k 2) …)`;
+           the un-materializable Set forces whole-expression const_eval. Two fixes land it: the const_eval Compare arm
+           builds the Ordering variant at `ordering_discs`, and `const_pattern_matches` matches the payload-less
+           Ordering variant against the corpus-conventional `(Ordering.Greater _)` placeholder. k∈{3,2,1} → Greater/
+           Equal/Less → inserts {300,200,100} → Set.len 3. Was a REJECT (Compare unhandled in const_eval).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s
+                  (grow (Set.insert s (match (Ordering.of k 2)
+                                        ((Ordering.Less _)    100)
+                                        ((Ordering.Equal _)   200)
+                                        ((Ordering.Greater _) 300))) (- k 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
+(case "cso2 a COMPOUND three-way (Ordering.of) in a const recursion folds (const_eval Compare arm, compound path)"
+  (doc    "The compound face of cso1: `Ordering.of` on two TUPLES threaded through a const recursion. `(tuple k 0)`
+           vs `(tuple 2 0)` orders by the first element (k vs 2), so k=3→Greater, k=2→Equal, k=1→Less → {300,200,100}
+           → Set.len 3. Pins the const_eval Compare arm's compound path (via `cval_key_order`, gated on
+           `is_orderable_compound`).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: k Int64)))
+              (if (= k 0) s
+                  (grow (Set.insert s (match (Ordering.of (tuple k 0) (tuple 2 0))
+                                        ((Ordering.Less _)    100)
+                                        ((Ordering.Equal _)   200)
+                                        ((Ordering.Greater _) 300))) (- k 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (output (: 3 Int64)))
+
 (case "cdv1 integer DIV and REM threaded through a const recursion fold (const_eval arithmetic arm)"
   (doc    "`apply_const_prim` folded Add/Sub/Mul but not `/`/`%`, so a recursion doing integer division declined
            and the `(const ...)` rejected — though `core_of` folds a direct `(/ n 10)`. `grow` extracts the base-10
