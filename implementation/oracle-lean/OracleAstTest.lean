@@ -1,16 +1,38 @@
 /-
-`oracle-ast-roundtrip` — the L0.2 gate witness: the binary-AST codec is byte-identical on real
-corpus-derived module blobs.
+`oracle-ast-roundtrip` — the L0.2 + L0.3 gate witness over real corpus-derived module blobs.
 
 For each `program.ast` path given on the command line, it (1) decodes the bytes to a `Module`,
-(2) re-encodes, and (3) asserts the re-encoded bytes are BYTE-IDENTICAL to the input. Any decode
-error or byte mismatch fails the run (non-zero exit). This is a codec-law check of the oracle's own
-decoder — not a re-test of any corpus semantics (PRINCIPLES.md §2): every `program.ast` is a
-canonical `codec::encode` output, so decode∘encode must be the identity on it.
+(2) round-trips every SCALAR LEAF through the `Value` codec (L0.3: `Value.decode (Value.encode v)`
+must equal `v`), (3) re-encodes the module, and (4) asserts the re-encoded bytes are BYTE-IDENTICAL
+to the input. Plus a few decoder-refusal negative cases (L0.2 conformance) and explicit scalar value
+round-trips (unit + a negative int + the empty string). Any failure fails the run (non-zero exit).
+
+These are codec-law checks of the oracle's own codecs — not a re-test of corpus semantics
+(PRINCIPLES.md §2): every `program.ast` is a canonical `codec::encode` output, so decode∘encode is
+the identity, and a scalar value's binary-AST form must survive encode∘decode. Everything is binary
+AST; no s-expr is parsed.
 -/
 import Oracle
 
-open Oracle.Ast
+open Oracle Oracle.Ast
+
+/-- A scalar leaf, interpreted as a `Value`, must survive `Value.encode`→`Value.decode` unchanged
+(canonical value-AST byte codec, L0.3). Non-scalar leaves (name/symbol/float/bytes/suffixed) are not
+value leaves here and are skipped. -/
+def valueLeafOk (l : Leaf) : Bool :=
+  match Value.ofLeaf l with
+  | none => true
+  | some v =>
+    match Value.decode (Value.encode v) with
+    | .ok v' => v == v'
+    | .error _ => false
+
+/-- A short label of a leaf's kind, for a failure message. -/
+def reprLeafKind : Leaf → String
+  | .intLit .. => "int" | .float .. => "float" | .str _ => "str" | .boolLit _ => "bool"
+  | .name _ => "name" | .bytesLit _ => "bytes" | .badEscape _ => "bad-escape" | .char _ => "char"
+  | .badChar _ => "bad-char" | .sym _ => "sym" | .suffixed .. => "suffixed"
+  | .floatNan => "nan" | .floatInf _ => "inf"
 
 /-- Hex of a short byte slice, for a legible mismatch report. -/
 def hexPrefix (b : ByteArray) (n : Nat) : String :=
@@ -33,6 +55,11 @@ def roundtripOne (path : String) : IO Bool := do
     IO.eprintln s!"FAIL {path}: decode error: {e}"
     return false
   | .ok m =>
+    -- Value round-trip (L0.3): every scalar leaf in this module, interpreted as a Value, must survive
+    -- Value.encode → Value.decode unchanged (canonical value-AST byte codec; binary AST only).
+    if let some bad := m.leaves.toList.find? (fun l => !valueLeafOk l) then
+      IO.eprintln s!"FAIL {path}: scalar value round-trip failed for a leaf ({reprLeafKind bad})"
+      return false
     let re := encode m
     if re == bytes then
       return true
@@ -89,11 +116,25 @@ def negativeChecks : IO Bool := do
   if ok then IO.println "oracle-ast-roundtrip: negative checks ok (4 malformed inputs refused)"
   return ok
 
+/-- Scalar Value round-trips not guaranteed to appear as corpus program leaves: the unit value (no
+leaf kind — the `unit` name atom), a negative int, and the empty string. -/
+def valueScalarChecks : IO Bool := do
+  let cases : List (String × Value) :=
+    [("unit", .unit), ("neg int", .int (-42)), ("zero", .int 0), ("empty string", .str "".toUTF8)]
+  let mut ok := true
+  for (label, v) in cases do
+    match Value.decode (Value.encode v) with
+    | .ok v' => if v != v' then do IO.eprintln s!"VALUE FAIL {label}: round-trip changed the value"; ok := false
+    | .error e => do IO.eprintln s!"VALUE FAIL {label}: {e}"; ok := false
+  if ok then IO.println "oracle-ast-roundtrip: scalar value checks ok (unit + explicit scalars round-trip)"
+  return ok
+
 def main (args : List String) : IO UInt32 := do
   if args.isEmpty then
     IO.eprintln "oracle-ast-roundtrip: usage: oracle-ast-roundtrip (--manifest FILE | <program.ast>...)"
     return 2
   let negOk ← negativeChecks
+  let valOk ← valueScalarChecks
   let paths ← resolvePaths args
   if paths.isEmpty then
     IO.eprintln "oracle-ast-roundtrip: no fixture paths given"
@@ -102,5 +143,5 @@ def main (args : List String) : IO UInt32 := do
   let mut fail := 0
   for path in paths do
     if ← roundtripOne path then ok := ok + 1 else fail := fail + 1
-  IO.println s!"oracle-ast-roundtrip: {ok} byte-identical, {fail} failed (of {paths.length})"
-  return (if fail == 0 && negOk then 0 else 1)
+  IO.println s!"oracle-ast-roundtrip: {ok} byte-identical, {fail} failed (of {paths.length}); scalar value round-trip over every corpus leaf"
+  return (if fail == 0 && negOk && valOk then 0 else 1)
