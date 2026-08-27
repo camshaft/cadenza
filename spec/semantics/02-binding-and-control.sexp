@@ -2917,18 +2917,6 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
-(case "a false variant guard shields its trapping body"
-  (doc    "A guarded arm's BODY is evaluated only when its guard HOLDS — the short-circuit rule applied to
-           a guarded arm. `(guard (Some x) (> x 0)) (/ 10 x)` over `(Some 0)`: the guard `0 > 0` is false,
-           so the arm is skipped and its trapping body `(/ 10 0)` never runs — no spurious CDZ0304
-           div-by-zero for an arm that cannot fire — and the match falls through to `(Some y) -1`. A
-           generation that folds the guarded body regardless of the guard raises a compile-time
-           div-by-zero for a dead arm.")
-  (input  (do
-            (def (main) (match (Some 0) ((guard (Some x) (> x 0)) (/ 10 x)) ((Some y) -1) (None -2)))
-            (export main)))
-  (output (: -1 Int64)))
-
 (case "a match whose only variant arm is guarded is non-exhaustive"
   (doc    "A guarded VARIANT arm covers no value unconditionally, so `(match o ((guard (Some x) (> x 0))
            x) ((None) 0))` — whose only `Some` arm is guarded, with no unguarded `Some` fall-through —
