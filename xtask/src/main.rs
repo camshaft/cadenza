@@ -2998,7 +2998,7 @@ fn run_program_rust(
 
 /// The trap REASON from a Rust process's panic stderr. Rust formats a panic as
 /// `thread '<name>' panicked at <file>:<line>:<col>:` followed by the panic MESSAGE on the NEXT line
-/// (`panic!("unreachable")` → the message line is `unreachable`). The gate's `trap_kind` classifies by
+/// (`panic!("unreachable")` → the message line is `unreachable`). The gate's `classify` classifies by
 /// that reason, so the message line — not the `panicked at <loc>` header (which has no reason) — is what
 /// must be returned. Take the line AFTER the `panicked at` header; fall back to the first line if the
 /// format is unexpected (a non-panic non-zero exit).
@@ -3967,7 +3967,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
 /// The observable-outcome KEY the opt-sweep compares across optimization levels — the projection every
 /// level must preserve. Two runs are level-EQUIVALENT iff their keys are equal; a divergence in this key
 /// across O0..O3 is a candidate miscompile. A value carries its host-call trace; a trap keys on its
-/// classified KIND ([`trap_kind`]) or — for an UNCLASSIFIED reason — the RAW first line (NOT a single
+/// classified KIND ([`classify`]) or — for an UNCLASSIFIED reason — the RAW first line (NOT a single
 /// "other" bucket, else two genuinely-different unclassified traps would compare EQUAL and a real
 /// cross-level trap divergence among them would be missed). Extracted as a free fn so the comparison the
 /// blocking gate rests on is unit-tested (see `opt_sweep_outcome_key_*` tests).
@@ -3975,8 +3975,8 @@ fn sweep_outcome_key(ran: &Ran) -> String {
     match ran {
         Ran::Value(v, calls, _) if calls.is_empty() => format!("value {v}"),
         Ran::Value(v, calls, _) => format!("value {v} [host: {}]", calls.join(",")),
-        Ran::Trap(msg) => match trap_kind(msg) {
-            Some(kind) => format!("trap {kind}"),
+        Ran::Trap(msg) => match classify(msg) {
+            Some(code) => format!("trap {}", code.code()),
             None => format!("trap raw:{}", first_line(msg.as_bytes())),
         },
         Ran::Declined { code, .. } => format!("declined {}", code.as_deref().unwrap_or("-")),
@@ -4816,7 +4816,7 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
         //  - declined/rejected (compile-time refusal, e.g. a constant-folded overflow caught as CDZ0302) →
         //    Todo (refused, not miscompiled — the runtime trap isn't reached because the compiler rejects
         //    the ill-formed program first; aligning that is a separate design choice).
-        // Trap-reason matching normalizes both sides to a canonical trap KIND (`trap_kind`), so the
+        // Trap-reason matching normalizes both sides to a canonical trap KIND (`classify` → `TrapCode`), so the
         // corpus's `divide by zero` matches wasmtime's `integer divide by zero`, `overflow` matches
         // `integer overflow`, `index out of bounds` matches `out of bounds memory access`, etc.
         "trap" => match ran {
@@ -4826,12 +4826,17 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             Ran::BadArtifact(e) => {
                 Grade::Fail(format!("expected a trap, artifact did not build: {e}"))
             }
-            Ran::Trap(actual) => match (trap_kind(payload), trap_kind(actual)) {
-                // Both classify AND agree → the expected trap fired.
-                (Some(want), Some(got)) if want == got => Grade::Pass,
-                // Trapped, but the reason doesn't classify or doesn't match — a real trap, unconfirmed.
-                _ => Grade::Todo,
-            },
+            Ran::Trap(actual) => {
+                // EXPECTED side: an explicit trap CODE id (`from_id`, preferred stable form) or a legacy
+                // English reason (`classify`, back-compat). Compare by CODE to the actual runtime reason.
+                let want = TrapCode::from_id(payload).or_else(|| classify(payload));
+                match (want, classify(actual)) {
+                    // Both classify AND agree → the expected trap fired.
+                    (Some(w), Some(g)) if w == g => Grade::Pass,
+                    // Trapped, but the reason doesn't classify or doesn't match — a real trap, unconfirmed.
+                    _ => Grade::Todo,
+                }
+            }
             Ran::Declined { .. } => Grade::Todo,
         },
         // `declines`: the corpus says the compiler DECLINES to emit a component for this well-formed
@@ -4871,16 +4876,56 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
     }
 }
 
-/// Classify a trap-reason string (from EITHER the corpus's `(trap "<reason>")` or cdz-run's actual
-/// wasmtime trap message) into a canonical trap KIND, so the two vocabularies compare equal. Returns
-/// `None` for a reason that doesn't classify (so the grader stays conservative — an unclassifiable
-/// actual never Passes against a classifiable expectation, and vice versa).
+/// A STANDARD, CLOSED set of runtime trap KINDS — the "trap code" analogue of a diagnostic code (operator
+/// 2026-08-27: "similar to error/warning codes … an actual unique id, not string matching on english"). A
+/// `(trap …)` corpus expectation and a runtime trap outcome both resolve to one of these and compare by CODE
+/// EQUALITY. MIRROR of `cdz_corpus_grade::TrapCode` (xtask is a separate crate, kept in sync deliberately so a
+/// `(trap …)` case grades identically on wasm and rust). A code's [`TrapCode::code`] id is STABLE — it must
+/// not change when a backend's human trap wording drifts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrapCode {
+    DivByZero,
+    OutOfBounds,
+    Overflow,
+    Unreachable,
+}
+
+impl TrapCode {
+    /// The STABLE id token — the canonical `(trap "<id>")` spelling, and the [`TrapCode::from_id`] inverse.
+    fn code(self) -> &'static str {
+        match self {
+            TrapCode::DivByZero => "div-by-zero",
+            TrapCode::OutOfBounds => "out-of-bounds",
+            TrapCode::Overflow => "overflow",
+            TrapCode::Unreachable => "unreachable",
+        }
+    }
+
+    /// Parse a corpus `(trap "…")` token as an explicit trap CODE id. `None` if not a code id — the grader
+    /// falls back to [`classify`] for a legacy English reason (so old `(trap "divide by zero")` cases keep
+    /// grading while new cases use the stable `(trap "div-by-zero")`).
+    fn from_id(token: &str) -> Option<TrapCode> {
+        match token.trim() {
+            "div-by-zero" => Some(TrapCode::DivByZero),
+            "out-of-bounds" => Some(TrapCode::OutOfBounds),
+            "overflow" => Some(TrapCode::Overflow),
+            "unreachable" => Some(TrapCode::Unreachable),
+            _ => None,
+        }
+    }
+}
+
+/// Classify a trap-reason string (cdz-run's actual wasmtime/rust-panic message, OR a legacy corpus English
+/// reason) into its [`TrapCode`], so the two vocabularies compare equal. `None` for a reason that doesn't
+/// classify (so the grader stays conservative — an unclassifiable actual never Passes against a classifiable
+/// expectation, and vice versa). This is the ONE place English is matched — on the RUNTIME reason the backend
+/// emits; the AUTHORED side uses [`TrapCode::from_id`].
 ///
-/// The corpus writes human reasons (`divide by zero`, `integer overflow`, `index out of bounds`,
-/// `unreachable`, `out of range`); wasmtime writes its own (`integer divide by zero`, `integer
-/// overflow`, `out of bounds memory access`, `wasm 'unreachable' instruction executed`). Both are
-/// lowercased and matched by the distinguishing SUBSTRING, mapping to one token per underlying trap.
-fn trap_kind(reason: &str) -> Option<&'static str> {
+/// wasmtime writes its own vocabulary (`integer divide by zero`, `integer overflow`, `out of bounds memory
+/// access`, `wasm 'unreachable' instruction executed`); rust panics its own (`divide by zero` / `remainder by
+/// zero`, `integer overflow`, `shift count out of range`). Lowercased + matched by distinguishing SUBSTRING,
+/// most-specific first, mapping to one code per underlying trap.
+fn classify(reason: &str) -> Option<TrapCode> {
     let r = reason.to_ascii_lowercase();
     // Order matters: check the most specific substrings first. "divide by zero" / "division by zero"
     // both contain "zero"; "integer overflow" / "overflow" share "overflow".
@@ -4890,26 +4935,26 @@ fn trap_kind(reason: &str) -> Option<&'static str> {
     {
         // Divide-by-zero AND modulo/remainder-by-zero are the SAME underlying fault (a zero divisor):
         // wasm traps both as an integer division trap, and the rust backend panics "division by zero"
-        // for `/` but "remainder by zero" for `%` — map both spellings to the one canonical kind so a
+        // for `/` but "remainder by zero" for `%` — map both spellings to the one canonical code so a
         // runtime modulo-by-zero `(trap …)` case grades pass on BOTH backends (the rust matcher was
         // keyed only to the divide spelling, so a `%`-by-zero case graded todo on rust — breaker's gap).
-        Some("div-by-zero")
+        Some(TrapCode::DivByZero)
     } else if r.contains("out of bounds") || r.contains("out-of-bounds") {
         // wasmtime "out of bounds memory access" (a guest bounds trap) and the corpus "index out of
         // bounds" are the same underlying fault — a list/segment index past the end.
-        Some("out-of-bounds")
+        Some(TrapCode::OutOfBounds)
     } else if r.contains("overflow") {
         // "integer overflow" / bare "overflow" — an arithmetic result outside the type width.
-        Some("overflow")
+        Some(TrapCode::Overflow)
     } else if r.contains("unreachable") || r.contains("shift count out of range") {
         // wasmtime "wasm 'unreachable' instruction executed" / the corpus bare "unreachable" — the
         // compiler lowers an explicit non-arithmetic trap (a `trap`/uninhabited-match) to `unreachable`.
         // The rust backend's shift-count guard panics "shift count out of range" for the SAME
         // non-arithmetic `Core::Trap` the wasm backend lowers to bare `unreachable` (an out-of-range
-        // shift count) — map it to the same canonical kind so a `(trap "unreachable")` shift-count case
+        // shift count) — map it to the same canonical code so a `(trap "unreachable")` shift-count case
         // grades pass on BOTH backends. (Rust's second shift panic, "integer overflow in left shift",
         // already classifies via the "overflow" arm above.)
-        Some("unreachable")
+        Some(TrapCode::Unreachable)
     } else {
         None
     }
@@ -9459,45 +9504,55 @@ mod trap_grading_tests {
     }
 
     #[test]
-    fn trap_kind_maps_corpus_and_wasmtime_vocabularies_to_one_token() {
-        // The corpus's human reasons and wasmtime's actual trap messages must classify to the SAME token
+    fn classify_maps_corpus_and_wasmtime_vocabularies_to_one_trap_code() {
+        // The corpus's human reasons and wasmtime's actual trap messages must classify to the SAME code
         // per underlying trap, so `grade_trial`'s `trap` arm recognizes an expected trap that fired.
         // Division by zero — corpus writes both spellings; wasmtime prepends "integer".
-        assert_eq!(trap_kind("divide by zero"), Some("div-by-zero"));
-        assert_eq!(trap_kind("division by zero"), Some("div-by-zero"));
+        assert_eq!(classify("divide by zero"), Some(TrapCode::DivByZero));
+        assert_eq!(classify("division by zero"), Some(TrapCode::DivByZero));
         assert_eq!(
-            trap_kind("cdz-run: trap: wasm trap: integer divide by zero: error while executing"),
-            Some("div-by-zero")
+            classify("cdz-run: trap: wasm trap: integer divide by zero: error while executing"),
+            Some(TrapCode::DivByZero)
         );
         // Modulo/remainder-by-zero is the SAME div-by-zero fault — the rust backend panics
         // "remainder by zero" for `%` (vs "division by zero" for `/`); both must classify identically
         // so a runtime `%`-by-zero `(trap …)` case grades pass on rust, not todo (breaker's gap).
-        assert_eq!(trap_kind("remainder by zero"), Some("div-by-zero"));
+        assert_eq!(classify("remainder by zero"), Some(TrapCode::DivByZero));
         assert_eq!(
-            trap_kind("thread 'main' panicked at …: remainder by zero"),
-            Some("div-by-zero")
+            classify("thread 'main' panicked at …: remainder by zero"),
+            Some(TrapCode::DivByZero)
         );
         // Overflow — bare and "integer" both, corpus + wasmtime.
-        assert_eq!(trap_kind("overflow"), Some("overflow"));
-        assert_eq!(trap_kind("integer overflow"), Some("overflow"));
+        assert_eq!(classify("overflow"), Some(TrapCode::Overflow));
+        assert_eq!(classify("integer overflow"), Some(TrapCode::Overflow));
         assert_eq!(
-            trap_kind("cdz-run: trap: wasm trap: integer overflow: error"),
-            Some("overflow")
+            classify("cdz-run: trap: wasm trap: integer overflow: error"),
+            Some(TrapCode::Overflow)
         );
         // Out of bounds — corpus "index out of bounds" vs wasmtime "out of bounds memory access".
-        assert_eq!(trap_kind("index out of bounds"), Some("out-of-bounds"));
+        assert_eq!(classify("index out of bounds"), Some(TrapCode::OutOfBounds));
         assert_eq!(
-            trap_kind("wasm trap: out of bounds memory access"),
-            Some("out-of-bounds")
+            classify("wasm trap: out of bounds memory access"),
+            Some(TrapCode::OutOfBounds)
         );
         // Unreachable — corpus bare word vs wasmtime's full phrasing.
-        assert_eq!(trap_kind("unreachable"), Some("unreachable"));
+        assert_eq!(classify("unreachable"), Some(TrapCode::Unreachable));
         assert_eq!(
-            trap_kind("wasm `unreachable` instruction executed"),
-            Some("unreachable")
+            classify("wasm `unreachable` instruction executed"),
+            Some(TrapCode::Unreachable)
         );
         // An unclassifiable reason yields None (grader stays conservative — never a false Pass).
-        assert_eq!(trap_kind("some novel host failure"), None);
+        assert_eq!(classify("some novel host failure"), None);
+        // Every code's stable id round-trips through `from_id` (the corpus-facing token); a non-code is None.
+        for tc in [
+            TrapCode::DivByZero,
+            TrapCode::OutOfBounds,
+            TrapCode::Overflow,
+            TrapCode::Unreachable,
+        ] {
+            assert_eq!(TrapCode::from_id(tc.code()), Some(tc));
+        }
+        assert_eq!(TrapCode::from_id("not-a-code"), None);
     }
 
     #[test]
@@ -9538,10 +9593,10 @@ mod trap_grading_tests {
     fn opt_sweep_outcome_key_separates_distinct_unclassified_traps() {
         // The review-fix-3 invariant (PR #529 Copilot): an UNCLASSIFIED trap reason must NOT collapse to a
         // single "other" bucket, or two genuinely-different unclassified traps would compare EQUAL and a
-        // real cross-level trap divergence among them would be MISSED. Both reasons are `trap_kind` = None,
+        // real cross-level trap divergence among them would be MISSED. Both reasons are `classify` = None,
         // so the key falls back to the raw first line and they must differ.
-        assert_eq!(trap_kind("novel host failure A"), None);
-        assert_eq!(trap_kind("novel host failure B"), None);
+        assert_eq!(classify("novel host failure A"), None);
+        assert_eq!(classify("novel host failure B"), None);
         assert_ne!(
             sweep_outcome_key(&Ran::Trap("novel host failure A".into())),
             sweep_outcome_key(&Ran::Trap("novel host failure B".into())),
