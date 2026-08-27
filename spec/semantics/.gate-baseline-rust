@@ -7717,3 +7717,5 @@ pass	spx1 a Bool entry param selects a branch
 todo	spx2 a Char entry param declines pending a boundary representation
 pass	spx3 a UInt64 entry param increments in its own width
 pass	spx4 Int8 and Int16 entry params sign-extend and sum
+pass	a const top-bit-set u64 bin binding folds unsigned
+pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned

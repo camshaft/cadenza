@@ -2132,6 +2132,34 @@
         (export main)))
   (call   main (: 0 UInt8)) (output (: 191 Int64)))
 
+(case "a const top-bit-set u64 bin binding folds unsigned"
+  (doc    "The u64 face of the const-eval binding finding (the width 2114 above is the perimeter): a
+           constant-folded `(bin (u64 m))` over [128,0,0,0,0,0,0,9] = 2^63+9 must decode UNSIGNED, not
+           through a signed i64 carrier. `(> m 5)` is 1 (a signed read of the top-bit-set value would be
+           negative → 0), and `(m % 1000)` is 817 (2^63+9 mod 1000, unsigned; a signed read would compute
+           the dividend-signed -799 or reject a bogus overflow). Composite `1000*(>5) + (m % 1000)` = 1817.")
+  (input  (do
+        (def (main)
+          (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+            ((bin (u64 m)) (+ (* 1000 (if (> m (: 5 UInt64)) 1 0)) (Int64.of (% m (: 1000 UInt64)))))
+            (_ -2)))
+        (export main)))
+  (output (: 1817 Int64)))
+
+(case "two const top-bit-set u64 bin bindings in one fn both fold unsigned"
+  (doc    "The two-match perimeter of the u64 const fold: TWO `(bin (u64 m))` matches over the same
+           [128,0,0,0,0,0,0,9] in one function must BOTH fold unsigned without the second
+           re-materializing the folded 2^63+9 at a signed width. Their unsigned `(m % 1000)` values sum
+           to 817 + 817 = 1634 (a signed re-materialization would flip a sign or reject).")
+  (input  (do
+        (def (main)
+          (+ (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+               ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2))
+             (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+               ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2))))
+        (export main)))
+  (output (: 1634 Int64)))
+
 (case "a top-bit u64 binding re-encodes to its exact source bytes"
   (doc    "The ENCODE round-trip of the u64-binding family: `(bin (u64 n))` re-encoding the binding
            read from [x,0,...,9] must reproduce the SOURCE bytes exactly — whole-value equality
