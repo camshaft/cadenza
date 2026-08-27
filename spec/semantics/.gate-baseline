@@ -7996,3 +7996,6 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 pass	xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)
 pass	xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload
+pass	ruw1 a fresh Result Ok with a list payload matched twice leaks the payload like Option
+pass	ruw2 a fresh user-generic sum with a list payload matched twice leaks the payload identically
+pass	ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs
