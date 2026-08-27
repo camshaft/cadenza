@@ -9539,7 +9539,6 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // name is CDZ0210 in binder position, so no user binder can collide); the def-count suffix keeps distinct
     // specializations distinct.
     let base = db.defs[callee_def].name.clone();
-    let spec_name = format!("{base}#eff{}", db.defs.len());
 
     // Build the specialized def as a REAL AST form `(def (spec (: n Tn)… (: s0 Ts0) (: s1 Ts1)…) <body>)`,
     // so its parameters resolve (via `is_param_occurrence`, which walks to a `def` form) and each types by
@@ -9587,177 +9586,222 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
             .values()
             .filter_map(|a| db.ast.as_name(a.state).map(str::to_string)),
     );
-    let captured_specs = captured_enclosing_params(db, ctx, &own_binders, &orig_param_names);
-    // A capture with an undetermined type cannot annotate its extra param — decline the whole specialization
-    // (mirrors the `orig_params` `Ty::Any` guard), so the shape stays a clean todo rather than emitting a
-    // loosely-typed param.
-    if captured_specs.iter().any(|(_, ty)| ty_has_any(ty)) {
-        return None;
-    }
-    let capture_names: Vec<String> = captured_specs.iter().map(|(n, _)| n.clone()).collect();
 
-    let spec_name_atom = db.push_name(&spec_name);
-    let mut sig_children = vec![spec_name_atom];
-    for (n, ty) in &orig_param_specs {
-        let name_atom = db.push_name(n);
-        let ty_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_name(":");
-        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
-    }
-    // The captured enclosing-fn params — annotated with each capture's solved type, AFTER the originals and
-    // BEFORE the trailing states (the layout every call site appends args in: orig, captured, states).
-    for (n, ty) in &captured_specs {
-        let name_atom = db.push_name(n);
-        let ty_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_name(":");
-        sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
-    }
-    // The trailing state params — one per slot, named `{spec}$s{k}`, annotated with the slot's state type.
-    let state_names: Vec<String> = (0..slot_tys.len())
-        .map(|k| format!("{spec_name}$s{k}"))
-        .collect();
-    for (k, ty) in slot_tys.iter().enumerate() {
-        let state_name = db.push_name(&state_names[k]);
-        let state_type_expr = crate::eval::encode_typeval(db, ty);
-        let colon = db.push_name(":");
-        sig_children.push(db.push_list(vec![colon, state_name, state_type_expr]));
-    }
-    let sig = db.push_list(sig_children.clone());
-    let spec_params: Vec<StructId> = sig_children[1..].to_vec();
+    // FULL FOLD — thread-the-let-local (2026-08-27, on v-inference's `handle_lift_escapes` signal). A handler
+    // arm may capture a MAIN-LOCAL `let` binding (`(let ((m (* n 3))) (handle St 0 ((get (u) s (resume m s)))
+    // (loop2 n)))`): `captured_enclosing_params` threads enclosing-fn PARAMS but NOT a main-local `let` binder
+    // (`collect_captures` matches `Resolved::Param` only), so the arm's `m`, spliced into the lifted def, rides
+    // in out of scope. An a-priori scan over-declines — pre-thread, a resume value / threaded-state / do-local
+    // reference is indistinguishable from a genuine escape. Instead: thread with the captures known so far,
+    // then let `handle_lift_escapes` name the PRECISE escaping occurrence on the ACTUAL threaded body (it walks
+    // resolved value positions, so a state / resume / do-local ref resolves fine and is never flagged). Thread
+    // THAT main-local as an extra capture param and re-run — the arm's `m` becomes a spec param, and both the
+    // self-call and the initial call append the main-scope `m` (in scope at the caller: `(loop2 n)` sits inside
+    // the `let`), so the recursion carries the constant capture exactly as it does an enclosing param (xas2).
+    // The escaping occurrence resolves `Poison` in the lifted def, so its TYPE is read from `let_cap_types`
+    // (built from the pre-thread arm bodies, where the reference is still bound). An escape that is NOT a typed
+    // main-local candidate is unthreadable → clean decline (the honest floor stays for the residue).
+    let let_cap_types = collect_local_capture_types(db, ctx, &orig_param_names);
+    let mut forced_captures: Vec<(String, crate::ty::Ty)> = Vec::new();
+    loop {
+        let spec_name = format!("{base}#eff{}", db.defs.len());
+        let mut captured_specs =
+            captured_enclosing_params(db, ctx, &own_binders, &orig_param_names);
+        // Append the main-local captures the validator confirmed on a prior iteration (empty on the first pass),
+        // after the enclosing-param captures and before the trailing states — the layout every call site appends
+        // args in. Skip any name an enclosing-param capture already covers (it resolves, so it never escapes).
+        for (n, ty) in &forced_captures {
+            if !captured_specs.iter().any(|(cn, _)| cn == n) {
+                captured_specs.push((n.clone(), ty.clone()));
+            }
+        }
+        // A capture with an undetermined type cannot annotate its extra param — decline the whole specialization
+        // (mirrors the `orig_params` `Ty::Any` guard), so the shape stays a clean todo rather than emitting a
+        // loosely-typed param.
+        if captured_specs.iter().any(|(_, ty)| ty_has_any(ty)) {
+            return None;
+        }
+        let capture_names: Vec<String> = captured_specs.iter().map(|(n, _)| n.clone()).collect();
 
-    // RESERVE the def NOW (with the sig, body filled later) + MEMOIZE — so the recursive self-call inside
-    // the body re-enters `specialize_recursive`, hits the memo, and names THIS `spec_name`.
-    let spec_index = db.defs.len();
-    db.push_specialized_def(Def {
-        name: spec_name.clone(),
-        sig_occ: sig,
-        params: spec_params.clone(),
-        body: None,
-        internal: false,
-    });
-    // CLONE the key at the insert (not move): `handle_lift_escapes` below may find the just-filled body
-    // ESCAPES the spec scope and decline the fold, which must ROLL BACK this registration — else a later
-    // identical call hits the still-present memo, returns `spec_name` WITHOUT re-validating, and emits the
-    // poison def (the bogus CDZ0101 returns). Keeping `memo_key` lets the rollback remove it.
-    db.effect_specializations
-        .insert(memo_key.clone(), spec_index);
-    // Register the multi-value calling convention BEFORE threading the body, so the recursive self-call arm
-    // (which re-enters here, hits the memo, and reads `db.multivalue_specs`) knows THIS spec returns a
-    // `(value, out-states…)` tuple and rewrites its own self-calls to destructure + thread the out-state.
-    if multivalue {
-        db.multivalue_specs.insert(spec_name.clone());
+        let spec_name_atom = db.push_name(&spec_name);
+        let mut sig_children = vec![spec_name_atom];
+        for (n, ty) in &orig_param_specs {
+            let name_atom = db.push_name(n);
+            let ty_expr = crate::eval::encode_typeval(db, ty);
+            let colon = db.push_name(":");
+            sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+        }
+        // The captured enclosing-fn params — annotated with each capture's solved type, AFTER the originals and
+        // BEFORE the trailing states (the layout every call site appends args in: orig, captured, states).
+        for (n, ty) in &captured_specs {
+            let name_atom = db.push_name(n);
+            let ty_expr = crate::eval::encode_typeval(db, ty);
+            let colon = db.push_name(":");
+            sig_children.push(db.push_list(vec![colon, name_atom, ty_expr]));
+        }
+        // The trailing state params — one per slot, named `{spec}$s{k}`, annotated with the slot's state type.
+        let state_names: Vec<String> = (0..slot_tys.len())
+            .map(|k| format!("{spec_name}$s{k}"))
+            .collect();
+        for (k, ty) in slot_tys.iter().enumerate() {
+            let state_name = db.push_name(&state_names[k]);
+            let state_type_expr = crate::eval::encode_typeval(db, ty);
+            let colon = db.push_name(":");
+            sig_children.push(db.push_list(vec![colon, state_name, state_type_expr]));
+        }
+        let sig = db.push_list(sig_children.clone());
+        let spec_params: Vec<StructId> = sig_children[1..].to_vec();
+
+        // RESERVE the def NOW (with the sig, body filled later) + MEMOIZE — so the recursive self-call inside
+        // the body re-enters `specialize_recursive`, hits the memo, and names THIS `spec_name`.
+        let spec_index = db.defs.len();
+        db.push_specialized_def(Def {
+            name: spec_name.clone(),
+            sig_occ: sig,
+            params: spec_params.clone(),
+            body: None,
+            internal: false,
+        });
+        // CLONE the key at the insert (not move): `handle_lift_escapes` below may find the just-filled body
+        // ESCAPES the spec scope and decline the fold, which must ROLL BACK this registration — else a later
+        // identical call hits the still-present memo, returns `spec_name` WITHOUT re-validating, and emits the
+        // poison def (the bogus CDZ0101 returns). Keeping `memo_key` lets the rollback remove it.
+        db.effect_specializations
+            .insert(memo_key.clone(), spec_index);
+        // Register the multi-value calling convention BEFORE threading the body, so the recursive self-call arm
+        // (which re-enters here, hits the memo, and reads `db.multivalue_specs`) knows THIS spec returns a
+        // `(value, out-states…)` tuple and rewrites its own self-calls to destructure + thread the out-state.
+        if multivalue {
+            db.multivalue_specs.insert(spec_name.clone());
+        }
+        // Register the captured enclosing-fn param names so the self-call rewrite arm (and the initial call from
+        // the handle body) passes them through as extra args, in the same order the sig lays them out.
+        if !capture_names.is_empty() {
+            db.effect_spec_captures
+                .insert(spec_name.clone(), capture_names.clone());
+        }
+
+        // Thread `orig_body` under `ctx`, with each slot's incoming state = a REFERENCE to its state param. A
+        // perform's resume value references the arm's state binder, which `thread`'s perform arm substitutes
+        // with that slot's state expression; the recursive self-call re-enters and (via the memo) rewrites to
+        // `(spec_name args… <threaded-states>)`. Each state name atom must re-resolve to its param, so we pass
+        // FRESH occurrences of the names (bare `s{k}` references), not the binder occurrences.
+        let state_refs: Vec<StructId> = state_names.iter().map(|n| db.push_name(n)).collect();
+        // PRE-SPEC-LIFT (recursive-nested-arm-resume fix, concierge-steered). When the recursive callee calls an
+        // INNER op whose ARM resume-value performs an OUTER (merged-slot) op — `(step (u) t (resume (A.tick) t))`
+        // — that outer perform is hidden until the inner op folds mid-thread, and re-threading the peeled resume
+        // value produces a mis-scoped state-ref (the disproven arm-fold approach). INSTEAD, substitute the inner-
+        // op call with its arm's peeled resume VALUE directly in `orig_body` BEFORE threading, so the outer
+        // perform becomes a DIRECT-body perform threaded via the top-level perform arm — binding the spec's
+        // `state_refs` identically to the working direct-body cases (14-eff:7706 `(+ (A.geta) (B.getb))`). Only
+        // fires in the MERGED ctx (>1 slot) for an inner op whose arm reaches an outer perform AND threads its
+        // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
+        // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
+        let orig_body = if ctx.slots.len() > 1 {
+            lift_inner_op_arm_outer_perform(db, orig_body, ctx, caller_observes_outstate)
+        } else {
+            orig_body
+        };
+        // [tpwJ A-tight] Mark that we are threading a RECURSIVE-DRIVER body, so the perform arm's cross-scope
+        // tuple COLLAPSE stays OFF here (it is unsound under recursive specialization — rq3). Restored after.
+        let saved_recur = ctx.in_recursive_specialize.get();
+        ctx.in_recursive_specialize.set(true);
+        // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
+        // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
+        let spec_body = if multivalue {
+            // SAVE/RESTORE the multi-value scratch (`temp_ctr` + `pending`) around threading THIS body. In the
+            // GROUP fold, threading one member's body recurses (via the recursive-call arm → `specialize_recursive`)
+            // into a PARTNER member's OWN multi-value thread, which resets `temp_ctr`/`pending` — corrupting this
+            // member's in-progress pending self/partner-call temps (the `$t0` leak: the partner's `clear()` wiped
+            // the entry's pending temp before `thread_returning_tuple` drained it). Snapshot before, restore after,
+            // so each member's multi-value scratch is independent. (For a non-group single self-recursive spec the
+            // partner recursion is absent, so save/restore is inert — byte-identical to the prior reset.)
+            let saved_ctr = ctx.temp_ctr.get();
+            let saved_pending = std::mem::take(&mut *ctx.pending.borrow_mut());
+            ctx.temp_ctr.set(0);
+            let threaded = thread_returning_tuple(db, orig_body, state_refs, ctx, callee_def);
+            ctx.temp_ctr.set(saved_ctr);
+            *ctx.pending.borrow_mut() = saved_pending;
+            threaded?
+        } else {
+            // SINGLE-RETURN specialization: the ordinary `thread` with NO `drain_and_wrap` after it. SUPPRESS the
+            // FINDING-24 growing-state `#st` bind here — a `#st` pushed to `ctx.pending` on this path would never
+            // materialize (nothing drains it) → an orphan `#st..` reference in the spec body (CDZ0101). This path
+            // is immune to the exponential anyway: a recursive callee threads the state as a fn PARAMETER through
+            // the self-call (one static site), not by re-substituting a growing expr per dispatch, so the bind
+            // wins no size here. Restore the flag after (the shared `ctx` may thread other, drainable, bodies).
+            let saved_bind = ctx.bind_growing_state.get();
+            ctx.bind_growing_state.set(false);
+            let threaded = thread(db, orig_body, state_refs, ctx);
+            ctx.bind_growing_state.set(saved_bind);
+            let (b, _out) = threaded?;
+            b
+        };
+        ctx.in_recursive_specialize.set(saved_recur);
+
+        // DEEP-FRESH-COPY the threaded body so NO original-body node is shared into the spec. Threading /
+        // `beta_reduce` return an unchanged subtree AS-IS (a node with no substituted param is not rebuilt), so
+        // the spec body can SHARE original param-reference nodes (e.g. the `n` in `(St.put n)` reached through a
+        // perform-arm-threaded state expression). `core_of` MEMOIZES by StructId (`db.core`), so a shared
+        // original node carries its cached `Core::Param{ORIGINAL binder}` — which has no slot in the spec
+        // function (its slots are keyed by the spec sig's param nodes) → "parameter reference has no local slot"
+        // at emit when a later inline copies + lowers it. Re-pushing every node fresh gives the whole body new
+        // StructIds with no `db.core` memo; each ref re-resolves (lazily, post-parent) against the spec `(def sig
+        // …)` form below → binds to the spec sig param → gets a slot. (The self-recursive / multi-value temps
+        // `$s{k}`/`$t{k}` and any `#cv` bindings are name-resolved, so a fresh copy re-binds them identically.)
+        let spec_body = deep_fresh_copy(db, spec_body);
+
+        // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
+        // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
+        // Case 4 resolves a body reference against the def signature. Without this the synthesized params
+        // would not resolve. The `db.defs` entry's `body` points at `spec_body` (the def-form node is for
+        // scope/param resolution, not the emitted body — emission reads `db.defs[i].body`).
+        let def_head = db.push_name("def");
+        let _def_form = db.push_list(vec![def_head, sig, spec_body]);
+
+        db.fill_specialized_def(spec_index, spec_params, spec_body);
+
+        // EMISSION-SITE SAFE FLOOR (specialize_recursive escape, v-effects pairing 2026-08-27). A recursive
+        // performer whose handler arm captures a MAIN-LOCAL `let` binding escapes the lifted top-level def:
+        // `collect_captures` threads enclosing-fn PARAMS as extra spec params but NOT a main-local `let` binder
+        // (it matches `Resolved::Param` only), so the captured name (`ys`/`m`) rides into the lifted def where
+        // it is out of scope and resolves UNBOUND. A-priori detection over-declines (an arm's threaded-state /
+        // resume / do-local refs are indistinguishable pre-lift); the escape is precise ONLY on the actual
+        // threaded body. Validate it; on an escape DECLINE the fold cleanly (an honest "not yet reducible" todo)
+        // instead of emitting a def whose reference dangles as a bogus CDZ0101. The validation walk MEMOIZES
+        // resolution of the fresh spec body against the fill-time context, so FORGET it afterward — `core_of`
+        // must re-resolve against the fully-populated context (a mutual partner spec / multi-value drain filled
+        // AFTER this call).
+        let escape = handle_lift_escapes(db, spec_body);
+        crate::resolve::forget_subtree(db, spec_body);
+        if let Some(node) = escape {
+            // ROLL BACK every registration this iteration made (v-effects attempt-4 finding): the memo entry, the
+            // multi-value flag, and the capture list. Without this a later identical call hits the stale memo
+            // and returns `spec_name` un-revalidated, re-emitting the poison def. The reserved (now
+            // filled-but-unreferenced) def is harmless — the fold declined this shape, so nothing names it.
+            db.effect_specializations.remove(&memo_key);
+            db.multivalue_specs.remove(&spec_name);
+            db.effect_spec_captures.remove(&spec_name);
+            // FULL FOLD: if the escaping occurrence is a typed main-local `let` capture we have NOT already
+            // threaded, add it and re-run — next pass binds it to a fresh spec param, so it no longer escapes.
+            // A name already in `forced_captures` that STILL escapes is genuinely unthreadable (threading it did
+            // not bind it — an exotic shape); and an escape that is not a typed main-local candidate cannot be
+            // annotated. Either way DECLINE cleanly (the honest "not yet reducible" floor), so the residue stays
+            // a todo rather than emitting a def whose reference dangles as a bogus CDZ0101.
+            let name = db.ast.as_name(node).map(str::to_string)?;
+            if forced_captures.iter().any(|(n, _)| n == &name) {
+                return None;
+            }
+            match let_cap_types.get(&name) {
+                Some(ty) if !ty_has_any(ty) && !orig_param_names.contains(&name) => {
+                    forced_captures.push((name, ty.clone()));
+                    continue;
+                }
+                _ => return None,
+            }
+        }
+        return Some(spec_name);
     }
-    // Register the captured enclosing-fn param names so the self-call rewrite arm (and the initial call from
-    // the handle body) passes them through as extra args, in the same order the sig lays them out.
-    if !capture_names.is_empty() {
-        db.effect_spec_captures
-            .insert(spec_name.clone(), capture_names.clone());
-    }
-
-    // Thread `orig_body` under `ctx`, with each slot's incoming state = a REFERENCE to its state param. A
-    // perform's resume value references the arm's state binder, which `thread`'s perform arm substitutes
-    // with that slot's state expression; the recursive self-call re-enters and (via the memo) rewrites to
-    // `(spec_name args… <threaded-states>)`. Each state name atom must re-resolve to its param, so we pass
-    // FRESH occurrences of the names (bare `s{k}` references), not the binder occurrences.
-    let state_refs: Vec<StructId> = state_names.iter().map(|n| db.push_name(n)).collect();
-    // PRE-SPEC-LIFT (recursive-nested-arm-resume fix, concierge-steered). When the recursive callee calls an
-    // INNER op whose ARM resume-value performs an OUTER (merged-slot) op — `(step (u) t (resume (A.tick) t))`
-    // — that outer perform is hidden until the inner op folds mid-thread, and re-threading the peeled resume
-    // value produces a mis-scoped state-ref (the disproven arm-fold approach). INSTEAD, substitute the inner-
-    // op call with its arm's peeled resume VALUE directly in `orig_body` BEFORE threading, so the outer
-    // perform becomes a DIRECT-body perform threaded via the top-level perform arm — binding the spec's
-    // `state_refs` identically to the working direct-body cases (14-eff:7706 `(+ (A.geta) (B.getb))`). Only
-    // fires in the MERGED ctx (>1 slot) for an inner op whose arm reaches an outer perform AND threads its
-    // own state trivially (next-state == state binder — no inner-op state advance to preserve); a non-trivial
-    // inner-state advance is left to the ordinary fold (unchanged). Byte-identical when nothing matches.
-    let orig_body = if ctx.slots.len() > 1 {
-        lift_inner_op_arm_outer_perform(db, orig_body, ctx, caller_observes_outstate)
-    } else {
-        orig_body
-    };
-    // [tpwJ A-tight] Mark that we are threading a RECURSIVE-DRIVER body, so the perform arm's cross-scope
-    // tuple COLLAPSE stays OFF here (it is unsound under recursive specialization — rq3). Restored after.
-    let saved_recur = ctx.in_recursive_specialize.get();
-    ctx.in_recursive_specialize.set(true);
-    // MULTI-VALUE mode: the body's every tail leaf yields `("tuple" value out-states…)`, and each self-call
-    // is let-bound (out-state projected + threaded). SINGLE-return mode: the ordinary `thread` (unchanged).
-    let spec_body = if multivalue {
-        // SAVE/RESTORE the multi-value scratch (`temp_ctr` + `pending`) around threading THIS body. In the
-        // GROUP fold, threading one member's body recurses (via the recursive-call arm → `specialize_recursive`)
-        // into a PARTNER member's OWN multi-value thread, which resets `temp_ctr`/`pending` — corrupting this
-        // member's in-progress pending self/partner-call temps (the `$t0` leak: the partner's `clear()` wiped
-        // the entry's pending temp before `thread_returning_tuple` drained it). Snapshot before, restore after,
-        // so each member's multi-value scratch is independent. (For a non-group single self-recursive spec the
-        // partner recursion is absent, so save/restore is inert — byte-identical to the prior reset.)
-        let saved_ctr = ctx.temp_ctr.get();
-        let saved_pending = std::mem::take(&mut *ctx.pending.borrow_mut());
-        ctx.temp_ctr.set(0);
-        let threaded = thread_returning_tuple(db, orig_body, state_refs, ctx, callee_def);
-        ctx.temp_ctr.set(saved_ctr);
-        *ctx.pending.borrow_mut() = saved_pending;
-        threaded?
-    } else {
-        // SINGLE-RETURN specialization: the ordinary `thread` with NO `drain_and_wrap` after it. SUPPRESS the
-        // FINDING-24 growing-state `#st` bind here — a `#st` pushed to `ctx.pending` on this path would never
-        // materialize (nothing drains it) → an orphan `#st..` reference in the spec body (CDZ0101). This path
-        // is immune to the exponential anyway: a recursive callee threads the state as a fn PARAMETER through
-        // the self-call (one static site), not by re-substituting a growing expr per dispatch, so the bind
-        // wins no size here. Restore the flag after (the shared `ctx` may thread other, drainable, bodies).
-        let saved_bind = ctx.bind_growing_state.get();
-        ctx.bind_growing_state.set(false);
-        let threaded = thread(db, orig_body, state_refs, ctx);
-        ctx.bind_growing_state.set(saved_bind);
-        let (b, _out) = threaded?;
-        b
-    };
-    ctx.in_recursive_specialize.set(saved_recur);
-
-    // DEEP-FRESH-COPY the threaded body so NO original-body node is shared into the spec. Threading /
-    // `beta_reduce` return an unchanged subtree AS-IS (a node with no substituted param is not rebuilt), so
-    // the spec body can SHARE original param-reference nodes (e.g. the `n` in `(St.put n)` reached through a
-    // perform-arm-threaded state expression). `core_of` MEMOIZES by StructId (`db.core`), so a shared
-    // original node carries its cached `Core::Param{ORIGINAL binder}` — which has no slot in the spec
-    // function (its slots are keyed by the spec sig's param nodes) → "parameter reference has no local slot"
-    // at emit when a later inline copies + lowers it. Re-pushing every node fresh gives the whole body new
-    // StructIds with no `db.core` memo; each ref re-resolves (lazily, post-parent) against the spec `(def sig
-    // …)` form below → binds to the spec sig param → gets a slot. (The self-recursive / multi-value temps
-    // `$s{k}`/`$t{k}` and any `#cv` bindings are name-resolved, so a fresh copy re-binds them identically.)
-    let spec_body = deep_fresh_copy(db, spec_body);
-
-    // Wrap in a REAL `(def (spec params… (: s T)) spec_body)` arena node so the parent index links
-    // param → sig → def: `is_param_occurrence` walks that chain to classify each param, and `binder_in`
-    // Case 4 resolves a body reference against the def signature. Without this the synthesized params
-    // would not resolve. The `db.defs` entry's `body` points at `spec_body` (the def-form node is for
-    // scope/param resolution, not the emitted body — emission reads `db.defs[i].body`).
-    let def_head = db.push_name("def");
-    let _def_form = db.push_list(vec![def_head, sig, spec_body]);
-
-    db.fill_specialized_def(spec_index, spec_params, spec_body);
-
-    // EMISSION-SITE SAFE FLOOR (specialize_recursive escape, v-effects pairing 2026-08-27). A recursive
-    // performer whose handler arm captures a MAIN-LOCAL `let` binding escapes the lifted top-level def:
-    // `collect_captures` threads enclosing-fn PARAMS as extra spec params but NOT a main-local `let` binder
-    // (it matches `Resolved::Param` only), so the captured name (`ys`/`m`) rides into the lifted def where
-    // it is out of scope and resolves UNBOUND. A-priori detection over-declines (an arm's threaded-state /
-    // resume / do-local refs are indistinguishable pre-lift); the escape is precise ONLY on the actual
-    // threaded body. Validate it; on an escape DECLINE the fold cleanly (an honest "not yet reducible" todo)
-    // instead of emitting a def whose reference dangles as a bogus CDZ0101. The validation walk MEMOIZES
-    // resolution of the fresh spec body against the fill-time context, so FORGET it afterward — `core_of`
-    // must re-resolve against the fully-populated context (a mutual partner spec / multi-value drain filled
-    // AFTER this call).
-    let escape = handle_lift_escapes(db, spec_body);
-    crate::resolve::forget_subtree(db, spec_body);
-    if escape.is_some() {
-        // ROLL BACK every registration this call made (v-effects attempt-4 finding): the memo entry, the
-        // multi-value flag, and the capture list. Without this a later identical call hits the stale memo
-        // and returns `spec_name` un-revalidated, re-emitting the poison def. The reserved (now
-        // filled-but-unreferenced) def is harmless — the fold declined, so nothing names it.
-        db.effect_specializations.remove(&memo_key);
-        db.multivalue_specs.remove(&spec_name);
-        db.effect_spec_captures.remove(&spec_name);
-        return None;
-    }
-    Some(spec_name)
 }
 
 /// After `specialize_recursive` fills a lifted spec def, return the first VALUE-POSITION occurrence in its
@@ -11723,6 +11767,55 @@ fn collect_captures(
             collect_captures(db, c, own_binders, seen, out);
         }
     }
+}
+
+/// A NAME → solved-type table for every name occurring in the handler arm bodies that resolves to a
+/// DETERMINED type in the ORIGINAL (pre-thread) context. The full-fold loop in `specialize_recursive`
+/// uses it to supply the type of a main-local `let` capture the validator flags: the flagged occurrence
+/// resolves `Poison` in the LIFTED def (out of scope there), so its type can only be read here, from the
+/// arm body where the reference is still bound to its enclosing `let`. Names matching an original param
+/// are excluded (the spec already binds that name — it can never be a threaded capture). Over-inclusion
+/// is harmless: only names the validator actually flags as escaping are ever consulted, and an own binder
+/// / global / prelude name is never flagged (it resolves, not `Poison`). Walks arm bodies in the SAME
+/// stable `(decl, op-index)` order `captured_enclosing_params` uses, for determinism.
+fn collect_local_capture_types(
+    db: &mut Db,
+    ctx: &HandlerCtx,
+    orig_param_names: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, crate::ty::Ty> {
+    let mut out: std::collections::HashMap<String, crate::ty::Ty> =
+        std::collections::HashMap::new();
+    let mut arm_bodies: Vec<((u32, u32), StructId)> =
+        ctx.arms.iter().map(|(&k, a)| (k, a.body)).collect();
+    arm_bodies.sort_by_key(|&(k, _)| k);
+    fn walk(
+        db: &mut Db,
+        node: StructId,
+        orig_param_names: &std::collections::HashSet<String>,
+        out: &mut std::collections::HashMap<String, crate::ty::Ty>,
+    ) {
+        if let Some(name) = db.ast.as_name(node).map(str::to_string)
+            && !name.contains('#')
+            && !name.contains('$')
+            && !orig_param_names.contains(&name)
+            && !out.contains_key(&name)
+            && !matches!(resolved_of(db, node), Resolved::Poison(_))
+        {
+            let ty = crate::infer::type_of(db, node);
+            if !ty_has_any(&ty) {
+                out.insert(name, ty);
+            }
+        }
+        if let Struct::List(children) = db.ast.get(node).clone() {
+            for c in children {
+                walk(db, c, orig_param_names, out);
+            }
+        }
+    }
+    for (_, body) in arm_bodies {
+        walk(db, body, orig_param_names, &mut out);
+    }
+    out
 }
 
 fn count_param_refs(db: &mut Db, node: StructId, binder: StructId) -> u32 {
