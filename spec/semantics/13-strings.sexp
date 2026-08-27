@@ -4822,3 +4822,27 @@
 (case "a char literal past the maximum scalar is a reader defect"
   (input (do (def (main) #\u+110000) (export main)))
   (error CDZ0002))
+
+; -- char/symbol literal list-element pattern refinement (migration from rcdzc
+; a_char_or_symbol_literal_list_element_refines_by_value, 2026-08-27): a #\c / #"sym" literal is a refutable
+; scalar list element, matching only a list whose element at that position equals the literal.
+
+(case "a char-literal list-element pattern matches a runtime list whose head is that char"
+  (input (do (def (classify (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
+             (def (main) (classify (list (Option.expect (Char.from-int 97) "a") (Option.expect (Char.from-int 98) "b")))) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a char-literal list-element pattern misses when the head differs"
+  (input (do (def (classify (: xs (List Char))) (match xs ((list #\a .. r) 1) (_ 0)))
+             (def (main) (classify (list (Option.expect (Char.from-int 122) "z")))) (export main)))
+  (call main) (output (: 0 Int64)))
+
+(case "a symbol-literal list-element pattern matches a list whose head is that symbol"
+  (input (do (def (f (: xs (List Symbol))) (match xs ((list #"go" .. r) 1) (_ 0)))
+             (def (main) (f (list (Symbol.of "go")))) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a char literal at a non-head fixed-arity list position matches by value"
+  (input (do (def (f (: xs (List Char))) (match xs ((list a #\x) 1) (_ 0)))
+             (def (main) (f (list #\p #\x))) (export main)))
+  (call main) (output (: 1 Int64)))

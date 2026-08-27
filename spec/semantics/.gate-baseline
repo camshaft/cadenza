@@ -1163,6 +1163,7 @@ pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
 pass	a String built by folding String.concat over a runtime list of chunks has the right content and length
 pass	a String compound export under a non-main name crosses to the host
+pass	a String literal pattern over a Symbol scrutinee is rejected at the nominal boundary
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String op RESULT selected by the op argument, composed via concat
@@ -1179,6 +1180,7 @@ pass	a String.slice VIEW built in the ARM crosses back through resume — the bo
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
+pass	a Symbol literal pattern over a String scrutinee is rejected at the nominal boundary
 pass	a Symbol map key looks up by content and an overwrite does not grow the map
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
 pass	a Symbol stored as a map VALUE round-trips through lookup to its content string
@@ -1504,12 +1506,15 @@ pass	a chained Option.expect(Option.expect s) payload consumed per iteration acc
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
 pass	a chained generic instantiates at a MAP type and both tuple slots share the CHAMP
+pass	a char literal at a non-head fixed-arity list position matches by value
 pass	a char literal list element dispatches a runtime list by its value
 pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
 pass	a char literal past the maximum scalar is a reader defect
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
+pass	a char-literal list-element pattern matches a runtime list whose head is that char
+pass	a char-literal list-element pattern misses when the head differs
 pass	a char-literal pattern nested in a variant payload matches by scalar value
 pass	a char-literal pattern over a non-char scrutinee is a type error
 pass	a char-literal pattern selects the arm whose char matches
@@ -4270,6 +4275,7 @@ pass	a symbol is constructed from a string
 pass	a symbol literal list element dispatches a runtime list by its content
 pass	a symbol round-trip between TWO ops of one effect — interned by one, judged by the other
 pass	a symbol's identity is its content, not how the content was derived
+pass	a symbol-literal list-element pattern matches a list whose head is that symbol
 pass	a symbol-literal match agrees with its if-(= s lit) chain on the DEFAULT fall-through arm
 pass	a symbol-literal match agrees with the equivalent if-(= s lit) chain
 pass	a symbol-literal match reaches the second arm by content

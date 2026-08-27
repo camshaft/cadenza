@@ -937,3 +937,15 @@
   (input (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
              (def (main) (String.byte-len (Symbol.to-string (Symbol.of (rep "xx" 3))))) (export main)))
   (call main) (output (: 5 Int64)))
+
+; -- the String/Symbol nominal boundary in match patterns (migration from rcdzc
+; a_string_or_symbol_literal_pattern_respects_the_nominal_boundary, 2026-08-27; the same-kind dispatch
+; controls are covered by the symbol/string content-dispatch cases): a cross-boundary literal pattern faults.
+
+(case "a String literal pattern over a Symbol scrutinee is rejected at the nominal boundary"
+  (input (do (def (f (: s Symbol)) (match s ("add" 1) (_ 0))) (export f)))
+  (error CDZ0201))
+
+(case "a Symbol literal pattern over a String scrutinee is rejected at the nominal boundary"
+  (input (do (def (f (: s String)) (match s (#"add" 1) (_ 0))) (export f)))
+  (error CDZ0201))
