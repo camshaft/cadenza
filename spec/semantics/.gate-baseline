@@ -8149,3 +8149,5 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 pass	hfr1 a handler fold's list result crosses the return boundary (two threaded draws, two reachable cells)
 pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
 todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
+pass	oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)
+pass	oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise
