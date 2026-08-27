@@ -7493,7 +7493,6 @@ fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
     use crate::backend::wasm::lir::Lir;
     use crate::db::Db;
     use crate::testkit::parse;
-    use wasmtime::component::Val;
     let lir = |params: &str, body: &str| -> Vec<Lir> {
         let ast = parse(&format!(
             "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
@@ -7531,30 +7530,10 @@ fn a_nested_multiply_by_a_power_of_two_also_strength_reduces() {
         "both multiplies become shifts, got: {code:?}"
     );
 
-    // VALUE PARITY: (* (* x 2) 4) = x*8.
-    let src = "(module m (def (f (: x Int64)) (* (: (* x 2) Int64) 4)) (export f))";
-    let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(5)]), 40);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(-3)]), -24);
-    assert_eq!(run_returns_with::<i64>(&b, "f", &[Val::S64(0)]), 0);
-    // OVERFLOW-TRAP PARITY: 2^61 * 8 = 2^64 overflows Int64 — the nested shift chain must still trap.
-    assert!(
-        call_traps(&b, "f", &[Val::S64(1i64 << 61)]),
-        "a nested `* 2^k` chain must trap on overflow like the multiply"
-    );
-    // NARROW: Int8 (* (* x 2) 4) = x*8. 15*8=120 fits; 20*8=160 overflows Int8 → trap (outer); 100*2=200
-    // overflows Int8 already → trap (inner). Both must fire.
-    let s8 = "(module m (def (f (: x Int8)) (* (: (* x 2) Int8) 4)) (export f))";
-    let b8 = compile_component(&crate::codec::encode(&parse(s8))).expect("compile");
-    assert_eq!(run_returns_with::<i8>(&b8, "f", &[Val::S8(15)]), 120);
-    assert!(
-        call_traps(&b8, "f", &[Val::S8(20)]),
-        "outer Int8 overflow (160) traps"
-    );
-    assert!(
-        call_traps(&b8, "f", &[Val::S8(100)]),
-        "inner Int8 overflow (200) traps"
-    );
+    // The VALUE + OVERFLOW-TRAP PARITY half (x*8 at Int64 and Int8; 2^61 overflows Int64; Int8 x=20 outer
+    // and x=100 inner overflows both trap) is the corpus cases "a nested (* (* x 2) 4) strength-reduces …
+    // Int64 overflow-trap parity" and "the narrow Int8 nested (* (* x 2) 4) traps on BOTH …" in
+    // 28-compiler-primitives — this stays a white-box Lir shl-count / no-mul-div_s check of the reduction.
 }
 
 /// A CONSTANT unsigned comparison whose operand exceeds `i64` range folds by the TRUE numeric value at

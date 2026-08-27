@@ -7786,3 +7786,5 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity
+pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow
