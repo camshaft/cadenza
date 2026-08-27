@@ -223,8 +223,10 @@ representation is uniform at every depth. No arity or depth limits.
 The operator extended the scheme beyond the five collection constructors to the two other *pervasive
 value-structural heads*, each of which is recognized by head text today and would otherwise be
 string-matched everywhere:
-- **`=` — the record field-pair marker** `(= key value)`. It is a distinct node so the ML printer can
-  attach a comment to a field; making it a **dedicated payloadless leaf kind** keeps that while removing
+- **`=` — the field-pair marker** `(= key value)`, used for BOTH record fields AND map entries (the
+  latter unified from the legacy plain `(k v)` map entry per the operator's flat-pairs ruling, see
+  D-SURFACE §6). It is a distinct node so the ML printer can attach a comment to a field; making it a
+  **dedicated payloadless leaf kind** keeps that while removing
   the text dispatch. **Disambiguation win (CONFIRMED, v-spec-oracle 2026-08-27):** the field-pair `=` and
   the equality operator `(= a b)` ARE the same bare `=` leaf today, disambiguated ONLY by position (a `=`
   directly under a resolved record head = field pair; a `=` in expression/application position = equality
@@ -332,15 +334,25 @@ set symbol as well"*; *"i am not a huge fan of the string-encoded head. it's jus
   fully migrated** to the new surface. The dual-read phase (M1/M2) is *transient scaffolding only* so
   `trunk` never breaks mid-flight; **M3 deletes every trace of the old path** (§7). No permanent compat
   layer.
-- **D-SURFACE — s-expr paren PREFIX: RULED = full-word `#list(…)` (operator, 2026-08-27):** with the
-  string head gone and a bare-name head ambiguous with application, the s-expr textual surface can no
-  longer write a compound as a pure paren form; it takes an explicit constructor **`#`-word prefix on
-  the paren** — `#list(1 2 3)`, `#tuple(a b)`, `#record(= x 1)`, `#map(k v)`, `#set(1 2 3)` — consistent
-  with the existing `#"…"`/`#{…}`/`#(…)`/`#\` reader-directive family, unambiguously distinct from an
-  application `(list …)`. This is a `cadenza-syntax` s-expr reader+printer change and gates the **corpus
-  migration** (M2/M3) but NOT the Layer-1 dispatch work. The ML surface (`[…]`/`{…}`/`#{…}`/`#(…)`/`(a,b)`)
-  already has its own literals. (Exact record/map field-pair spelling inside the prefix form —
-  `#record((= x 1) …)` vs `#record(= x 1 …)` — pinned at the reader-design increment.)
+- **D-SURFACE — s-expr `#word(…)` prefix, FLAT PAIRS + reader-inserted `=`: RULED (operator, 2026-08-27,
+  via v-syntax):** with the string head gone and a bare-name head ambiguous with application, the s-expr
+  textual surface takes an explicit constructor **`#`-word prefix on the paren**, consistent with the
+  existing `#"…"`/`#{…}`/`#(…)`/`#\` reader-directive family. Body grammar (operator refinement,
+  superseding the earlier "grouped" proposal — *"for the record and map syntax we know what the data
+  types are and should just do pairs, and then the sexpr would implicitly insert the `=` nodes"*):
+  - `#list(a b c)` → `(list a b c)`, `#tuple(a b)` → `(tuple a b)`, `#set(a b c)` → `(set a b c)` — FLAT,
+    elements pass through, no pairing.
+  - `#record(f1 v1 f2 v2 …)` → `(record (= f1 v1) (= f2 v2) …)` — FLAT pairs; **the reader inserts an `=`
+    (FieldPair) node per pair** (no explicit `(= …)` in the surface). Odd element count = reader error.
+  - `#map(k1 v1 k2 v2 …)` → `(map (= k1 v1) (= k2 v2) …)` — likewise; **map entries UNIFY with record
+    fields as `(= key value)`** (NOT today's plain 2-elem `(k v)` entry). Odd count = reader error.
+  🔑 **Consequence (v-ast-compound lane):** the map AST-entry shape changes from `(k v)` to `(= k v)`,
+  unified with record fields and consistent with the `=` FieldPair tag (§3.6). The rcdzc map
+  consumer/lowering (`resolve_map` + lower) must DUAL-READ both `(= k v)` and legacy `(k v)` through the
+  migration; M3 migrates the corpus `(map (k v))` → `(map (= k v))` and drops the plain form. **v-syntax
+  owns the reader/printer (`cadenza-syntax/src/sexpr.rs`); this design owns the map-consumer change + the
+  ctor leaf kinds; v-spec-oracle's §269 co-edit shape's "map = (key value)" becomes "(= key value)".**
+  The ML surface (`[…]`/`{…}`/`#{…}`/`#(…)`/`(a,b)`) already has its own literals.
 - **D2 — `set`: RULED = first-class** — `set` gets its own ctor leaf/symbol like the other four
   (`CompoundCtor::Set`, `Resolved::Set`). The set **value render** stays `(Set.of (list …sorted))` :
   `(Set T)` (operator did not ask to change it) so `19-sets.sexp` outputs + the oracle value-form are
