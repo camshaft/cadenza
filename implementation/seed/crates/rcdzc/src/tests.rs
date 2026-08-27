@@ -13350,15 +13350,9 @@ mod match_engine {
             None
         );
 
-        // The folded VALUE is correct (the operand itself), when a runtime is available.
-        if let Some(v) = run_heap_value_escape(
-            "(module m (def (main) (+ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main))",
-        ) {
-            assert!(
-                v.contains("18446744073709551615"),
-                "the identity folds to the UInt64 operand's value: got {v}"
-            );
-        }
+        // The folded VALUE (the operand itself) is confirmed end-to-end by corpus 06 "a constant algebraic
+        // identity over a high UInt64 operand folds to the operand, not a spurious reject" (8583) — this
+        // keeps only the compile-time fold-vs-CDZ0304 decline witness (`reject_code`, no runtime).
     }
 
     #[test]
@@ -13420,16 +13414,10 @@ mod match_engine {
             "a wide constant divide by zero must still trap"
         );
 
-        // The folded VALUES are correct (exact IntValue arithmetic, i64-truncation-free), when a runtime
-        // is available.
-        if let Some(v) = run_heap_value_escape(
-            "(module m (def (main) (/ (: 18446744073709551614 UInt64) (: 2 UInt64))) (export main))",
-        ) {
-            assert!(
-                v.contains("9223372036854775807"),
-                "u64max-1 / 2 folds to 9223372036854775807: got {v}"
-            );
-        }
+        // The folded VALUES (exact IntValue arithmetic, i64-truncation-free) are confirmed end-to-end by
+        // corpus 06 "a constant division over a high UInt64 operand folds exactly to the quotient" (8616)
+        // and its sub/mod/add-in-range siblings (8623/8629/8635) — this keeps only the compile-time
+        // fold-vs-CDZ0304 decline witness (`reject_code`, no runtime).
     }
 
     #[test]
