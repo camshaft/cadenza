@@ -7649,3 +7649,6 @@ todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	rcw2 a hundred-field record projects its first and last fields
 pass	rcw3 a fifty-element tuple projects its first and last positions
 pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
+pass	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
+pass	wfp2 EIGHT list entry params are sixteen flat values — the lifted boundary edge sums their lengths
+pass	wfp3 NINE list entry params are eighteen flat values and decline
