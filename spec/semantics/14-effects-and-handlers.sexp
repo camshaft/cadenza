@@ -3968,7 +3968,7 @@
                   ((tuple a b) (+ a b)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "the guard-MISS path re-performs in the fallback arm — dispatch continues past a failed guard"
   (doc    "The miss path of the compound guard: `(> (+ a b) 100)` fails at 15, the fallback arm
@@ -3985,7 +3985,7 @@
                   ((tuple a b) (match (St.pair) ((tuple c d) (+ (* 10 (+ a b)) (+ c d))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 168 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "an arm re-performs its OWN effect to a SAME-EFFECT outer handler — the true self-shadow forward"
   (doc    "The existing forwarding pin uses two DISTINCT effects; here the inner handler of `Ctr`
@@ -5007,7 +5007,7 @@
                   ((tuple a b) (- 0 (+ a b))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 506 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "recursively STACKED same-effect handlers — the perform resolves to the DEEPEST frame"
   (doc    "A DYNAMICALLY-built shadow stack (the shadow pins are lexical 2-deep literals): the

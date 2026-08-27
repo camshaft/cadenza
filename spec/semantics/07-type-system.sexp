@@ -577,7 +577,7 @@
             (export main)))
   (call   main)
   (output (: 1 Int64))
-  (live-objects known-leak 60))
+  (live-objects 0))
 
 ; The parameter check applies to a LIST's element type too, not only a sum's payload. `(list 1 2)` has
 ; type `List Int64`; annotated `List Bool`, the head `List` agrees but the element type `Int64` cannot

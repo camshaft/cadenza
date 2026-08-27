@@ -1172,7 +1172,7 @@
                   ((Option.None) false))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 24))
+  (live-objects known-leak 23))
 
 (case "the kernel's SPEC (∀-elimination) instantiates the quantified body with the witness"
   (doc    "∀-elimination: from ⊢ ∀x.P derive ⊢ P[t/x], substituting the witness t for the bound variable
@@ -1571,7 +1571,7 @@
                     (match (mp-aconv imp th) ((Option.Some r) (term-eq (concl r) q)) ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 16))
+  (live-objects known-leak 15))
 
 (case "TRANS should match its middle term up to α-equivalence: aconv-TRANS chains an α-variant a structural equality rejects"
   (doc    "Premise-matching completeness for TRANS. t1 : ⊢ (Var 1) = (λx0.x0); t2 : ⊢ (λx5.x5) = (Var 2) —
@@ -1628,7 +1628,7 @@
                     (match (trans-aconv t1 t2) ((Option.Some r) (term-eq (concl r) (Term.Eq a c))) ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 22))
+  (live-objects known-leak 21))
 
 ; ============================================================================================
 ; Increment 12 — the HOL-FAITHFUL LOGICAL LAYER: logical constants as DEFINED constants (via

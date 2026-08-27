@@ -20719,7 +20719,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 77 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "rcw2 a hundred-field record projects its first and last fields"
   (input (do

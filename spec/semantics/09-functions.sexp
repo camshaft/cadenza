@@ -3357,7 +3357,7 @@
   (call   main (: 6 Int64)) (output (: 80016 Int64))
   (call   main (: 27 Int64)) (output (: 1110232 Int64))
   (call   main (: 97 Int64)) (output (: 1180232 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation"
   (doc    "Two totally different computations of the same survivor, cross-checked: the O(n) MODULAR
@@ -3453,7 +3453,7 @@
               (export main)))
   (call   main)
   (output (: 1 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 20))
 
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
@@ -3575,7 +3575,7 @@
   (call   main (: 10 Int64)) (output (: 551 Int64))
   (call   main (: 31 Int64)) (output (: 13462691 Int64))
   (call   main (: 64 Int64)) (output (: 106102098577231 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity"
   (doc    "The third fibonacci computation (naive recursion, fast-doubling above, now the LINEAR-MAP
@@ -3774,7 +3774,7 @@
             (def (main) (match (check (Exp.If (Exp.Num 1) (Exp.Num 2))) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "the well-typed branch of the mutual check returns the Ok result"
   (doc    "The companion outcome of the check/check-if pair on a well-typed input. `check(Num 5)` =
@@ -3802,7 +3802,7 @@
             (def (main) (match (check (Exp.Num 5)) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; --- A rest-pattern head binder read inside an INLINED match-arg callee's scrutinee ------------
 ; The monomorphization pair above pins one face of the "re-parent / orphaned-binder" class: a match-arm
@@ -8618,7 +8618,7 @@
             (def (main (: n Int64)) (match (f n) ((Mk t) ((. List len) t))))
             (export main)))
   (call   main (: -2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 12))
 
 (case "a recursive re-wrap of a matched owned sum child accumulates shells -- known gap, DEEP (6 frames, leaks strictly more)"
   (doc    "The SAME program as the shallow twin, driven to 6 re-wrap frames (`main(-6)`) instead of 2. Value
@@ -8632,7 +8632,7 @@
             (def (main (: n Int64)) (match (f n) ((Mk t) ((. List len) t))))
             (export main)))
   (call   main (: -6 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 254))
+  (live-objects known-leak 252))
 
 ; -- breaker batch 473 (2026-08-27): the heap-return × lifted-param COMPOSITION gate (found probing
 ; param→return flow). Lifted list param + scalar return works (el2); scalar param + heap return

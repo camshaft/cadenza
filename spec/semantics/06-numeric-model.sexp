@@ -2544,7 +2544,7 @@
   (call   main (: 9 Int64)) (output (: 901 Int64))
   (call   main (: 99999999 Int64)) (output (: 921 Int64))
   (call   main (: 10 Int64)) (output (: 111 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers"
   (doc    "The sqrt-paired divisor walk (the trial-division pin below STOPS at the first divisor;
