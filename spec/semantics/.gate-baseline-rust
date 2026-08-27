@@ -3138,6 +3138,7 @@ pass	a pure shared subexpression computes the same value however the backend opt
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
+pass	a qualified nullary variant pattern resolves in a nested match on the same scrutinee
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width

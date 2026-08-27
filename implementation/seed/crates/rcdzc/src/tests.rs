@@ -8945,40 +8945,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nullary_dotted_variant_pattern_matches_in_a_directly_nested_match() {
-        // REGRESSION (resolve, both surfaces): a qualified NULLARY-variant pattern `(. Ty TInt)` in a match
-        // whose scrutinee is itself an OUTER match's arm body — `(match x ((. Ty TBool) …) ((. Ty TInt)
-        // (match x …)))` — faulted as CDZ0201 "member access requires a record" while the IDENTICAL outer
-        // arm pattern compiled. `find_binder_in_pattern` mis-parsed the whole `(. Ty TInt)` member form as a
-        // variant ctor whose PAYLOAD binders were `Ty` and `TInt` (the `.` atom read as the ctor head), so
-        // it registered `Ty`/`TInt` as spurious payload binders. Those binders poisoned scope: the nested
-        // arm's identical `Ty`/`TInt` occurrences then looked SHADOWED, so `is_variant_pattern_binder_
-        // occurrence` classified them INERT (`Resolved::Unit`); the member operand `Ty` no longer reduced to
-        // the type record and `variant_disc_of` failed. Fix: a `.`-atom head means the whole list IS a
-        // nullary-member ctor (no payload binders) — bail, exactly as `lower::pattern_constraints` already
-        // special-cases it. `x` is `TInt` → outer `TInt` arm → inner match `TInt` arm → 9.
-        let src = "(module m \
-             (type Ty (TInt) (TBool)) \
-             (def (g (: x Ty)) \
-               (match x ((. Ty TBool) 0) ((. Ty TInt) (match x ((. Ty TBool) 8) ((. Ty TInt) 9))))) \
-             (def (main) (g (Ty.TInt))) \
-             (export main))";
-        // `cdz check` must be clean — no CDZ0201 on the nested arm.
-        let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-        assert!(
-            diags
-                .iter()
-                .all(|d| d.severity != crate::abi::Severity::Error),
-            "a nullary dotted variant pattern in a nested match lowers with no error diagnostics: {diags:?}"
-        );
-        let Some(v) = run_heap_value(src, vec![]) else {
-            eprintln!("runtime wasm not found; skipping nested nullary-variant match run");
-            return;
-        };
-        assert_eq!(v, "9", "TInt → outer TInt arm → inner match TInt arm → 9");
-    }
-
-    #[test]
     fn a_nested_element_pattern_dispatches_on_a_non_variant0_list_payload() {
         // REGRESSION (miscompile-node-payload-consumed-by-mutual-recursion): a sum whose payload is a LIST,
         // in a NON-variant-0 slot (`List` is the LAST variant of `Ast`), matched by a NESTED list-element
