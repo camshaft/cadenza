@@ -5814,6 +5814,51 @@ fn a_recursive_performer_feeding_its_result_to_a_helper_call_folds() {
     );
 }
 
+/// A capture-once closure driven by a RECURSIVE higher-order fn now COMPILES (was a "parameter reference
+/// has no local slot" ICE at emit — chr1). The closure `(fn (x) (* a x))` captures `a = (St.next)`; the
+/// capture-once fold discharges the draw and rewrites the capture as a chain of SYNTHESIZED alias bindings
+/// (`#a → #seed → n`) that bottoms out at main's enclosing param `n`. Because `n` escapes into the
+/// recursive `drive` (which cannot inline the closure), `collect_captures` must box it into the closure
+/// env — but it chased the ref alias only ONE level (saw `Ref{#seed}`, not a `Param`), then treated the
+/// non-user synthesized `#a`/`#seed` node as a global constant and skipped it, leaving `n` to lower as a
+/// slot-less `Core::Param`. Fixed by chasing the synthesized alias chain to its terminal in
+/// `collect_captures`: a chain that bottoms out at an enclosing param IS a capture, keyed by the original
+/// body occurrence. Pins that it COMPILES with no slot-less-param leak; the run value (`main(5)` = 6375)
+/// and the residual 1-object closure leak are checked by the corpus case `chr1 a capture-once closure
+/// driven by a RECURSIVE higher-order fn folds…` via cdz-run.
+#[test]
+fn a_capture_once_closure_through_a_recursive_hof_folds_via_alias_chain_capture() {
+    use crate::testkit::parse;
+    let src = "(do \
+        (effect St (op next (-> Int64))) \
+        (def (drive (: f (-> Int64 Int64)) (: k Int64)) \
+          (if (= k 0) 0 (+ (f k) (drive f (- k 1))))) \
+        (def (main (: n Int64)) \
+          (handle St n ((next () s (resume s (+ s 1)))) \
+            (let ((g (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) \
+              (drive g 50)))) \
+        (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "chr1 must compile (no slot-less closure capture)"
+    );
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("no local slot")),
+        "no 'parameter reference has no local slot' decline"
+    );
+}
+
 /// A mutual-group DEMAND-PERFORM-DEMAND arm inside a `let`-wrapped dispatch now FOLDS (was a tail-resumptive
 /// decline that blocked compiler-ml's lazy-DB spine). `demand`/`cache`/`compute` are a mutual SCC over a
 /// per-node state effect; `compute`'s arm is `(let ((a (demand child))) (match (St.put …) (_ (demand child))))`
