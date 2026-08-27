@@ -20140,3 +20140,45 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 10 Int64)))
+
+; -- breaker batch 456 (2026-08-27): the generic x heap-payload family BREADTH (extends batch 455's
+; df quad). The leak covers tuple and record payloads too (dfr1/dfr2), and multi-payload generic
+; ctors are SOUND under whole-binding (dfr3d, reclaims) — but a NESTED destructure of a heap
+; payload in a multi-payload generic ctor MISCOMPILES to an unreachable trap on wasm (rust: 111).
+; That trap shape is filed, not pinnable; dfr3d is its passing whole-binding control.
+
+(case "dfr1 a generic sum's TUPLE payload destructured to scalars leaks its shells"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (match (if (> n 0) (GBox.GFull (tuple n (+ n 1))) (GBox.GEmpty unit))
+        ((GBox.GFull (tuple a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 2))
+
+(case "dfr2 a generic sum's RECORD payload destructured to a field leaks its shells"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (match (if (> n 0) (GBox.GFull (record (= v n))) (GBox.GEmpty unit))
+        ((GBox.GFull (record (= v a))) (* a 3))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 2))
+
+(case "dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+        ((Both p c) (+ (List.len p) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 102 Int64))
+  (live-objects 0))
