@@ -870,13 +870,6 @@ const PRAGMA_REGISTRY: &[&str] = &[
     "default-fraction",
     "default-float",
     "param",
-    // A CONTRACT module's identity (`modules-and-namespaces.md` §A Contract Module Declares Its Identity):
-    // the contract NAME (a string) plus which declared type is its INPUT and which its OUTPUT. A contract
-    // `.cdz` = its type decls + these directives; a tool reads them from the module AST to assemble and
-    // hash `(contract <name> (<types>) <input> <output>)`.
-    "contract",
-    "input",
-    "output",
 ];
 
 /// The numeric-domain check for a well-formed `(pragma default-integer <T>)`: the directive names the
@@ -1792,60 +1785,6 @@ fn collect_faults(db: &mut Db) -> Vec<Reject> {
                             Code::MalformedDirective,
                             "`@!param` must be `@!param(config…) name : Type` — a module parameter with an \
                              explicit type (e.g. `@!param(widget: slider) width : Int64`)",
-                        )
-                        .at(form),
-                    );
-                }
-            }
-            // `contract <name>` — the contract module's NAME, exactly one STRING argument. A missing/extra
-            // argument or a non-string (e.g. a bare name) is CDZ0602: the name is a string identity a tool
-            // hashes, so its shape is fixed. (What the name/input/output MEAN — assembling and hashing the
-            // contract identity — is an external tool's concern; this arm is the structural gate.)
-            Some("contract") => {
-                if ptail.len() != 2 {
-                    faults.push(
-                        Reject::coded(
-                            Code::MalformedDirective,
-                            "`contract` takes exactly one string argument — the contract name \
-                             (e.g. `@!contract \"cdz-platform.deliver\"`)",
-                        )
-                        .at(form),
-                    );
-                } else if db.ast.as_str(ptail[1]).is_none() {
-                    faults.push(
-                        Reject::coded(
-                            Code::MalformedDirective,
-                            "a `contract` name must be a string literal \
-                             (e.g. `@!contract \"cdz-platform.deliver\"`)",
-                        )
-                        .at(form),
-                    );
-                }
-            }
-            // `input <Type>` / `output <Type>` — which declared type is the contract's input and which its
-            // output (the contract is `name : Input -> Output`). Exactly one argument, a bare TYPE NAME the
-            // module declares. A missing/extra argument or a non-name (e.g. a string/number literal) is
-            // CDZ0602 — steering to the type-name form.
-            Some(dir @ ("input" | "output")) => {
-                if ptail.len() != 2 {
-                    faults.push(
-                        Reject::coded(
-                            Code::MalformedDirective,
-                            format!(
-                                "`{dir}` takes exactly one argument — the name of a type the module \
-                                 declares (e.g. `@!{dir} Envelope`)"
-                            ),
-                        )
-                        .at(form),
-                    );
-                } else if db.ast.as_name(ptail[1]).is_none() {
-                    faults.push(
-                        Reject::coded(
-                            Code::MalformedDirective,
-                            format!(
-                                "`{dir}` must name a type the module declares (e.g. `@!{dir} Envelope`), \
-                                 not a literal"
-                            ),
                         )
                         .at(form),
                     );
