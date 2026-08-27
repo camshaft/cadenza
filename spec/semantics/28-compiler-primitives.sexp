@@ -2292,7 +2292,7 @@
            PRESERVES both the trap AND its kind — deferred to runtime, not dropped, not kind-erased.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "divide by zero")
+  (trap   "div-by-zero")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb3 a const divide-by-zero in a MATCH arm traps at runtime, not at compile (the match twin)"
@@ -2301,7 +2301,7 @@
            the PRESERVED `divide by zero` kind (`Core::TrapDivZero`, the match twin of dzb2's `if`-branch demote).")
   (input  (do (def (main (: n Int64)) (match n (0 (/ 1 0)) (_ 7))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "divide by zero")
+  (trap   "div-by-zero")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzw1 an EXPLICIT user (trap …) in a runtime branch does NOT warn CDZ0309 (only const-fold-origin traps warn)"
@@ -2346,7 +2346,7 @@
            bare 'unreachable' a plain `Core::Trap` would report). Pins the overflow twin of dzb2's div-by-zero demote.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "integer overflow")
+  (trap   "overflow")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "ovb3 a shift-COUNT-out-of-range branch stays the kind-less 'unreachable' (the discrimination)"
