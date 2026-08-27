@@ -25572,57 +25572,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_list_update_index_that_wraps_below_the_length_traps() {
-        // SAFETY: `List.update`'s Int64 index is wrapped i64→i32 to feed the runtime's u32 index, but the
-        // wrap discards the high 32 bits BEFORE the runtime's length check — so a huge index `>= 2^32`
-        // that truncates below the length would silently update the WRONG element. `(List.update (list 1
-        // 2 3) 2^32 99)` (index 4294967296 truncates to 0) must TRAP, not alias into slot 0. A high-bits
-        // guard (trap if `(index as u64) >= 2^32`) precedes the wrap. An in-bounds index still updates;
-        // a real OOB index still traps.
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping list-update OOB run");
-            return;
-        };
-        let run = |src: &str| -> cdz_run::Outcome {
-            let bytes = component(src);
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            cdz_run::run(&bytes, &opts).expect("run")
-        };
-        // The list is BUILT at run time (`build 0 3` = `[0 1 2]`) so `List.update` stays a RUNTIME
-        // `vec-update` (a constant-list update folds — an OOB constant index is caught at COMPILE time as
-        // CDZ0304, a separate path; this test pins the RUNTIME index guard). A helper wraps the shared
-        // build-loop + update-len; each call passes a different runtime index.
-        let prog = |idx: &str| {
-            format!(
-                "(module m \
-                   (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (main) (List.len (List.update (build 0 3 (list)) {idx} 99))) (export main))"
-            )
-        };
-        // A wrapping OOB index (2^32 → 0) must TRAP, not silently update element 0.
-        assert!(
-            matches!(run(&prog("4294967296")), cdz_run::Outcome::Trap(_)),
-            "an index that wraps below the length must trap, not alias into a valid slot"
-        );
-        // A real OOB index (no wrap) still traps.
-        assert!(
-            matches!(run(&prog("5")), cdz_run::Outcome::Trap(_)),
-            "a genuinely out-of-bounds index must trap"
-        );
-        // NO OVER-TRAP: an in-bounds update still succeeds and preserves the length.
-        assert!(
-            matches!(run(&prog("2")), cdz_run::Outcome::Value(ref s) if s == "3"),
-            "an in-bounds update must still succeed"
-        );
-    }
-
     /// Compile `src` (a single nullary-export program returning a compound), compose+run it, and return
     /// the host's rendered `(: value type)` string. Skips (returns `None`) when the runtime is not built.
     fn escape_render(src: &str) -> Option<String> {
@@ -31278,47 +31227,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             Some("CDZ0221"),
             "a non-final `,@` in a quote pattern is CDZ0221"
         );
-    }
-
-    #[test]
-    fn a_recursive_sum_linked_list_folds_at_runtime() {
-        // The self-hosting idiom (05-compound-types.sexp): a RECURSIVE sum `IntList` whose `Cons` carries
-        // `(Tuple Int64 IntList)` — the payload references the sum itself. `count` builds a runtime-length
-        // list `[n … 1]` via `(IntList.Cons (tuple n (count (- n 1))))` and `(IntList.Nil ())` (nullary
-        // construction); `sm` folds it, destructuring each Cons node's tuple payload `(tuple h t)` and
-        // recursing on the runtime discriminant. sm(count 5) = 5+4+3+2+1 = 15. Exercises recursive sums +
-        // nullary `(Nil ())` construction + tuple-payload destructure + runtime sum-match, all composed.
-        let src = "(module m \
-                     (type IntList (Cons (Tuple Int64 IntList)) Nil) \
-                     (def (count (: n Int64)) \
-                        (if (< n 1) (IntList.Nil ()) \
-                            (IntList.Cons (tuple n (count (- n 1)))))) \
-                     (def (sm (: xs IntList)) \
-                        (match xs \
-                          ((IntList.Cons (tuple h t)) (+ h (sm t))) \
-                          ((IntList.Nil _) 0))) \
-                     (def (main) (sm (count 5))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile a recursive-sum linked list");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a runtime linked-list fold imports the value-heap runtime"
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed linked-list run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "15", "sm(count 5)"),
-            cdz_run::Outcome::Trap(t) => panic!("recursive linked-list fold trapped: {t}"),
-        }
     }
 
     #[test]

@@ -21027,3 +21027,37 @@
   (call i32hit)  (output (: 100 Int32))
   (call boolhit) (output (: 1 Int64))
   (call boxed)   (output (: 100 Int64)))
+
+; -- runtime List.update index guard (migrated from rcdzc runtime_ops a_list_update_index_that_wraps_
+; below_the_length_traps): List.update's Int64 index is wrapped i64->i32 for the runtime's u32 index; a
+; high-bits guard must trap an index >= 2^32 BEFORE the wrap so a wrapping index can't alias a valid slot,
+; and a genuinely-OOB index traps, while an in-bounds update succeeds. The list is built at RUNTIME so
+; List.update stays a real vec-update (a constant-list update folds via a separate compile-time path).
+(case "lus1 a runtime List.update traps on a wrapping or out-of-bounds index, succeeds in bounds"
+  (doc    "`(List.len (List.update (build 0 3 (list)) idx 99))` over the runtime list [0,1,2]: idx=2 updates
+           in bounds → len 3; idx=5 is out of bounds → trap; idx=4294967296 (2^32) truncates to 0 but the
+           high-bits guard traps it rather than aliasing slot 0.")
+  (input (do
+    (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+    (def (main (: idx Int64)) (List.len (List.update (build 0 3 (list)) idx 99)))
+    (export main)))
+  (call main (: 2 Int64))          (output (: 3 Int64))
+  (call main (: 5 Int64))          (trap "unreachable")
+  (call main (: 4294967296 Int64)) (trap "unreachable"))
+
+; -- recursive-sum linked list (migrated from rcdzc runtime_ops a_recursive_sum_linked_list_folds_at_
+; runtime): a recursive sum IntList whose Cons carries (Tuple Int64 IntList) — the payload references the
+; sum itself; count builds [n..1] via Cons/nullary Nil, sm folds it destructuring each Cons tuple payload
+; and recursing on the runtime discriminant. sm(count 5) = 5+4+3+2+1 = 15.
+(case "rsl1 a recursive-sum linked list is built and folded at runtime"
+  (doc    "Recursive sum + nullary (Nil ()) construction + tuple-payload destructure + runtime sum-match
+           composed: sm(count 5) sums [5,4,3,2,1] = 15.")
+  (input (do
+    (type IntList (Cons (Tuple Int64 IntList)) Nil)
+    (def (count (: n Int64)) (if (< n 1) (IntList.Nil ()) (IntList.Cons (tuple n (count (- n 1))))))
+    (def (sm (: xs IntList)) (match xs ((IntList.Cons (tuple h t)) (+ h (sm t))) ((IntList.Nil _) 0)))
+    (def (main) (sm (count 5)))
+    (export main)))
+  (call main)
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
