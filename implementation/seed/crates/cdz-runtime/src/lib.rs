@@ -20697,6 +20697,39 @@ mod tests {
         assert_eq!(live_nodes(), before, "no leak across the slice-compact");
     }
 
+    /// EMPIRICAL classification of the adv54b root-cause split — does the fix need a RUNTIME half? adv54b
+    /// is `Bytes.concat (String.to-bytes tail) (String.to-bytes tail)` where `tail` is a slice-VIEW used
+    /// TWICE; the compiler under-dups the dual consuming use, so concat double-frees. This replays the op
+    /// sequence WITH the correct compiler dup simulated (`op_dup` of the dual-used view) and asserts the
+    /// census BALANCES + the value is correct. It PASSES, which proves `op_bytes_compact`/`bytes_flatten`
+    /// of a SHARED node is SOUND: unlike a value-CHANGING FBIP mutator (`vec-push`), flatten is a
+    /// value-PRESERVING canonicalization (rope→flat leaf, same logical bytes; it releases only the node's
+    /// OWN single child-ref), so it needs no `rc == 1` guard. => the adv54b fix is PURELY the compiler dup
+    /// (v-core-opt's half); there is NO runtime half. This test pins that the runtime stays sound once the
+    /// dup lands.
+    #[test]
+    fn compact_of_a_dual_used_shared_slice_view_is_balanced_with_the_dup() {
+        reset();
+        let before = live_nodes();
+        let parent = bytes_leaf(&[10, 20, 30, 40, 50]);
+        let sl = op_bytes_slice(parent, 1, 2); // slice-view [20,30]; the view now owns parent's ref
+        op_dup(sl); // SIMULATE the compiler dup for the dual consuming use → sl rc 2 (shared)
+        let t1 = op_bytes_compact(sl); // compact #1: flattens the now-SHARED view in place
+        let t2 = op_bytes_compact(sl); // compact #2: sl is a flat leaf now → no-op, same handle
+        let b = op_bytes_concat(t1, t2); // consumes BOTH refs of sl (rc 2 → 0, freed once)
+        assert_eq!(op_bytes_len(b), 4, "concat of [20,30] ++ [20,30] is 4 bytes");
+        let b_flat = op_bytes_compact(b);
+        let expected = bytes_leaf(&[20, 30, 20, 30]);
+        assert!(champ_eq(b_flat, expected), "content is [20,30,20,30] — value correct");
+        op_drop(b_flat);
+        op_drop(expected);
+        assert_eq!(
+            live_nodes(),
+            before,
+            "census balances (no double-free, no leak) — compact-of-a-shared view is sound WITH the dup, so the adv54b fix is purely the compiler dup"
+        );
+    }
+
     /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-
     /// byte compare, BY CONTRACT (fast, shared with the map-key path). So a ROPE Bytes/String value is
     /// value-eq-DISTINCT from its flat twin even with equal CONTENT — the COMPILER must canonicalize
