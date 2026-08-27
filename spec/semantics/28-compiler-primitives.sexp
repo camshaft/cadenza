@@ -1203,6 +1203,77 @@
   (call   go 0)
   (trap   "division by zero"))
 
+(case "coc2 an (Ordering.of) of a Char-leaf compound DECLINES — Char is not a blessed compound-ordering leaf"
+  (doc    "The three-way companion of 03-equality's `<` Char-leaf decline (one total order, two ways — §331): a Char
+           leaf makes a compound un-orderable for BOTH the boolean `<` and the three-way `Ordering.of`.
+           `Ordering.of (tuple 1 #\\a) (tuple 1 #\\b)` DECLINES — even though a SCALAR `Ordering.of #\\a #\\b` is
+           blessed and a const Set of chars to-lists sorted (that bakes an enumeration order, never a compound walk).
+           Pins that the const compound-ordering fold gates on the RUNTIME blessed-leaf vocabulary
+           (`is_orderable_compound`: Int/Bool/String/Bytes + nested, NOT Char/Float), not `const_key_order`'s broader
+           to-list order — so it never answers where the runtime compound walk refuses.")
+  (input  (do (def (main)
+                (match (Ordering.of (tuple 1 #\a) (tuple 1 #\b))
+                  ((Ordering.Less _)    1)
+                  ((Ordering.Equal _)   2)
+                  ((Ordering.Greater _) 3)))
+              (export main)))
+  (declines))
+
+; --- Primitive 2: const boolean ORDERING (`<`/`<=`/`>`/`>=`) folds a constant COMPOUND pair --------------------
+; The boolean ordering operators are the §331 companion of the three-way `Ordering.of`: a type surfaces ONE total
+; order two ways that cannot disagree. The compound `=` fold already lands; a constant COMPOUND `<`/`<=`/`>`/`>=`
+; now folds too, through the SAME `const_key_order` canonical value order (mirroring the runtime `value_cmp_shaped`
+; the `value-cmp` walk uses), guarded on both operands being fully constant (the fold discards them, so a runtime
+; trapping subterm must not be elided). Pinned under a `(const ...)` demand — without the fold the `<` lowers to a
+; runtime `value-cmp` (not a constant) and the demand rejects — plus a §331 agreement check vs `Ordering.of`.
+
+(case "a const (<) of two constant TUPLES folds to a Bool under the const demand"
+  (doc    "`(< (tuple 1 2) (tuple 1 3))`: tuples order element-wise — position 0 equal, position 1 decides 2 < 3 →
+           true. The `(const ...)` demand forces the compile-time Bool via `const_key_order`, else it rejects, so this
+           pins the compound ordering fold (the boolean-operator twin of the `Ordering.of` tuple case above).")
+  (input  (do (def (main) (const (if (< (tuple 1 2) (tuple 1 3)) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "a const (>=) of two constant RECORDS folds in canonical (name-lexicographic) field order"
+  (doc    "Discriminated against source/decl order: both records are written `lo`-FIRST but order by the canonical
+           name-lexicographic field order (`hi` before `lo`). `(>= {lo 9, hi 1} {lo 0, hi 2})` reads `hi` first:
+           `hi 1` < `hi 2` → the record is LESS, so `>=` is false → 0, IGNORING that `lo 9` > `lo 0` (a source/decl
+           order would make `>=` true → 1). Pins record field-wise ordering in the boolean operator.")
+  (input  (do (def (main)
+                (const (if (>= (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))) 1 0)))
+              (export main)))
+  (output (: 0 Int64)))
+
+(case "a const (>) of two same-discriminant SUMS folds by payload"
+  (doc    "Sums order by discriminant then payload. `(> (Option.Some 5) (Option.Some 3))`: same discriminant (Some),
+           payload 5 > 3 → true → 1. The const demand forces the compound sum ordering fold via `const_key_order`.")
+  (input  (do (def (main) (const (if (> (Option.Some 5) (Option.Some 3)) 1 0))) (export main)))
+  (output (: 1 Int64)))
+
+(case "cbo1 a const compound (<) agrees with the three-way (Ordering.of) on the same operands (§331)"
+  (doc    "The one-total-order-two-ways invariant: `(< a b)` is true EXACTLY when `Ordering.of a b` is Less, for the
+           same constant compound operands. Compares the boolean fold against the three-way fold's Less arm over
+           `(tuple 2 (Option.Some 1))` vs `(tuple 2 (Option.Some 9))` (position 0 equal, then Some 1 < Some 9 → Less);
+           both must fold to agree → true. Pins that the two compound folds surface the SAME order (cannot diverge).")
+  (input  (do (def (main)
+                (const (= (< (tuple 2 (Option.Some 1)) (tuple 2 (Option.Some 9)))
+                          (match (Ordering.of (tuple 2 (Option.Some 1)) (tuple 2 (Option.Some 9)))
+                            ((Ordering.Less _) true) ((Ordering.Equal _) false) ((Ordering.Greater _) false)))))
+              (export main)))
+  (output (: true Bool)))
+
+(case "cbo2 a compound (<) does NOT elide a runtime operand's construction effect (fold effect-safety guard)"
+  (doc    "The boolean-operator twin of coc1: the compound `<` fold discards its operands, so it fires only when both
+           are fully constant. Here the order of `(Option.Some <payload>)` vs `(Option.None)` is decided by the
+           discriminant alone, but the fully-const guard keeps this runtime (the payload depends on `k`): `go 0`
+           constructs the Some payload, whose `(/ 1 0)` traps 'division by zero' before the compare — the effect is
+           preserved, not elided.")
+  (input  (do (def (go (: k Int64))
+                (if (< (Option.Some (/ 1 k)) (: (Option.None unit) (Option Int64))) 1 0))
+              (export go)))
+  (call   go 0)
+  (trap   "division by zero"))
+
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
 ; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
