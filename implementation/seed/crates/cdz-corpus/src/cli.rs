@@ -140,6 +140,18 @@ fn shred_records(files: &[String], out_dir: &str) -> Result<(), String> {
                 )
                 .map_err(|e| format!("{path} case {i} module {}: {e}", m.name))?;
             }
+            // PEER provider components (cross-component case): per peer, its program as `peer-<n>.ast` (a
+            // STANDALONE component the nix build-drv compiles separately — glob `peer-*.ast`, NOT linked
+            // like a module) + a `peer-<n>.iface` sidecar holding the interface name. The interface
+            // (`cadenza:pkg/iface`) is NOT filename-safe (`:`/`/`), so the sidecar — not the stem — carries
+            // it, and the build/exec reconstruct `--peer <iface>=<peer.wasm>` from {peer-<n>.ast,
+            // peer-<n>.iface}. Indexed by declaration order (stable). Absent for a single-component case.
+            for (n, p) in rec.peers.iter().enumerate() {
+                write_bytes(&cdir.join(format!("peer-{n}.ast")), &p.program_ast)
+                    .map_err(|e| format!("{path} case {i} peer {} ast: {e}", p.interface))?;
+                std::fs::write(cdir.join(format!("peer-{n}.iface")), &p.interface)
+                    .map_err(|e| format!("{path} case {i} peer {} iface: {e}", p.interface))?;
+            }
             // The compile CONFIG, each in the compiler's NATIVE input form (no transform at compile time):
             // the world as its own `wit-world.ast` binary artifact, the interface name as plain text.
             if let Some(w) = &rec.wit_world_ast {

@@ -1351,6 +1351,7 @@ fn run_program(
     store: &Option<PathBuf>,
     program: &str,
     modules: &[(String, String)],
+    peers: &[(String, String)],
     call: Option<&Call>,
     host_responses: &[(String, String)],
     host_calls: &[String],
@@ -1389,12 +1390,23 @@ fn run_program(
             message: String::new(),
         };
     }
+    // A CROSS-COMPONENT `(peer …)` case is driven ONLY through the WASM harness — the peer is a separately-
+    // compiled component composed at run via `cdz-run --peer`/`run_with_peers`. The Rust/ML backends have no
+    // cross-component composition on this path, so a peer case is not-yet-supported there → DECLINE (Todo),
+    // the same wasm-only convention `wit-world` uses.
+    if !peers.is_empty() && !matches!(target, GateTarget::Wasm) {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
     match target {
         GateTarget::Wasm => run_program_wasm(
             tools,
             store,
             program,
             modules,
+            peers,
             call,
             host_responses,
             None,
@@ -1586,6 +1598,7 @@ fn run_program_wasm(
     store: &Option<PathBuf>,
     program: &str,
     modules: &[(String, String)],
+    peers: &[(String, String)],
     call: Option<&Call>,
     host_responses: &[(String, String)],
     opt_level: Option<&str>,
@@ -1609,6 +1622,46 @@ fn run_program_wasm(
         Err(ran) => return ran,
     };
 
+    // CROSS-COMPONENT PEERS: compile each peer program to its OWN standalone component (the same
+    // single-file emit as the entry — NOT linked like a module), write it into a temp dir, and pass
+    // `--peer <iface>=<path>` so cdz-run composes it with the entry via `run_with_peers`. The temp dir
+    // must outlive the run (its `.wasm` files are read at instantiate), so it is removed only after the
+    // run completes (below). Empty for a single-component case (no `--peer`, byte-identical to before).
+    let mut peer_paths: Vec<(String, PathBuf)> = Vec::new();
+    let peer_dir: Option<PathBuf> = if peers.is_empty() {
+        None
+    } else {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TICK: AtomicU64 = AtomicU64::new(0);
+        let tick = TICK.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("cdz-peers-{}-{tick}", std::process::id()));
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Ran::BadArtifact("could not create a temp peer dir".into());
+        }
+        for (i, (iface, pprog)) in peers.iter().enumerate() {
+            // The peer EXPORTS `iface`, so compile it with `--component-name <iface>` (the mechanism a
+            // source program uses to export through a named interface instance). A peer whose interface
+            // shape isn't inferable from its exports alone may additionally need a wit-world — that surface
+            // is TBD pending the source-provider shape (coordinating with v-wm); component-name is required
+            // regardless.
+            let (peer_bytes, _warnings) =
+                match emit_component_single_at(tools, pprog, opt_level, None, Some(iface)) {
+                    Ok(bw) => bw,
+                    Err(ran) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return ran;
+                    }
+                };
+            let path = dir.join(format!("peer-{i}.wasm"));
+            if std::fs::write(&path, &peer_bytes).is_err() {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Ran::BadArtifact("could not write a peer component".into());
+            }
+            peer_paths.push((iface.clone(), path));
+        }
+        Some(dir)
+    };
+
     // Stage 3: run the component (its stdout is the value; a trap goes to stderr with exit 1).
     let mut run = std::process::Command::new(&tools.run);
     run.arg("-")
@@ -1617,6 +1670,11 @@ fn run_program_wasm(
         .stderr(Stdio::piped());
     if let Some(dir) = store {
         run.arg("--store").arg(dir);
+    }
+    // Each cross-component peer: `--peer <iface>=<path>` (the compiled peer component). cdz-run composes
+    // them with the entry (`run_with_peers`). Absent for a single-component case.
+    for (iface, path) in &peer_paths {
+        run.arg("--peer").arg(format!("{iface}={}", path.display()));
     }
     // HEAP-BALANCE (corpus opt-out heap-liveness): every HEAP-importing wasm case must end at its expected
     // live-cell count. cdz-run detects the heap import and emits a `live-objects\t<N>` line ONLY for a heap
@@ -1715,7 +1773,13 @@ fn run_program_wasm(
     }
     let mut child = run.spawn().unwrap_or_else(|e| launch_fail("cdz-run", e));
     child.stdin.take().unwrap().write_all(&component).ok();
-    let run_out = match wait_with_timeout(child, run_timeout()).expect("wait cdz-run") {
+    let waited = wait_with_timeout(child, run_timeout()).expect("wait cdz-run");
+    // The peers' `.wasm` files were read at instantiate; the child has now exited, so drop the temp peer
+    // dir before grading (covers every return path below, including the timeout branch).
+    if let Some(dir) = &peer_dir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let run_out = match waited {
         Some(out) => out,
         // A runaway program (an infinite loop, or a runtime that never returns) — killed at the
         // deadline. Grade it as a trap-with-reason "timeout": on an `(output …)` case it FAILs (a value
@@ -1864,6 +1928,13 @@ fn emit_component_single_at(
     if let Some(level) = opt_level {
         compile_args.push("--opt-level");
         compile_args.push(level);
+    }
+    // A component-name WITHOUT a wit-world (a bare peer/provider): the guest's exports cross THROUGH the
+    // named interface instance, its shape synthesized from the exported fn signatures (the wit-world path
+    // above handles the explicit-world case). `cdz compile --component-name <iface>` on the stdin pipe.
+    if let Some(cn) = component_name {
+        compile_args.push("--component-name");
+        compile_args.push(cn);
     }
     let rcdzc = Command::new(&tools.rcdzc)
         .args(&compile_args)
@@ -4138,6 +4209,7 @@ fn sweep_one_case(
                 store,
                 &rec.program,
                 &rec.modules,
+                &rec.peers,
                 call,
                 &rec.host_responses,
                 Some(lvl),
@@ -4316,6 +4388,7 @@ fn gate_one_case(
                         store,
                         &rec.program,
                         &rec.modules,
+                        &rec.peers,
                         t.call.as_ref(),
                         &rec.host_responses,
                         &rec.host_calls,
@@ -4381,6 +4454,11 @@ struct CorpusRecord {
     /// compiled alone). When non-empty, the wasm gate driver writes every module + the entry (`program`,
     /// named `main`) to a temp dir and runs `cdz compile <files> --entry main` instead of the stdin pipe.
     modules: Vec<(String, String)>,
+    /// PEER components of a CROSS-COMPONENT case — each an `(interface, provider-program)` from a `peer`
+    /// record line. Empty for a single-component case. When non-empty, the wasm gate compiles each peer to
+    /// its OWN component and runs the entry with `cdz-run --peer <iface>=<path>` (`run_with_peers`), rather
+    /// than linking them into one component like `modules`.
+    peers: Vec<(String, String)>,
     /// One or more TRIALS — each an optional `(call …)` paired with the `expect` payload it must
     /// produce. The program is compiled ONCE; each trial runs its call and grades against its expect,
     /// and the case's verdict COMBINES them (see `grade_ran`). A single-result case is one trial with
@@ -4475,6 +4553,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     let mut records = Vec::new();
     let (mut desc, mut prog, mut needs) = (String::new(), String::new(), Vec::new());
     let mut modules: Vec<(String, String)> = Vec::new();
+    let mut peers: Vec<(String, String)> = Vec::new();
     let mut trials: Vec<Trial> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
@@ -4497,6 +4576,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 description: std::mem::take(&mut desc),
                 program: std::mem::take(&mut prog),
                 modules: std::mem::take(&mut modules),
+                peers: std::mem::take(&mut peers),
                 trials: std::mem::take(&mut trials),
                 needs: std::mem::take(&mut needs),
                 host_responses: std::mem::take(&mut host_responses),
@@ -4523,6 +4603,14 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                 "module" => {
                     if let Some((name, mprog)) = val.split_once('\t') {
                         modules.push((name.to_string(), mprog.to_string()));
+                    }
+                }
+                // `peer\t<iface>\t<program>` — a cross-component provider (interface + its program). Split
+                // the interface off the program; the wasm gate compiles each peer to its own component and
+                // composes via `--peer <iface>=<path>`.
+                "peer" => {
+                    if let Some((iface, pprog)) = val.split_once('\t') {
+                        peers.push((iface.to_string(), pprog.to_string()));
                     }
                 }
                 "call" => call_export = Some(val.to_string()),
@@ -4629,6 +4717,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 store,
                 &rec.program,
                 &rec.modules,
+                &rec.peers,
                 t.call.as_ref(),
                 &rec.host_responses,
                 &rec.host_calls,
@@ -4888,6 +4977,12 @@ enum TrapCode {
     OutOfBounds,
     Overflow,
     Unreachable,
+    /// A cross-component PEER compose-time signature/arity/type reject (`run_with_peers` refuses a peer
+    /// whose exported op does not match the consumer's binding). Not a runtime arithmetic trap — a compose
+    /// refusal surfaced as a trap by the gate.
+    PeerSignatureMismatch,
+    /// A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface reject).
+    PeerMissingInterface,
 }
 
 impl TrapCode {
@@ -4900,6 +4995,8 @@ impl TrapCode {
             TrapCode::OutOfBounds => "CDZ0702",
             TrapCode::Overflow => "CDZ0703",
             TrapCode::Unreachable => "CDZ0704",
+            TrapCode::PeerSignatureMismatch => "CDZ0705",
+            TrapCode::PeerMissingInterface => "CDZ0706",
         }
     }
 
@@ -4912,6 +5009,8 @@ impl TrapCode {
             "CDZ0702" => Some(TrapCode::OutOfBounds),
             "CDZ0703" => Some(TrapCode::Overflow),
             "CDZ0704" => Some(TrapCode::Unreachable),
+            "CDZ0705" => Some(TrapCode::PeerSignatureMismatch),
+            "CDZ0706" => Some(TrapCode::PeerMissingInterface),
             _ => None,
         }
     }
@@ -4957,6 +5056,18 @@ fn classify(reason: &str) -> Option<TrapCode> {
         // grades pass on BOTH backends. (Rust's second shift panic, "integer overflow in left shift",
         // already classifies via the "overflow" arm above.)
         Some(TrapCode::Unreachable)
+    } else if r.contains("signature mismatch") {
+        // A cross-component PEER compose-time reject: cdz-run's peer signature check refuses to compose a
+        // peer whose exported op arity/signature does not match the consumer's binding (the signature/
+        // arity/type reject family). Both the corpus `(trap "signature mismatch")` legacy reason and
+        // cdz-run's full "peer `<iface>` op `<f>` signature mismatch: …" reason classify here — so a
+        // compose-time reject grades PASS, not an unconfirmed todo. (A compose reject is neither a compile
+        // `(declines)`/`(error)` — both components compile — nor a runtime arithmetic trap; it is its own kind.)
+        Some(TrapCode::PeerSignatureMismatch)
+    } else if r.contains("does not export the interface") {
+        // A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface
+        // compose reject). The corpus `(trap "does not export the interface")` reason classifies here.
+        Some(TrapCode::PeerMissingInterface)
     } else {
         None
     }
@@ -6523,6 +6634,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                         store,
                         &rec.program,
                         &rec.modules,
+                        &rec.peers,
                         call,
                         &rec.host_responses,
                         &rec.host_calls,
@@ -6545,6 +6657,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                                 store,
                                 &rec.program,
                                 &rec.modules,
+                                &rec.peers,
                                 call,
                                 &rec.host_responses,
                                 &rec.host_calls,
@@ -8594,6 +8707,7 @@ mod trap_grading_tests {
             description: "unused-binding warns fixture".to_string(),
             program: "(do (def (main) (let ((unused 99)) 42)) (export main))".to_string(),
             modules: Vec::new(),
+            peers: Vec::new(),
             trials: vec![Trial {
                 call: None,
                 expect: "output (: 42 Int64)".to_string(),
