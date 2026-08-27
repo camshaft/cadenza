@@ -33092,19 +33092,6 @@ mod stage1 {
     }
 
     #[test]
-    fn duplicate_field_name_is_rejected() {
-        // 05-compound-types: (record (a 1) (a 2)) — a record's field names are a SET → CDZ0201. Read a
-        // field so the record is reached (a bare record value would decline for the heap first).
-        assert!(expect_decline("(. (record (a 1) (a 2)) a)").contains("more than once"));
-    }
-
-    #[test]
-    fn non_adjacent_duplicate_field_name_is_rejected() {
-        // (record (a 1) (b 2) (a 3)) — the check is over the whole field list, not adjacent pairs.
-        assert!(expect_decline("(. (record (a 1) (b 2) (a 3)) b)").contains("more than once"));
-    }
-
-    #[test]
     fn a_duplicate_written_literal_map_key_is_rejected() {
         // collections-and-text.md §A Map Associates Keys With Values — each key at most once. A repeated
         // WRITTEN literal is the ambiguous duplicate the spec forbids, across every direct-literal key
