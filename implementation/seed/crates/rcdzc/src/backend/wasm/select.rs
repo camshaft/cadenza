@@ -7887,11 +7887,23 @@ fn emit_loop_iteration(
                     if slots.get(&binder) == Some(&tl.param_slots[i]))
         })
         .collect();
+    // EXPERIMENT PART 2: eval args whose VALUE is a RestFrom tail-slice (SumPayload path ends RestFrom,
+    // a runtime-CONSUMING vec-drop materialization) LAST — detected structurally (NOT via binding_escapes,
+    // which calls the fresh-tail a borrow).
+    let is_restfrom_consume: Vec<bool> = args
+        .iter()
+        .map(|&arg| {
+            matches!(core_of(db, arg), Core::SumPayload { ref path, .. }
+                if matches!(path.last(), Some(crate::core::PathStep::RestFrom(_))))
+        })
+        .collect();
+    let mut eval_order: Vec<usize> = (0..args.len())
+        .filter(|&i| !is_identity[i] && !is_restfrom_consume[i])
+        .collect();
+    eval_order.extend((0..args.len()).filter(|&i| !is_identity[i] && is_restfrom_consume[i]));
     let mut arg_base = base;
-    for (i, &arg) in args.iter().enumerate() {
-        if is_identity[i] {
-            continue; // pass-through to its own slot — no push, no store.
-        }
+    for &i in &eval_order {
+        let arg = args[i];
         if let Core::ConstInt(_) = core_of(db, arg)
             && let Ty::Int(ait) = type_of(db, arg)
         {
@@ -7901,13 +7913,8 @@ fn emit_loop_iteration(
         }
         arg_base = *high;
     }
-    // Pop the values into the parameter slots, last-arg-first (stack is LIFO). An identity-move slot was
-    // never pushed, so it is not popped either — its old value stands.
-    for (i, &slot) in tl.param_slots.iter().enumerate().rev() {
-        if i < is_identity.len() && is_identity[i] {
-            continue;
-        }
-        out.push(Lir::LocalSet(slot));
+    for &i in eval_order.iter().rev() {
+        out.push(Lir::LocalSet(tl.param_slots[i]));
     }
     // For a mutual group, set the `which` state so the next iteration dispatches into the callee's body.
     // (A plain self-loop has one member, `which = None`, and skips this.)
