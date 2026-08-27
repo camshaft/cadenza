@@ -10,11 +10,11 @@
 // descriptor().id (guest-side self-reflected id) — so a passing match proves the two derivations agree.
 // on-response/on-notification inert (reducer-lib).
 import { descriptor } from "effect"
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   if msg.contract == descriptor().id then
-    { requests = [{ contract = msg.contract, payload = b"effect-dispatched", token = b"", deadlineNanos = None }],
+    { requests = [request(msg.contract, b"effect-dispatched", b"")],
       outcome = Outcome.Continue }
   else
     { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"unknown-contract" }) }

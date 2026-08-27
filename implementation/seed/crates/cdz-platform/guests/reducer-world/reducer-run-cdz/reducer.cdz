@@ -12,12 +12,12 @@
 // are fixed (a bare Ok/Err leaves the error type unresolved and the compiler declines it), the same shape as
 // deliver-response's answer. Targets reducer-world (the floor world that imports `run`). on-response /
 // on-notification are inert.
-import { Outcome, Error, on-response, on-notification } from "reducer-lib"
+import { Outcome, Error, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   host run in
     (match (run.run(msg.payload, msg.contract, b"RUN-INPUT") : Result(Bytes, Error)) with
-      | Ok(out) => { requests = [{ contract = msg.contract, payload = out, token = msg.token, deadlineNanos = None }],
+      | Ok(out) => { requests = [request(msg.contract, out, msg.token)],
                      outcome = Outcome.Continue }
       | Err(_e) => { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"run-failed" }) })
 

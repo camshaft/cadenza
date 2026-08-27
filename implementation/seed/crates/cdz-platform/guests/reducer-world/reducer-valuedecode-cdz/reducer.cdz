@@ -7,12 +7,12 @@
 // enabling half of the contract-dispatch track — a reducer decodes its input by the contract's schema.
 // on-response/on-notification inert (reducer-lib).
 import { Effect } from "effect"
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 
 def on-message(msg) =
   match (Value.decode(msg.payload) : Option(Effect)) with
   | Some(Effect.Perform(p)) =>
-      { requests = [{ contract = msg.contract, payload = p, token = b"", deadlineNanos = None }],
+      { requests = [request(msg.contract, p, b"")],
         outcome = Outcome.Continue }
   | None =>
       { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"value-decode-failed" }) }

@@ -8,12 +8,12 @@
 // contract carrying a marker; on a mismatch it closes. So an observed Emitted on the delivered contract proves
 // the guest's self-reflected id equals the real routing key the harness delivered on — the P4 property, e2e.
 // Delegates no host interface; on-response/on-notification are inert (owned by reducer-lib).
-import { Outcome, on-response, on-notification } from "reducer-lib"
+import { Outcome, on-response, on-notification, request } from "reducer-lib"
 import { descriptor } from "temp-celsius"
 
 def on-message(msg) =
   if (msg.contract == descriptor().id) then
-    { requests = [{ contract = msg.contract, payload = b"self-id-match", token = b"", deadlineNanos = None }],
+    { requests = [request(msg.contract, b"self-id-match", b"")],
       outcome = Outcome.Continue }
   else
     { requests = [], outcome = Outcome.Close({ schema = msg.contract, reason = b"contract-mismatch" }) }
