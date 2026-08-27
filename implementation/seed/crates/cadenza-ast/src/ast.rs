@@ -1125,6 +1125,16 @@ impl Builder {
         id
     }
 
+    /// Push a leaf WITHOUT deduping — a fresh id every call, never coalesced with an equal leaf. The
+    /// counterpart to [`Builder::leaf`] for a caller that needs a DISTINCT occurrence (e.g. a compiler
+    /// pass emitting a leaf whose identity, not just value, must stay separate). Skips the `leaf_index`
+    /// entirely, so it neither reads nor populates the dedup map.
+    pub fn leaf_unique(&mut self, leaf: Leaf) -> LeafId {
+        let id = LeafId(self.leaves.len() as u32);
+        self.leaves.push(leaf);
+        id
+    }
+
     /// Intern a NAME leaf given its string SLICE, returning its (possibly pre-existing) id. Allocates
     /// an owned `String` ONLY on a cache miss — a repeated name (the common case) is a pure `&str`
     /// lookup with no allocation. This is the hot interning path (every identifier occurrence).
