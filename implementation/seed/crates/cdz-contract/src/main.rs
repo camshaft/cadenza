@@ -8,17 +8,20 @@
 //! the non-wasm surface, so its filesystem + subprocess use lives only here.
 //!
 //! ```text
-//! cdz-contract hash <dir> [--cdz <path>] [--out <file>]
-//! cdz-contract id <file.cdz> [--cdz <path>]
+//! cdz-contract hash <dir> [--cdz <path>] [--out <file>] [--lib <lib.cdz>]…
+//! cdz-contract id <file.cdz> [--cdz <path>] [--lib <lib.cdz>]…
 //! cdz-contract blob <file>
 //! ```
 //!
-//! `hash` reads every `*.cdz` under `<dir>`, and for each contract module (one carrying the `@!contract` /
-//! `@!input` / `@!output` pragmas) computes its contract-id, emitting a JSON object `{ "<name>": "<id>" }`
-//! sorted by name, where the id is the base62 of the contract-id (§8, the one text form). A `.cdz` that is
-//! a valid module but declares no contract is skipped; a source the `cdz` binary cannot parse is a hard
-//! error. `--cdz` sets the parser binary (else `$CDZ`, else `cdz` on `PATH`); `--out` writes the mapping to a
-//! file instead of stdout.
+//! `hash` reads every `*.cdz` under `<dir>` and, for each, COMPILES + EXECUTES its `descriptor()` and reads
+//! the contract's name + id from the folded descriptor record (operator 2026-08-27: the identity flows
+//! through the guest's own `descriptor()` self-reflection — no `@!contract`/`@!input`/`@!output` pragmas). It
+//! emits a JSON object `{ "<name>": "<id>" }` sorted by name, the id base62 (§8, the one text form). Each
+//! `.cdz` must be a runnable contract (a non-contract is a hard error, not a silent skip). `--lib` supplies
+//! the library module(s) a contract imports (the platform contracts `import … from "contract-id"`, whose lib
+//! lives in `guests/`), compiled alongside each contract. `--cdz` sets the `cdz` binary (else `$CDZ`, else
+//! `cdz` on `PATH`); `--out` writes the mapping to a file instead of stdout. (Executing a contract needs the
+//! value-heap runtime resolvable by `cdz run` — the caller/build provides the store.)
 //!
 //! `blob` reads one `<file>` and prints its raw content address — `Hash::of(HashTag::Blob, bytes)` rendered
 //! base62 (§8), no trailing newline — the SAME string `cdz-run`'s and `xtask`'s `content_address` produce and
@@ -26,8 +29,9 @@
 //! runtime-hash parity check) names an artifact by the exact platform content address, not a bare `b3sum`
 //! hex that would disagree with the tagged base62 the compiler pins in a `+<hash>` import.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -35,7 +39,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(Error::Usage(msg)) => {
             eprintln!(
-                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>]\n       cdz-contract id <file.cdz> [--cdz <path>]\n       cdz-contract blob <file>"
+                "cdz-contract: {msg}\n\nusage: cdz-contract hash <dir> [--cdz <path>] [--out <file>] [--lib <lib.cdz>]...\n       cdz-contract id <file.cdz> [--cdz <path>] [--lib <lib.cdz>]...\n       cdz-contract blob <file>"
             );
             ExitCode::from(2)
         }
@@ -58,6 +62,7 @@ struct HashArgs {
     dir: PathBuf,
     cdz: String,
     out: Option<PathBuf>,
+    libs: Vec<PathBuf>,
 }
 
 fn run(args: &[String]) -> Result<(), Error> {
@@ -70,15 +75,18 @@ fn run(args: &[String]) -> Result<(), Error> {
     }
 }
 
-/// The parsed `id` invocation: one contract source file + the parser binary.
+/// The parsed `id` invocation: one contract source file, the `cdz` binary, and the library module(s) the
+/// contract imports (`--lib`, repeatable — e.g. `guests/contract-id.cdz`), needed to compile + execute it.
 struct IdArgs {
     file: PathBuf,
     cdz: String,
+    libs: Vec<PathBuf>,
 }
 
 fn parse_id(args: &[String]) -> Result<IdArgs, Error> {
     let mut file: Option<PathBuf> = None;
     let mut cdz: Option<String> = None;
+    let mut libs: Vec<PathBuf> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -88,6 +96,12 @@ fn parse_id(args: &[String]) -> Result<IdArgs, Error> {
                         .ok_or_else(|| Error::Usage("--cdz needs a path".into()))?
                         .clone(),
                 );
+            }
+            "--lib" => {
+                libs.push(PathBuf::from(
+                    it.next()
+                        .ok_or_else(|| Error::Usage("--lib needs a path".into()))?,
+                ));
             }
             flag if flag.starts_with('-') => {
                 return Err(Error::Usage(format!("unknown option `{flag}`")));
@@ -101,31 +115,19 @@ fn parse_id(args: &[String]) -> Result<IdArgs, Error> {
         cdz: cdz
             .or_else(|| std::env::var("CDZ").ok())
             .unwrap_or_else(|| "cdz".into()),
+        libs,
     })
 }
 
-/// `cdz-contract id <file.cdz>` — print the base62 contract-id of the single `@!contract` module in `<file>`,
-/// via the canonical STATIC derivation (`cdz_contract::contract_from_module` → `contract_id_from_module`). This
-/// is "compile the contracts and query their IDs" (operator 2026-08-26): rather than a hand-driven hash, query
-/// the ONE id that is byte-identical to (1) the platform router's routing keys and (2) a self-reflecting
-/// guest's `contract-id(Ast.module)` fold — all pinned byte-exact by the cdz-platform goldens. PURE function of
-/// the `@!contract`/`@!input`/`@!output` declaration: NO compile-to-wasm, NO run (the runtime `id()` self-
-/// reflection is the guest reducer-dispatch path; build tooling needs only this static id). The per-contract
-/// primitive behind the `hash` dir-walker's name→id mapping. Exit 1 if `<file>` declares no contract.
+/// `cdz-contract id <file.cdz> [--lib <lib.cdz>]…` — print the base62 contract-id of the contract in `<file>`,
+/// by COMPILING + EXECUTING its `descriptor()` and reading the id from the folded descriptor record (operator
+/// 2026-08-27: "the codegen should call the compiled module, get the descriptor" — no `@!contract` pragmas).
+/// The id is byte-identical to (1) the platform router's routing keys and (2) the self-reflecting guest's own
+/// `descriptor().id` fold — the guest execution IS the single source of truth. `--lib` supplies the
+/// `contract-id` library module the contract imports (it lives in `guests/`, not beside the contract). Exit 1
+/// if `<file>` is not a runnable contract (does not compile, run, or export a descriptor record).
 fn id(args: IdArgs) -> Result<(), Error> {
-    let ast = convert(&args.cdz, &args.file)?;
-    let arenas = cadenza_ast::codec::decode(&ast).ok_or_else(|| {
-        Error::Failed(format!(
-            "`cdz convert` of {} produced an undecodable AST",
-            args.file.display()
-        ))
-    })?;
-    let (_name, id) = cdz_contract::contract_from_module(&arenas).ok_or_else(|| {
-        Error::Failed(format!(
-            "{} declares no @!contract (no `@!contract` pragma)",
-            args.file.display()
-        ))
-    })?;
+    let (_name, id) = compile_run_descriptor(&args.cdz, &args.file, &args.libs)?;
     println!("{id}");
     Ok(())
 }
@@ -148,12 +150,14 @@ fn blob(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Parse `hash`'s arguments: a single positional `<dir>`, plus optional `--cdz <path>` and `--out <file>`.
+/// Parse `hash`'s arguments: a single positional `<dir>`, plus optional `--cdz <path>`, `--out <file>`, and
+/// `--lib <lib.cdz>` (repeatable — the library module(s) the contracts import, compiled alongside each).
 /// `--cdz` defaults to `$CDZ` then `cdz` (found on `PATH`).
 fn parse_hash(args: &[String]) -> Result<HashArgs, Error> {
     let mut dir: Option<PathBuf> = None;
     let mut cdz: Option<String> = None;
     let mut out: Option<PathBuf> = None;
+    let mut libs: Vec<PathBuf> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -170,6 +174,12 @@ fn parse_hash(args: &[String]) -> Result<HashArgs, Error> {
                         .ok_or_else(|| Error::Usage("--out needs a file".into()))?,
                 ));
             }
+            "--lib" => {
+                libs.push(PathBuf::from(
+                    it.next()
+                        .ok_or_else(|| Error::Usage("--lib needs a path".into()))?,
+                ));
+            }
             flag if flag.starts_with('-') => {
                 return Err(Error::Usage(format!("unknown option `{flag}`")));
             }
@@ -183,6 +193,7 @@ fn parse_hash(args: &[String]) -> Result<HashArgs, Error> {
             .or_else(|| std::env::var("CDZ").ok())
             .unwrap_or_else(|| "cdz".into()),
         out,
+        libs,
     })
 }
 
@@ -198,22 +209,14 @@ fn hash(args: HashArgs) -> Result<(), Error> {
     // (two contracts declaring the same name is an authoring error, not a silent last-wins).
     let mut mapping: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for src in &sources {
-        let ast = convert(&args.cdz, src)?;
-        let arenas = cadenza_ast::codec::decode(&ast).ok_or_else(|| {
-            Error::Failed(format!(
-                "`cdz convert` of {} produced an undecodable AST",
-                src.display()
-            ))
-        })?;
-        // A valid module that declares no contract (no `@!contract` pragma) is not an error — a directory may
-        // hold non-contract `.cdz`; it is simply not in the mapping.
-        let Some((name, id)) = cdz_contract::contract_from_module(&arenas) else {
-            continue;
-        };
-        if let Some(prev) = mapping.insert(name.to_string(), id.to_string()) {
+        // Each `.cdz` under a contracts dir is a contract: compile + execute its `descriptor()` and read its
+        // name + id from the folded record (no `@!contract` pragma). A `.cdz` that is not a runnable contract
+        // is a hard error (it names no contract for the mapping) rather than being silently skipped, so a
+        // broken contract surfaces here instead of as a later "not in the mapping" failure.
+        let (name, id) = compile_run_descriptor(&args.cdz, src, &args.libs)?;
+        if let Some(prev) = mapping.insert(name.clone(), id.to_string()) {
             return Err(Error::Failed(format!(
-                "two contracts declare the name `{name}` (one is {}); names must be unique",
-                prev
+                "two contracts declare the name `{name}` (one is {prev}); names must be unique"
             )));
         }
     }
@@ -244,32 +247,96 @@ fn collect_cdz(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Parse a contract source to its canonical binary AST via the `cdz` binary (`cdz convert <src> --to
-/// binary`, the same invocation `xtask codegen` uses), returning the AST bytes. Delegating the parse to the
-/// pinned binary keeps this crate off the compiler (the first cut; a compiler-as-library parse is the later
-/// wasm-component path). A non-zero exit or a spawn failure is a hard error naming the source.
-fn convert(cdz: &str, src: &Path) -> Result<Vec<u8>, Error> {
+/// A contract's declared **name** and its [`contract-id`](cdz_contract::contract_id), obtained by COMPILING
+/// and EXECUTING the contract's `descriptor()` (operator 2026-08-27: "the codegen should call the compiled
+/// module, get the descriptor" — no `@!contract`/`@!input`/`@!output` pragmas, no Rust re-derivation). The
+/// contract is compiled together with the `contract-id` library module(s) it imports (`libs` — the platform
+/// contracts `import { contract-descriptor } from "contract-id"`, whose lib lives in `guests/`, so the caller
+/// supplies it with `--lib`) into a component exporting `descriptor`, then run with `cdz run --format
+/// binary-ast` — which emits the descriptor record as the canonical binary AST (the universal `cadenza-ast`
+/// exchange form). The two `cdz` invocations are piped IN MEMORY (`compile … -o -` → `run - --format
+/// binary-ast`), so no temp file is written and the crate stays dep-minimal. The emitted bytes are decoded
+/// (`cadenza_ast::codec::decode`) and the id + name read out ([`cdz_contract::id_name_from_descriptor`]). A
+/// spawn failure, a non-zero exit from either `cdz`, an undecodable doc, or a value that is not a descriptor
+/// record is a hard error naming the source (a `.cdz` under the hashed dir must be a runnable contract).
+fn compile_run_descriptor(
+    cdz: &str,
+    src: &Path,
+    libs: &[PathBuf],
+) -> Result<(String, cdz_contract::Hash), Error> {
     let src_str = src.to_str().ok_or_else(|| {
         Error::Failed(format!(
             "contract path {} is not valid UTF-8",
             src.display()
         ))
     })?;
-    let output = Command::new(cdz)
-        .args(["convert", src_str, "--to", "binary"])
+    // `--entry <stem>` names which input file's `(export …)` forms the component boundary — the contract, not
+    // the library. A source file's entry name is its stem (`deliver.cdz` → `deliver`).
+    let stem = src.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+        Error::Failed(format!(
+            "contract path {} has no usable stem",
+            src.display()
+        ))
+    })?;
+
+    // 1) Compile the contract + its imported lib(s) to a component on stdout (`-o -`).
+    let mut compile_args: Vec<&str> = vec!["compile", src_str];
+    let lib_strs: Vec<&str> = libs
+        .iter()
+        .map(|l| {
+            l.to_str().ok_or_else(|| {
+                Error::Failed(format!("lib path {} is not valid UTF-8", l.display()))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    compile_args.extend(lib_strs.iter().copied());
+    compile_args.extend(["--entry", stem, "-o", "-"]);
+    let compiled = Command::new(cdz)
+        .args(&compile_args)
         .output()
-        .map_err(|e| {
-            Error::Failed(format!(
-                "running `{cdz} convert {src_str} --to binary`: {e}"
-            ))
-        })?;
-    if !output.status.success() {
+        .map_err(|e| Error::Failed(format!("running `{cdz} compile {src_str} …`: {e}")))?;
+    if !compiled.status.success() {
         return Err(Error::Failed(format!(
-            "`{cdz} convert {src_str} --to binary` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "`{cdz} compile {src_str} …` failed: {}",
+            String::from_utf8_lossy(&compiled.stderr).trim()
         )));
     }
-    Ok(output.stdout)
+
+    // 2) Run the component (from stdin, `-`), emitting the descriptor record as canonical binary AST.
+    let mut child = Command::new(cdz)
+        .args(["run", "-", "--format", "binary-ast"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Failed(format!("running `{cdz} run - --format binary-ast`: {e}")))?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(&compiled.stdout)
+        .map_err(|e| Error::Failed(format!("feeding the component to `{cdz} run`: {e}")))?;
+    let ran = child
+        .wait_with_output()
+        .map_err(|e| Error::Failed(format!("waiting on `{cdz} run`: {e}")))?;
+    if !ran.status.success() {
+        return Err(Error::Failed(format!(
+            "`{cdz} run - --format binary-ast` failed for {src_str}: {}",
+            String::from_utf8_lossy(&ran.stderr).trim()
+        )));
+    }
+
+    // 3) Decode the descriptor value form and read (name, contract-id) out of it.
+    let value = cadenza_ast::codec::decode(&ran.stdout).ok_or_else(|| {
+        Error::Failed(format!(
+            "descriptor() of {src_str} did not emit a decodable value form"
+        ))
+    })?;
+    cdz_contract::id_name_from_descriptor(&value).ok_or_else(|| {
+        Error::Failed(format!(
+            "the descriptor() of {src_str} is not a contract descriptor record (id + name)"
+        ))
+    })
 }
 
 /// Render the name→id mapping as a JSON object, one entry per line, sorted by name (the `BTreeMap`'s order).
