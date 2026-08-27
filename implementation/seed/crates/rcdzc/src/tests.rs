@@ -8653,44 +8653,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_literal_narrow_newtype_element_of_a_constructed_list_grounds_to_its_inner_width() {
-        // The CONSTRUCTION-side sibling of `an_erased_narrow_newtype_boxed_into_a_compound_widens_before_box_int`.
-        // That test fixed `is_narrow_int` (the WIDEN-before-box helper) to strip_nominal, so an erased narrow
-        // newtype extends i32→i64 before `box-int`. But the LITERAL-materialization path (`Core::ConstInt`
-        // emit) picks its slot width from `int_ty_of`, which matched `Ty::Int` WITHOUT strip_nominal → an
-        // erased narrow-newtype LITERAL `(W.Wrap 5)` fell to the i64 default → `ConstI64`, while the widen now
-        // (correctly) fired → `i64.extend_i32_u` expecting an i32 → the two DISAGREED → an INVALID component
-        // (`expected i32, found i64`). The sibling's tests all boxed a PARAM payload (`(W.Wrap n)` — read from
-        // an i32 slot, no ConstInt), so this literal-construction gap slipped through. It only surfaces when
-        // the list is ACTUALLY CONSTRUCTED (not constant-folded) — a live-after scrutinee (`List.len xs` in the
-        // arm) forces the build. FIX: `int_ty_of` strips_nominal too, so a `(W.Wrap 5)` literal grounds to u8
-        // (i32 slot) and the widen matches. breaker-found in my churn-watch of `420e39667`.
-        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-        // A LITERAL narrow-newtype element in a constructed list, scrutinee live-after (forces construction).
-        ok("(module m (type W (Wrap UInt8)) \
-              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
-                            (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main))");
-        // Signed narrow width (Int32) — the extend is sign-aware; the literal must ground to i32 too.
-        ok("(module m (type W (Wrap Int32)) \
-              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
-                            (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main))");
-
-        // RUN: the constructed narrow-newtype list matched by its literal element, scrutinee len read after.
-        let Some(v) = run_on_heap(
-            "(module m (type W (Wrap UInt8)) \
-               (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) \
-                             (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping literal-narrow-newtype-element run");
-            return;
-        };
-        assert_eq!(
-            v, "2",
-            "the head is a (Wrap 5) → the arm hits; List.len of the live-after scrutinee is 2 (was an invalid component: expected i32, found i64)"
-        );
-    }
-
-    #[test]
     fn a_call_returned_erased_newtype_literal_match_spills_at_the_right_width() {
         // The SPILL-path sibling of the erased-newtype literal-payload test above. When the match scrutinee
         // is a CALL RESULT (`(f (mk d))`) rather than an inline `(W.Wrap n)` construction, it is NOT a

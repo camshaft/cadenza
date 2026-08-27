@@ -2449,6 +2449,7 @@ pass	a list-scrutinee match arm whose head is an unbound name is rejected in a r
 pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
 pass	a literal MAP KEY that overflows the annotated key width is rejected
 pass	a literal MAP VALUE that overflows the annotated value width is rejected
+pass	a literal SIGNED narrow-newtype element in a constructed list grounds its ConstInt to the inner width
 pass	a literal arm wins over a later guard arm that also matches
 pass	a literal in a MULTI-PAYLOAD user sum that overflows the annotated width is rejected
 pass	a literal in a RECORD FIELD that overflows the annotated field width is rejected
@@ -2461,6 +2462,7 @@ pass	a literal inside an Ok pattern refines a Result match
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal list element dispatches a runtime list by its value
 pass	a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact
+pass	a literal narrow-newtype element in a constructed list grounds its ConstInt to the inner width
 pass	a literal narrow-width newtype list element in a constructed list grounds to its inner width
 pass	a literal nested in a compound payload that overflows the annotated width is rejected
 pass	a literal nested in a tuple def-parameter is refutable and rejected
