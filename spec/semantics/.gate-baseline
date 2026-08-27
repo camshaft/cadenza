@@ -6757,6 +6757,7 @@ pass	multiplying a runtime integer by negative one is checked negation in both o
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
 pass	mutually-recursive do-local functions nested in an inlined helper recurse
+pass	mutually-recursive newtypes erase and construct and match end to end
 pass	mwv1 a MIXED-WIDTH scalar-payload variant host ARG delivers each arm's payload
 pass	mwv2 the SAME mixed-width variant wrapped in a RECORD host arg
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
@@ -7548,6 +7549,7 @@ pass	set union is associative on generated inputs (the order merges are grouped 
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
+pass	several same-shaped recursive defs each resolve their own parameter
 pass	sf1 an inner SAME-effect handler's arm re-performs the effect it discharges — the re-perform routes to the OUTER handler, both states advance independently
 pass	sf2 the inner arm's NEXT-STATE re-performs to the outer — the forward sits in the state-thread position, not the resume value
 pass	sfl1 a PERFECT-SHUFFLE position tracker — each shuffle doubles the tracked card's position mod seven (the out-shuffle orbit on eight cards, position seven fixed), where packs position and shuffle count, and the two seeds ride the SAME 3-cycle orbit entered at different points so the rows are rotations of each other
@@ -8120,6 +8122,10 @@ pass	tl1 THREE live handlers, each drawn in one expression — every draw dispat
 pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
+pass	tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair
+pass	tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero
+pass	tle3 fifty frames alternating exact-fit-32 and 33-element constant lists reclaim to zero (no half-marked node pins structure)
+pass	tle4 fifty frames of persistent update against an exact-fit 32-element hoisted constant never corrupt it (both nodes marked — the header+arr trap)
 pass	tlf1 Set.to-list of TUPLE elements orders identically const and runtime
 pass	tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)
 pass	tlf3 Map.to-list with SUM keys orders identically const and runtime
@@ -8571,7 +8577,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair
-pass	tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero
-pass	tle3 fifty frames alternating exact-fit-32 and 33-element constant lists reclaim to zero (no half-marked node pins structure)
-pass	tle4 fifty frames of persistent update against an exact-fit 32-element hoisted constant never corrupt it (both nodes marked — the header+arr trap)

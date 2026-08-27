@@ -4084,6 +4084,23 @@
             (def (main) (if (go 0 3) 1 0)) (export main)))
   (output (: 1 Int64)))
 
+(case "several same-shaped recursive defs each resolve their own parameter"
+  (doc    "N recursive defs of IDENTICAL shape — `(sm_i n acc) = if n=0 then acc else sm_i(n-1, acc+i)` —
+           each fold over their OWN parameter. Resolving which def owns a parameter must attribute each
+           reference to the RIGHT def, never a same-shaped sibling; a mis-attribution would thread the
+           wrong per-def increment. sm0..sm4 at (3, 0) each add their index three times, so the sum is
+           3·(0+1+2+3+4) = 30. Distinct per-def answers prove no parameter is cross-attributed across the
+           identical-shaped group.")
+  (input  (do
+            (def (sm0 n acc) (if (= n 0) acc (sm0 (- n 1) (+ acc 0))))
+            (def (sm1 n acc) (if (= n 0) acc (sm1 (- n 1) (+ acc 1))))
+            (def (sm2 n acc) (if (= n 0) acc (sm2 (- n 1) (+ acc 2))))
+            (def (sm3 n acc) (if (= n 0) acc (sm3 (- n 1) (+ acc 3))))
+            (def (sm4 n acc) (if (= n 0) acc (sm4 (- n 1) (+ acc 4))))
+            (def (main) (+ (sm0 3 0) (+ (sm1 3 0) (+ (sm2 3 0) (+ (sm3 3 0) (sm4 3 0))))))
+            (export main)))
+  (output (: 30 Int64)))
+
 ; A self-tail call (or any call) evaluates ALL its arguments onto the operand stack simultaneously — a
 ; parallel move into the parameter slots (the self-tail-loop back-edge) or the call's argument sequence.
 ; Each argument's scratch is live until the store, so sibling arguments must occupy DISJOINT scratch

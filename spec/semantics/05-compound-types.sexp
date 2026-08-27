@@ -21329,6 +21329,20 @@
   (input  (List.len (List.update (list 10 20 30) 1 99)))
   (output (: 3 Int64)))
 
+; -- MUTUALLY-recursive newtypes erase and construct/match end to end (behavioral migration from rcdzc
+; mutually_recursive_newtypes_erase_and_match, 2026-08-27): `(type A (Mk (Option B))) (type B (Wrap (Tuple
+; Int64 A)))` — each single-variant newtype's inner references the OTHER (a finite Ty::Sum back-edge to the
+; other's decl); both erase, and the decl+args identity makes the cross-references unify. The recursive
+; (single-type) newtype linked list is pinned above; this is the MUTUAL (A<->B) face.
+(case "mutually-recursive newtypes erase and construct and match end to end"
+  (input (do
+           (type A (Mk (Option B)))
+           (type B (Wrap (Tuple Int64 A)))
+           (def (main)
+             (match (Mk (Some (Wrap (tuple 7 (Mk None)))))
+               ((Mk o) (match o ((Some w) (match w ((Wrap t) (. t 0)))) ((None _) 0)))))
+           (export main)))
+  (call main) (output (: 7 Int64)))
 ; ── breaker batch 517: the small-list build-once threshold EDGE (#4245 gates hoisting at <=32) ──
 ; The exact-fit 32-element literal HOISTS (verified: 3 static globals vs 1 in the 33 twin) and the
 ; 33-element literal does NOT (multi-level RRB, builds per-eval). Hazards fenced at the edge:
