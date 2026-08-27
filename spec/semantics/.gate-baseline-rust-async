@@ -6108,6 +6108,8 @@ pass	lk2 a ROLLING-code lock — each successful match advances the key index th
 pass	lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter
 pass	lky1 a LEAKY-BUCKET meter — arrive fills toward the seed-shaped capacity answering only the OVERFLOW spill (level clamps at the brim), drain leaks five clamped at empty answering the new level, and the small bucket spills twice where the large one never does
 pass	ll1 a LIST-OF-LISTS handler state — each dispatch appends a fresh row, the drain reads a middle row's middle element
+pass	llt1 a list length >= 0 is a tautology (folds to the then-branch value)
+pass	llt2 a match on a list length never hits a negative arm
 pass	lnr1 a const Set.to-list of a LONE non-orderable element still declines (the sort-by-skip soundness face)
 pass	lnr2 a const Map.to-list with a LONE non-orderable KEY still declines
 pass	lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0
