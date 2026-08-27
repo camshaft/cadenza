@@ -20505,48 +20505,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bare_member_nullary_ctor_list_saturation_is_exhaustive_and_dispatches() {
-        // The bare-MEMBER nullary form `C.R` (= `(. C R)`) now SATURATES too (was Inc-24's known decline):
-        // `(list) + (list C.R ..) + (list C.G ..) + (list C.B ..)` over `(List C)` is total without a `_`.
-        // The pass NORMALIZES a bare-member lead element to the paren-applied `((. C R))` form
-        // (`wrap_bare_member_element`), which resolves cleanly as a nullary-variant pattern where the bare
-        // member alone re-lowered as member ACCESS (CDZ0201) in the emit path.
-        assert!(
-            reject_code(
-                "(module m (type C R G B) (def (f (: xs (List C))) \
-                   (match xs ((list) 0) ((list C.R .. _r) 1) ((list C.G .. _r) 2) ((list C.B .. _r) 3))) \
-                 (def (main) (f (list C.R))) (export main))"
-            )
-            .is_none(),
-            "a bare-member nullary-variant list saturation is exhaustive without a wildcard"
-        );
-        // Runtime: build a list of one nullary variant internally and dispatch by discriminant. mk(0) →
-        // [C.R] → arm 1; mk(1) → [C.G] → arm 2; mk(2) → [C.B] → the (now unconditional, normalized) C.B arm 3.
-        let run = |n: &str| -> String {
-            run_heap_value(
-                "(module m (type C R G B) \
-                   (def (mk (: n Int64)) (if (< n 1) (list C.R) (if (< n 2) (list C.G) (list C.B)))) \
-                   (def (f (: xs (List C))) \
-                     (match xs ((list) 0) ((list C.R .. _r) 1) ((list C.G .. _r) 2) ((list C.B .. _r) 3))) \
-                   (def (main (: n Int64)) (f (mk n))) (export main))",
-                vec![n.to_string()],
-            )
-            .unwrap_or_default()
-        };
-        if run("0").is_empty() {
-            eprintln!("runtime wasm not found; skipping bare-member-saturation run");
-            return;
-        }
-        assert_eq!(run("0"), "1", "[C.R] matches the C.R arm");
-        assert_eq!(run("1"), "2", "[C.G] matches the C.G arm");
-        assert_eq!(
-            run("2"),
-            "3",
-            "[C.B] matches the (normalized, unconditional) C.B arm"
-        );
-    }
-
-    #[test]
     fn a_refutable_ctor_list_element_still_requires_a_catch_all() {
         // A discriminant test may fail, so — like a literal element or any guarded arm — a ctor-element arm
         // does NOT count toward length-coverage exhaustiveness. Two ctor arms covering every discriminant

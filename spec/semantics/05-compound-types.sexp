@@ -7560,8 +7560,9 @@
                 ((list C.G .. r) 2)
                 ((list C.B .. r) 3)))
             (def (main (: n Int64)) (f (mk n))) (export main)))
-  (call   main (: 2 Int64))
-  (output (: 3 Int64)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64)))
 
 (case "a sum variant's list payload split across empty and rest arms is exhaustive and dispatches"
   (doc    "A sum variant whose LIST PAYLOAD is refined by MULTIPLE arms that jointly cover every length —
