@@ -3571,6 +3571,7 @@ pass	a repeated condition in a nested if collapses to the outer condition (value
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated conjunct absorbs to the plain conjunction
 pass	a repeated disjunct absorbs to the plain disjunction
+pass	a repeated do-local declaration shadows the earlier one for what follows
 pass	a repeated float comparison is computed once and reused (value-transparent CSE)
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow

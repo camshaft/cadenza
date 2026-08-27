@@ -33410,7 +33410,6 @@ mod stage1 {
         );
     }
 
-
     #[test]
     fn ml_forall_binder_compiles_runs_and_monomorphizes_end_to_end() {
         // FORALL-BINDER e2e (v-inference × v-syntax). `forall a. T` in a parameter annotation is PURE
@@ -33501,9 +33500,6 @@ mod stage1 {
         );
     }
 
-
-
-
     #[test]
     fn a_wide_accumulation_let_resolves_each_binder_correctly() {
         // A wide `let` where each binding references the immediately-preceding one — realistic accumulation
@@ -33532,7 +33528,6 @@ mod stage1 {
             "the last binding of a repeated name wins for the body"
         );
     }
-
 
     #[test]
     fn a_do_block_with_an_ill_typed_intermediate_is_still_caught() {
@@ -33691,7 +33686,6 @@ mod stage1 {
         );
     }
 
-
     /// A WIDE `do` block compiles cheaply AND still detects its do-local declaration — the correctness
     /// guard for the `is_binding_candidate` per-parent memo in `build_scope_skip`. That predicate is
     /// O(children) for a `(do …)` (it scans the block's forms for a `def`/`module`), and it was called
@@ -33741,43 +33735,7 @@ mod stage1 {
         assert_eq!(run_main(&src), 19900);
     }
 
-    #[test]
-    fn a_do_local_declaration_shadows_last_wins_and_an_outer_binding() {
-        // A repeated do-local declaration shadows the earlier one for what follows (last-wins, like a
-        // repeated `let` binding): `(def x 5) (def x (+ x 10))` → the second `x` sees the first → 15.
-        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
-        // A do-local declaration shadows an OUTER lexical binding for the forms that follow it: the inner
-        // `(def x 99)` shadows the enclosing `let ((x 1))`, so the block yields 99.
-        assert_eq!(run_main("(let ((x 1)) (do (def x 99) x))"), 99);
-    }
 
-    #[test]
-    fn a_do_local_function_declaration_is_recursive() {
-        // 02-binding-and-control "a do-local function declaration is recursive": a do-local `(def (fac
-        // n) …)` is in scope in its OWN body (self-recursion, like a top-level/module-member def, NOT
-        // strictly sequential like a value binding), and the self-call LOWERS — `register_do_local_callables`
-        // registers it as an internal `db.defs` entry so the recursive call is a `Core::Call`. fac(5)=120.
-        assert_eq!(
-            run_main("(do (def (fac n) (if (= n 0) 1 (* n (fac (- n 1))))) (fac 5))"),
-            120
-        );
-        // MUTUAL recursion: `ev` calls `od`, `od` calls `ev` — a do-local function is visible in a sibling's
-        // body regardless of order (a forward reference a strictly-sequential scope would reject). ev(10) →
-        // true → 1.
-        assert_eq!(
-            run_main(
-                "(do (def (ev n) (if (= n 0) true (od (- n 1)))) \
-                     (def (od n) (if (= n 0) false (ev (- n 1)))) \
-                     (if (ev 10) 1 0))"
-            ),
-            1
-        );
-        // A do-local VALUE declaration stays STRICTLY sequential (backward-only) — the function
-        // mutual-visibility must not leak to values: the second `x` sees only the first → 15, and a
-        // forward VALUE reference is still unbound (checked in
-        // `a_do_local_declaration_scope_is_backward_only`).
-        assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
-    }
 
     #[test]
     fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {

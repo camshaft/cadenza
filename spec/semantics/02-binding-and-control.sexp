@@ -2017,6 +2017,16 @@
   (input  (let ((x 1)) (do (def x 99) x)))
   (output (: 99 Int64)))
 
+(case "a repeated do-local declaration shadows the earlier one for what follows"
+  (doc    "The do-block twin of the repeated-let-binding shadow: a second `(def x …)` shadows the earlier
+           one for the forms that follow (last-wins), and its RHS sees the OLD binding (the scope stays
+           backward-only). `(do (def x 5) (def x (+ x 10)) x)` — the second `x`'s value `(+ x 10)` reads
+           the first `x` = 5 → 15, and the trailing `x` is that second binding = 15. A generation that
+           unbound the earlier `x` at the shadow (rather than shadowing for what follows) would fault the
+           second declaration's RHS.")
+  (input  (do (def x 5) (def x (+ x 10)) x))
+  (output (: 15 Int64)))
+
 (case "a single-form body admits a sequence by holding a do block"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order in a
            single-form body position: a `let` body is one form, so a sequence of forms is written as a
