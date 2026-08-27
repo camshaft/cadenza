@@ -26356,46 +26356,6 @@ mod match_engine {
     }
 
     #[test]
-    fn unit_in_over_a_bigint_quantity_converts_and_unwraps() {
-        // `lower_unit_in` gained a BigInt-inner arm: `(Unit.in meter (Qty.of (BigInt.of v) kilometer))`
-        // converts `value * 1000` in unbounded bigint arithmetic and UNWRAPS to a bare BigInt. Previously
-        // it declined ("ownership cannot prove") — only float/rational arms existed. Uses the FULL runtime
-        // (bigint ops); skips if absent. A CONSTANT bigint-quantity conversion (folds via IntValue bignum).
-        let src = "(do (def (main) \
-                   ((. Unit in) ((. Unit of) #\"meter\") \
-                     ((. Qty of) ((. BigInt of) 3) ((. Unit of) #\"kilometer\")))) \
-                   (export main))";
-        let Some(rendered) = run_heap_value_escape(src) else {
-            return; // no runtime store — the corpus gate covers the runtime form e2e
-        };
-        assert!(
-            rendered.contains("3000"),
-            "3 km (BigInt) in meters unwraps to the bare BigInt 3000: {rendered}"
-        );
-    }
-
-    #[test]
-    fn unit_in_over_a_rational_quantity_converts_exactly_and_unwraps() {
-        // `lower_unit_in` gained a runtime Rational arm: `(Unit.in meter (Qty.of (Rational.of 1 1) inch))`
-        // converts by the exact scale (inch = 127/5000 m) via a runtime `rational-mul` and UNWRAPS to a
-        // bare Rational — 127/5000, EXACT (no rounding, unlike Int/BigInt which truncate a non-whole
-        // ratio). Previously the runtime Rational case declined ("not yet emitted"). Uses the FULL runtime;
-        // skips if absent. Here the magnitude is narrowed from a runtime BigInt so it does not fold.
-        let src = "(do (def (main) \
-                   ((. Unit in) ((. Unit of) #\"meter\") \
-                     ((. Qty of) ((. Rational of-int) ((. Int64 of) ((. BigInt of) 1))) \
-                                 ((. Unit of) #\"inch\")))) \
-                   (export main))";
-        let Some(rendered) = run_heap_value_escape(src) else {
-            return; // no runtime store — the corpus gate covers the runtime form e2e
-        };
-        assert!(
-            rendered.contains("127/5000"),
-            "1 inch (Rational) in meters unwraps to the exact bare Rational 127/5000: {rendered}"
-        );
-    }
-
-    #[test]
     fn a_bare_number_where_a_quantity_is_expected_offers_the_qty_of_wrap() {
         // The ARGUMENT/binder twin of the dimensional-mismatch `Qty.of` wrap: a bare `Int64` passed to a
         // `(Qty …)` PARAMETER, or bound to a `(Qty …)`-annotated let-binder, gets the `(Qty.of <n> <unit>)`
@@ -27177,43 +27137,6 @@ mod match_engine {
                       (export main))";
         wasmparser::validate(&component(wide))
             .expect("a wide-Int64 Qty map value must still emit valid wasm");
-    }
-
-    #[test]
-    fn qty_pow_negative_over_a_rational_inner_is_the_exact_reciprocal() {
-        // `lower_qty_pow` builds the reciprocal `1 / value^|n|` for a negative exponent; the numerator `1`
-        // must be in q's INNER numeric type, not a bare Int64. Over a Rational inner a bare `1` divided by
-        // the Rational `value` is an Int64/Rational mismatch that slipped past the check inside the quantity
-        // and surfaced as a backend "ownership cannot prove" error on the reciprocal divide. Building `1` as
-        // `(Rational.of 1 1)` clears it: (2/3 m)^-2 = 9/4 EXACTLY (a Rational carries its own denominator).
-        let src = "(do (def (main) ((. Qty value) \
-                   ((. Qty pow) ((. Qty of) ((. Rational of) 2 3) ((. Unit base) #\"meter\")) -2))) \
-                   (export main))";
-        let Some(rendered) = run_heap_value_escape(src) else {
-            return; // no runtime store — the corpus gate is the e2e witness
-        };
-        assert!(
-            rendered.contains("9/4"),
-            "(2/3 m)^-2 = 9/4 exactly (Rational-inner negative Qty.pow, numerator 1 built in-type): {rendered}"
-        );
-    }
-
-    #[test]
-    fn qty_pow_negative_over_a_bigint_inner_truncates_the_reciprocal() {
-        // The BigInt companion of the Rational reciprocal: the negative-exponent numerator `1` is built as
-        // `(BigInt.of 1)` (the inner type), not a bare Int64 `1` — building it in-type is what clears the
-        // mixed Int64/BigInt divide's backend ownership error. (4 m)^-1 = 1/4 truncates toward zero to 0
-        // (a BigInt has no fractions), the documented integer truncation.
-        let src = "(do (def (main) ((. Qty value) \
-                   ((. Qty pow) ((. Qty of) ((. BigInt of) 4) ((. Unit base) #\"meter\")) -1))) \
-                   (export main))";
-        let Some(rendered) = run_heap_value_escape(src) else {
-            return; // no runtime store — the corpus gate is the e2e witness
-        };
-        assert!(
-            rendered.contains('0'),
-            "(4 m)^-1 truncates to 0 (BigInt-inner negative Qty.pow, numerator 1 built in-type): {rendered}"
-        );
     }
 
     #[test]
