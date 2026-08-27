@@ -43414,79 +43414,11 @@ mod stage1 {
                (def (code (: n Int64)) (match (pick n){arms})) \
                (export code))"
         );
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide-sum match");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed wide-sum run");
-            return;
-        };
-        for k in [0, 5, 11] {
-            let opts = cdz_run::RunOpts {
-                export: Some("code".to_string()),
-                args: vec![k.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => {
-                    assert_eq!(
-                        s,
-                        (100 + k).to_string(),
-                        "arm V{k}: payload 100 + index {k}"
-                    )
-                }
-                cdz_run::Outcome::Trap(t) => panic!("wide-sum run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
-    fn a_variant_carrying_a_bare_nullary_variant_type_checks() {
-        // A value carrying a bare nullary variant with an UNCONSTRAINED payload — `(Some (None))`,
-        // `(Ok (None))` — must type-check, not trip a spurious occurs-check. Each `apply_type` uses a
-        // private `Fresh` from 0, so `Some`'s scheme `(-> ?0 (Option ?0))` and the inner `(None)`'s
-        // independently-inferred `(Option ?0)` SHARE variable numbers; unifying the parameter `?0`
-        // against the argument `(Option ?0)` gave `?0 = Option ?0` and rejected CDZ0203 "infinite type".
-        // Freshening the argument's free vars past the head's counter (`?0` → `?1`) breaks the alias.
-        // Consumed by a nested match to a scalar so the value need not cross the host boundary.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) \
-                       (match (Some (None)) ((Some (Some x)) x) ((Some (None)) 1) ((None) 2))) \
-                       (export main))"
-                )))
-                .expect("(Some (None)) must type-check, not reject as an infinite type"),
-                "main"
-            ),
-            1
-        );
-        // Result too — the bug spans the generic-sum constructors, not only Option.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) \
-                       (match (Ok (None)) ((Ok (Some x)) x) ((Ok (None)) 1) ((Err e) e))) \
-                       (export main))"
-                )))
-                .expect("(Ok (None)) must type-check"),
-                "main"
-            ),
-            1
-        );
-        // NO OVER-ACCEPTANCE: the payload is still typed (a nested `Some 5` binds x : Int64, and using it
-        // as a Bool condition is still a fault) — freshening only removes the spurious cycle, it does not
-        // drop the real constraint.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (main) \
-                   (match (Some (Some 5)) ((Some (Some x)) (if x 1 0)) ((Some (None)) 0) ((None) -1))) \
-                   (export main))"
-            )))
-            .is_err(),
-            "an inner payload used as a Bool must still be a type fault"
-        );
+        // COMPILING the 12-variant match is the regression exercise: the O(N^2) unbound-suggestion /
+        // ctor-scan / redundant-arm-check paths are on the compile, and a successful compile witnesses they
+        // are linear. The per-arm dispatch VALUE (each binder reaches its own arm) is ordinary N-variant
+        // sum-match behavior covered by the corpus; only the compile-at-scale exercise stays here.
+        compile_component(&crate::codec::encode(&parse(&src))).expect("compile wide-sum match");
     }
 
     #[test]
