@@ -8543,3 +8543,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	an unguarded same-variant fall-through restores exhaustiveness for a guarded variant match
+pass	a constant-scrutinee guarded match with a fall-through folds to the guarded body when its guard holds

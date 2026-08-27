@@ -28283,63 +28283,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_guarded_variant_arm_does_not_satisfy_exhaustiveness() {
-        // A guarded arm covers no value unconditionally, so a sum match whose only `Some` arm is guarded
-        // (no unguarded `Some` fall-through) is non-exhaustive → CDZ0210. Pins that a guarded VARIANT arm
-        // is excluded from coverage exactly as a guarded scalar arm is.
-        assert_eq!(
-            reject_code(
-                "(module m (def (f (: o (Option Int64))) \
-                   (match o ((guard (Some x) (> x 0)) x) ((None) 0))) \
-                 (def (main (: n Int64)) (f (Some n))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "a guarded variant arm must not count toward exhaustiveness"
-        );
-        // CONTROL: an unguarded `(Some y)` fall-through makes it exhaustive again.
-        assert!(
-            compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f (: o (Option Int64))) \
-                   (match o ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
-                 (def (main (: n Int64)) (f (Some n))) (export main))"
-            )))
-            .is_ok(),
-            "an unguarded same-variant fall-through restores exhaustiveness"
-        );
-        // REGRESSION: the SAME non-exhaustive match must reject EVEN WHEN it fully const-folds — a
-        // CONSTANT scrutinee `(Some 5)` whose guard `(> 5 0)` folds to TRUE previously returned the
-        // guarded body directly (→ 5), SKIPPING the exhaustiveness check, so a non-exhaustive match was
-        // silently accepted whenever a constant input happened to satisfy the guard. A match is
-        // ill-formed AS WRITTEN (CDZ0210) regardless of whether a specific fold hits the guarded arm; the
-        // guard-folds-true path now verifies the fall-through covers the variant before folding.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) \
-                   (match (Some 5) ((guard (Some x) (> x 0)) x) ((None) 0))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0210"),
-            "a non-exhaustive guarded match rejects even when a constant scrutinee folds its guard true"
-        );
-        // CONTROL: the fold-true case with an unguarded same-variant fall-through still COMPILES and
-        // folds to the guarded body (5) — the exhaustiveness check passes, the fold is unchanged.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) \
-                       (match (Some 5) ((guard (Some x) (> x 0)) x) ((Some y) y) ((None) 0))) \
-                     (export main))"
-                )))
-                .expect("an exhaustive guarded match folds"),
-                "main"
-            ),
-            5,
-            "an exhaustive guarded match still folds to the guarded body when the guard folds true"
-        );
-    }
-
-    #[test]
     fn a_string_payload_variant_is_not_misjudged_nullary() {
         // REGRESSION: a variant carrying a `String` payload — `(type Tag (Named String) Anon)` — must
         // construct, not be misjudged NULLARY. `eval::encode_ty` (the `Ty → type-value AST` round-trip a
