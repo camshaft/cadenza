@@ -20332,27 +20332,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_annotation_checks_the_element_type() {
-        // `(: (list 1 2) (List Bool))` — the value is a `List Int64`, the annotation says `List Bool`; the
-        // element types conflict, so it is rejected (CDZ0203). Pins `(List T)` in type position + the
-        // annotation element check. A matching annotation `(List Int64)` is transparent (folds to len 2).
-        assert_eq!(
-            reject_code("(module m (def (main) (: (list 1 2) (List Bool))) (export main))")
-                .as_deref(),
-            Some("CDZ0203")
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) ((. List len) (: (list 1 2) (List Int64)))) (export main))"
-                ),
-                "main"
-            ),
-            2
-        );
-    }
-
-    #[test]
     fn a_bin_value_out_of_range_for_its_segment_is_a_provable_trap() {
         // A constant LITERAL segment value that does not fit its width grounds to the segment's width type
         // and range-checks: it has no encoding → the build fails (CDZ0304), rather than truncating. `(u8
@@ -24254,46 +24233,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             reject_code(runtime_bad).as_deref(),
             Some("CDZ0201"),
             "a RUNTIME map's wrong-type key pattern is rejected too, not silently dead"
-        );
-    }
-
-    #[test]
-    fn a_list_element_literal_pattern_of_the_wrong_type_is_a_type_error() {
-        // A refutable LITERAL leading element `(list "x" .. r)` on an `(List Int64)` writes a String where
-        // an Int64 is required. Before, it desugared to a `(= __le "x")` guard that silently never matched
-        // (String-vs-Int folds to `false`), accepting a mistyped element as dead code. It is now CDZ0201
-        // naming both types, anchored at the literal (the list-element twin of the scalar-match + map-key
-        // pattern-type checks).
-        let d = reject_full(
-            "(module m (def (main) (match (list 1 2 3) ((list \"x\" .. r) 1) (_ 0))) (export main))",
-        )
-        .expect("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
-        assert!(
-            d.message.contains("list-element pattern is String")
-                && d.message.contains("the list's elements are Int64"),
-            "names both element types: {}",
-            d.message
-        );
-        // The symmetric case (an Int element on a String list) rejects too.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (match (list \"a\" \"b\") ((list 5 .. r) 1) (_ 0))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0201")
-        );
-        // NO OVER-REJECTION: a well-typed literal element matches + runs (an Int literal on an Int list).
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) (match (list 1 2 3) ((list 1 .. _r) 10) (_ 0))) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            10,
-            "a well-typed list-element literal dispatches by value"
         );
     }
 

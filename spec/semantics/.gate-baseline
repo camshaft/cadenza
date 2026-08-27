@@ -6506,6 +6506,8 @@ pass	jos1 JOSEPHUS elimination — every dispatch advances the cursor k-1 around
 pass	keyed lookups at different keys are not shared
 pass	kgt1 a KADANE max-subarray tracker — feed extends or RESTARTS the running sum via a four-way comparison lattice answering the live sum, best remembers the peak from a -99 sentinel, and the seed flips the middle feed's sign so one run restarts there while the other extends through it
 pass	knt1 a KNIGHT walker on an eight-by-eight board — hop attempts the L-move answering the landing square's index or -1 REFUSED off-board with the position held, cnt reads the completed-hop count, and the seed's starting rank makes the SAME move list bounce twice on one run and once on the other
+pass	lae1 a list annotation with a conflicting element type is rejected (CDZ0203)
+pass	lae2 a matching list annotation is transparent
 pass	lam1 INLINE and LET-BOUND lambdas applied to one draw — both closure forms read the same drawn value
 pass	lap1 a STOPWATCH with lap splits — tick advances the clock by a seed stride, lap answers the split since the last mark and remembers it, best tracks the MINIMUM split (seeded -1 sentinel replaced on first lap), and the middle lap of three is the unique best on both seeds
 pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
@@ -6525,6 +6527,9 @@ pass	le2 an EMPTY const Set.to-list folds to the empty list
 pass	le3 a single-entry const Map.to-list reads its lone (k v)
 pass	led1 BULLY leader election — registrations grow the candidate set, elect scans for the highest id, and deregistering the ELECTED leader (its id threaded through the body) forces re-election from the survivors
 pass	left shift
+pass	lep1 a String literal list-element pattern on an Int64 list is a type error (CDZ0201)
+pass	lep2 an Int literal list-element pattern on a String list is a type error (CDZ0201)
+pass	lep3 a well-typed list-element literal pattern dispatches by value
 pass	less-than at the integer extremes is signed, not unsigned
 pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
