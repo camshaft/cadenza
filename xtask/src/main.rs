@@ -1400,6 +1400,23 @@ fn run_program(
             message: String::new(),
         };
     }
+    // A `(peer …)` case binds its interface with the imposed-world consumer form `(effect E …) (bind E
+    // "iface") (host (E) …)`; an EXPLICIT `(wit-world …)` clause ALONGSIDE a peer is UNSUPPORTED — the
+    // consumer's declared world and the peer wiring disagree, and `cdz-run` composes an UNPARSEABLE
+    // component ("invalid component: failed to parse WebAssembly module") with no hint at the cause
+    // (breaker's F2 differential burned a full bisection on exactly this). Reject the combination UP FRONT
+    // with an actionable message that names the fix, instead of letting the opaque compose failure through.
+    // Bind-only is THE peer form (see `spec/semantics/29-cross-component-peers.sexp`'s authoring rules); no
+    // corpus case pairs a peer with a wit-world, so this only fires on a MISAUTHORED case, turning a
+    // confusing invalid-component crash into a clear decline-with-a-route-to-a-fix.
+    if !peers.is_empty() && wit_world.is_some() {
+        return Ran::BadArtifact(
+            "a (peer …) case must bind its interface with (bind E \"iface\") in the consumer, not declare \
+             an explicit (wit-world …): the wit-world+peer combination composes an unparseable component. \
+             Remove the (wit-world …) clause and use the bind-only consumer form."
+                .to_string(),
+        );
+    }
     match target {
         GateTarget::Wasm => run_program_wasm(
             tools,
