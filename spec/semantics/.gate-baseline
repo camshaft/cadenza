@@ -2047,11 +2047,13 @@ pass	a generic definition takes the type as a type-valued parameter
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic newtype instantiated at a FUNCTION type carries a closure through erasure
 pass	a generic newtype with a structural-record payload mentioning the type parameter constructs
+pass	a generic pair helper returns a mixed-type tuple projected through a match
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
 pass	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
+pass	a generic result flows into a second generic call
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a generic sum instantiated at a HEAP payload ((Box (List Int64))) crosses resume
 pass	a generic sum type constructor applied to a value is rejected
@@ -2765,6 +2767,7 @@ pass	a nested @!param is a misplaced module directive (CDZ0602), not a module pa
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
+pass	a nested Option is double-matched to its inner value
 pass	a nested Record.with rewrites an inner record field through the outer, inline
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)
@@ -5474,6 +5477,8 @@ pass	crr3 an export returns a Some-wrapped scalar (one reachable cell)
 pass	crr4 an export returns a runtime-concatenated String (one reachable cell)
 pass	crr5 an export returns a two-field record (one reachable cell)
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
+pass	csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair
+pass	csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
@@ -8049,5 +8054,3 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair
-pass	csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero
