@@ -20962,3 +20962,10 @@
   (call main (: 5 Int64))
   (output (: 99005 Int64))
   (live-objects 0))
+
+(case "a bare prelude Option is built via if and matched to its payload or a default"
+  (doc    "The prelude `Some`/`None` (no declaration) built by an `if` and matched: `(if (> n 0) (Some n) None)`
+           → `((Some x) x) (None -1)`. n=7 → 7; n=0 → -1.")
+  (input (do (def (main (: n Int64)) (match (if (> n 0) (Some n) None) ((Some x) x) (None -1))) (export main)))
+  (call main (: 7 Int64)) (output (: 7 Int64))
+  (call main (: 0 Int64)) (output (: -1 Int64)))

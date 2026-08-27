@@ -3176,3 +3176,20 @@
             (def (main) (f (Map.insert (Map.empty) "y" "hixxx") "y"))
             (export main)))
   (call   main) (output (: 1 Int64)) (live-objects known-leak 1))
+
+(case "Ordering.of yields the three-way ordering of two Int64 operands"
+  (doc    "`Ordering.of a b` deconstructed by a three-arm match → -1/0/1: 1<2 Less→-1, 2=2 Equal→0, 3>2 Greater→1.")
+  (input (do (def (main (: a Int64) (: b Int64))
+               (match (Ordering.of a b) ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1)))
+             (export main)))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: -1 Int64))
+  (call main (: 2 Int64) (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 3 Int64) (: 2 Int64)) (output (: 1 Int64)))
+
+(case "Ordering.of orders strings lexicographically in the three-way comparison"
+  (doc    "`Ordering.of` on string constants: \"a\" < \"b\" Less→-1, \"b\" = \"b\" Equal→0. main = 10*first + second = -10.")
+  (input (do (def (main)
+               (+ (* 10 (match (Ordering.of "a" "b") ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1)))
+                  (match (Ordering.of "b" "b") ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1))))
+             (export main)))
+  (output (: -10 Int64)))
