@@ -4150,6 +4150,7 @@ pass	a squared BigInt-inner quantity added to a linear one is a dimension mismat
 pass	a squared quantity does not add to a linear quantity
 pass	a stacked @test @ensures def called as a function returns its value, not unit (value-transparent)
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
+pass	a standard unit abbreviation resolves to its canonical unit in a converting sum
 pass	a state byte built into a Bytes and decoded by a from-bytes match in a tail-resumptive arm folds
 pass	a state-advancing helper called before a later read threads its write through the continuation
 pass	a state-destructuring arm under a multi-perform body folds to 6
