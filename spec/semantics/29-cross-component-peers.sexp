@@ -421,6 +421,20 @@
   (call   main)
   (output (: 10 Int64)))
 
+(case "a symbol argument crosses to and from a peer as a runtime handle like a string"
+  (doc    "A Symbol crosses the peer boundary as a runtime handle exactly like a String — a Symbol is a
+           String byte-leaf at run time (`is_extern_heap_type` includes `Ty::Symbol`), so a peer op taking
+           AND returning a Symbol crosses its handle both ways with no marshaling. PROVIDER `echo` returns
+           the crossed Symbol unchanged; the CONSUMER passes `(Symbol.of \"hi\")` INTO the peer op (arg
+           crosses as a handle), reads the returned Symbol handle BACK, and compares it to the original —
+           equal → 1. Before, a peer op declaring a Symbol DECLINED at the boundary while the identical
+           String op crossed; this pins the transport parity.")
+  (peer   "cadenza:sym/api" (do (def (echo (: s Symbol)) s) (export echo)))
+  (input  (do (effect Sym (op echo (-> Symbol Symbol))) (bind Sym "cadenza:sym/api")
+              (def (main) (host (Sym) (if (= (Sym.echo (Symbol.of "hi")) (Symbol.of "hi")) 1 0))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 ; ── breaker batch 542: the two peer-matrix cells the landed coverage misses — the heap-ARG
 ; direction (consumer→provider lowering; the landed pcl/pcm cases are all RESULT-crossing) and
 ; the cross-boundary CENSUS (peer-returned heap consumed ×50 must reclaim on the consumer side;
