@@ -20164,40 +20164,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_char_literal_is_a_scalar_that_compares_by_scalar_value() {
-        // 13-strings CHAR increment 1 (`collections-and-text.md` §A Char Is A Single Unicode Scalar
-        // Value): a `#\c` literal is a `Ty::Char` constant whose value is its Unicode scalar. Equality is
-        // scalar equality and ordering is the numeric order of the scalar, both folding at compile time to
-        // a `Bool` (a char has no runtime machine slot this increment). A literal spelling a NON-scalar
-        // (a surrogate `#\u+D800`) is a reader-detected lexical defect the compiler rejects CDZ0002.
-        let run = |src: &str| run_returns::<bool>(&component(src), "main");
-        // Equality by scalar value: two equal chars are equal, two distinct chars are not.
-        assert!(run("(module m (def (main) (= #\\a #\\a)) (export main))"));
-        assert!(!run("(module m (def (main) (= #\\a #\\b)) (export main))"));
-        // Ordering by scalar value: 97 (`a`) < 98 (`b`).
-        assert!(run("(module m (def (main) (< #\\a #\\b)) (export main))"));
-        assert!(!run("(module m (def (main) (< #\\b #\\a)) (export main))"));
-        // The `#\u+HHHH` code-point spelling names the same scalar (`#\u+0061` = `a`).
-        assert!(run(
-            "(module m (def (main) (= #\\u+0061 #\\a)) (export main))"
-        ));
-        // A named control char (`#\newline`) reads to its scalar (U+000A).
-        assert!(run(
-            "(module m (def (main) (= #\\newline #\\u+000A)) (export main))"
-        ));
-        // A surrogate code point is not a scalar — the literal is malformed (CDZ0002).
-        assert_eq!(
-            reject_code("(module m (def (main) #\\u+D800) (export main))").as_deref(),
-            Some("CDZ0002")
-        );
-        // A code point past U+10FFFF is likewise not a scalar.
-        assert_eq!(
-            reject_code("(module m (def (main) #\\u+110000) (export main))").as_deref(),
-            Some("CDZ0002")
-        );
-    }
-
-    #[test]
     fn a_string_match_is_well_formed_or_rejected() {
         // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
         // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).

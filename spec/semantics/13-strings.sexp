@@ -4806,3 +4806,19 @@
 (case "a bare constant string escapes across the boundary and renders"
   (input (do (def (main) "hello") (export main)))
   (call main) (output (: "hello" String)))
+
+; -- char-literal spellings resolve to the same scalar (reader feature; migration from rcdzc
+; a_char_literal_is_a_scalar_that_compares_by_scalar_value, 2026-08-27; = / < / surrogate-reject already
+; covered by the Char comparison + CDZ0002 cases here).
+
+(case "a hex code-point char spelling names the same scalar as the plain char"
+  (input (do (def (main) (if (= #\u+0061 #\a) 1 0)) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a named control char reads to its scalar code point"
+  (input (do (def (main) (if (= #\newline #\u+000A) 1 0)) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a char literal past the maximum scalar is a reader defect"
+  (input (do (def (main) #\u+110000) (export main)))
+  (error CDZ0002))
