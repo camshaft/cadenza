@@ -2213,6 +2213,8 @@ pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call
 pass	a host-delegated result SEEDS an in-program handler's initial state
 pass	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
+pass	a kept let-binding carries its masked initializer's range and the guard-elided doubling computes correctly (value parity)
+pass	a kept let-binding's masked range lets a guard-elided multiply compute correctly (value parity)
 pass	a kernel may deliberately export its rule as a first-class value
 pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys

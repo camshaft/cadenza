@@ -11918,31 +11918,12 @@ mod runtime_ops {
             "full-range binding keeps guard"
         );
 
-        // VALUE PARITY — the guard-elided binding computes the same as the guarded form.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(let ((y (& x 255))) (+ y y))",
-                &[Val::S64(200)]
-            ),
-            400
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(let ((y (& x 255))) (* y y))",
-                &[Val::S64(20)]
-            ),
-            400
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(let ((y (& x 255))) (+ y y))",
-                &[Val::S64(-1)]
-            ),
-            510
-        ); // -1&255=255, +255=510
+        // VALUE PARITY (the guard-elided `(+ y y)` and `(* y y)` over the masked binding compute exactly
+        // 2·(x&255) and (x&255)² — e.g. x=200→400, x=-1→510, x=20→400) is the corpus cases "a kept
+        // let-binding carries its masked initializer's range and the guard-elided doubling computes
+        // correctly (value parity)" and "a kept let-binding's masked range lets a guard-elided multiply
+        // compute correctly (value parity)" in 28-compiler-primitives — this stays a white-box Lir
+        // guard-elision check.
     }
 
     #[test]

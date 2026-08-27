@@ -2335,3 +2335,26 @@
   (input (do (def (main (: n Int64)) (if (> (/ 10 n) 0) (if (> (/ 10 n) 0) 7 8) 7)) (export main)))
   (call main (: 5 Int64)) (output (: 7 Int64))
   (call main (: 0 Int64)) (trap "divide by zero"))
+
+; -- kept let-binding carries its initializer's range (behavioral half migrated from rcdzc
+; a_kept_let_binding_carries_its_initializers_range, 2026-08-27; the white-box Lir guard-elision
+; inspection — the `(+ y y)`/`(* y y)` over a masked binding sheds its overflow guard, a full-range
+; binding keeps it — stays a wasmtime-free rcdzc unit test): a multi-use `let`-binding's `LocalRef`
+; carries the range of its INITIALIZER, so `(& x 255)` bound to `y` propagates [0,255] through `y` and
+; the guard-elided `(+ y y)`/`(* y y)` computes the same value the guarded inlined form would.
+
+(case "a kept let-binding carries its masked initializer's range and the guard-elided doubling computes correctly (value parity)"
+  (doc    "`(let ((y (& x 255))) (+ y y))` — `y` is `x & 255` ∈ [0,255], so `y + y` ∈ [0,510] sheds its
+           overflow guard yet is exactly 2·(x&255): x=200 → 200&255=200 → 400; x=-1 → 255 → 510; x=0 → 0.")
+  (input (do (def (main (: x Int64)) (let ((y (& x 255))) (+ y y))) (export main)))
+  (call main (: 200 Int64)) (output (: 400 Int64))
+  (call main (: -1 Int64))  (output (: 510 Int64))
+  (call main (: 0 Int64))   (output (: 0 Int64)))
+
+(case "a kept let-binding's masked range lets a guard-elided multiply compute correctly (value parity)"
+  (doc    "`(let ((y (& x 255))) (* y y))` — the same masked binding, squared: x=20 → 20&255=20 → 400;
+           x=0 → 0; x=16 → 256, in [0,255²] and guard-elided but exact.")
+  (input (do (def (main (: x Int64)) (let ((y (& x 255))) (* y y))) (export main)))
+  (call main (: 20 Int64)) (output (: 400 Int64))
+  (call main (: 0 Int64))  (output (: 0 Int64))
+  (call main (: 16 Int64)) (output (: 256 Int64)))
