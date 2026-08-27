@@ -5183,6 +5183,8 @@ pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
 pass	byte sequences are equal by their bytes in order
 pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width
+pass	ca1c a closure over a performing nested-let-init capture folds via the capture-once hoist
+pass	ca1m a capture-once closure applied TWICE shares the single draw across both applications
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
@@ -7978,7 +7980,6 @@ todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm r
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an Option (sum) entry argument is marshalled as a native Option
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
-todo	ca1c a closure over a performing nested-let-init capture declines pending the capture-once fold
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)

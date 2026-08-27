@@ -53,6 +53,32 @@ fn try_compile_rust(src: &str) -> Result<String, Vec<String>> {
     }
 }
 
+/// The capture-once fold (effects.rs `hoist_performing_capture_closure`): a let-bound closure whose
+/// value-let binds a PERFORMING draw the returned lambda reads folds cleanly rather than declining —
+/// reduce_handle hoists the draw out to wrap the binding so it is threaded ONCE and the closure closes
+/// over the captured result. This is the unit-level guard for the ca1c/ca1m corpus witnesses: it must
+/// EMIT (not decline), and the emit must NOT re-issue the draw at each application (the old silent
+/// re-performing miscompile). Applied twice, the single draw is shared across both applications.
+#[test]
+fn a_let_bound_closure_capturing_a_performing_draw_folds_via_the_capture_once_hoist() {
+    // Applied ONCE (ca1c): a = St.next captured once = seed n; (f 10) = 10*n.
+    let once = try_compile_rust(
+        "(do (effect St (op next (-> Int64))) (def (main (: n Int64)) (handle St n ((next () s (resume s (+ s 1)))) (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (f 10)))) (export main))",
+    );
+    assert!(
+        once.is_ok(),
+        "capture-once closure applied once must fold, not decline: {once:?}"
+    );
+    // Applied TWICE (ca1m): the single draw is shared across both applications (not re-drawn per use).
+    let twice = try_compile_rust(
+        "(do (effect St (op next (-> Int64))) (def (main (: n Int64)) (handle St n ((next () s (resume s (+ s 1)))) (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (+ (f 10) (f 20))))) (export main))",
+    );
+    assert!(
+        twice.is_ok(),
+        "capture-once closure applied twice must fold, not decline: {twice:?}"
+    );
+}
+
 #[test]
 fn a_recursive_fold_reusing_a_rebuilt_list_across_sibling_arms_builds_and_computes() {
     // Perimeter companions to the payload-binder case (corpus-bugfix/breaker corrected discriminator,
