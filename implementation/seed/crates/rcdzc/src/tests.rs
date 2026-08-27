@@ -5828,7 +5828,6 @@ fn an_int_seeded_handler_resuming_with_a_string_next_state_still_rejects_cdz0201
     );
 }
 
-
 /// A recursive performer whose recursion RESULT feeds a separate HELPER call now COMPILES (was a
 /// "parameter reference has no local slot" decline at emit). `walk` recurses, then a match arm feeds the
 /// recursion result AND a fresh `St.get` to a pure helper `combine`. The specializer threads `walk`'s body
