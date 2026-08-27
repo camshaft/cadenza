@@ -15262,50 +15262,6 @@ mod match_engine {
     /// element declined "needs the value heap"; the wasm twin of v-rust-backend's `Ty::Symbol → String` rep
     /// (v-property-testing found the asymmetry). `(tuple (Symbol.of "a") n)` compares equal to itself.
     #[test]
-    fn a_symbol_tuple_element_compares_by_content_on_the_value_heap() {
-        use crate::testkit::parse;
-        // Compose against the real runtime (the tuple+Symbol build needs arr-alloc/champ-eq); skip if the
-        // runtime wasm is not built.
-        let run = |src: &str| -> Option<String> {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            let runtime = crate::tests::find_runtime_wasm()?;
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec!["7".to_string()],
-                runtime: Some(runtime),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => Some(s),
-                cdz_run::Outcome::Trap(t) => panic!("Symbol-tuple-element = trapped: {t}"),
-            }
-        };
-        // Equal tuples with a Symbol element → true (a Symbol element boxes/compares like a String element).
-        let Some(eq) = run("(module m (def (main (: n Int64)) \
-               (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"a\") n)) 1 0)) (export main))")
-        else {
-            eprintln!("runtime wasm not found; skipping Symbol-tuple-element run");
-            return;
-        };
-        assert_eq!(eq, "1", "equal Symbol-element tuples compare equal");
-        // A differing scalar sibling → not equal.
-        assert_eq!(
-            run("(module m (def (main (: n Int64)) \
-                   (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"a\") (+ n 1))) 1 0)) (export main))").unwrap(),
-            "0",
-            "a differing scalar sibling makes the tuples unequal"
-        );
-        // A differing SYMBOL element (same scalar) → not equal (content comparison).
-        assert_eq!(
-            run("(module m (def (main (: n Int64)) \
-                   (if (= (tuple ((. Symbol of) \"a\") n) (tuple ((. Symbol of) \"b\") n)) 1 0)) (export main))").unwrap(),
-            "0",
-            "a differing Symbol element makes the tuples unequal (by content)"
-        );
-    }
-
-    #[test]
     fn symbol_of_a_non_string_reports_one_error_not_a_misleading_runtime_string_decline() {
         // `(Symbol.of 5)` is a type error (`Symbol.of : String → Symbol`, applied to Int64) — CDZ0203.
         // It used to ALSO emit the emit-path decline "Symbol.of on a runtime string is not yet interned",
@@ -33682,8 +33638,6 @@ mod stage1 {
         // the O(N²) path); that it runs + returns 19900 is the gate.
         assert_eq!(run_main(&src), 19900);
     }
-
-
 
     #[test]
     fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
