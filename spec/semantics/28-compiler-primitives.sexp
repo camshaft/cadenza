@@ -2396,3 +2396,36 @@
   (call main (: 20 Int64)) (output (: 400 Int64))
   (call main (: 0 Int64))  (output (: 0 Int64))
   (call main (: 16 Int64)) (output (: 256 Int64)))
+
+; --- let-binding reuse / CSE: a bound value is computed once and reused, value-transparently ---------
+; A `let`-bound runtime value used more than once is value-numbered to one computation (the backend's
+; dominator CSE); the OBSERVABLE invariant these pin is value-transparency — reusing a binding yields the
+; same result as recomputing it. (The "computed once" is an internal optimization the run cannot witness;
+; the run witnesses the correct value.)
+
+(case "a multi-use runtime let binding is computed once and reused (value-transparent)"
+  (doc    "`(let ((s (+ a b))) (+ s s))` binds the sum once and adds it to itself: a=10,b=20 -> s=30 ->
+           30+30 = 60. Reusing `s` is value-transparent (same result as recomputing `(+ a b)` twice).")
+  (input (do (def (main (: a Int64) (: b Int64)) (let ((s (+ a b))) (+ s s))) (export main)))
+  (call main (: 10 Int64) (: 20 Int64)) (output (: 60 Int64)))
+
+(case "a named runtime binding computes its value exactly once"
+  (doc    "The subtraction companion: `(let ((s (- a b))) (+ s s))` with a=7,b=4 -> s=3 -> 3+3 = 6. Pins
+           that a named runtime binding used twice is value-transparent over a non-commutative operand.")
+  (input (do (def (main (: a Int64) (: b Int64)) (let ((s (- a b))) (+ s s))) (export main)))
+  (call main (: 7 Int64) (: 4 Int64)) (output (: 6 Int64)))
+
+(case "a sequential let binding names an earlier binding in a later initializer"
+  (doc    "A sequential (let*-style) binding group: `(let ((s (+ a b)) (t (+ s s))) (+ t 1))` — `t`'s
+           initializer reads the earlier `s`. a=3,b=4 -> s=7 -> t=14 -> 14+1 = 15. Pins that a later
+           binding's initializer sees the earlier bindings in the same group.")
+  (input (do (def (main (: a Int64) (: b Int64)) (let ((s (+ a b)) (t (+ s s))) (+ t 1))) (export main)))
+  (call main (: 3 Int64) (: 4 Int64)) (output (: 15 Int64)))
+
+(case "a multi-use runtime bool binding is reused in a nested condition"
+  (doc    "A `let`-bound Bool used as the condition of two nested `if`s: `(let ((p (< a b))) (if p (if p 1
+           2) 3))`. a=1,b=9 -> p=true -> inner p=true -> 1; a=9,b=1 -> p=false -> 3. Pins that a bound
+           comparison result is reused value-transparently across both branch tests.")
+  (input (do (def (main (: a Int64) (: b Int64)) (let ((p (< a b))) (if p (if p 1 2) 3))) (export main)))
+  (call main (: 1 Int64) (: 9 Int64)) (output (: 1 Int64))
+  (call main (: 9 Int64) (: 1 Int64)) (output (: 3 Int64)))
