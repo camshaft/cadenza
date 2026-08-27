@@ -21911,7 +21911,7 @@
 (case "pcc3 a partial ctor in a record field completes when projected and applied"
   (doc    "`(. r f)` projects the partial `(T.Mk 7)` from the record field; applied to 3 → `(T.Mk 7 3)` → 10.")
   (input (do (type T (Mk Int64 Int64))
-    (def (main) (let ((r (record (f (T.Mk 7)) (g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
+    (def (main) (let ((r (record (= f (T.Mk 7)) (= g 0)))) (match ((. r f) 3) ((T.Mk a b) (+ a b))))) (export main)))
   (call main) (output (: 10 Int64)))
 
 ; ── breaker batch 529: immortal-trie WALKER-interaction fences (post-#4330 deep-mark). An
