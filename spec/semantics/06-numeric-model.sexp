@@ -4095,6 +4095,31 @@
   (call   main (: 15 UInt8) (: 17 UInt8)) (output (: 255 UInt8))
   (call   main (: 16 UInt8) (: 16 UInt8)) (trap   "overflow"))
 
+(case "a runtime two-operand Int8 multiplication range-checks its product"
+  (doc    "`(* a b)` over two runtime Int8: 10 * 12 = 120 fits, but 12 * 12 = 144 > Int8.max (127) traps,
+           and -128 * -1 = 128 > 127 traps too (the signed high-end). Because 2*8 <= 32 the machine i32
+           multiply cannot overflow the slot, so the narrow range-check alone bounds the product.")
+  (input  (do (def (main (: a Int8) (: b Int8)) (* a b)) (export main)))
+  (call   main (: 10 Int8) (: 12 Int8))   (output (: 120 Int8))
+  (call   main (: 12 Int8) (: 12 Int8))   (trap   "overflow")
+  (call   main (: -128 Int8) (: -1 Int8)) (trap   "overflow"))
+
+(case "a runtime two-operand Int16 multiplication range-checks its product"
+  (doc    "`(* a b)` over two runtime Int16: 181 * 181 = 32761 fits Int16 (max 32767), but 182 * 182 =
+           33124 overflows and traps. At width 16 the product 2*16 = 32 exactly fills the i32 slot, so the
+           machine multiply still cannot overflow the slot and the narrow range-check bounds the result.")
+  (input  (do (def (main (: a Int16) (: b Int16)) (* a b)) (export main)))
+  (call   main (: 181 Int16) (: 181 Int16)) (output (: 32761 Int16))
+  (call   main (: 182 Int16) (: 182 Int16)) (trap   "overflow"))
+
+(case "a runtime two-operand UInt16 multiplication range-checks its product"
+  (doc    "The unsigned width-16 companion: `(* a b)` over UInt16 with 255 * 257 = 65535 fits (UInt16.max),
+           but 256 * 256 = 65536 overflows and traps. Pins the narrow range-check at the widest width that
+           still fits the i32 slot without a division-based overflow guard.")
+  (input  (do (def (main (: a UInt16) (: b UInt16)) (* a b)) (export main)))
+  (call   main (: 255 UInt16) (: 257 UInt16)) (output (: 65535 UInt16))
+  (call   main (: 256 UInt16) (: 256 UInt16)) (trap   "overflow"))
+
 (case "a runtime Int8 division in range computes and division by zero traps"
   (doc    "`(/ a b)` over two runtime Int8: -100 / 3 = -33 (toward zero, in range), and 5 / 0 traps on the
            zero divisor. The in-range + divide-by-zero faces of the narrow signed division; the MIN / -1

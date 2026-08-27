@@ -11585,51 +11585,6 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::I32DivS)),
             "Int32*Int32 can overflow i32 — the div guard must be kept"
         );
-        // VALUE/TRAP PARITY — the range-check still catches the overflow the div guard used to.
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(* a b)",
-                &[Val::S8(10), Val::S8(12)]
-            ),
-            120
-        );
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(* a b)",
-            &[Val::S8(12), Val::S8(12)]
-        )); // 144 > 127
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(* a b)",
-            &[Val::S8(-128), Val::S8(-1)]
-        )); // 128 > 127
-        assert_eq!(
-            run::<i16>(
-                "(: a Int16) (: b Int16)",
-                "(* a b)",
-                &[Val::S16(181), Val::S16(181)]
-            ),
-            32761
-        );
-        assert!(traps(
-            "(: a Int16) (: b Int16)",
-            "(* a b)",
-            &[Val::S16(182), Val::S16(182)]
-        )); // 33124 > 32767
-        assert_eq!(
-            run::<u16>(
-                "(: a UInt16) (: b UInt16)",
-                "(* a b)",
-                &[Val::U16(255), Val::U16(257)]
-            ),
-            65535
-        );
-        assert!(traps(
-            "(: a UInt16) (: b UInt16)",
-            "(* a b)",
-            &[Val::U16(256), Val::U16(256)]
-        )); // 65536
     }
 
     #[test]
