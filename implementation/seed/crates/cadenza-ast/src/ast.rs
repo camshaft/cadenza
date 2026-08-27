@@ -20,15 +20,11 @@
 
 // `alloc` (not std's prelude) so this file compiles under the `#![no_std]` minimal core as well as
 // under std; `alloc::string::String` == `std::string::String`, etc.
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-
-// The `IntValue` <-> `num_bigint::BigInt` bridge is a std-only convenience — the no_std minimal core
-// carries no num-bigint (the #459 lesson); `Leaf::Int` is always the dependency-light `IntValue`.
-#[cfg(feature = "std")]
-use num_bigint::BigInt;
 
 /// A leaf primitive value. The value kinds plus one MARKER (`BadEscape`) the reader emits for a
 /// lexically-malformed literal it cannot itself report.
@@ -969,24 +965,38 @@ impl IntValue {
     }
 }
 
-/// `Decimal` construction from a native float — a std-only front-end path (the decimal->binary
-/// conversion parses via num-bigint). The no_std minimal core builds Float leaves through the runtime's
-/// own byte-magnitude path (rcdzc `ast::Decimal::from_f64`), not this one.
-#[cfg(feature = "std")]
+/// `Decimal` construction from a native float — the value-form `Leaf::Float` a native float value
+/// encodes to. Part of the no_std minimal core (no num-bigint): the decimal->binary conversion is a
+/// base-10 -> base-256 Horner loop, byte-identical to rcdzc's `ast::Decimal::from_f64` and the
+/// cdz-runtime `float_leaf`, so all three codecs (compiler, native-rust-emit, runtime) produce
+/// BYTE-IDENTICAL Float leaves (the 3-codec identity). cdz-runtime's `#[path]` include of this file
+/// calls `from_f64` in its op93 float-encode path, so it must live in the no_std surface.
 impl Decimal {
-    /// The EXACT shortest-decimal `Decimal` for an `f64` — the value-form `Leaf::Float` a native float
-    /// value encodes to. Mirrors rcdzc's `ast::Decimal::from_f64` and the cdz-runtime `float_leaf` so all
-    /// three codecs (compiler, native-rust-emit, runtime) produce BYTE-IDENTICAL Float leaves (the 3-codec
-    /// identity): a WHOLE value uses its full expansion (`{f:.0}`), a non-whole its shortest round-tripping
-    /// `{:e}` text; the (sign, digit string, base-10 exponent) decomposition then folds the fractional
-    /// digits into the exponent. `None` for a non-finite `f64` — nan/inf has no canonical value form, so
-    /// the encode declines (matching the runtime's trap). (rcdzc stores the significand as a base-256 byte
-    /// magnitude; here it is the crate's `BigInt`, built by parsing the digit string — same value.)
+    /// The EXACT shortest-decimal `Decimal` for an `f64`: a WHOLE value uses its full expansion
+    /// (`{f:.0}`), a non-whole its shortest round-tripping `{:e}` text; the (sign, digit string, base-10
+    /// exponent) decomposition then folds the fractional digits into the exponent. `None` for a
+    /// non-finite `f64` — nan/inf has no canonical value form, so the encode declines (the runtime's trap).
     pub fn from_f64(f: f64) -> Option<Decimal> {
         if !f.is_finite() {
             return None;
         }
-        let s = if f.fract() == 0.0 {
+        // `f.fract() == 0.0` (is `f` whole) WITHOUT the std-only `f64::fract`, so this compiles under
+        // `#![no_std]`. Exact and identical to `fract() == 0.0` for every finite f64 (guarded above):
+        // inspect the IEEE-754 fields — an unbiased exponent < 0 (|f| < 1) is whole only at ±0.0; an
+        // exponent >= 52 leaves no fractional mantissa bits; otherwise f is whole iff its low `52 - exp`
+        // mantissa bits are all zero.
+        let is_whole = {
+            let bits = f.to_bits();
+            let exp = ((bits >> 52) & 0x7ff) as i64 - 1023;
+            if exp < 0 {
+                f == 0.0
+            } else if exp >= 52 {
+                true
+            } else {
+                (bits & ((1u64 << (52 - exp)) - 1)) == 0
+            }
+        };
+        let s = if is_whole {
             format!("{f:.0}")
         } else {
             format!("{f:e}")
@@ -1006,8 +1016,9 @@ impl Decimal {
 
     /// Decompose a decimal/scientific text (`-2.5e-1`, `100`, `1.5e0`) into `(negative, significand,
     /// exponent)`: split the sign, the `e` exponent, and the fractional digits (folded into the exponent).
-    /// The significand is the concatenated integer+fraction digit string parsed as a `BigInt`. `None` on a
-    /// malformed mantissa (a non-digit, or empty). Shared by `from_f64`/`from_f32` so both decompose identically.
+    /// The significand is the concatenated integer+fraction digit string converted to a big-endian
+    /// base-256 magnitude by a Horner loop (no num-bigint). `None` on a malformed mantissa (a non-digit,
+    /// or empty). Shared by `from_f64`/`from_f32` so both decompose identically.
     fn from_sci(s: &str) -> Option<Decimal> {
         let (negative, rest) = match s.strip_prefix('-') {
             Some(r) => (true, r),
@@ -1024,16 +1035,35 @@ impl Decimal {
         let mut digits = String::from(int_part);
         digits.push_str(frac_part);
         let exponent = exp10 - frac_part.len() as i64;
-        if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        if digits.is_empty() {
             return None;
         }
-        // Parse the non-negative digit string to a byte magnitude. This std-side path uses num-bigint
-        // for the decimal→binary conversion, then keeps the canonical minimal big-endian magnitude.
-        let b = BigInt::parse_bytes(digits.as_bytes(), 10)?;
-        let significand = IntValue::from_bigint(&b).magnitude;
+        // Convert the base-10 digit string to a big-endian base-256 magnitude (Horner: acc = acc*10 + d,
+        // carried in a little-endian byte vector), no num-bigint — a non-digit is malformed. Leading
+        // zeros collapse to the empty magnitude (zero). Byte-identical to rcdzc's `from_f64`.
+        let mut mag: Vec<u8> = Vec::new(); // little-endian base-256 during build
+        for ch in digits.bytes() {
+            if !ch.is_ascii_digit() {
+                return None;
+            }
+            let mut carry = (ch - b'0') as u32;
+            for byte in mag.iter_mut() {
+                let v = (*byte as u32) * 10 + carry;
+                *byte = (v & 0xff) as u8;
+                carry = v >> 8;
+            }
+            while carry > 0 {
+                mag.push((carry & 0xff) as u8);
+                carry >>= 8;
+            }
+        }
+        while mag.last() == Some(&0) {
+            mag.pop();
+        }
+        mag.reverse();
         Some(Decimal {
             negative,
-            significand,
+            significand: mag,
             exponent,
         })
     }
@@ -1688,6 +1718,7 @@ impl Arenas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigInt;
     use std::str::FromStr;
 
     fn dec(neg: bool, sig: &str, exp: i64) -> Decimal {
