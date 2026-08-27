@@ -22918,3 +22918,11 @@
               (def (main (: b Bool)) (look (pick b))) (export main)))
   (call   main (: false Bool))
   (output (: -1 Int64)))
+(case "mde1 the two #map entry spellings (raw pair and = pair) build EQUAL maps (the #4589 dual-read; operator: maps+records unify on =)"
+  (input (do (def (main (: n Int64))
+  (+ (if (= #map((1 10) (2 20)) #map((= 1 10) (= 2 20))) 1000 0)
+     (match (Map.lookup #map((= 1 10) (2 20)) n) ((Some v) v) ((None u) -1))))
+(export main)))
+  (call main (: 2 Int64))
+  (output (: 1020 Int64))
+  (live-objects 0))
