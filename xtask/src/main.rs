@@ -1372,16 +1372,15 @@ fn run_program(
             message: String::new(),
         };
     }
-    // A `(then …)` two-call or a `(drop)` case is driven ONLY through the WASM harness — the two-call
-    // drive (`run_closure_resource`'s `--call-twice`) and the explicit resource-drop (`--drop-handle`,
-    // for a `(live-objects 0)` release assertion) both live in the wasm closure driver. The Rust/ML
-    // backends have no such closure-resource drive on this path, so those cases are not-yet-supported
-    // there → DECLINE (Todo, coverage-not-yet). Without this, a `(then)` backend runs only the FIRST call
-    // (scalar `15` vs the expected `(tuple 15 17)`), a spurious disagreement; the decline makes such a case
-    // baseline pass-wasm / todo-elsewhere, the same wasm-only convention `wit-world` uses above. (A `(drop)`
-    // case's `(live-objects …)` is itself wasm-only, but declining keeps the non-wasm grade a clean todo.)
+    // A `(then …)` two-call, a `(drop)`, or a `(call-method …)` value-resource case is driven ONLY through
+    // the WASM harness — the two-call drive (`--call-twice`), the explicit resource-drop (`--drop-handle`),
+    // and the named value-resource member reach (`--call-member`) all live in the wasm closure/escape
+    // driver. The Rust/ML backends have no such resource drive on this path, so those cases are
+    // not-yet-supported there → DECLINE (Todo, coverage-not-yet). Without this, a `(then)` backend runs only
+    // the FIRST call (scalar `15` vs the expected `(tuple 15 17)`), a spurious disagreement; the decline
+    // makes such a case baseline pass-wasm / todo-elsewhere, the same wasm-only convention `wit-world` uses.
     if call
-        .map(|c| c.second_call.is_some() || c.drop_handle)
+        .map(|c| c.second_call.is_some() || c.drop_handle || c.method.is_some())
         .unwrap_or(false)
         && !matches!(target, GateTarget::Wasm)
     {
@@ -1670,16 +1669,26 @@ fn run_program_wasm(
     // the export's declared parameter type (its `--arg` allows a leading `-`, so a negative value is
     // taken as the argument, not a flag).
     if let Some(call) = call {
-        // A `(wit-world …)` case's guest exports THROUGH the named interface instance, so qualify the
-        // export as `<iface>#<export>` (cdz-run resolves the interface-nested member); a synthesized-world
-        // case (no component-name) calls the bare top-level export as before.
-        let export = match component_name {
-            Some(iface) => format!("{iface}#{}", call.export),
-            None => call.export.clone(),
-        };
-        run.arg("--call").arg(&export);
-        for arg in &call.args {
-            run.arg("--arg").arg(arg);
+        if let Some(member) = &call.method {
+            // A `(call-method <member>)` case has no export: the program's sole producer makes the value-
+            // resource (cdz-run routes to the resource-escape path with no `--call`), and `--call-member`
+            // names the member to reach on it (instead of the default `encode`). Args are the member's.
+            run.arg("--call-member").arg(member);
+            for arg in &call.args {
+                run.arg("--arg").arg(arg);
+            }
+        } else {
+            // A `(wit-world …)` case's guest exports THROUGH the named interface instance, so qualify the
+            // export as `<iface>#<export>` (cdz-run resolves the interface-nested member); a synthesized-world
+            // case (no component-name) calls the bare top-level export as before.
+            let export = match component_name {
+                Some(iface) => format!("{iface}#{}", call.export),
+                None => call.export.clone(),
+            };
+            run.arg("--call").arg(&export);
+            for arg in &call.args {
+                run.arg("--arg").arg(arg);
+            }
         }
         // A `(then …)` continuation drives a SECOND call on the same closure handle (borrow<t>
         // repeatability): `--call-twice` puts cdz-run in two-call mode (make ONCE, call twice, render the
@@ -4434,6 +4443,10 @@ struct Call {
     /// A `(drop)` clause: resource-drop the minted closure handle after the call(s) before reading the
     /// result / heap balance (so a `(live-objects 0)` case can pin release). Drives `cdz-run --drop-handle`.
     drop_handle: bool,
+    /// A `(call-method <member> …)` clause: the NAMED value-resource member to invoke (drives `cdz-run
+    /// --call-member <member>`). `None` for an ordinary call/escape. When `Some`, the case has no export
+    /// (the program's producer makes the resource; the member is reached after).
+    method: Option<String>,
 }
 
 /// Run `cdz-corpus records <file>` and parse its record stream.
@@ -4475,6 +4488,9 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
     // The pending `(drop)` flag (resource-drop the closure handle after the call), set by a `drop-handle`
     // marker line, flushed into the trial's `Call` on the `expect` line.
     let mut drop_handle = false;
+    // The pending `(call-method <member>)` value-resource member, set by a `call-method` line. A method
+    // case has NO `call` line (no export), so the trial's `Call` is produced from `method` alone.
+    let mut method: Option<String> = None;
     for line in text.lines() {
         if line == "---" {
             records.push(CorpusRecord {
@@ -4495,6 +4511,7 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
             call_args.clear();
             second_call = None;
             drop_handle = false;
+            method = None;
             continue;
         }
         if let Some((key, val)) = line.split_once('\t') {
@@ -4509,6 +4526,9 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                     }
                 }
                 "call" => call_export = Some(val.to_string()),
+                // `call-method\t<member>` — a value-resource member drive (no export; the member is reached
+                // on the resource the program's producer makes).
+                "call-method" => method = Some(val.to_string()),
                 "arg" => call_args.push(val.to_string()),
                 // `then-call\t<n>` opens a two-call continuation (n = its arg count, unused — the args
                 // arrive as `then-arg` lines); a bare `(then)` emits `then-call\t0` and no `then-arg`, so
@@ -4526,12 +4546,20 @@ fn parse_records(text: &str) -> Vec<CorpusRecord> {
                     // carrying any `(then …)` second-call args and the `(drop)` flag.
                     let sc = second_call.take();
                     let dh = std::mem::take(&mut drop_handle);
-                    let call = call_export.take().map(|export| Call {
-                        export,
-                        args: std::mem::take(&mut call_args),
-                        second_call: sc,
-                        drop_handle: dh,
-                    });
+                    let m = method.take();
+                    // A trial has a call if it named an export OR a `(call-method)` member (the latter has
+                    // no export — the program's producer makes the value-resource).
+                    let call = if call_export.is_some() || m.is_some() {
+                        Some(Call {
+                            export: call_export.take().unwrap_or_default(),
+                            args: std::mem::take(&mut call_args),
+                            second_call: sc,
+                            drop_handle: dh,
+                            method: m,
+                        })
+                    } else {
+                        None
+                    };
                     call_args.clear();
                     trials.push(Trial {
                         call,

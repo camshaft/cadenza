@@ -53,6 +53,9 @@ pub fn grade(
     let mut first_live: Option<Option<u32>> = None;
     let result = grade_run(&test_run, compile_status, compile_diag, |trial: &GTrial| {
         let export = match (&trial.call, component_name) {
+            // A `(call-method …)` case has no export (empty) — leave it None so the run routes to the
+            // value-resource escape driver, which the named member reach keys off.
+            (Some(c), _) if c.method.is_some() => None,
             (Some(c), Some(iface)) => Some(format!("{iface}#{}", c.export)),
             (Some(c), None) => Some(c.export.clone()),
             (None, _) => None, // invoke the sole export
@@ -80,8 +83,16 @@ pub fn grade(
         let second_call: Option<&[String]> =
             trial.call.as_ref().and_then(|c| c.second_call.as_deref());
         let drop_handle = trial.call.as_ref().map(|c| c.drop_handle).unwrap_or(false);
-        let (outcome, observed, live) =
-            run_with_live_objects(component_bytes, &opts, second_call, drop_handle)?;
+        // A `(call-method <member>)` case reaches a named value-resource member on the grade path too (no
+        // export → routes to the escape driver, which reaches `<member>` instead of `encode`).
+        let call_member: Option<&str> = trial.call.as_ref().and_then(|c| c.method.as_deref());
+        let (outcome, observed, live) = run_with_live_objects(
+            component_bytes,
+            &opts,
+            second_call,
+            drop_handle,
+            call_member,
+        )?;
         if first_live.is_none() {
             first_live = Some(live);
         }

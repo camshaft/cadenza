@@ -5574,3 +5574,25 @@
   (then   (: 40 Int64))
   (output (: (tuple 6 41) (Tuple Int64 Int64)))
   (live-objects known-leak 1))
+
+; VALUE-RESOURCE METHOD (VM-1) — a RUNTIME VALUE crossing as a resource exposes compiler-EMITTED members
+; besides `encode`: a `Bytes` value's `len : borrow<t> -> u32` (and `is-empty`/`to-bytes`). The host makes
+; the value once, then reaches a NAMED member via `(call-method <member>)` and calls it. A borrow method is
+; REPEATABLE — `(then)` calls `len` again on the SAME handle, rendering the pair as a tuple. `(uleb 624485)`
+; builds a genuine RUNTIME Bytes `E5 8E 26` (3 bytes) via a recursive LEB128 concat — a FOLDABLE constant
+; Bytes emits NO value-resource `len` member (only a runtime value does), so the recursive builder is
+; load-bearing. `len` = 3 both times. The recursive concat leaves 5 live cells (intermediates + result).
+
+(case "a runtime Bytes value exposes a repeatable len member (call-method)"
+  (doc    "`(uleb 624485)` builds the runtime Bytes `E5 8E 26`; the host reaches its emitted `len` member and
+           calls it TWICE on the same borrowed handle (repeatable) -> (tuple 3 3). Pins the value-resource
+           METHOD ABI (a named member besides encode), driven by (call-method len) + (then).")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method len)
+  (then)
+  (output (: (tuple 3 3) (Tuple UInt32 UInt32)))
+  (live-objects known-leak 5))

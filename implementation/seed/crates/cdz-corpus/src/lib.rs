@@ -144,6 +144,13 @@ pub struct Call {
     /// the drop fires the resource's `t-dtor`, reclaiming the cell, so a `(drop)` case can assert
     /// `(live-objects 0)`. Default `false` (hold the handle — the historical leaks-1 behavior). Wasm-only.
     pub drop_handle: bool,
+    /// A `(call-method <member> …)` clause: the NAMED member to invoke on the value-resource the program
+    /// produces (a runtime value crossing as a resource in the `cadenza:run/run` instance exposes
+    /// compiler-emitted members — e.g. a `Bytes` value's `len : borrow<t> -> u32`, `is-empty`, `to-bytes`,
+    /// besides `encode`). `None` for the ordinary make/encode escape or a closure call; `Some("len")` makes
+    /// the value once then reaches that member and calls it with the handle (+ args). `(then …)` repeats
+    /// the member on the SAME handle (a borrow method is repeatable); `(drop)` reclaims after. Wasm-only.
+    pub method: Option<String>,
 }
 
 /// The recorded primary result of a case — exactly one per the corpus vocabulary.
@@ -357,9 +364,18 @@ pub fn render(records: &[Record]) -> String {
         // the trial. A single-trial case emits exactly the historical `call?`/`arg*`/`expect` shape.
         for trial in &r.trials {
             if let Some(call) = &trial.call {
-                out.push_str("call\t");
-                out.push_str(&call.export);
-                out.push('\n');
+                // A `(call-method <member>)` case has no export (the program's sole producer makes the
+                // value-resource); it emits a `call-method\t<member>` line the driver reaches after make,
+                // instead of the `call\t<export>` line. The `arg` lines are the member's arguments either way.
+                if let Some(member) = &call.method {
+                    out.push_str("call-method\t");
+                    out.push_str(member);
+                    out.push('\n');
+                } else {
+                    out.push_str("call\t");
+                    out.push_str(&call.export);
+                    out.push('\n');
+                }
                 for arg in &call.args {
                     out.push_str("arg\t");
                     out.push_str(arg);
@@ -715,6 +731,27 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                         args,
                         second_call: None,
                         drop_handle: false,
+                        method: None,
+                    });
+                }
+            }
+            Some("call-method") => {
+                // `(call-method <member> <arg>…)` — invoke a NAMED member on the value-resource the program
+                // produces (a runtime value crosses as a resource in `cadenza:run/run`, exposing members like
+                // `len`/`is-empty`/`to-bytes` besides `encode`). No export name: the program's sole value-
+                // producer makes the resource (like the `encode` escape), then the driver reaches `<member>`.
+                // The args are the member's arguments. `(then …)`/`(drop)` compose (repeatable / reclaim).
+                if let Some(tail) = a.as_form(clause, "call-method")
+                    && let Some(&member_id) = tail.first()
+                    && let Some(member) = a.as_name(member_id)
+                {
+                    let args = tail[1..].iter().map(|&arg| value_of(a, arg)).collect();
+                    pending_call = Some(Call {
+                        export: String::new(),
+                        args,
+                        second_call: None,
+                        drop_handle: false,
+                        method: Some(member.to_string()),
                     });
                 }
             }
@@ -1936,6 +1973,37 @@ mod tests {
         )
         .unwrap();
         assert!(!plain[0].trials[0].call.as_ref().unwrap().drop_handle);
+    }
+
+    /// A `(call-method <member> …)` clause sets `method` on the pending call (no export) and serializes to
+    /// a `call-method\t<member>` line (plus `arg` lines), not a `call` line.
+    #[test]
+    fn a_call_method_clause_names_a_value_resource_member() {
+        let recs = read(
+            r#"(case "vm"
+                 (input (do (def (main) ((. Bytes of) (list ((. UInt8 wrap) 65)))) (export main)))
+                 (call-method len)
+                 (output (: 1 UInt32)))"#,
+        )
+        .unwrap();
+        let call = recs[0].trials[0].call.as_ref().unwrap();
+        assert_eq!(call.method.as_deref(), Some("len"));
+        assert!(call.export.is_empty(), "a method case has no export");
+        let text = to_records(
+            r#"(case "vm"
+                 (input (do (def (main) ((. Bytes of) (list ((. UInt8 wrap) 65)))) (export main)))
+                 (call-method len)
+                 (output (: 1 UInt32)))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains("call-method\tlen\n"),
+            "call-method line, got: {text:?}"
+        );
+        assert!(
+            !text.contains("\ncall\t"),
+            "a method case emits no call line, got: {text:?}"
+        );
     }
 
     /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).
