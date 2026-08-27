@@ -10583,3 +10583,150 @@
            (not 101%7 = 3). A trapping inner operand still traps.")
   (input (do (def (main (: x Int64)) (% (: (% x 100) Int64) 7)) (export main)))
   (call main (: 101 Int64)) (output (: 1 Int64)))
+; ═══ bitwise/algebraic-identity + CSE parity, batch migrated from rcdzc runtime_ops (2026-08-27) ═══
+; The white-box Lir/select IR-shape assertions (mask-elision, mask/or/xor collapse counts, the
+; CSE compute-once Select/I64Eq counts) STAY as wasmtime-free rcdzc unit tests; these cases pin the
+; RUNTIME value + trap observables. algebraic_identities_compute_correctly and
+; an_annihilator_does_not_elide_a_trap were PURE parity (no IR inspection) → fully migrated, rcdzc
+; tests deleted; the covering case names are cited in the commit.
+
+; -- identical_operands_share_one_computation (CSE; the compute-once Select/I64Eq counts stay in rcdzc)
+(case "io1 a shared pure subexpression reads the same value twice (value parity: shared, self-subtract, commuted)"
+  (doc    "`(+ (* a b) (* a b))` = 2ab (shared product), `(- (+ a b) (+ a b))` = 0 (self-subtract), and
+           `(+ (* a b) (* b a))` = 2ab (commuted, non-shared but equal). One checksum pins all three.")
+  (input (do (def (main (: a Int64) (: b Int64))
+    (+ (if (= (+ (* a b) (* a b)) (* 2 (* a b))) 1 0)
+       (+ (* 10 (if (= (- (+ a b) (+ a b)) 0) 1 0))
+          (* 100 (if (= (+ (* a b) (* b a)) (* 2 (* a b))) 1 0)))))
+    (export main)))
+  (call main (: 3 Int64) (: 4 Int64))    (output (: 111 Int64))
+  (call main (: 100 Int64) (: 23 Int64)) (output (: 111 Int64)))
+
+(case "io2 a shared min-select reads the same value twice (value parity, both operand orders)"
+  (doc    "`(+ (if (< a b) a b) (if (< a b) a b))` = 2*min(a,b) — the min-select is CSE'd (computed once
+           in rcdzc's Lir), the value is 2*min either order.")
+  (input (do (def (main (: a Int64) (: b Int64))
+    (+ (if (< a b) a b) (if (< a b) a b))) (export main)))
+  (call main (: 3 Int64) (: 5 Int64)) (output (: 6 Int64))
+  (call main (: 5 Int64) (: 3 Int64)) (output (: 6 Int64)))
+
+(case "io3 a shared subexpression keeps its overflow trap (computed once still traps)"
+  (doc    "`(+ (* a b) (* a b))` — the shared `(* a b)` overflows Int64 at a=Int64.max,b=2 and must still
+           trap even though it is computed once; (5,5) → 50.")
+  (input (do (def (main (: a Int64) (: b Int64))
+    (+ (* a b) (* a b))) (export main)))
+  (call main (: 5 Int64) (: 5 Int64))                   (output (: 50 Int64))
+  (call main (: 9223372036854775807 Int64) (: 2 Int64)) (trap "overflow"))
+
+; -- algebraic_identities_compute_correctly (PURE parity → rcdzc test DELETED; covered here)
+(case "ai1 the algebraic identities compute the operand or its annihilator (17-fold checksum)"
+  (doc    "x+0, 0+x, x-0, x*1, 1*x, x|0, x^0, x<<0, x>>0, x/1, x&x, x|x all equal x; x*0, x&0, x%1, x-x,
+           x^x all equal 0. Weighted flags sum to 131071 (2^17-1) when every identity holds; checked for
+           a=7 and a=-3.")
+  (input (do (def (main (: a Int64))
+    (+ (if (= (+ a 0) a) 1 0)
+    (+ (if (= (+ 0 a) a) 2 0)
+    (+ (if (= (- a 0) a) 4 0)
+    (+ (if (= (* a 1) a) 8 0)
+    (+ (if (= (* 1 a) a) 16 0)
+    (+ (if (= (* a 0) 0) 32 0)
+    (+ (if (= (| a 0) a) 64 0)
+    (+ (if (= (^ a 0) a) 128 0)
+    (+ (if (= (& a 0) 0) 256 0)
+    (+ (if (= (<< a 0) a) 512 0)
+    (+ (if (= (>> a 0) a) 1024 0)
+    (+ (if (= (/ a 1) a) 2048 0)
+    (+ (if (= (% a 1) 0) 4096 0)
+    (+ (if (= (- a a) 0) 8192 0)
+    (+ (if (= (^ a a) 0) 16384 0)
+    (+ (if (= (& a a) a) 32768 0)
+       (if (= (| a a) a) 65536 0))))))))))))))))))
+    (export main)))
+  (call main (: 7 Int64))  (output (: 131071 Int64))
+  (call main (: -3 Int64)) (output (: 131071 Int64)))
+
+(case "ai2 an identity that keeps the operand preserves its overflow trap ((+ (* a b) 0))"
+  (doc    "`(+ (* a b) 0)` = a*b; the +0 identity is elided but the product's overflow at a=max,b=2 still
+           traps; (5,5) → 25.")
+  (input (do (def (main (: a Int64) (: b Int64)) (+ (* a b) 0)) (export main)))
+  (call main (: 5 Int64) (: 5 Int64))                   (output (: 25 Int64))
+  (call main (: 9223372036854775807 Int64) (: 2 Int64)) (trap "overflow"))
+
+(case "ai3 a same-operand & keeps the operand and preserves its overflow trap ((& (* a b) (* a b)))"
+  (doc    "`(& (* a b) (* a b))` folds `& x x` → x = a*b; the product's overflow still traps at a=max,b=2;
+           (5,5) → 25.")
+  (input (do (def (main (: a Int64) (: b Int64)) (& (* a b) (* a b))) (export main)))
+  (call main (: 5 Int64) (: 5 Int64))                   (output (: 25 Int64))
+  (call main (: 9223372036854775807 Int64) (: 2 Int64)) (trap "overflow"))
+
+; -- an_annihilator_does_not_elide_a_trap (PURE parity → rcdzc test DELETED; covered here)
+(case "an1 the *0 annihilator does not discard a trapping divisor ((* (/ a b) 0))"
+  (doc    "`(* (/ a b) 0)` = 0, but only when the discarded `(/ a b)` is trap-free; at b=0 it must still
+           divide-by-zero trap (the annihilator does not delete a defined trap); (10,2) → 0.")
+  (input (do (def (main (: a Int64) (: b Int64)) (* (/ a b) 0)) (export main)))
+  (call main (: 10 Int64) (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 1 Int64) (: 0 Int64))  (trap "divide by zero"))
+
+(case "an2 the self-subtract annihilator does not discard a trapping operand ((- (/ a b) (/ a b)))"
+  (doc    "`(- (/ a b) (/ a b))` = 0, but the discarded `(/ a b)` must still trap at b=0; (10,2) → 0.")
+  (input (do (def (main (: a Int64) (: b Int64)) (- (/ a b) (/ a b))) (export main)))
+  (call main (: 10 Int64) (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 1 Int64) (: 0 Int64))  (trap "divide by zero"))
+
+; -- a_full_width_mask_on_an_unsigned_value_is_elided (the Lir mask-elision assertions stay in rcdzc)
+(case "fm1 a full-width mask on a UInt8 is a no-op (value parity)"
+  (doc    "`(& x 255)` on UInt8 covers the whole range → identity; every byte maps to itself.")
+  (input (do (def (main (: x UInt8)) (& x 255)) (export main)))
+  (call main (: 200 UInt8)) (output (: 200 UInt8))
+  (call main (: 0 UInt8))   (output (: 0 UInt8))
+  (call main (: 255 UInt8)) (output (: 255 UInt8)))
+
+(case "fm2 a full-width mask on a UInt16 is a no-op (value parity)"
+  (input (do (def (main (: x UInt16)) (& x 65535)) (export main)))
+  (call main (: 40000 UInt16)) (output (: 40000 UInt16))
+  (call main (: 0 UInt16))     (output (: 0 UInt16)))
+
+(case "fm3 a partial mask on a UInt8 still masks (not elided)"
+  (doc    "`(& x 15)` clears the high nibble: 200 & 15 = 8, 255 & 15 = 15.")
+  (input (do (def (main (: x UInt8)) (& x 15)) (export main)))
+  (call main (: 200 UInt8)) (output (: 8 UInt8))
+  (call main (: 255 UInt8)) (output (: 15 UInt8)))
+
+; -- nested_masks_collapse_to_a_single_and (the Lir and-count assertions stay in rcdzc)
+(case "nm1 two nested constant masks collapse to their bitwise-AND (value parity)"
+  (doc    "`(& (& x 255) 15)` = x & (255&15=15): 58 & 15 = 10, -1 & 15 = 15.")
+  (input (do (def (main (: x Int64)) (& (& x 255) 15)) (export main)))
+  (call main (: 58 Int64)) (output (: 10 Int64))
+  (call main (: -1 Int64)) (output (: 15 Int64)))
+
+(case "nm2 a left-constant nested mask collapses to a single AND"
+  (input (do (def (main (: x Int64)) (& 15 (& x 255))) (export main)))
+  (call main (: 58 Int64)) (output (: 10 Int64)))
+
+(case "nm3 a non-subset nested mask pair collapses correctly"
+  (doc    "`(& (& x 12) 10)` = x & (12&10=8): 15 & 8 = 8.")
+  (input (do (def (main (: x Int64)) (& (& x 12) 10)) (export main)))
+  (call main (: 15 Int64)) (output (: 8 Int64)))
+
+(case "nm4 a narrow Int8 nested mask grounds the folded constant to the width"
+  (doc    "`(& (& x 15) 7)` on Int8 = x & 7: 13 & 7 = 5.")
+  (input (do (def (main (: x Int8)) (& (& x 15) 7)) (export main)))
+  (call main (: 13 Int8)) (output (: 5 Int8)))
+
+; -- nested_or_and_xor_by_constants_collapse_to_a_single_op (the Lir or/xor-count assertions stay in rcdzc)
+(case "oax1 two nested OR-by-constants collapse to their bitwise-OR (value parity)"
+  (doc    "`(| (| x 5) 3)` = x | (5|3=7): 8 | 7 = 15, 16 | 7 = 23.")
+  (input (do (def (main (: x Int64)) (| (| x 5) 3)) (export main)))
+  (call main (: 8 Int64))  (output (: 15 Int64))
+  (call main (: 16 Int64)) (output (: 23 Int64)))
+
+(case "oax2 two nested XOR-by-constants collapse to their bitwise-XOR (value parity)"
+  (doc    "`(^ (^ x 5) 3)` = x ^ (5^3=6): 10 ^ 6 = 12, 6 ^ 6 = 0.")
+  (input (do (def (main (: x Int64)) (^ (^ x 5) 3)) (export main)))
+  (call main (: 10 Int64)) (output (: 12 Int64))
+  (call main (: 6 Int64))  (output (: 0 Int64)))
+
+(case "oax3 a double complement (^ (^ x -1) -1) is the identity"
+  (doc    "`(^ (^ x -1) -1)` = x ^ (-1 ^ -1 = 0) = x: 42 → 42.")
+  (input (do (def (main (: x Int64)) (^ (^ x -1) -1)) (export main)))
+  (call main (: 42 Int64)) (output (: 42 Int64)))

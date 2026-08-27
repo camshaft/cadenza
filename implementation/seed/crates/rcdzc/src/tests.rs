@@ -14692,60 +14692,11 @@ mod runtime_ops {
         // `(+ (* a b) (* a b))` — the two operands are the SAME pure computation. CSE computes `(* a b)`
         // ONCE and reads it twice, so the result is `2 * (a*b)` and it is observably identical to
         // computing the product twice. 3*4=12 → 24.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(+ (* a b) (* a b))",
-                &[Val::S64(3), Val::S64(4)]
-            ),
-            24
-        );
-        // The shared computation's overflow guard STILL fires: `(* a b)` overflowing Int64 traps even
-        // though it is computed once (a trapping subexpression traps at its single evaluation point).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(+ (* a b) (* a b))",
-            &[Val::S64(i64::MAX), Val::S64(2)]
-        ));
-        // A deeper identical operand: `(- (+ a b) (+ a b))` = 0 for any a,b — computed once, subtracted
-        // from itself. (a+b) itself must not overflow, but the subtraction of equal values is 0.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(- (+ a b) (+ a b))",
-                &[Val::S64(100), Val::S64(23)]
-            ),
-            0
-        );
-        // NON-identical operands are NOT shared (a≠b computation): `(+ (* a b) (* b a))` — `(* a b)` and
-        // `(* b a)` differ structurally (operand order), so both compute; result 2*a*b still, but via
-        // two products. Correctness (not sharing) is what matters here: 3*4 + 4*3 = 24.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(+ (* a b) (* b a))",
-                &[Val::S64(3), Val::S64(4)]
-            ),
-            24
-        );
-        // A conditional (`if`/`select`) operand is CSE'd too: `(+ (if (< a b) a b) (if (< a b) a b))` is
-        // `2 * min(a,b)` with the `min` select computed ONCE (`core_eq` now recurses through `Core::If`).
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(+ (if (< a b) a b) (if (< a b) a b))",
-                &[Val::S64(3), Val::S64(5)]
-            ),
-            6
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(+ (if (< a b) a b) (if (< a b) a b))",
-                &[Val::S64(5), Val::S64(3)]
-            ),
-            6
-        );
+        // VALUE + TRAP PARITY of the arithmetic CSE migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "io1 a shared pure subexpression reads the same value
+        // twice …" (shared product = 2ab, self-subtract = 0, commuted = 2ab), "io2 a shared min-select …"
+        // (2*min both orders) and "io3 a shared subexpression keeps its overflow trap …". The compute-ONCE
+        // proof (single Select / single I64Eq in the emitted Lir) is not corpus-observable and stays here.
         // The `min` select is emitted ONCE (Lir has a single `Select`, not two).
         {
             use crate::backend::wasm::lir::Lir;
@@ -14837,79 +14788,14 @@ mod runtime_ops {
     }
 
     // ── algebraic identities: an op with an identity constant elides the checked op ───────────────
+    // algebraic_identities_compute_correctly: pure value+trap parity (no IR inspection) → fully migrated
+    // to spec/semantics/06-numeric-model.sexp cases "ai1 the algebraic identities compute the operand or
+    // its annihilator (17-fold checksum)", "ai2 an identity that keeps the operand preserves its overflow
+    // trap …" and "ai3 a same-operand & keeps the operand and preserves its overflow trap …".
 
-    #[test]
-    fn algebraic_identities_compute_correctly() {
-        // Each identity must produce exactly the operand's value (or the annihilator's 0), at run time.
-        assert_eq!(run::<i64>("(: a Int64)", "(+ a 0)", &[Val::S64(7)]), 7); // x+0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(+ 0 a)", &[Val::S64(7)]), 7); // 0+x = x
-        assert_eq!(run::<i64>("(: a Int64)", "(- a 0)", &[Val::S64(7)]), 7); // x-0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(* a 1)", &[Val::S64(7)]), 7); // x*1 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(* 1 a)", &[Val::S64(7)]), 7); // 1*x = x
-        assert_eq!(run::<i64>("(: a Int64)", "(* a 0)", &[Val::S64(7)]), 0); // x*0 = 0
-        assert_eq!(run::<i64>("(: a Int64)", "(| a 0)", &[Val::S64(5)]), 5); // x|0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(^ a 0)", &[Val::S64(5)]), 5); // x^0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(& a 0)", &[Val::S64(5)]), 0); // x&0 = 0
-        assert_eq!(run::<i64>("(: a Int64)", "(<< a 0)", &[Val::S64(5)]), 5); // x<<0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(>> a 0)", &[Val::S64(5)]), 5); // x>>0 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(/ a 1)", &[Val::S64(7)]), 7); // x/1 = x
-        assert_eq!(run::<i64>("(: a Int64)", "(% a 1)", &[Val::S64(7)]), 0); // x%1 = 0
-        // SAME-OPERAND identities (the two operands are the same value).
-        assert_eq!(run::<i64>("(: a Int64)", "(- a a)", &[Val::S64(7)]), 0); // a-a = 0
-        assert_eq!(run::<i64>("(: a Int64)", "(^ a a)", &[Val::S64(7)]), 0); // a^a = 0
-        assert_eq!(run::<i64>("(: a Int64)", "(& a a)", &[Val::S64(5)]), 5); // a&a = a
-        assert_eq!(run::<i64>("(: a Int64)", "(| a a)", &[Val::S64(5)]), 5); // a|a = a
-        // A same-operand identity that KEEPS the operand preserves its trap: `(& (* a b) (* a b))` = the
-        // product, so it still traps on overflow (the `& x x` is elided, not the multiply).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(& (* a b) (* a b))",
-            &[Val::S64(i64::MAX), Val::S64(2)]
-        ));
-        // An identity that KEEPS the operand still lets the operand's own trap fire: `(+ (* a b) 0)` = x
-        // but if `(* a b)` overflows it still traps (the +0 is elided, not the product).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(+ (* a b) 0)",
-            &[Val::S64(i64::MAX), Val::S64(2)]
-        ));
-    }
-
-    #[test]
-    fn an_annihilator_does_not_elide_a_trap() {
-        // `x * 0 → 0` DISCARDS x — but only when x cannot trap. `(* (/ a b) 0)` must STILL trap on b==0
-        // (division-by-zero is a defined trap, not to be optimized away by the annihilator).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(* (/ a b) 0)",
-            &[Val::S64(1), Val::S64(0)]
-        ));
-        // With a non-zero divisor it does NOT trap and the annihilator gives 0 (the division ran but its
-        // result was multiplied by 0).
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(* (/ a b) 0)",
-                &[Val::S64(10), Val::S64(2)]
-            ),
-            0
-        );
-        // The same-operand annihilator `x - x → 0` / `x ^ x → 0` likewise DISCARDS x, so it fires only
-        // when x is trap-free. `(- (/ a b) (/ a b))` must STILL trap on b==0 (not fold to 0).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(- (/ a b) (/ a b))",
-            &[Val::S64(1), Val::S64(0)]
-        ));
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(- (/ a b) (/ a b))",
-                &[Val::S64(10), Val::S64(2)]
-            ),
-            0
-        );
-    }
+    // an_annihilator_does_not_elide_a_trap: pure value+trap parity (no IR inspection) → fully migrated
+    // to spec/semantics/06-numeric-model.sexp cases "an1 the *0 annihilator does not discard a trapping
+    // divisor …" and "an2 the self-subtract annihilator does not discard a trapping operand …".
 
     #[test]
     fn a_full_width_mask_on_an_unsigned_value_is_elided() {
@@ -14963,16 +14849,9 @@ mod runtime_ops {
             "a partial mask keeps the and; got {partial:?}"
         );
 
-        // VALUE PARITY — the elided mask must give the same value as the explicit `&`.
-        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(200)]), 200);
-        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(0)]), 0);
-        assert_eq!(run::<u8>("(: x UInt8)", "(& x 255)", &[Val::U8(255)]), 255);
-        assert_eq!(
-            run::<u16>("(: x UInt16)", "(& x 65535)", &[Val::U16(40000)]),
-            40000
-        );
-        // The partial mask still masks correctly (parity where it is NOT elided).
-        assert_eq!(run::<u8>("(: x UInt8)", "(& x 15)", &[Val::U8(200)]), 8); // 200 & 15 = 8
+        // VALUE PARITY migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "fm1 a full-width mask on a UInt8 …",
+        // "fm2 … UInt16 …" (the elided mask is a no-op) and "fm3 a partial mask … still masks".
     }
 
     #[test]
@@ -15037,28 +14916,9 @@ mod runtime_ops {
             "& a a still folds to a"
         );
 
-        // VALUE PARITY — subset and NON-subset mask pairs.
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(58)]),
-            10
-        ); // 58&15
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (& (& x 255) 15) Int64)", &[Val::S64(-1)]),
-            15
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (& (& x 12) 10) Int64)", &[Val::S64(15)]),
-            8
-        ); // 15 & (12&10=8)
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (& 15 (& x 255)) Int64)", &[Val::S64(58)]),
-            10
-        );
-        // Narrow (Int8): the folded constant grounds to the narrow width.
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (& (& x 15) 7) Int8)", &[Val::S8(13)]),
-            5
-        ); // 13&15&7 = 5
+        // VALUE PARITY migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "nm1 …"/"nm2 …"/"nm3 …" (Int64 nested-mask collapse)
+        // and "nm4 a narrow Int8 nested mask …" (the folded constant grounds to the narrow width).
     }
 
     #[test]
@@ -15140,28 +15000,9 @@ mod runtime_ops {
         let mixed = lir("(: x Int64)", "(: (| (& x 240) 15) Int64)");
         assert_eq!(ors(&mixed) + ands(&mixed), 2, "and-then-or keeps both ops");
 
-        // VALUE PARITY.
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(8)]),
-            15
-        ); // 8|7
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (| (| x 5) 3) Int64)", &[Val::S64(16)]),
-            23
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(10)]),
-            12
-        ); // 10^6
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (^ (^ x 5) 3) Int64)", &[Val::S64(6)]),
-            0
-        ); // 6^6
-        // Double complement `(^ (^ x -1) -1)` = `x ^ 0` = x.
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(: (^ (^ x -1) -1) Int64)", &[Val::S64(42)]),
-            42
-        );
+        // VALUE PARITY migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "oax1 …" / "oax2 …" (OR/XOR-by-constant collapse)
+        // and "oax3 a double complement …" (`(^ (^ x -1) -1)` = x).
     }
 
     #[test]

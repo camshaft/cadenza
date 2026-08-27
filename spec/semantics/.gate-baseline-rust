@@ -4338,6 +4338,9 @@ pass	aeq2 bare equality of String.to-bytes twins
 pass	aeq4 a slice VIEW bare-compares equal to its flat twin
 pass	ag2 TWO aggregator effects interleaved — each keeps its own running sum, weighted reads pin the four-feed order
 pass	ag3 one resumptive dispatch then an ABORT on the same handler — the abort arm reads the advanced state
+pass	ai1 the algebraic identities compute the operand or its annihilator (17-fold checksum)
+pass	ai2 an identity that keeps the operand preserves its overflow trap ((+ (* a b) 0))
+pass	ai3 a same-operand & keeps the operand and preserves its overflow trap ((& (* a b) (* a b)))
 pass	al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state
 pass	al2 a PURE helper called from the arm for BOTH slots — the arm delegates its computation to a def
 pass	al3 a two-site resume where EACH branch has its own LET local — gap/overshoot named per path, different strides
@@ -4942,6 +4945,8 @@ pass	an unwrapped conversion result is a bare number under ordinary numeric rule
 pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	an updated-back RRB list EQUALS the never-updated build (update history-independence)
 pass	an1 explicitly ASCRIBED draws — (: (E.next) Int64) in let and argument positions changes nothing observable
+pass	an1 the *0 annihilator does not discard a trapping divisor ((* (/ a b) 0))
+pass	an2 the self-subtract annihilator does not discard a trapping operand ((- (/ a b) (/ a b)))
 pass	and evaluates the right operand when the left is true
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
@@ -5738,6 +5743,9 @@ pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
 pass	flt1 a TWO-STAGE sediment filter — pass traps the value's residue mod the seed then HALF of what remains answering the survivor, backwash resets the trap answering its contents, and the finer mesh traps MORE in stage one leaving less for stage two so the survivors differ while the last backwash CONVERGES
+pass	fm1 a full-width mask on a UInt8 is a no-op (value parity)
+pass	fm2 a full-width mask on a UInt16 is a no-op (value parity)
+pass	fm3 a partial mask on a UInt8 still masks (not elided)
 pass	four nested frames dispatched OUTERMOST-first — every outer perform escapes live inner frames
 pass	four same-signature closure exports share one resource
 pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats
@@ -5953,6 +5961,9 @@ pass	intersection of a set with itself is the set (idempotent)
 pass	intersection of a trie with its churned-back subset is the subset itself
 pass	intersection with the empty set is the empty set
 pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count is value-dependent, the Bezout coefficient normalizes through the double-mod idiom, and the body verifies v times inverse is one mod 97
+pass	io1 a shared pure subexpression reads the same value twice (value parity: shared, self-subtract, commuted)
+pass	io2 a shared min-select reads the same value twice (value parity, both operand orders)
+pass	io3 a shared subexpression keeps its overflow trap (computed once still traps)
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
@@ -6216,9 +6227,13 @@ pass	nk2 +inf, -inf, and NaN are THREE distinct set members
 pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
 pass	nl2 the nested-record binder in LIST-ELEMENT pattern position — the head record's field binds, the rest carries full records
 pass	nm1 NEGATIVE remainder is TRUNCATED (sign of the dividend) uniformly — bare and through a handler arm
+pass	nm1 two nested constant masks collapse to their bitwise-AND (value parity)
 pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through a handler arm
+pass	nm2 a left-constant nested mask collapses to a single AND
+pass	nm3 a non-subset nested mask pair collapses correctly
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
+pass	nm4 a narrow Int8 nested mask grounds the folded constant to the width
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	no over-conservatism: a trap-free masked operand still folds the tautology
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
@@ -6250,6 +6265,9 @@ pass	oa1 an Option-returning op's None arm aborts LOCALLY — the local bail-out
 pass	oak1 an op ARGUMENT of type Rational feeds exact arithmetic into the arm
 pass	oak2 an op ARGUMENT of type BigInt accumulates multi-limb in the state
 pass	oak3 an op ARGUMENT of type Map is queried by the arm and drives the state
+pass	oax1 two nested OR-by-constants collapse to their bitwise-OR (value parity)
+pass	oax2 two nested XOR-by-constants collapse to their bitwise-XOR (value parity)
+pass	oax3 a double complement (^ (^ x -1) -1) is the identity
 pass	oc1 an Option-of-TUPLE accumulator — None seeds on first step, Some carries (total,count) advancing both
 pass	oc2 an Option FLOWS between two ops of one effect — find produces Some/None, use consumes it as an op ARG
 pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Some v) all distinguished by the body
