@@ -8335,6 +8335,7 @@ todo	a non-kebab (camelCase) peer op name agrees across both sides and runs
 todo	a none-only option<s64> record field resolves its element type from an imposed WIT world
 todo	a peer missing a bound op is rejected naming the op
 todo	a peer op arity mismatch is rejected at compose time, not a trap
+todo	a peer op returning a tuple result is projected to a scalar over the shared runtime
 todo	a peer op type mismatch is rejected at compose time (same arity, different type)
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
