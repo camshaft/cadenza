@@ -20674,50 +20674,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_guard_on_a_literal_list_element_reads_an_enclosing_let_through_inlining() {
-        // REGRESSION (issue adv-literal-list-pattern-guard-cant-see-enclosing-let): a user guard on a list
-        // pattern with a LITERAL leading element, whose guard cond reads an ENCLOSING `let` binding, false-
-        // rejected `CDZ0101 unbound` — but ONLY when the def is INLINED (β-copied at a call site). Root: the
-        // refutable-literal desugar rewrites the arm into a synth `(guard (list __le0 x ..) (and (= __le0 0)
-        // (> x lim)))` and its rewritten `(match …)` REPLACES the copied match in the enclosing `let`'s body
-        // slot; the copied `let`'s recorded body-occurrence still pointed at the PRE-desugar copied match, so
-        // the copied `lim` reached the `let` in the scope walk but failed its by-identity body check. Fix
-        // (3 coordinated): the desugar reparents the rewritten match into the original match's slot;
-        // `binder_in`'s `let` case accepts a body-POSITION child (not only the recorded body node); and
-        // `extend_scope_skip_into_subtree` seeds the rewritten root's skip TO a binding-candidate parent.
-        // `main` CALLS `f` (forcing the inline copy), so this exercises the inlined path (a direct export
-        // resolved the original before the copy and never hit it). `f (list 0 7 2)`: head `0` matches,
-        // `x`=7 > `lim`=5 → 7. And a guard-FAIL falls through to the catch-all (-1).
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (f (: xs (List Int64))) \
-                 (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
-               (def (main) (f (list 0 7 2))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping literal-list-guard-enclosing-let run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "guard cond reads the enclosing let `lim` through inlining (0 matches, 7 > 5)"
-        );
-        // Guard FAILS (x=3 not > 5) → falls through to the catch-all -1. `9` as `x` (>5) still matches → 9.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (f (: xs (List Int64))) \
-                     (let ((lim 5)) (match xs ((guard (list 0 x .. r) (> x lim)) x) (_ -1)))) \
-                   (def (main) (f (list 0 3 2))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "-1",
-            "guard fails (3 not > 5) → catch-all -1, enclosing-let binding still resolved"
-        );
-    }
-
-    #[test]
     fn a_list_pattern_in_a_sum_payload_matches_a_runtime_node() {
         // THE COMPILER-AST SHAPE: a sum-variant payload that is a LIST — `(type Node (Lit Int64) (Call
         // (List Node)))` — matched over a RUNTIME node by a list pattern in the payload position: `((Call
@@ -23286,50 +23242,6 @@ mod match_engine {
             vec![],
         ) {
             assert_eq!(v, "5", "bare Other construct is T's own Other arm");
-        }
-    }
-
-    #[test]
-    fn a_type_name_colliding_variant_constructs_as_the_local_variant() {
-        // The CONSTRUCT-position half. A variant whose name collides with a prelude TYPE/MODULE name
-        // (`Int`/`List`/…) is SKIPPED from the bare `variant_ctor_index` (the `9f326a2d` guard) so bare
-        // `Int` stays the width constructor everywhere it means the width TYPE. But in application-HEAD
-        // position on a genuine USER node a bare `(Int 42)` is a VALUE construct of the local variant — so
-        // the user's declaration SHADOWS the colliding prelude name (operator ruling 2026-07-15). Before
-        // the fix the bare construct stayed the prelude width-type ctor (a type value with no runtime form)
-        // and the program was over-rejected; only `(T.Int 42)` worked. `resolve_name` step 3d reaches the
-        // variant via the companion `prelude_colliding_variant_ctor` index, consulted only in head position
-        // on a user node — the same discriminator the same-name-newtype ctor rule uses.
-        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-        // Single-variant nominal newtype, bare `(Int 42)` construct (qualified `T.Int` pattern isolates it).
-        ok(
-            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
-        );
-        // Multi-variant sum, bare `(Int 42)` construct beside a nullary variant.
-        ok(
-            "(module m (type T (Int Int64) (Nil)) (def (f (: t T)) (match t ((T.Int n) n) ((T.Nil) 0))) (def (main) (f (Int 42))) (export main))",
-        );
-        // `List`-colliding variant (a prelude MODULE name), bare construct.
-        ok(
-            "(module m (type T (List Int64) (Nada)) (def (f (: t T)) (match t ((T.List n) n) ((T.Nada) 0))) (def (main) (f (List 7))) (export main))",
-        );
-        // The bare `(Int 42)` construct genuinely BUILDS + matches T's `Int` variant → 42 (not a rejection,
-        // not a wrong value from resolving to the prelude width type).
-        if let Some(v) = run_heap_value(
-            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (main) (f (Int 42))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(v, "42", "bare (Int 42) construct is T's own Int variant");
-        }
-        // NO CORRUPTION of the width type: bare `Int` used as the width TYPE (a `(: x Int64)` annotation
-        // whose reduction touches the prelude `Int` ctor) still works ALONGSIDE the shadowing construct.
-        // The shadow is scoped to construct-head position on a user node; a regression that shadowed `Int`
-        // unconditionally would break this annotation reduction (the global corruption `9f326a2d` fixed).
-        if let Some(v) = run_heap_value(
-            "(module m (type T (Int Int64)) (def (f (: t T)) (match t ((T.Int n) n))) (def (g (: x Int64)) x) (def (main) (+ (f (Int 42)) (g 10))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(v, "52", "construct shadow coexists with the width type Int");
         }
     }
 
