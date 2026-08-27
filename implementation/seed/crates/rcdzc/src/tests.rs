@@ -82175,51 +82175,16 @@ mod closure_host_resource {
     /// hand-emit this shape), NOT an ABI wall requiring a `value-decode` op.
     #[test]
     fn a_fixed_shape_tuple_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a) (operator bulk wasmtime-out push): the VALIDATE face stays as a lean Rust #[test] via
+        // wasmparser (no wasmtime), proving the emitted tuple-arg closure component is a valid module. The
+        // make+call(arg) BEHAVIORAL drive is the RESIDUAL, pending the corpus closure make+call host harness
+        // (the resource-CALL / WASI IO-DAG scope decision); it returns to the corpus once that lands.
         let comp = oracle_closure_tuple_arg_component(&closure_tuple_arg_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("tuple-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
-
-        // call(handle, (3, 4)) → 3 + 4 = 7. The tuple crosses as a Val::Tuple; wasmtime flattens it to two
-        // core i64 params for the guest `call`.
-        let tuple_arg = Val::Tuple(vec![Val::S64(3), Val::S64(4)]);
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), tuple_arg], &mut out)
-            .expect("call(handle, (3,4))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(
-            out[0],
-            Val::S64(7),
-            "closure (fn (p) (+ (. p 0) (. p 1))) applied to (3,4) = 7"
-        );
     }
 
     /// SUM-ARG oracle core: a closure `(fn (o) (match o ((Some x) x) (None 0)))` whose ONE argument is an
@@ -82415,59 +82380,14 @@ mod closure_host_resource {
     /// the flattened disc/payload + rebuild the sum via `sum-new`), NOT an ABI wall requiring `value-decode`.
     #[test]
     fn an_option_scalar_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); the make+call(arg) behavioral drive
+        // is the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_option_arg_component(&closure_option_arg_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("option-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
-
-        // call(handle, Some(42)) → 42. The option crosses as a Val::Option; wasmtime flattens it to (disc,
-        // payload) core params for the guest `call`. (`own<t>` is single-use — this call CONSUMES the handle.)
-        let some_arg = Val::Option(Some(Box::new(Val::S64(42))));
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), some_arg], &mut out)
-            .expect("call(handle, Some(42))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(42), "match Some(42) → 42");
-
-        // A FRESH handle for the None case (`own<t>` consumed the first): make() again, then call(h2, None) → 0.
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2)
-            .expect("make call 2");
-        make.post_return(&mut store).expect("make post_return 2");
-        let none_arg = Val::Option(None);
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), none_arg], &mut out2)
-            .expect("call(handle, None)");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out2[0], Val::S64(0), "match None → 0");
     }
 
     /// RESULT-ARG oracle core: a closure `(fn (r) (match r ((Ok x) x) ((Err e) (- 0 e))))` whose ONE argument
@@ -82663,57 +82583,14 @@ mod closure_host_resource {
     /// an ABI wall.
     #[test]
     fn a_result_scalar_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_variant_arg_component(&closure_variant_arg_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("variant-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-
-        // call(handle, Ok(7)) → 7 (own<t> is single-use — consumes the handle).
-        let ok_arg = Val::Result(Ok(Some(Box::new(Val::S64(7)))));
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
-            .expect("call(handle, Ok(7))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(7), "match Ok(7) → 7");
-
-        // A fresh handle for Err: call(h2, Err(3)) → -3.
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2)
-            .expect("make call 2");
-        make.post_return(&mut store).expect("make post_return 2");
-        let err_arg = Val::Result(Err(Some(Box::new(Val::S64(3)))));
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
-            .expect("call(handle, Err(3))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out2[0], Val::S64(-3), "match Err(3) → -3");
     }
 
     /// DIFFERENT-WIDTH RESULT-ARG oracle core: a closure `(fn (r) (match r ((Ok x) x) ((Err e) (Int64.of e))))`
@@ -82914,8 +82791,8 @@ mod closure_host_resource {
     /// scalar)` arg is an implementation gap (join-width + narrow-recover), NOT an ABI wall.
     #[test]
     fn a_diff_width_result_scalar_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_diff_width_result_arg_component(
             &closure_diff_width_result_arg_call_core(),
         );
@@ -82924,60 +82801,6 @@ mod closure_host_resource {
         validator
             .validate_all(&comp)
             .expect("diff-width result-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        // call(handle, Ok(7)) → 7 (the s64 ok payload read directly off the joined i64).
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        let ok_arg = Val::Result(Ok(Some(Box::new(Val::S64(7)))));
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
-            .expect("call(handle, Ok(7))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(7), "match Ok(7) → 7");
-
-        // A fresh handle: call(h2, Err(3)) → 3 (the s32 err recovered from the joined i64 via wrap).
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2)
-            .expect("make call 2");
-        make.post_return(&mut store).expect("make post_return 2");
-        let err_arg = Val::Result(Err(Some(Box::new(Val::S32(3)))));
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
-            .expect("call(handle, Err(3))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out2[0], Val::S64(3), "match Err(3) → 3");
-
-        // A fresh handle: call(h3, Err(-5)) → -5 — the NEGATIVE narrow err pins the sign-extend into the join.
-        let mut handle3 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle3)
-            .expect("make call 3");
-        make.post_return(&mut store).expect("make post_return 3");
-        let err_neg = Val::Result(Err(Some(Box::new(Val::S32(-5)))));
-        let mut out3 = [Val::Bool(false)];
-        call.call(&mut store, &[handle3[0].clone(), err_neg], &mut out3)
-            .expect("call(handle, Err(-5))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out3[0], Val::S64(-5), "match Err(-5) → -5 (sign-extended)");
     }
 
     /// COMPOUND-SUM-PAYLOAD oracle core: a closure `(fn (o) (match o ((Some p) (+ (. p 0) (. p 1))) (None 0)))`
@@ -83183,8 +83006,8 @@ mod closure_host_resource {
     /// wall — the natural next widening after scalar sum payloads.
     #[test]
     fn an_option_tuple_payload_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_option_tuple_payload_component(
             &closure_option_tuple_payload_call_core(),
         );
@@ -83193,48 +83016,6 @@ mod closure_host_resource {
         validator
             .validate_all(&comp)
             .expect("option-tuple-payload closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        // call(handle, Some((3,4))) → 7 (the payload tuple's flattened leaves f0=3, f1=4).
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        let some_arg = Val::Option(Some(Box::new(Val::Tuple(vec![Val::S64(3), Val::S64(4)]))));
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), some_arg], &mut out)
-            .expect("call(handle, Some((3,4)))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(7), "match Some((3,4)) → 7");
-
-        // A fresh handle: call(h2, None) → 0.
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2)
-            .expect("make call 2");
-        make.post_return(&mut store).expect("make post_return 2");
-        let none_arg = Val::Option(None);
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), none_arg], &mut out2)
-            .expect("call(handle, None)");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out2[0], Val::S64(0), "match None → 0");
     }
 
     /// COMPOUND-RESULT-PAYLOAD oracle core: a closure `(fn (r) (match r ((Ok p) (+ (. p 0) (. p 1))) ((Err e) (-
@@ -83450,8 +83231,8 @@ mod closure_host_resource {
     /// implementation gap (per-arm rebuild over the joined slots), NOT an ABI wall.
     #[test]
     fn a_result_tuple_payload_closure_arg_crosses_by_native_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_result_tuple_payload_component(
             &closure_result_tuple_payload_call_core(),
         );
@@ -83460,51 +83241,6 @@ mod closure_host_resource {
         validator
             .validate_all(&comp)
             .expect("result-tuple-payload closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        // call(handle, Ok((3,4))) → 7 (the ok tuple's fields = joined slots j0=3, j1=4).
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        let ok_arg = Val::Result(Ok(Some(Box::new(Val::Tuple(vec![
-            Val::S64(3),
-            Val::S64(4),
-        ])))));
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), ok_arg], &mut out)
-            .expect("call(handle, Ok((3,4)))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(7), "match Ok((3,4)) → 7");
-
-        // A fresh handle: call(h2, Err(5)) → -5 (the err scalar joined into j0=5).
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2)
-            .expect("make call 2");
-        make.post_return(&mut store).expect("make post_return 2");
-        let err_arg = Val::Result(Err(Some(Box::new(Val::S64(5)))));
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), err_arg], &mut out2)
-            .expect("call(handle, Err(5))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out2[0], Val::S64(-5), "match Err(5) → -5");
     }
 
     /// NESTED-COMPOUND oracle core: a closure `(fn (p) (+ (. p 0) (+ (. (. p 1) 0) (. (. p 1) 1))))` whose ONE
@@ -83759,54 +83495,14 @@ mod closure_host_resource {
     /// recursive rebuild), NOT an ABI wall requiring `value-decode`.
     #[test]
     fn a_nested_fixed_shape_tuple_closure_arg_crosses_by_recursive_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_nested_tuple_arg_component(&closure_nested_tuple_arg_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("nested-tuple-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
-
-        // call(handle, (100, (10, 3))) → 100 + 10 + 3 = 113. The nested tuple crosses as a Val::Tuple of a
-        // Val::Tuple; wasmtime RECURSIVELY flattens it to three core i64 params for the guest `call`.
-        let nested_arg = Val::Tuple(vec![
-            Val::S64(100),
-            Val::Tuple(vec![Val::S64(10), Val::S64(3)]),
-        ]);
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), nested_arg], &mut out)
-            .expect("call(handle, (100, (10, 3)))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(
-            out[0],
-            Val::S64(113),
-            "closure (fn (p) (+ p.0 (+ p.1.0 p.1.1))) applied to (100, (10, 3)) = 113"
-        );
     }
 
     /// TWO-COMPOUND-ARGS oracle core: a closure `(fn (p q) (+ (. p 0) (. p 1) (. q 0) (. q 1)))` taking TWO
@@ -84064,51 +83760,14 @@ mod closure_host_resource {
     /// of `TupleArgRebuild`, one per tuple, each at its own `base_param`), NOT an ABI wall.
     #[test]
     fn two_fixed_shape_tuple_closure_args_cross_by_independent_flattening() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
+        // Interim (a): VALIDATE-only Rust face (wasmparser, no wasmtime); make+call(arg) drive is
+        // the RESIDUAL pending the corpus closure make+call host harness. (See a_fixed_shape_tuple.)
         let comp = oracle_closure_two_tuple_args_component(&closure_two_tuple_args_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("two-tuple-arg closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        assert!(matches!(handle[0], Val::Resource(_)), "make → resource");
-
-        // call(handle, (3,4), (10,20)) → 3+4+10+20 = 37. Each tuple flattens to two core i64 params.
-        let p = Val::Tuple(vec![Val::S64(3), Val::S64(4)]);
-        let q = Val::Tuple(vec![Val::S64(10), Val::S64(20)]);
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), p, q], &mut out)
-            .expect("call(handle, (3,4), (10,20))");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(
-            out[0],
-            Val::S64(37),
-            "closure (fn (p q) (+ p.0 p.1 q.0 q.1)) applied to (3,4),(10,20) = 37"
-        );
     }
 
     /// COMPOUND-RESULT oracle core (the byte anchor for a closure whose result is a `list<u8>` / a compound
