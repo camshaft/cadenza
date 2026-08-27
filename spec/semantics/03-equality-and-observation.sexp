@@ -145,6 +145,28 @@
   (input  (= Float64.nan Float64.nan))
   (output (: true Bool)))
 
+(case "a not-a-number value is unequal to a finite float"
+  (doc    "The complement of the nan = nan rule (core-semantics.md #Floating-Point Equality Follows The
+           Canonical Byte Form): the canonical NaN byte form differs from every FINITE float's byte form,
+           so `(= Float64.nan 1.0)` is false — NaN equals only another NaN, never a finite value. A
+           constant fold (both operands compile-time), consumed directly as a Bool.")
+  (input  (= Float64.nan 1.0))
+  (output (: false Bool)))
+
+(case "a finite float is unequal to a not-a-number value regardless of operand order"
+  (doc    "The operand-order twin of the case above: `(= 1.0 Float64.nan)` is equally false. `=` is
+           symmetric, so the finite-vs-NaN inequality holds with the finite operand on either side — the
+           constant fold must not treat the NaN operand specially by position.")
+  (input  (= 1.0 Float64.nan))
+  (output (: false Bool)))
+
+(case "a not-a-number leaf makes a compound unequal to the same compound with a finite leaf"
+  (doc    "The nan-vs-finite inequality recurses through a compound: `(tuple Float64.nan)` and `(tuple
+           1.0)` differ at their sole leaf (NaN's canonical byte form vs the finite float's), so the
+           tuples are unequal — the compound companion of the scalar case above, folded structurally.")
+  (input  (= (tuple Float64.nan) (tuple 1.0)))
+  (output (: false Bool)))
+
 ; --- COMPOUND value-equality over a runtime FLOAT LEAF (a float inside a tuple/sum) -------------------
 ; The scalar cases above fold at compile time (constant float operands). A RUNTIME float — a def parameter
 ; — stored in a compound and compared by `=` takes the runtime `value-eq`/`champ_eq` heap-walk. It follows

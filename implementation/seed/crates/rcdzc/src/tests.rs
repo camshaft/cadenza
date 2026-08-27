@@ -41273,31 +41273,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn nan_equality_follows_the_canonical_byte_form() {
-        // 03-equality NaN cluster (`core-semantics.md` §Floating-Point Equality Follows The Canonical Byte
-        // Form): `Float64.nan` is the canonical NaN VALUE (a module constant field, like `Int64.max`),
-        // resolving to `Core::ConstFloatNan`. Every NaN shares one canonical byte form, so `(= nan nan)`
-        // is TRUE (NOT wasm f64.eq, which says nan≠nan), and `nan` is UNEQUAL to any finite float. The
-        // rule recurses through compounds (tuple/list/sum) via `const_compound_eq`. Consumed by an `if`
-        // so `main` returns 1/0 — a Bool result.
-        for (prog, want) in [
-            ("(= Float64.nan Float64.nan)", 1),
-            ("(= Float64.nan 1.0)", 0),
-            ("(= 1.0 Float64.nan)", 0),
-            ("(= (tuple Float64.nan) (tuple Float64.nan))", 1),
-            ("(= (tuple Float64.nan) (tuple 1.0))", 0),
-            ("(= (Some Float64.nan) (Some Float64.nan))", 1),
-        ] {
-            let src = format!("(module m (def (main) (if {prog} 1 0)) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "nan equality fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
     fn a_cross_width_nan_comparison_is_a_type_error() {
         // A `nan` value carries its DECLARING float width — `Float64.nan` is a Float64, `Float32.nan` a
         // Float32 — so a cross-width comparison is the CDZ0301 no-silent-promotion error the identical
@@ -41334,21 +41309,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         assert_eq!(code("(= Float32.nan Float32.nan)"), None);
         assert_eq!(code("(= Float64.nan Float64.nan)"), None);
         assert_eq!(code("(= Float64.nan 5)").as_deref(), Some("CDZ0301"));
-    }
-
-    #[test]
-    fn nan_crosses_the_boundary_as_a_canonical_f64_nan() {
-        // `Float64.nan` returned as the program result emits an `f64.const` of the canonical NaN bits;
-        // the export returns f64 and the boundary lifts it. Read back BY BITS: it IS a NaN (f64::NAN).
-        let got = run_returns::<f64>(
-            &component("(module m (def (main) Float64.nan) (export main))"),
-            "main",
-        );
-        assert!(
-            got.is_nan(),
-            "Float64.nan crosses as an f64 NaN (got bits {:#x})",
-            got.to_bits()
-        );
     }
 
     #[test]

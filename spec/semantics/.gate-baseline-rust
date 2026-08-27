@@ -1875,6 +1875,7 @@ pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a finite float is less than Float64.Infinity
+pass	a finite float is unequal to a not-a-number value regardless of operand order
 pass	a fitting Float32 Qty magnitude computes at the narrow inner width
 pass	a fitting Float32 literal in a runtime MATCH arm computes
 pass	a fitting Float32 literal in a runtime if branch computes
@@ -2765,6 +2766,8 @@ pass	a nonneg-dividend signed division elides the MIN over -1 guard and divides 
 pass	a nonzero BigInt literal probe dispatches across MUTUAL recursion post-fix
 pass	a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time
 pass	a not of a runtime conjunction computes the negated conjunction
+pass	a not-a-number leaf makes a compound unequal to the same compound with a finite leaf
+pass	a not-a-number value is unequal to a finite float
 pass	a nullary Sign variant applied to a non-unit payload is a type error
 pass	a nullary constructor is a plain first-class value stored in a tuple
 pass	a nullary constructor is a single-arity function taking unit
@@ -6442,6 +6445,9 @@ pass	rak2 an op RESULT of type BigInt resumes a multi-limb value
 pass	rak3 an op RESULT of type Symbol resumes an interned symbol by state
 pass	rak4 an op RESULT of type Bytes resumes a built rope
 pass	rak5 an op RESULT of type Map resumes a built map the body queries
+pass	rbw1 a three-hundred-arm integer match dispatches to the right arm
+pass	rbw2 a four-hundred-binding let chain threads sequentially
+pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does not exhaust the stack)
 pass	rc1 a RECORD handler state — the arm projects both fields and rebuilds with different advances, sums pin two dispatches
 pass	rc2 the arm updates ONE record-state field chosen by the fields' own parity — three snapshots pin the alternating writes
 pass	rc3 a record state whose FIELD is a tuple — the counter ticks while the pair walks a Fibonacci step per dispatch
@@ -6945,6 +6951,7 @@ pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
+pass	the canonical NaN crosses the boundary as a not-a-number float
 pass	the churned-to-empty map REGROWS with correct structure (no residue corrupts re-insertion)
 pass	the closure state is REPLACED per dispatch by one capturing the arm's OWN binder
 pass	the closure's inner arm performs an OUTER effect through the closure boundary
@@ -7472,6 +7479,7 @@ pass	wa1 wrapping-add as the next-state — a near-MAX seed wraps to a concrete 
 pass	wa2 wrapping-add of the op ARG and state in the resume value — wrap, exact-MAX, and identity rows
 pass	wa3 the wrap WALK — three draws from a MAX seed step MAX, MIN, MIN+1 through wrapping-add(+1), checked '+' beside
 pass	wc1 the inner arm's resume value draws from TWO different outer effects — both threads advance per inner dispatch
+pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
@@ -7638,7 +7646,3 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	wep1 SIXTEEN scalar entry params cross the boundary and sum (the max-flat-params edge)
-pass	rbw1 a three-hundred-arm integer match dispatches to the right arm
-pass	rbw2 a four-hundred-binding let chain threads sequentially
-pass	rbw3 a one-million-frame add-one recursion answers (the non-tail spine does not exhaust the stack)
