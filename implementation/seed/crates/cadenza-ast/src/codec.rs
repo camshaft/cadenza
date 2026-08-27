@@ -81,8 +81,16 @@
 use crate::ast::{
     Arenas, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind,
 };
-use crate::dict::{DictSet, Hash};
 use crate::leb128::{self, Reader};
+// `alloc` (not std's prelude) so the minimal core compiles under `#![no_std]`.
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
+// The dict transport plane (`DictSet`/content-`Hash`) is std-only — the no_std minimal core is just
+// `encode`/`decode`. Gated with the dict-bearing functions below.
+#[cfg(feature = "std")]
+use crate::dict::{DictSet, Hash};
 
 // Leaf kind tags. Int folds (sign, radix) into the tag.
 const KIND_INT_POS_DEC: u8 = 0;
@@ -122,6 +130,7 @@ const TAG_LIST: u8 = 1;
 // Payload `[dict_idx:var][node_id:var]`: `dict_idx` indexes the import section's hash list, `node_id`
 // indexes the referenced dictionary's `structure` arena. `decode_with_dicts` grafts the named subtree
 // in place of the ref; the canonical `decode` never accepts a header carrying this tag.
+#[cfg(feature = "std")]
 const TAG_DICT_REF: u8 = 2;
 
 /// Why [`decode_detailed`] rejected a byte string. The load-bearing distinction for a streaming/log
@@ -161,6 +170,9 @@ pub enum DecodeError {
     /// seq-120: the decoder never fetches a missing dict — it errors out). Distinct from corruption:
     /// the bytes are well-formed, the needed input artifact was simply not supplied. Only
     /// `decode_with_dicts` produces this; the canonical `decode`/`decode_detailed` never see `\x00\x02`.
+    /// Only the std dict-transport plane produces it, so the variant is std-only (it carries a
+    /// dict `Hash`); the no_std minimal core's `decode` never reaches the dict path.
+    #[cfg(feature = "std")]
     MissingDict(Hash),
 }
 
@@ -183,9 +195,11 @@ const SCHEMA_HEADER: [u8; 8] = *b"cdzast\x00\x01";
 /// `TAG_DICT_REF` nodes, and is decoded ONLY by [`decode_with_dicts`]. The canonical [`decode`]/
 /// [`decode_detailed`] REFUSE it (`BadHeader`) — the structural guarantee that a transport artifact can
 /// never be mistaken for an identity artifact. The `\x00\x01` canonical plane is untouched.
+#[cfg(feature = "std")]
 const TRANSPORT_HEADER: [u8; 8] = *b"cdzast\x00\x02";
 
 /// The content-hash width in a transport artifact's import section (a [`Hash`] = 32 bytes).
+#[cfg(feature = "std")]
 const HASH_LEN: usize = 32;
 
 fn int_kind(neg: bool, radix: Radix) -> u8 {
@@ -221,9 +235,14 @@ fn int_kind(neg: bool, radix: Radix) -> u8 {
 /// always hash equal regardless of later additive vocabulary growth (new head names need no format bump;
 /// only a genuinely new leaf kind bumps to `\x00\x02`).
 pub fn encode(arenas: &Arenas) -> Vec<u8> {
-    // Canonicalize to normal form so equal programs encode to identical bytes. `canonicalize` returns
-    // a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh parse is.
+    // Under std, canonicalize to normal form so equal programs encode to identical bytes. `canonicalize`
+    // returns a `Cow` — borrowed (no clone/rebuild) when `arenas` is already canonical, which a fresh
+    // parse is. The no_std minimal core has no `canon` module and serializes the arena AS GIVEN: a
+    // Builder-built or `decode`d arena is already canonical (leaves interned/deduped on insert, structure
+    // in occurrence order), so the bytes match — this mirrors rcdzc's minimal encode, which has no canon.
+    #[cfg(feature = "std")]
     let canon = crate::canon::canonicalize(arenas);
+    #[cfg(feature = "std")]
     let arenas = &*canon;
     let mut out = Vec::new();
     out.extend_from_slice(&SCHEMA_HEADER);
@@ -257,6 +276,7 @@ pub fn encode(arenas: &Arenas) -> Vec<u8> {
 /// Extract the subtree rooted at `id` of `arenas` into its own standalone `Arenas` (a fresh, dense
 /// arena rooted at the copied subtree). Used to compute a subtree's CANONICAL content bytes (via
 /// `encode`) for dict-match keying. Iterative (explicit stack), so a deep subtree can't overflow.
+#[cfg(feature = "std")]
 fn subtree_arena(arenas: &Arenas, id: StructId) -> Arenas {
     let mut leaves: Vec<Leaf> = Vec::new();
     let mut structure: Vec<Struct> = Vec::new();
@@ -313,6 +333,7 @@ fn subtree_arena(arenas: &Arenas, id: StructId) -> Arenas {
 /// listed. The identity guarantee: `decode_with_dicts(encode_with_dict(a, d), d) == canonicalize(a)`,
 /// and `encode(decode_with_dicts(encode_with_dict(a, d), d)) == encode(a)` — transport is
 /// identity-preserving; the canonical inline `encode` remains the sole identity form.
+#[cfg(feature = "std")]
 pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8> {
     let canon = crate::canon::canonicalize(arenas);
     let arenas = &*canon;
@@ -710,6 +731,7 @@ pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
 /// dict reference. Kept internal to the transport decoder: it is resolved AWAY (grafted) into a normal
 /// dict-free [`Struct`] before any `Arenas` is returned, so the transport variant never escapes into the
 /// identity value model.
+#[cfg(feature = "std")]
 enum TStruct {
     Atom(LeafId),
     List(Vec<StructId>),
@@ -736,6 +758,7 @@ enum TStruct {
 /// The returned `Arenas` re-encodes via [`encode`] to canonical `cdzast\x00\x01` — that is its identity.
 /// The canonical [`decode`]/[`decode_detailed`] REFUSE `\x00\x02` (`BadHeader`): only THIS entry point
 /// accepts the transport plane, so a dict artifact can never be mistaken for an identity artifact.
+#[cfg(feature = "std")]
 pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, DecodeError> {
     // Dispatch on the header. Fewer than 8 bytes = truncated. The canonical `\x00\x01` plane is decoded
     // exactly as `decode_detailed` (dicts unused). Only `\x00\x02` engages the transport path.
@@ -892,6 +915,7 @@ pub fn decode_with_dicts(bytes: &[u8], dicts: &DictSet) -> Result<Arenas, Decode
 /// differ byte-wise from `encode(a)` (though structurally equal), breaking
 /// `decode_with_dicts(encode_with_dict(a,d),d) == canonicalize(a)`. (`canon` numbers leaves by
 /// FIRST-ENCOUNTER, not by value, so dedup must happen HERE, mirroring how `ast::Builder` interns.)
+#[cfg(feature = "std")]
 struct Grafter {
     /// The transport artifact's decoded leaf pool, indexed by the artifact's own leaf ids.
     src_leaves: Vec<Leaf>,
@@ -902,6 +926,7 @@ struct Grafter {
     out: Vec<Struct>,
 }
 
+#[cfg(feature = "std")]
 impl Grafter {
     /// Emit a node into the output arena, returning its new `StructId`. Bounds-checked: an artifact that
     /// expands past `u32::MAX` nodes is refused (`IdOutOfRange`) rather than SILENTLY WRAPPING the id into
@@ -1048,6 +1073,7 @@ impl Grafter {
 /// invariant inline (out-of-range → `IdOutOfRange`, cycle/shared-subtree → `NotATree`). Named for the
 /// property it guarantees (safe-to-walk), not just acyclicity. Iterative DFS with a 3-color
 /// (unvisited/on-stack/done) marking over every node as a potential root; O(nodes+edges).
+#[cfg(feature = "std")]
 fn dict_is_safe_to_walk(dict: &Arenas) -> bool {
     // 0 = unvisited, 1 = on the current DFS stack (a back-edge to it = cycle), 2 = fully explored.
     let mut color = vec![0u8; dict.structure.len()];
@@ -1112,6 +1138,7 @@ fn dict_is_safe_to_walk(dict: &Arenas) -> bool {
 /// Every node reachable from the root must be reached EXACTLY once (no cycle, no shared subtree).
 /// Iterative, so it cannot overflow on deep input. (`decode_detailed` performs the equivalent check
 /// inline over its own decoded structure; this standalone form guards the transport graft's result.)
+#[cfg(feature = "std")]
 fn verify_tree(arenas: &Arenas) -> Result<(), DecodeError> {
     let mut visited = vec![false; arenas.structure.len()];
     let mut stack = vec![arenas.root.0 as usize];
