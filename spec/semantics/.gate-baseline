@@ -2012,6 +2012,7 @@ pass	a function's return type contradicting the body is rejected
 pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
+pass	a fused match arm reading a heap binder twice is UAF-free and reclaim-neutral vs the non-fused shape
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
 pass	a generated LIST value is reproducible from its seed AND distinct seeds give distinct lists (runtime list = walks the spine)
 pass	a generated MIXED payload+nullary SUM value is reproducible from its seed (a 3-variant sum with a bare-name nullary variant)
@@ -4155,6 +4156,7 @@ pass	a tuple-returning closure alongside a plain export — the closure
 pass	a tuple-returning closure alongside a plain export — the plain
 pass	a tuple-wrapped self-application is rejected in bounded time, not a compiler stack overflow
 pass	a twenty-deep push chain retains the still-live source binding
+pass	a twice-used heap binder without a Some shell reclaims fully (the fusion-neutrality anchor)
 pass	a two-argument built-in applied to three arguments names its arity
 pass	a two-argument closure exported to the host is called with both arguments
 pass	a two-argument list operation applied to a non-list names the expected argument type
@@ -7378,6 +7380,7 @@ pass	the natural invariant construction over a VIOLATING perform result traps th
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
 pass	the new map from a runtime-key take has the key removed
+pass	the non-fused Some-shell control reads a heap binder twice with the same reclaim (no fusion)
 pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the operator's uniform all-Bytes/String contract descriptor materializes whole at runtime
