@@ -5632,7 +5632,7 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
-pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
+pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
 pass	cpc1 a conditionally-selected performing capture folds via the branch-aware distribution
