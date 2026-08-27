@@ -1586,3 +1586,49 @@
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
   (live-objects known-leak 7))
+
+; --- Value codec: a newtype-OVER-RECORD round-trips (the newtype-nominal × record composition). ---
+; The RECORD leaf (:1196) and the scalar-erased newtype (:1424) are pinned above; this composes them — a
+; single-ctor newtype WHOSE PAYLOAD is a record, `(type Pt (Mk (Record (: x Int64) (: y Int64))))`. The
+; newtype erases to the record handle, so `Value.encode` sees the record (the Pt nominal riding in the
+; descriptor, not the document) and `Value.decode` at `(Option Pt)` reconstructs it — both fields survive.
+; Grounded two ways: an INLINE `(: (Value.decode ..) (Option Pt))` ascription and a LET-BINDER `(let (((:
+; p (Option Pt)) (Value.decode ..))) ..)` (the two distinct grounding paths of :1196 and :1364, here over
+; the newtype-over-record shape). A runtime param drives construction so nothing const-folds.
+
+(case "a Value.encode/Value.decode round-trip preserves a newtype-over-RECORD nominal"
+  (doc    "The newtype-over-record composition: `(type Pt (Mk (Record (: x Int64) (: y Int64))))` encoded and
+           decoded back at `(Option Pt)` via an INLINE ascription reconstructs the wrapped record — both
+           fields survive. `main 7` builds `Pt.Mk (record (= x 7) (= y 107))`, round-trips, and the Some arm
+           reads `(. r x) + (. r y)` = 114; a dropped field or a lost nominal would give a wrong value or the
+           None arm. Composes the RECORD leaf (:1196) with the single-ctor newtype nominal (the descriptor
+           carries Pt while the document is the erased record).")
+  (input  (do
+            (type Pt (Mk (Record (: x Int64) (: y Int64))))
+            (def (main (: n Int64))
+              (let ((bs (Value.encode (Pt.Mk (record (= x n) (= y (+ n 100)))))))
+                (match (: (Value.decode bs) (Option Pt))
+                  ((Some p) (match p ((Pt.Mk r) (+ (. r x) (. r y)))))
+                  ((None u) (- 0 1)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 114 Int64))
+  (live-objects known-leak 2))
+
+(case "a Value.decode round-trip through a let-binder preserves a newtype-over-RECORD nominal"
+  (doc    "The let-binder grounding sibling of the case above (the :1364 path over a newtype-over-record):
+           the decode target `Pt` is fixed by a `(let (((: p (Option Pt)) (Value.decode bs))) ..)` binder
+           annotation, not an inline ascription. The round-trip reconstructs the wrapped record identically —
+           `main 7` → 114 — proving the binder-grounding path threads the newtype-over-record descriptor into
+           the decode node. An ungrounded target would decline (no descriptor to emit), so a passing run
+           proves the binder annotation fixed `a := Pt`.")
+  (input  (do
+            (type Pt (Mk (Record (: x Int64) (: y Int64))))
+            (def (main (: n Int64))
+              (let ((bs (Value.encode (Pt.Mk (record (= x n) (= y (+ n 100)))))))
+                (let (((: p (Option Pt)) (Value.decode bs)))
+                  (match p
+                    ((Some q) (match q ((Pt.Mk r) (+ (. r x) (. r y)))))
+                    ((None u) (- 0 1))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 114 Int64))
+  (live-objects known-leak 2))

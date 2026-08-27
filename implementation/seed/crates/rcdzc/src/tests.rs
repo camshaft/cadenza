@@ -5138,69 +5138,6 @@ fn a_bare_value_decode_match_scrutinee_declines_with_the_actionable_unsolved_tar
     );
 }
 
-/// R2 ROUND-TRIP, NON-VACUOUS (reviewer-requested: the `Value.decode` lower + `Core::ValueDecode` wasm emit
-/// were dead-on-trunk until the grounding fix that lands with this test, so the emit must be proven under a
-/// RUN, not just type-checked). `main` encodes `(Pt.Mk (record x=7 y=107))` to its binary-AST value-form
-/// Bytes, then `Value.decode`s into `(Option Pt)` (the annotation grounds the target), takes the `Some`
-/// arm, and reads back `x + y == 114`. Runs the compiled component with the value-heap runtime LINKED via
-/// `run_linked` (decode mints a heap value), so a good document decodes to `Some` and reconstructs the
-/// record — the decode emit fires for real. Skips if the runtime wasm is absent (the established heap-test
-/// pattern). This is the gate-visible non-vacuous proof the corpus runner can't give (it doesn't stage the
-/// value-heap runtime for a Bytes round-trip → records `todo`).
-#[test]
-fn value_encode_then_decode_round_trips_a_record_nominal_when_run() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (type Pt (Mk (Record (: x Int64) (: y Int64)))) \
-                 (def (main) \
-                   (let ((bs (Value.encode (Pt.Mk (record (= x 7) (= y 107)))))) \
-                     (match (: (Value.decode bs) (Option Pt)) \
-                       ((Some p) (match p ((Pt.Mk r) (+ (. r x) (. r y))))) \
-                       ((None) -1)))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the Value.encode/decode round-trip reducer compiles");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(
-            v, "114",
-            "Value.decode of Value.encode must reconstruct the record (Some arm, x+y=7+107): a `None` or \
-             wrong value means the decode emit round-trip is broken"
-        );
-    }
-}
-
-/// R2 ROUND-TRIP through a TYPED LET-BINDER, NON-VACUOUS — the run-proof twin of
-/// `value_decode_grounds_its_target_from_a_typed_let_binder`. Same round-trip as
-/// `value_encode_then_decode_round_trips_a_record_nominal_when_run` (encode a record, decode it back, read
-/// `x+y=114`), but the decode is grounded by a `(let (((: p (Option Pt)) (Value.decode bs))) …)` BINDER
-/// annotation, not a direct `(: … (Option Pt))`. Proves the binder-grounded decode doesn't just type-check —
-/// its emit fires for real and reconstructs the record, so the binder-grounding path yields the SAME correct
-/// descriptor the direct-annotation path does. Skips if the value-heap runtime wasm is absent (the heap-test
-/// pattern).
-#[test]
-fn value_decode_grounded_by_a_let_binder_round_trips_a_record_when_run() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (type Pt (Mk (Record (: x Int64) (: y Int64)))) \
-                 (def (main) \
-                   (let ((bs (Value.encode (Pt.Mk (record (= x 7) (= y 107)))))) \
-                     (let (((: p (Option Pt)) (Value.decode bs))) \
-                       (match p \
-                         ((Some q) (match q ((Pt.Mk r) (+ (. r x) (. r y))))) \
-                         ((None) -1))))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the let-binder-grounded Value.decode round-trip reducer compiles");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(
-            v, "114",
-            "a let-binder-grounded Value.decode of Value.encode must reconstruct the record (Some arm, \
-             x+y=7+107) exactly as the direct-annotation form does: a `None`/wrong value means binder \
-             grounding built the wrong descriptor"
-        );
-    }
-}
-
 /// R2 ENCODE — a scalar-erased newtype over a WIDER-than-i32 scalar now COMPILES via the boxing increment
 /// (was a DECLINE; the value-model boxing slice, DESIGN-compiler-primitives-adjacent). `Value.encode` walks
 /// an i32 HEAP HANDLE; a scalar-erased newtype `(type W (Mk Int64))` erases to a bare `i64`, NOT a handle.
