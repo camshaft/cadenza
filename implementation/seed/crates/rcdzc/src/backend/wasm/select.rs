@@ -7789,7 +7789,7 @@ fn emit_tail(
             // payload copies out (no alias), so the drop is safe; a compound shell is left un-dropped (leak,
             // value-correct) pending a sound compound-reclaim increment.
             let reclaim_shell = !arms_tail_call
-                && sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges);
+                && sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges, &root);
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -8281,17 +8281,128 @@ pub(crate) fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<
 /// the loop top and never reaches the post-match drop) — that stays at the call site because it needs the
 /// `MatchSum` decision tree, and it is NOT the same as a `TailPos::Tail(Some(_))` self-loop test (a
 /// `Tail(Some)` match whose arm is a constructor still has a valid reclaim point).
+/// Whether ANY arm body (or guard) in a `MatchSum` decision tree materializes a heap sub-value of the
+/// scrutinee OUT as a live handle — the sum analogue of the per-arm `arm_borrows_heap_subvalue` check
+/// `list_shell_reclaim_slot` runs over a `MatchList`'s flat arms. Walks the `SumCont`: a `Leaf`/`Guarded`
+/// body (and a `Guarded` guard) is an arm body; `Guarded.els`/`LitTest.then_`/`LitTest.els`/`Switch` arms
+/// are continuations. If NONE borrows a heap sub-value out (escape-clean), the payload is destructured to
+/// scalars — no live handle survives — and the shell deep-drop is safe. Because
+/// `collect_consuming_payload_sites` marks a compound-child dup on exactly the SAME consuming-position
+/// condition, escape-clean here implies the shell-reclaim dup pass collected NOTHING for this shell, so
+/// the deep-drop needs no dup pairing and reclaims the shell + its borrowed-only children by cascade.
+fn sum_cont_arm_borrows_heap_subvalue(db: &mut Db, cont: &crate::core::SumCont) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => arm_borrows_heap_subvalue(db, *body),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            arm_borrows_heap_subvalue(db, *cond)
+                || arm_borrows_heap_subvalue(db, *body)
+                || sum_cont_arm_borrows_heap_subvalue(db, els)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_arm_borrows_heap_subvalue(db, then_)
+                || sum_cont_arm_borrows_heap_subvalue(db, els)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_arm_borrows_heap_subvalue(db, &a.cont)),
+    }
+}
+
+/// Conservative reuse-clean for the compound-shell reclaim: whether ANY arm body CONSTRUCTS a compound
+/// value. A constructor is the only node that can FBIP-reuse a payload cell in place — a
+/// `(tuple (. t 0) (. t 1))` reuses the projected payload's cell, which the shell deep-drop would then
+/// double-free even though escape analysis (which sees only borrowing projections) reports it safe (the
+/// FBIP-rebuild-of-projection gap `arm_borrows_heap_subvalue` cannot see). Declining any arm that builds a
+/// compound over-approximates (a rebuild-to-fresh arm leaks rather than reclaims — value-correct, never a
+/// double-free), which honors the discipline "no reclaim widening without the FBIP-aware check"; the
+/// destructure-to-scalar acceptance set constructs nothing and is unaffected.
+fn sum_cont_arm_constructs_compound(db: &mut Db, cont: &crate::core::SumCont) -> bool {
+    let mut seen = HashSet::new();
+    sum_cont_arm_constructs_compound_seen(db, cont, &mut seen)
+}
+
+fn sum_cont_arm_constructs_compound_seen(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => expr_constructs_compound_seen(db, *body, seen),
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            expr_constructs_compound_seen(db, *cond, seen)
+                || expr_constructs_compound_seen(db, *body, seen)
+                || sum_cont_arm_constructs_compound_seen(db, els, seen)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            sum_cont_arm_constructs_compound_seen(db, then_, seen)
+                || sum_cont_arm_constructs_compound_seen(db, els, seen)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| sum_cont_arm_constructs_compound_seen(db, &a.cont, seen)),
+    }
+}
+
+/// Whether the expression subtree `id` contains a compound CONSTRUCTOR node (see
+/// [`sum_cont_arm_constructs_compound`]). Node-id `seen` set guards the shared-`StructId` DAG re-walk.
+fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<StructId>) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if matches!(
+        core_of(db, id),
+        Core::Tuple { .. }
+            | Core::SumNew { .. }
+            | Core::ListNew { .. }
+            | Core::MapNew { .. }
+            | Core::SetOf { .. }
+            | Core::Record { .. }
+            | Core::BytesOf { .. }
+            | Core::BinBuild { .. }
+            | Core::BinBitsBuild { .. }
+    ) {
+        return true;
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| expr_constructs_compound_seen(db, c, seen))
+}
+
+/// Whether `id` is a FALLIBLE-READ extraction op (`List.at`/`Bytes.at`/`Map.lookup`/`Bytes.slice`/
+/// `String.at`/`String.slice`) — each returns a runtime `Option` and `dup`-RETAINS the extracted element
+/// into the `Some` (see `heap_operand_ownership`), so the `Some` shell carries an EXTRA retained ref that a
+/// plain deep-drop orphans (the +1 extraction-retain leak). inc2a does NOT dup-on-escape, so it must
+/// DECLINE reclaiming such a `Some` shell — releasing the extraction retain is inc2b's unwrap-site move.
+fn scrutinee_is_fallible_extraction(db: &mut Db, id: StructId) -> bool {
+    matches!(
+        core_of(db, id),
+        Core::ListAt { .. }
+            | Core::BytesAt { .. }
+            | Core::StrAt { .. }
+            | Core::StrSlice { .. }
+            | Core::BytesSlice { .. }
+            | Core::MapLookup { .. }
+    )
+}
+
 fn sum_shell_reclaim_ok(
     db: &mut Db,
     scrutinee: StructId,
     scrut_ty: &Ty,
     stashed_slot: Option<(u32, ValType)>,
     never_diverges: bool,
+    root: &crate::core::SumCont,
 ) -> bool {
     !never_diverges
         && is_heap_type(scrut_ty)
         && !ty_is_enum_disc(db, scrut_ty)
-        && sum_has_only_scalar_payloads(db, scrut_ty)
+        // The all-scalar floor is always safe (a scalar payload copies out). A COMPOUND payload is
+        // reclaimable when the arm is escape-clean (no heap sub-value read out as a live handle) AND
+        // reuse-clean (no arm constructs a compound that could FBIP-reuse a payload cell).
+        && (sum_has_only_scalar_payloads(db, scrut_ty)
+            || (!sum_cont_arm_borrows_heap_subvalue(db, root)
+                && !sum_cont_arm_constructs_compound(db, root)
+                && !scrutinee_is_fallible_extraction(db, scrutinee)))
         && matches!(stashed_slot, Some((_, ValType::I32)))
         && matches!(
             heap_operand_ownership(db, scrutinee),
@@ -13557,7 +13668,7 @@ fn emit(
             // risk the UAF. The `collect_shell_reclaim_child_dups` dup-injection is now a no-op (empty for a
             // scalar sum) — retained but never fires here.
             let reclaim_shell =
-                sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges);
+                sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges, &root);
             emit_sum_cont(
                 db,
                 scrutinee,

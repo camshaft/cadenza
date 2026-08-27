@@ -1092,7 +1092,7 @@
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 4))
 
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
@@ -3162,7 +3162,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -3429,7 +3429,7 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 5 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a recursive fold over a runtime Peano spine recovers its depth"
   (doc    "The consume dual of the parameterized render: `depth` matches `(S rest)` and recurses on the
@@ -3516,7 +3516,7 @@
             (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
@@ -3660,7 +3660,7 @@
   (call   main (: 3 Int64)) (output (: 12 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 14 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a runtime list of lists escapes with its nested element type"
   (doc    "A runtime-built `(List (List Int64))` — a list whose ELEMENTS are themselves lists — crosses
@@ -5493,7 +5493,7 @@
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 0 UInt8))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a narrow-width newtype boxed as a tuple element falls through on a non-matching payload"
   (doc    "The miss: n=9 ≠ 0, so `(tuple (W.Wrap 0) y)` does not match → -1. Pins the boxed narrow newtype's
@@ -5503,7 +5503,7 @@
               (def (main (: n UInt8)) (f n)) (export main)))
   (call   main (: 9 UInt8))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a narrow-width newtype boxed as a list element matches by its literal payload"
   (doc    "The LIST position: `(match (list (W.Wrap n)) ((list (W.Wrap 0) .. r) 100) (_ 0))`, `W = (Wrap
@@ -5982,7 +5982,7 @@
                                     (_                       0)))
             (def (main) (top (build 2))) (export main)))
   (output (: 99 Int64))
-  (live-objects known-leak 9))
+  (live-objects 0))
 
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
@@ -6953,7 +6953,7 @@
   (output (: 2001 Int64))
   (call   main (: 5 Int64) (: 5 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind"
   (doc    "A literal buried at spine position 2 of a runtime 3-node list: `(Cons 1 (Cons 2 (Cons v
@@ -6973,7 +6973,7 @@
   (output (: 3 Int64))
   (call   main (: 9 Int64))
   (output (: 30 Int64))
-  (live-objects known-leak 7))
+  (live-objects 0))
 
 (case "a homogeneous nested Option distinguishes its outer and inner None"
   (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
@@ -9742,7 +9742,7 @@
             (export run)))
   (call   run (: 0 Int64)) (output (: 7 Int64))
   (call   run (: 5 Int64)) (output (: -3 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
@@ -9832,7 +9832,7 @@
             (export f)))
   (call   f (: 0 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a nested constructor match on a variant past the first dispatches on that variant's payload"
   (doc    "A NESTED constructor pattern on a variant that is NOT the first — `(type W (A Int64) (V (Option
@@ -13503,7 +13503,7 @@
   (output (: 1 Int64))
   (call   main (: 1 Int64))
   (output (: 0 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a top-level tuple pattern matches a tuple produced by a runtime conditional"
   (doc    "A `(tuple a b)` pattern over a scrutinee that is a RUNTIME tuple — one built by an `if`, so the
@@ -15673,7 +15673,7 @@
             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
             (export main)))
   (output (: 100 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 ; --- Non-variant-0 payload TYPE resolution: the remaining slot/shape faces -------------------------
 ; 134dee198 fixed the wasm discriminant walk resolving a Payload step's type via variant 0 (the
@@ -16889,7 +16889,7 @@
             (export main)))
   (call   main (: 9 Int64))
   (output (: 109 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "literal refinement on two elements of one list pattern"
   (doc    "BOTH elements carry same-variant ctors, the second refined by literal vs binder: input
@@ -16907,7 +16907,7 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a string literal payload refines a ctor list element"
   (doc    "`(Tag \"a\")` -> 1 vs `(Tag s)` -> byte-len s: the literal is a HEAP payload compared by
@@ -16963,7 +16963,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 4 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a failing tuple guard falls to a later arm re-binding the elements"
   (doc    "Arm one guards `(> a 9)` (→ 100+a), arm two re-binds both elements unguarded (→ a+b):
@@ -16980,7 +16980,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 121 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a tuple guard reads a ctor payload binder inside a tuple element"
   (doc    "`(guard (tuple (Op.Add n) b) (> n b))` — the compound head contains a REFUTABLE ctor
@@ -17049,7 +17049,7 @@
             (export main)))
   (call   main (: 5 Int64) (: 2 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a recursive unifier distinguishes arrow components through the payload slots"
   (doc    "The full HM-unify shape run END TO END: `unify (TArrow (TInt, TBool)) (TArrow (TInt, TInt))`
@@ -17785,7 +17785,7 @@
               (export main)))
   (call   main (: 7 Int64) (: 7 Int64) (: 0 Int64))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; The TUPLE-PARAM twin of the inline-tuple value guard above: matching a bound tuple PARAMETER `t`
 ; (`(: t (Tuple Int64 Int64 Int64))`) rather than an inline `(tuple a b c)`. Both shapes now lower to a
@@ -19505,7 +19505,7 @@
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
   (call   main (: -4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 ;; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
 (case "lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects"
@@ -19851,7 +19851,7 @@
   (input  (do (def (f (: n Int64)) (match (tuple n 2) ((tuple 1 2) 100) (_ 0))) (export f)))
   (call   f 1)
   (output (: 100 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; -- breaker batch 415 (2026-08-26): owned-temporary match-scrutinee reclaim across the OTHER heap
 ; kinds (#3726 covered lists, MatchSum covered sums): branch-selected String literal-dispatch, Bytes

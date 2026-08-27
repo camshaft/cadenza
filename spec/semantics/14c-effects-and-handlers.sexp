@@ -3657,7 +3657,7 @@
   (call   main (: 4 Int64)) (output (: 1083 Int64))
   (call   main (: 0 Int64)) (output (: 2003 Int64))
   (call   main (: -5 Int64)) (output (: 2903 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ;; ── ns: RECORDS inside SUM payloads through dispatch ─────────────────────────
 ;; (Record-type fields in canonical `(: name T)` ascription per RT4.) ns1
@@ -6243,7 +6243,7 @@
   (call   main (: 2 Int64)) (output (: 3400 Int64))
   (call   main (: 8 Int64)) (output (: 0 Int64))
   (call   main (: -5 Int64)) (output (: 3412 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "gp6 a CTOR-pattern guard with a SAME-CTOR non-guarded sibling admits per-dispatch across TWO dispatches (breaker #15)"
   (doc    "breaker FINDING #15 (HIGH silent-miscompile, all 3 backends). A ctor-pattern guard `(guard (Wrap
@@ -9652,7 +9652,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 21300441 Int64))
   (call   main (: 1 Int64)) (output (: 21300400 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; --- breaker batch 256: list-of-closures pipeline, cross-swapping scalar pair, length-prefixed frame protocol ---
 (case "loc1 a LIST-OF-CLOSURES pipeline state — each add pushes a stage function, run folds the input through every staged closure in order, later stages compose after earlier runs"
