@@ -1466,6 +1466,14 @@
   (input  (Qty.value (: (Qty.of 300 (Unit.of #"kilometer")) (Qty UInt8 (Unit.base #"meter")))))
   (error  CDZ0302))
 
+(case "a quantity annotation at a same-unit out-of-range magnitude is rejected"
+  (doc    "`(: (Qty.of 300 meter) (Qty UInt8 meter))` — a SAME-UNIT annotation (the magnitude unit equals the
+           annotation's inner unit) still range-checks the inner width: 300 does not fit UInt8 (0..=255) →
+           CDZ0302. The same-unit companion of the same-dimension different-scale case above; pins the inner
+           check fires regardless of the unit relationship (it drills the magnitude, not the units).")
+  (input  (Qty.value (: (Qty.of 300 (Unit.base #"meter")) (Qty UInt8 (Unit.base #"meter")))))
+  (error  CDZ0302))
+
 (case "a quantity annotation rejects a negative magnitude at an unsigned inner width"
   (doc    "`(: (Qty.of -1 meter) (Qty UInt8 meter))` — a same-UNIT annotation whose inner width is unsigned:
            -1 does not fit UInt8 (0..=255), CDZ0302. Pins that the inner range-check also enforces SIGN (a

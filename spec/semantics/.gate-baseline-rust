@@ -1299,6 +1299,7 @@ pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare built-in generic in a VALUE annotation needs a type argument
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare constant string escapes across the boundary and renders
+pass	a bare constant width UInt8 literal crosses to the host as its value
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare decimal in a default-float=Float32 module grounds to Float32
@@ -3229,6 +3230,7 @@ pass	a purely-logical composed proof over a quantified proposition: DISCH then M
 pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a qualified nullary variant pattern resolves in a nested match on the same scrutinee
+pass	a quantity annotation at a same-unit out-of-range magnitude is rejected
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
@@ -4026,6 +4028,7 @@ pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
+pass	a self-referential-shaped HOF that is not actually recursive folds
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
 pass	a self-tail-recursive SUM consumer loops (tail call in a MatchSum arm) and computes the fold
@@ -8445,5 +8448,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a self-referential-shaped HOF that is not actually recursive folds
-pass	a bare constant width UInt8 literal crosses to the host as its value
