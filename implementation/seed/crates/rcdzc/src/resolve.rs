@@ -446,6 +446,7 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                 Some(CompoundCtor::Tuple) => return resolve_tuple(db, id),
                 Some(CompoundCtor::List) => return resolve_list(db, id),
                 Some(CompoundCtor::Map) => return resolve_map(db, id),
+                Some(CompoundCtor::Set) => return resolve_set(db, id),
                 None => {}
             }
             match db.ast.head_name(id) {
@@ -6448,6 +6449,15 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
     let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
     Resolved::List { elems }
+}
+
+/// Resolve `("set" e0 e1 …)` — a first-class tagged set construction (operator ruling: pulled all the way
+/// through the compiler). Like a list, the elements are AST occurrences in order that all unify to one
+/// element type (homogeneity enforced by `infer`/`type_errors`); DUPLICATES collapse at build. Lowers to
+/// `Core::SetOf`. An empty `("set")` is a set of a deferred element type.
+fn resolve_set(db: &Db, id: StructId) -> Resolved {
+    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "set").unwrap_or(&[]).into();
+    Resolved::Set { elems }
 }
 
 /// Resolve `(map (k v) …)` — a persistent key→value association literal. Each entry is a two-element

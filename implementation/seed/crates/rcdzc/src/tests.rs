@@ -5063,6 +5063,58 @@ fn a_projection_only_tuple_folds_importing_no_runtime() {
 /// is a reject-don't-diverge fix: before the fold the type-checker ACCEPTED the program while the backend
 /// declined at emit ("no orderable descriptor") — a check/compile divergence. The FOLD unit needs no
 /// runtime; the wasmtime run (`#[ignore]`, needs the store) confirms the empty list has length 0.
+/// The first-class `("set" …)` construction (operator ruling 2026-08-27: data structures pulled all the
+/// way through the compiler, NOT desugared to `Set.of` in the reader) resolves to `Resolved::Set` and
+/// lowers to the SAME `Core::SetOf` `Set.of (list …)` produces — so a set VALUE still renders
+/// `(Set.of (list …sorted))`, constant elements dedup at build, and `Set.to-list` folds identically.
+#[test]
+fn set_literal_ctor_lowers_to_the_same_set_as_set_of() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    let fold = |body: &str| -> Core {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main has a body");
+        core_of(&mut db, m_body)
+    };
+    // `("set" 3 1 2)` lowers directly to a `Core::SetOf` of 3 elements.
+    match fold("(\"set\" 3 1 2)") {
+        Core::SetOf { elems, .. } => assert_eq!(
+            elems.len(),
+            3,
+            "(\"set\" 3 1 2) lowers to a 3-element Core::SetOf, got {}",
+            elems.len()
+        ),
+        other => panic!("(\"set\" 3 1 2) must lower to Core::SetOf, got {other:?}"),
+    }
+    // Constant elements DEDUP at build: `("set" 1 1 2)` is a 2-element set.
+    match fold("(\"set\" 1 1 2)") {
+        Core::SetOf { elems, .. } => assert_eq!(
+            elems.len(),
+            2,
+            "(\"set\" 1 1 2) dedups to a 2-element Core::SetOf, got {}",
+            elems.len()
+        ),
+        other => panic!("(\"set\" 1 1 2) must lower to Core::SetOf, got {other:?}"),
+    }
+    // Through `Set.to-list` a `("set" …)` folds to the SAME sorted list as `Set.of (list …)`.
+    match (
+        fold("(Set.to-list (\"set\" 3 1 2))"),
+        fold("(Set.to-list (Set.of (list 3 1 2)))"),
+    ) {
+        (Core::ListNew { elems: a }, Core::ListNew { elems: b }) => assert_eq!(
+            a.len(),
+            b.len(),
+            "(\"set\" …) and Set.of build the same set: {} vs {}",
+            a.len(),
+            b.len()
+        ),
+        (x, y) => panic!("both must fold to a sorted ListNew: {x:?} vs {y:?}"),
+    }
+}
+
 #[test]
 fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     use crate::core::Core;

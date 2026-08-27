@@ -843,6 +843,10 @@ pub enum CompoundCtor {
     List,
     /// `("map" (k v)…)` — a map: key/value entry-pair children.
     Map,
+    /// `("set" e…)` — a set: element children (dedup at build). A first-class tagged construction pulled
+    /// all the way through the compiler (operator ruling 2026-08-27); lowers to `Core::SetOf`. The set
+    /// VALUE still renders `(Set.of (list …sorted))`.
+    Set,
 }
 
 impl CompoundCtor {
@@ -854,6 +858,7 @@ impl CompoundCtor {
             "tuple" => Some(CompoundCtor::Tuple),
             "list" => Some(CompoundCtor::List),
             "map" => Some(CompoundCtor::Map),
+            "set" => Some(CompoundCtor::Set),
             _ => None,
         }
     }

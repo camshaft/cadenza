@@ -7107,9 +7107,10 @@ fn thread_bounded(
         // ML tuple/list literal, whose head is the STRING-LITERAL ctor primitive `"tuple"`/`"list"` (a bare
         // `tuple` NAME reduces via `(meta apply)` and threads through the Apply arm; the string-head ctor
         // reaches HERE). The ctor string is re-pushed as a `Leaf::Str` head so the resolver re-recognizes it.
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             let ctor = match resolved_of(db, node) {
                 Resolved::List { .. } => "list",
+                Resolved::Set { .. } => "set",
                 _ => "tuple",
             };
             let elems: Vec<StructId> = elems.iter().copied().collect();
@@ -9910,7 +9911,7 @@ pub(crate) fn handle_lift_escapes(db: &mut Db, node: StructId) -> Option<StructI
         Resolved::Member { operand, .. } | Resolved::Proj { operand, .. } => {
             handle_lift_escapes(db, operand)
         }
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             elems.iter().find_map(|&e| handle_lift_escapes(db, e))
         }
         Resolved::Record { fields } => fields
@@ -11104,7 +11105,7 @@ fn pure_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> PureHole {
             pure_hole(db, operand, ctx)
         }
         Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => pure_hole(db, expr, ctx),
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             pure_hole_seq(db, elems.iter().copied(), ctx)
         }
         Resolved::Apply { head, args } => {
@@ -11192,7 +11193,7 @@ fn leading_strict_hole(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> Option<
         Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
             leading_strict_hole(db, expr, ctx)
         }
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             leading_strict_hole_seq(db, elems.iter().copied(), ctx)
         }
         Resolved::Apply { head, args } => {
