@@ -21203,3 +21203,34 @@
   (call mtup8)   (output (: 100 Int8))
   (call mlst)    (output (: 42 Int64))
   (call mbyname) (output (: 25 Int64)))
+
+; -- breaker batch 515 (2026-08-27): immortal constants in CONTENT-keyed structures (the identity
+; hazard cells, post-#4245). ikc1 = a Map keyed by a hoisted constant list is FOUND by a
+; runtime-built equal key — hashing/equality are content-based; an identity-based path anywhere
+; would miss. ikc2 = a handler SEEDED with a hoisted constant threads functional updates per
+; dispatch (the immortal is never mutated; each resume's push builds fresh state) — len reads 2
+; then 3, both reclaim.
+
+(case "ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key"
+  (input (do (def (main (: n Int64))
+    (let ((m (Map.insert Map.empty (list 1 2) 77))
+          (k (if (> n 0) (list 1 2) (list 9))))
+      (match (Map.lookup m k)
+        ((Option.Some v) v)
+        ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 77 Int64))
+  (live-objects 0))
+
+(case "ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: n Int64))
+      (handle St (list 1 2)
+        ((get (u) s (resume (List.len s) (List.push s 9))))
+        (+ (St.get) (* 10 (St.get)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 32 Int64))
+  (live-objects 0))
