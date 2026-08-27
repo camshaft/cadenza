@@ -2289,7 +2289,9 @@ pass	a key-directed pattern matches a RUNTIME map by looking up its keys
 pass	a keyed lookup of an updated map is not shared with the original's
 pass	a known-constructor match selects the NON-first arm, eliding the other arms' bodies
 pass	a lambda applied in the scope of the binding it captures observes that binding
+pass	a lambda applying its forwarded fn param TWICE runs through a recursive HOF
 pass	a lambda captures an enclosing function parameter and is applied in its body
+pass	a lambda forwarding to a substituted fn param runs through a recursive HOF
 pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic

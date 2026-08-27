@@ -1936,6 +1936,40 @@
   (output (: 15 Int64))
   (live-objects known-leak 4))
 
+; A lambda that FORWARDS to a fn parameter SUBSTITUTED into a NON-recursive HOF. `twice` is non-recursive so
+; it inlines and its `g` is substituted by `main`'s concrete lambda; the inner `(fn (b) (g b))` is passed to
+; the recursive `sumapply`, so it must survive as a runtime closure. (This declined for several ticks on a
+; spurious self-capture: descending the nested `(fn …)` in the lifted body tripped the capture-collector's
+; own-param-binder guard; it now descends a nested lambda's body with the inner params excluded.)
+
+(case "a lambda forwarding to a substituted fn param runs through a recursive HOF"
+  (doc    "`twice` (non-recursive) inlines, substituting `g` = `(fn (x) (+ x 1))`; the inner `(fn (b) (g b))`
+           forwards to it and escapes into the recursive `sumapply`. sumapply (fn (b) (g b)) 3 with g=(+1):
+           (3+1)+(2+1)+(1+1) = 9.")
+  (input  (do
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1)))))
+            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g b)) 3))
+            (def (main) (twice (fn ((: x Int64)) (+ x 1))))
+            (export main)))
+  (call   main)
+  (output (: 9 Int64))
+  (live-objects known-leak 1))
+
+(case "a lambda applying its forwarded fn param TWICE runs through a recursive HOF"
+  (doc    "The double-apply face: the inner lambda is `(fn (b) (g (g b)))`, so h(b) = g(g(b)) = b+2 with
+           g=(+1); sumapply h 3 = (3+2)+(2+2)+(1+2) = 12. Pins that a nested lambda applying its forwarded
+           param more than once still lowers.")
+  (input  (do
+            (def (sumapply (: h (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (h n) (sumapply h (- n 1)))))
+            (def (twice (: g (-> Int64 Int64))) (sumapply (fn ((: b Int64)) (g (g b))) 3))
+            (def (main) (twice (fn ((: x Int64)) (+ x 1))))
+            (export main)))
+  (call   main)
+  (output (: 12 Int64))
+  (live-objects known-leak 1))
+
 (case "a compose combinator captures TWO function values and applies them in declared order"
   (doc    "The two-function capture face: `(compose f g)` returns `(fn (x) (f (g x)))` — ONE closure whose
            env holds TWO fn handles, applied inner-to-outer. Order is witnessed by non-commuting operands:
@@ -6079,7 +6113,6 @@
             (export main)))
   (output (: 5 Int64))
   (live-objects known-leak 36))
-
 (case "a recursive-generic filter threading a predicate closure composes at two element types"
   (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
            recursing over a generic `Iter`. The predicate's domain is tied to the element type (the same
