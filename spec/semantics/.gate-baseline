@@ -4696,6 +4696,7 @@ pass	a user generic NESTED as the type argument of a built-in generic resolves i
 pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
 pass	a user generic sum OVER-applied with too many type arguments in an annotation is rejected
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
+pass	a user generic sum whose nullary variant carries a lowercase-unit payload has exactly one type param
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body

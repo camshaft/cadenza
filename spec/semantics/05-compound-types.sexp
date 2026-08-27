@@ -4720,6 +4720,12 @@
   (call   main (: 0 Int64))
   (output (: 0 Int64)))
 
+(case "a user generic sum whose nullary variant carries a lowercase-unit payload has exactly one type param"
+  (doc    "The pervasive nullary-variant idiom writes a unit-typed payload with the LOWERCASE `unit` VALUE (the prelude empty product): `(type (Box a) (Full a) (Nil unit))`. Param collection must NOT harvest that `unit` as a second type parameter — `Box` has EXACTLY ONE param `a` (a type-position `unit` maps to `Ty::Unit`, not a fresh Var). Were it harvested as a 2nd param, its unfilled phantom would leave a stray Var making the sum non-Eq/non-Ord (a Set/Map of it would decline on the rust backend). Value side: matching `(Full 6)` over both variants — with the lowercase idiom intact — binds `v`=6 → 7 (the `(Nil _u)` arm is the -1 fall-through). A run to 7 witnesses the sum type-checks with one param and dispatches.")
+  (input  (do (type (Box a) (Full a) (Nil unit))
+              (def (main) (match (Full 6) ((Full v) (+ v 1)) ((Nil _u) -1))) (export main)))
+  (call   main) (output (: 7 Int64)))
+
 (case "a Result built by an if with the Err branch first type-checks"
   (doc    "The Result companion (two type parameters): `(match (if (= n 0) (Err n) (Ok n)) ((Ok k) k)
            ((Err e) 0))` with n = 5 yields `(Ok 5)`, matched to 5. Both of Result's parameters must be
