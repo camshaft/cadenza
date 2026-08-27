@@ -21,8 +21,17 @@ const path = require("node:path");
 // to test a helper that lives in bridge.js, MOVE it to format.js (the dep-free module) and require it from
 // there — that's exactly what was done for isTransientSocketModeFault. Verify locally the CI way:
 // `mv node_modules aside && node smoke.test.js` must still pass.
-const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
-const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault, KNOWN_KINDS } = require("./format.js");
+const { deliver, drain, markProcessed, markFailed, inboxDir, isValidAgentName } = require("./inbox.js");
+const {
+  parseOperatorMessage,
+  renderFleetMessage,
+  renderFleetMessagePlain,
+  relayPlan,
+  isContentPostError,
+  helpText,
+  isTransientSocketModeFault,
+  KNOWN_KINDS,
+} = require("./format.js");
 
 let passed = 0;
 function test(name, fn) {
@@ -307,6 +316,62 @@ test("isTransientSocketModeFault does NOT swallow genuine faults (still exits)",
   ]) {
     assert.ok(!isTransientSocketModeFault(fatal), `must NOT swallow ${JSON.stringify(String(fatal))}`);
   }
+});
+
+// ---- RESILIENCE: outbound relay must never head-of-line-block on a poison message ----------------
+
+test("markFailed dead-letters a message and it no longer drains (preserved, not dropped)", () => {
+  // A quarantined un-postable message moves to failed/ — preserved for inspection, and removed from the
+  // drain so it can't block the relay queue (the ~11h/57-message wedge this fixes).
+  const dir = tmpFleet();
+  const file = deliver(dir, "slack-bridge", { from: "v-x", kind: "ask", subject: "poison" });
+  assert.strictEqual(drain(dir, "slack-bridge").length, 1);
+  markFailed(file);
+  assert.strictEqual(drain(dir, "slack-bridge").length, 0, "dead-lettered message no longer drains");
+  const dead = path.join(inboxDir(dir, "slack-bridge"), "failed", path.basename(file));
+  assert.ok(fs.existsSync(dead), "message preserved under failed/");
+  assert.strictEqual(JSON.parse(fs.readFileSync(dead, "utf8")).subject, "poison");
+});
+
+test("relayPlan escalates normal → degraded → quarantine (bounds a poison message)", () => {
+  // The escalation must be finite so a poison message is dead-lettered after a bounded number of polls and
+  // can NEVER block the queue forever. Pins the exact thresholds; must stay in lockstep with Rust relay_plan.
+  assert.strictEqual(relayPlan(0), "normal");
+  assert.strictEqual(relayPlan(1), "normal");
+  assert.strictEqual(relayPlan(2), "degraded");
+  assert.strictEqual(relayPlan(3), "degraded");
+  assert.strictEqual(relayPlan(4), "quarantine");
+  assert.strictEqual(relayPlan(99), "quarantine");
+});
+
+test("isContentPostError classifies Slack API errors as content, transport/rate-limit as transient", () => {
+  // Only a CONTENT error (Slack answered with err.data.error, e.g. internal_error — the ~11h wedge) advances
+  // a message toward degrade/quarantine. Transport faults + rate limiting are transient → retry in place.
+  assert.ok(isContentPostError({ data: { error: "internal_error" } }), "internal_error is content");
+  assert.ok(isContentPostError({ data: { error: "msg_too_long" } }), "msg_too_long is content");
+  assert.ok(!isContentPostError({ data: { error: "ratelimited" } }), "ratelimited is transient");
+  assert.ok(!isContentPostError({ code: "slack_webapi_rate_limited_error", retryAfter: 30 }), "rate limit is transient");
+  assert.ok(!isContentPostError(new Error("socket hang up")), "transport error is transient");
+  assert.ok(!isContentPostError({ code: "slack_webapi_request_error" }), "request error is transient");
+  assert.ok(!isContentPostError(undefined) && !isContentPostError(null), "no error → not content");
+});
+
+test("renderFleetMessagePlain strips mrkdwn control chars and hard-truncates", () => {
+  // The degraded fallback must carry NO mrkdwn/entity control chars (so it can't re-trigger Slack's parse
+  // quirk) and must be short (the proven-safe truncation that posted where the rich render failed).
+  const m = { from: "pr-sync", kind: "ask", subject: "decide *A* or `B`", body: "use <https://x> & _em_ ~s~ | p" };
+  const s = renderFleetMessagePlain(m);
+  for (const bad of ["*", "_", "~", "`", "<", ">", "&", "|"]) {
+    assert.ok(!s.includes(bad), `plain render must not contain ${bad}: ${s}`);
+  }
+  assert.ok(s.includes("pr-sync") && s.includes("ask"), "keeps who/what");
+  assert.ok([...s].length <= 400, "bounded to the proven-safe length");
+
+  const huge = { from: "v-x", kind: "ask", subject: "big", body: "x".repeat(9000) };
+  const big = renderFleetMessagePlain(huge);
+  assert.ok([...big].length <= 400, "huge body is capped");
+  assert.ok(big.includes("truncated"), "elision marker present");
+  assert.ok(big.includes("v-x"), "header survives the cap");
 });
 
 console.log(`\n${passed} checks passed`);

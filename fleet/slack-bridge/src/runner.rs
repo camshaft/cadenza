@@ -3,10 +3,13 @@
 //! WebSocket + subprocess); the pure decisions it calls into ARE tested in the lib.
 
 use cadenza_slack_bridge::{
-    Config, Message, MirroredAsk, SlackTokens, ThreadMap, deliver, drain, mark_processed,
-    parse_operator_message, render_fleet_message, sidecar, watchdog,
+    Config, Message, MirroredAsk, RELAY_QUEUE_WARN, RelayPlan, SlackTokens, ThreadMap, deliver,
+    drain, mark_failed, mark_processed, parse_operator_message, relay_plan, render_fleet_message,
+    render_fleet_message_plain, sidecar, watchdog,
 };
+use slack_morphism::errors::SlackClientError;
 use slack_morphism::prelude::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -141,11 +144,30 @@ pub async fn outbound_loop(cfg: Arc<Config>, tokens: SlackTokens) {
     let bot = SlackApiToken::new(tokens.bot_token.clone().into());
     let channel_id: SlackChannelId = channel.into();
 
+    // Per-message CONTENT-failure counts (inbox filename → count) for the relay, so a deterministically
+    // un-postable message escalates degrade→quarantine across ticks WITHOUT blocking the queue. In-memory:
+    // a restart resets it, which is fine — the message re-drains and re-clears in a bounded number of ticks
+    // (never forever, the ~11h wedge this fixes). Lives here so it persists across `outbound_tick` calls.
+    let mut relay_failures: HashMap<String, u32> = HashMap::new();
+
     loop {
-        if let Err(e) = outbound_tick(&cfg, &client, &bot, &channel_id).await {
+        if let Err(e) = outbound_tick(&cfg, &client, &bot, &channel_id, &mut relay_failures).await {
             tracing::warn!(error = %e, "outbound tick error (will retry)");
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Classify a Slack post error: CONTENT (the message itself is un-postable — Slack answered with an API
+/// error like `internal_error`/`msg_too_long`) vs TRANSIENT (a transport/HTTP/rate-limit fault — retry in
+/// place). Only content failures advance a message toward degrade/quarantine; a transient outage retries
+/// forever without dead-lettering. `ratelimited` is an API error but is transient (back off + retry). Mirror
+/// of the Node `isContentPostError` in format.js.
+fn is_content_post_error(e: &SlackClientError) -> bool {
+    match e {
+        SlackClientError::ApiError(api) => api.code != "ratelimited",
+        // Http/HttpProtocol/System/EndOfStream/Protocol/SocketMode/RateLimit → transport/transient.
+        _ => false,
     }
 }
 
@@ -154,6 +176,7 @@ async fn outbound_tick(
     client: &SlackHyperClient,
     bot: &SlackApiToken,
     channel: &SlackChannelId,
+    relay_failures: &mut HashMap<String, u32>,
 ) -> Result<(), BoxErr> {
     let session = client.open_session(bot);
 
@@ -189,18 +212,68 @@ async fn outbound_tick(
         }
     }
 
-    // (2) Relay the bridge's own inbox (agent → operator) to the channel, then archive each.
+    // (2) Relay the bridge's own inbox (agent → operator) to the channel, then archive each. A message that
+    // deterministically fails to post must NEVER head-of-line-block the queue (the ~11h/57-message wedge):
+    // a transport/transient fault retries in place (order preserved), but a CONTENT-class failure escalates
+    // per-message degrade→quarantine and we SKIP PAST it so the rest flow.
     let inbound = drain(&cfg.fleet_dir, &cfg.bridge_agent)?;
+    if inbound.len() >= RELAY_QUEUE_WARN {
+        let oldest = inbound
+            .first()
+            .and_then(|e| e.file.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        tracing::warn!(
+            depth = inbound.len(),
+            %oldest,
+            "outbound relay queue backlog — a message may be failing to post"
+        );
+    }
     for entry in inbound {
+        let key = entry
+            .file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let fails = relay_failures.get(&key).copied().unwrap_or(0);
+        let plan = relay_plan(fails);
+        if plan == RelayPlan::Quarantine {
+            tracing::warn!(
+                %key,
+                content_failures = fails,
+                "outbound relay: quarantining un-postable message — dead-lettering to failed/ (full text preserved), draining the rest"
+            );
+            mark_failed(&entry.file)?;
+            relay_failures.remove(&key);
+            continue;
+        }
+        let text = if plan == RelayPlan::Degraded {
+            render_fleet_message_plain(&entry.msg)
+        } else {
+            render_fleet_message(&entry.msg)
+        };
         let req = SlackApiChatPostMessageRequest::new(
             channel.clone(),
-            SlackMessageContent::new().with_text(render_fleet_message(&entry.msg)),
+            SlackMessageContent::new().with_text(text),
         );
         match session.chat_post_message(&req).await {
-            Ok(_) => mark_processed(&entry.file)?,
+            Ok(_) => {
+                mark_processed(&entry.file)?;
+                relay_failures.remove(&key);
+            }
+            Err(e) if is_content_post_error(&e) => {
+                let n = fails + 1;
+                relay_failures.insert(key.clone(), n);
+                tracing::warn!(
+                    %key, attempt = n, ?plan, error = %e,
+                    "outbound relay: content post error — skipping past this message (will degrade then quarantine), rest continue"
+                );
+                continue; // do NOT block the queue on a poison message
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "failed to relay bridge message; will retry");
-                break; // preserve order; retry this + the rest next tick
+                // Transport/transient (outage, rate limit): retry this + the rest next tick, order preserved.
+                tracing::warn!(error = %e, "failed to relay bridge message (transient — will retry)");
+                break;
             }
         }
     }

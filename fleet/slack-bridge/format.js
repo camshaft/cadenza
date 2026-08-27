@@ -94,6 +94,79 @@ function renderFleetMessage(msg) {
   return cp.slice(0, keep).join("") + marker;
 }
 
+// ── OUTBOUND-RELAY RESILIENCE (fleet → Slack) ─────────────────────────────────────────────────────
+//
+// A message that DETERMINISTICALLY fails to post must never head-of-line-block the outbound relay. This
+// once wedged the whole queue (57 messages, ~11h): the pump posted in order and `break`'d on the first post
+// error, and a single message that reliably returned Slack `internal_error` (a content/length quirk in
+// Slack's mrkdwn parse — a 400-char truncation of the SAME message posted fine) blocked every message
+// behind it forever, and re-blocked identically after a process restart (the poison re-reads from disk).
+// The relay now retries a transport/transient fault in place, but for a CONTENT-class failure escalates
+// per-message: after DEGRADE_AFTER it posts a degraded plain variant, and after QUARANTINE_AFTER it
+// dead-letters the message (moves it to failed/, preserving it) and keeps draining. Kept HERE, in the
+// dep-free module, so the zero-dep smoke test can pin it (bridge.js is transport-only glue over these).
+
+// Content-class post failures after which the relay falls back to the degraded plain variant, then gives up
+// and dead-letters. A transient/transport fault (outage, rate limit) does NOT advance these — it retries.
+const RELAY_DEGRADE_AFTER = 2;
+const RELAY_QUARANTINE_AFTER = 4;
+// Relay queue depth at/above which the pump logs a backlog warning — a visible health signal so a wedge
+// can't pile up silently as it did during the ~11h wedge.
+const RELAY_QUEUE_WARN = 25;
+// Proven-safe degraded-post length: Slack rejected a ~2073-char rendered mrkdwn message with `internal_error`
+// while a 400-char truncation of the same message posted fine, so the degraded variant truncates to this.
+const PLAIN_TEXT_CAP = 400;
+
+/// Decide the relay plan ("normal" | "degraded" | "quarantine") from the count of CONTENT-class post
+/// failures so far. Pure, and mirrored by the Rust `relay_plan` so both relays escalate identically.
+function relayPlan(contentFailures) {
+  if (contentFailures >= RELAY_QUARANTINE_AFTER) return "quarantine";
+  if (contentFailures >= RELAY_DEGRADE_AFTER) return "degraded";
+  return "normal";
+}
+
+/// Classify a Slack post error: CONTENT (the message is un-postable — Slack answered with an API error like
+/// `internal_error`/`msg_too_long`, carried on `err.data.error`) vs TRANSIENT (a transport/HTTP fault with
+/// no API payload, or rate limiting — retry in place). Only content failures advance a message toward
+/// degrade/quarantine. Mirror of the Rust `is_content_post_error`.
+function isContentPostError(err) {
+  if (!err) return false;
+  // Rate limiting is transient — back off and retry, never dead-letter.
+  if (err.code === "slack_webapi_rate_limited_error" || (err.data && err.data.error === "ratelimited")) {
+    return false;
+  }
+  return !!(err.data && typeof err.data.error === "string");
+}
+
+// Replace every character Slack's mrkdwn/entity parser treats as control (formatting `*_~\``, entity/link
+// markup `<>&|`) with a space and collapse whitespace. Neutralizing the trigger in the CONTENT (rather than
+// a per-post mrkdwn=false flag, which the transports don't expose uniformly) keeps the degraded post from
+// re-triggering the parse quirk that failed the rich render.
+function stripMrkdwn(s) {
+  return String(s || "")
+    .replace(/[*_~`<>&|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/// Render a fleet message as a DEGRADED, plain, mrkdwn-safe, hard-truncated Slack string — the relay's
+/// fallback when the normal render deterministically fails to post. No mrkdwn markup, control chars stripped
+/// from every field, capped at PLAIN_TEXT_CAP code points with a marker pointing at the fleet inbox.
+function renderFleetMessagePlain(msg) {
+  const from = stripMrkdwn(msg.from || "unknown");
+  const kind = stripMrkdwn(msg.kind || "note");
+  const subject = stripMrkdwn(msg.subject || "");
+  let head = `[plain] ${from} ${kind}`;
+  if (subject) head += `: ${subject}`;
+  const body = stripMrkdwn(msg.body || "");
+  const out = body ? `${head} — ${body}` : head;
+  const cp = [...out];
+  if (cp.length <= PLAIN_TEXT_CAP) return out;
+  const marker = " …[truncated — full text in the fleet inbox]";
+  const keep = Math.max(0, PLAIN_TEXT_CAP - [...marker].length);
+  return cp.slice(0, keep).join("") + marker;
+}
+
 /// A short usage/help string shown when the operator sends an empty message or `help`.
 function helpText(defaultTo) {
   return [
@@ -123,4 +196,14 @@ function isTransientSocketModeFault(err) {
   );
 }
 
-module.exports = { parseOperatorMessage, renderFleetMessage, helpText, KNOWN_KINDS, isTransientSocketModeFault };
+module.exports = {
+  parseOperatorMessage,
+  renderFleetMessage,
+  renderFleetMessagePlain,
+  relayPlan,
+  isContentPostError,
+  RELAY_QUEUE_WARN,
+  helpText,
+  KNOWN_KINDS,
+  isTransientSocketModeFault,
+};

@@ -197,6 +197,26 @@ pub fn mark_processed(file: &Path) -> io::Result<()> {
     }
 }
 
+/// Move an un-postable inbox file into a `failed/` dead-letter dir (created on demand), a sibling of
+/// `processed/`. Used by the outbound relay to quarantine a message that deterministically fails to post so
+/// it can NEVER head-of-line-block the queue, while PRESERVING it (not dropping it) for inspection. Mirrors
+/// [`mark_processed`]; a missing source is ignored (already moved).
+pub fn mark_failed(file: &Path) -> io::Result<()> {
+    let Some(dir) = file.parent() else {
+        return Ok(());
+    };
+    let failed = dir.join("failed");
+    std::fs::create_dir_all(&failed)?;
+    let Some(name) = file.file_name() else {
+        return Ok(());
+    };
+    match std::fs::rename(file, failed.join(name)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +326,34 @@ mod tests {
                 .join(pending[0].file.file_name().unwrap())
                 .exists()
         );
+    }
+
+    #[test]
+    fn mark_failed_dead_letters_and_removes_from_drain() {
+        // A quarantined (un-postable) message moves to `failed/` — preserved, not dropped — and no longer
+        // drains, so it can't block the relay queue while its content is still recoverable for inspection.
+        let dir = tmp_fleet("failed");
+        deliver(
+            &dir,
+            "slack-bridge",
+            Message::new("v-x", "", "ask", "poison"),
+        )
+        .unwrap();
+        let pending = drain(&dir, "slack-bridge").unwrap();
+        assert_eq!(pending.len(), 1);
+        mark_failed(&pending[0].file).unwrap();
+        assert!(
+            drain(&dir, "slack-bridge").unwrap().is_empty(),
+            "dead-lettered message no longer drains"
+        );
+        let dead = inbox_dir(&dir, "slack-bridge")
+            .unwrap()
+            .join("failed")
+            .join(pending[0].file.file_name().unwrap());
+        assert!(dead.exists(), "message preserved under failed/");
+        // And it's the real message, not lost.
+        let rec: Message = serde_json::from_str(&std::fs::read_to_string(&dead).unwrap()).unwrap();
+        assert_eq!(rec.subject, "poison");
     }
 
     #[test]
