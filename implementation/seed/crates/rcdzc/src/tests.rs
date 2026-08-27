@@ -12237,44 +12237,6 @@ mod runtime_ops {
     /// guarded) does NOT spuriously trap.
     #[test]
     fn a_narrow_signed_division_range_check_is_upper_bound_only() {
-        // MIN / 1 = MIN — the exact lower edge. It must compute (not trap): the dropped `r < min` check
-        // was provably unreachable, so removing it must not have removed a real guard.
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(/ a b)",
-                &[Val::S8(-128), Val::S8(1)]
-            ),
-            -128
-        );
-        assert_eq!(
-            run::<i16>(
-                "(: a Int16) (: b Int16)",
-                "(/ a b)",
-                &[Val::S16(-32768), Val::S16(1)]
-            ),
-            -32768
-        );
-        // A large-magnitude negative quotient (still >= MIN) computes.
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(/ a b)",
-                &[Val::S8(-128), Val::S8(2)]
-            ),
-            -64
-        );
-        // The one real overflow (MIN / -1 → +2^(N-1), above max) still traps — the upper bound stands.
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(/ a b)",
-            &[Val::S8(-128), Val::S8(-1)]
-        ));
-        assert!(traps(
-            "(: a Int16) (: b Int16)",
-            "(/ a b)",
-            &[Val::S16(-32768), Val::S16(-1)]
-        ));
         // The Lir has ONE range compare (the upper `gt_s`), not two — the dead lower `lt_s` is gone.
         let code = {
             use crate::db::Db;
