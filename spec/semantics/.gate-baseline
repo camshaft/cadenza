@@ -7994,3 +7994,5 @@ todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)
+pass	xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload
