@@ -8995,3 +8995,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a diamond peer graph shares one provider across two middle peers
+pass	reclaim across a nested-compound projection from a peer result
