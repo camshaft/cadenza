@@ -60125,47 +60125,25 @@ mod stage1 {
 
         // FLAT: two flips on a `*` spine, multi-shot arm → the 4-path cross-product sum folds.
         // (2*2)+(2*3)+(3*2)+(3*3) = 4+6+6+9 = 25.
-        let flat = "(do (effect Amb (op flip (-> Unit Int64))) \
-             (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) \
-               (* (Amb.flip) (Amb.flip)))) (export main))";
-        let flat_bytes = compile_component(&crate::codec::encode(&parse(flat)))
-            .expect("a flat multi-shot arm with two performs folds (the 4-path cross-product)");
-        // run_returns (not if-let-Some(run_linked)) so the value assert ALWAYS runs + is typed
-        // (github-liaison #2243 review: the if-let form silently skips the check if the runtime is absent).
-        assert_eq!(
-            run_returns::<i64>(&flat_bytes, "main"),
-            25,
-            "flat multi-shot cross-product: (2*2)+(2*3)+(3*2)+(3*3) = 25"
-        );
+        // FLAT (the fold value) is migrated to the corpus: 14-effects "a flat multi-shot arm with two
+        // performs on a strict spine folds the cross-product" (= 25). This rcdzc test keeps ONLY the
+        // white-box RECURSIVE-face decline check (no wasmtime).
 
         // RECURSIVE: the SAME multi-shot arm but the performs are inside a self-recursive loop. Today this
-        // declines cleanly; a future fold (a recursive multi-shot refold) must equal the SAME 25. Reasoning:
-        // `(loop 0)` = 1, so `(loop 2)` = `(* flipA (* flipB 1))`; the `* 1` is IDENTITY, so this is
-        // STRUCTURALLY `(* flipA flipB)` — the identical 2-flip shape as the flat case → the same 4-path
-        // cross-product (2·2)+(2·3)+(3·2)+(3·3) = 25. (NB: `(loop 1)` as a STANDALONE program totals 2+3=5, its
-        // continuation being a bare `* 1`; but nested UNDER flipA that `* 1` collapses, so `(loop 2)` matches
-        // the flat product — github-liaison #2245 flagged the earlier "returns 1" gloss.)
+        // declines cleanly (a recursive 2^n-path refold is a later increment). If a future increment folds
+        // it, the value MUST equal the flat cross-product 25 (`(loop 2)` = `(* flipA (* flipB 1))`, the `* 1`
+        // collapsing to `(* flipA flipB)`) — pinned by the corpus flat case above; here we only guard the
+        // current CLEAN (uncoded) decline, never a coded rejection or crash.
         let rec = "(do (effect Amb (op flip (-> Unit Int64))) \
              (def (loop (: n Int64)) (if (= n 0) 1 (* (Amb.flip) (loop (- n 1))))) \
              (def (main) (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) (loop 2))) (export main))";
-        match compile_component(&crate::codec::encode(&parse(rec))) {
-            // Clean decline is the current, EXPECTED behavior — assert it is UNCODED (a recursive multi-shot
-            // refold is a later increment), NOT masked by a bare `_` (github-liaison #2243: a coded-rejection
-            // regression must fail loudly, not pass via Err(_)).
-            Err(e) => assert!(
-                e.code.is_none(),
-                "the recursive multi-shot face must decline CLEANLY (uncoded) — a coded rejection is a different regression: {:?}",
-                e.code
-            ),
-            // If a future recursive-multi-shot-refold increment folds it, the value MUST be 25 (same
-            // cross-product as flat — `(loop 2)` = `(* flipA (* flipB 1))`, the `* 1` collapsing to
-            // `(* flipA flipB)`), never a wrong value.
-            Ok(bytes) => assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                25,
-                "if the recursive multi-shot ever folds it must equal the flat cross-product 25, never miscompile"
-            ),
-        }
+        let e = compile_component(&crate::codec::encode(&parse(rec)))
+            .expect_err("the recursive multi-shot face declines cleanly (not yet reducible)");
+        assert!(
+            e.code.is_none(),
+            "the recursive multi-shot face must decline CLEANLY (uncoded) — a coded rejection is a different regression: {:?}",
+            e.code
+        );
     }
 
     #[test]

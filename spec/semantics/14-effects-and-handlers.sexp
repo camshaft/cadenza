@@ -972,6 +972,33 @@
             (def (main) (outer (fn (u) (R.roll)))) (export main)))
   (output (: 5 Int64)))
 
+(case "an apply-site-homed lambda's perform result composes in the caller's arithmetic"
+  (doc    "The apply-site-homing case above pins the bare homed value; this pins that the homed lambda's
+           perform result is a FIRST-CLASS value the caller composes with. `with-seed` applies its `body`
+           param under `handle Rand` and adds 100 to the result — `(+ (body unit) 100)`; `main` passes
+           `(fn (u) (Rand.roll))`, whose `Rand.roll` is homed at the apply site and resumes the seed 5, so
+           the caller computes 5 + 100 = 105. (The bare-value form is pinned above; this adds the
+           result-composition face.)")
+  (input  (do
+            (effect Rand (op roll (-> Unit Int64)))
+            (def (with-seed (: body (-> Unit Int64)))
+              (handle Rand 5 ((roll (u) s (resume s s))) (+ (body unit) 100)))
+            (def (main) (with-seed (fn (u) (Rand.roll)))) (export main)))
+  (output (: 105 Int64)))
+
+(case "a transitively-homed lambda's perform result composes in the pass-through caller"
+  (doc    "The transitive-homing companion of the result-composition case: through a PASS-THROUGH
+           (`outer(b) = inner(b)`, `inner(b) = handle R … (+ (b unit) 100)`), the homed lambda's perform
+           result flows into the caller's `+ 100`. `main` passes `(fn (u) (R.roll))`; the homed `R.roll`
+           resumes seed 5, so 5 + 100 = 105. Pins that transitive apply-site homing yields a first-class
+           value the pass-through caller composes with, not just a bare result.")
+  (input  (do
+            (effect R (op roll (-> Unit Int64)))
+            (def (inner (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (+ (b unit) 100)))
+            (def (outer (: b (-> Unit Int64))) (inner b))
+            (def (main) (outer (fn (u) (R.roll)))) (export main)))
+  (output (: 105 Int64)))
+
 (case "a performing closure called TWICE observes the state advance between its calls"
   (doc    "The state-threading face of the performing closure (the homing pins above call the closure
            once): `f = (fn (u) (Ctr.next unit))` is let-bound under the handler and applied TWICE in one
@@ -7371,6 +7398,19 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (if (< (Amb.flip) 5) 100 2))) (export main)))
   (output (: 10000 Int64)))
+
+(case "a flat multi-shot arm with two performs on a strict spine folds the cross-product"
+  (doc    "A MULTI-SHOT arm resumes TWICE and SUMS its two continuations — `(flip (u) s (+ (resume 2 s)
+           (resume 3 s)))` — over a body with TWO performs on a flat strict `*` spine `(* (Amb.flip)
+           (Amb.flip))`. Each flip forks into resume-2 and resume-3, so the two flips produce the 4-path
+           cross-product: (2*2)+(2*3)+(3*2)+(3*3) = 4+6+6+9 = 25. Pins the multi-shot refold on a flat
+           spine (the recursive-cycle face is a separate not-yet-reducible decline, kept as a white-box
+           rcdzc test).")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ (resume 2 s) (resume 3 s)))) (* (Amb.flip) (Amb.flip)))) (export main)))
+  (output (: 25 Int64)))
 
 (case "a handler distributes into a match on a pure scrutinee whose selected arm performs"
   (doc    "Handler distribution over a `match` whose SCRUTINEE is pure and whose selected ARM performs (the
