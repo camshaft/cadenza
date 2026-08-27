@@ -8935,3 +8935,28 @@
     (export main)))
   (call main (: (list 4 5 6) (List Int64)))
   (output (: 6 Int64)))
+
+; -- breaker batch 486 (2026-08-27): the scalar entry-param matrix completed. Bool, UInt64, and
+; the narrow widths (Int8/Int16, sign-extending correctly) all cross the boundary; Char declines
+; with an honest precise message (names the type, lists what crosses, notes an annotation cannot
+; fix it) — the Char family's param-side rung, joining the char-walk/ckr1 runtime declines.
+
+(case "spx1 a Bool entry param selects a branch"
+  (input (do (def (main (: b Bool)) (if b 7 3)) (export main)))
+  (call main (: true Bool))
+  (output (: 7 Int64)))
+
+(case "spx2 a Char entry param declines pending a boundary representation"
+  (input (do (def (main (: c Char)) (Char.to-int c)) (export main)))
+  (call main (: #\a Char))
+  (output (: 97 Int64)))
+
+(case "spx3 a UInt64 entry param increments in its own width"
+  (input (do (def (main (: u UInt64)) (: (+ u 1) UInt64)) (export main)))
+  (call main (: 5 UInt64))
+  (output (: 6 UInt64)))
+
+(case "spx4 Int8 and Int16 entry params sign-extend and sum"
+  (input (do (def (main (: a Int8) (: b Int16)) (+ (Int64.of a) (Int64.of b))) (export main)))
+  (call main (: -5 Int8) (: 300 Int16))
+  (output (: 295 Int64)))
