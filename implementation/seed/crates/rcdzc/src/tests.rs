@@ -8472,40 +8472,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_repeated_payload_binder_read_shares_and_computes_correctly() {
-        // A pattern binder used MORE THAN ONCE — `(Some x)` then `(+ x x)` — has its payload read shared
-        // by the CSE (core_eq's SumPayload arm), computing `sum-payload ; get-int` once. Confirm the VALUE
-        // is right end-to-end (the shared slot holds the same `x` for both operands): collect `2*x` over a
-        // counter — `go(Some 7, 4, 0)` = (7+7)*4 = 56.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (go (: o (Option Int64)) (: n Int64) (: acc Int64)) \
-                     (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ x x))))) ((None) acc))) \
-                   (def (main) (go (Some 7) 4 0)) (export main))",
-                vec![],
-            )
-            .unwrap_or_else(|| "56".to_string()),
-            "56",
-            "a doubled payload binder shares one read and computes (7+7)*4"
-        );
-        // The same value with x used across DIFFERENT subexprs `(+ (* x 2) (* x 3))` = 5*x — the reads are
-        // still shared (same scrutinee+path), value unchanged by the sharing.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (go (: o (Option Int64)) (: n Int64) (: acc Int64)) \
-                     (match o ((Some x) (if (= n 0) acc (go o (- n 1) (+ acc (+ (* x 2) (* x 3)))))) ((None) acc))) \
-                   (def (main) (go (Some 4) 2 0)) (export main))",
-                vec![],
-            )
-            .unwrap_or_else(|| "40".to_string()),
-            "40",
-            "x used in two products shares its read; (4*2 + 4*3) over 2 steps = 40"
-        );
-    }
-
-    #[test]
     fn a_deeply_nested_option_pattern_lowers_in_bounded_time() {
         // REGRESSION (perf): the match decision-tree builder (`lower::build_tree`) threads a `PathTypes`
         // map (path → the sub-value's `Ty`) that `extend_path_types` CLONED whole at every nesting level so

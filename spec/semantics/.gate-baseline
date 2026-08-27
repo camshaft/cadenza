@@ -1995,6 +1995,7 @@ pass	a double same-dimension annotation preserves the original scale
 pass	a double-negated condition unwinds to the original selection
 pass	a double-negated float compare unwinds to the compare, preserving NaN-false
 pass	a double-nominal narrow newtype (newtype of a newtype of UInt8) boxed in a list refines by value
+pass	a doubled payload binder shares one read across a counter fold
 pass	a doubling add computes in range and traps on overflow like the general add
 pass	a doubly-call-returned narrow newtype spills correctly through two calls
 pass	a doubly-nested strength-reduced multiply chains shift into shift
@@ -3164,6 +3165,7 @@ pass	a pass-through parameter re-passed unchanged across a tail loop is not corr
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
+pass	a payload binder read in two different subexpressions shares its read
 pass	a payload op arg feeds BOTH the resume value and the next-state through DIFFERENT operators, dispatched twice
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
@@ -6514,6 +6516,9 @@ pass	identical PURE reads of a perform-built list — safe to share, values agre
 pass	identical PURE subterms around distinct performs — pure sharing must not merge dispatches
 pass	identical negative zeros nested in a tuple compare equal
 pass	identically-built ropes on both sides of a nested compare are equal (control)
+pass	ieh1 an immortal 33-element list as handler STATE threads unchanged across three resumes (runtime-indexed reads)
+pass	ieh2 an immortal 33-element list as an op ARGUMENT crosses the dispatch seam (runtime-indexed read in the handler; miss cell via the small twin)
+pass	ieh3 MIXED handler state (mortal counter + immortal list in a tuple) advances the counter and re-threads the immortal across resumes
 pass	if1 Float64.Infinity minus itself is NaN (canonical-byte equal to nan)
 pass	if1 a WHOLE nested handle expression as an IF's CONDITION beside outer draws
 pass	if2 one divided by Float64.Infinity is exactly zero
@@ -8713,6 +8718,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	ieh1 an immortal 33-element list as handler STATE threads unchanged across three resumes (runtime-indexed reads)
-pass	ieh2 an immortal 33-element list as an op ARGUMENT crosses the dispatch seam (runtime-indexed read in the handler; miss cell via the small twin)
-pass	ieh3 MIXED handler state (mortal counter + immortal list in a tuple) advances the counter and re-threads the immortal across resumes
