@@ -6338,6 +6338,9 @@ pass	lhv4 a list of tuples of different arity is malformed (CDZ0201)
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
 pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
+pass	lif1 List.len of an if whose both arms are owned producers reclaims (join = Owned)
+pass	lif2 a mixed owned/borrowed if-arm does not free the borrowed param under a sibling read (join = Borrowed)
+pass	lif3 5000 borrowed-arm if paths do not double-free the param (no trap/drift)
 pass	list concatenation is associative by content
 pass	list ordering recurses into string elements by content across mixed reps
 pass	lists are equal by elements in order

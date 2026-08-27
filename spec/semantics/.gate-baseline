@@ -5602,6 +5602,8 @@ pass	breaker holsubst: a free occurrence beside a shadow substitutes selectively
 pass	breaker holsubst: a shadowing binder blocks substitution
 pass	breaker holsubst: the naive subst's documented capture hazard
 pass	breaker specsubst: GEN of refl then SPEC substitutes the bound var throughout the body
+pass	bri1 a constant BigInt (2^65) re-evaluated across fifty frames reclaims to zero (numeric heap constants build per-eval — not in the build-once family)
+pass	bri2 a constant Rational compared against fifty runtime-built rationals reclaims to zero
 pass	brk1 TYPED-BRACKET matching — opens push their code, a close must match the TOP of the expected stack (LIFO discipline), a wrong-type close flips the sticky invalid; the seed orders the closes right or wrong
 pass	brw1 a BREW fermenter with a stuck-fermentation rescue — each day the gravity drops by the yeast health floored at ten (an inline min), a drop under three counts as STUCK earning a four-point yeast boost and a seven-hundred alarm with the standing gravity, a healthy day answers gravity and the yeast's low digit, pitching adds yeast, the read packs all three, and the weak seed sticks on DAY ONE (rescuing early) while the strong one ferments clean until the floor
 pass	bs1 a BOOL toggle state — four draws alternate true/false from an input-dependent seed
@@ -6683,6 +6685,9 @@ pass	lhv4 a list of tuples of different arity is malformed (CDZ0201)
 pass	li1 draws choose BOTH the List.update target and the List.at read index — the collection edit follows the thread
 pass	li2 a list BUILT from pushed draws then read at a draw-picked index — construction and consumption share one thread
 pass	li3 draw PARITY picks prepend vs push while building — the final shape encodes the whole draw sequence
+pass	lif1 List.len of an if whose both arms are owned producers reclaims (join = Owned)
+pass	lif2 a mixed owned/borrowed if-arm does not free the borrowed param under a sibling read (join = Borrowed)
+pass	lif3 5000 borrowed-arm if paths do not double-free the param (no trap/drift)
 pass	list concatenation is associative by content
 pass	list ordering recurses into string elements by content across mixed reps
 pass	lists are equal by elements in order
@@ -8766,5 +8771,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	bri1 a constant BigInt (2^65) re-evaluated across fifty frames reclaims to zero (numeric heap constants build per-eval — not in the build-once family)
-pass	bri2 a constant Rational compared against fifty runtime-built rationals reclaims to zero

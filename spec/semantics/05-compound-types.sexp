@@ -22268,3 +22268,31 @@
              (def (main) (drive 0 5000 0)) (export main)))
   (call main) (output (: 30000 Int64))
   (live-objects 0))
+
+; -- List.len over an if reclaims when both arms own but not when an arm borrows (migrated from rcdzc
+; list_len_over_an_if_reclaims_when_both_arms_own_but_not_when_an_arm_borrows): the control-flow-join face
+; of owned-operand reclaim — List.len of an if is Owned iff EVERY arm is a fresh owned temporary (so the
+; single post-borrow drop is correct on all paths), else Borrowed (leak-safe, never double-free).
+(case "lif1 List.len of an if whose both arms are owned producers reclaims (join = Owned)"
+  (doc    "Both arms build a fresh 4-element list (push / concat), so the join is Owned and List.len drops
+           it after the borrow: g(0)=4 + g(1)=4 = 8, live-objects 0 (reclaimed on both paths).")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: b Int64)) ((. List len) (if (= b 0) ((. List push) (build 0 3 (list)) 9) ((. List concat) (build 0 2 (list)) (build 0 2 (list))))))
+             (def (main) (+ (g 0) (g 1))) (export main)))
+  (call main) (output (: 8 Int64)) (live-objects 0))
+
+(case "lif2 a mixed owned/borrowed if-arm does not free the borrowed param under a sibling read (join = Borrowed)"
+  (doc    "THEN owns (List.push xs), ELSE borrows the param xs, with a sibling `List.len xs` after the if:
+           the join must be Borrowed so the if-result drop does NOT free xs on the else path.
+           g(_,0)=len(xs)+len(xs)=3+3=6; g(_,1)=len(push xs)+len(xs)=4+3=7; total 13, no double-free.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: xs (List Int64)) (: b Int64)) (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs)))
+             (def (main) (+ (g (build 0 3 (list)) 0) (g (build 0 3 (list)) 1))) (export main)))
+  (call main) (output (: 13 Int64)))
+
+(case "lif3 5000 borrowed-arm if paths do not double-free the param (no trap/drift)"
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: xs (List Int64)) (: b Int64)) (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs)))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 (list)) 0))) tot))
+             (def (main) (drive 0 5000 0)) (export main)))
+  (call main) (output (: 30000 Int64)) (live-objects 0))

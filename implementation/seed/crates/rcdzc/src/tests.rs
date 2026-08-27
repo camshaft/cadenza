@@ -19536,64 +19536,6 @@ mod match_engine {
     }
 
     #[test]
-    fn list_len_over_an_if_reclaims_when_both_arms_own_but_not_when_an_arm_borrows() {
-        // The CONTROL-FLOW JOIN face of the owned-operand reclaim (`join_arm_ownership` in
-        // `heap_operand_ownership`): when a borrowing op's operand is an `if`, its ownership is the JOIN of
-        // the arms — Owned iff EVERY arm is provably a fresh owned temporary (so the single post-borrow drop
-        // is correct on all paths), else Borrowed (leak-safe: a false-borrowed only leaks, never double-frees
-        // a borrowed arm's value under its owner). Pins BOTH faces so a future classifier change can't
-        // silently regress the join into an unsound drop.
-        //
-        // (a) BOTH arms owned producers (List.push / List.concat): the join is Owned, so `List.len (if …)`
-        // reclaims — it must import `drop`.
-        let both_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: b Int64)) ((. List len) (if (= b 0) \
-                   ((. List push) (build 0 3 (list)) 9) \
-                   ((. List concat) (build 0 2 (list)) (build 0 2 (list)))))) \
-               (def (main) (+ (g 0) (g 1))) (export main))";
-        assert!(
-            component_imports_op(&component(both_owned), "drop"),
-            "List.len of an if whose BOTH arms are owned producers must reclaim (join = Owned → drop)"
-        );
-        if let Some(out) = run_on_heap(both_owned) {
-            assert_eq!(
-                out, "8",
-                "both owned arms yield a 4-elem list each → len 4 + 4 = 8"
-            );
-        }
-        // (b) MIXED arm: THEN an owned-temp `List.push xs`, ELSE the BORROWED param `xs`, with a SIBLING
-        // `List.len xs` read after the if. The join MUST be Borrowed — dropping the if-result would free the
-        // param `xs` on the else path while the sibling still reads it (a UAF/double-free). Value must be
-        // exact, no trap: g(_,0) = len(xs)+len(xs) = 3+3 = 6; g(_,1) = len(push xs)+len(xs) = 4+3 = 7.
-        let mixed = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: xs (List Int64)) (: b Int64)) \
-                   (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs))) \
-               (def (main) (+ (g (build 0 3 (list)) 0) (g (build 0 3 (list)) 1))) (export main))";
-        if let Some(out) = run_on_heap(mixed) {
-            assert_eq!(
-                out, "13",
-                "a mixed owned/borrowed if-arm must NOT free the borrowed param under its sibling read \
-                 (join = Borrowed): g(_,0)=6 + g(_,1)=7 = 13, no double-free"
-            );
-        }
-        // Stress the mixed (borrowed-arm) path 5000× — a double-free of the param would trap, a leak drift.
-        let mixed_stress = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (g (: xs (List Int64)) (: b Int64)) \
-                   (+ ((. List len) (if (= b 0) xs ((. List push) xs 99))) ((. List len) xs))) \
-               (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (build 0 3 (list)) 0))) tot)) \
-               (def (main) (drive 0 5000 0)) (export main))";
-        if let Some(out) = run_on_heap(mixed_stress) {
-            assert_eq!(
-                out, "30000",
-                "5000× the borrowed-arm path (3+3=6 each) must not double-free the param (no trap/drift)"
-            );
-        }
-    }
-
-    #[test]
     fn set_contains_and_map_lookup_over_an_owned_temporary_reclaim_the_collection() {
         // The last READ-op faces: `Set.contains`/`Map.lookup` over an owned-temporary collection must
         // reclaim it. WARNING: Map.lookup is DELICATE — the looked-up value is borrowed from the map and dup'd in
