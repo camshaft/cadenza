@@ -8860,3 +8860,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a Bool annotation on a Bool value is transparent
+pass	an annotation whose type is a reduced (Int 64) constructor grounds the value
