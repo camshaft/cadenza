@@ -50,3 +50,24 @@ runs:
         purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
         purge-created: 0
         purge-primary-key: never
+    # Restore ROOT ownership of the nix DB after the cache restore, then reconnect the daemon. The
+    # cache-nix-action chowns /nix/var/nix/db to `runner` (for its own restore/save). On the GitHub
+    # ubuntu-24.04 image bump (20260816 -> 20260823, Aug 2026) the ROOT nix-daemon then REFUSES to (re)start
+    # over a runner-owned DB ("systemctl restart nix-daemon.service: Job failed" — v-nix co-verified), so the
+    # first nix command in every cache-restoring job hit "cannot open connection to remote store daemon:
+    # Connection reset by peer" (fleet-wide non-hermetic red; the cache-action SHA + nix-installer were
+    # IDENTICAL green-vs-red — only the runner image changed). Chowning the DB back to root:root lets the
+    # daemon own its DB and restart cleanly; `nix store ping` fail-fasts if it still can't; journalctl on a
+    # restart failure surfaces WHY. NOTE the SAVE step (main only) re-chowns to runner for its own write, so
+    # this build-phase root ownership does not persist across the save. Linux-only (every consumer is
+    # ubuntu-latest / ubuntu-24.04-arm); RUNNER_OS-guarded so a non-Linux adopter no-ops.
+    - name: reconnect nix-daemon after store-cache restore
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo chown -R root:root /nix/var/nix/db || true
+          sudo systemctl restart nix-daemon.socket nix-daemon.service \
+            || sudo systemctl restart nix-daemon \
+            || { echo "nix-daemon restart FAILED — journalctl:"; sudo journalctl -xeu nix-daemon --no-pager | tail -40 || true; }
+        fi
+        nix store ping
