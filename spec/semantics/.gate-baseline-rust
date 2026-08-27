@@ -2731,6 +2731,7 @@ pass	a mutual-recursion pair where each side performs against its OWN handler (t
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
+pass	a mutually-recursive decoder infers its params from the call site and emits valid wasm
 pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive even/odd guard computes correctly (the call-branch is not rewritten)
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes

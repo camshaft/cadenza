@@ -22936,34 +22936,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_mutually_recursive_decoder_infers_and_emits_valid_wasm() {
-        // Two fixes compose here: (1) TRANSITIVE call-site inference — `dn`'s param `b` (a `(List Int64)`)
-        // is decided only via `main → top → dn` / `dac → dn`, threaded through the pass-through param by
-        // seeding `dac`/`top`'s params from THEIR call sites; (2) an EMIT scratch-floor fix — `SumExpect`
-        // (Option.expect) reserves its handle slot ABOVE `*high`, and `Core::Tuple`/`ListNew` advance each
-        // element's scratch base past the prior element's high-water, so an i32 heap handle never re-types
-        // an i64 slot a sibling element uses (`(tuple (AInt (expect …)) (+ i 1))` clashed before →
-        // `expected i64, found i32`). The decoder normalizes `(list 42 7)` → `(AInt 42)`, matched to 42.
-        let Some(v) = run_heap_value(
-            "(module m (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
-               (def (dn b i) (if (= i 0) (tuple (AInt ((. Option expect) ((. List at) b 0) \"in range\")) (+ i 1)) \
-                                         (tuple (AList (dac b i (- i 1) (list))) (+ i 1)))) \
-               (def (dac b i n acc) (if (< n 1) acc \
-                   (match (dn b i) ((tuple child nx) (dac b nx (- n 1) ((. List push) acc child)))))) \
-               (def (top b) (match (dn b 0) ((tuple ast pos) ast))) \
-               (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping mutually-recursive decoder run");
-            return;
-        };
-        assert_eq!(
-            v, "42",
-            "the decoder normalizes (list 42 7) to (AInt 42) → 42"
-        );
-    }
-
-    #[test]
     fn many_pass_through_defs_each_infer_their_param_via_the_call_site_index() {
         // Call-site inference (`call_site_arg_types`) seeds an open param from a caller's argument — it
         // needs "every call of this def", which it now reads from a CALL-SITE INDEX built once, not by

@@ -1336,6 +1336,26 @@
   (output (: 6 Int64))
   (live-objects known-leak 6))
 
+(case "a mutually-recursive decoder infers its params from the call site and emits valid wasm"
+  (doc    "Composes two fixes: (1) TRANSITIVE call-site inference — `dn`'s param `b` (`(List Int64)`) is
+           decided only via `main → top → dn` / `dac → dn`, threaded through the pass-through params by
+           seeding `dac`/`top` from THEIR call sites; (2) an EMIT scratch-floor — a `SumExpect`
+           (Option.expect) handle slot reserved above the running high-water and each `tuple` element's
+           scratch advanced past the prior element's, so an i32 heap handle never re-types an i64 slot a
+           sibling element uses (`(tuple (AInt (expect …)) (+ i 1))` clashed → 'expected i64, found i32').
+           The decoder normalizes `(list 42 7)` → `(AInt 42)`, matched to 42.")
+  (input  (do
+            (type Ast (AInt Int64) ALeaf (AList (List Ast)))
+            (def (dn b i) (if (= i 0) (tuple (AInt (Option.expect (List.at b 0) "in range")) (+ i 1))
+                                      (tuple (AList (dac b i (- i 1) (list))) (+ i 1))))
+            (def (dac b i n acc) (if (< n 1) acc
+                (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child))))))
+            (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
+            (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1)))
+            (export main)))
+  (output (: 42 Int64))
+  (live-objects known-leak 2))
+
 (case "a recursive fold with an unannotated two-argument callback parameter"
   (doc    "The callback takes TWO arguments — `(fn (a b) (+ a b))` — and `fold` threads an accumulator:
            `(fold f (f acc h) t)`. `f` infers `(-> Int64 (-> Int64 Int64))` from the two-argument
