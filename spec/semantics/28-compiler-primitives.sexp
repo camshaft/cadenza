@@ -2214,3 +2214,20 @@
            did not over-decline on constant lists.")
   (input (do (def (main) (List.len (list 1 2 3))) (export main)))
   (output (: 3 Int64)))
+
+; -- select-ification trap parity (behavioral half migrated from rcdzc a_possibly_trapping_if_arm_is_not_select_ified,
+; 2026-08-27; the white-box Lir If-vs-Select inspection stays a wasmtime-free rcdzc unit test): a wasm
+; `select` evaluates BOTH arms, so an `if` with a possibly-trapping arm must NOT select-ify — it must
+; evaluate only the taken arm. This is the observable half: the untaken trapping arm does not trap.
+
+(case "a possibly-trapping if arm evaluates only the taken branch (no eager trap on the untaken arm)"
+  (doc    "A wasm `select` evaluates BOTH arms unconditionally, so an `if` whose arm contains a trapping
+           op — a checked `(/ a b)` — must stay an `if` that evaluates only the taken arm. c=true,b=4 →
+           20/4=5; c=false,b=0 → 20 (the untaken `(/ a 0)` is NOT evaluated, so no trap); c=true,b=0 →
+           the TAKEN `(/ a 0)` divides by zero and traps.")
+  (input (do
+    (def (main (: c Bool) (: a Int64) (: b Int64)) (if c (/ a b) a))
+    (export main)))
+  (call main (: true Bool) (: 20 Int64) (: 4 Int64)) (output (: 5 Int64))
+  (call main (: false Bool) (: 20 Int64) (: 0 Int64)) (output (: 20 Int64))
+  (call main (: true Bool) (: 20 Int64) (: 0 Int64)) (trap "divide by zero"))
