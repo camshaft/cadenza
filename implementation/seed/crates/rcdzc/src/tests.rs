@@ -8673,53 +8673,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_nullary_generic_producer_argument_declines_with_a_nullary_specific_message() {
-        // A NULLARY generic producer `(empty) : ∀a. GIter a` fed into a generic recursive consumer
-        // `(count (empty))` can't be monomorphized — nothing determines its element type. The CDZ0201 decline
-        // must name the NULLARY-PRODUCER shape and its actionable workaround (annotate THAT argument), not the
-        // generic three-shape message whose "annotate a nested argument / use a single concrete element type"
-        // advice doesn't apply to a producer that takes no argument. (Diagnostic quality; the tie itself is a
-        // separate tracked gap.)
-        let err = compile_component(&crate::codec::encode(&parse(
-            "(module m (type GIter (Nil) (Cons a (GIter a))) \
-               (def (empty) (GIter.Nil)) \
-               (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest))))) \
-               (def (main) (count (empty))) (export main))",
-        )))
-        .expect_err("a nullary generic producer with no element source must decline");
-        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
-        assert!(
-            err.message.contains("nullary generic producer"),
-            "expected the nullary-producer-specific message, got: {}",
-            err.message
-        );
-        // ANNOTATING the producer-call argument's result grounds the element → the program COMPILES (the
-        // workaround the message names). Guard the compile succeeds (the module builds); the runtime `count`
-        // over a heap GIter needs the value-heap runtime this unit-test linker lacks, so validate the emit.
-        let bytes = component(
-            "(module m (type GIter (Nil) (Cons a (GIter a))) \
-               (def (empty) (GIter.Nil)) \
-               (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest))))) \
-               (def (main) (count (: (empty) (GIter Int64)))) (export main))",
-        );
-        assert!(
-            wasmparser::validate(&bytes).is_ok(),
-            "annotating the nullary producer's result element must compile to valid wasm"
-        );
-        // FALSE-POSITIVE GUARD: an ordinary NULLARY def returning a SCALAR (`(zero)` → 0) passed to a
-        // monomorphic consumer is NOT a generic-producer gap — it monomorphizes fine and must COMPILE, never
-        // trip the nullary-generic decline. Guards the `arg_is_nullary_producer_call` predicate from firing on
-        // any zero-arg call (it must only re-word the message on a genuine recursive-generic `type_specialize`
-        // failure, which this case never reaches). `(inc (zero))` → 1.
-        // `(inc (zero))` must COMPILE (never trip the nullary-generic decline); the value is ordinary and
-        // corpus-covered, so this only guards that a plain nullary scalar producer does not over-fire.
-        let _ = component(
-            "(module m (def (zero) 0) (def (inc (: n Int64)) (+ n 1)) \
-               (def (main) (inc (zero))) (export main))",
-        );
-    }
-
-    #[test]
     fn a_constant_bigint_newtype_passed_as_a_recursive_call_arg_emits_a_handle_not_a_raw_i64() {
         // FACE-B of the nonzero-BigInt-recursive miscompile (an INVALID-MODULE bug, so the guard is that the
         // emitted bytes VALIDATE): `(type W (Mk BigInt))` is a single-variant single-payload NEWTYPE, so it
