@@ -3189,6 +3189,9 @@ pass	a payload op arg feeds BOTH the resume value and the next-state through DIF
 pass	a payload sum type declared inside a do block resolves and matches its payload
 pass	a payload-in-payload nested list pattern dispatches through two recorded types
 pass	a peephole rewrite rule reads in the shape of the code it rewrites
+pass	a peer missing a bound op is rejected naming the op
+pass	a peer op arity mismatch is rejected at compose time, not a trap
+pass	a peer op type mismatch is rejected at compose time (same arity, different type)
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a per-element perform in a cross-function fold threads to a read-out in the base case
@@ -5532,6 +5535,13 @@ pass	b63a a UInt64 logical right shift by one halves the value
 pass	b63b a nonneg UInt64 logical shift satisfies the >= 0 tautology
 pass	b63c a mask covering the 2^63-1 range of a UInt64 >> 1 is a no-op
 pass	ba1 an EMPTY Bytes arg crosses the wasm host boundary
+pass	bar1 Bytes.at over an owned-temporary Bytes.concat result reclaims it
+pass	bar2 a borrowed bytes read by Bytes.at AND Bytes.len is not freed early
+pass	bar3 Bytes.at over an owned-temporary Bytes.slice result reclaims the slice
+pass	bar4 5000x Bytes.at over an owned-temporary Bytes.slice each reclaims (no leak drift)
+pass	bar5 Bytes.at over an owned-temporary Bytes.compact result reclaims it
+pass	bar6 Bytes.at over an owned-temporary String.to-bytes result reclaims it
+pass	bar7 5000x Bytes.at over an owned-temporary Bytes.compact each reclaims (no leak drift)
 pass	bare patterns on a CONCRETELY-exported type stay legal for importers
 pass	bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition
 pass	bc1 a comparison of a draw feeds a BOOL-taking op whose arm NEGATES the state — the bool crosses the dispatch boundary
@@ -5899,6 +5909,7 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
+pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak
 pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
@@ -8791,6 +8802,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a peer op arity mismatch is rejected at compose time, not a trap
-pass	a peer op type mismatch is rejected at compose time (same arity, different type)
-pass	a peer missing a bound op is rejected naming the op

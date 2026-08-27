@@ -386,6 +386,100 @@
   (output (: 210 Int64))
   (live-objects known-leak 4))
 
+; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
+; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
+; — CONSUMES its operand and returns a FRESH owned Bytes leaf, so a borrowing `Bytes.at` (bytes-len + bytes-get,
+; the read byte is a COPIED i32) over one is an owned temporary that must be dropped after the borrow or it
+; leaks a leaf per read. A constant `Bytes.of`/`b"…"` folds away (no runtime handle), so `build` threads the
+; bytes through recursion to make a genuine runtime rope. The value is unchanged by the reclaim; the stress
+; loops detect a leak (drift/OOM) or double-free (trap). (The rcdzc tests asserted the reclaim via a
+; component_imports_op(...,'drop') module-shape check — subsumed here by the live-objects reclaim witness.)
+(case "bar1 Bytes.at over an owned-temporary Bytes.concat result reclaims it"
+  (doc    "`build` concats a fresh single byte 10 three times -> [10,10,10]; `(Bytes.at (build …) 1)` = Some 10,
+           the owned rope dropped after the borrowing at. Value 10; a leaked leaf would show live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10)))) acc))
+            (def (main) (Option.expect (Bytes.at (build 0 3 (Bytes.of (list))) 1) "v"))
+            (export main)))
+  (call   main) (output (: 10 Int64))
+  (live-objects 0))
+
+(case "bar2 a borrowed bytes read by Bytes.at AND Bytes.len is not freed early"
+  (doc    "`(let ((bs (build 0 3))) (+ (Option.expect (Bytes.at bs 1)) (Bytes.len bs)))` reads the borrowed
+           `bs` twice — the at must not free it under the still-live binding (else double-free). 10 + 3 = 13.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10)))) acc))
+            (def (main) (let ((bs (build 0 3 (Bytes.of (list)))))
+                          (+ (Option.expect (Bytes.at bs 1) "v") (Bytes.len bs))))
+            (export main)))
+  (call   main) (output (: 13 Int64))
+  (live-objects 0))
+
+(case "bar3 Bytes.at over an owned-temporary Bytes.slice result reclaims the slice"
+  (doc    "The slice rope-producer face: `build` -> [10,20,30]x3 (9 bytes); `(Bytes.slice … 1 3)` = window
+           [20,30,10]; `(Bytes.at that 1)` = 30, the owned slice dropped after the borrow. Value 30.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20 30)))) acc))
+            (def (main) (Option.expect
+                          (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))
+            (export main)))
+  (call   main) (output (: 30 Int64))
+  (live-objects 0))
+
+(case "bar4 5000x Bytes.at over an owned-temporary Bytes.slice each reclaims (no leak drift)"
+  (doc    "Leak/UAF stress: 5000x build+slice a fresh owned bytes and read byte 1 of the window (30). A leaked
+           slice leaf would OOM/drift; a double-free would trap. Sum = 150000.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20 30)))) acc))
+            (def (drive (: j Int64) (: m Int64) (: tot Int64))
+              (if (< j m) (drive (+ j 1) m (+ tot (Option.expect
+                  (Bytes.at (Option.expect (Bytes.slice (build 0 3 (Bytes.of (list))) 1 3) "s") 1) "v"))) tot))
+            (def (main) (drive 0 5000 0))
+            (export main)))
+  (call   main) (output (: 150000 Int64))
+  (live-objects 0))
+
+(case "bar5 Bytes.at over an owned-temporary Bytes.compact result reclaims it"
+  (doc    "The compact rope-producer face: `build` -> [10,20]x3 (6 bytes); `(Bytes.compact …)` flattens to a
+           fresh leaf; `(Bytes.at that 1)` = 20, the owned compact dropped after the borrow. Value 20.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20)))) acc))
+            (def (main) (Option.expect (Bytes.at (Bytes.compact (build 0 3 (Bytes.of (list)))) 1) "v"))
+            (export main)))
+  (call   main) (output (: 20 Int64))
+  (live-objects 0))
+
+(case "bar6 Bytes.at over an owned-temporary String.to-bytes result reclaims it"
+  (doc    "The String.to-bytes rope-producer face: `build` -> \"ababab\"; `(String.to-bytes …)` re-tags the
+           byte-rope out as a fresh flat Bytes; `(Bytes.at that 1)` = 98 ('b'), the owned bytes dropped after
+           the borrow. Value 98.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc String))
+              (if (< i n) (build (+ i 1) n (String.concat acc "ab")) acc))
+            (def (main) (Option.expect (Bytes.at (String.to-bytes (build 0 3 "")) 1) "v"))
+            (export main)))
+  (call   main) (output (: 98 Int64))
+  (live-objects 0))
+
+(case "bar7 5000x Bytes.at over an owned-temporary Bytes.compact each reclaims (no leak drift)"
+  (doc    "Leak stress for the compact face: 5000x build+compact a fresh owned bytes and read byte 1 (20). A
+           leaked leaf per call would OOM/drift. Sum = 100000.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (< i n) (build (+ i 1) n (Bytes.concat acc (Bytes.of (list 10 20)))) acc))
+            (def (drive (: j Int64) (: m Int64) (: tot Int64))
+              (if (< j m) (drive (+ j 1) m (+ tot (Option.expect
+                  (Bytes.at (Bytes.compact (build 0 3 (Bytes.of (list)))) 1) "v"))) tot))
+            (def (main) (drive 0 5000 0))
+            (export main)))
+  (call   main) (output (: 100000 Int64))
+  (live-objects 0))
+
 (case "String.from-bytes of a runtime slice decodes the WINDOW only"
   (doc    "The decode face: `String.from-bytes` over a runtime-start slice of (x,a,b,y) at a=1 must
            decode exactly the 2-byte window \"ab\" (byte-len 2) — not the parent's 4 bytes and not a
