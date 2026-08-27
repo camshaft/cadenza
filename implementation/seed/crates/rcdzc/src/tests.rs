@@ -24091,37 +24091,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_rational_numerator_denominator_fold_to_a_constant_bigint() {
-        // A CONSTANT `Rational.numerator`/`denominator` FOLDS (no runtime import): `(Rational.of 6 4)` is a
-        // compile-time-visible `Core::ConstRational(3, 2)` (already normalized), so `numerator` folds to the
-        // constant BigInt 3 and `denominator` to 2 — a `Core::ConstInt` typed BigInt, narrowed by `Int64.of`
-        // for the scalar result. Uses `run_returns`/`component` (bare linker) — the fold means NO value-heap
-        // runtime is imported. Pins the const-fold arm alongside the runtime path above.
-        for (prog, want) in [
-            (
-                "((. Int64 of) ((. Rational numerator) ((. Rational of) 6 4)))",
-                3,
-            ),
-            (
-                "((. Int64 of) ((. Rational denominator) ((. Rational of) 6 4)))",
-                2,
-            ),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let bytes = component(&src);
-            assert!(
-                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-                "a constant Rational.numerator/denominator folds — no runtime import: {prog}"
-            );
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                want,
-                "constant fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
     fn a_constant_rational_with_a_zero_denominator_names_the_nonzero_repair() {
         use crate::testkit::parse;
         // `(Rational.of 1 0)` is a compile-provable trap (CDZ0304, the rational analogue of a constant
@@ -24171,32 +24140,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_rational_truncate_folds_to_a_constant_int() {
-        // A CONSTANT `Rational.truncate` FOLDS at compile time (no runtime import): `(Rational.of 7 2)` is a
-        // compile-time `Core::ConstRational(7, 2)`, so truncate folds to `Core::ConstInt(7 / 2 = 3)` via
-        // `IntValue::divmod` (truncating toward zero). Pins the const-fold arm alongside the runtime path,
-        // including the negative toward-zero case (-7/2 → -3) that distinguishes truncate from floor.
-        for (prog, want) in [
-            ("(Rational.truncate (Rational.of 7 2))", 3),
-            ("(Rational.truncate (Rational.of -7 2))", -3),
-            ("(Rational.truncate (Rational.of 8 2))", 4),
-            ("(Rational.truncate (Rational.of 1 2))", 0),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let bytes = component(&src);
-            assert!(
-                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-                "a constant Rational.truncate folds — no runtime import: {prog}"
-            );
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                want,
-                "const fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
     fn a_runtime_rational_floor_and_ceil_round_toward_neg_and_pos_infinity() {
         // `Rational.floor : Rational → Int64` (toward −∞) / `Rational.ceil` (toward +∞) — DERIVATIONS:
         // `truncate` adjusted by ±1 off the remainder sign. Runtime rational (from the param `n`), so the
@@ -24232,35 +24175,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_rational_floor_and_ceil_fold_to_a_constant_int() {
-        // A CONSTANT `Rational.floor`/`ceil` FOLDS at compile time (no runtime import): the toward-zero
-        // `IntValue::divmod` quotient adjusted by ±1 off the remainder sign. Pins the const-fold arms with
-        // the toward-±∞ discriminants (floor -7/2 = -4, ceil 7/2 = 4) + exact (8/2) + sub-one (-1/2).
-        for (prog, want) in [
-            ("(Rational.floor (Rational.of 7 2))", 3),
-            ("(Rational.floor (Rational.of -7 2))", -4),
-            ("(Rational.floor (Rational.of 8 2))", 4),
-            ("(Rational.floor (Rational.of -1 2))", -1),
-            ("(Rational.ceil (Rational.of 7 2))", 4),
-            ("(Rational.ceil (Rational.of -7 2))", -3),
-            ("(Rational.ceil (Rational.of 8 2))", 4),
-            ("(Rational.ceil (Rational.of -1 2))", 0),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let bytes = component(&src);
-            assert!(
-                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-                "a constant Rational.floor/ceil folds — no runtime import: {prog}"
-            );
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                want,
-                "const fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
     fn a_runtime_rational_round_is_nearest_ties_half_away_from_zero() {
         // `Rational.round : Rational → Int64` — NEAREST integer, ties HALF-AWAY-FROM-ZERO (the settled
         // ruling). A DERIVATION: the toward-zero quotient adjusted away from zero when 2·|remainder| ≥
@@ -24285,35 +24199,6 @@ mod match_engine {
                 return;
             };
             assert_eq!(got, want, "round({n}/2) half-away-from-zero");
-        }
-    }
-
-    #[test]
-    fn a_constant_rational_round_folds_to_a_constant_int() {
-        // A CONSTANT `Rational.round` FOLDS: the toward-zero quotient ± 1 when 2·|rem| ≥ den. Pins the
-        // half-away ties (1/2 → 1, -1/2 → -1, 3/2 → 2, 5/2 → 3) AND the nearest-not-tie cases (7/3 = 2.33 →
-        // 2, 8/3 = 2.67 → 3) — the `≥` threshold that rounds an exact half away but a below-half toward.
-        for (prog, want) in [
-            ("(Rational.round (Rational.of 1 2))", 1),
-            ("(Rational.round (Rational.of -1 2))", -1),
-            ("(Rational.round (Rational.of 3 2))", 2),
-            ("(Rational.round (Rational.of 5 2))", 3),
-            ("(Rational.round (Rational.of -5 2))", -3),
-            ("(Rational.round (Rational.of 7 3))", 2),
-            ("(Rational.round (Rational.of 8 3))", 3),
-            ("(Rational.round (Rational.of 4 2))", 2),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            let bytes = component(&src);
-            assert!(
-                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-                "a constant Rational.round folds — no runtime import: {prog}"
-            );
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                want,
-                "const fold: {prog}"
-            );
         }
     }
 

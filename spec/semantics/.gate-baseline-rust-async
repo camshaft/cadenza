@@ -670,10 +670,15 @@ pass	a COMPOUND-inner single-variant newtype takes the heap escape and its inner
 pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
 pass	a CONDITIONALLY-recursive helper reaching a performer in one branch folds where no outer recursion needs the boundary guard
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
+pass	a CONST in-range rational ceil folds toward positive infinity with the remainder-sign adjustment
+pass	a CONST in-range rational floor folds toward negative infinity with the remainder-sign adjustment
 pass	a CONST in-range rational truncate still folds to its integer part, not over-rejected as overflow
 pass	a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap
 pass	a CONST rational ceil whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
 pass	a CONST rational floor whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
+pass	a CONST rational round above the half rounds up to the nearer integer
+pass	a CONST rational round below the half rounds down to the nearer integer
+pass	a CONST rational round folds an exact half away from zero
 pass	a CONST rational round whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
 pass	a CONST rational truncate whose integer part exceeds Int64 rejects CDZ0304 at the fold, not a span-less CDZ0302
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
@@ -3116,6 +3121,7 @@ pass	a rational truncates to its integer part toward zero, narrowed to Int64
 pass	a rational with near-Int64 numerator and denominator normalizes by gcd exactly
 pass	a rational with numerator and denominator both negative normalizes to positive
 pass	a rational with the Int64 minimum as denominator normalizes past the i64 sign-flip
+pass	a rational's denominator reads the reduced pair's positive denominator, folded from a constant
 pass	a rational's numerator and denominator are read as BigInt from the normalized pair
 pass	a rational's sign is normalized onto the numerator
 pass	a rational-magnitude quantity erases to its exact rational value

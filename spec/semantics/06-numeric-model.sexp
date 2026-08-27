@@ -201,6 +201,15 @@
   (call   main (: 6 Int64))
   (output (: 3 Int64)))
 
+; The DENOMINATOR read of the same normalized pair, as a COMPILE-TIME CONSTANT (no runtime param → the
+; `Rational.denominator` read folds). `(Rational.of 6 4)` normalizes to 3/2, so the denominator is 2 (the
+; REDUCED denominator, not 4). Pairs with the numerator read above (which pins numerator = 3): together they
+; witness both components of the reduced pair as scalars. `Rational.denominator` returning a scalar is
+; otherwise unwitnessed; this pins it on the const-fold path.
+(case "a rational's denominator reads the reduced pair's positive denominator, folded from a constant"
+  (input  (do (def (main) (Int64.of (Rational.denominator (Rational.of 6 4)))) (export main)))
+  (output (: 2 Int64)))
+
 ; `Rational.truncate : Rational → Int64` — the integer part of a rational TOWARD ZERO, narrowed to a fixed
 ; Int64 (unlike numerator/denominator which stay BigInt: the integer part is a single small value that must
 ; land in a fixed width to be useful — MIDI ticks, indices). It is NOT a new runtime op: it lowers as a
@@ -289,6 +298,34 @@
 ; forms with CDZ0304 — computes an in-range value cleanly). 7/2 truncates toward zero to 3.
 (case "a CONST in-range rational truncate still folds to its integer part, not over-rejected as overflow"
   (input  (do (def (main) (Rational.truncate (Rational.of 7 2))) (export main)))
+  (output (: 3 Int64)))
+
+; The floor/ceil/round in-range CONST-FOLD value companions of the truncate case above. Truncate has no
+; remainder-sign adjustment; floor/ceil/round each add a ±1 off the remainder, and that adjustment lives on
+; the CONST-FOLD path too (not just the runtime derivation the parameter cases pin). floor(-7/2) = -4 applies
+; the −1 (toward −∞, NOT truncate's -3); ceil(7/2) = 4 applies the +1 (toward +∞, NOT 3). Pins the const-fold
+; ±1 that a fold bug could get wrong only when the rational is a compile-time constant.
+(case "a CONST in-range rational floor folds toward negative infinity with the remainder-sign adjustment"
+  (input  (do (def (main) (Rational.floor (Rational.of -7 2))) (export main)))
+  (output (: -4 Int64)))
+(case "a CONST in-range rational ceil folds toward positive infinity with the remainder-sign adjustment"
+  (input  (do (def (main) (Rational.ceil (Rational.of 7 2))) (export main)))
+  (output (: 4 Int64)))
+
+; `Rational.round` const-folds nearest, ties HALF-AWAY-FROM-ZERO — the `2·|rem| ≥ den` threshold on the
+; const-fold path. The runtime round cases pin the TIE (½) direction; these add the const-fold value AND the
+; NON-TIE nearest behavior the runtime cases never exercise (they all use /2 halves). 5/2 = 2.5 is an exact
+; half → rounds AWAY to 3 (the `≥` boundary). 7/3 = 2.33 is below half → rounds DOWN to 2; 8/3 = 2.67 is above
+; half → rounds UP to 3. The below/above pair pins the threshold that a `>`-instead-of-`≥` or a truncating
+; round would break.
+(case "a CONST rational round folds an exact half away from zero"
+  (input  (do (def (main) (Rational.round (Rational.of 5 2))) (export main)))
+  (output (: 3 Int64)))
+(case "a CONST rational round below the half rounds down to the nearer integer"
+  (input  (do (def (main) (Rational.round (Rational.of 7 3))) (export main)))
+  (output (: 2 Int64)))
+(case "a CONST rational round above the half rounds up to the nearer integer"
+  (input  (do (def (main) (Rational.round (Rational.of 8 3))) (export main)))
   (output (: 3 Int64)))
 
 ; --- List.len fold must preserve a TRAPPING element construction (trap-preservation) --------------------
