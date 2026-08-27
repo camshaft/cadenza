@@ -4188,6 +4188,33 @@ fn an_option_scalar_entry_param_compiles_to_a_component() {
     );
 }
 
+/// A `result<scalar,scalar>` ENTRY param must DECLINE (no artifact), NOT emit an invalid component. The
+/// option-shaped sum lift is admitted ONLY for a genuine `option<T>` WIT type; a `Result` resolves (via
+/// `spilled_result_wit_type`) to a WIT `variant` whose flattening/disc convention disagrees with the
+/// option-shaped `SumArgRebuild` lift — admitting it produced malformed wasm (a silent bad artifact). Until a
+/// dedicated Result entry-param sub-slice, a Result param declines honestly. (Companion to the option test;
+/// the Option path stays green.)
+#[test]
+fn a_result_scalar_entry_param_declines_cleanly_not_invalid_wasm() {
+    use crate::testkit::parse;
+    let src = "(do (def (main (: r (Result Int64 Int64))) \
+                 (match r ((Result.Ok v) v) ((Result.Err e) (* e -1)))) \
+               (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Wasm],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_none(),
+        "a result<scalar,scalar> entry param must DECLINE, not emit an invalid component"
+    );
+}
+
 /// A PARAMETERIZED Symbol-returning export declines — but with a TRUTHFUL message. `(main (: n Int64)) #"hot"`
 /// has a scalar `Int64` param (fine) and a `Symbol` result; the runtime value-encode has no canonical Symbol
 /// render (no `Shape::Sym` — a Symbol renders as a String), so a parameterized symbol return (which cannot use
