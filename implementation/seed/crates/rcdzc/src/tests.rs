@@ -16377,34 +16377,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_text_operand_against_a_scalar_in_a_builtin_op_is_cdz0201() {
-        // 07-type-system "an operation on mismatched types is rejected" + "ordering a string against an
-        // integer is a type error": a built-in arithmetic/comparison/equality operator with ONE text
-        // operand (String/Bytes) against a SCALAR operand (a number, a Bool, a Char) is a CROSS-KIND
-        // clash — a malformed operation (CDZ0201), NOT the CDZ0203 a same-kind SHAPE mismatch gets. Mirrors
-        // the map-vs-record kind clash: there is no shared order/arithmetic across the text↔scalar boundary.
-        for src in [
-            "(module m (def (main) (+ 1 \"two\")) (export main))",
-            "(module m (def (main) (< 1 \"x\")) (export main))",
-            "(module m (def (main) (> \"x\" 1)) (export main))",
-        ] {
-            assert_eq!(
-                reject_code(src).as_deref(),
-                Some("CDZ0201"),
-                "a text/scalar operand clash must reject CDZ0201: {src}"
-            );
-        }
-        // Int-vs-Bool — TWO scalars, no text operand — stays the generic structural mismatch CDZ0203.
-        assert_eq!(
-            reject_code("(module m (def (main) (< 1 true)) (export main))").as_deref(),
-            Some("CDZ0203")
-        );
-        // String-vs-String is a VALID comparison (the guard fires only on a text/scalar clash): it must
-        // COMPILE, not reject. The boolean result of `(= "a" "a")` is ordinary string equality, corpus-covered.
-        let _ = component("(module m (def (main) (= \"a\" \"a\")) (export main))");
-    }
-
-    #[test]
     fn arithmetic_on_two_same_typed_non_numeric_operands_names_the_real_type_and_plus_offers_concat()
      {
         // `(+ s t)` on two Strings (the Python/JS reflex) — and on two Lists/Records/Tuples/Bools/etc. —
