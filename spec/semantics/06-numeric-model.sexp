@@ -4077,6 +4077,37 @@
   (call   main (: 5 UInt8) (: 3 UInt8)) (output (: 2 UInt8))
   (call   main (: 0 UInt8) (: 1 UInt8)) (trap   "overflow"))
 
+(case "a runtime two-operand UInt8 multiplication range-checks its product"
+  (doc    "`(* a b)` over two runtime UInt8: 15 * 17 = 255 fits at the top and does not trap, but 16 * 16 =
+           256 leaves [0,255] and traps. Pins the narrow-width range-check on a genuine two-operand product,
+           distinct from the constant-multiplier strength-reduction cases.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (* a b)) (export main)))
+  (call   main (: 15 UInt8) (: 17 UInt8)) (output (: 255 UInt8))
+  (call   main (: 16 UInt8) (: 16 UInt8)) (trap   "overflow"))
+
+(case "a runtime Int8 division in range computes and division by zero traps"
+  (doc    "`(/ a b)` over two runtime Int8: -100 / 3 = -33 (toward zero, in range), and 5 / 0 traps on the
+           zero divisor. The in-range + divide-by-zero faces of the narrow signed division; the MIN / -1
+           overflow face is pinned by \"a runtime Int8 division of the minimum by -1 overflows and traps\".")
+  (input  (do (def (main (: a Int8) (: b Int8)) (/ a b)) (export main)))
+  (call   main (: -100 Int8) (: 3 Int8)) (output (: -33 Int8))
+  (call   main (: 5 Int8) (: 0 Int8))    (trap   "divide by zero"))
+
+(case "a runtime UInt8 unsigned right shift is logical"
+  (doc    "`(>> a b)` over a runtime UInt8 is a LOGICAL shift (zero-fill), so 255 >> 1 = 127 — the high bit
+           shifts out and is filled with 0, never sign-extended. Pins that a narrow unsigned right shift
+           does not smear the top bit.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (>> a b)) (export main)))
+  (call   main (: 255 UInt8) (: 1 UInt8)) (output (: 127 UInt8)))
+
+(case "a runtime full-width Int32 addition traps on carry overflow"
+  (doc    "Int32 is a FULL i32-slot width (N == slot bits), so the machine i32 add carry guard is what
+           traps, not a narrow range-check: 20 + 22 = 42 in range, but Int32.max + 1 overflows the 32-bit
+           width and traps. The full-slot-width companion of the narrow UInt8 add range-check above.")
+  (input  (do (def (main (: a Int32) (: b Int32)) (+ a b)) (export main)))
+  (call   main (: 20 Int32) (: 22 Int32))         (output (: 42 Int32))
+  (call   main (: 2147483647 Int32) (: 1 Int32))  (trap   "overflow"))
+
 ; The WRAPPING counterpart of the checked narrow-width overflow above: where the checked `+` TRAPS at
 ; its width, the named `wrapping-*` op instead has A Defined Modular Outcome (numeric-model.md #A
 ; Wrapping Operation Has A Defined Modular Outcome) — the result is the low `width` bits, re-normalized

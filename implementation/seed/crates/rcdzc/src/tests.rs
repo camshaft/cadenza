@@ -13465,24 +13465,6 @@ mod runtime_ops {
     }
 
     #[test]
-    fn runtime_narrow_multiplication_range_checks() {
-        // UInt8 mul: 15*17=255 fits; 16*16=256 traps (the i32 product is exact, range-check to 255 traps).
-        assert_eq!(
-            run::<u8>(
-                "(: a UInt8) (: b UInt8)",
-                "(* a b)",
-                &[Val::U8(15), Val::U8(17)]
-            ),
-            255
-        );
-        assert!(traps(
-            "(: a UInt8) (: b UInt8)",
-            "(* a b)",
-            &[Val::U8(16), Val::U8(16)]
-        ));
-    }
-
-    #[test]
     fn a_narrow_multiply_whose_product_fits_the_slot_drops_the_div_overflow_guard() {
         // The general signed/unsigned mul overflow guard is a `div_s`/`div_u` round-trip (`a≠0 && r/a≠b`)
         // — a hardware DIVISION. But when `2*width <= slot bits` the machine multiply in the slot CANNOT
@@ -14186,31 +14168,6 @@ mod runtime_ops {
         );
     }
 
-    #[test]
-    fn runtime_narrow_signed_division_min_over_minus_one_traps() {
-        // Int8 division: -128 / -1 = 128 overflows Int8 (max 127). The i32 div_s does NOT trap here (128
-        // fits i32), so the range-check catches it — the narrow-signed-division overflow the machine op
-        // misses. In range: -100/3 = -33 (truncates toward zero).
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(/ a b)",
-                &[Val::S8(-100), Val::S8(3)]
-            ),
-            -33
-        );
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(/ a b)",
-            &[Val::S8(-128), Val::S8(-1)]
-        ));
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(/ a b)",
-            &[Val::S8(5), Val::S8(0)]
-        ));
-    }
-
     /// A narrow signed division's range-check needs ONLY its upper bound: a signed quotient can overflow
     /// the type solely UPWARD (`MIN/-1 = 2^(N-1) > max`). It can never fall below `min` — `|q| = |a|/|b|
     /// <= |a| <= 2^(N-1)`, so the most-negative reachable quotient is `-2^(N-1) = MIN` itself (in range,
@@ -14313,39 +14270,6 @@ mod runtime_ops {
             "(: a UInt8) (: b UInt8)",
             "(<< a b)",
             &[Val::U8(3), Val::U8(7)]
-        ));
-    }
-
-    #[test]
-    fn runtime_narrow_unsigned_right_shift_is_logical() {
-        // UInt8.max >> 1 = 127 (logical, zero-fill). Pins narrow shr_u — the op selection follows the
-        // unsigned type.
-        assert_eq!(
-            run::<u8>(
-                "(: a UInt8) (: b UInt8)",
-                "(>> a b)",
-                &[Val::U8(255), Val::U8(1)]
-            ),
-            127
-        );
-    }
-
-    #[test]
-    fn runtime_int32_full_width_addition_traps() {
-        // Int32 is a FULL i32-slot width (N == slot bits): the machine i32.add carry/borrow guard is what
-        // traps, not a range-check. Int32.max + 1 traps; in range computes.
-        assert_eq!(
-            run::<i32>(
-                "(: a Int32) (: b Int32)",
-                "(+ a b)",
-                &[Val::S32(20), Val::S32(22)]
-            ),
-            42
-        );
-        assert!(traps(
-            "(: a Int32) (: b Int32)",
-            "(+ a b)",
-            &[Val::S32(i32::MAX), Val::S32(1)]
         ));
     }
 
