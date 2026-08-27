@@ -4919,3 +4919,41 @@
   (call main (: 1 Int64))
   (output (: 10301 Int64))
   (live-objects known-leak 6))
+
+; ── breaker batch 545: DEEP-ROPE structural cells (50-concat trees — unprobed depth). rp1 = the
+; rope itself reclaims clean after a byte-len tree walk; rp2 = the char-scan idiom across every
+; seam (values exact; carries the KNOWN String.at per-read leak at scale, ~2/read — same family
+; as the banana lexer pin, flips with it); rp3 = a slice SPANNING ~50 seams reads exact content
+; (slc-class residue rider at rope depth).
+
+(case "rp1 a 50-concat deep rope's byte-len walks the tree and the rope reclaims clean"
+  (input (do (def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
+(def (main (: n Int64)) (String.byte-len (grow (if (> n 0) "abc" "z") 50)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 53 Int64))
+  (live-objects 0))
+
+(case "rp2 a char-scan with String.at across every seam of a 50-concat rope counts exactly (per-read leak family at scale)"
+  (input (do (def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
+(def (at (: s String) (: i Int64)) (Option.expect (String.at s i) "ok"))
+(def (cnt (: s String) (: i Int64) (: acc Int64))
+  (if (= i (String.byte-len s)) acc
+      (cnt s (+ i 1) (if (= (at s i) "x") (+ acc 1) acc))))
+(def (main (: n Int64)) (cnt (grow (if (> n 0) "abc" "z") 50) 0 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 50 Int64))
+  (live-objects known-leak 107))
+
+(case "rp3 a slice SPANNING the seams of a deep rope reads exact length and content"
+  (input (do (def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
+(def (main (: n Int64))
+  (let ((r (grow (if (> n 0) "abc" "z") 50)))
+    (let ((sl (Option.expect (String.slice r 1 (- (String.byte-len r) 1)) "in")))
+      (+ (* 100 (String.byte-len sl))
+         (if (= (Option.expect (String.at sl 10) "ok") "x") 1 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 5101 Int64))
+  (live-objects known-leak 7))

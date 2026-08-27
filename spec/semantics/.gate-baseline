@@ -8868,3 +8868,6 @@ pass	lbe3 List.at over a runtime list at a plain negative index yields None
 pass	ba1 List.at swept across the bounds boundary of a runtime list answers Some in-bounds and None out (indices 0..4 over len 3)
 pass	ba2 fifty provably-in-bounds List.at reads (index = k mod len) never miss (the elision's legitimate cell)
 pass	ba3 the exact bounds edge: index len-1 answers the last element, index len answers None
+pass	rp1 a 50-concat deep rope's byte-len walks the tree and the rope reclaims clean
+pass	rp2 a char-scan with String.at across every seam of a 50-concat rope counts exactly (per-read leak family at scale)
+pass	rp3 a slice SPANNING the seams of a deep rope reads exact length and content
