@@ -7971,3 +7971,5 @@ pass	dfr2 a generic sum's RECORD payload destructured to a field leaks its shell
 pass	dfr3d a TWO-payload generic ctor's heap field bound WHOLE and measured reclaims cleanly
 pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
 pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
+pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
+pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)

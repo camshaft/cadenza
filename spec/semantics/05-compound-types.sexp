@@ -20212,3 +20212,36 @@
   (call main (: 5 Int64))
   (output (: 111 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 458 (2026-08-27): the DEF-side reclaim gap BLOCKING the nested-list entry slice,
+; reproduced with NO boundary lift. v-rust-backend's nested lift emit was proven value-correct but
+; reverted: a List.at-extracted COMPOUND element (the Some-bound inner vec) is RETAINED by List.at
+; and never dropped by the def when only BORROWED (List.len) — the borrow-only compound-payload
+; match-shell reclaim (bdf09c60a) does not fire for the List.at-Some-extracted shape. lar1 is the
+; minimal local witness (leak 3 = inner vec + its two boxed ints, v-rust-backend's rc analysis
+; exactly); lar2 is the scalar control (List.at of a flat list extracts without retaining — 0).
+; {el8, eln1-3} and the nested slice unblock when this flips.
+
+(case "lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (match (List.at xs 1)
+          ((Option.Some inner) (List.len inner))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak 3))
+
+(case "lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)"
+  (input (do
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list n (+ n 1) (* n 3)) (list 9))))
+        (match (List.at xs 1)
+          ((Option.Some v) v)
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 6 Int64))
+  (live-objects 0))
