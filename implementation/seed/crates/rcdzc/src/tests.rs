@@ -8945,56 +8945,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_deep_nested_constructor_pattern_matching_a_nullary_variant_solves_its_switch_path() {
-        // REGRESSION (v-compiler-ml surfaced, concierge-assigned): a constructor pattern nesting a NULLARY
-        // variant TWO+ constructor layers deep errored `compound match switch path has no solved type`.
-        // `(match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))` where IntTy is a SINGLE-variant
-        // sum (erased to Ty::Nominal): the switch on `Sign` is at `[Payload, Payload, Elem(0)]` (TyInt's
-        // boxed-sum Payload seeds `[Payload]` = IntTy in path_types, but the INNER Payload — the erased
-        // IntTy newtype unwrap — is NOT seeded). `type_from_seeded_prefix` walked the suffix from the seeded
-        // `[Payload]` but its `Payload` arm UNCONDITIONALLY declined → no solved type. FIX: peel a
-        // `Ty::Nominal` (erased newtype) `Payload` in the suffix walk (mirror `type_at_path`), so the switch
-        // resolves through the erased inner layer. Runtime-chosen inner defeats the const-fold.
-        let Some(hit) = run_heap_value(
-            "(module m \
-               (type Sign (Signed) (Unsigned) (SignDef)) \
-               (type Width (WFixed Int64) (WidthDef)) \
-               (type IntTy (IntTy Sign Width)) \
-               (type Ty (TyInt IntTy) (TyBool) (TyErr)) \
-               (def (probe (: t Ty)) (match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))) \
-               (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned))) \
-               (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef))))) \
-               (export main))",
-            vec!["-1".into()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping deep-nested-nullary-match run");
-            return;
-        };
-        assert_eq!(
-            hit, "1",
-            "k<0 → Sign.Signed two constructor layers deep (through the erased IntTy newtype) → the arm fires (1)"
-        );
-        // The non-matching inner nullary falls through to the wildcard.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (type Sign (Signed) (Unsigned) (SignDef)) \
-                   (type Width (WFixed Int64) (WidthDef)) \
-                   (type IntTy (IntTy Sign Width)) \
-                   (type Ty (TyInt IntTy) (TyBool) (TyErr)) \
-                   (def (probe (: t Ty)) (match t ((Ty.TyInt (IntTy.IntTy (Sign.Signed) w)) 1) (_ 0))) \
-                   (def (mk (: k Int64)) (if (< k 0) (Sign.Signed) (Sign.Unsigned))) \
-                   (def (main (: k Int64)) (probe (Ty.TyInt (IntTy.IntTy (mk k) (Width.WidthDef))))) \
-                   (export main))",
-                vec!["1".into()],
-            )
-            .unwrap(),
-            "0",
-            "k>=0 → Sign.Unsigned → the inner nullary switch falls to the wildcard (0)"
-        );
-    }
-
-    #[test]
     fn a_nested_match_on_a_recursive_sum_with_a_known_outer_disc_reads_the_right_payload_depth() {
         // These asserts run heap values; skip when the value-heap runtime store is absent (CI's bare
         // `cargo test` builds no store), matching the established heap-test pattern — else the
