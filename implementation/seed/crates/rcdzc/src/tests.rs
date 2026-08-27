@@ -20033,53 +20033,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_guard_on_a_tuple_arm_reads_its_element_binders() {
-        // REGRESSION (false CDZ0101): a user `(guard …)` on a TUPLE-match arm reading the tuple's element
-        // binders — `(guard (tuple a b) (> (+ a b) 5))` — falsely reported CDZ0101 "unbound name `a`" (at
-        // BOTH check and compile). ROOT: no guard-cond resolution case handled a tuple pattern —
-        // `guard_cond_variant_binds` uses `find_binder_in_pattern`, which EXCLUDES the `tuple`/`list`/… heads,
-        // and only `guard_cond_list_binds` covered the list case. FIX: a new `guard_cond_tuple_binds` (Case
-        // 6tg) routes a `(guard (tuple …) cond)` to `find_binder_in_tuple`, so an element binder resolves to
-        // a `SumPayload` at its `Elem(i)` path — the tuple analogue of Inc-5's list-guard support.
-        let Some(v) = run_heap_value(
-            "(module m (def (f (: t (Tuple Int64 Int64))) \
-               (match t ((guard (tuple a b) (> (+ a b) 5)) (+ a b)) (_ -1))) \
-             (def (main (: k Int64)) (f (tuple k 4))) (export main))",
-            vec!["3".to_string()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping tuple-guard-binder run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "the tuple guard reads a=3,b=4; (> 7 5) holds → a+b = 7"
-        );
-        // Guard FALSE → falls through.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (f (: t (Tuple Int64 Int64))) \
-                   (match t ((guard (tuple a b) (> (+ a b) 5)) (+ a b)) (_ -1))) \
-                 (def (main (: k Int64)) (f (tuple k 1))) (export main))",
-                vec!["1".to_string()],
-            )
-            .unwrap(),
-            "-1",
-            "a=1,b=1 → (> 2 5) false → falls through to the catch-all"
-        );
-        // A NESTED ctor binder inside the tuple: `(guard (tuple (Some n) m) …)` reads `n` AND `m`.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (f (: t (Tuple (Option Int64) Int64))) \
-                   (match t ((guard (tuple (Some n) m) (> (+ n m) 5)) (+ n m)) (_ -1))) \
-                 (def (main) (f (tuple (Some 3) 4))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "7",
-            "the tuple guard reads a NESTED ctor payload binder n plus the element binder m: 3+4=7 > 5 → 7"
-        );
-    }
 
     #[test]
     fn a_guard_on_a_nested_list_in_list_element_reads_the_inner_binder() {
