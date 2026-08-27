@@ -608,6 +608,39 @@
   (call   app2 (: 1 Int64) (: 2 Int64) (: 5 Int64))
   (output (: 13 Int64)))
 
+; C-HOST-5 leak balance — a round trip leaves NO live cell. The producer mints the closure cell
+; (`make-adder` → `resource.new`); the consumer takes it back as `own<t>`, applies it, and its wrapper
+; RELEASES the cell (`heap.drop`) after the body returns. So after the round trip `live-objects` is 0 —
+; distinct from a bare `make`+`call` case, which HOLDS the handle (borrow) and leaks 1. `twice-plus` applies
+; the closure TWICE (`(+ (g x) (g x))`) — the drop fires once, AFTER the body, not per application.
+
+(case "a round trip releases the produced closure cell (no live objects)"
+  (doc    "`make-adder(1)` mints a closure `(+ y 1)`; `twice-plus(handle, 5)` = (5+1)+(5+1) = 12, then the
+           consumer wrapper drops the own<t> cell. After the round trip live-objects is 0 — the consumer
+           owns the handed-back handle and reclaims the cell once, after the body.")
+  (input  (do (def (make-adder (: k Int64)) (fn ((: y Int64)) (+ y k)))
+              (def (twice-plus (: g (-> Int64 Int64)) (: x Int64)) (+ (g x) (g x)))
+              (export make-adder) (export twice-plus)))
+  (call   twice-plus (: 1 Int64) (: 5 Int64))
+  (output (: 12 Int64))
+  (live-objects 0))
+
+; Release soundness when the consumer NEVER APPLIES the handed-back closure on the taken path: the own<t>
+; was consumed at the boundary regardless, so the wrapper still drops the cell. `app`'s body is
+; `(if (< x 0) 0 (g x))`; called with x < 0 it takes the guarded branch (returns 0) WITHOUT dispatching the
+; closure — yet the handed-back cell is still reclaimed. live-objects 0 on the ignore path too.
+
+(case "a round trip releases the closure cell even when the consumer ignores it"
+  (doc    "`app(handle, -3)` with `(if (< x 0) 0 (g x))` takes the guarded branch → 0, never applying the
+           closure. The own<t> handle was consumed at the boundary, so its cell is dropped anyway —
+           live-objects 0. Pins that release does not depend on the body dispatching the closure.")
+  (input  (do (def (mk) (fn ((: x Int64)) (+ x 1)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (if (< x 0) 0 (g x)))
+              (export mk) (export app)))
+  (call   app (: -3 Int64))
+  (output (: 0 Int64))
+  (live-objects 0))
+
 ; A consumer that does MORE than apply the closure once — it applies it and adds a constant — showing the
 ; consumer body is ordinary Cadenza code with the handed-back closure as a first-class value in it.
 
