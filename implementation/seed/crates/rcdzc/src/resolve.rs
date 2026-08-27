@@ -6234,42 +6234,44 @@ pub(crate) fn read_record_fields(
         // A value-record field is the canonical `(= name value)` ascription triple (DESIGN-record-type-
         // syntax Phase B): key = child 1, value = child 2, `=` head dropped. The legacy `(name value)`
         // pair is still accepted (an un-migrated node / hand-built AST), so both shapes read.
-        let (key_id, val_id) = match db.ast.get(field) {
-            // The canonical `(= name value)` ascription triple (Phase B): key = child 1, value = child 2.
-            Struct::List(kv) if kv.len() == 3 && db.ast.as_name(kv[0]) == Some("=") => {
-                (kv[1], kv[2])
-            }
-            // A field LED BY `=` but not exactly 3 elements is a MALFORMED ascription field — e.g.
-            // `(= a)` (a field named `a` with NO value, the migrated form of the ill-formed `(a)`), or
-            // `(= a 1 2)` (surplus). It is NOT a legacy pair (that would misread the `=` head as the key).
-            // Fixed-arity reject anchored at the entry (want the 3-element `(= key value)`).
-            Struct::List(kv)
-                if db.ast.as_name(kv.first().copied().unwrap_or(field)) == Some("=") =>
-            {
-                return Err(fixed_arity_reject(
-                    field,
-                    kv,
-                    3,
-                    "record field must be (= key value)",
-                ));
-            }
-            // A legacy `(name value)` pair (an un-migrated node / hand-built AST) — head is NOT `=`.
-            Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
-            Struct::List(kv) => {
-                // A wrong-arity non-`=` field entry `(x 1 2)` / `(x)`. A SURPLUS element gets the shared
-                // delete-the-surplus fix; too few is message-only. Anchored at the offending entry.
-                return Err(fixed_arity_reject(
-                    field,
-                    kv,
-                    2,
-                    "record field must be (= key value)",
-                ));
-            }
-            _ => {
-                return Err(Reject::coded(
-                    Code::Malformed,
-                    "record field must be (= key value)",
-                ));
+        // The canonical `(= name value)` ascription triple (Phase B): read via the shared
+        // `Arenas::field_pair` (the ONE `(= k v)` reader for record fields + map entries).
+        let (key_id, val_id) = if let Some(kv) = db.ast.field_pair(field) {
+            kv
+        } else {
+            match db.ast.get(field) {
+                // A field LED BY `=` but not exactly 3 elements is a MALFORMED ascription field — e.g.
+                // `(= a)` (a field named `a` with NO value, the migrated form of the ill-formed `(a)`), or
+                // `(= a 1 2)` (surplus). It is NOT a legacy pair (that would misread the `=` head as the key).
+                // Fixed-arity reject anchored at the entry (want the 3-element `(= key value)`).
+                Struct::List(kv)
+                    if db.ast.as_name(kv.first().copied().unwrap_or(field)) == Some("=") =>
+                {
+                    return Err(fixed_arity_reject(
+                        field,
+                        kv,
+                        3,
+                        "record field must be (= key value)",
+                    ));
+                }
+                // A legacy `(name value)` pair (an un-migrated node / hand-built AST) — head is NOT `=`.
+                Struct::List(kv) if kv.len() == 2 => (kv[0], kv[1]),
+                Struct::List(kv) => {
+                    // A wrong-arity non-`=` field entry `(x 1 2)` / `(x)`. A SURPLUS element gets the shared
+                    // delete-the-surplus fix; too few is message-only. Anchored at the offending entry.
+                    return Err(fixed_arity_reject(
+                        field,
+                        kv,
+                        2,
+                        "record field must be (= key value)",
+                    ));
+                }
+                _ => {
+                    return Err(Reject::coded(
+                        Code::Malformed,
+                        "record field must be (= key value)",
+                    ));
+                }
             }
         };
         let label = match read_key(db, key_id) {

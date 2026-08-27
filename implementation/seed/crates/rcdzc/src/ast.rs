@@ -1093,6 +1093,14 @@ impl Builder {
         self.atom_leaf(Leaf::Name(name.into()))
     }
 
+    /// Build a canonical `(= key value)` FIELD PAIR node — the shape shared by record fields and map
+    /// entries. The emit twin of [`Arenas::field_pair`], so record/map construction routes through one
+    /// place. See `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn field_pair(&mut self, key: StructId, value: StructId) -> StructId {
+        let eq = self.name("=");
+        self.list(vec![eq, key, value])
+    }
+
     // ── Canonical WIT schema-descriptor builders (schema-hash-only effect identity) ──────────────
     //
     // COPY, DON'T DEPEND (rcdzc/Cargo.toml directive): these are a VERBATIM copy of the WIT-descriptor
@@ -1437,6 +1445,21 @@ impl Arenas {
         }
     }
 
+    /// The `(key, value)` of a canonical `(= key value)` FIELD PAIR node — a `List` of exactly three
+    /// children whose head is the `=` FieldPair marker. This is the ONE reader for the shape shared by
+    /// record fields and (once unified, per DESIGN-native-ast-compound-data) map entries, so a consumer
+    /// extracts key/value through it instead of re-matching the triple. `None` for anything that is not a
+    /// well-formed `(= k v)` triple (a caller distinguishes a malformed `=`-led or a legacy `(k v)` form
+    /// itself). The read twin of [`Builder::field_pair`].
+    pub fn field_pair(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(kv) if kv.len() == 3 && self.as_name(kv[0]) == Some("=") => {
+                Some((kv[1], kv[2]))
+            }
+            _ => None,
+        }
+    }
+
     /// If `id` is a `List` headed by the NAME `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1746,6 +1769,35 @@ mod tests {
                 .map(|t| t.len()),
             Some(0)
         );
+    }
+
+    #[test]
+    fn field_pair_builds_and_reads_the_canonical_eq_kv_node() {
+        let mut b = Builder::new();
+        let k = b.name("x");
+        let v = b.name("1");
+        // Builder::field_pair emits `(= x 1)`; Arenas::field_pair reads it back.
+        let fp = b.field_pair(k, v);
+        // A non-field-pair node (a plain 2-elem `(x 1)` and a wrong-head `(tuple x 1)`) reads as None.
+        let x2 = b.name("x");
+        let one2 = b.name("1");
+        let plain = b.list(vec![x2, one2]);
+        let th = b.name("tuple");
+        let x3 = b.name("x");
+        let one3 = b.name("1");
+        let non_eq = b.list(vec![th, x3, one3]);
+        let root = b.list(vec![fp, plain, non_eq]);
+        let a = b.finish(root);
+
+        // Emit→read round-trips to the same key/value occurrences.
+        assert_eq!(a.field_pair(fp), Some((k, v)));
+        // The head is the `=` FieldPair marker, three children.
+        assert!(
+            matches!(a.get(fp), Struct::List(kv) if kv.len() == 3 && a.as_name(kv[0]) == Some("="))
+        );
+        // A legacy plain `(x 1)` pair and a `(tuple …)` are NOT field pairs.
+        assert_eq!(a.field_pair(plain), None);
+        assert_eq!(a.field_pair(non_eq), None);
     }
 
     #[test]

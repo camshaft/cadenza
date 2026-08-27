@@ -3656,6 +3656,14 @@ impl Db {
         self.push_atom(Leaf::Str(s.into()))
     }
 
+    /// Append a canonical `(= key value)` FIELD PAIR node — the shape shared by record fields and map
+    /// entries. The runtime-construction twin of [`crate::ast::Arenas::field_pair`] /
+    /// [`crate::ast::Builder::field_pair`], so synthesized record/map forms route through one place.
+    pub fn push_field_pair(&mut self, key: StructId, value: StructId) -> StructId {
+        let eq = self.push_name("=");
+        self.push_list(vec![eq, key, value])
+    }
+
     /// The definition of the given name, if one exists — how an export resolves its target and how a
     /// later call resolves its callee (by name against the index, reading a signature, not a body).
     /// O(1) via the `def_name_index` map (built at load). `resolve_name` calls this for every non-local
