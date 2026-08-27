@@ -2004,7 +2004,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 12 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a runtime bin match decodes a FINAL DEPENDENT-size utf8 segment"
   (doc    "The dependent-size companion of the constant-size utf8 pins (:1878/:1899): a `(u8 n)` length
@@ -2026,7 +2026,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a runtime bin match decodes a NON-FINAL dependent-size utf8 segment before a trailing field"
   (doc    "The non-final face of the dependent-size utf8 decode: `(bin (u8 n) (utf8 s n) (u8 7))` — the
@@ -2047,7 +2047,7 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a dependent-size utf8 whose length prefix OVERRUNS the frame is a non-match, not a trap"
   (doc    "Trap-safety of the dependent-size utf8 read (the totality companion of the ill-formed-bytes
@@ -2070,7 +2070,7 @@
   (call   main (: 1 UInt8)) (output (: 1 Int64))
   (call   main (: 5 UInt8)) (output (: -1 Int64))
   (call   main (: 0 UInt8)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
   (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets

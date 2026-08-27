@@ -1468,7 +1468,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 9 Int64)) (output (: 9 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a Value.encode/Value.decode round-trip of a NARROW signed-int single-ctor sign-extends correctly"
   (doc    "Pins the NARROW-INT box path of the single-ctor boxing that the Int64 case above does NOT exercise:
@@ -1570,7 +1570,7 @@
                 ((None u) 0)))
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec"
   (doc    "The homoiconic/recursive case: `(Ast.List (list (Ast.Bool b) (Ast.Str \"x\")))` — an Ast whose
@@ -1585,7 +1585,7 @@
                 ((None u) 0)))
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
-  (live-objects known-leak 7))
+  (live-objects 0))
 
 ; --- Value codec: a newtype-OVER-RECORD round-trips (the newtype-nominal × record composition). ---
 ; The RECORD leaf (:1196) and the scalar-erased newtype (:1424) are pinned above; this composes them — a

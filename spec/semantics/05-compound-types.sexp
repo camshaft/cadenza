@@ -20295,7 +20295,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 111 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 ; -- v-rust-backend (2026-08-27): dmp2/dmp3 complete the container-kind matrix for `elem_field_ty` — the
 ; SAME fix's Record and Tuple-with-list arms. dmp1 pins the direct-LIST field; here the nested list sits one
@@ -20320,7 +20320,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 102 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 (case "dmp3 a multi-payload ctor's TUPLE field whose first element is a list resolves to vec-get"
   (doc    "The Tuple arm of `elem_field_ty` for a LIST element (mpf2's tuple was scalar-only): field 0 of
@@ -20337,7 +20337,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 109 Int64))
-  (live-objects known-leak 5))
+  (live-objects 0))
 
 ; -- breaker batch 458 (2026-08-27): the DEF-side reclaim gap BLOCKING the nested-list entry slice,
 ; reproduced with NO boundary lift. v-rust-backend's nested lift emit was proven value-correct but
