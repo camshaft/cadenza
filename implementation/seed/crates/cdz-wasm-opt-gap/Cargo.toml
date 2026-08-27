@@ -1,0 +1,18 @@
+# cdz-wasm-opt-gap — the wasm-opt optimality-gap per-case REPORT formatter.
+#
+# A dedicated, lightweight (std-only, zero-dependency) program that parses binaryen
+# `wasm-opt --metrics` output + the module sizes for one corpus case and emits a
+# single `(gap ...)` s-expression record (or `(optimal ...)` when there is no size
+# reduction). It is the per-case body the Nix per-case derivation calls AFTER it has
+# run wasm-opt — parse+format only, no wasm-opt invocation of its own, so it stays
+# trivially cacheable and parallelizable. See
+# implementation/design/DESIGN-wasm-opt-gap-analysis-rcdzc.md (owner: v-wasm-opt).
+[package]
+name = "cdz-wasm-opt-gap"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "wasm-opt-gap"
+path = "src/main.rs"

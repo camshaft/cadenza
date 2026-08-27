@@ -481,6 +481,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdz-wasm-opt-gap"
+version = "0.0.0"
+
+[[package]]
 name = "cdz-world-artifact"
 version = "0.0.0"
 dependencies = [
