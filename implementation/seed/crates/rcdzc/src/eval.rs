@@ -13,7 +13,7 @@
 //! ordinary member projection. The built module is a normal arena record, resolved/typed/lowered by
 //! the ordinary demand.
 
-use crate::ast::{IntValue, Leaf, StructId};
+use crate::ast::{CompoundCtor, IntValue, Leaf, StructId};
 use crate::db::Db;
 use crate::fxhash::FxHashMap as HashMap;
 use crate::resolve::resolved_of;
@@ -841,8 +841,7 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
         && db.ast.as_name(pair_children[0]) == Some("=")
         && pair_children.get(1) == Some(&id)
         && let Some(grandparent) = db.parent_of(pair)
-        && (db.ast.head_name(grandparent) == Some("record")
-            || db.ast.head_ctor(grandparent) == Some("record"))
+        && (db.ast.compound_ctor_either(grandparent) == Some(CompoundCtor::Record))
     {
         return true;
     }
@@ -884,8 +883,7 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     // `(record …)` or the unshadowable STRING primitive `("record" …)`. (A field pair has exactly two
     // children; a `(meta name)` key is already immune as it is not a bare param name.)
     if pair_children.len() == 2
-        && (db.ast.head_name(grandparent) == Some("record")
-            || db.ast.head_ctor(grandparent) == Some("record"))
+        && (db.ast.compound_ctor_either(grandparent) == Some(CompoundCtor::Record))
     {
         return true;
     }
