@@ -9043,13 +9043,15 @@
   (call main (: (list 5 6 7 8) Bytes))
   (output (: 2 Int64)))
 
-; -- breaker batch 496 (2026-08-27): RECORD/TUPLE entry params — all decline today, with a
-; DOUBLY-WRONG diagnostic ("returning a (Record …) on the multi-export boundary" — these are
-; PARAMS not returns, and the programs have ONE export). Also contradicts the heap-return guard's
-; message which claims "fixed-shape scalar tuple/record params" forward — one of the two messages
-; lies about the capability (filed to v-rust-backend, wrong-diagnostic #10). Rungs: scalar record
-; (rpp1), an open-row helper over the boundary record (rpp2), record with a heap field (rpp3),
-; scalar tuple (rpp4). All rust-pass — oracles machine-verified.
+; -- breaker batch 496→499 (2026-08-27): RECORD/TUPLE entry params — all decline (rungs standing).
+; The original diagnostic was DOUBLY wrong (result-phrased for a param; "multi-export" for one
+; export — the shared export_result_valtype error surfaced in the param loop); FIXED in #4031 to
+; the truthful param message ("parameter … has no scalar boundary representation — a non-scalar
+; entry parameter is not yet emitted on this export path"). Admission is a deferred feature —
+; v-rust-backend's admit attempt itself emitted an INVALID component (the envelope does not
+; flatten a record param), vindicating the decline. Rungs: scalar record (rpp1), an open-row
+; helper over the boundary record (rpp2), record with a heap field (rpp3), scalar tuple (rpp4);
+; all rust-pass, auto-flip when the flatten slice lands.
 
 (case "rpp1 a scalar-fielded Record entry param projects both fields"
   (input (do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (* 100 (. r x)) (. r y))) (export main)))
