@@ -170,6 +170,7 @@ pass	Int64.min crossing the boundary is still negative
 pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed
 pass	Int64.of over a u64 host-op RESULT evaluates the host call ONCE (the range-check names the operand)
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
+pass	Int8.wrap of a constant with the sign bit set reinterprets as negative
 pass	Int8.wrap of all-ones-byte is negative one
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
@@ -514,6 +515,8 @@ pass	UInt16.wrap at exactly two-to-the-sixteenth is zero
 pass	UInt16.wrap one past two-to-the-sixteenth is one
 pass	UInt64.max crosses the parameter boundary and back unchanged
 pass	UInt64.max crossing the boundary compares as a large unsigned, not -1
+pass	UInt8.wrap of a constant past the byte boundary truncates to the low byte
+pass	UInt8.wrap of a negative constant reads the low byte as unsigned
 pass	Unit.in converts a quantity to a chosen larger unit (Float)
 pass	Unit.in converts a quantity to a chosen smaller unit exactly (Int)
 pass	Unit.in over a BigInt quantity truncates a non-dividing ratio
@@ -6972,6 +6975,9 @@ pass	runtime tuple concatenation preserves element order across the seam
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
 pass	runtime-payload `?`s in BOTH branches of a runtime if take their own continuations
+pass	ruw1 a fresh Result Ok with a list payload matched twice leaks the payload like Option
+pass	ruw2 a fresh user-generic sum with a list payload matched twice leaks the payload identically
+pass	ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs
 pass	rv1 the inner handler ARM resumes with an OUTER draw — the resume VALUE expression performs against the enclosing handler
 pass	rv2 the inner arm's resume value SUBTRACTS two outer draws — cross-handler order inside the arm, with a doubling outer state
 pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing outer draw
@@ -7317,6 +7323,9 @@ pass	the composed multibyte slice view equals its literal twin and keys a Map
 pass	the composed slice view EQUALS its flat twin and keys a Map by canonical content
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the conditional-shot-count arm's SINGLE-shot branch (same program, other input)
+pass	the constructor-built width module carries the same wrap as the named width
+pass	the constructor-built width module projects the same max bound as the named width
+pass	the constructor-built width module projects the same min bound as the named width
 pass	the cross-handler op-arg lift fires 100 times inside a recursive accumulator loop
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set
@@ -7928,6 +7937,8 @@ pass	xme4 a library exports a RUN-WRAPPER installing its own handler — the ent
 pass	xop1 a let-bound extracted Option matched TWICE leaks twice — the unpaired dup is per-unwrap
 pass	xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell
 pass	xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap
+pass	xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)
+pass	xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload
 pass	xsw1 a CROSS-SWAPPING scalar pair — each dispatch computes both successors then installs them SWAPPED (a gets the b-derived value, b the a-derived), lineage crosses sides every step
 pass	za1 literal-arm dispatch on a draw — the MATCHED arm performs again, both calls exercised
 pass	za2 a COMPUTED scrutinee (difference of two draws) selects the performing arm at one input only
@@ -7994,8 +8005,3 @@ todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	read of malformed text is a coded reject, not a wrong value
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	xop4 a FRESH compound-payload Option matched twice leaks its payload (one unwrap balances, the second does not)
-pass	xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload
-pass	ruw1 a fresh Result Ok with a list payload matched twice leaks the payload like Option
-pass	ruw2 a fresh user-generic sum with a list payload matched twice leaks the payload identically
-pass	ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs

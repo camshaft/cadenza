@@ -6324,6 +6324,52 @@
   (input  (UInt16.wrap 65537))
   (output (: 1 UInt16)))
 
+(case "UInt8.wrap of a constant past the byte boundary truncates to the low byte"
+  (doc    "`(UInt8.wrap 256)` = 0 — the truncating conversion keeps the low 8 bits (0x100 -> 0x00) of a
+           bare Int64 literal and never traps (contrast the checked `.of`, which returns None). The
+           canonical byte-truncation the encoder relies on; pins the bare-literal fold that the annotated
+           `(UInt8.wrap (: 256 Int32))` = 0 case mirrors at an explicit source width.")
+  (input  (UInt8.wrap 256))
+  (output (: 0 UInt8)))
+
+(case "UInt8.wrap of a negative constant reads the low byte as unsigned"
+  (doc    "`(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones) read UNSIGNED,
+           not a magnitude (|-1| = 1) and not a reject. The constant-fold companion of the runtime
+           negative-wrap case; pins that the bare -1 literal folds to 255 at UInt8.")
+  (input  (UInt8.wrap -1))
+  (output (: 255 UInt8)))
+
+(case "Int8.wrap of a constant with the sign bit set reinterprets as negative"
+  (doc    "`(Int8.wrap 200)` = -56 — 200 = 0xC8 has bit 7 set, so read as a signed Int8 the low 8 bits are
+           -56 (200 - 256). The interior-value twin of the sign-bit-boundary `Int8.wrap 128` = -128 above;
+           pins the bare-literal signed truncation reinterpret.")
+  (input  (Int8.wrap 200))
+  (output (: -56 Int8)))
+
+(case "the constructor-built width module carries the same wrap as the named width"
+  (doc    "`((Int 8).wrap 200)` = -56, identical to `(Int8.wrap 200)` — the constructor-built module
+           `(Int 8)` and the named width `Int8` carry the SAME `wrap` op (built by the twin wrap fields),
+           so both fold to -56, not merely agree. `(Int 8).wrap` is the postfix-member sugar reading to
+           `(. (Int 8) wrap)`. Pins that the width-indexed constructor and its named alias denote one
+           operation.")
+  (input  ((Int 8).wrap 200))
+  (output (: -56 Int8)))
+
+(case "the constructor-built width module projects the same max bound as the named width"
+  (doc    "`(. (Int 8) max)` = 127, identical to `Int8.max` — `Int8` and the width-indexed constructor
+           `(Int 8)` are the SAME module (no per-name special case; both go through the width-generic
+           builder), so they project a bound of the same value and type. Pins the constructor/named-alias
+           equivalence on the bound-projection face, the companion of the wrap-op equivalence above.")
+  (input  (. (Int 8) max))
+  (output (: 127 Int8)))
+
+(case "the constructor-built width module projects the same min bound as the named width"
+  (doc    "`(. (Int 8) min)` = -128, identical to `Int8.min` — the min face of the same
+           constructor/named-alias equivalence: the width-indexed `(Int 8)` projects the same signed
+           lower bound the named `Int8` does.")
+  (input  (. (Int 8) min))
+  (output (: -128 Int8)))
+
 ; ── WRAP ELISION is value-transparent: a wrap whose source/value already fits the target is the identity ─
 ; `T.wrap x` truncates to the target width, but when the SOURCE already fits (same-sign, source width <=
 ; target) the mask/sign-extend is redundant and elided; likewise a nested `T.wrap(U.wrap x)` with the outer

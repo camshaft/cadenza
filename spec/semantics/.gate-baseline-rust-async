@@ -7628,3 +7628,9 @@ pass	arithmetic is generic over the integer type, sharing a built-in bound with 
 pass	the maximum signed 64-bit value is a folding constant
 pass	the minimum signed 64-bit value is a folding constant
 pass	the maximum signed 8-bit value is its per-width bound
+pass	UInt8.wrap of a constant past the byte boundary truncates to the low byte
+pass	UInt8.wrap of a negative constant reads the low byte as unsigned
+pass	Int8.wrap of a constant with the sign bit set reinterprets as negative
+pass	the constructor-built width module carries the same wrap as the named width
+pass	the constructor-built width module projects the same max bound as the named width
+pass	the constructor-built width module projects the same min bound as the named width
