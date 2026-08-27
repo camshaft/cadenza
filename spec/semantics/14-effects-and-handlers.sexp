@@ -7760,6 +7760,51 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip))) (+ x x)))) (export main)))
   (output (: 21 Int64)))
 
+(case "a pure one-hole MATCH-scrutinee whose selected arm binds and uses the scrutinee re-resolves after the splice"
+  (doc    "A match scrutinee hole whose selected arm BINDS the scrutinee and USES the binder — the whole match
+           is copied per resume, so the pattern binder `k` must re-resolve against the spliced scrutinee.
+           `C = (match □ (0 100) (k (+ k k)))`, resume 10 → binder arm k=10 → `(+ 10 10)` = 20; arm
+           `(+ 1 (resume 10 s))` → `(+ 1 20)` = 21.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 100) (k (+ k k)))))
+            (export main)))
+  (output (: 21 Int64)))
+
+(case "a pure one-hole conditional nested inside a strict operator folds"
+  (doc    "A conditional hole NESTED inside a strict operator: `(+ 1 (if (< (Amb.flip) 5) 10 20))`. The outer
+           `+` and the `if` compose: `C = (+ 1 (if (< □ 5) 10 20))`, resume 10 → `(+ 1 (if (< 10 5) 10 20))`
+           = `(+ 1 20)` = 21; arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (if (< (Amb.flip) 5) 10 20))))
+            (export main)))
+  (output (: 22 Int64)))
+
+(case "a pure one-hole in a let BODY (pure init) folds"
+  (doc    "A hole in the BODY of a let whose init is pure is a strict-spine position with a uniform
+           continuation. `C = (let ((x 5)) (+ x □))`, resume 10 → `(+ 5 10)` = 15; arm `(+ 1 (resume 10 s))`
+           → `(+ 1 15)` = 16.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x 5)) (+ x (Amb.flip)))))
+            (export main)))
+  (output (: 16 Int64)))
+
+(case "a pure one-hole in a FIRST let init with a later init using its binder folds"
+  (doc    "A hole in the FIRST init of a let whose LATER init uses the bound binder: the whole let is copied
+           per resume, so both binders re-resolve. `C = (let ((x □) (y (+ x 1))) (+ x y))`, resume 10 → x=10,
+           y=11 → 21; arm `(+ 1 (resume 10 s))` → `(+ 1 21)` = 22.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (let ((x (Amb.flip)) (y (+ x 1))) (+ x y))))
+            (export main)))
+  (output (: 22 Int64)))
+
 (case "a handler arm that resumes NON-tail folds through a pure continuation containing an effect-free call"
   (doc    "The pure one-hole continuation `C` may contain a NON-RECURSIVE user CALL whose body reaches no
            effect — not only primitive operators. Cadenza is strict, so the call evaluates its argument
