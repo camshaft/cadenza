@@ -8331,6 +8331,7 @@ todo	a peer missing a bound op is rejected naming the op
 todo	a peer op arity mismatch is rejected at compose time, not a trap
 todo	a peer op returning a tuple result is projected to a scalar over the shared runtime
 todo	a peer op type mismatch is rejected at compose time (same arity, different type)
+todo	a peer result handle passes straight through to another peer's arg without local inspection
 todo	a peer string result is consumed in-program via equality and byte-len
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
@@ -8347,6 +8348,8 @@ todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value 
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
+todo	a scalar quantity argument crosses to and from a peer as its inner scalar
+todo	a signature mismatch in ONE of several bound peers is rejected at compose time
 todo	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time
 todo	a string argument crosses to a peer and the doubled result byte-len is read
 todo	a symbol argument crosses to and from a peer as a runtime handle like a string
@@ -8456,5 +8459,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-todo	a signature mismatch in ONE of several bound peers is rejected at compose time
-todo	a peer result handle passes straight through to another peer's arg without local inspection

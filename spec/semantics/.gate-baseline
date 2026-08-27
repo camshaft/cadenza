@@ -4187,6 +4187,7 @@ pass	a scalar export crosses the WIT boundary and returns its argument
 pass	a scalar match beyond the jump-table cap falls back to a probe cascade and still dispatches
 pass	a scalar newtype matched back in place round-trips the erased inner
 pass	a scalar newtype wrapped by a param'd helper then matched back crosses the internal call boundary
+pass	a scalar quantity argument crosses to and from a peer as its inner scalar
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
