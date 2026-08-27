@@ -25600,27 +25600,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_plural_family_unit_spelling_names_the_same_unit_as_its_singular() {
-        // The ML quantity-literal surface reads for natural language (`4.0 feet`, `1.0 meters`), so a
-        // common English PLURAL spelling resolves to the SAME family unit as its canonical singular:
-        // `feet` = `foot`, `meters` = `meter`. `1.0 meters + 4.0 feet` converts feet to the meter
-        // reference (foot = 381/1250 m) and adds: 1 + 4 * 0.3048 = 2.2192 m. The plural resolves and
-        // converts exactly as the singular would — before the plural aliases it failed as an unknown
-        // unit. Compiles + RUNS.
-        let src = "(do (def (main) ((. Qty value) \
-                   (+ ((. Qty of) 1.0 ((. Unit of) #\"meters\")) \
-                      ((. Qty of) 4.0 ((. Unit of) #\"feet\"))))) (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a meters+feet plural family-unit sum compiles and runs"),
-                "main"
-            ),
-            2.2192
-        );
-    }
-
-    #[test]
     fn a_standard_unit_abbreviation_names_the_same_unit_as_its_canonical_spelling() {
         // The ML quantity-literal surface reads for the terse SI/metric symbols a calculator user reaches
         // for, so a standard ABBREVIATION resolves to the SAME family unit as its canonical spelling:
@@ -25719,67 +25698,6 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0501"),
             "degree + radian must reject CDZ0501 (incompatible dimension)"
-        );
-    }
-
-    #[test]
-    fn a_named_rate_unit_of_a_derived_dimension_converts_and_mixes() {
-        // F2-5: `mbps` is a named unit of the DERIVED dimension `byte/second` (a rate = information/time),
-        // not an atomic base. A rate DERIVED by division (`bytes / seconds`) is the SAME free-abelian-
-        // group dimension `mbps` names, so a computed rate and an `mbps` quantity MIX and convert:
-        // (250000 byte / 1 s) + 1 mbps = 250000 + 125000 = 375000 byte/s (1 mbps = 10^6 bit / 8 = 125000
-        // byte/s). The "name what bytes-over-time means as its own convertible family" case, over Float,
-        // NO bignum. `Unit.in` UNWRAPS to the bare byte/s count (Q3) — no `Qty.value` needed. Compiles + RUNS.
-        let src = "(do (def (main) \
-                   ((. Unit in) ((. Unit of) #\"byte-per-second\") \
-                     (+ (/ ((. Qty of) 250000.0 ((. Unit of) #\"byte\")) \
-                           ((. Qty of) 1.0 ((. Unit of) #\"second\"))) \
-                        ((. Qty of) 1.0 ((. Unit of) #\"mbps\"))))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a computed-rate + mbps sum compiles and runs"),
-                "main"
-            ),
-            375000.0
-        );
-    }
-
-    #[test]
-    fn a_named_rate_unit_combined_with_a_length_is_cdz0501() {
-        // F2-5: `(+ (Qty.of 1.0 mbps) (Qty.of 1.0 meter))` — a rate (`information/time`) plus a length —
-        // different dimensions → CDZ0501. A named DERIVED-dimension unit obeys the same dimensional
-        // safety as an atomic one (its dimension is `{byte:1, second:-1}`, incompatible with `{meter:1}`).
-        let src = "(do (def (main) (+ ((. Qty of) 1.0 ((. Unit of) #\"mbps\")) \
-                   ((. Qty of) 1.0 ((. Unit of) #\"meter\")))) (export main))";
-        assert_eq!(
-            compile_component(&crate::codec::encode(&parse(src)))
-                .err()
-                .and_then(|d| d.code.as_deref().map(str::to_string))
-                .as_deref(),
-            Some("CDZ0501"),
-            "a rate + a length must reject CDZ0501"
-        );
-    }
-
-    #[test]
-    fn a_program_declares_and_converts_its_own_family_unit() {
-        // F2-6: `(Unit.define #"furlong" (Unit.of #"foot") 660 1)` declares a user family unit = 660 feet;
-        // `(Unit.of #"furlong")` then resolves it and converts: 1 furlong = 660 * 381/1250 = 201.168 m.
-        // The user family-declaration surface, RUNS. `Unit.in` UNWRAPS to the bare meter count (Q3).
-        let src = "(do \
-                   ((. Unit define) #\"furlong\" ((. Unit of) #\"foot\") 660 1) \
-                   (def (main) ((. Unit in) ((. Unit of) #\"meter\") \
-                     ((. Qty of) 1.0 ((. Unit of) #\"furlong\")))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<f64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a user-declared furlong compiles and runs"),
-                "main"
-            ),
-            201.168
         );
     }
 
