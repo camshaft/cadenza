@@ -8828,15 +8828,14 @@
   (call main (: (list 1 2 3) (List UInt8)))
   (output (: 6 Int64)))
 
-; -- breaker batch 490 (2026-08-27): the cp4 decline-witness, pinned per the #3996 interim
-; safety-decline (the silent re-draw 170 — the pre-reduce_handle inline duplicated a performing
-; nullary factory call per use — is now a fail-loud decline; v-inference's bind-once guard).
-; Oracle 150 = capture-once semantics (mk's body draws ONCE at the (mk) call, f shares a=seed;
-; 5*10 + 5*20 = 150 at n=5), adjudicated in the #3929 arc. Flips todo->pass when v-effects'
-; capture-once fold extends to the factory-body face. Controls: cpf1 (single-app, 50) above,
-; idc1/idc2 (pure-alloc bind-once) in 09-functions.
+; -- breaker batch 490→495 (2026-08-27): the cp4 arc, CLOSED. History: silent re-draw 170 (the
+; pre-reduce_handle inline duplicated a performing nullary factory call per use) → fail-loud
+; decline (#3996, v-inference's bind-once guard) → capture-once FOLD 150 (#4017). Oracle 150 =
+; mk's body draws ONCE at the (mk) call, f shares a=seed; 5*10 + 5*20 at n=5 — adjudicated in the
+; #3929 arc, pinned before either fix. Controls: cpf1 (single-app, 50) above, idc1/idc2
+; (pure-alloc bind-once) in 09-functions.
 
-(case "cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)"
+(case "cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold"
   (input (do
     (effect St (op next (-> Int64)))
     (def (mk) (let ((a (St.next))) (fn ((: x Int64)) (* a x))))
