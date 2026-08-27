@@ -8074,9 +8074,10 @@
            `outer` stayed single-value and dropped `inner`'s S.tick advances every outer iteration (a silent
            wrong value: 9 not 7). `5a788c845` makes the reach transitive THROUGH non-recursive helpers to the
            recursive leaf, so the composed shape no longer SILENTLY MISCOMPILES. Threading it to the final
-           value is the same cross-def recursion-boundary fold follow-on as the direct face; until then it
-           DECLINES cleanly (the honest not-yet-reducible todo) rather than the pre-fix silent wrong value.
-           Correct value pinned: main(1)=7. Depth-general (a two-hop via1→via2→inner drops identically pre-fix);
+           value — the cross-def recursion-boundary fold — now WORKS through the hop: the let-dispatch arm
+           threads the `(let ((d (S.depth))) (outer … (via d)))` body, `via` inlines to the recursive `inner`,
+           and `inner`'s out-state projects across `outer`'s recursion under multi-value mode.
+           Correct value pinned: main(1)=7. Depth-general (a two-hop via1→via2→inner folds identically);
            a straight-line non-recursive helper folds fine (it reaches no recursive leaf). Uniform on all 3
            backends.")
   (input  (do

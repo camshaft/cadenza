@@ -5909,7 +5909,6 @@ pass	converting a surrogate code point to a char yields None
 pass	converting a unit to another unit of the same dimension is an exact rational scale
 pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
-pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak
 pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
@@ -6574,17 +6573,14 @@ pass	if4 Infinity plus a finite float saturates to Infinity
 pass	if5 runtime division by zero produces Infinity and crosses the boundary
 pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	ifb1 fifty frames of persistent update against a constant list never corrupt the constant
-pass	ifb2 a let-bound constant tuple referenced twice const-propagates into two embedded allocations
 pass	ifb2 a let-bound constant tuple referenced twice: the WHOLE `(tuple t t)` is a constant compound RETURN, so it hoists build-once (WIT static encoding) to a single census-excluded immortal — 0 mortal allocations
 pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key
 pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
-pass	imc1 a constant tuple in a compound RETURN allocates per-eval (the value-encode assembler lacks build-once sections)
 pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
 pass	imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)
-pass	imc2 a constant tuple as a returned list element allocates likewise (same assembler path)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
@@ -6982,6 +6978,9 @@ pass	nested quasiquote: a double unquote at level 2 decrements back to active an
 pass	nested quasiquote: a level-1 unquote splices even while a level-2 one is deferred (same template)
 pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosing binding
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
+pass	nested recursive performers THROUGH A NON-RECURSIVE PASS-THROUGH also fold (the pass-through inlines to the recursive leaf)
+pass	nested recursive performers through a non-recursive intermediate — out-state threads across the hop
+pass	nested recursive performers — an inner walk's out-state threads across the outer recursion boundary
 pass	nested same-direction shifts by constants combine into one shift by the sum, keeping the left-shift overflow trap
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption

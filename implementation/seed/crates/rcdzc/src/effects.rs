@@ -5773,6 +5773,14 @@ fn thread_returning_tuple(
                 Resolved::If { .. } | Resolved::Match { .. }
             ) || db.ast.as_form(form[1], "let").map(|t| t.len()) == Some(2)
                 || db.ast.as_form(form[1], "do").is_some()
+                // A `(let ((d (E.op))) (f … recursive …))` whose BODY carries the tail re-entrant call —
+                // the cross-def recursion-boundary shape (nr0: `(let ((d (S.depth))) (outer (- k 1) (+ acc
+                // (inner d 0))))`). The leaf arm below would `thread_bounded` the WHOLE let and DROP the
+                // let-init perform's binder (`d` rides into the self-call arg UNBOUND — a CDZ0101 the escape
+                // validator catches). Route it here so the init is threaded (binding `d` to the resume value,
+                // advancing the state) and the body is recursed as its own tail, rebuilding the `let` so `d`
+                // stays in scope.
+                || contains_recursive_call(db, form[1], callee_def)
         } =>
         {
             let form = db.ast.as_form(body, "let").unwrap().to_vec();
@@ -9414,11 +9422,7 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // must reach the DECLINE floor. `callee_calls_other_recursive_def` was direct-only, so the indirection
     // variant slipped past this guard into a single-return that DROPPED the advance (silent miscompile 9 vs 7);
     // the transitive variant follows the pass-through so the indirection declines cleanly like the direct case.
-    if caller_observes_outstate
-        && callee_transitively_calls_other_recursive_def(db, orig_body, callee_def, &mut Vec::new())
-    {
-        return None;
-    }
+
     // GROUP-AWARE MULTI-VALUE (the mutual-performer SCC fold). This body is a member of a mutually-recursive
     // SCC being group-specialized in multi-value mode together — recorded in `group_multivalue_bodies` (either
     // because THIS is the entry call whose SCC we detect just below, or because an OUTER entry already
@@ -9502,6 +9506,27 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // branch (`ev`/`od`: mutually exclusive, no shared strict context). Placed after the multivalue decision
     // so a shape that path linearizes is not pre-empted.
     if !multivalue && branch_perform_coexists_with_reentrant_call(db, orig_body, callee_def, ctx) {
+        return None;
+    }
+    // CROSS-DEF RECURSION-BOUNDARY safe floor (finding #19), NARROWED. A caller-observed callee whose
+    // recursion reaches ANOTHER recursive performer needs that callee's out-state threaded across the
+    // recursion. This now FOLDS for the ONE-WAY nested case (`outer` calls `inner`, `inner` does NOT call
+    // back — SCC of `outer` is just `{outer}`) under MULTI-VALUE mode: `thread_returning_tuple`'s
+    // let-dispatch arm threads the cross-def out-state (nr0/nr1/nr10). It still DECLINES cleanly when the
+    // fold would be unsound:
+    //   * SINGLE-return (`!multivalue`, e.g. a self-call gated behind a conditional): single-return drops
+    //     the cross-def advance every iteration — a silent miscompile (9 vs 7).
+    //   * a MUTUAL SCC (the reached performer cycles BACK — `ea`↔`eb`, so `mutual_scc_of` size > 1):
+    //     multi-value threads a SELF-call's out-state but not a mutual SIBLING's, so forcing it would leak
+    //     the internal `$s0`/`$t0` names.
+    // The `mutual_scc_of(callee_def).len() <= 1` test is what distinguishes the now-foldable ONE-WAY nested
+    // case (`outer`'s SCC is just `{outer}`) from the still-declining MUTUAL case. (This replaced an
+    // unconditional pre-group-detection decline; a caller-observed + transitive shape never reached the
+    // group fold under that guard, so declining one here — group-registered or not — matches prior behavior.)
+    if caller_observes_outstate
+        && callee_transitively_calls_other_recursive_def(db, orig_body, callee_def, &mut Vec::new())
+        && !(multivalue && mutual_scc_of(db, callee_def, ctx).len() <= 1)
+    {
         return None;
     }
 
