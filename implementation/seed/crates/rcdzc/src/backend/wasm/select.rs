@@ -8741,6 +8741,83 @@ fn sum_shell_reclaim_ok(
             heap_operand_ownership(db, scrutinee),
             Ok(HandleOwnership::Owned)
         )
+        // Class-B UAF (cb3-5): a scrutinee RE-MATCHED by a NESTED `MatchSum` in an arm (`match s { Circle =>
+        // match s { … } … }`, `s` an owned/inlined sum) is reclaimed by the INNER match's shell-drop already;
+        // this ENCLOSING reclaim would deep-drop the SAME handle a 2nd time → double-free. Suppress the
+        // enclosing reclaim when the scrutinee recurs as a nested-match scrutinee — the innermost reclaim
+        // fires once, rc balances. Leak-safe if the nested match is only in SOME arms (a non-re-matching arm
+        // then leaves the shell un-reclaimed = a value-correct leak, never a UAF).
+        && !cont_rematches_scrutinee(db, scrutinee, root)
+}
+
+/// Whether the outer MatchSum's owned `scrutinee` is RE-MATCHED — appears as the scrutinee of a NESTED
+/// `MatchSum` within `root`'s arm bodies (Class-B UAF cb3-5). Keyed on the scrutinee NODE (a CSE-shared
+/// re-match) and, when the scrutinee is a `Param`/`LocalRef`, its BINDER (a distinct-node same-binder
+/// re-match). Used by [`sum_shell_reclaim_ok`] to SUPPRESS the enclosing shell-reclaim so the innermost
+/// match's reclaim is the sole drop of the shared owned scrutinee (no double-free).
+fn cont_rematches_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    root: &crate::core::SumCont,
+) -> bool {
+    let tgt_binder = match core_of(db, scrutinee) {
+        Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+        _ => None,
+    };
+    let mut seen = HashSet::new();
+    cont_rematches_scrutinee_cont(db, scrutinee, tgt_binder, root, &mut seen)
+}
+
+fn cont_rematches_scrutinee_cont(
+    db: &mut Db,
+    scrutinee: StructId,
+    tgt_binder: Option<StructId>,
+    cont: &crate::core::SumCont,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            expr_rematches_scrutinee(db, scrutinee, tgt_binder, *body, seen)
+        }
+        crate::core::SumCont::Guarded { cond, body, els } => {
+            expr_rematches_scrutinee(db, scrutinee, tgt_binder, *cond, seen)
+                || expr_rematches_scrutinee(db, scrutinee, tgt_binder, *body, seen)
+                || cont_rematches_scrutinee_cont(db, scrutinee, tgt_binder, els, seen)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_rematches_scrutinee_cont(db, scrutinee, tgt_binder, then_, seen)
+                || cont_rematches_scrutinee_cont(db, scrutinee, tgt_binder, els, seen)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms
+            .iter()
+            .any(|a| cont_rematches_scrutinee_cont(db, scrutinee, tgt_binder, &a.cont, seen)),
+    }
+}
+
+fn expr_rematches_scrutinee(
+    db: &mut Db,
+    scrutinee: StructId,
+    tgt_binder: Option<StructId>,
+    id: StructId,
+    seen: &mut HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if let Core::MatchSum { scrutinee: s2, .. } = core_of(db, id) {
+        if s2 == scrutinee {
+            return true;
+        }
+        if let Some(b) = tgt_binder {
+            if matches!(core_of(db, s2), Core::Param { binder } | Core::LocalRef { binder } if binder == b)
+            {
+                return true;
+            }
+        }
+    }
+    core_child_ids(db, id)
+        .into_iter()
+        .any(|c| expr_rematches_scrutinee(db, scrutinee, tgt_binder, c, seen))
 }
 
 /// Whether EVERY variant of the sum type `sum` carries either NO payload (nullary) or a SCALAR payload
