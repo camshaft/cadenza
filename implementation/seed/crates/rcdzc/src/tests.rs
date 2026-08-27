@@ -21575,35 +21575,6 @@ mod match_engine {
         );
     }
 
-    #[test]
-    fn a_match_on_a_tuple_of_recursive_calls_types_from_the_constructor() {
-        // A bottom-up fold matches a TUPLE OF RECURSIVE CALLS against constructor patterns: `(match (tuple
-        // (fold a) (fold b)) ((tuple (E.Lit x) (E.Lit y)) …) ((tuple fa fb) …))`. Two gaps closed: (1) the
-        // switch resolves the tuple element's SUM type from the constructor (`type_at_path` peels a leading
-        // `Elem` over a tuple constructor) rather than the aggregate `type_of((tuple (fold a) (fold b)))`
-        // which reads a recursive-call element as `Any` during `fold`'s own solve → a non-sum decline; (2)
-        // the fall-through arm's binders `fa`/`fb` (reading the tuple's elements) type via the constructor
-        // (`tuple_constructor_ty` in `type_of`'s SumPayload arm) → `E`, not `Any`, so the value-heap emit
-        // does not decline. Typing each element occurrence on its own reaches `fold`'s cached `def_scheme`
-        // (`E → E`). `fold` normalizes `(Add (Lit 3) (Add (Lit 4) (Lit 5)))` bottom-up; `ev` sums → 12.
-        let Some(v) = run_heap_value(
-            "(module m (type E (Lit Int64) (Add (Tuple E E))) \
-               (def (fold e) (match e (((. E Lit) n) ((. E Lit) n)) \
-                   (((. E Add) (tuple a b)) \
-                     (match (tuple (fold a) (fold b)) \
-                       ((tuple ((. E Lit) x) ((. E Lit) y)) ((. E Lit) (+ x y))) \
-                       ((tuple fa fb) ((. E Add) (tuple fa fb))))))) \
-               (def (ev e) (match e (((. E Lit) n) n) (((. E Add) (tuple a b)) (+ (ev a) (ev b))))) \
-               (def (main) (ev (fold ((. E Add) (tuple ((. E Lit) 3) \
-                                                       ((. E Add) (tuple ((. E Lit) 4) ((. E Lit) 5)))))))) \
-               (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping bottom-up-fold run");
-            return;
-        };
-        assert_eq!(v, "12", "bottom-up fold over a tuple of recursive results");
-    }
 
     #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {

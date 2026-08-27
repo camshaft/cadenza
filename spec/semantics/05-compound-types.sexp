@@ -13636,6 +13636,21 @@
             (def (main) (f (E.Lit 3) (E.Lit 4))) (export main)))
   (output (: 7 Int64)))
 
+(case "a match on a tuple of RECURSIVE CALLS types its elements from the constructor pattern"
+  (doc    "The bottom-up-fold shape a self-hosted compiler takes, and its inference gap: `fold` matches `(tuple (fold a) (fold b))` — a tuple whose ELEMENTS are RECURSIVE CALLS — against constructor patterns. During `fold`'s own solve, `type_of((tuple (fold a) (fold b)))` reads each recursive-call element as `Any` (the def is not yet solved), so the switch must resolve the tuple element's SUM type from the CONSTRUCTOR pattern (`type_at_path` peels a leading `Elem` over the tuple constructor), NOT the aggregate type — else a non-sum decline. The fall-through arm's binders `fa`/`fb` likewise type via the constructor (`E`, not `Any`) so the value-heap emit does not decline. `fold` normalizes `(Add (Lit 3) (Add (Lit 4) (Lit 5)))` bottom-up (constant-folding sibling `Lit`s) and `ev` sums the result → 12. Distinct from the bound-value `(tuple a b)` pair-of-sums case above, whose elements type cleanly.")
+  (input  (do
+            (type E (Lit Int64) (Add (Tuple E E)))
+            (def (fold e) (match e
+                            ((E.Lit n) (E.Lit n))
+                            ((E.Add (tuple a b))
+                              (match (tuple (fold a) (fold b))
+                                ((tuple (E.Lit x) (E.Lit y)) (E.Lit (+ x y)))
+                                ((tuple fa fb) (E.Add (tuple fa fb)))))))
+            (def (ev e) (match e ((E.Lit n) n) ((E.Add (tuple a b)) (+ (ev a) (ev b)))))
+            (def (main) (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5))))))))
+            (export main)))
+  (call   main) (output (: 12 Int64)))
+
 (case "a match through an erased single-variant newtype dispatches on the inner sum's discriminant"
   (doc    "`(match (Outer2.Wrap <runtime Inner2>) ((Outer2.Wrap (Inner2.P x)) …) ((Outer2.Wrap (Inner2.W y))
            …))` where `Outer2 = (Wrap Inner2)` is a CLOSED single-variant sum — a NEWTYPE that ERASES to its

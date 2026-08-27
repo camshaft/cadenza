@@ -2602,6 +2602,7 @@ pass	a match on a genuinely-runtime char (from a runtime Char.from-int) dispatch
 pass	a match on a record field selects a later literal arm
 pass	a match on a record-field-access scrutinee dispatches on the field value
 pass	a match on a runtime integer scrutinee producing a boolean
+pass	a match on a tuple of RECURSIVE CALLS types its elements from the constructor pattern
 pass	a match on a tuple-element-access scrutinee dispatches on the element value
 pass	a match on a value of one sum type rejects a pattern from a different sum type
 pass	a match on an open sum omitting the open-tail arm is rejected
