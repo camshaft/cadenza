@@ -2746,6 +2746,7 @@ pass	a module function calls a sibling export by name
 pass	a module function is recursive
 pass	a module in a top-level do sequence type-checks its members
 pass	a module may nest three deep
+pass	a module member body resolves a sibling module in the enclosing scope
 pass	a module member named by the export clause is reachable
 pass	a module member not named by the export clause is private
 pass	a module member reading a sibling constant with an unannotated param compiles and runs
@@ -6584,6 +6585,8 @@ pass	iso-b a let-bound escaped-closure helper-call answer inside the handle body
 pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
 pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
 pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
+pass	itf4 an immortal 40-element Set compares structurally equal to a runtime-BUILT equal Set, and the runtime side reclaims
+pass	itf5 fifty frames of Set.union off an immortal 40-element Set (runtime-keyed probes) reclaim every produced set
 pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
@@ -8703,5 +8706,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	itf4 an immortal 40-element Set compares structurally equal to a runtime-BUILT equal Set, and the runtime side reclaims
-pass	itf5 fifty frames of Set.union off an immortal 40-element Set (runtime-keyed probes) reclaim every produced set

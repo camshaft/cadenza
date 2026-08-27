@@ -914,6 +914,18 @@
   (call   main)
   (output (: 50 Int64)))
 
+(case "a module member body resolves a sibling module in the enclosing scope"
+  (doc    "A module member's body resolves names by ordinary lexical scope INCLUDING the module's enclosing
+           scope — so a member of `app` may call a SIBLING MODULE `lib` declared beside it. `(module app
+           (def (go) ((. lib answer) unit)))` reaches `(. lib answer)` = 42 because `app`'s synthesized
+           record scope chains up to the enclosing do-block where `lib` binds. A scope walk that dead-ended
+           at `app`'s own record would spuriously reject `lib` (CDZ0101).")
+  (input  (do
+            (module lib (def (answer) 42))
+            (module app (def (go) ((. lib answer) unit)))
+            ((. app go) unit)))
+  (output (: 42 Int64)))
+
 (case "an outer definition references a sibling nested module by bare name"
   (doc    "A module's members are mutually visible (core-semantics.md #A Module Evaluates To A Record Of
            Its Exports), and a nested module is a member — so an outer `(def …)` may reference the sibling
