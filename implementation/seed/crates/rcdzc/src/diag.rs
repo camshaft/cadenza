@@ -186,6 +186,16 @@ pub enum Code {
     /// could never have produced a value (almost always a defect). The error-severity companion is
     /// `ConstTrap` (CDZ0304), emitted when the same provable trap IS observed.
     DeadTrap,
+    /// A compile-provable trap (a divide-by-zero / overflow / out-of-bounds the compiler discovered by
+    /// CONST-FOLDING) sits in a CONDITIONALLY-reached position — an `if` branch or `match` arm guarded by a
+    /// RUNTIME condition. Per the operator ruling (cn02), such a trap is NOT a compile error: it demotes to a
+    /// runtime trap that fires only when the branch is taken (the program builds + runs). But since the trap
+    /// was SYNTHESIZED by the fold — the author did not write an explicit `trap`/panic — a WARNING flags that
+    /// the operation could trap at runtime along a reachable path (a likely defect). The conditional-branch
+    /// companion of `ConstTrap` (CDZ0304, the UNCONDITIONAL / const-demanded trap that IS an error) and
+    /// `DeadTrap` (CDZ0305, the trap in a DROPPED value). Emitted ONLY for a const-fold-origin trap, never for
+    /// an explicit user `(trap …)` (which lowers to a plain `Core::Trap`, not a provable-trap poison).
+    ReachableTrap,
     /// A binding is DECLARED but never referenced — a `let` binding, a `fn`/`def` parameter, or a
     /// top-level definition (not exported) that nothing uses. A WARNING (not a rejection): an unused
     /// binding is well-formed, just likely a defect (a typo, a leftover, a forgotten use). Suppressed
@@ -392,6 +402,7 @@ impl Code {
             Code::NonIntegerDefault => "CDZ0303",
             Code::ConstTrap => "CDZ0304",
             Code::DeadTrap => "CDZ0305",
+            Code::ReachableTrap => "CDZ0309",
             Code::UnusedBinding => "CDZ0306",
             Code::DiscardedValue => "CDZ0307",
             Code::UnreachableBranch => "CDZ0308",
