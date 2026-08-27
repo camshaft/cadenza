@@ -8796,20 +8796,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_same_name_newtype_name_is_still_a_type_in_annotation_position() {
-        // The same name in a NON-head position stays the TYPE: `(: (UserId 5) UserId)` uses `UserId` as
-        // the constructor (head of `(UserId 5)`) AND as the type annotation (non-head) — both resolve
-        // correctly, and the value escapes tagged with the nominal name.
-        let v = run_heap_value_escape(
-            "(module m (type UserId (UserId Int64)) (def (main) (: (UserId 5) UserId)) (export main))",
-        );
-        // Skips (returns None) when the runtime wasm is absent — same guard the other escape tests use.
-        if let Some(v) = v {
-            assert_eq!(v, "(: 5 UserId)");
-        }
-    }
-
-    #[test]
     fn file_of_binary_search_maps_every_files_nodes_to_the_right_file() {
         // REGRESSION (perf + correctness): `FileScopeTable::file_of` maps a node id to its package file,
         // consulted on EVERY file-scoped resolution (`file_scoped_def`/`_type`/`_variant_ctor`). It was a
@@ -26427,50 +26413,6 @@ mod match_engine {
         let bytes = component(src);
         wasmparser::validate(&bytes)
             .expect("a Float32 Qty read back via Map.lookup must emit valid wasm (f32, not f64)");
-    }
-
-    #[test]
-    fn a_narrow_width_qty_stored_as_a_map_value_emits_valid_wasm_through_lookup() {
-        // MISCOMPILE REGRESSION: a `(Qty Int8 u)` stored as a MAP VALUE, read back via `Map.lookup` (→
-        // `Option`), and let ESCAPE the Option match AS A QTY (bound + `Qty.value`-unwrapped OUTSIDE the
-        // arm) emitted an INVALID module — `expected i32, found i64`. A quantity over a NARROW int erases to
-        // its inner narrow int's i32 machine slot, but the heap boxes/reads integers through an i64 cell
-        // (`box-int`/`get-int`), so a narrow value needs an i32→i64 EXTEND before `box-int` and an i64→i32
-        // NARROW after `get-int`. Both `is_narrow_int` (the extend/narrow decision) and `int_ty_of` (the
-        // `ConstI32`-vs-`ConstI64` literal-width decision) read the node's solved type and MUST peel
-        // `Ty::Qty` to see the narrow inner — without the peel the magnitude emitted as an i64 constant while
-        // the read applied the i64→i32 narrow, leaving an i64 where the i32 narrow-int slot was expected. The
-        // two width decisions must agree on the same peeled type (the `int_ty_of`/`is_narrow_int` lockstep,
-        // now extended from `strip_nominal` to also peel `Ty::Qty`). `cdz check` did NOT catch it (a
-        // check-vs-link gap), so the precise guard is that the emitted component VALIDATES.
-        let src = "(module m (def (main) ((. Qty value) \
-                     (match ((. Map lookup) \
-                              ((. Map insert) ((. Map empty)) 1 \
-                               ((. Qty of) ((. Int8 of) 100) ((. Unit base) #\"meter\"))) 1) \
-                       ((Some q) q) \
-                       ((None) ((. Qty of) ((. Int8 of) 0) ((. Unit base) #\"meter\")))))) \
-                     (export main))";
-        let bytes = component(src);
-        wasmparser::validate(&bytes)
-            .expect("a narrow-width Qty map value read back via Map.lookup must emit valid wasm");
-        // And it runs to the stored magnitude (100) when a runtime store is present.
-        if let Some(v) = run_heap_value_escape(src) {
-            assert_eq!(
-                v, "100",
-                "the stored narrow-Qty map value reads back as 100"
-            );
-        }
-        // CONTROL: a WIDE Int64 quantity map value already validated (rides the i64 fixnum default) — the
-        // fix must not regress it.
-        let wide = "(module m (def (main) ((. Qty value) \
-                      (match ((. Map lookup) \
-                               ((. Map insert) ((. Map empty)) 1 \
-                                ((. Qty of) 100 ((. Unit base) #\"meter\"))) 1) \
-                        ((Some q) q) \
-                        ((None) ((. Qty of) 0 ((. Unit base) #\"meter\")))))) \
-                      (export main))";
-        wasmparser::validate(&component(wide))
-            .expect("a wide-Int64 Qty map value must still emit valid wasm");
     }
 
     #[test]

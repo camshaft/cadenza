@@ -10361,6 +10361,17 @@
   (call   main)
   (output (: 42 Id)))
 
+(case "a newtype whose variant name equals its type name resolves in both head and annotation positions"
+  (doc    "The idiomatic newtype spelling reuses ONE name for the type AND its single variant: `(type UserId
+           (UserId Int64))`. That name must resolve correctly in BOTH a HEAD position — `(UserId 5)`, the
+           constructor — AND a NON-HEAD annotation position — `(: … UserId)`, the type. Both resolve, and the
+           value escapes as the erased bare payload tagged with the nominal name: `(: 5 UserId)` (the
+           single-field-nominal scalar escape, same shape as the `(: 42 Id)` case above but with the
+           ctor==type name). A resolver that let the head occurrence shadow the type (or vice-versa) would
+           fail one of the two positions.")
+  (input  (do (type UserId (UserId Int64)) (def (main) (: (UserId 5) UserId)) (export main)))
+  (output (: 5 UserId)))
+
 (case "a single-variant newtype over a COMPOUND escapes the bare compound under its type header"
   (doc    "The compound companion: `(type Pt (Mk (Tuple Int64 Int64)))` — a newtype whose underlying value
            is a tuple. `(Pt.Mk (tuple 5 5))` escapes `(: (tuple 5 5) Pt)`: the payload is the BARE tuple

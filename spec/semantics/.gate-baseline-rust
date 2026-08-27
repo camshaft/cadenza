@@ -2646,6 +2646,7 @@ pass	a module function calls a sibling export by name
 pass	a module function is recursive
 pass	a module in a top-level do sequence type-checks its members
 pass	a module may nest three deep
+pass	a module member body resolves a sibling module in the enclosing scope
 pass	a module member named by the export clause is reachable
 pass	a module member not named by the export clause is private
 pass	a module member reading a sibling constant with an unannotated param compiles and runs
@@ -2923,6 +2924,7 @@ pass	a newtype over a record reads a field through the tag
 pass	a newtype over a record reads a field through the tag at runtime
 pass	a newtype over a sum erases without a second box and matches through both layers
 pass	a newtype over a sum escapes to the host as its erased underlying sum value-form
+pass	a newtype whose variant name equals its type name resolves in both head and annotation positions
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
@@ -8244,4 +8246,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a module member body resolves a sibling module in the enclosing scope
