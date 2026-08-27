@@ -4864,3 +4864,38 @@
   (input (do (def (f (: xs (List Char))) (match xs ((list a #\x) 1) (_ 0)))
              (def (main) (f (list #\p #\x))) (export main)))
   (call main) (output (: 1 Int64)))
+
+; ── breaker batch 537: slice-dup residue calibration (post-#4425, operator-accepted
+; leaks-over-UAF). The Owned classification stopped the Class-A double-free (values verified
+; correct in every cell here) at the cost of an unreleased dup per consume. These three cells sit
+; OUTSIDE the 12 markers #4425 reconciled: the MINIMAL single-consume cell, the slice-of-slice
+; composition, and the dqe-INTERSECTION (a slice inside a dual-used tuple — drops only when BOTH
+; the slice-dup residue AND dqe leg-1 are balanced; a partial §4 fix shows an intermediate
+; reading here). All flip DOWN under v-core-opt's unified consuming analysis.
+
+(case "slc1 a SINGLE-consumed String.slice result leaks its dup (the minimal post-#4425 residue cell)"
+  (input (do (def (main (: n Int64))
+  (String.byte-len (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range")))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak 3))
+
+(case "slc2 a slice-of-slice (two view layers) multi-consumed leaks both layers' dups"
+  (input (do (def (main (: n Int64))
+  (let ((u (Option.expect (String.slice (Option.expect (String.slice (String.concat "abcdefgh" (if (> n 0) "XY" "Z")) 1 6) "in-range") 1 3) "in-range")))
+    (+ (* 100 (String.byte-len u)) (if (= u "cd") 1 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 201 Int64))
+  (live-objects known-leak 10))
+
+(case "slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range")))
+        (b (tuple n (Option.expect (String.slice (String.concat "abcdef" (if (> n 0) "XY" "Z")) 1 4) "in-range"))))
+    (+ (* 100 (String.byte-len (. a 1))) (+ (. b 0) (if (= a b) 10000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 10301 Int64))
+  (live-objects known-leak 6))
