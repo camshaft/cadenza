@@ -40,6 +40,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -61,6 +67,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -82,6 +94,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -104,6 +122,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -192,6 +216,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -267,6 +297,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -361,6 +397,12 @@ jobs:
       # supply-chain caution). Matches the repo's tag-pinning convention for third-party actions.
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -396,6 +438,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -417,6 +465,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
@@ -452,6 +506,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
         with:
+          # Opt out of the floating Determinate Nix "stable" daemon: a bad stable release reset the daemon
+          # socket fleet-wide (Aug 2026 — cargo-path CI red across unrelated PRs, "cannot open connection to
+          # remote store daemon: Connection reset by peer"), while the ACTION+installer version were
+          # unchanged green-vs-red. Use upstream Nix instead — nothing here is Determinate-only
+          # (ca-derivations below is an upstream-native experimental feature).
+          determinate: false
           # Enable ca-derivations so CI builds + reuses the per-case content-addressed corpus cache (#3363)
           # instead of rebuilding the world (operator 2026-08-26). Appends to the installer nix-command/flakes.
           extra-conf: "extra-experimental-features = ca-derivations"
