@@ -146,3 +146,17 @@
               (def (main (: kind Int64)) (host (K) (List.len (K.interpret kind 0)))) (export main)))
   (call   main (: 1 Int64))
   (output (: 2 Int64)))
+(case "two effects bound to the same interface share one peer instance (both ops run)"
+  (doc    "ONE provider component exports `fa` (adds 10) and `fb` (adds 20) on `cadenza:x/y`; the consumer
+           declares TWO effects A and B and binds BOTH to `cadenza:x/y` — a legal dedup on the EFFECT name,
+           merging both ops onto a SINGLE `cadenza:x/y` instance import (not two colliding imports, which
+           would be a silent-invalid component). `main = A.fa(1) + B.fb(2) = 11 + 22 = 33`, proving both
+           effects route to the one shared provider instance and each op returns its own result. Relocated
+           (RUN half) from the in-crate rcdzc `two_effects_bound_to_the_same_interface_share_one_peer_instance`
+           — its white-box single-instance-import structural pin stays in rcdzc.")
+  (peer   "cadenza:x/y" (do (def (fa (: x Int64)) (+ x 10)) (def (fb (: x Int64)) (+ x 20)) (export fa) (export fb)))
+  (input  (do (effect A (op fa (-> Int64 Int64))) (effect B (op fb (-> Int64 Int64)))
+              (bind A "cadenza:x/y") (bind B "cadenza:x/y")
+              (def (main) (host (A B) (+ (A.fa 1) (B.fb 2)))) (export main)))
+  (call   main)
+  (output (: 33 Int64)))
