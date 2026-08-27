@@ -91,11 +91,32 @@ def stripFrame (m : Module) (i : Nat) : Nat :=
     | none => i
   | _ => i
 
-/-- Interpret an expected value-AST node (its frame stripped) as a scalar `Value`, if it is one. -/
-def expectedValue? (m : Module) (i : Nat) : Option Value :=
-  match m.nodes[stripFrame m i]? with
-  | some (Node.atom lid) => (m.leaves[lid]?).bind Value.ofLeaf
-  | _ => none
+mutual
+/-- Interpret an expected value-AST node (its `(: v T)` frame stripped) as a `Value` — a scalar leaf,
+or a compound `(Some e)` / `(None …)` / `(Ok e)` / `(Err e)` / `(tuple e…)` / `(list e…)` (recursively).
+`none` if it is not a value the domain models. -/
+partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
+  let s := stripFrame m i
+  match m.nodes[s]? with
+  | Option.some (Node.atom lid) => (m.leaves[lid]?).bind Value.ofLeaf
+  | Option.some (Node.list cs) =>
+    match headStr? m s with
+    | Option.some "Some" => ((cs[1]?).bind (expectedValue? m)).map Value.some
+    | Option.some "Ok" => ((cs[1]?).bind (expectedValue? m)).map Value.ok
+    | Option.some "Err" => ((cs[1]?).bind (expectedValue? m)).map Value.err
+    | Option.some "None" => Option.some Value.none
+    | Option.some "tuple" => (seqVals m (cs.extract 1 cs.size)).map Value.tuple
+    | Option.some "list" => (seqVals m (cs.extract 1 cs.size)).map Value.list
+    | _ => Option.none
+  | _ => Option.none
+
+/-- Interpret each node as a value; `none` if any element is not a modeled value. -/
+partial def seqVals (m : Module) (ids : Array Nat) : Option (Array Value) :=
+  ids.foldl (fun acc id =>
+    match acc, expectedValue? m id with
+    | Option.some vs, Option.some v => Option.some (vs.push v)
+    | _, _ => Option.none) (Option.some #[])
+end
 
 /-- Parse one `(trial (call <export>)? (arg <val>)* (expect-… …))`. -/
 def parseTrial (m : Module) (tid : Nat) : Except String OTrial := do

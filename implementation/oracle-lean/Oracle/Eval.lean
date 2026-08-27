@@ -260,6 +260,16 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         if h == "let".toUTF8 then evalLet m env ty fuel children
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
+        else if (env.lookup? h).isSome then
+          -- the head is a BOUND (shadowed) name, not the builtin constructor/operator — this is an
+          -- application of that binding, which the pure-core does not model yet → skip.
+          .unsupported "eval: head is a bound/shadowed name (application not modeled)"
+        else if h == "Some".toUTF8 then evalUnaryCtor m env fuel children Value.some
+        else if h == "Ok".toUTF8 then evalUnaryCtor m env fuel children Value.ok
+        else if h == "Err".toUTF8 then evalUnaryCtor m env fuel children Value.err
+        else if h == "None".toUTF8 then Outcome.value Value.none
+        else if h == "tuple".toUTF8 then evalSeqCtor m env fuel children Value.tuple
+        else if h == "list".toUTF8 then evalSeqCtor m env fuel children Value.list
         else match String.fromUTF8? h with
              | some hs => if arithOps.contains hs then evalArith m env ty fuel hs children
                           else .unsupported s!"eval: operator/application {hs} not yet modeled"
@@ -327,15 +337,46 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       let operandTyIn := fun (i : Nat) =>
         (operandTy? m i).orElse (fun _ => (nameOf? m i).bind (fun nm => (env.lookup? nm).bind (·.2)))
       let opTy := ((operandTyIn aId).orElse (fun _ => operandTyIn bId)).getD ty
-      match evalNode m env opTy fuel aId with
-      | .value (.int a) =>
-        match evalNode m env opTy fuel bId with
-        | .value (.int b) => evalArithOp op a b opTy
-        | .value _ => .unsupported "eval: non-integer operand to arithmetic"
-        | other => other
-      | .value _ => .unsupported "eval: non-integer operand to arithmetic"
-      | other => other
+      -- Evaluate BOTH operands and combine by precedence: unsupported > diverges > trap > value. An
+      -- UNMODELED operand (unsupported) wins over a sibling's trap — so we skip (never claim a trap we
+      -- are unsure of), which is what keeps a `try`/short-circuit case a coverage-gap rather than a
+      -- spurious trap.
+      let oa := evalNode m env opTy fuel aId
+      let ob := evalNode m env opTy fuel bId
+      match oa, ob with
+      | .unsupported r, _ => .unsupported r
+      | _, .unsupported r => .unsupported r
+      | .diverges, _ => .diverges
+      | _, .diverges => .diverges
+      | .trap t, _ => .trap t
+      | _, .trap t => .trap t
+      | .value (.int a), .value (.int b) => evalArithOp op a b opTy
+      | _, _ => .unsupported "eval: non-integer operand to arithmetic"
   | _, _ => .unsupported s!"eval: malformed {op}"
+
+/-- A unary constructor `(Ctor e)` (Some/Ok/Err): evaluate `e`, wrap the value; a trap/diverges/
+unsupported inner outcome propagates. -/
+partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Array Nat)
+    (wrap : Value → Value) : Outcome :=
+  match children[1]? with
+  | some eId =>
+    match evalNode m env defaultIntTy fuel eId with
+    | .value v => .value (wrap v)
+    | other => other
+  | none => .unsupported "eval: malformed unary constructor"
+
+/-- A sequence constructor `(tuple e…)` / `(list e…)`: evaluate each element left-to-right (a
+non-value element propagates), wrap the collected values. -/
+partial def evalSeqCtor (m : Module) (env : Env) (fuel : Nat) (children : Array Nat)
+    (wrap : Array Value → Value) : Outcome :=
+  let rec go (js : List Nat) (acc : Array Value) : Outcome :=
+    match js with
+    | [] => .value (wrap acc)
+    | j :: rest =>
+      match evalNode m env defaultIntTy fuel j with
+      | .value v => go rest (acc.push v)
+      | other => other
+  go (children.extract 1 children.size).toList #[]
 end
 
 /-- Evaluate the program's `main` body, or `unsupported` if the program shape is not the modeled
