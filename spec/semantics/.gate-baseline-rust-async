@@ -2730,6 +2730,7 @@ pass	a narrow-width two-parameter recursion compiles to valid wasm and computes
 pass	a narrow-width wrapping-mul constant folds by wrapping, not by rejecting
 pass	a narrower-typed runtime value is not silently widened into a wider segment
 pass	a nearer handler on the call chain shadows an outer one
+pass	a negated repeated condition in a nested if collapses (value parity)
 pass	a negated zero equality composes with the negation fold
 pass	a negative and its positive twin encode to distinct bytes
 pass	a negative const-multiplier bound check traps at the exact boundary
@@ -3336,6 +3337,7 @@ pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm sh
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
 pass	a remainder by a constant bounds its result so a downstream checked op sheds its guard (value + trap parity)
 pass	a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep
+pass	a repeated condition in a nested if collapses to the outer condition (value parity)
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
