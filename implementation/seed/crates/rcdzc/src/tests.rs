@@ -19553,34 +19553,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_projected_list_consumed_then_reprojected_is_retained_not_mutated() {
-        // The PROJECTION face of the still-live-binding retain (repeated-proj-of-let-consumed-then-read): the
-        // shared value is a nested-compound PROJECTION `(. t 0)` of a `let`-bound tuple, not the binding
-        // itself. `t = (build …) : (Tuple (List Int64) Int64)` with `t.0 = [0 1 2]`; the list is CONSUMED by
-        // `(List.push (. t 0) 99)` (len → 4) and READ again as `(. t 0)` (len → 3), so 4 + 3 = 7. Before the
-        // fix `arr-get` returned the child list as a BORROW (no rc++), so the child had rc==1 and `List.push`
-        // FBIP-mutated it in place → the re-projection read the grown list → 8 (silent wrong value). Dup'ing
-        // the binder `t` did NOT help (it bumps the aggregate's rc, not the child's); the fix `dup`s the
-        // projected CHILD at the consuming projection so the push takes the persistent path. `build` threads
-        // the list through the recursion so `t` is a genuine runtime value (no const-fold).
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n acc) (if (< i n) \
-                   (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc)) \
-               (def (main) (let ((t (build 0 3 (tuple (list) 0)))) \
-                             (+ ((. List len) ((. List push) (. t 0) 99)) ((. List len) (. t 0))))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "7",
-            "a consuming projection must not mutate the child a later re-projection reads"
-        );
-    }
-
-    #[test]
     fn a_single_use_projected_list_consume_needs_no_extra_child_dup() {
         // The FBIP fast path for the projection face: a projected list consumed EXACTLY once (no later
         // re-projection) must NOT get the extra child retain — `build 0 3` = `[0 1 2]`, `(. t 0)` pushed to
@@ -19598,34 +19570,6 @@ mod match_engine {
             return;
         };
         assert_eq!(out, "4", "single-use projected push then length");
-    }
-
-    #[test]
-    fn a_doubly_nested_projected_list_consumed_then_reread_is_retained() {
-        // The projection-DEPTH face: the shared list lives TWO projections deep, `(. (. t 0) 0)`, inside a
-        // `(Tuple (Tuple (List Int64) Int64) Int64)`. The consuming op's operand is a Proj-of-Proj (an
-        // intermediate borrow reads the inner tuple, then the list). The single-level retain gated on a
-        // DIRECT binder operand, so this got no child dup and `List.push` FBIP-mutated the innermost list
-        // (→ 8, want 7). The fix walks the projection chain to the root binder and dups the innermost child
-        // at the consuming leaf (only the OUTERMOST projection dups — no wasted intermediate dup). `build 0
-        // 3` → `[0 1 2]`; consumed len 4 + re-read original len 3 = 7.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n acc) (if (< i n) \
-                   (build (+ i 1) n (tuple (tuple ((. List push) (. (. acc 0) 0) i) (. (. acc 0) 1)) \
-                                           (+ (. acc 1) 1))) acc)) \
-               (def (main) (let ((t (build 0 3 (tuple (tuple (list) 0) 0)))) \
-                             (+ ((. List len) ((. List push) (. (. t 0) 0) 99)) \
-                                ((. List len) (. (. t 0) 0))))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "7",
-            "a doubly-nested projected list must retain its innermost child through the proj chain"
-        );
     }
 
     #[test]

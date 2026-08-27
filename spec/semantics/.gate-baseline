@@ -8774,3 +8774,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a constant shift-left whose result exceeds i64 but fits the UInt64 width folds, not declines
 pass	a constant SIGNED shift-right sign-extends (the unsigned-width fold bails on a signed type)
+pass	pjr1 a consuming projection of a let-bound tuple's list child is retained (re-projection reads original)
+pass	pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)
