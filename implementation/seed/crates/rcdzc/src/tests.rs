@@ -16196,40 +16196,10 @@ mod runtime_ops {
             "distinct w does not cancel"
         );
 
-        // VALUE PARITY.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (^ (: (^ x y) Int64) y) Int64)",
-                &[Val::S64(12345), Val::S64(6789)]
-            ),
-            12345
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (^ (: (^ x 5) Int64) 5) Int64)",
-                &[Val::S64(999)]
-            ),
-            999
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64) (: y Int64)",
-                "(: (^ y (: (^ x y) Int64)) Int64)",
-                &[Val::S64(-7), Val::S64(42)]
-            ),
-            -7
-        );
-        // TRAP SAFETY: a trapping `w = (/ 100 z)` is discarded by the fold — must NOT be dropped, still ÷0.
-        assert!(
-            traps(
-                "(: x Int64) (: z Int64)",
-                "(^ (: (^ x (: (/ 100 z) Int64)) Int64) (: (/ 100 z) Int64))",
-                &[Val::S64(5), Val::S64(0)]
-            ),
-            "a trapping xor operand must keep its trap (not cancelled)"
-        );
+        // VALUE + TRAP PARITY migrated to the corpus (wasmtime-free here): see
+        // spec/semantics/06-numeric-model.sexp cases "xc1 xor by the same value twice cancels to the
+        // operand …" (runtime/constant/commuted/masked w all fold to the operand) and "xc2 a trapping
+        // discarded xor operand keeps its trap …" (the cancellation must not drop a trapping `(/ 100 z)`).
     }
 
     #[test]

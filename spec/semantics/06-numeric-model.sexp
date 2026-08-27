@@ -10228,3 +10228,28 @@
   (input (do (def (main (: a Int64) (: b Int64)) (if (not (not (< a b))) 1 0)) (export main)))
   (call main (: 4 Int64) (: 5 Int64)) (output (: 1 Int64))
   (call main (: 5 Int64) (: 4 Int64)) (output (: 0 Int64)))
+; -- xor cancellation value+trap parity (migrated from rcdzc runtime_ops
+; a_xor_by_the_same_value_twice_cancels_to_the_operand, 2026-08-27; the Lir xor-count assertions
+; stay as the wasmtime-free rcdzc unit test, these pin the runtime observable): `(^ (^ v w) w)` → v
+; for a runtime, constant, commuted, and masked `w`; a TRAPPING discarded `w` must still trap.
+
+(case "xc1 xor by the same value twice cancels to the operand (runtime, constant, commuted, masked w)"
+  (doc    "`(^ (^ x y) y)`, `(^ (^ x 5) 5)`, `(^ y (^ x y))`, and `(^ (^ x (& y 15)) (& y 15))` all equal x —
+           the paired xors by the same w cancel. Combined checksum pins all four forms in one run.")
+  (input (do (def (main (: x Int64) (: y Int64))
+    (+ (if (= (^ (^ x y) y) x) 1 0)
+       (+ (* 10 (if (= (^ (^ x 5) 5) x) 1 0))
+          (+ (* 100 (if (= (^ y (^ x y)) x) 1 0))
+             (* 1000 (if (= (^ (^ x (& y 15)) (& y 15)) x) 1 0))))))
+    (export main)))
+  (call main (: 12345 Int64) (: 6789 Int64))
+  (output (: 1111 Int64)))
+
+(case "xc2 a trapping discarded xor operand keeps its trap (the cancellation must not drop it)"
+  (doc    "`(^ (^ x (/ 100 z)) (/ 100 z))` equals x for any evaluated z, but `(/ 100 z)` at z=0 divides by
+           zero and must still trap — the fold that cancels the xors must not discard the trapping operand.
+           z=3 → operand 33, result x=5; z=0 → trap.")
+  (input (do (def (main (: x Int64) (: z Int64))
+    (^ (^ x (/ 100 z)) (/ 100 z))) (export main)))
+  (call main (: 5 Int64) (: 3 Int64)) (output (: 5 Int64))
+  (call main (: 5 Int64) (: 0 Int64)) (trap "divide by zero"))
