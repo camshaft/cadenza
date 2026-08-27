@@ -7811,62 +7811,6 @@ fn a_site_a_owned_closure_producers_reclaim_across_shapes() {
     );
 }
 
-/// KNOWN LEAK (tracking probe): a SINGLE non-recursive `match` over an OWNED COMPOUND-payload sum, whose
-/// payload child is only BORROWED (read by `List.len` → scalar, never moved out) and does NOT escape the arm,
-/// STILL leaks the shell + its payload — the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`,
-/// which a `(List Int64)` payload fails, so `reclaim_shell` is false and the owned `Box.Wrap` shell is left
-/// un-dropped. Even though this shape is SOUND to reclaim (the child is borrowed + non-escaping, contrast
-/// `((Mk a _) (Mk a a))` whose child flows into the returned ctor), the conservative all-scalar floor blocks it.
-/// WARNING: CRITICAL — the scrutinee `(mk n)` takes a RUNTIME param `n`: with a CONSTANT `(mk 3)` the whole
-/// `(if (< 3 0) …)` + 2-arm match CONST-FOLD to the `Wrap` arm, the `MatchSum` is eliminated, no shell is built,
-/// and the probe spuriously reads 0 (masking the leak — the exact `build 0 …` const-fold flaw PR#719/Copilot
-/// caught in the set-algebra probe). A runtime `n` forces the real `MatchSum` emit + reclaim gate (traced:
-/// `all_scalar=false => reclaim=false`). This is the SIMPLEST instance of the compound-shell-reclaim gap and the
-/// cleanest before/after witness for the future broadening (flip to 0 when the sound compound-shell reclaim,
-/// gated on no-arm-child-escapes, lands). `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn a_borrow_only_compound_payload_match_shell_known_gap() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "[compound-shell] debug-counters runtime not in the store; skipping known-leak probe"
-        );
-        return;
-    };
-    // `mk n` (RUNTIME `n`, so the match can NOT const-fold) builds a fresh owned `Box.Wrap [0..n)`; the match
-    // binds `xs` and reads `List.len xs` (a borrow → scalar). `xs` does NOT escape the arm, so the shell is a
-    // droppable owned temporary — but the compound-payload gate (`all_scalar=false`) leaves it un-dropped.
-    let src = "(module m \
-                 (type Box (Wrap (List Int64)) Empty) \
-                 (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
-                    (if (< i n) (build (+ i 1) n (List.push acc i)) acc)) \
-                 (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) (Box.Wrap (build 0 n (list))))) \
-                 (def (main (: n Int64)) (match (mk n) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // Value CORRECT despite the leak (reclamation gap, not a miscompile; no UAF — a freed-early shell traps).
-    assert_eq!(
-        rt.call("main", &[Val::S64(3)]),
-        Val::S64(3),
-        "List.len of the wrapped [0,1,2] is 3 (value-correct + NO UAF)"
-    );
-    // The owned `Box.Wrap` shell + its payload list ([0,1,2]) leak — the compound-payload gate blocks the
-    // shell drop even though the borrowed, non-escaping child would make it sound. Pins the count; flip to 0
-    // when the compound-shell reclaim broadening (gated on no-arm-child-escapes) lands — this is the first
-    // shape it should fix. A LOWER count = the broadening landed (or an over-drop); investigate before flipping.
-    assert_eq!(
-        rt.live_objects(),
-        3,
-        "KNOWN GAP: an owned compound-payload match shell whose child is only borrowed (List.len) + non-\
-         escaping is left un-dropped (all-scalar-payload reclaim floor) — 3 cells (the Box.Wrap shell + the \
-         payload list's spine + boxed element(s)). Flip to 0 when the sound compound-shell reclaim lands."
-    );
-}
-
 /// WARNING: UAF GUARD (the `implementation/cad` snowflake miscompile a rejected shell-reclaim shipped, minimized to a
 /// lib probe): an owned COMPOUND-payload sum whose child is a COMPOUND (`hi : V`) BORROWED OUT of the shell
 /// via a nested match — `(match (mk n) ((Box.Bx lo hi) (match hi ((V.V3 a b c) …))))` — with a SCALAR final

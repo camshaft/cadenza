@@ -1371,6 +1371,7 @@ pass	a boolean result threaded through a second function
 pass	a boolean tuple element is projected as the program result
 pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
+pass	a borrow-only compound-payload match shell is left un-dropped -- known gap (all-scalar reclaim floor)
 pass	a borrowed BigInt let-binding used by three ops leaves no live heap objects
 pass	a borrowed heap-payload sum param in a self-recursive fn is reclaimed at the loop exit (no leak)
 pass	a borrowed runtime String rope compares equal to its flat twin and its compaction is leak-neutral
@@ -7097,6 +7098,9 @@ pass	shadowing resolves nearest-wins through the scope-skip index
 pass	shd1 DYNAMIC shift amounts from the state — two drawn widths, the value-63 draw traps the checked shift overflow
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
+pass	shr1 a let-bound inner list referenced twice in a returned list stays one shared object (four cells)
+pass	shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)
+pass	shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)
 pass	shrinking an @invariant newtype to EMPTY traps at the rebuild — the invariant catches the crossing
 pass	shrinking reports the minimal failing input
 pass	shx1 two SIBLING handles of one effect in one expression keep independent states
@@ -8045,6 +8049,3 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	shr1 a let-bound inner list referenced twice in a returned list stays one shared object (four cells)
-pass	shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)
-pass	shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)
