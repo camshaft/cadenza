@@ -2014,49 +2014,80 @@ fn inlined_body_is_performing_capture_creation_wrapper(db: &mut Db, node: Struct
     })
 }
 
-/// [cp4 SILENT-MISCOMPILE GUARD, v-inference×v-effects pair] Whether the handle body binds a MULTI-USE
-/// `let`-local to a NULLARY factory-call `(mk)` whose VERBATIM body is a performing-capture creation-wrapper
-/// closure `(let ((a <perform>)) (fn …a…))`. Reducing `(f X)` inlines `(mk)` per use via
-/// `apply_lambda`/`lambda_of`, whose `Let`-capture arm SUBSTITUTES the performing init `(St.next)` INTO the
-/// returned lambda body (creation-time capture → per-application perform), so a local used ≥2× re-draws per
-/// use (breaker cp4: 170 instead of the capture-once 150). The correct fix is v-effects' capture-once fold
-/// (draw once, close over the result — the whole `(let ((f (mk))) …)` becomes ca1m which #3894 already
-/// folds); the bind-once REWRITE that would produce it hits the resolution-hygiene wall blocking that fold
-/// family. Until it lands, `reduce_handle` DECLINES this shape (bind-once-or-reject: fail-loud, never a
-/// silent wrong value — operator NO-silent-miscompile). NARROW: multi-use only (a single application draws
-/// once = correct, cpf1 folds 50), NULLARY factory only (the arg-factory cc3 is v-effects' `reduce_handle`
-/// layer), gated on the creation-wrapper shape (excludes cx8 [perform inside the lambda] and pure factories
-/// idc1/idc2 [callee returns non-lambda / no perform]).
-fn handle_body_has_multiuse_nullary_performing_factory(db: &mut Db, body: StructId) -> bool {
+/// [cp4 CAPTURE-ONCE FOLD, v-inference×v-effects pair] When the handle body binds a MULTI-USE `let`-local to
+/// a NULLARY factory-call `(mk)` whose VERBATIM body is a performing-capture creation-wrapper closure
+/// `(let ((a <perform>)) (fn …a…))`, rebind the local to a fresh COPY of that verbatim body — PRESERVING the
+/// capture-let, turning the body into the DIRECT performing-closure-let (ca1m) shape the #3894 capture-once
+/// hoist already folds to the capture-once value (cp4 → 150). Without this, reducing `(f X)` inlines `(mk)`
+/// per use via `apply_lambda`/`lambda_of`, whose `Let`-capture arm SUBSTITUTES the performing init
+/// `(St.next)` INTO the returned lambda body (creation-time capture → per-application perform), so a local
+/// used ≥2× re-draws per use (breaker cp4: silent 170 instead of 150). Binding the VERBATIM body (not the
+/// `apply_lambda`-reduced one, which collapses the capture) + the #4006 `deep_fresh_copy` re-anchor (below)
+/// keeps the capture. NARROW: multi-use only (a single application draws once = correct, cpf1 folds 50),
+/// NULLARY factory only (the arg-factory face cc3 is v-effects' `reduce_handle` layer, folded by #4006),
+/// gated on the creation-wrapper shape (excludes cx8 [perform inside the lambda, folds 24] and pure
+/// factories idc1/idc2 [callee returns non-lambda / no perform]).
+fn bind_once_performing_factory(db: &mut Db, body: StructId) -> StructId {
     let Some(form) = db.ast.as_form(body, "let").map(|t| t.to_vec()) else {
-        return false;
+        return body;
     };
     if form.len() != 2 {
-        return false;
+        return body;
     }
     let (bindings_occ, inner) = (form[0], form[1]);
     let Struct::List(pairs) = db.ast.get(bindings_occ).clone() else {
-        return false;
+        return body;
     };
-    pairs.iter().any(|&pair| {
-        let Struct::List(kv) = db.ast.get(pair).clone() else {
-            return false;
-        };
-        if kv.len() != 2 || count_param_refs(db, inner, kv[1]) < 2 {
-            return false; // multi-use only (a single application draws once — cpf1 folds 50)
+    let mut changed = false;
+    let mut new_pairs: Vec<StructId> = Vec::with_capacity(pairs.len());
+    for pair in pairs.iter().copied() {
+        let rebuilt = (|| -> Option<StructId> {
+            let Struct::List(kv) = db.ast.get(pair).clone() else {
+                return None;
+            };
+            if kv.len() != 2 || count_param_refs(db, inner, kv[1]) < 2 {
+                return None; // multi-use only (a single application draws once — cpf1 folds 50)
+            }
+            let Struct::List(items) = db.ast.get(kv[1]).clone() else {
+                return None;
+            };
+            if items.len() != 1 {
+                return None; // NULLARY factory call `(mk)` only; the arg-factory (cc3) is v-effects' layer
+            }
+            let head = items[0];
+            let mk_body = crate::eval::lambda_body_of_nullary(db, head)?;
+            if !inlined_body_is_performing_capture_creation_wrapper(db, mk_body) {
+                return None;
+            }
+            let empty: HashMap<StructId, StructId> = HashMap::default();
+            let copy = crate::eval::copy_structural_pub(db, mk_body, &[], &empty);
+            Some(db.push_list(vec![kv[0], copy]))
+        })();
+        match rebuilt {
+            Some(np) => {
+                new_pairs.push(np);
+                changed = true;
+            }
+            None => new_pairs.push(pair),
         }
-        let Struct::List(items) = db.ast.get(kv[1]).clone() else {
-            return false;
-        };
-        if items.len() != 1 {
-            return false; // NULLARY factory call `(mk)` only; the arg-factory (cc3) is v-effects' layer
-        }
-        let head = items[0];
-        let Some(mk_body) = crate::eval::lambda_body_of_nullary(db, head) else {
-            return false;
-        };
-        inlined_body_is_performing_capture_creation_wrapper(db, mk_body)
-    })
+    }
+    if !changed {
+        return body;
+    }
+    let new_bindings = db.push_list(new_pairs);
+    let let_head = db.push_name("let");
+    let new_body = db.push_list(vec![let_head, new_bindings, inner]);
+    // [#4006 recipe] The reused `inner` SHARES load-time atoms whose single parent slot points into the
+    // pre-rewrite tree, so a plain `resolve_subtree` leaves `(f …)` refs anchored to the OLD `(mk)` binding
+    // (folds 200) and a blunt `forget_subtree` over-forgets the fresh copy's own op resolution (spurious
+    // decline). `deep_fresh_copy` gives every node a fresh id with `push_list`-set parents → coherent scope
+    // chains; `forget_subtree` + `force_structural_resolution_subtree` then re-resolve every reference
+    // against the rebuilt binding (the copied capture closure), yielding the DIRECT performing-closure-let
+    // (ca1m) shape the #3894 capture-once hoist folds to the capture-once value (cp4 → 150).
+    let fresh = deep_fresh_copy(db, new_body);
+    crate::resolve::forget_subtree(db, fresh);
+    db.force_structural_resolution_subtree(fresh);
+    fresh
 }
 
 /// are the resolved handle's children.
@@ -2075,13 +2106,11 @@ pub fn reduce_handle(
     // is bounded separately by `THREAD_INLINE_LIMIT` in `thread_bounded`.)
     let mut guard = db.enter_reduction()?;
     let db = guard.db();
-    // [cp4] DECLINE a multi-use nullary performing-factory let-local before the fold's per-use inline
-    // collapses its creation-time capture into a per-application perform (silent 170 vs the capture-once
-    // 150). Fail-loud interim (v-effects' capture-once fold flips this to 150 later); no-op unless the exact
-    // narrow shape is present (see `handle_body_has_multiuse_nullary_performing_factory`).
-    if handle_body_has_multiuse_nullary_performing_factory(db, body) {
-        return None;
-    }
+    // [cp4] Bind-once a multi-use nullary performing-factory let-local to the VERBATIM factory body (the
+    // preserved capture-let = ca1m shape #3894 folds to 150), before the fold's per-use inline collapses
+    // the creation-time capture into a per-application perform (silent 170). No-op unless the exact narrow
+    // shape is present (see `bind_once_performing_factory`).
+    let body = bind_once_performing_factory(db, body);
     // Build the operation→arm map, keyed by each arm's operation identity (read off the arm's op
     // projection's `(meta effect-op)`). An arm whose op is not an effect operation (a malformed arm) or
     // whose op the effect does not declare (CDZ0403 — reported elsewhere) makes the fold decline.
