@@ -4892,6 +4892,28 @@
             (export main)))
   (error  CDZ0201))
 
+(case "a dead (unreferenced) argument is still checked for its own fault"
+  (doc    "Application checking collects each argument's OWN faults even when the parameter is DEAD — the
+           body never references it — because a dead argument is not covered by the body's use. `(def (f a
+           b c) a)` uses only `a`; passing an unbound name `zzz` for the dead parameter `c` must reject
+           CDZ0101, not be silently accepted because `c` is unused. Pins that ignoring a parameter does not
+           excuse a malformed argument in its position.")
+  (input  (do
+            (def (f a b c) a)
+            (def (main) (f 7 2 zzz))
+            (export main)))
+  (error  CDZ0101))
+
+(case "a function using only its first parameter accepts all its well-typed arguments"
+  (doc    "The accept companion: the same `(def (f a b c) a)` applied to all well-typed arguments compiles
+           and returns the used one — `(f 7 2 3)` = 7. Pins that a body referencing only a subset of its
+           parameters does not over-reject the unused (dead) arguments when they are well-formed.")
+  (input  (do
+            (def (f a b c) a)
+            (def (main) (f 7 2 3))
+            (export main)))
+  (output (: 7 Int64)))
+
 ; --- A recursive parameter used ONLY as a call argument infers from the callee -----------------------
 ; A RECURSIVE def's parameter that no primitive operator ever touches — it is only PASSED AS AN ARGUMENT
 ; to another def, threaded unchanged through the recursion — is still determined: its type is the

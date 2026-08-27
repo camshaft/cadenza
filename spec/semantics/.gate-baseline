@@ -1835,6 +1835,7 @@ pass	a curried-syntax application of a multi-payload constructor reaches full ar
 pass	a curried-syntax application of a runtime closure flattens to one full-arity indirect call
 pass	a cycle of module imports is rejected
 pass	a data-rate quantity converts a binary-prefix composite unit to its byte/second reference
+pass	a dead (unreferenced) argument is still checked for its own fault
 pass	a decimal integer literal
 pass	a decimal kilobyte and a binary kibibyte are distinct units of one dimension
 pass	a decimal kilobyte and a binary kibibyte convert distinctly over Int64
@@ -2119,6 +2120,7 @@ pass	a function stored in a record field is called after extraction
 pass	a function stored in a record field of a sum payload is called after a match
 pass	a function stored in a tuple element is called after extraction
 pass	a function takes a boolean parameter and branches on it
+pass	a function using only its first parameter accepts all its well-typed arguments
 pass	a function whose body always diverges has result type Never
 pass	a function whose name is capitalized is called, not treated as a constructor
 pass	a function with an unused parameter compiles and runs but the build surfaces a CDZ0306 unused-parameter warning
