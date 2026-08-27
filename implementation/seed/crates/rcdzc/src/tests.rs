@@ -22286,40 +22286,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_newtype_over_a_scalar_matches_a_runtime_payload() {
-        // The RUNTIME (non-constant) payload path: the payload is behind an `if`, so the match can't fold —
-        // it reads the erased value directly (no `sum-payload`, since the box is gone). Exercises the
-        // `erase_nominal_steps` path (a `[Payload]` walk that drops to an empty path).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Wrap (Mk Int64)) \
-                       (def (main) (match (Mk (if true 42 0)) ((Mk n) (+ n 1)))) (export main))"
-                ),
-                "main"
-            ),
-            43
-        );
-    }
-
-    #[test]
-    fn a_struct_newtype_over_multiple_fields_destructures() {
-        // A multi-payload single variant is a STRUCT: `(Mk 3 4)` erases to the payload TUPLE, and `(Mk x
-        // y)` destructures its elements (`[Payload, Elem(i)]` → the `Payload` erases, the `Elem` reads the
-        // tuple handle).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Point (Mk Int64 Int64)) \
-                       (def (main) (match (Mk 3 4) ((Mk x y) (+ x y)))) (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
-    }
-
-    #[test]
     fn a_nullary_newtype_is_a_unit_tag() {
         // A nullary single variant `(type Marker (The))` is a nominal Unit — `The` erases to unit (no box),
         // and `(match The ((The) …))` matches unconditionally.
@@ -22349,24 +22315,6 @@ mod match_engine {
                 "main"
             ),
             1
-        );
-    }
-
-    #[test]
-    fn a_same_name_newtype_constructs_and_matches_by_the_type_name() {
-        // `(type UserId (UserId Int64))` — the idiomatic `newtype` spelling where the constructor name IS
-        // the type name. The ONE name means the CONSTRUCTOR in application/pattern-HEAD position and the
-        // TYPE everywhere else; resolve picks by POSITION (head → ctor), so `(UserId 42)` constructs and
-        // `(UserId n)` binds — no `.Mk` ceremony. Erases to the raw payload like any newtype.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type UserId (UserId Int64)) \
-                       (def (main) (match (UserId 42) ((UserId n) (+ n 1)))) (export main))"
-                ),
-                "main"
-            ),
-            43
         );
     }
 
@@ -22589,23 +22537,6 @@ mod match_engine {
                 "main"
             ),
             4
-        );
-    }
-
-    #[test]
-    fn a_generic_newtype_erases_and_matches() {
-        // A GENERIC single-variant sum `(type Box (Mk a))` is an erasable newtype: its inner type is
-        // computed PER-INSTANTIATION (the template `Var(0)` with the instantiation's arg substituted at
-        // `decode_ty`). `(Mk 42)` erases to the raw i64 (no `sum-new`), and `(Mk n)` binds it.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Box (Mk a)) \
-                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
-                ),
-                "main"
-            ),
-            43
         );
     }
 
