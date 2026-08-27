@@ -873,10 +873,31 @@ pub enum MemLeafKind {
     /// A `String` param: the copied-out UTF-8 byte-leaf IS the String (a Cadenza String is a byte-leaf; no
     /// decode — a WIT `string` param is valid UTF-8). Same lift as `Bytes`; distinct only for the WIT type.
     Str,
-    /// A `list<Int64>` param: build a value-heap vec (`vec-empty` + per-element `i64.load` + `box-int` +
-    /// `vec-push`) from the canonical `(ptr, len)` layout, rather than a raw byte copy. Slice 2a: Int64
-    /// elements only.
-    ListS64,
+    /// A `list<scalar>` param: build a value-heap vec (`vec-empty` + per-element read/box/`vec-push`) from the
+    /// canonical `(ptr, len)` layout, rather than a raw byte copy. The [`ListElem`] carries the element's
+    /// read+box (Int8/16/32/64, UInt*, Float32/64, Bool). A `list<u8>` here is a genuine `List UInt8` value
+    /// (a vec of boxed u8s), NOT `Bytes` (a packed byte-leaf) — distinct value reps behind the same WIT type.
+    List(ListElem),
+}
+
+/// How ONE scalar element of a `list<scalar>` param is read out of linear memory and boxed into the value
+/// heap, for [`emit_list_leaf_lift`]. The canonical layout lays element `j` at `ptr + j*stride`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ListElem {
+    /// The wasm load opcode (`i64.load`/`i32.load`/`i32.load8_u`/`f64.load`/…) reading the element at its
+    /// computed address.
+    pub load_op: u8,
+    /// The load's natural-alignment memarg (log2 bytes): 0 (byte), 1 (i16), 2 (i32/f32), 3 (i64/f64).
+    pub load_align: u32,
+    /// The element's canonical byte stride (`canonical_size`): 1/2/4/8 by width.
+    pub stride: u32,
+    /// `Some(signed)` when a NARROW int (loaded into an i32 slot) must be i32→i64 extended before `box-int`
+    /// (which takes i64); `None` for a full-width i64, an f32/f64 (boxed by `box-float`/`box-float32`), or a
+    /// bool (`box-bool` takes the i32 directly).
+    pub extend: Option<bool>,
+    /// The box op that wraps the loaded scalar into a value-heap handle (`box-int`/`box-float`/`box-float32`/
+    /// `box-bool`).
+    pub box_op: &'static str,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -1286,9 +1307,9 @@ fn core_module_impl(
                         MemLeafKind::Str | MemLeafKind::Bytes => {
                             emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
                         }
-                        // list<Int64>: build a value-heap vec by reading + boxing each element.
-                        MemLeafKind::ListS64 => {
-                            emit_list_s64_leaf_lift(leaf, buf, ctr, &imp, &mut inner); // → [vec]
+                        // list<scalar>: build a value-heap vec by reading + boxing each element per its width.
+                        MemLeafKind::List(elem) => {
+                            emit_list_leaf_lift(&elem, leaf, buf, ctr, &imp, &mut inner); // → [vec]
                         }
                     }
                     leaf += 2; // the string/list flattened to (ptr, len)
@@ -2898,14 +2919,15 @@ fn emit_bytes_leaf_copy_in(
     uleb128(buf as u64, out);
 }
 
-/// Emit the lift for one top-level `list<Int64>` param: the list crossed the boundary as `(ptr, len)` at
+/// Emit the lift for one top-level `list<scalar>` param: the list crossed the boundary as `(ptr, len)` at
 /// flattened core params `ptr_leaf` / `ptr_leaf + 1` (len = the ELEMENT count). Build a value-heap vec
-/// (`vec-empty`) and loop `j in 0..len` pushing `box-int(i64.load(ptr + j*8))` — each element read at its
-/// natural 8-byte stride in the canonical `list<s64>` layout, boxed, and `vec-push`ed. Leaves the vec handle
-/// on the stack (the caller passes it as the def arg directly). `buf`/`ctr` are the two reusable scratch
-/// locals; stack-balanced (`[]->[handle]`). An empty list (`len == 0`) yields the fresh empty vec. Slice 2a
-/// is Int64 elements only (one load width + `box-int`, no extend); other element widths decline upstream.
-fn emit_list_s64_leaf_lift(
+/// (`vec-empty`) and loop `j in 0..len` pushing `box(load(ptr + j*stride))` per the [`ListElem`] — each
+/// element read at its natural canonical stride, optionally i32→i64 extended (a narrow int), boxed, and
+/// `vec-push`ed. Leaves the vec handle on the stack (the caller passes it as the def arg directly).
+/// `buf`/`ctr` are the two reusable scratch locals; stack-balanced (`[]->[handle]`). An empty list yields
+/// the fresh empty vec.
+fn emit_list_leaf_lift(
+    elem: &ListElem,
     ptr_leaf: u32,
     buf: u32,
     ctr: u32,
@@ -2924,7 +2946,7 @@ fn emit_list_s64_leaf_lift(
     crate::backend::wasm::encode::sleb128(0, out);
     out.push(op::LOCAL_SET);
     uleb128(ctr as u64, out);
-    // block { loop { if ctr >= len br 1; buf = vec-push(buf, box-int(i64.load(ptr + ctr*8))); ctr += 1; br 0 } }
+    // block { loop { if ctr >= len br 1; buf = vec-push(buf, box(load(ptr + ctr*stride))); ctr += 1; br 0 } }
     out.push(op::BLOCK);
     out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
     out.push(op::LOOP);
@@ -2937,23 +2959,30 @@ fn emit_list_s64_leaf_lift(
     out.push(op::I32_GE_U);
     out.push(op::BR_IF);
     uleb128(1, out);
-    // buf = vec-push(buf, box-int(i64.load(ptr + ctr*8)))
+    // buf = vec-push(buf, box(load(ptr + ctr*stride)))
     out.push(op::LOCAL_GET);
     uleb128(buf as u64, out); // [buf]
-    // addr = ptr + ctr*8
+    // addr = ptr + ctr*stride
     out.push(op::LOCAL_GET);
     uleb128(ptr_leaf as u64, out);
     out.push(op::LOCAL_GET);
     uleb128(ctr as u64, out);
     out.push(op::I32_CONST);
-    crate::backend::wasm::encode::sleb128(8, out);
+    crate::backend::wasm::encode::sleb128(elem.stride as i64, out);
     out.push(op::I32_MUL);
     out.push(op::I32_ADD); // [buf, addr]
-    out.push(op::I64_LOAD);
-    uleb128(3, out); // align (log2) = 3 (natural i64)
-    uleb128(0, out); // offset 0
+    out.push(elem.load_op);
+    uleb128(elem.load_align as u64, out);
+    uleb128(0, out); // offset 0 → [buf, elem]
+    if let Some(signed) = elem.extend {
+        out.push(if signed {
+            op::I64_EXTEND_I32_S
+        } else {
+            op::I64_EXTEND_I32_U
+        });
+    }
     out.push(op::CALL);
-    uleb128(imp("box-int"), out); // [buf, boxed]
+    uleb128(imp(elem.box_op), out); // [buf, boxed]
     out.push(op::CALL);
     uleb128(imp("vec-push"), out); // [buf']
     out.push(op::LOCAL_SET);

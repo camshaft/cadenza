@@ -826,14 +826,12 @@ pub fn emit(
         && host_imports.is_empty()
         && extern_imports.is_empty()
         && layout.exports.iter().any(|e| {
-            e.params
-                .iter()
-                .any(|(_, t)| {
-                    matches!(
-                        t,
-                        crate::ty::Ty::String | crate::ty::Ty::Bytes | crate::ty::Ty::List(_)
-                    )
-                })
+            e.params.iter().any(|(_, t)| {
+                matches!(
+                    t,
+                    crate::ty::Ty::String | crate::ty::Ty::Bytes | crate::ty::Ty::List(_)
+                )
+            })
         })
         && let Some(result) = try_bare_entry_param_component(db, layout, &funcs, &imports)
     {
@@ -9561,6 +9559,84 @@ fn record_fields_rebuild(
     Some((rebuild, slots))
 }
 
+/// The per-element read+box descriptor for a `list<scalar>` entry param — the load op / natural-align /
+/// canonical stride / narrow-int extend / box op for one element of a list of Int8/16/32/64, UInt*,
+/// Float32/64, or Bool. `None` for a nested or compound element (list<list>, list<record>) — a later slice.
+fn list_scalar_elem(elem: &crate::ty::Ty) -> Option<crate::backend::wasm::serialize::ListElem> {
+    use crate::backend::wasm::serialize::ListElem;
+    use crate::backend::wasm::wasm_abi::op;
+    use crate::ty::Ty;
+    Some(match elem.strip_nominal() {
+        Ty::Int(it) => {
+            let signed = it.ground_signed();
+            match it.ground_width() {
+                64 => ListElem {
+                    load_op: op::I64_LOAD,
+                    load_align: 3,
+                    stride: 8,
+                    extend: None,
+                    box_op: "box-int",
+                },
+                32 => ListElem {
+                    load_op: op::I32_LOAD,
+                    load_align: 2,
+                    stride: 4,
+                    extend: Some(signed),
+                    box_op: "box-int",
+                },
+                16 => ListElem {
+                    load_op: if signed {
+                        op::I32_LOAD16_S
+                    } else {
+                        op::I32_LOAD16_U
+                    },
+                    load_align: 1,
+                    stride: 2,
+                    extend: Some(signed),
+                    box_op: "box-int",
+                },
+                8 => ListElem {
+                    load_op: if signed {
+                        op::I32_LOAD8_S
+                    } else {
+                        op::I32_LOAD8_U
+                    },
+                    load_align: 0,
+                    stride: 1,
+                    extend: Some(signed),
+                    box_op: "box-int",
+                },
+                _ => return None,
+            }
+        }
+        Ty::Bool => ListElem {
+            load_op: op::I32_LOAD8_U,
+            load_align: 0,
+            stride: 1,
+            extend: None,
+            box_op: "box-bool",
+        },
+        Ty::Float(ft) => match ft.ground_width() {
+            64 => ListElem {
+                load_op: op::F64_LOAD,
+                load_align: 3,
+                stride: 8,
+                extend: None,
+                box_op: "box-float",
+            },
+            32 => ListElem {
+                load_op: op::F32_LOAD,
+                load_align: 2,
+                stride: 4,
+                extend: None,
+                box_op: "box-float32",
+            },
+            _ => return None,
+        },
+        _ => return None, // a nested list / compound element — a later slice
+    })
+}
+
 /// The PLAIN-EXPORT ENTRY-PARAM emit (entry-param declines slice 1): a SINGLE bare exported def whose param
 /// is a memory-bearing `String`/`Bytes` (crossing as `string`/`list<u8>`) gets a guest LIFT WRAPPER — the
 /// wrapper copies the incoming `(ptr, len)` bytes out of linear memory into a value-heap `Bytes` (a `String`
@@ -9600,11 +9676,9 @@ fn try_bare_entry_param_component(
         let mem_kind = match gty {
             Ty::String => Some(serialize::MemLeafKind::Str),
             Ty::Bytes => Some(serialize::MemLeafKind::Bytes),
-            // Slice 2a: list<Int64> only (one element load width). Other element types decline (later slice).
-            Ty::List(elem) => match elem.strip_nominal() {
-                Ty::Int(it) if it.ground_width() == 64 => Some(serialize::MemLeafKind::ListS64),
-                _ => return None,
-            },
+            // A list<scalar> param (Int8/16/32/64, UInt*, Float32/64, Bool) — build the per-element
+            // read+box descriptor; a nested/compound element (list<list>, list<record>) declines (later slice).
+            Ty::List(elem) => Some(serialize::MemLeafKind::List(list_scalar_elem(elem)?)),
             _ => None,
         };
         match (mem_kind, gty) {
@@ -9657,16 +9731,20 @@ fn try_bare_entry_param_component(
     if mem_leaf_params.iter().any(|m| {
         matches!(
             m,
-            Some((serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, _))
+            Some((
+                serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes,
+                _
+            ))
         )
     }) {
         lift_ops.extend(["bytes-alloc", "bytes-set"]);
     }
-    if mem_leaf_params
-        .iter()
-        .any(|m| matches!(m, Some((serialize::MemLeafKind::ListS64, _))))
-    {
-        lift_ops.extend(["vec-empty", "vec-push", "box-int"]);
+    for m in &mem_leaf_params {
+        if let Some((serialize::MemLeafKind::List(elem), _)) = m {
+            // A list<scalar> builds a vec + boxes each element with its own box op (box-int/float/float32/bool).
+            lift_ops.extend(["vec-empty", "vec-push"]);
+            lift_ops.push(elem.box_op);
+        }
     }
     if any_drop {
         lift_ops.push("drop");

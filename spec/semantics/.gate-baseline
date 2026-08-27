@@ -7916,9 +7916,9 @@ todo	el1 a List entry param summed by an indexed walk
 pass	el2 TWO List entry params measure independently
 pass	el3 an EMPTY List entry param has length zero
 pass	el4 a List entry param's element read by a non-recursive List.at
-todo	el5 a List-of-UInt8 entry param measures and reads an element
-todo	el6 a List-of-Int32 entry param measures and reads an element
-todo	el7 a List-of-Float64 entry param measures and compares an element
+pass	el5 a List-of-UInt8 entry param measures and reads an element
+pass	el6 a List-of-Int32 entry param measures and reads an element
+pass	el7 a List-of-Float64 entry param measures and compares an element
 todo	el8 a nested List-of-List entry param measures both levels
 pass	elc1 a local closure captures the lifted List entry param and is invoked twice
 pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
