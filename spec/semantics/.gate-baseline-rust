@@ -7671,15 +7671,15 @@ todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
-todo	a runtime bin match decodes a FINAL constant-size utf8 segment
+pass	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	aeq1 bare equality over two runtime Ast.encode results
-todo	aeq2 bare equality of String.to-bytes twins
+pass	aeq2 bare equality of String.to-bytes twins
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
-todo	aeq4 a slice VIEW bare-compares equal to its flat twin
+pass	aeq4 a slice VIEW bare-compares equal to its flat twin
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
