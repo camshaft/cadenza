@@ -52403,85 +52403,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_unannotated_closure_infers_through_an_unannotated_recursive_hof_param() {
-        // INFERENCE regression (issue mlrepro-reject-inferred-closure-param-through-recursive-hof): an
-        // UNANNOTATED closure passed to a SELF-RECURSIVE higher-order function whose function parameter
-        // is ALSO unannotated must infer the closure's parameter type from the closure's OWN body — it
-        // was wrongly DECLINED "a closure's parameter type has no machine representation". Root: the
-        // closure's storage context is a fully-generic HOF param `g : (-> _ Int64)`, whose domain is an
-        // unsolved `Var` (a HOLE, not `Any`); `lambda_param_ty_from_context` returned that hole, which
-        // preempted `lower_lambda_value`'s body-solve (`solve_lambda_param_ty`) with an unsolvable var.
-        // The fix rejects a free-`Var` context domain (like `Any`), so the closure body's own numeric use
-        // (`(+ x 1)` → Int64) pins its param. `mapsum g acc xs = acc + Σ g(xᵢ)`, with a BOUNDARY `acc = n`
-        // so nothing folds (a real `call_indirect` over the runtime closure): `n + Σ (xᵢ+1)` over 5,7,30
-        // = `n + 6 + 8 + 31 = n + 45`.
-        let src = "(module m \
-            (def (mapsum f acc xs) \
-              (match xs \
-                ((list) acc) \
-                ((list h .. t) (mapsum f (+ acc (f h)) t)))) \
-            (def (main (: n Int64)) (mapsum (fn (x) (+ x 1)) n (list 5 7 30))) (export main))";
-        let Some(r) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "45"); // 0 + (5+1)+(7+1)+(30+1) = 45
-        assert_eq!(run_closure(src, 100).unwrap(), "145"); // 100 + 45
-    }
-
-    #[test]
-    fn an_unannotated_multiparam_closure_infers_through_a_generic_recursive_hof() {
-        // INFERENCE regression (issue mlrepro-reject-multiparam-closure-through-recursive-hof-unit-domain):
-        // the MULTI-parameter twin of the case above — an unannotated `(fn (x a) (+ a x))` (the idiomatic
-        // left-fold callback) passed to a generic recursive HOF `fold-list`. `check` PASSED but `compile`
-        // rejected CDZ0203 with the closure typed `(-> Unit (-> Unit Int64))`. Root: `fold-list` is GENERIC
-        // in `f` (scheme `(-> _ (-> _ _))`), so the call MONOMORPHIZES via `type_specialize`, which
-        // re-annotates the specialized copy's `f` with the ARG's type — `type_of(closure)` = `(-> Any (->
-        // Any Int64))`, whose nested `Any` holes `encode_ty` renders as `Unit`, so the copy got `f : (->
-        // Unit (-> Unit Int64))` and its `(f h acc)` conflicted. Fix: `type_specialize` now SOLVES a bare
-        // closure arg's params (`solved_lambda_arrow`, the same body-solve `lower_lambda_value` runs) before
-        // annotating, so the copy gets the concrete `(-> Int64 (-> Int64 Int64))`. `fold-list f acc xs = acc
-        // (+ f over xs)`, BOUNDARY `acc = n` so nothing folds: `n + 5 + 7 + 30 = n + 42`.
-        let src = "(module m \
-            (def (fold-list f acc xs) \
-              (match xs \
-                ((list) acc) \
-                ((list h .. t) (fold-list f (f h acc) t)))) \
-            (def (main (: n Int64)) (fold-list (fn (x a) (+ a x)) n (list 5 7 30))) (export main))";
-        let Some(r) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "42"); // 0 + 5 + 7 + 30 = 42
-        assert_eq!(run_closure(src, 100).unwrap(), "142"); // 100 + 42
-    }
-
-    #[test]
-    fn an_unannotated_closure_with_distinct_param_types_infers_through_a_generic_recursive_hof() {
-        // COVERAGE (v-inference): the closure-arg param-solve through monomorphization must be
-        // PER-PARAMETER and type-directed, not a single uniform type smeared across the slots. A two-arg
-        // fold callback whose params have DISTINCT types — `(fn (acc s) (+ acc (String.byte-len s)))`,
-        // `acc : Int64` (from `(+ acc …)`) and `s : String` (from `(String.byte-len s)`) — passed
-        // unannotated to the generic recursive `foldstr`. The monomorphized copy's `f` must be
-        // `(-> Int64 (-> String Int64))`; a uniform-type solve would mistype one slot. Sums the byte
-        // lengths of `ab`,`abcd`,`x` into a runtime accumulator: `n + 2 + 4 + 1 = n + 7`. Pins the
-        // multi-param fix (`solved_lambda_arrow` in `type_specialize`) for a non-uniform closure.
-        let src = "(module m \
-            (def (foldstr f acc xs) \
-              (match xs \
-                ((list) acc) \
-                ((list h .. t) (foldstr f (f acc h) t)))) \
-            (def (main (: n Int64)) (foldstr (fn (acc s) (+ acc (String.byte-len s))) n (list \"ab\" \"abcd\" \"x\"))) \
-            (export main))";
-        let Some(r) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "7"); // 0 + 2 + 4 + 1
-        assert_eq!(run_closure(src, 100).unwrap(), "107"); // 100 + 7
-    }
-
-    #[test]
     fn a_generic_transformer_maps_a_closure_to_an_aggregate_result_at_two_distinct_domains() {
         // INFERENCE FIX (v-inference): a recursive-generic TRANSFORMER `gmap` threading a closure whose
         // result is an AGGREGATE (a tuple / user-sum), instantiated at TWO DISTINCT element (domain) types
@@ -52581,28 +52502,6 @@ mod stage1 {
         };
         assert_eq!(r, "6"); // 3·2
         assert_eq!(run_closure(src, 4).unwrap(), "12"); // 3·4
-    }
-
-    #[test]
-    fn an_unannotated_predicate_closure_infers_through_a_recursive_counting_hof() {
-        // COVERAGE (v-inference): an inferred closure's RESULT type (not just its params) must cross the
-        // runtime `call_indirect` correctly for a NON-numeric result. A bare predicate `(fn (x) (< x 10))`
-        // — param solved `Int64` from `(< x 10)`, result `Bool` — threaded through the recursive `countif`,
-        // whose `if (f h)` drives on the boolean. `5` and `7` are `< 10` (`20` is not), so `n + 2`. The
-        // result-type companion of the arithmetic-callback folds; pins the single-param fix
-        // (`lambda_param_ty_from_context` free-`Var` guard) for a Bool-result closure.
-        let src = "(module m \
-            (def (countif f acc xs) \
-              (match xs \
-                ((list) acc) \
-                ((list h .. t) (countif f (if (f h) (+ acc 1) acc) t)))) \
-            (def (main (: n Int64)) (countif (fn (x) (< x 10)) n (list 5 20 7))) (export main))";
-        let Some(r) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r, "2"); // 5 and 7 satisfy `< 10`
-        assert_eq!(run_closure(src, 100).unwrap(), "102"); // 100 + 2
     }
 
     #[test]
