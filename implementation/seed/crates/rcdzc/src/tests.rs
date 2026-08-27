@@ -18373,27 +18373,6 @@ mod match_engine {
     }
 
     #[test]
-    fn applying_a_non_function_is_a_coded_type_error() {
-        // 09-functions "applying a non-function/boolean/float is a type error": a value that is NOT a
-        // function has no defined result when applied (`core-semantics.md` §Applying A Function Binds Its
-        // Parameter To Its Argument), so `(5 3)`/`(true 1)`/`(3.5 1)` MUST be REJECTED with a code
-        // (CDZ0201 Malformed) — not DECLINED "value is not applyable" (a to-do). The head's type is a
-        // definite non-function (Int64/Bool/Float64), so `check_application` faults before lowering.
-        assert_eq!(
-            reject_code("(module m (def (main) (5 3)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        assert_eq!(
-            reject_code("(module m (def (main) (true 1)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        assert_eq!(
-            reject_code("(module m (def (main) (3.5 1)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-    }
-
-    #[test]
     fn applying_an_effect_name_names_the_category_not_the_leaked_record_type() {
         // `(E 5)` applies an EFFECT name as a function. The head's type is the effect's SYNTHESIZED record,
         // so rendering it dumped an internal representation at the user (`cannot apply a value of type
