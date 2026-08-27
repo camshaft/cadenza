@@ -7960,6 +7960,44 @@
   (call main (: (list 1 2 3) (List Int64)))
   (output (: 3 Int64)))
 
+; -- breaker batch 451 (2026-08-27): boundary VALUES through #3852's per-width list lift — the
+; classic width traps. u8 element loads must ZERO-extend (255 stays 255, not -1), i32 loads must
+; SIGN-extend (-5 stays -5), three widths coexist in one wrapper with per-param strides, and an
+; f64 element survives load+return exactly.
+
+(case "wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 zero-extends, 0 reads 0)"
+  (input (do
+    (def (main (: xs (List UInt8)))
+      (+ (* 1000 (match (List.at xs 0) ((Option.Some v) (Int64.of v)) ((Option.None) -1)))
+         (match (List.at xs 2) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 255 7 0) (List UInt8)))
+  (output (: 255000 Int64)))
+
+(case "wl2 a List-of-Int32 entry param's negative element sign-extends on read"
+  (input (do
+    (def (main (: xs (List Int32)))
+      (match (List.at xs 0) ((Option.Some v) (Int64.of v)) ((Option.None) 0)))
+    (export main)))
+  (call main (: (list -5 3) (List Int32)))
+  (output (: -5 Int64)))
+
+(case "wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper"
+  (input (do
+    (def (main (: a (List UInt8)) (: b (List Float64)) (: c (List Int64)))
+      (+ (* 100 (List.len a)) (+ (* 10 (List.len b)) (List.len c))))
+    (export main)))
+  (call main (: (list 1 2 3) (List UInt8)) (: (list 0.5 1.5) (List Float64)) (: (list 9) (List Int64)))
+  (output (: 321 Int64)))
+
+(case "wl4 a List-of-Float64 entry param's element survives load and return exactly"
+  (input (do
+    (def (main (: xs (List Float64)))
+      (match (List.at xs 1) ((Option.Some v) v) ((Option.None) -1.0)))
+    (export main)))
+  (call main (: (list 0.5 2.25 9.0) (List Float64)))
+  (output (: 2.25 Float64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
