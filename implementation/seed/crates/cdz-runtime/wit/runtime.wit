@@ -512,6 +512,19 @@ interface heap {
   //    (`h != 0 → Ok(h)`, else `Err`), so decode is total — a bad byte sequence is DATA, never a trap. Takes
   //    the SAME 9-disc `discs` as `ast-encode`. BORROWS both. See `op_ast_decode`. APPENDED last.
   ast-decode: func(bytes-handle: u32, discs: u32) -> u32; // 94 — canonical cdzast Bytes + baked 9 discs → heap Ast handle, or 0 on parse failure (borrows both)
+
+  //  mark-immortal(handle) -> handle
+  //    CONVERT a freshly-built heap node into an IMMORTAL one — its refcount becomes the reserved sentinel
+  //    `u32::MAX`, so `dup`/`drop` are NO-OPS on it (it is never retained or freed) and it is EXCLUDED from
+  //    the live-objects census, exactly like the inline `IMM_UNIT` (an immortal is not a leak). For a
+  //    BUILD-ONCE static value hoisted into a module global (DESIGN-static-data §2d): the global holds the
+  //    handle for the whole instance, so a consumer reads it with a bare `global.get` and its drop is a
+  //    harmless no-op; `node-rc` reports the sentinel (≠ 1) so FBIP always path-copies, never mutating the
+  //    shared immortal in place. GENERAL over any heap node (Bytes now; String/List/Map reuse it unchanged).
+  //    The node was counted at `alloc`; converting it decrements the census so the immortal nets to zero.
+  //    Returns the same handle; an immediate (no node) is returned unchanged. APPENDED last (frozen-contract
+  //    rule). See `op_mark_immortal`.
+  mark-immortal: func(handle: u32) -> u32;             // 95 — convert a heap node to IMMORTAL: dup/drop no-op + census-excluded (build-once statics)
 }
 
 world runtime {
