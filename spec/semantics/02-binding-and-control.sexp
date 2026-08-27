@@ -8026,3 +8026,34 @@
            any other value, and has no same-variant binder fall-through -> non-exhaustive, CDZ0210.")
   (input (do (def (f n) (match (Some n) ((Some 0) 100) ((None _) -1))) (def (main) (f 5)) (export main)))
   (error CDZ0210))
+
+; -- a guarded-wildcard arm falling through to a self-tail-call iterates as a loop (migrated from rcdzc
+; a_guarded_wildcard_arm_falling_through_to_a_tail_call_iterates_the_loop): a match whose first arm is a
+; GUARDED WILDCARD and whose fall-through arm SELF-TAIL-CALLS compiles to a wasm loop. Two composed
+; miscompiles (tail-depth: a guarded wildcard has no probe if, so the fall-through br'd past the loop;
+; branch-scratch: a heap-handle guard's scratch slot must sit above the iteration arithmetic) made these
+; emit INVALID wasm — running find(0) is the witness.
+(case "gwl1 a scalar-guarded wildcard falling through to a self-tail-call iterates (tail-depth)"
+  (input (do (def (find (: n Int64)) (match n ((guard x (> x 2)) x) (_ (find (+ n 1))))) (export find)))
+  (call find (: 0 Int64)) (output (: 3 Int64)))
+
+(case "gwl2 a value-eq-guarded wildcard falling through to a tail-call iterates (tail-depth + scratch)"
+  (input (do (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n))
+             (def (find (: n Int64)) (match n ((guard x (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find)))
+  (call find (: 0 Int64)) (output (: 3 Int64)))
+
+(case "gwl3 a value-eq match scrutinee in a self-tail-call loop (scrutinee scratch)"
+  (input (do (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n))
+             (def (find (: n Int64)) (match (= (mk n) (mk 3)) (true n) (false (find (+ n 1))))) (export find)))
+  (call find (: 0 Int64)) (output (: 3 Int64)))
+
+(case "gwl4 a value-eq guard on a literal-probe arm in a tail-call loop (probe-else scratch)"
+  (input (do (type N (I Int64) (J Int64)) (def (mk (: n Int64)) (N.I n))
+             (def (find (: n Int64)) (match n ((guard 3 (= (mk n) (mk 3))) 300) (_ (find (+ n 1))))) (export find)))
+  (call find (: 0 Int64)) (output (: 300 Int64)))
+
+(case "gwl5 a value-eq guard on a sum-match arm with a call scrutinee in a tail-call loop (sum-cont scratch)"
+  (input (do (type N (I Int64) (J Int64)) (def (bump (: n Int64)) (if (< n 0) (N.J n) (N.I n))) (def (mk (: n Int64)) (N.I n))
+             (def (find (: n Int64)) (match (bump n) ((guard (N.I x) (= (mk x) (mk 3))) x) (_ (find (+ n 1))))) (export find)))
+  (call find (: 0 Int64)) (output (: 3 Int64))
+  (live-objects known-leak 4))

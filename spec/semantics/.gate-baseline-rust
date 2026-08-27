@@ -1177,6 +1177,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a THREE-phase state machine — Idle to Running(count,peak) to Done(total), the sentinel input drives the final transition
 pass	a THREE-site and a TWO-site arm interleaved fold (site counts mix freely)
 pass	a THREE-site arm (nested if, three resume sites) folds
+pass	a THREE-way mutually-recursive effectful cycle specializes and runs
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
@@ -2718,6 +2719,7 @@ pass	a multibyte-length runtime String host arg copies the full length
 pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
+pass	a mutual group performing in an IF base-case branch and recursing in the other threads and runs
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine
 pass	a mutual-recursion pair where each side performs against its OWN handler (two nested frames)
@@ -4695,6 +4697,7 @@ pass	an abortive handler arm never resumes, so its value becomes the handle's va
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
+pass	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
@@ -6105,6 +6108,11 @@ pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Co
 pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch
 pass	gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently
 pass	gsx1 ONE arm instantiates the same generic sum at TWO types — a Container Int64 and a Container String built, unwrapped, and combined per dispatch
+pass	gwl1 a scalar-guarded wildcard falling through to a self-tail-call iterates (tail-depth)
+pass	gwl2 a value-eq-guarded wildcard falling through to a tail-call iterates (tail-depth + scratch)
+pass	gwl3 a value-eq match scrutinee in a self-tail-call loop (scrutinee scratch)
+pass	gwl4 a value-eq guard on a literal-probe arm in a tail-call loop (probe-else scratch)
+pass	gwl5 a value-eq guard on a sum-match arm with a call scrutinee in a tail-call loop (sum-cont scratch)
 pass	gws1 GROWING-STATE shared-let — the push arm let-binds a value derived from the argument the CURRENT length and the seed bias, answers the binder packed with the length, and threads the LIST GROWN by the binder; the total draws all three stored values back out, so a binder aliased against the post-push list would corrupt both the rows and the total
 pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
 pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
@@ -8236,6 +8244,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a THREE-way mutually-recursive effectful cycle specializes and runs
-pass	an abortive handler over a non-tail MUTUAL recursion declines cleanly
-pass	a mutual group performing in an IF base-case branch and recursing in the other threads and runs
