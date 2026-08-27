@@ -10609,20 +10609,19 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal")); // [arr] — the record root, immortal
             Ok(())
         }
-        // A SMALL (≤32, non-empty, not all-`Bool`) constant list — built like a tuple (a flat `arr` of boxed
-        // elements) then `vec-of-arr`. For such a list `vec-of-arr` produces TWO nodes: an 8-byte VEC HEADER
-        // whose root points at the `arr`, REUSED unchanged as the sole strict leaf (`op_vec_of_arr`: "the arr
-        // node IS a valid strict single leaf … move it in as the root" — a plain `vec_alloc_header(count, 0,
-        // arr)`, NO rc check, NO copy). So BOTH nodes must be marked immortal, and mark-immortal is shallow:
-        //   - mark each element as it is built (`emit_immortal_elem`),
-        //   - mark the `arr` BEFORE `vec-of-arr` — safe because the reuse path does not inspect rc (it just
-        //     stores `arr` as the root), so no FBIP path-copy; marking it after is impossible (the arr is then
-        //     buried inside the header with no stack handle),
-        //   - mark the HEADER (the `vec-of-arr` result) after.
-        // The all-`Bool` pack path (drops the arr, mints a fresh un-markable bit-leaf) and the empty-list
-        // `vec-empty` singleton are excluded upstream (`is_markable_constant_small_list`), so neither reaches
-        // here — every admitted list is the arr-reuse shape whose two nodes this covers. `> 32` (a multi-node
-        // trie) is likewise excluded.
+        // A constant list of ANY size (non-empty, not all-`Bool`) — built like a tuple (a flat `arr` of boxed
+        // elements) then `vec-of-arr`. The build is UNIFORM across sizes: `arr-alloc(n)` + per-element build +
+        // `arr-set`, then `vec-of-arr`. What differs is the node topology `vec-of-arr` produces — ≤32 reuses the
+        // `arr` as the sole leaf under an 8-byte header; `>32` DRAINS the elements into ≤32-element trie leaves
+        // and builds a radix trie (INTERNAL nodes minted inside the op, no compile-time handle). So the root is
+        // marked with `mark-immortal-DEEP` (op 96), which transitively marks the whole structure — header + arr
+        // leaf (≤32) OR spine + all trie leaves (>32) + every element handle — in ONE call, reaching the trie
+        // internals a per-node shallow mark could not. Do NOT shallow-mark the `arr` before `vec-of-arr`: for
+        // `>32` the arr shell is drained + dropped (a marked-immortal shell would be orphaned = a leak), and the
+        // deep-mark on the result covers the reused-arr leaf for ≤32 anyway. Elements are shallow-marked as built
+        // (`emit_immortal_elem`) — redundant with the final deep-mark (idempotent) but harmless. The all-`Bool`
+        // PACK path (mints a fresh bit-leaf + drops the arr WITH the marked element boxes → orphaned leak) and the
+        // empty-list `vec-empty` singleton are excluded upstream (`is_markable_constant_list`).
         Core::ListNew { elems } => {
             let elem_ty = match type_of(db, id).strip_nominal() {
                 Ty::List(t) => Some((**t).clone()),
@@ -10635,9 +10634,8 @@ fn emit_immortal_static(
                 emit_immortal_elem(db, elem, elem_ty.as_ref(), layout, out)?;
                 out.push(Lir::CallImport(OP_ARR_SET)); // [arr]
             }
-            out.push(Lir::CallImport("mark-immortal")); // [arr] — the leaf, immortal (reused by `vec-of-arr`)
-            out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list] (moves the immortal arr in as the root)
-            out.push(Lir::CallImport("mark-immortal")); // [list] — the vec header, immortal
+            out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list] (arr reused (≤32) or drained into a trie (>32))
+            out.push(Lir::CallImport("mark-immortal-deep")); // [list] — transitively immortal (header/arr or spine/leaves + elems)
             Ok(())
         }
         _ => Err(Reject::decline(

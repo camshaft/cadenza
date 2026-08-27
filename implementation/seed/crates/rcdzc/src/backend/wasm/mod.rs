@@ -559,9 +559,12 @@ pub fn emit(
         used.insert("bytes-alloc");
         used.insert("bytes-set");
         used.insert("mark-immortal");
-        // A hoisted SMALL constant list builds its flat arr then `vec-of-arr` (moves the rc=1 arr in as the
-        // vec root); the init's `vec-of-arr` isn't in any body when the only list use is hoisted, so force it.
+        // A hoisted constant list builds its flat arr then `vec-of-arr` (reused-as-leaf for ≤32, drained into a
+        // trie for >32); the init's `vec-of-arr` isn't in any body when the only list use is hoisted, so force
+        // it. A list root is marked with `mark-immortal-DEEP` (op 96) — transitive, reaches trie internals — so
+        // force that too (the per-node shallow `mark-immortal` above still covers tuple/record/scalar/leaf marks).
         used.insert("vec-of-arr");
+        used.insert("mark-immortal-deep");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -1498,7 +1501,7 @@ pub fn collect_static_bytes(db: &mut Db, order: &[usize]) -> Vec<Vec<u8>> {
 
 /// Collect the constant `Tuple`/`Record` (and SMALL constant `List`, ≤32) ROOTS in the reachable program
 /// that are per-node-immortal-markable (`lower::is_markable_constant_compound` /
-/// `is_markable_constant_small_list`) — the §2d build-once static table. Each root is built ONCE as an
+/// `is_markable_constant_list`) — the §2d build-once static table. Each root is built ONCE as an
 /// immortal tree in the module `start` init and read with `global.get` at each use, instead of the
 /// per-evaluation `arr-alloc` + boxed `arr-set` (+ `vec-of-arr` for a list) the backend emits today. On
 /// finding a markable root, collect it and do NOT descend — its whole subtree (nested markable
@@ -1525,7 +1528,7 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
                 continue;
             }
             if crate::lower::is_markable_constant_compound(db, id)
-                || crate::lower::is_markable_constant_small_list(db, id)
+                || crate::lower::is_markable_constant_list(db, id)
             {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested
@@ -10346,6 +10349,7 @@ fn emit_bytes_provider_member(
             "box-bool",
             "vec-of-arr",
             "mark-immortal",
+            "mark-immortal-deep",
         ] {
             used.insert(op);
         }
