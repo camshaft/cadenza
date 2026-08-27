@@ -74,7 +74,7 @@ pub fn grade(
             runtime_cache_dir: runtime_cache_dir.clone(),
             host_responses: host_responses.clone(),
         };
-        let (outcome, observed, live) = run_with_live_objects(component_bytes, &opts)?;
+        let (outcome, observed, live) = run_with_live_objects(component_bytes, &opts, None)?;
         if first_live.is_none() {
             first_live = Some(live);
         }

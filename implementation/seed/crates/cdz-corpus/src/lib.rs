@@ -131,6 +131,13 @@ pub struct Call {
     /// The argument value-forms, in order — each the value's canonical text (e.g. `41`), stripped from
     /// its `(: <value> <Type>)` annotation. The runner coerces each to the export's declared parameter type.
     pub args: Vec<String>,
+    /// A `(then <arg>…)` continuation: a SECOND call on the SAME closure handle this call minted, for a
+    /// `borrow<t>` closure (which does NOT consume its handle, so it is repeatable — an `own<t>` closure
+    /// would trap on the second call). `None` for the ordinary one-make/one-call form; `Some(args)` (which
+    /// may be empty for a nullary second call) drives make ONCE then `call` TWICE on that handle, and the
+    /// run renders both results as a tuple value-form `(tuple <r1> <r2>)`. This is how a case pins that a
+    /// borrowed closure handle stays live across calls.
+    pub second_call: Option<Vec<String>>,
 }
 
 /// The recorded primary result of a case — exactly one per the corpus vocabulary.
@@ -351,6 +358,20 @@ pub fn render(records: &[Record]) -> String {
                     out.push_str("arg\t");
                     out.push_str(arg);
                     out.push('\n');
+                }
+                // A `(then …)` continuation (two-call-on-one-handle): a `then-call\t<n>` marker line (n =
+                // the second call's arg count, so an empty `(then)` still records its presence) followed by
+                // one `then-arg\t<value>` line per argument. Absent for the ordinary one-call form (byte-
+                // identical to before).
+                if let Some(second) = &call.second_call {
+                    out.push_str("then-call\t");
+                    out.push_str(&second.len().to_string());
+                    out.push('\n');
+                    for arg in second {
+                        out.push_str("then-arg\t");
+                        out.push_str(arg);
+                        out.push('\n');
+                    }
                 }
             }
             out.push_str("expect\t");
@@ -681,7 +702,20 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     pending_call = Some(Call {
                         export: export.to_string(),
                         args,
+                        second_call: None,
                     });
+                }
+            }
+            Some("then") => {
+                // `(then <arg>…)` — a SECOND call on the SAME handle the PENDING `(call …)` minted (a
+                // `borrow<t>` closure keeps its handle live across calls). Attaches the second call's
+                // arguments to the pending call; the driver makes ONE handle, calls it twice, and renders
+                // the pair as a tuple. A bare `(then)` (no args) drives a nullary second call. Ignored if
+                // there is no pending call (a `(then …)` must follow a `(call …)` in the same trial).
+                if let Some(tail) = a.as_form(clause, "then")
+                    && let Some(call) = pending_call.as_mut()
+                {
+                    call.second_call = Some(tail.iter().map(|&arg| value_of(a, arg)).collect());
                 }
             }
             Some("output") => {
@@ -1771,6 +1805,78 @@ mod tests {
         assert_eq!(recs[0].trials.len(), 1);
         assert_eq!(recs[0].trials[0].call.as_ref().unwrap().export, "mk");
         assert!(matches!(&recs[0].trials[0].expect, Expect::Declines(_)));
+    }
+
+    /// A `(then <arg>…)` after a `(call …)` records a SECOND call on the same handle (borrow<t>
+    /// repeatability): the pending call carries `second_call = Some(args)`, and it stays ONE trial.
+    #[test]
+    fn a_then_clause_records_a_second_call_on_the_pending_call() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ k x))) (export adder)))
+                 (call adder (: 10 Int64) (: 5 Int64))
+                 (then (: 7 Int64))
+                 (output (: (tuple 15 17) (Tuple Int64 Int64))))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            recs[0].trials.len(),
+            1,
+            "a `(then …)` stays in the same trial"
+        );
+        let call = recs[0].trials[0].call.as_ref().unwrap();
+        assert_eq!(call.export, "adder");
+        assert_eq!(call.args, vec!["10".to_string(), "5".to_string()]);
+        assert_eq!(call.second_call, Some(vec!["7".to_string()]));
+    }
+
+    /// A bare `(then)` (no args) records a nullary second call — `second_call = Some(vec![])`, distinct
+    /// from `None` (no second call at all), so a nullary-arg closure is repeatable too.
+    #[test]
+    fn a_bare_then_clause_records_a_nullary_second_call() {
+        let recs = read(
+            r#"(case "x"
+                 (input (do (def (mk) (fn () 7)) (export mk)))
+                 (call mk)
+                 (then)
+                 (output (: (tuple 7 7) (Tuple Int64 Int64))))"#,
+        )
+        .unwrap();
+        let call = recs[0].trials[0].call.as_ref().unwrap();
+        assert_eq!(call.second_call, Some(Vec::new()));
+    }
+
+    /// A `(then …)` serializes to a `then-call\t<n>` marker line (n = arg count) plus one `then-arg\t<v>`
+    /// line each, after the `arg` lines — how the gate driver learns to drive a two-call case.
+    #[test]
+    fn render_emits_then_call_and_then_arg_lines() {
+        let text = to_records(
+            r#"(case "x"
+                 (input (do (def (adder (: k Int64)) (fn ((: x Int64)) (+ k x))) (export adder)))
+                 (call adder (: 10 Int64) (: 5 Int64))
+                 (then (: 7 Int64))
+                 (output (: (tuple 15 17) (Tuple Int64 Int64))))"#,
+        )
+        .unwrap();
+        assert!(
+            text.contains("then-call\t1\n"),
+            "then-call marker with arg count, got: {text:?}"
+        );
+        assert!(
+            text.contains("then-arg\t7\n"),
+            "then-arg line, got: {text:?}"
+        );
+        // The ordinary one-call form emits NO then-* line (back-compat).
+        let plain = to_records(
+            r#"(case "y"
+                 (input (do (def (main (: x Int64)) (+ x 1)) (export main)))
+                 (call main (: 5 Int64)) (output (: 6 Int64)))"#,
+        )
+        .unwrap();
+        assert!(
+            !plain.contains("then-call"),
+            "one-call form has no then-call line"
+        );
     }
 
     /// The flat record stream emits one `call?`/`arg*`/`expect` group per trial (round-trips the shape).

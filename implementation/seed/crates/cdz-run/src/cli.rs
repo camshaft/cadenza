@@ -39,6 +39,20 @@ pub struct RunArgs {
     #[arg(long = "arg", value_name = "VALUE", allow_hyphen_values = true)]
     pub args: Vec<String>,
 
+    /// Two-call-on-one-handle mode for a CLOSURE export (a `borrow<t>` closure keeps its handle live
+    /// across calls, so it is repeatable — an `own<t>` closure would trap on the second call). When set,
+    /// the run makes the closure handle ONCE (`--arg`s split as usual: make's params then the FIRST
+    /// call's args), then calls it a SECOND time with `--then-arg`s, and renders both results as a tuple
+    /// `(: (tuple <r1> <r2>) (Tuple T T))`. The corpus `(then …)` clause drives this.
+    #[arg(long = "call-twice")]
+    pub call_twice: bool,
+
+    /// A SECOND-call argument (repeatable), used only with `--call-twice`. `allow_hyphen_values` so a
+    /// negative value is taken as the argument, not a flag. A bare `--call-twice` with no `--then-arg`
+    /// drives a nullary second call.
+    #[arg(long = "then-arg", value_name = "VALUE", allow_hyphen_values = true)]
+    pub then_args: Vec<String>,
+
     /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
     /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
     /// bypasses that lookup — use for local runtime debugging, not conformance.
@@ -291,6 +305,11 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         runtime_cache_dir,
         host_responses,
     };
+    // A `--call-twice` request (the corpus `(then …)` two-call-on-one-handle drive): the second call's
+    // args, threaded alongside `opts` into the run path down to the closure-escape dispatch. `None` for an
+    // ordinary one-call run. Not a `RunOpts` field — that struct's field-adds are a known livelock (203
+    // exhaustive literals); it rides as a parameter on the run functions the gate path uses instead.
+    let second_call: Option<&[String]> = cli.call_twice.then_some(cli.then_args.as_slice());
 
     if !peers.is_empty() {
         // Compose the CONSUMER with its peers across the live boundary; the observed host calls are not
@@ -335,7 +354,8 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 content_address(rt)
             );
         }
-        let (outcome, observed, live) = run_with_live_objects(&component_bytes, &opts)?;
+        let (outcome, observed, live) =
+            run_with_live_objects(&component_bytes, &opts, second_call)?;
         emit_observed_host_calls(&observed);
         return match outcome {
             Outcome::Value(text) => {
@@ -355,7 +375,7 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         };
     }
 
-    let (outcome, observed) = run_capturing(&component_bytes, &opts)?;
+    let (outcome, observed) = run_capturing(&component_bytes, &opts, second_call)?;
     emit_observed_host_calls(&observed);
     match outcome {
         Outcome::Value(text) => {
