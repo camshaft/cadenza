@@ -1666,6 +1666,7 @@ pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init wh
 pass	a constant-folded u64 bin binding with the top bit set compares unsigned
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
+pass	a constant-lhs and whose right operand aborts desugars and folds to the arm value
 pass	a constant-returning closure threads through a recursive-generic HOF
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a constant-try helper folds and its result feeds a handler arm's resume
@@ -2801,6 +2802,8 @@ pass	a non-recursive generic producer composes at two element types via inlining
 pass	a non-recursive helper that performs the discharged op UNDER a conditional, in a recursive self-call arg, folds
 pass	a non-tail accumulable recursion runs to a large runtime N in constant stack
 pass	a non-tail call passing a heap-match argument compiles to valid wasm
+pass	a non-tail conditional abort hoists out of a strict operand and folds per branch
+pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail-resumptive outer handler reduces a reducible inner handle before its own fold
@@ -4399,6 +4402,7 @@ pass	an abortive handler arm performed with a RUNTIME argument abandons the comp
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
+pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
@@ -5143,7 +5147,9 @@ pass	cnm1 runtime UInt8 checked-mul at the exact 255 top
 pass	cnm2 runtime Int8 checked-mul hitting -128 EXACTLY fits (the signed exact-fit twin)
 pass	cnm3 runtime Int8 checked-mul of -128 by -1 yields None (the narrow sign-flip)
 pass	cnm4 runtime UInt16 checked-mul at the 65535 top
+pass	cnw1 a capture-once closure wrapped by two nesting closures folds through all three layers
 pass	cnw1 runtime UInt8 checked-add at the 255 boundary
+pass	cnw2 a factory taking TWO performing args draws each once and shares both across applications
 pass	cnw3 runtime Int8 checked-add at the signed 127 boundary
 pass	cnw4 runtime Int8 checked-sub at the signed -128 boundary
 pass	cnw5 runtime UInt16 checked-add at the 65535 top
@@ -7756,5 +7762,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	cnw1 a capture-once closure wrapped by two nesting closures folds through all three layers
-pass	cnw2 a factory taking TWO performing args draws each once and shares both across applications
