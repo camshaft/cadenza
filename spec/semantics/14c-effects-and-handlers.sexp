@@ -18596,3 +18596,36 @@
   (call main (: 1 Int64))
   (output (: 234 Int64))
   (live-objects 0))
+
+;; ── breaker batch 541: siblings at the #4511 fold boundary (cross-def recursion threading).
+;; frb1 = the newly-folded one-way nested family from an independent source shape; frb2 = TWO
+;; stacked let-init performs before the tail self-call (the let-dispatch routing composed —
+;; folds completely); frb3 = the MUTUAL-SCC cell the fold must keep declining (sound boundary,
+;; honest cross-function message) — an auto-flip witness for the named later increment.
+
+(case "frb1 a let-init perform's binder threads across a cross-def nested recursion (the #4511 fold, independent shape)"
+  (input (do (effect S (op depth (-> Int64)))
+(def (inner (: d Int64) (: acc Int64)) (if (= d 0) acc (inner (- d 1) (+ acc (S.depth)))))
+(def (outer (: k Int64) (: acc Int64)) (if (= k 0) acc (let ((d (S.depth))) (outer (- k 1) (+ acc (inner d 0))))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (outer n 0)))
+(export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64))
+  (live-objects 0))
+
+(case "frb2 TWO stacked let-init performs before the tail self-call fold (consecutive let-dispatch routing)"
+  (input (do (effect S (op depth (-> Int64)))
+(def (outer (: k Int64) (: acc Int64)) (if (= k 0) acc (let ((d (S.depth))) (let ((e (S.depth))) (outer (- k 1) (+ acc (+ (* 10 d) e)))))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (outer n 0)))
+(export main)))
+  (call main (: 2 Int64))
+  (output (: 24 Int64)))
+
+(case "frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment"
+  (input (do (effect S (op depth (-> Int64)))
+(def (inner2 (: d Int64)) (if (= d 0) 0 (+ (S.depth) (outer2 (- d 1) 0))))
+(def (outer2 (: k Int64) (: acc Int64)) (if (= k 0) acc (let ((d (S.depth))) (outer2 (- k 1) (+ acc (inner2 d))))))
+(def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (outer2 n 0)))
+(export main)))
+  (call main (: 2 Int64))
+  (output (: 3 Int64)))

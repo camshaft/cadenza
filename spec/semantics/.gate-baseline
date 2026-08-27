@@ -8824,3 +8824,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	frb1 a let-init perform's binder threads across a cross-def nested recursion (the #4511 fold, independent shape)
+pass	frb2 TWO stacked let-init performs before the tail self-call fold (consecutive let-dispatch routing)
+todo	frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment
