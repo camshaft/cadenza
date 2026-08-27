@@ -8118,7 +8118,9 @@
            the base `match` only borrows it). walk 1 (mk 3): (>= n 0) recurses n=1->0->-1 then the base
            `(match w ((Mk x) (Int64.of x)))` reads 3. Value-correct (3, no UAF/double-free). Pins the
            drop-epilogue reclaim: a regression reintroducing the leak reds on live-objects (1), a NEW leak
-           (>1) reds, and an over-firing drop (double-free) reds the value.")
+           (>1) reds, and an over-firing drop (double-free) reds the value. The reclaim is DEPTH-INDEPENDENT
+           (O(1), not per-level): the deep n=50 call nets the same ZERO — a per-recursion-level allocation
+           regression would surface as a leak > 0 at depth.")
   (input  (do
             (type W (Mk BigInt))
             (def (mk (: k Int64)) (Mk (BigInt.of k)))
@@ -8127,4 +8129,5 @@
             (def (main (: n Int64)) (walk n (mk 3)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 50 Int64)) (output (: 3 Int64))
   (live-objects 0))
