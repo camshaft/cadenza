@@ -8040,6 +8040,76 @@
                 (sum-to (Cfg.limit)))) (export main)))
   (output (: 10 Int64)))
 
+(case "a MULTI-shot arm over a pure effect-free call in the continuation folds"
+  (doc    "A multi-shot arm duplicates `C = (dbl □)` safely because `dbl` is effect-free (splicing it per
+           resume re-runs an effect-free computation). `(+ (resume 1 s) (resume 2 s))` over `(dbl (Amb.flip))`
+           → `(+ (dbl 1) (dbl 2))` = `(+ 2 4)` = 6.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (dbl (: x Int64)) (* x 2))
+            (def (main) (handle Amb 0 ((flip (u) s (+ (resume 1 s) (resume 2 s)))) (dbl (Amb.flip))))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "NESTED effect-free calls in the continuation compose and fold"
+  (doc    "The pure one-hole continuation may nest effect-free calls: `C = (dbl (inc □))`, arm
+           `(+ 1 (resume 10 s))` → `(+ 1 (dbl (inc 10)))` = `(+ 1 22)` = 23.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (dbl (: x Int64)) (* x 2)) (def (inc (: y Int64)) (+ y 1))
+            (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (dbl (inc (Amb.flip)))))
+            (export main)))
+  (output (: 23 Int64)))
+
+(case "a continuation call whose body ITSELF performs is not effect-free and declines"
+  (doc    "GUARD: a user call in `C` whose body performs the discharged effect is NOT effect-free — the
+           continuation is not pure (a second effect on the spine), so it must decline cleanly (not
+           miscompile). `bad x = (+ x (Amb.flip))` performs, so `(bad (Amb.flip))` has two performs.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (bad (: x Int64)) (+ x (Amb.flip)))
+            (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (bad (Amb.flip))))
+            (export main)))
+  (declines))
+
+(case "a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform"
+  (doc    "An outer handler whose arm is non-tail-resumptive, over a body containing a reducible inner handle
+           of a DIFFERENT effect. Reducing the inner B handle FIRST turns the body into `(+ (A.a) 20)`, a
+           single A-perform in a pure one-hole context A's fold serves: B `(resume 20 t)` → 20; A arm
+           `(+ 1 (resume 10 s))`, C = `(+ 10 □)` → `(+ 1 (+ 10 20))` = 31.")
+  (input  (do
+            (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (+ 1 (resume 10 s))))
+                (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b)))))
+            (export main)))
+  (output (: 31 Int64)))
+
+(case "two nested distinct effects both tail-resumptive fold via the threading path"
+  (doc    "The both-tail control for the nested-handle pre-reduction: both handlers are tail-resumptive so
+           the existing threading path folds it. A `(resume 10 s)` → 10, B `(resume 20 t)` → 20, `(+ 10 20)`
+           = 30.")
+  (input  (do
+            (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (resume 10 s)))
+                (handle B 0 ((b (u) t (resume 20 t))) (+ (A.a) (B.b)))))
+            (export main)))
+  (output (: 30 Int64)))
+
+(case "a non-tail inner handle with a foreign perform sibling stays declined (needs frames)"
+  (doc    "When the INNER handle is itself non-tail with a FOREIGN perform sibling in its body (`(A.a)` is
+           undischarged by B), B cannot reduce — its continuation is not pure (a foreign effect would be
+           duplicated by a multi-shot resume). This genuinely needs the frame vertical, so it declines
+           cleanly rather than miscompile.")
+  (input  (do
+            (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle A 0 ((a (u) s (+ 1 (resume 10 s))))
+                (handle B 0 ((b (u) t (+ 2 (resume 20 t)))) (+ (A.a) (B.b)))))
+            (export main)))
+  (declines))
+
 (case "a recursive builder PERFORMS per step and a recursive pure fold consumes the built list"
   (doc    "The two recursive helpers above composed, with the effect in the OPPOSITE one: here the
            recursion that performs is the BUILDER — `(grab k acc)` pushes one `(Cnt.bump)` result per
