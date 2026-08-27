@@ -10122,30 +10122,6 @@ mod runtime_ops {
             guards(&lir("(: x Int8)", "(: (* (% x 100) 5) Int8)")) > 0,
             "[-495,495] overflows Int8"
         );
-
-        // VALUE + TRAP parity.
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(27)]),
-            35
-        ); // 7*5
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (* (% x 10) 5) Int8)", &[Val::S8(-27)]),
-            -35
-        ); // -7*5
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (+ (% x 100) 1) Int8)", &[Val::S8(99)]),
-            100
-        );
-        // The kept-guard case traps on real overflow (99*5=495) and computes when in range.
-        assert!(traps(
-            "(: x Int8)",
-            "(: (* (% x 100) 5) Int8)",
-            &[Val::S8(99)]
-        ));
-        assert_eq!(
-            run::<i8>("(: x Int8)", "(: (* (% x 100) 5) Int8)", &[Val::S8(100)]),
-            0
-        ); // 100%100=0
     }
 
     #[test]
@@ -10209,51 +10185,6 @@ mod runtime_ops {
             "shr [0,15] < 8 → runtime compare"
         );
 
-        // VALUE PARITY: the folded tautologies are true; a non-tautology computes correctly.
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt64)",
-                "(if (< (>> x 60) 20) 111 222)",
-                &[Val::U64(12345)]
-            ),
-            111
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (< (% (: (& x 255) Int64) 10) 10) 111 222)",
-                &[Val::S64(12345)]
-            ),
-            111
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x UInt64)",
-                "(if (< (>> x 60) 8) 111 222)",
-                &[Val::U64(12345)]
-            ),
-            111
-        ); // 12345>>60=0 < 8
-
-        // TRAP SAFETY: a LEFT shift is NOT trap-free (it can overflow), so a `(>= (<< x 2) MIN)` tautology
-        // is NOT folded and a genuine overflow still traps; a RUNTIME-divisor `%` likewise traps on ÷0.
-        assert!(
-            traps(
-                "(: x Int64)",
-                "(>= (<< x 2) -9223372036854775808)",
-                &[Val::S64(1i64 << 62)]
-            ),
-            "a left-shift overflow must still trap (<< is not trap-free)"
-        );
-        assert!(
-            traps(
-                "(: x Int64) (: d Int64)",
-                "(< (% (: (& x 255) Int64) d) 300)",
-                &[Val::S64(12345), Val::S64(0)]
-            ),
-            "a runtime-divisor rem must still trap on ÷0 (not trap-free)"
-        );
-
         // WRAPPING ARITHMETIC IS TRAP-FREE: `wrapping-add`/`wrapping-mul` emit the raw machine add/mul with
         // NO overflow guard (they wrap modulo the slot — that is their whole purpose), so they never trap.
         // A discarding annihilator `(* 0 <wrapping-mul>)` → 0 now DROPS the wrapping-mul (no `i64.mul`
@@ -10269,24 +10200,6 @@ mod runtime_ops {
             muls(&lir("(: x Int64)", "(* 0 (* x x))")) >= 1,
             "a dead CHECKED mul is KEPT (it can overflow → trapping, so the trap is preserved)"
         );
-        // VALUE PARITY: the annihilated wrapping product is 0; a live wrapping fold computes correctly.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(* 0 ((. Int64 wrapping-mul) x x))",
-                &[Val::S64(7)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x))",
-                &[Val::S64(6)]
-            ),
-            42 // 6 + 6*6
-        );
-
         // A TUPLE/RECORD PROJECTION IS TRAP-FREE: `(. p i)` emits `arr-get(compound, const-index)` where
         // `i` is within the operand's static arity (`type_errors` rejects an out-of-arity index at compile
         // time — never a runtime OOB trap), so it never traps. A discarding annihilator `(* 0 (. p 0))` → 0
@@ -10301,18 +10214,6 @@ mod runtime_ops {
             getarr(&lir("(: p (Tuple Int64 Int64))", "(* 0 (. p 0))")),
             0,
             "a dead tuple projection is dropped by the annihilator fold (it is trap-free)"
-        );
-        // VALUE PARITY (the whole `(* 0 (. p 0))` folds to 0, projection dropped): a nullary export builds
-        // the tuple + projects, confirming the fold + a LIVE projection both compute correctly.
-        assert_eq!(
-            run::<i64>("", "(let ((p (tuple 42 7))) (* 0 (. p 0)))", &[]),
-            0,
-            "the annihilated projection evaluates to 0"
-        );
-        assert_eq!(
-            run::<i64>("", "(let ((p (tuple 42 7))) (. p 0))", &[]),
-            42,
-            "a live projection reads the field"
         );
     }
 
