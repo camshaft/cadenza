@@ -106,7 +106,7 @@ pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
 /// Overridable at compile time via the `CDZ_DEBUG_RUNTIME_HASH` env (see `REQUIRED_RUNTIME_HASH`).
 pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05OU7cA8ZvnZxhATHy9Jf3O2jkgz3PI9GylN6qRW6zgp4",
+    None => "057xxUcMIFakdPRUZcnaPFtk1jr8QI2DQEY39p9WB1Ben",
 };
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
