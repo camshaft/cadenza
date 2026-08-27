@@ -34254,24 +34254,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_list_index_folds_to_some_of_the_element() {
-        // `List.at : ∀a. (List a) → Int64 → (Option a)` — the fallible indexed read. A CONSTANT list
-        // literal indexed by a CONSTANT in-range index FOLDS to `(Some elem)` at compile time (no heap,
-        // no `vec-get`): `(List.at (list 1 2 3) 1)` → `(Some 2)`. Consumed by a match here so `main`
-        // returns a scalar — `(match (List.at (list 10 20 30) 1) ((Some x) x) (None -1))` = 20 — pinning
-        // that the fold produces the right variant + payload. (The corpus case renders `(Some 20)` at
-        // the boundary, which needs sum escape; the match-consumer form checks the fold without it.)
-        let bytes = component(
-            "(module m (def (main) (match ((. List at) (list 10 20 30) 1) ((Some x) x) (None -1))) (export main))",
-        );
-        assert_eq!(
-            run_returns::<i64>(&bytes, "main"),
-            20,
-            "in-bounds → Some(element)"
-        );
-    }
-
-    #[test]
     fn a_constant_list_index_out_of_bounds_folds_to_none() {
         // The absent side of the fold: an out-of-range CONSTANT index yields `None`
         // (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping). `(List.at (list 10
