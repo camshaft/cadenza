@@ -8204,3 +8204,4 @@ pass	tlf2 Set.to-list of SUM elements orders identically const and runtime (disc
 pass	tlf3 Map.to-list with SUM keys orders identically const and runtime
 pass	a self-comparison of a scalar folds to a constant (value parity)
 pass	a self-comparison keeps a trapping operand (b=0 still traps)
+pass	dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation
