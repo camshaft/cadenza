@@ -7867,7 +7867,7 @@ todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect declines cleanly (no silent drop)
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
-todo	a List entry argument is marshalled as a vec!
+pass	a List entry argument is marshalled as a vec!
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 todo	a Rational entry argument is marshalled through Rational::new
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
@@ -7895,8 +7895,8 @@ todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — th
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
-todo	el2 TWO List entry params measure independently
-todo	el3 an EMPTY List entry param has length zero
+pass	el2 TWO List entry params measure independently
+pass	el3 an EMPTY List entry param has length zero
 todo	eo1 an Option entry param delivers its Some payload
 todo	eo2 an Option entry param takes the None arm
 todo	eo3 an Option param BETWEEN scalars keeps positions
