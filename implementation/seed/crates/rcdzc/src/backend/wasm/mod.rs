@@ -10256,29 +10256,18 @@ fn emit_bytes_provider_member(
     iface: &str,
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
-    // §2d STATIC-DATA on the provider path: the PURE assembler (`bytes_roundtrip_core_module`) now emits its
-    // OWN build-once GLOBAL/START sections, so a constant Bytes/String/Tuple/Record/small-List in the reducer
-    // body — including its RETURNED effect-list's constant parts — hoists to a `global.get` immortal static
-    // built once per spawn (the platform per-event amortization). The HOST-FUSED assembler
-    // (`bytes_roundtrip_host_core_module`) is NOT yet static-capable, so for a host-using member we still STRIP
-    // both static tables (build inline, the pre-hoist behavior) — else the selected body would route to a
-    // `global.get` that assembler never declares (the #3862 undeclared-global failure). Decide by whether the
-    // member uses any host op; the strip decision is made HERE (before selection bakes the routing into funcs).
+    // §2d STATIC-DATA on the provider path: BOTH the pure (`bytes_roundtrip_core_module`) and host-fused
+    // (`bytes_roundtrip_host_core_module`) assemblers now emit their OWN build-once GLOBAL/START sections, so a
+    // constant Bytes/String/Tuple/Record/small-List in the reducer body — including its RETURNED effect-list's
+    // constant parts — hoists to a `global.get` immortal static built once per spawn (the platform per-event
+    // amortization), whether or not the member uses host ops. No strip: the real static tables flow through to
+    // selection (routing the constants to `global.get`) and to the assembler (which declares those globals).
+    // (Probe host imports up front only to reuse the walk below.)
     let mut host_imports_probe: Vec<host::HostImport> = Vec::new();
     for &def in &layout.order {
         let body = def_body(db, def)?;
         host::collect_host_imports(db, body, &mut host_imports_probe);
     }
-    let is_pure_member = host_imports_probe.is_empty();
-    let layout_no_static;
-    let layout = if is_pure_member {
-        layout // pure path: keep the static tables — the pure assembler builds the globals
-    } else {
-        layout_no_static = layout
-            .with_static_bytes(Vec::new())
-            .with_static_compounds(Vec::new(), Vec::new());
-        &layout_no_static
-    };
     // The member's declared param/result types drive both descriptors — the compiler reads them off the
     // export plan, never off a hard-coded contract shape.
     let (params, result_ty) = {
@@ -10345,11 +10334,11 @@ fn emit_bytes_provider_member(
     ] {
         used.insert(op);
     }
-    // PURE-path static hoisting: the `start` init builds each hoisted constant with the same ops the inline
-    // build used, then `mark-immortal`s it — the init isn't in any body (the body routes to `global.get`), so
-    // force the full init op set when the static tables are non-empty (bytes-alloc/set already forced above).
-    // Mirrors `core_module_impl`'s pre-pass forcing; no-op (byte-identical) when nothing is hoisted.
-    if is_pure_member && (!layout.static_bytes.is_empty() || !layout.static_compounds.is_empty()) {
+    // PROVIDER static hoisting (both pure + host-fused): the `start` init builds each hoisted constant with the
+    // same ops the inline build used, then `mark-immortal`s it — the init isn't in any body (the body routes to
+    // `global.get`), so force the full init op set when the static tables are non-empty (bytes-alloc/set already
+    // forced above). Mirrors `core_module_impl`'s pre-pass forcing; no-op (byte-identical) when nothing hoisted.
+    if !layout.static_bytes.is_empty() || !layout.static_compounds.is_empty() {
         for op in [
             "arr-alloc",
             "arr-set",
@@ -10552,6 +10541,7 @@ fn emit_bytes_provider_member(
         &param_desc,
         &result_desc,
         &member_name,
+        layout,
     )
     .map_err(Reject::decline)?;
     Ok(envelope::assemble_bytes_roundtrip_host_provider(
