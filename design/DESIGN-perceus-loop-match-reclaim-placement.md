@@ -313,6 +313,23 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
      re-verify empirically that the residual reclaims value-correct + no-trap BEFORE trusting the refinement;
      the fresh `pair` threaded into `resume` + `Map.insert` is a SEPARATE value (not `p`), so reclaiming
      `p`'s dead shell should not touch it, but confirm on the debug runtime.
+     - **RE-VERIFY 2026-08-27 (reactivation tick).** Current main: `mts1` is now `known-leak 2` (a later
+       increment — 2c.1 #4051's borrow-classify arm — reduced it 3→2). Re-ran `--case mts1` ×3: **PASS 3/3,
+       NO trap, NO flap** — the `2` is deterministic (not a hidden rc-unsoundness), so the fence is holding
+       cleanly and there is no regression to chase; the residual is purely a MISSED reclaim.
+     - **SHARPENED MODEL (supersedes "reuse-clean over-conservative").** The tick-27a trap came from trying
+       to REUSE/FREE `p`'s cell. But if `Map.lookup` returns an OWNED payload duped to a DISTINCT cell (m
+       retains its own ref → `p` at rc≥2), then the correct reclaim is NOT reuse — it is a plain missing
+       **DROP** of the extraction-duped `p` at arm end (decrement to release the dup; m's ref survives). That
+       is the SAME missing-let-drop shape as 2c.1 (#4051), specialized to an extraction payload projected to
+       scalars, and it is SOUND (a decrement, never a free of a shared cell). Freeing the shell (what tick-27a
+       did) is the UNSOUND variant — it double-frees when lookup borrows-or-shares into m.
+     - **BLOCKING ALIAS QUESTION → v-runtime (asked this tick).** Soundness hinges entirely on: does
+       `Map.lookup(m,k)` return the value as an OWNED/rc-incremented distinct cell (→ missing-drop is sound),
+       or a BORROW into m's CHAMP node storage (→ ANY reclaim of `p` while m is live+threaded = UAF)? The
+       CHAMP map lives in the runtime module (v-runtime's lane), so this is theirs to answer. NO emit change
+       until answered. If OWNED: land a scalar-projection-only missing-drop for the extraction payload,
+       gated exactly like 2c.1, acceptance = value-wrong-grep + flap-detection on `052KQzQP`.
    - **2c.3 THREADED-STATE (`mmx1`/`rrb1`, NON-extraction, UAF-CRITICAL — proposed LAST).** The handler
      STATE (`mmx1`: `Option (Tuple)`, `rrb1`: a `Tuple`) is matched, projected, a fresh state built, and
      the OLD state shell is dead once the NEW state is produced and threaded into `resume` as the next
