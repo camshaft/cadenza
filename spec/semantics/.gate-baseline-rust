@@ -2943,6 +2943,7 @@ pass	a parameterized export returns a sum value computed from its argument
 pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
+pass	a parenthesized-head generic type de-dups a repeated head parameter to arity one and resolves
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg

@@ -2310,3 +2310,18 @@
   (call mrt    (: 5 Int64)) (output (: 5 Int64))
   (call mconst (: 5 Int64)) (output (: 7 Int64))
   (call mann   (: 5 Int64)) (output (: 5 Int64)))
+
+; -- a parenthesized-head generic type de-dups a repeated head parameter (behavioral migration from rcdzc
+; a_parenthesized_head_type_decl_dedups_repeated_head_params, 2026-08-27): a degenerate but well-formed
+; head with a repeated param must collect to arity ONE, so the ctor scheme reads the true arity and the
+; type resolves + runs (an overcount read a higher-arity scheme and mis-typed).
+(case "a parenthesized-head generic type de-dups a repeated head parameter to arity one and resolves"
+  (doc    "`(type (Box a a) (Mk a))` repeats the head param `a`; the head-param collect must DE-DUP to one
+           param so `(Box Int64)` is a correctly-arity-1 application that resolves by name and runs.
+           `(Mk k)` through `(Box Int64)` = k.")
+  (input  (do
+            (type (Box a a) (Mk a))
+            (def (u (: b (Box Int64))) (match b ((Mk v) v)))
+            (def (main (: k Int64)) (u (Mk k)))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 5 Int64)))
