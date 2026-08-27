@@ -22228,64 +22228,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_quantity_annotation_range_checks_its_inner_width() {
-        // Completeness follow-up to the rebrand fix (Copilot PR#437): a quantity annotation checks the
-        // dimension (scale is sugar) but STILL grounds + range-checks the inner numeric type, exactly as a
-        // bare (: 300 UInt8) does. The rebrand fix's type_of arm returns the expression's type to keep the
-        // unit, which meant the inner width never got checked — a Qty-wrapped literal slipped its width.
-        // Fixed by drilling the quantity's magnitude against the annotation's inner type in
-        // nested_literal_width_faults (the same choke point the List/Tuple/Sum payload checks use), so it
-        // covers same-unit AND same-dimension-different-scale uniformly.
-        // Out-of-range at a same-DIMENSION different-scale annotation → CDZ0302.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (: ((. Qty of) 300 ((. Unit of) #\"kilometer\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
-                 (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0302"),
-            "300 does not fit UInt8 — a same-dimension quantity annotation range-checks the inner width"
-        );
-        // Out-of-range at a same-UNIT annotation (the pre-existing gap the fix also closes) → CDZ0302.
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (: ((. Qty of) 300 ((. Unit base) #\"meter\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
-                 (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0302"),
-            "300 does not fit UInt8 — a same-unit quantity annotation range-checks too"
-        );
-        // Negative into an unsigned inner width → CDZ0302 (sign enforced).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) ((. Qty value) \
-                 (: ((. Qty of) -1 ((. Unit base) #\"meter\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
-                 (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0302"),
-            "-1 does not fit an unsigned UInt8 — the inner range-check enforces sign"
-        );
-        // In-range grounds + accepts, keeping the km unit — Qty.value reads back the magnitude.
-        assert_eq!(
-            run_returns::<u8>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(do (def (main) ((. Qty value) \
-                     (: ((. Qty of) 5 ((. Unit of) #\"kilometer\")) (Qty UInt8 ((. Unit base) #\"meter\"))))) \
-                     (export main))"
-                )))
-                .expect("an in-range quantity annotation grounds the inner width and accepts"),
-                "main"
-            ),
-            5,
-            "5 fits UInt8 — the annotation grounds the inner to UInt8 and accepts (value 5, unit kept)"
-        );
-    }
-
-    #[test]
     fn an_if_join_over_different_unit_quantities_names_the_scale_not_a_shadowed_declaration() {
         // Two same-dimension quantities at DIFFERENT units (km vs m) are distinct `(Qty T u)` types (the
         // unit carries the scale), so an if-join rejects them CDZ0203 — but BOTH render to

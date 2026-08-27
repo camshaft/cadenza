@@ -1328,6 +1328,7 @@ pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare built-in generic in a VALUE annotation needs a type argument
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare constant string escapes across the boundary and renders
+pass	a bare constant width UInt8 literal crosses to the host as its value
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
 pass	a bare decimal in a default-float=Float32 module grounds to Float32
@@ -3362,6 +3363,7 @@ pass	a purely-logical composed proof over a quantified proposition: DISCH then M
 pass	a push-loop tuple-list accumulator infers its tuple element component types
 pass	a qualified construct and a bare match name the same colliding variant
 pass	a qualified nullary variant pattern resolves in a nested match on the same scrutinee
+pass	a quantity annotation at a same-unit out-of-range magnitude is rejected
 pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
@@ -8956,4 +8958,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a bare constant width UInt8 literal crosses to the host as its value
