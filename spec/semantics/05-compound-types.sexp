@@ -21568,3 +21568,95 @@
   (call main (: 1 Int64))
   (output (: 10 Int64))
   (live-objects 0))
+
+; ── breaker batch 521: the ZIP exit-drop acceptance ladder + fences, PRE-ARMED for v-core-opt's
+; 2c.4 increment (design/DESIGN-perceus-loop-match-reclaim-placement.md — exit arms fail to drop
+; the enclosing match's dead binders; fix = emit the same vec-drop the recursive arm already
+; proves safe, escape-gate guarded). zc1-3 independently REPRODUCE the design doc's empirical
+; table (3/2/1, constant ys so the reading keys to the arm residue, runtime xs): these known-leak
+; clauses flip to 0 when exit-drop lands — the ladder IS the acceptance. zx4/zx5 are the fences
+; the fix could break: zx4 = the caller retains xs and reads it AFTER the zip consumed it (an
+; over-release/double-drop frees under the live caller binding → the 33001 read corrupts loudly);
+; zx5 = an exit arm that RETURNS the enclosing binder's tail (the escape gate must keep that drop
+; suppressed — a blind exit-drop frees the returned list → the 31 read corrupts loudly). Values
+; must hold VERBATIM through the fix; only the leak clauses move.
+
+(case "zc1 dual-spine zip exiting at the INNER arm (ys empties mid-decomposition): the arm returns acc without consuming xh/xt"
+  (input (do
+(def (zip-sum xs ys acc)
+  (match xs
+    ((list) acc)
+    ((list xh .. xt)
+      (match ys
+        ((list) acc)
+        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum (List.update (list 1 2 3) 0 n) (list 10 20) 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 33 Int64))
+  (live-objects known-leak 3))
+
+(case "zc2 dual-spine zip exiting at the OUTER arm after walking both spines to equal length"
+  (input (do
+(def (zip-sum xs ys acc)
+  (match xs
+    ((list) acc)
+    ((list xh .. xt)
+      (match ys
+        ((list) acc)
+        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum (List.update (list 1 2) 0 n) (list 10 20) 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 33 Int64))
+  (live-objects known-leak 2))
+
+(case "zc3 dual-spine zip exiting IMMEDIATELY (xs empty on entry)"
+  (input (do
+(def (zip-sum xs ys acc)
+  (match xs
+    ((list) acc)
+    ((list xh .. xt)
+      (match ys
+        ((list) acc)
+        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64)) (zip-sum (list) (list 10) 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 0 Int64))
+  (live-objects known-leak 1))
+
+(case "zx4 the caller retains xs and reads it AFTER the zip consumed it (over-release fence for exit-drop)"
+  (input (do
+(def (zip-sum xs ys acc)
+  (match xs
+    ((list) acc)
+    ((list xh .. xt)
+      (match ys
+        ((list) acc)
+        ((list yh .. yt) (zip-sum xt yt (+ acc (+ xh yh))))))))
+(def (main (: n Int64))
+  (let ((xs (List.update (list 1 2 3) 0 n)))
+    (+ (* 1000 (zip-sum xs (List.update (list 10 20) 0 10) 0))
+       (match (List.at xs 0) ((Option.Some v) v) ((Option.None) -1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 33001 Int64))
+  (live-objects known-leak 3))
+
+(case "zx5 an exit arm that RETURNS the enclosing binder's tail (escape-gate fence: that drop must stay suppressed)"
+  (input (do
+(def (zdrop xs ys)
+  (match xs
+    ((list) (list))
+    ((list xh .. xt)
+      (match ys
+        ((list) xt)
+        ((list yh .. yt) (zdrop xt yt))))))
+(def (main (: n Int64))
+  (let ((r (zdrop (List.update (list 1 2 3) 0 n) (List.update (list 10) 0 10))))
+    (+ (* 10 (match (List.at r 0) ((Option.Some v) v) ((Option.None) -1))) (List.len r))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 31 Int64))
+  (live-objects known-leak 3))
