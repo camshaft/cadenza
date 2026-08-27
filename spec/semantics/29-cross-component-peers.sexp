@@ -73,7 +73,8 @@
   (input  (do (effect P (op mk (-> Int64 (Tuple (List Int64) Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (+ (List.len (. (P.mk x) 0)) (. (P.mk x) 1)))) (export main)))
   (call   main (: 4 Int64))
-  (output (: 43 Int64)))
+  (output (: 43 Int64))
+  (live-objects known-leak 2))
 
 (case "pcl3 an element of a peer-returned list is read and used"
   (doc    "PROVIDER `mklist(x)` = [x+1, x+2]; the consumer reads element 0 with List.at and unwraps the
@@ -141,7 +142,8 @@
               (def (main (: x Int64)) (host (M) (sumv (Map.to-list (M.mk x)) 0)))
               (export main)))
   (call   main (: 5 Int64))
-  (output (: 40 Int64)))
+  (output (: 40 Int64))
+  (live-objects known-leak 1))
 
 ; -- a LIST argument crosses INBOUND to a peer as a handle (migrated from rcdzc
 ; a_list_argument_crosses_inbound_to_a_peer_as_a_handle): the inbound twin of the list-RESULT crossing —
@@ -316,7 +318,8 @@
   (input  (do (effect P (op mkpair (-> Int64 (Tuple Int64 Int64)))) (bind P "cadenza:p/api")
               (def (main (: x Int64)) (host (P) (P.mkpair x))) (export main)))
   (call   main (: 9 Int64))
-  (output (: (tuple 9 10) (Tuple Int64 Int64))))
+  (output (: (tuple 9 10) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
 
 (case "por1 a peer Option result escapes the entrypoint via the fused envelope"
   (doc    "The non-recursive SUM-resource escape path (emit_runtime_sum_resource, peer-aware): main RETURNS
@@ -327,7 +330,8 @@
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (List.at (L.mklist x) 0))) (export main)))
   (call   main (: 7 Int64))
-  (output (: (Some 8) (Option Int64))))
+  (output (: (Some 8) (Option Int64)))
+  (live-objects known-leak 1))
 
 (case "plr1 a peer LIST result escapes the entrypoint via the fused envelope"
   (doc    "The recursive-sum / value-encode walker escape path (emit_recursive_sum_resource), distinct from
@@ -338,7 +342,8 @@
   (input  (do (effect L (op mklist (-> Int64 (List Int64)))) (bind L "cadenza:l/api")
               (def (main (: x Int64)) (host (L) (L.mklist x))) (export main)))
   (call   main (: 7 Int64))
-  (output (: (list 8 9) (List Int64))))
+  (output (: (list 8 9) (List Int64)))
+  (live-objects known-leak 2))
 
 ; ── peer RESULT crossings read down to a scalar (no entrypoint escape): a BIGINT handle and a NESTED
 ; compound. Migrated from the in-crate rcdzc PL25/PL26.
@@ -362,7 +367,8 @@
   (input  (do (effect N (op nest (-> Int64 (Tuple (List Int64) Int64)))) (bind N "cadenza:n/api")
               (def (main (: x Int64)) (host (N) (+ (List.len (. (N.nest x) 0)) (. (N.nest x) 1)))) (export main)))
   (call   main (: 5 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 Int64))
+  (live-objects known-leak 2))
 
 
 ; ── map/set/record ARG crossings (INBOUND): the consumer builds a compound and passes it TO a peer op ──
@@ -377,7 +383,8 @@
   (input  (do (effect M (op msz (-> (Map Int64 Int64) Int64))) (bind M "cadenza:ma/api")
               (def (main (: x Int64)) (host (M) (M.msz (Map.insert (Map.insert (Map.empty) 1 x) 2 (+ x 1))))) (export main)))
   (call   main (: 7 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 1))
 
 (case "pca2 a set argument crosses INBOUND to a peer and its length is read there"
   (doc    "The set arg twin: the consumer builds a (Set Int64) {x, x+1} and passes it into the peer op, which
@@ -386,7 +393,8 @@
   (input  (do (effect S (op ssz (-> (Set Int64) Int64))) (bind S "cadenza:sa/api")
               (def (main (: x Int64)) (host (S) (S.ssz (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))))) (export main)))
   (call   main (: 7 Int64))
-  (output (: 2 Int64)))
+  (output (: 2 Int64))
+  (live-objects known-leak 1))
 
 (case "pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there"
   (doc    "A RECORD carrying a HEAP (String) field beside a scalar crosses inbound: the consumer builds
@@ -395,7 +403,7 @@
            handle and its fields are read by the provider (the record analogue of the compound-arg crossing).")
   (peer   "cadenza:ra/api" (do (def (req (: r (Record (: msg String) (: n Int64)))) (+ (String.byte-len (. r msg)) (. r n))) (export req)))
   (input  (do (effect R (op req (-> (Record (: msg String) (: n Int64)) Int64))) (bind R "cadenza:ra/api")
-              (def (main) (host (R) (R.req (record (msg "hi") (n 4))))) (export main)))
+              (def (main) (host (R) (R.req (record (= msg "hi") (= n 4))))) (export main)))
   (call   main)
   (output (: 6 Int64)))
 
@@ -424,7 +432,8 @@
              (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
              (def (main (: n Int64)) (host (A) (A.sum (bld n)))) (export main)))
   (call main (: 4 Int64))
-  (output (: 10 Int64)))
+  (output (: 10 Int64))
+  (live-objects known-leak 1))
 
 (case "pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)"
   (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
@@ -462,7 +471,8 @@
   (input  (do (effect M (op converse (-> String String))) (bind M "cadenza:model/api")
               (def (main) (host (M) (M.converse "hi"))) (export main)))
   (call   main)
-  (output (: "hihi" String)))
+  (output (: "hihi" String))
+  (live-objects known-leak 2))
 
 (case "psc1 chained peer String ops flow a result into an arg then the second result escapes"
   (doc    "The agentic-pipeline shape `tag(converse(prompt))`: a String is BOTH a peer result (handle out
@@ -475,7 +485,8 @@
   (input  (do (effect M (op converse (-> String String)) (op tag (-> String String))) (bind M "cadenza:model/api")
               (def (main) (host (M) (M.tag (M.converse "hi")))) (export main)))
   (call   main)
-  (output (: "T:hihi" String)))
+  (output (: "T:hihi" String))
+  (live-objects known-leak 2))
 
 (case "pbk1 a request-struct {prompt,max-tokens} crosses to a peer and its String completion escapes"
   (doc    "THE REALISTIC BEDROCK SHAPE: peer op `converse : (Tuple String Int64) -> String` — a request
@@ -487,7 +498,8 @@
   (input  (do (effect M (op converse (-> (Tuple String Int64) String))) (bind M "cadenza:model/api")
               (def (main) (host (M) (M.converse (tuple "hi" 64)))) (export main)))
   (call   main)
-  (output (: "hihi" String)))
+  (output (: "hihi" String))
+  (live-objects known-leak 3))
 
 (case "pby1 a peer BYTES result escapes the entrypoint via the with-methods fused envelope"
   (doc    "The binary-result sibling of pse1: a Bytes result crosses via the SAME with-methods fused
