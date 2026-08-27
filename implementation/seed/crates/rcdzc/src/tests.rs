@@ -57236,31 +57236,12 @@ mod cross_component_oracle {
                 "the {who} must carry the kebab interface member name `add-two`"
             );
         }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL4] runtime wasm not found; skipping the run");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:math/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a non-kebab peer op composes + runs across both source sides")
-        {
-            // The provider's `addTwo(5)` = 10, reached through the kebab-agreed `add-two` boundary name.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "10",
-                "a camelCase peer op crosses end-to-end (both sides kebabize to `add-two`)"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("non-kebab peer-op run trapped: {t}"),
-        }
+        // The RUN half (compose the camelCase-op provider + this consumer, `addTwo(5) = 10` through the
+        // kebab-agreed `add-two` boundary) is covered by corpus `spec/semantics/29-cross-component-peers.sexp`
+        // — "a non-kebab (camelCase) peer op name agrees across both sides and runs". This in-crate test now
+        // pins the WHITE-BOX claim only: both artifacts carry the kebab interface-member name `add-two` (and
+        // neither leaks the verbatim `addTwo` into a component-boundary position), which the corpus run
+        // confirms behaviorally (a name disagreement would fail to link).
     }
 
     #[test]
@@ -57312,32 +57293,12 @@ mod cross_component_oracle {
                 "the {who} must carry the versioned interface name `cadenza:math/api@1.0.0`"
             );
         }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[versioned-iface] runtime wasm not found; skipping the run");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:math/api@1.0.0".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["6".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a versioned interface composes + runs across both source sides")
-        {
-            // The provider's `dbl(6)` = 12, reached through the VERSIONED `cadenza:math/api@1.0.0` boundary
-            // name agreed on both sides. The version suffix survived the crossing intact.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "12",
-                "a versioned peer interface crosses end-to-end (both sides carry `@1.0.0`)"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("versioned-interface run trapped: {t}"),
-        }
+        // The RUN half (compose the versioned-interface provider + this consumer, `dbl(6) = 12` through the
+        // versioned `cadenza:math/api@1.0.0` boundary) is covered by corpus
+        // `spec/semantics/29-cross-component-peers.sexp` — "a versioned interface name agrees across both
+        // sides and runs". This in-crate test now pins the WHITE-BOX claim only: both artifacts carry the
+        // VERSIONED extern name `cadenza:math/api@1.0.0` verbatim (the @version-suffix agreement that lets
+        // them link), which the corpus run confirms behaviorally.
     }
 
     // ------------------------------------------------------------------------------------------------

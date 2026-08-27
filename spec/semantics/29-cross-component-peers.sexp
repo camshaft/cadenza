@@ -228,3 +228,38 @@
               (def (main (: x Int64)) (host (M) (match (Map.to-list (M.mk x)) ((list e .. rest) (. e 0)) ((list) -1)))) (export main)))
   (call   main (: 9 Int64))
   (output (: 1 Int64)))
+(case "a consumer calls a scalar op across a source peer provider"
+  (doc    "The L3 COMPOSITION PROOF (happy path): a separately-compiled PROVIDER exports neg over Int64;
+           the CONSUMER binds cadenza:math/api and performs M.neg under a host delegation. The harness
+           compiles the provider to its own component and composes via --peer cadenza:math/api=<peer.wasm>
+           (run_with_peers), then runs main 5 end-to-end → -5. Relocated from the in-crate rcdzc scalar
+           peer round-trip.")
+  (peer   "cadenza:math/api" (do (def (neg (: x Int64)) (- 0 x)) (export neg)))
+  (input  (do (effect M (op neg (-> Int64 Int64))) (bind M "cadenza:math/api")
+              (def (main (: x Int64)) (host (M) (M.neg x))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: -5 Int64)))
+
+(case "a non-kebab (camelCase) peer op name agrees across both sides and runs"
+  (doc    "PROVIDER exports camelCase `addTwo` on cadenza:math/api (its interface member kebab-normalizes to
+           `add-two`); the CONSUMER binds the same interface and performs `Math.addTwo`. Both sides carry the
+           kebab boundary name `add-two`, so they link; addTwo(5)=10 crosses end-to-end. Relocated (RUN half)
+           from rcdzc a_non_kebab_peer_op_name_agrees_across_both_sides_and_runs — its white-box
+           `add-two`-boundary-name pin stays in rcdzc.")
+  (peer   "cadenza:math/api" (do (def (addTwo (: x Int64)) (+ x x)) (export addTwo)))
+  (input  (do (effect Math (op addTwo (-> Int64 Int64))) (bind Math "cadenza:math/api")
+              (def (main (: x Int64)) (host (Math) (Math.addTwo x))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "a versioned interface name agrees across both sides and runs"
+  (doc    "PROVIDER publishes `dbl` on the VERSIONED cadenza:math/api@1.0.0; the CONSUMER binds the exact
+           versioned string. The @version is part of the component-boundary extern name emitted verbatim on
+           BOTH sides — a mismatch would not link. dbl(6)=12 crosses end-to-end. Relocated (RUN half) from
+           rcdzc a_versioned_interface_name_agrees_across_both_sides_and_runs — its white-box versioned-name
+           pin stays in rcdzc.")
+  (peer   "cadenza:math/api@1.0.0" (do (def (dbl (: x Int64)) (+ x x)) (export dbl)))
+  (input  (do (effect Math (op dbl (-> Int64 Int64))) (bind Math "cadenza:math/api@1.0.0")
+              (def (main (: x Int64)) (host (Math) (Math.dbl x))) (export main)))
+  (call   main (: 6 Int64))
+  (output (: 12 Int64)))
