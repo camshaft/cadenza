@@ -2261,10 +2261,14 @@ pass	a host delegating a value definition rather than an effect is rejected
 pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+pass	a host op interleaving runtime Bytes and scalar args keeps regions and slots distinct
+pass	a host op mixing a const String and a runtime Bytes arg routes each to its own path
 pass	a host op returning Bool crosses the boundary and drives a branch
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 pass	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
 pass	a host op with a String parameter composes with the value-heap runtime
+pass	a host op with three runtime Bytes args marshals each to a disjoint region
+pass	a host op with two runtime Bytes args marshals each to a disjoint region
 pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a host response captured BEFORE a multi-shot region is shared by both branches — one host call
 pass	a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)
@@ -2685,6 +2689,7 @@ pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
+pass	a multibyte-length runtime String host arg copies the full length
 pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
@@ -3480,6 +3485,7 @@ pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
 pass	a runtime Bool host arg crosses the boundary and drives two response bindings
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
+pass	a runtime Bytes host arg crosses as list<u8> and the host call returns its response
 pass	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
@@ -3532,6 +3538,7 @@ pass	a runtime Rational-inner quantity used as a Map key hits, and a different m
 pass	a runtime Result carrying a String error is matched
 pass	a runtime Result constructed from a condition selects its Ok or Err arm
 pass	a runtime SIGNED nibble truncation sign-extends from the top kept bit
+pass	a runtime String host arg is marshaled into shared memory and the host call returns its response
 pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT fall-through arm
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime String rope inserted into an empty set boxes by its own type and its compaction is leak-neutral
@@ -4803,6 +4810,7 @@ pass	an empty map is unequal to a non-empty map, not a type error
 pass	an empty map passed to a recursive callee with a non-Int64 key param grounds its key type from the param
 pass	an empty quote is rejected, not a crash
 pass	an empty record pattern matches any record of its type
+pass	an empty runtime String host arg marshals as a zero-length buffer
 pass	an empty scrutinee matches an empty bin pattern
 pass	an empty set in one if-branch unifies with a non-empty set in the other and its length reads correctly
 pass	an empty set passed to a recursive callee with a non-Int64 element param grounds its element type from the param
