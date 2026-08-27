@@ -10950,6 +10950,7 @@
     (export rec)))
   (call rec (: 0 Int64)) (output (: true Bool))
   (call rec (: 3 Int64)) (output (: true Bool)))
+
 ; -- type-width-bounded logical-shift mask elision (migrated from rcdzc runtime_ops
 ; a_logical_shift_of_an_unbounded_value_bounds_the_result_by_the_type_width; the Lir mask-elided/kept
 ; assertions stay in rcdzc): a bare unsigned value has an unknown upper bound, but the TYPE WIDTH still
@@ -11017,3 +11018,81 @@
   (input (do (def (main (: x Int64) (: y Int64) (: z Int64)) (+ (+ (& x 15) (& y 15)) (& z 15))) (export main)))
   (call main (: 255 Int64) (: 255 Int64) (: 255 Int64)) (output (: 45 Int64))
   (call main (: 1 Int64) (: 2 Int64) (: 4 Int64))       (output (: 7 Int64)))
+
+; -- masked/bounded shift-guard elision + conditional-range guard-shedding value+trap parity (behavioral
+; half of the final shift-guard/conditional hybrids migrated from rcdzc, 2026-08-27, run/traps wasmtime
+; sweep; each hybrid's white-box Lir count-guard / overflow-guard / IfIntegerOverflowEnd inspection stays
+; a wasmtime-free rcdzc unit test).
+
+(case "msc1 a masked runtime shift count wraps mod the mask (>> x (& k 63))"
+  (doc    "A masked count `(& k 63)` bounds the count to [0,63] so the count guard is elided; the value
+           still wraps mod the mask exactly as the machine shift does: 256>>(k&63) for k=0,1,4,63,64,65.")
+  (input (do (def (main (: x Int64) (: k Int64)) (>> x (& k 63))) (export main)))
+  (call main (: 256 Int64) (: 0 Int64))  (output (: 256 Int64))
+  (call main (: 256 Int64) (: 1 Int64))  (output (: 128 Int64))
+  (call main (: 256 Int64) (: 4 Int64))  (output (: 16 Int64))
+  (call main (: 256 Int64) (: 63 Int64)) (output (: 0 Int64))
+  (call main (: 256 Int64) (: 64 Int64)) (output (: 256 Int64))
+  (call main (: 256 Int64) (: 65 Int64)) (output (: 128 Int64)))
+
+(case "msc2 a masked runtime left-shift count elides the count guard but keeps the value-overflow trap"
+  (doc    "`(<< x (& k 63))`: the count guard is elided (count in [0,63]) but the overflow round-trip
+           stays — 1<<4 = 16 computes, 1<<63 = +2^63 overflows and traps.")
+  (input (do (def (main (: x Int64) (: k Int64)) (<< x (& k 63))) (export main)))
+  (call main (: 1 Int64) (: 4 Int64))  (output (: 16 Int64))
+  (call main (: 1 Int64) (: 63 Int64)) (trap "overflow"))
+
+(case "msc3 a narrow UInt8 masked left-shift with an out-of-width count traps"
+  (doc    "`(<< x (& k 15))` on UInt8: (& k 15) can exceed the width (8) so the count guard is KEPT; a
+           count of (10&15=10) >= 8 is out of range and traps (unreachable), before any value overflow.")
+  (input (do (def (main (: x UInt8) (: k UInt8)) (<< x (& k 15))) (export main)))
+  (call main (: 3 UInt8) (: 10 UInt8)) (trap "unreachable"))
+
+(case "lsb1 a bounded value shifted by a bounded count computes the masked result"
+  (doc    "`(<< (& x 15) (& k 3))` = (x&15)<<(k&3): the overflow guard is elided (value [0,15] x count
+           [0,7] fits Int64) and the value equals the masked shift, incl. count-wrap when k&3 wraps.")
+  (input (do (def (main (: x Int64) (: k Int64)) (<< (& x 15) (& k 3))) (export main)))
+  (call main (: 15 Int64) (: 3 Int64))  (output (: 120 Int64))
+  (call main (: 7 Int64) (: 2 Int64))   (output (: 28 Int64))
+  (call main (: 1 Int64) (: 7 Int64))   (output (: 8 Int64))
+  (call main (: 255 Int64) (: 10 Int64)) (output (: 60 Int64))
+  (call main (: 15 Int64) (: 8 Int64))  (output (: 15 Int64)))
+
+(case "lsb2 a negative bounded operand shifted by a bounded count stays sound (Int8)"
+  (doc    "`(<< (- 0 (& x 7)) (& k 2))` on Int8: value [-7,0] x count [0,3] fits Int8, guard elided:
+           -(7&7=7) << (2&2=2) = -7<<2 = -28.")
+  (input (do (def (main (: x Int8) (: k Int8)) (<< (- 0 (& x 7)) (& k 2))) (export main)))
+  (call main (: 7 Int8) (: 2 Int8)) (output (: -28 Int8)))
+
+(case "lsb3 a bounding box that overflows keeps the guard and traps at a genuinely-overflowing input"
+  (doc    "`(<< (& x 8589934591) (& k 31))`: value [0,2^33-1] x count [0,31] can reach ~2^64, so the
+           guard is KEPT and a genuinely-overflowing input traps.")
+  (input (do (def (main (: x Int64) (: k Int64)) (<< (& x 8589934591) (& k 31))) (export main)))
+  (call main (: 8589934591 Int64) (: 31 Int64)) (trap "overflow"))
+
+(case "cru1 a bool-materialized conditional range sheds the downstream overflow guard and computes"
+  (doc    "`(* (if (< a b) 1 0) 5)`: the conditional is [0,1] so the product is [0,5] and cannot overflow
+           Int64 — guard shed, value computes: (1,2) -> 1*5=5, (5,2) -> 0*5=0.")
+  (input (do (def (main (: a Int64) (: b Int64)) (* (if (< a b) 1 0) 5)) (export main)))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: 5 Int64))
+  (call main (: 5 Int64) (: 2 Int64)) (output (: 0 Int64)))
+
+(case "cru2 a narrow conditional whose product fits the type sheds its guard"
+  (doc    "`(: (* (if c 3 4) 5) Int8)`: the conditional is [3,4] so the product is [15,20] which fits Int8
+           — guard shed: c=true -> 3*5=15, c=false -> 4*5=20.")
+  (input (do (def (main (: c Bool)) (: (* (if c 3 4) 5) Int8)) (export main)))
+  (call main (: true Bool))  (output (: 15 Int8))
+  (call main (: false Bool)) (output (: 20 Int8)))
+
+(case "cru3 a narrow conditional whose branch-union overflows the type keeps its guard and traps"
+  (doc    "`(: (+ (if (< n 5) 100 0) 100) Int8)`: the union is [0,100]+100 = up to 200 > Int8.max, so the
+           guard is KEPT — n=3 -> 100+100=200 traps, n=9 -> 0+100=100 computes.")
+  (input (do (def (main (: n Int8)) (: (+ (if (< n 5) 100 0) 100) Int8)) (export main)))
+  (call main (: 3 Int8)) (trap "overflow")
+  (call main (: 9 Int8)) (output (: 100 Int8)))
+
+(case "cru4 an unbounded conditional branch keeps the guard and traps on real overflow"
+  (doc    "`(* (if c x 4) 5)`: the branch `x` is unbounded so the product's range is unknown — guard KEPT,
+           and (c=true, x=Int64.max) overflows and traps.")
+  (input (do (def (main (: c Bool) (: x Int64)) (* (if c x 4) 5)) (export main)))
+  (call main (: true Bool) (: 9223372036854775807 Int64)) (trap "overflow"))
