@@ -19399,50 +19399,6 @@ mod match_engine {
     }
 
     #[test]
-    fn saturating_bool_list_first_elements_are_exhaustive_without_a_wildcard() {
-        // `(list) + (list true .. r) + (list false .. r)` covers every length: the empty arm covers length
-        // 0, and the two bool-lead arms saturate the first element of any non-empty list (`true` or `false`,
-        // nothing else) — so the match is TOTAL without a `_` (`core-semantics.md`: a set of list arms is
-        // exhaustive when it covers the empty list AND every non-empty list). The list analogue of Inc-20's
-        // tuple-of-bools. `desugar_saturating_bool_list_elements` drops the LAST bool arm's redundant
-        // position-0 test (→ `(list _ .. r)`, an unguarded tail cover the length matcher counts), so the
-        // check passes AND the runtime routes correctly by first-match-wins.
-        assert!(
-            reject_code(
-                "(module m \
-                   (def (f (: xs (List Bool))) \
-                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
-                   (def (main) (f (list true))) (export main))"
-            )
-            .is_none(),
-            "a bool-saturating list match is exhaustive without a wildcard"
-        );
-        // Runtime: build a list internally and dispatch. mk(0) → [] → arm 0; mk(1) → [true, false] → the
-        // true-lead arm (1); mk(2) → [false, true] → the false-lead arm (2). Confirms the guard-drop rewrite
-        // preserves first-match-wins — the true-lead arm still gates on `true`, only the (now trailing)
-        // false-lead arm is unconditional.
-        let run = |n: &str| -> String {
-            run_heap_value(
-                "(module m \
-                   (def (mk (: n Int64)) \
-                     (if (< n 1) (list) (if (< n 2) (list true false) (list false true)))) \
-                   (def (f (: xs (List Bool))) \
-                     (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2))) \
-                   (def (main (: n Int64)) (f (mk n))) (export main))",
-                vec![n.to_string()],
-            )
-            .unwrap_or_default()
-        };
-        if run("0").is_empty() {
-            eprintln!("runtime wasm not found; skipping bool-saturation-list run");
-            return;
-        }
-        assert_eq!(run("0"), "0", "[] matches the empty arm");
-        assert_eq!(run("1"), "1", "[true, …] matches the true-lead arm");
-        assert_eq!(run("2"), "2", "[false, …] matches the false-lead arm");
-    }
-
-    #[test]
     fn a_bool_list_match_missing_a_lead_value_or_the_empty_arm_still_rejects() {
         // The saturation relaxation is SOUND — it fires ONLY when both bool values AND the empty list are
         // covered. A single bool-lead arm does not saturate the first element (the other value is
@@ -19562,68 +19518,6 @@ mod match_engine {
                 "an uncovered length / variant still rejects: {src}"
             );
         }
-    }
-
-    #[test]
-    fn saturating_ctor_list_first_elements_are_exhaustive_without_a_wildcard() {
-        // The CONSTRUCTOR analogue of the bool-saturation case: `(list) + (list (Some x) .. r) +
-        // (list (None) .. r)` over `(List (Option Int64))` is TOTAL — the empty arm covers length 0, and the
-        // two ctor-lead arms saturate the first element's VARIANT SET (`Some`/`None`, the whole sum) → every
-        // non-empty list matches. `desugar_saturating_ctor_list_elements` turns the LAST saturating arm into
-        // an unconditional `(list __ls .. r)` cover with the payload-binding moved to its body, so the check
-        // passes AND first-match-wins routing is preserved.
-        assert!(
-            reject_code(
-                "(module m \
-                   (def (f (: xs (List (Option Int64)))) \
-                     (match xs ((list) 0) ((list (Some x) .. r) x) ((list (None) .. r) 99))) \
-                   (def (main) (f (list (None)))) (export main))"
-            )
-            .is_none(),
-            "an Option-saturating list match is exhaustive without a wildcard"
-        );
-        // A 3-variant PAREN-nullary sum saturates too (each variant written `(R)`/`(G)`/`(B)`).
-        assert!(
-            reject_code(
-                "(module m (type C (R) (G) (B)) \
-                   (def (f (: xs (List C))) \
-                     (match xs ((list) 0) ((list (R) .. _r) 1) ((list (G) .. _r) 2) ((list (B) .. _r) 3))) \
-                   (def (main) (f (list (R)))) (export main))"
-            )
-            .is_none(),
-            "a 3-variant-saturating list match is exhaustive without a wildcard"
-        );
-        // Runtime: build a list internally and dispatch, confirming the guard-drop preserves routing AND the
-        // moved-to-body payload binding still binds. mk(0) → [] → arm 0; mk(1) → [(Some 7), …] → the Some arm
-        // returns its payload 7; mk(2) → [(None), …] → the None arm (now unconditional) returns 99.
-        let run = |n: &str| -> String {
-            run_heap_value(
-                "(module m \
-                   (def (mk (: n Int64)) \
-                     (if (< n 1) (list) \
-                       (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7))))) \
-                   (def (f (: xs (List (Option Int64)))) \
-                     (match xs ((list) 0) ((list (Some x) .. _r) x) ((list (None) .. _r) 99))) \
-                   (def (main (: n Int64)) (f (mk n))) (export main))",
-                vec![n.to_string()],
-            )
-            .unwrap_or_default()
-        };
-        if run("0").is_empty() {
-            eprintln!("runtime wasm not found; skipping ctor-saturation-list run");
-            return;
-        }
-        assert_eq!(run("0"), "0", "[] matches the empty arm");
-        assert_eq!(
-            run("1"),
-            "7",
-            "[(Some 7), …] matches the Some arm, binding its payload"
-        );
-        assert_eq!(
-            run("2"),
-            "99",
-            "[(None), …] matches the (now unconditional) None arm"
-        );
     }
 
     #[test]

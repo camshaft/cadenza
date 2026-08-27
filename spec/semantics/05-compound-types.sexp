@@ -6047,6 +6047,49 @@
             (def (main) (first-len (list (list 1 2 3) (list 4 5)))) (export main)))
   (output (: 3 Int64)))
 
+(case "a bool-lead-saturating list match is exhaustive without a wildcard and routes by first-match"
+  (doc    "`(list) + (list true .. r) + (list false .. r)` covers EVERY length with NO `_`: the empty arm
+           covers length 0, and the two bool-lead arms saturate a non-empty list's first element (`true` or
+           `false`, nothing else) — so the match is TOTAL (the list analogue of the tuple-of-bools
+           exhaustiveness). That this wildcard-less match COMPILES proves the saturation is accepted; the
+           runtime routing proves first-match-wins survives the saturation rewrite (which drops the last
+           bool arm's redundant position-0 test to an unconditional tail cover). `[]` → 0; `[true, …]` → the
+           true-lead arm → 1; `[false, …]` → the (now unconditional) false-lead arm → 2. Relocated (RUN half,
+           which subsumes the exhaustiveness compile-check) from rcdzc
+           `saturating_bool_list_first_elements_are_exhaustive_without_a_wildcard`.")
+  (input  (do
+            (def (mk (: n Int64)) (if (< n 1) (list) (if (< n 2) (list true false) (list false true))))
+            (def (f (: xs (List Bool)))
+              (match xs ((list) 0) ((list true .. r) 1) ((list false .. r) 2)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
+
+(case "a ctor-lead-saturating list match is exhaustive without a wildcard and binds the moved payload"
+  (doc    "The CONSTRUCTOR analogue: `(list) + (list (Some x) .. r) + (list (None) .. r)` over
+           `(List (Option Int64))` is TOTAL — the empty arm covers length 0 and the two ctor-lead arms
+           saturate the first element's VARIANT SET (`Some`/`None`, the whole sum). The saturation rewrite
+           turns the last saturating arm into an unconditional `(list __ls .. r)` cover with its payload
+           binding moved to the body — so the wildcard-less match COMPILES (exhaustive) AND first-match-wins
+           routing plus the moved-to-body payload bind survive. `[]` → 0; `[(Some 7), …]` → the Some arm binds
+           its payload → 7; `[(None), …]` → the (now unconditional) None arm → 99. Relocated (RUN half) from
+           rcdzc `saturating_ctor_list_first_elements_are_exhaustive_without_a_wildcard`.")
+  (input  (do
+            (def (mk (: n Int64)) (if (< n 1) (list) (if (< n 2) (list (Some 7) (None)) (list (None) (Some 7)))))
+            (def (f (: xs (List (Option Int64))))
+              (match xs ((list) 0) ((list (Some x) .. r) x) ((list (None) .. r) 99)))
+            (def (main (: n Int64)) (f (mk n))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64))
+  (call   main (: 2 Int64))
+  (output (: 99 Int64)))
+
 (case "a leading nested-list element dispatches on the inner list's length"
   (doc    "A nested list element with LEADING positions `(list (list a .. r1) .. r2)` dispatches on the
            INNER list's length — `(list a .. r1)` matches only a NON-empty inner list (it binds the inner

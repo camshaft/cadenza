@@ -1383,6 +1383,7 @@ pass	a body that TRAPS keeps its OWN trap kind under an @ensures — the postcon
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+pass	a bool-lead-saturating list match is exhaustive without a wildcard and routes by first-match
 pass	a bool-materialized (if c 1 0) compared to 0 or 1 folds to the condition (value parity)
 pass	a boolean compared to a true/false literal folds to the boolean or its negation (both orders)
 pass	a boolean connective with a non-boolean operand is a type error
@@ -1799,6 +1800,7 @@ pass	a ctl-style arm that applies its continuation lexically folds through the d
 pass	a ctl-style arm that reads the STATE binder AROUND its continuation application folds
 pass	a ctl-style arm whose continuation ESCAPES to another function reifies it as a closure and applies it there
 pass	a ctor-in-tuple-slot match is expressible by binding the tuple then re-matching
+pass	a ctor-lead-saturating list match is exhaustive without a wildcard and binds the moved payload
 pass	a cube dimension renders as Unit.^ with exponent 3
 pass	a curried closure capturing an inner-handled result closes over the value across both applications
 pass	a curried function can be partially applied
