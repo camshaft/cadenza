@@ -7766,3 +7766,7 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
+pass	rpp1 a scalar-fielded Record entry param projects both fields
+pass	rpp2 an open-row helper projects a field of the boundary Record param
+pass	rpp3 a Record entry param with a heap list field measures both
+pass	rpp4 a scalar Tuple entry param projects both positions

@@ -9042,3 +9042,34 @@
       ((Option.None) -1))) (export main)))
   (call main (: (list 5 6 7 8) Bytes))
   (output (: 2 Int64)))
+
+; -- breaker batch 496 (2026-08-27): RECORD/TUPLE entry params — all decline today, with a
+; DOUBLY-WRONG diagnostic ("returning a (Record …) on the multi-export boundary" — these are
+; PARAMS not returns, and the programs have ONE export). Also contradicts the heap-return guard's
+; message which claims "fixed-shape scalar tuple/record params" forward — one of the two messages
+; lies about the capability (filed to v-rust-backend, wrong-diagnostic #10). Rungs: scalar record
+; (rpp1), an open-row helper over the boundary record (rpp2), record with a heap field (rpp3),
+; scalar tuple (rpp4). All rust-pass — oracles machine-verified.
+
+(case "rpp1 a scalar-fielded Record entry param projects both fields"
+  (input (do (def (main (: r (Record (: x Int64) (: y Int64)))) (+ (* 100 (. r x)) (. r y))) (export main)))
+  (call main (: (record (= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
+  (output (: 507 Int64)))
+
+(case "rpp2 an open-row helper projects a field of the boundary Record param"
+  (input (do
+    (def (get-x r) (. r x))
+    (def (main (: r (Record (: x Int64) (: y Int64)))) (* 2 (get-x r)))
+    (export main)))
+  (call main (: (record (= x 5) (= y 7)) (Record (: x Int64) (: y Int64))))
+  (output (: 10 Int64)))
+
+(case "rpp3 a Record entry param with a heap list field measures both"
+  (input (do (def (main (: r (Record (: k Int64) (: xs (List Int64))))) (+ (. r k) (List.len (. r xs)))) (export main)))
+  (call main (: (record (= k 5) (= xs (list 1 2 3))) (Record (: k Int64) (: xs (List Int64)))))
+  (output (: 8 Int64)))
+
+(case "rpp4 a scalar Tuple entry param projects both positions"
+  (input (do (def (main (: t (Tuple Int64 Int64))) (+ (* 100 (. t 0)) (. t 1))) (export main)))
+  (call main (: (tuple 5 7) (Tuple Int64 Int64)))
+  (output (: 507 Int64)))
