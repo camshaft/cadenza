@@ -7755,3 +7755,6 @@ todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
 todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
+pass	a pure one-hole continuation folds with pure siblings around the hole
+pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
+pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail

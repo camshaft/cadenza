@@ -3102,6 +3102,8 @@ pass	a pure closure-driver call beside a perform in one handle body
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure non-final do-statement whose value is discarded compiles but earns a CDZ0307 discarded-value warning
+pass	a pure one-hole continuation folds with pure siblings around the hole
+pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
@@ -4096,6 +4098,7 @@ pass	a tail-recursive accumulator over a large runtime count iterates in constan
 pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
+pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail
 pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
 pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 pass	a tautology comparison against a masked value's derived range still traps on the operand
@@ -6046,6 +6049,7 @@ pass	het1 ONE effect with THREE result types — Int64, Bool, and String ops sha
 pass	heterogeneous constructions take ONE malformed-collection code across list, map, and set
 pass	hex and binary literals drive a runtime mask-extract across radix notations
 pass	hexadecimal, binary, and decimal spellings of one value are equal
+pass	hfr1 a handler fold's list result crosses the return boundary (two threaded draws, two reachable cells)
 pass	hgl1 an HOURGLASS with flips — tick drains three grains from the top clamped at empty, flip swaps the bulbs answering the new top (total minus old top), and the two totals CONVERGE mid-stream (both read 6,3,0 after the first flip drains) then DIVERGE again at the second flip which restores each glass's own total
 pass	hi1 an arm INSTALLS a fresh handle and resumes with its result — a whole handler lifecycle inside one dispatch
 pass	hi2 the arm-installed handle's body draws from the arm's ENCLOSING frame — fresh inner frame and outer dispatch in one arm
@@ -6077,6 +6081,7 @@ pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the sel
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
 pass	hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket
+pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
@@ -6532,6 +6537,10 @@ pass	op1 the STD Option as handler state — None seeds to Some on first feed, t
 pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
 pass	opposite-direction comparisons over a disjoint gap fold their and to false
 pass	opposite-direction comparisons that cover the line fold their or to true
+pass	oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)
+pass	oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise
+pass	oqc3 an extraction-Some payload consumed by a RECURSIVE callee leaks the retain (the true Stage-B negative witness)
+pass	oqc4 an extraction-Some payload passed as an op ARGUMENT balances at the dispatch boundary
 pass	or evaluates the right operand when the left is false
 pass	or performs the right operand's effect when the left is false
 pass	or short-circuit does not perform the right operand's effect
@@ -8114,6 +8123,7 @@ todo	cc3 a factory returning a closure over a performing-arg param declines pend
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
 todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
@@ -8146,10 +8156,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	hfr1 a handler fold's list result crosses the return boundary (two threaded draws, two reachable cells)
-pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
-todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
-pass	oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)
-pass	oqc2 an extraction-Some payload consumed by a CLOSURE application reclaims likewise
-pass	oqc3 an extraction-Some payload consumed by a RECURSIVE callee leaks the retain (the true Stage-B negative witness)
-pass	oqc4 an extraction-Some payload passed as an op ARGUMENT balances at the dispatch boundary
