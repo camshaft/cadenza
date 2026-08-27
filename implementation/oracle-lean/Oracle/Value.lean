@@ -39,6 +39,12 @@ inductive Value where
   | str (bytes : ByteArray)       -- UTF-8 string content
   | char (bytes : ByteArray)      -- UTF-8 of exactly one scalar
   | bytes (b : ByteArray)         -- a `Bytes` value (raw byte-string literal `b"…"`)
+  -- Float values are PASS-THROUGH of the canonical float leaf (we never COMPUTE floats): structural
+  -- BEq gives the spec's equality — a single canonical `NaN` form (all NaN equal) and `-0.0` ≠ `0.0`
+  -- (the sign bit differs). Floats offer NO total order (compareVals declines) and no arithmetic here.
+  | float (neg : Bool) (exp : Int) (sig : ByteArray)   -- a normal float (sign + exponent + significand)
+  | floatNan                                            -- the one canonical NaN
+  | floatInf (neg : Bool)                               -- ±infinity
   | unit
   -- compound values (their canonical forms, per `cdz-run`'s render): Option, Result, tuple, list
   | some (v : Value)
@@ -74,6 +80,9 @@ def toLeaf? : Value → Option Leaf
   | .str b => Option.some (.str b)
   | .char b => Option.some (.char b)
   | .bytes b => Option.some (.bytesLit b)
+  | .float n e s => Option.some (.float n e s)
+  | .floatNan => Option.some .floatNan
+  | .floatInf n => Option.some (.floatInf n)
   | .unit => Option.some (.name unitName)
   | _ => Option.none  -- compound values are not leaf-backed
 
@@ -87,6 +96,9 @@ def ofLeaf : Leaf → Option Value
   | .str b => Option.some (.str b)
   | .char b => Option.some (.char b)
   | .bytesLit b => Option.some (.bytes b)
+  | .float n e s => Option.some (.float n e s)
+  | .floatNan => Option.some .floatNan
+  | .floatInf n => Option.some (.floatInf n)
   | .name b => if b == unitName then Option.some .unit else Option.none
   | _ => Option.none
 
