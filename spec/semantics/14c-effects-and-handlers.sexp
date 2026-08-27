@@ -18629,3 +18629,42 @@
 (export main)))
   (call main (: 2 Int64))
   (output (: 3 Int64)))
+
+;; ── breaker batch 543: siblings at the #4540 nestop boundary (inner-op arm resume value performs
+;; an OUTER op reading the inner state binder — the arm.state re-bind). no1 = the landed shape from
+;; an independent trace; no2 = TWO outer performs in one resume value (both substituted, ordered
+;; state advance); no3 = the state read BOTH around and inside the outer perform. All three fold
+;; completely; values are hand-traced oracles.
+
+(case "no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)"
+  (input (do (effect A (op tick (-> Int64 Int64)))
+(effect B (op step (-> Int64 Int64)))
+(def (main (: n Int64))
+  (handle A (: 0 Int64) ((tick (x) s (resume (+ s x) (+ s 1))))
+    (handle B (: 10 Int64) ((step (u) t (resume (A.tick (+ t u)) t)))
+      (+ (B.step n) (* 100 (B.step (+ n 1)))))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1311 Int64)))
+
+(case "no2 TWO outer performs in one inner-arm resume value fold with ordered state advance"
+  (input (do (effect A (op tick (-> Int64 Int64)))
+(effect B (op step (-> Int64 Int64)))
+(def (main (: n Int64))
+  (handle A (: 0 Int64) ((tick (x) s (resume (+ s x) (+ s 1))))
+    (handle B (: 10 Int64) ((step (u) t (resume (+ (A.tick t) (A.tick u)) t)))
+      (+ (B.step n) (* 100 (B.step (+ n 1)))))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1712 Int64)))
+
+(case "no3 the inner state read both AROUND and INSIDE the outer perform folds"
+  (input (do (effect A (op tick (-> Int64 Int64)))
+(effect B (op step (-> Int64 Int64)))
+(def (main (: n Int64))
+  (handle A (: 0 Int64) ((tick (x) s (resume (+ s x) (+ s 1))))
+    (handle B (: 10 Int64) ((step (u) t (resume (+ t (A.tick (+ t u))) t)))
+      (+ (B.step n) (* 100 (B.step (+ n 1)))))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 2321 Int64)))
