@@ -7674,3 +7674,6 @@ todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	eop1 an Option entry param read inside a handle body composes with the fold
 pass	erp1 a Result entry param delivers its Ok payload
 pass	eop2 an Option-of-list entry param measures its Some payload
+pass	eoc1 an Option entry param captured by a local closure applied twice
+pass	eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)
+pass	eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)

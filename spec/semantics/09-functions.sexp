@@ -8804,3 +8804,33 @@
     (match o ((Option.Some xs) (List.len xs)) ((Option.None) -1))) (export main)))
   (call main (: (Some (list 4 5 6)) (Option (List Int64))))
   (output (: 3 Int64)))
+
+; -- breaker batch 478 (2026-08-27): Option-param COMPOSITIONS (the elc/grx lenses applied to the
+; #3923 lift). All three ADMITTED and 0-leak — including the cross-def relay (eoc2), which the
+; borrowed LIST lift declines: the Option lift REBUILDS an owned guest sum, so passing it to
+; another def is free, while a borrowed list vec cannot escape. That ownership asymmetry is the
+; one-line answer to "why do Option params compose more freely than list params" for the
+; consuming-slice implementer. eoc3 confirms the repeat-unwrap family needs a HEAP payload — a
+; twice-matched boundary Option with a scalar payload reclaims.
+
+(case "eoc1 an Option entry param captured by a local closure applied twice"
+  (input (do (def (main (: o (Option Int64)))
+    (let ((f (fn ((: k Int64)) (+ k (match o ((Option.Some v) v) ((Option.None) 0))))))
+      (+ (f 10) (f 100)))) (export main)))
+  (call main (: (Some 7) (Option Int64)))
+  (output (: 124 Int64)))
+
+(case "eoc2 an Option entry param relayed to a helper def and unwrapped there (owned sum, unlike the borrowed list)"
+  (input (do
+    (def (unwrap (: p (Option Int64))) (match p ((Option.Some v) v) ((Option.None) -1)))
+    (def (main (: o (Option Int64))) (* 2 (unwrap o)))
+    (export main)))
+  (call main (: (Some 7) (Option Int64)))
+  (output (: 14 Int64)))
+
+(case "eoc3 an Option entry param matched twice reclaims (the repeat-unwrap family needs a heap payload)"
+  (input (do (def (main (: o (Option Int64)))
+    (+ (match o ((Option.Some v) v) ((Option.None) -1))
+       (* 10 (match o ((Option.Some v) v) ((Option.None) -1))))) (export main)))
+  (call main (: (Some 7) (Option Int64)))
+  (output (: 77 Int64)))
