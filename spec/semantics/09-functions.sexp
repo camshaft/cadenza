@@ -9120,7 +9120,9 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: (tuple (list 7 8) (list 7 8)) (Tuple (List Int64) (List Int64))))
-  (live-objects 3))
+  ; WIT static encoding: the collection-return assembler now hoists the shared constant list build-once
+  ; (census-excluded immortal), so only the outer tuple is a mortal per-eval allocation: 3→1.
+  (live-objects 1))
 
 ; -- breaker batch 483 (2026-08-27): the result<scalar,scalar> param rung — the cell my original
 ; Result probe MISSED (rp1 used a String error payload, which declined; the scalar-scalar shape
@@ -9438,11 +9440,12 @@
   (output (: (tuple 5 (tuple 1 2)) (Tuple Int64 (Tuple Int64 Int64))))
   (live-objects 1))
 
-(case "imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)"
+(case "imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal"
   (input (do (def (main (: n Int64)) (list (tuple 1 2) (tuple n 9))) (export main)))
   (call main (: 5 Int64))
   (output (: (list (tuple 1 2) (tuple 5 9)) (List (Tuple Int64 Int64))))
-  (live-objects 4))
+  ; The embedded constant `(tuple 1 2)` is a census-excluded build-once immortal now: 4→3.
+  (live-objects 3))
 
 (case "a pass-through parameter re-passed unchanged across a tail loop is not corrupted"
   (doc    "`go(n,k,acc)` re-passes k unchanged each iteration (the back-edge elides the k←k self-move);
@@ -9529,12 +9532,12 @@
 ; alongside imc1/imc2 when that assembler gains build-once sections. Returning through a helper
 ; reads identically (probed, not separately pinned).
 
-(case "irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)"
+(case "irb1 a constant 33-element list in RETURN position now hoists build-once (the collection-return assembler gained build-once); both constant if-branch lists are census-excluded immortals → 0 mortal"
   (input (do (def (main (: n Int64)) (if (> n 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
 (export main)))
   (call main (: 1 Int64))
   (output (: (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (List Int64)))
-  (live-objects 4))
+  (live-objects 0))
 
 (case "irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)"
   (input (do (def (main (: n Int64)) (if (> n 0) (tuple 1 (tuple 2 3)) (tuple 9 (tuple 9 9))))

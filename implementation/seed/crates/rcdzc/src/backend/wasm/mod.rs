@@ -8905,6 +8905,17 @@ fn emit_recursive_sum_resource(
     // its `arr-alloc`/`arr-set`/box-* ops must join the import set BEFORE it is frozen below.
     let make_params = export_make_params(db, layout, export_def)?;
 
+    // BUILD-ONCE STATIC COMPOUNDS (WIT static encoding follow-up): the escaping bodies of a List/Map/Set /
+    // recursive-sum return may embed markable constant Tuple/Record/List/Map/Set literals (imc2's `(tuple 1 2)`
+    // inside a returned list; irb1's constant lists). Collect them build-once exactly as `emit_runtime_resource`
+    // does — the serializer plumbing (GLOBAL/START) is shared. byte_base 0: no static-bytes globals here.
+    let static_compounds = collect_static_compounds(db, &layout.order);
+    let static_compound_init = if static_compounds.is_empty() {
+        Vec::new()
+    } else {
+        select::build_static_compound_init(db, &static_compounds, 0, layout)?
+    };
+
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     // Scan the top-level defs AND the lambda-lifted closure bodies (see `append_lifted_bodies`) so an op
     // used only inside a closure is imported too — else its `CallImport` resolves to `u32::MAX` (invalid).
@@ -8920,6 +8931,28 @@ fn emit_recursive_sum_resource(
         "drop",
     ] {
         used.insert(op);
+    }
+    // The static-compound START init builds each immortal with arr-alloc/arr-set/box-*/mark-immortal[-deep]/
+    // vec-of-arr/map-*/set-*; force the full init op set when the table is non-empty (a hoisted-only constant
+    // leaves those ops in no body). Idempotent; no-op when there are no static compounds.
+    if !static_compounds.is_empty() {
+        for op in [
+            "arr-alloc",
+            "arr-set",
+            "box-int",
+            "box-bool",
+            "bytes-alloc",
+            "bytes-set",
+            "mark-immortal",
+            "vec-of-arr",
+            "mark-immortal-deep",
+            "map-empty",
+            "map-insert",
+            "set-empty",
+            "set-insert",
+        ] {
+            used.insert(op);
+        }
     }
     // A compound `make` param rebuilds each cell with `arr-alloc`/`arr-set` + a box op per scalar leaf.
     make_params.collect_rebuild_ops(&mut |op| {
@@ -9064,7 +9097,9 @@ fn emit_recursive_sum_resource(
     let k = imports.len() as u32;
     let layout = layout
         .with_import_base(p + k + 2)
-        .with_extern_order(extern_order);
+        .with_extern_order(extern_order)
+        // Thread build-once static compounds so the body's Core::Tuple/List/… arms emit `global.get`.
+        .with_static_compounds(static_compounds.clone(), static_compound_init.clone());
     let layout = &layout;
 
     let mut funcs: Vec<SelectedFunc> = Vec::new();
@@ -9092,8 +9127,8 @@ fn emit_recursive_sum_resource(
         &make_params.leaf_vts,
         &make_params.core_slots(),
         &escape_lifted_table(layout),
-        0, // build-once static compounds not threaded on this path (byte-identical; a follow-up increment)
-        &[], // no static-compound init
+        static_compounds.len(),
+        &static_compound_init,
     )
     .map_err(Reject::decline)?;
     append_debug_sections(db, layout, &funcs, &imports, spans, &mut main_core);
