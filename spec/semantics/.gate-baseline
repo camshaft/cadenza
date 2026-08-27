@@ -1408,9 +1408,12 @@ pass	a bounded generator produces only in-range values (0 <= roll < 64) for a ru
 pass	a boxed nested-unary curried closure applies without trapping
 pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
+pass	a branch condition refines a variable's range so a dead underflow guard is elided (value + trap parity)
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branch refinement does not leak into the else arm's overflow guard
+pass	a branch refinement elides a redundant AND-mask covering the refined range (value parity)
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
+pass	a branch-divergent next-state under a multi-perform body folds to 18
 pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a branchless and over two comparisons is the conjunction of the two relations
@@ -1674,6 +1677,7 @@ pass	a conditionally-selected nullary variant is returned as a runtime sum resul
 pass	a conditionally-selected variant is returned as a runtime sum result
 pass	a conjunction guards a let over a runtime value inside a conditional
 pass	a conjunction of two float compares preserves NaN-false through the connective fold
+pass	a conjunction/disjunction range condition refines both bounds so guards are elided (value + trap parity)
 pass	a connective-wrapped perform in an if condition threads its state advance to the taken branch
 pass	a consistent annotation type-checks against the inferred type
 pass	a const Ast-list FILTERED by a nested recursive comment-peeler const-evaluates at compile time
@@ -3859,6 +3863,7 @@ pass	a same-signature mutual tail cycle shares one constant-stack loop
 pass	a same-type sum match is accepted and binds the payload (the control)
 pass	a same-unit quantity join flows and its magnitude reads back
 pass	a satisfied @ensures on a performing def passes the effectful result through
+pass	a saturating OR-mask over a refined range folds to the constant (value + trap parity)
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
@@ -3984,6 +3989,7 @@ pass	a single handler with both a resuming and an abortive arm dispatches each o
 pass	a single handler with three ops each mutating the state by a DIFFERENT function, composed in sequence
 pass	a single mixed handler uses only its resuming arm when the abortive op is never performed
 pass	a single-form body admits a sequence by holding a do block
+pass	a single-perform body over a state-destructuring arm folds to 6
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant
 pass	a single-variant Int32 newtype literal-payload arm compiles at the payload width
@@ -4036,6 +4042,7 @@ pass	a stacked @test @ensures def called as a function returns its value, not un
 pass	a stacked @test @ensures with a FALSE postcondition traps when the def is called (test semantics preserved)
 pass	a state byte built into a Bytes and decoded by a from-bytes match in a tail-resumptive arm folds
 pass	a state-advancing helper called before a later read threads its write through the continuation
+pass	a state-destructuring arm under a multi-perform body folds to 6
 pass	a stateful counter is observed left-to-right by sibling performs in one expression
 pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
 pass	a stateful handler threads its counter across a function boundary
@@ -8272,6 +8279,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a state-destructuring arm under a multi-perform body folds to 6
-pass	a single-perform body over a state-destructuring arm folds to 6
-pass	a branch-divergent next-state under a multi-perform body folds to 18

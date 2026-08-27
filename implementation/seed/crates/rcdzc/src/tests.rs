@@ -11576,34 +11576,9 @@ mod runtime_ops {
             kept.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the overflow guard on (+ n 1) under n>0 is LIVE (n=MAX overflows) and must be kept, got: {kept:?}"
         );
-        // VALUE + TRAP parity. The elided-guard function computes correctly and never falsely traps:
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(5)]),
-            4
-        );
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (> n 0) (- n 1) 0)", &[Val::S64(0)]),
-            0
-        );
-        // `n = MIN` takes the else-branch (no subtraction) — no false underflow trap.
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (> n 0) (- n 1) 0)",
-                &[Val::S64(i64::MIN)]
-            ),
-            0
-        );
-        // The kept-guard function still TRAPS at the real overflow (n = MAX, n+1 leaves Int64).
-        assert!(traps(
-            "(: n Int64)",
-            "(if (> n 0) (+ n 1) 0)",
-            &[Val::S64(i64::MAX)]
-        ));
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (> n 0) (+ n 1) 0)", &[Val::S64(5)]),
-            6
-        );
+        // VALUE + TRAP parity (sub: n=5→4/0→0/MIN→0 no false trap; add: n=5→6, n=MAX traps overflow;
+        // esub: n=3→2) is the corpus case "a branch condition refines a variable's range so a dead
+        // underflow guard is elided" in 02-binding-and-control — this stays a white-box Lir guard-count check.
         // `<` refines the ELSE branch: `(if (< n 1) 0 (- n 1))` — else knows `n ≥ 1`, guard dropped.
         let else_refine = select(
             "(module m (def (f (: n Int64)) (if (< n 1) 0 (- n 1))) (def (main) 0) (export main))",
@@ -11614,10 +11589,6 @@ mod runtime_ops {
                 .iter()
                 .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "the else-branch of (< n 1) knows n>=1, so (- n 1) sheds its guard, got: {else_refine:?}"
-        );
-        assert_eq!(
-            run::<i64>("(: n Int64)", "(if (< n 1) 0 (- n 1))", &[Val::S64(3)]),
-            2
         );
     }
 
@@ -11926,40 +11897,9 @@ mod runtime_ops {
             "a partial mask (& 15) under x∈[0,255] is NOT redundant, got: {partial:?}"
         );
 
-        // VALUE PARITY: the elided-mask path returns x in range; out of range takes the else; the partial
-        // mask still masks.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
-                &[Val::S64(200)]
-            ),
-            200
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
-                &[Val::S64(1000)]
-            ),
-            1000
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (& x 255) x)",
-                &[Val::S64(0)]
-            ),
-            0
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (& x 15) x)",
-                &[Val::S64(200)]
-            ),
-            8
-        ); // 200&15
+        // VALUE PARITY (full: x=200→200/0→0/1000→1000 out-of-range; part: x=200→8) is the corpus case
+        // "a branch refinement elides a redundant AND-mask covering the refined range" in
+        // 02-binding-and-control — this stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -12026,48 +11966,9 @@ mod runtime_ops {
             "a partial `| 15` under x∈[0,255] is kept, got: {partial:?}"
         );
 
-        // VALUE PARITY: saturates to the constant in range; else branch out of range; partial still ORs.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
-                &[Val::S64(200)]
-            ),
-            255
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
-                &[Val::S64(0)]
-            ),
-            255
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (| x 255) x)",
-                &[Val::S64(1000)]
-            ),
-            1000
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(if (and (>= x 0) (< x 256)) (| x 15) x)",
-                &[Val::S64(200)]
-            ),
-            207
-        ); // 200|15
-        // TRAP PRESERVATION: the `|` fold DISCARDS x, so a trapping `(& (/ 100 z) 7)` still ÷0-traps.
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(| (: (& (: (/ 100 z) Int64) 7) Int64) 255)",
-                &[Val::S64(0)]
-            ),
-            "the saturating-or fold must not drop a trapping operand"
-        );
+        // VALUE + TRAP parity (sat: x=200→255/0→255/1000→1000; part: x=200→207; a trapping discarded
+        // operand still ÷0-traps) is the corpus case "a saturating OR-mask over a refined range folds to
+        // the constant" in 02-binding-and-control — this stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -12133,40 +12034,10 @@ mod runtime_ops {
             "C2 ⊄ C1 → kept"
         );
 
-        // VALUE PARITY: absorbed cases → the constant; the non-covered case computes the real result.
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (& (: (| x 15) Int64) 15) Int64)",
-                &[Val::S64(12345)]
-            ),
-            15
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (& (: (| x 255) Int64) 15) Int64)",
-                &[Val::S64(12345)]
-            ),
-            15
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: x Int64)",
-                "(: (& (: (| x 15) Int64) 240) Int64)",
-                &[Val::S64(12345)]
-            ),
-            (12345 | 15) & 240
-        );
-        // TRAP PRESERVATION: the fold DISCARDS `v`, so a trapping `(/ 100 z)` keeps its ÷0 trap.
-        assert!(
-            traps(
-                "(: z Int64)",
-                "(& (: (| (: (/ 100 z) Int64) 15) Int64) 15)",
-                &[Val::S64(0)]
-            ),
-            "the or-then-mask absorption must not drop a trapping operand"
-        );
+        // VALUE + TRAP parity (`(& (| v 15) 15)`→15 for any v; a trapping discarded operand still ÷0-traps)
+        // is the corpus cases "OR-then-mask absorption folds to the mask constant on a runtime operand" and
+        // "OR-then-mask absorption does not discard a trapping runtime operand" in 06-numeric-model — this
+        // stays a white-box Lir bit-op-count check.
     }
 
     #[test]
@@ -12246,46 +12117,10 @@ mod runtime_ops {
                 .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
             "an or in the THEN branch gives no single-variable bound — guard MUST be kept, got: {or_then:?}"
         );
-        // VALUE + TRAP parity. Bounded-range cases compute; the wrong-polarity case still traps at MIN.
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (and (> n 0) (< n 100)) (- n 1) 0)",
-                &[Val::S64(50)]
-            ),
-            49
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (and (> n 0) (< n 100)) (+ n 1) 0)",
-                &[Val::S64(99)]
-            ),
-            100
-        );
-        assert_eq!(
-            run::<i64>(
-                "(: n Int64)",
-                "(if (or (< n 1) (> n 99)) 0 (- n 1))",
-                &[Val::S64(50)]
-            ),
-            49
-        );
-        // Two DIFFERENT variables both refined by an `and`.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(if (and (> a 0) (> b 0)) (+ (- a 1) (- b 1)) 0)",
-                &[Val::S64(5), Val::S64(3)]
-            ),
-            6
-        );
-        // The wrong-polarity `or` still traps at MIN (the 2nd disjunct admits it; the guard is live).
-        assert!(traps(
-            "(: n Int64)",
-            "(if (or (> n 0) (< n -100)) (- n 1) 0)",
-            &[Val::S64(i64::MIN)]
-        ));
+        // VALUE + TRAP parity (asub: 50→49; aadd: 99→100; oelse: 50→49; two-var and: (5,3)→6; the
+        // wrong-polarity or still traps at MIN) is the corpus case "a conjunction/disjunction range
+        // condition refines both bounds so guards are elided" in 02-binding-and-control — this stays a
+        // white-box Lir guard-count check.
     }
 
     #[test]
