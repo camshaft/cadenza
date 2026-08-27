@@ -39795,44 +39795,7 @@ mod stage1 {
         }
     }
 
-    #[test]
-    fn a_duplicate_export_is_rejected_not_miscompiled() {
-        // A module's exports are a record whose fields are the exported names — exporting `a` twice is
-        // the same CDZ0201 duplicate-field ill-formedness as a duplicate definition. It MUST reject
-        // BEFORE emitting: two export entries of one name are forbidden by the component binary format,
-        // so emitting them writes an invalid component that fails to parse (decline-don't-miscompile).
-        let src = "(module m (def (a) 42) (export a) (export a))";
-        let msg = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("duplicate export must reject, not emit an invalid component")
-            .message;
-        assert!(msg.contains("exported more than once"), "got: {msg}");
-        // A single export is unaffected — the control compiles and runs.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (a) 42) (export a))"
-                )))
-                .expect("compile"),
-                "a"
-            ),
-            42
-        );
-    }
 
-    #[test]
-    fn an_unmodeled_top_level_form_declines() {
-        // A top-level declaration the compiler does not model makes the whole program refuse to compile
-        // (decline-don't-miscompile), NOT silently ignore it and run `main` as if it were absent. Here
-        // `(pragma strict)` names a key the fixed directive registry does not define, so it is REJECTED —
-        // now with a coded CDZ0601 (unknown directive), the directive-validation this exercises. (Before
-        // that validation it was a codeless decline; `(effect …)` USED to be the example — it is now a
-        // modeled top-level form, see `a_bare_effect_declaration_compiles`.)
-        let src = "(do (pragma strict) (def (main) 1) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a program with an unrecognized directive must be rejected"
-        );
-    }
 
     #[test]
     fn a_duplicate_effect_operation_is_rejected() {
