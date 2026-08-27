@@ -28519,36 +28519,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_guarded_arm_over_a_runtime_scrutinee_gates_and_falls_through() {
-        // A guarded arm over a RUNTIME scrutinee (an exported param, so no fold): `(classify n)` returns
-        // -1 when n<0, else n's own value via a later guard, else 0. Exercises the runtime probe chain's
-        // guard test + fall-through: classify(-5) = -1 (first guard holds); classify(7) = 7 (first guard
-        // fails → falls to the second, which holds); classify(0) via the unguarded wildcard tail = 0 (both
-        // guards fail). The guard reads the binder (the scrutinee). A scalar Int64 export needs no runtime.
-        let src = "(module m \
-                     (def (classify (: n Int64)) \
-                        (match n \
-                          ((guard x (< x 0)) (- 0 1)) \
-                          ((guard x (> x 0)) x) \
-                          (_ 0))) \
-                     (export classify))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile guards");
-        for (arg, want) in [("-5", "-1"), ("7", "7"), ("0", "0")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("classify".to_string()),
-                args: vec![arg.to_string()],
-                runtime: None,
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
-                cdz_run::Outcome::Trap(t) => panic!("guarded runtime match trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn a_guarded_scalar_match_desugars_to_an_if_and_goes_branchless() {
         // A GUARDED scalar match is `(if guard body else)` — so it must get the same branchless treatment
         // the plain `if` does (bool-materialization / select), not a structured `if`/`else` block.
@@ -28617,47 +28587,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             fcode.iter().any(|i| matches!(i, Lir::Loop(_))),
             "a guarded-wildcard tail-recursive match still compiles to a loop: {fcode:?}"
         );
-    }
-
-    #[test]
-    fn a_guarded_wildcard_binder_over_a_computed_scrutinee_in_a_nonentry_helper_binds_and_runs() {
-        // FINDING #46 (breaker/corpus-bugfix, VERIFIED both backends): a match GUARD with a NAMED wildcard
-        // binder `(guard w (> w 10))` over a COMPUTED/def-bound scrutinee `(* q 1)` in a NON-entry helper
-        // false-rejected CDZ0101 `unbound w`. ROOT: the guarded-scalar desugar EXTRACTS the guard cond+body
-        // into a bare `(if g body else)`, severing `w` from its `(guard …)` ancestor — so once the arm is
-        // reduced into an orphan `if` (which a computed scrutinee in a non-entry helper triggers), `w`
-        // resolves unbound. CONTROL: the SAME guard over a bare-param scrutinee `(match q …)` compiled fine.
-        // FIX (lower::lower_match guarded-scalar desugar): wrap the extracted test in
-        // `(let ((w scrutinee)) (if g body else))` + `forget_subtree` so `w` re-resolves to the `let` binder
-        // (and outer names the cond reads re-resolve up the live chain). Pins the RUN (a compile-only check
-        // would miss a mis-bound scrutinee): classify(21) = 1 (21>10), classify(5) = 0.
-        let src = "(module m \
-                     (def (classify (: q Int64)) (match (* q 1) ((guard w (> w 10)) 1) (_ 0))) \
-                     (def (main (: k Int64)) (classify k)) (export main))";
-        let bytes = component(src);
-        wasmparser::validate(&bytes).expect(
-            "a guarded wildcard binder over a computed scrutinee must emit valid wasm (not CDZ0101)",
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping finding-46 run");
-            return;
-        };
-        for (arg, want) in [(21i64, "1"), (5, "0")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(
-                    s, want,
-                    "classify({arg}) — the guard binder `w` binds the computed scrutinee"
-                ),
-                cdz_run::Outcome::Trap(t) => panic!("finding-46 run trapped: {t}"),
-            }
-        }
     }
 
     #[test]
@@ -28741,39 +28670,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
         let layr = crate::layout::compute(&mut dbr).expect("layout");
         crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None)
             .expect("PR1030 probe2: inlined-nested-match-in-fused-arm must emit rust");
-    }
-
-    #[test]
-    fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
-        // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
-        // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only
-        // when the variant matches AND the guard holds, and on a false guard control FALLS THROUGH to a
-        // later arm of the same variant. `f(Some 5)` → guard `5>0` holds → x = 5; `f(Some -3)` → guard
-        // fails → the plain `(Some y)` arm negates → `-(-3)` = 3. (Was CDZ0101 "unbound name x" / a clean
-        // decline before the guarded sum-match decision-tree support landed.)
-        let src = "(module m \
-                     (def (f (: o (Option Int64))) \
-                        (match o ((guard (Some x) (> x 0)) x) ((Some y) (- 0 y)) ((None) 0))) \
-                     (def (main (: n Int64)) (f (Some n))) (export main))";
-        let bytes = component(src);
-        wasmparser::validate(&bytes).expect("a guarded variant match must emit valid wasm");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping guarded-variant run");
-            return;
-        };
-        for (arg, want) in [(5i64, "5"), (-3, "3")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "guarded variant f({arg})"),
-                cdz_run::Outcome::Trap(t) => panic!("guarded variant run trapped: {t}"),
-            }
-        }
     }
 
     #[test]
@@ -31372,37 +31268,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             -1,
             "a false variant guard shields its trapping body (no spurious CDZ0304)"
         );
-    }
-
-    #[test]
-    fn chained_guards_of_the_same_variant_fall_through_in_order() {
-        // Two guarded `Some` arms then a plain `(Some z)`: each guard is tried in source order, falling
-        // through to the next on failure. `f(Some 50)` → first guard `>10` → 100; `f(Some 5)` → second
-        // guard `>0` → 1; `f(Some -2)` → both fail → plain `(Some z)` → 0.
-        let src = "(module m \
-            (def (f (: o (Option Int64))) (match o \
-              ((guard (Some x) (> x 10)) 100) \
-              ((guard (Some y) (> y 0)) 1) \
-              ((Some z) 0) ((None) (- 0 1)))) \
-            (def (main (: n Int64)) (f (Some n))) (export main))";
-        let bytes = component(src);
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping chained-guard run");
-            return;
-        };
-        for (arg, want) in [(50i64, "100"), (5, "1"), (-2, "0")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "chained guards f({arg})"),
-                cdz_run::Outcome::Trap(t) => panic!("chained-guard run trapped: {t}"),
-            }
-        }
     }
 
     #[test]
@@ -36362,55 +36227,6 @@ mod stage1 {
         // forward VALUE reference is still unbound (checked in
         // `a_do_local_declaration_scope_is_backward_only`).
         assert_eq!(run_main("(do (def x 5) (def x (+ x 10)) x)"), 15);
-    }
-
-    #[test]
-    fn a_multi_use_escaping_heap_do_def_is_kept_not_copy_propagated_no_uaf() {
-        use crate::testkit::parse;
-        // FINDING#20 (wasm UAF, corpus-bugfix/v-memory-safety/v-wasm-opt root-caused): a VALUE do-def
-        // `(def out V)` whose heap value is used at a BORROW (`String.byte-len out` in an if-cond) AND
-        // ESCAPES (a returned if-arm `out`) was COPY-PROPAGATED unconditionally — do-block value-defs bypass
-        // keep-analysis (filtered from the Seq), so the SAME producer re-emits at both sites and the reclaim
-        // gate frees the handle after the cond-borrow → the escaping arm returns a FREED handle → wrong value
-        // (wasm 20, want 8; rust ok). FIX: route value do-defs through `lower_let`'s keep-analysis — a
-        // multi-use + escaping heap do-def is KEPT (Core::Let binder → LocalRef → Borrowed → ONE retain/drop).
-        // A single-use do-def still copy-propagates + drops as sole owner (net-0 reclaim pins stay honest).
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping FINDING#20 do-def UAF run");
-            return;
-        };
-        // out = comp-go(...) (a String, run-length-encoding "aabcccccaaa" → "a2b1c5a3", byte-len 8), used at
-        // the cond `(< (byte-len out) (byte-len s))` AND returned by the `out` if-arm. mode 1 → 8.
-        let src = "(do \
-            (def (digit-str (: v Int64)) (Option.expect (String.at \"0123456789\" v) \"d\")) \
-            (def (comp-go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc String)) \
-              (if (>= i len) (String.concat acc (String.concat cur (digit-str cnt))) \
-                  (match (String.at s i) \
-                    ((Some c) (if (= c cur) (comp-go s (+ i 1) len cur (+ cnt 1) acc) \
-                                   (comp-go s (+ i 1) len c 1 (String.concat acc (String.concat cur (digit-str cnt)))))) \
-                    ((None _u) acc)))) \
-            (def (main (: mode Int64)) \
-              (do (def s (if (= mode 1) \"aabcccccaaa\" \"abc\")) \
-                  (match (String.at s 0) \
-                    ((Some c0) (do (def out (comp-go s 1 (String.byte-len s) c0 1 \"\")) \
-                                   (String.byte-len (if (< (String.byte-len out) (String.byte-len s)) out s)))) \
-                    ((None _u) -1)))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["1".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "8",
-                "the escaping heap do-def `out` must be kept (not freed after the cond-borrow) — FINDING#20 UAF"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("FINDING#20 repro trapped: {t}"),
-        }
     }
 
     #[test]

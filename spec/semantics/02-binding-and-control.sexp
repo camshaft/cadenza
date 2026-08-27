@@ -2756,6 +2756,26 @@
             (_ 999)))
   (output (: 7 Int64)))
 
+(case "a runtime scrutinee gates through a multi-guard chain and falls through to the wildcard"
+  (doc    "The runtime (non-folded) face of the multi-guard chain: `classify` matches its RUNTIME param `n`
+           through two guarded arms then a wildcard — none folds, so the emitted probe chain tests each
+           guard in order and falls through on failure. classify(-5) = -1 (first guard `< 0` holds);
+           classify(7) = 7 (first fails → second `> 0` holds, returning the bound scrutinee); classify(0) =
+           0 (both guards fail → the unguarded wildcard tail). Pins the runtime multi-guard gate + ordered
+           fall-through to the wildcard over one runtime scalar, distinct from the constant-scrutinee cases
+           above (which fold) and the single-guard runtime case below.")
+  (input  (do
+            (def (classify (: n Int64))
+              (match n
+                ((guard x (< x 0)) (- 0 1))
+                ((guard x (> x 0)) x)
+                (_ 0)))
+            (def (main (: n Int64)) (classify n))
+            (export main)))
+  (call   main (: -5 Int64)) (output (: -1 Int64))
+  (call   main (: 7 Int64)) (output (: 7 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
 (case "a guarded match over a runtime scrutinee with constant arms computes correctly"
   (doc    "`(def (main (: x Int64)) (match x ((guard n (> n 100)) 1) (_ 0)))` — a guarded scalar match over
            a RUNTIME argument. This is semantically `(if (> x 100) 1 0)`; the guard `(> n 100)` reads the
