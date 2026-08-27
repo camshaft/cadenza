@@ -667,6 +667,37 @@ struct Handle(*mut Node);
 
 impl Handle {
     const NULL: Handle = Handle(core::ptr::null_mut());
+
+    /// Guarded shared deref (mirrors `<*mut Node>::as_ref`): `None` for a null handle, else the node —
+    /// but in a debug build (`test` / `debug-counters`) it FIRST asserts the cell is a LIVE node, so a
+    /// read through a freed or fabricated handle traps loudly AT THE GETTER instead of returning wild
+    /// bytes. This is the every-access-site companion to the `with_node` / `with_raw_arity` chokepoints:
+    /// routing the direct derefs through it closes read-after-free coverage on the direct getters too
+    /// (the operator's "UAF is much worse than leaks" safety net, extended past the two chokepoints).
+    /// In the SHIPPED build the guard is `cfg`-absent, so this is EXACTLY `self.0.as_ref()` — zero cost,
+    /// and the release `Node` layout / codegen (`REQUIRED_RUNTIME_HASH`) is byte-unchanged; only the
+    /// debug-counters hash moves.
+    #[inline(always)]
+    unsafe fn node_ref<'a>(self) -> Option<&'a Node> {
+        let n = unsafe { self.0.as_ref() };
+        #[cfg(any(test, feature = "debug-counters"))]
+        if let Some(node) = n {
+            assert_node_live(self.0, node.guard, "node_ref");
+        }
+        n
+    }
+
+    /// Guarded mutable deref — the `as_mut` twin of [`Handle::node_ref`]. Reads the guard through a
+    /// short-lived shared ref FIRST (so no borrow overlaps the returned `&mut`), then hands out the
+    /// mutable node. Same debug-only LIVE-guard, same zero-cost `self.0.as_mut()` in the shipped build.
+    #[inline(always)]
+    unsafe fn node_mut<'a>(self) -> Option<&'a mut Node> {
+        #[cfg(any(test, feature = "debug-counters"))]
+        if let Some(node) = unsafe { self.0.as_ref() } {
+            assert_node_live(self.0, node.guard, "node_mut");
+        }
+        unsafe { self.0.as_mut() }
+    }
 }
 
 // ─── Low-bit tagged immediates (inline handles) — DESIGN-inline-handle-tagging.md §4.1 ────
@@ -836,7 +867,7 @@ fn with_raw_arity<T>(h: Handle, f: impl FnOnce(&[u8], usize) -> T) -> T {
         };
         f(&buf[..len], 0)
     } else {
-        match unsafe { h.0.as_ref() } {
+        match unsafe { h.node_ref() } {
             Some(node) => {
                 #[cfg(any(test, feature = "debug-counters"))]
                 assert_node_live(h.0, node.guard, "raw/arity read");
@@ -910,7 +941,7 @@ fn alloc_raw(handles: impl Into<Handles>, raw: Raw) -> Handle {
 /// disc/payload, string). The index accessors do NOT use this — they distinguish a benign null from
 /// an out-of-bounds index into a valid node (which traps), so they inline their own check.
 fn with_node<T>(h: Handle, default: T, f: impl FnOnce(&Node) -> T) -> T {
-    match unsafe { h.0.as_ref() } {
+    match unsafe { h.node_ref() } {
         Some(node) => {
             // UAF/wild-handle guard (debug only): reading through a freed or fabricated handle is a bug.
             // `with_node` is the central node reader (`node_rc`, the accessors), so this catches most reads.
@@ -1106,7 +1137,7 @@ fn op_bigint_of_bytes(buf: Handle) -> Handle {
 /// leaf's sign-magnitude `raw` slice DIRECTLY (`Big::i64_checked_from_sign_magnitude_bytes`) — a narrowing
 /// is READ-ONLY, so it needs NO `Big` (no limb `Vec`): allocation-free. A null node reads as zero.
 fn op_bigint_to_i64_checked(h: Handle) -> i64 {
-    let raw = unsafe { h.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    let raw = unsafe { h.node_ref() }.map_or(&[][..], |n| n.raw.as_slice());
     match bigint::Big::i64_checked_from_sign_magnitude_bytes(raw) {
         Some(v) => v,
         None => trap_bigint_narrow(),
@@ -1122,7 +1153,7 @@ fn trap_bigint_narrow() -> ! {
 /// null/missing node reads as the empty slice = canonical zero. The small-operand arithmetic fast path.
 #[inline]
 fn bigint_as_i128(h: Handle) -> Option<i128> {
-    let raw = unsafe { h.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    let raw = unsafe { h.node_ref() }.map_or(&[][..], |n| n.raw.as_slice());
     bigint::Big::i128_from_sign_magnitude_bytes(raw)
 }
 /// Box an `i128` result as a BigInt leaf directly from its sign-magnitude bytes — no intermediate `Big`.
@@ -1220,8 +1251,8 @@ fn op_bigint_rem(a: Handle, b: Handle) -> Handle {
 /// it needs NO `Big` (no limb `Vec`): allocation-FREE, unlike the arithmetic ops which must build a
 /// result. A null/mismatched node reads as the empty slice = canonical zero.
 fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
-    let av = unsafe { a.0.as_ref() };
-    let bv = unsafe { b.0.as_ref() };
+    let av = unsafe { a.node_ref() };
+    let bv = unsafe { b.node_ref() };
     let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
     let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
     match bigint::Big::cmp_sign_magnitude_bytes(as_, bs) {
@@ -1248,13 +1279,13 @@ fn op_bigint_cmp(a: Handle, b: Handle) -> i64 {
 /// case) has i64 components, and then two i64 components cross-multiply into an i128 that CANNOT overflow
 /// (|i64| · |i64| < 2¹²⁷), so the compare is exact native arithmetic with zero allocation.
 fn rational_components_as_i64(h: Handle) -> Option<(i64, i64)> {
-    let n = unsafe { h.0.as_ref() }?;
+    let n = unsafe { h.node_ref() }?;
     if n.handles.len() != 2 {
         return None;
     }
     let read = |slot: usize| -> Option<i64> {
         let ch = n.handles.get(slot).copied()?;
-        let raw = unsafe { ch.0.as_ref() }.map_or(&[][..], |cn| cn.raw.as_slice());
+        let raw = unsafe { ch.node_ref() }.map_or(&[][..], |cn| cn.raw.as_slice());
         bigint::Big::i64_checked_from_sign_magnitude_bytes(raw)
     };
     Some((read(0)?, read(1)?))
@@ -1264,7 +1295,7 @@ fn rational_components_as_i64(h: Handle) -> Option<(i64, i64)> {
 /// `0/1` (deterministic, never a trap — the scalar-read discipline). Borrows the child leaves; does NOT
 /// consume the handles.
 fn unbox_rational(h: Handle) -> (bigint::Big, bigint::Big) {
-    match unsafe { h.0.as_ref() } {
+    match unsafe { h.node_ref() } {
         Some(n) if n.handles.len() == 2 => (
             unbox_bigint(n.handles.get(0).copied().unwrap_or(Handle::NULL)),
             unbox_bigint(n.handles.get(1).copied().unwrap_or(Handle::NULL)),
@@ -1480,7 +1511,7 @@ fn op_arr_set(arr: Handle, index: u32, elem: Handle) -> Handle {
     if is_immediate(arr) {
         return arr; // an immediate array (inline unit) has no slots; elem is stored, not deref'd
     }
-    match unsafe { arr.0.as_mut() } {
+    match unsafe { arr.node_mut() } {
         None => {}
         Some(n) => match n.handles.get_mut(index as usize) {
             Some(slot) => *slot = elem,
@@ -1493,7 +1524,7 @@ fn op_arr_get(arr: Handle, index: u32) -> Handle {
     if is_immediate(arr) {
         trap_oob(); // an immediate array (inline unit) has 0 slots — any index is OOB
     }
-    match unsafe { arr.0.as_ref() } {
+    match unsafe { arr.node_ref() } {
         None => Handle::NULL,
         Some(n) => match n.handles.get(index as usize) {
             Some(&h) => h,
@@ -3633,7 +3664,7 @@ fn op_bytes_set(buf: Handle, index: u32, value: u32) -> Handle {
         return buf; // defensive (mirrors op_bytes_get/len): a bytes buffer is never an immediate;
         // return the handle unchanged (no-op write), never deref the tagged bits
     }
-    match unsafe { buf.0.as_mut() } {
+    match unsafe { buf.node_mut() } {
         None => {}
         Some(n) => match n.raw.as_mut_slice().get_mut(index as usize) {
             Some(slot) => *slot = value as u8,
@@ -3651,12 +3682,12 @@ fn op_bytes_get(buf: Handle, index: u32) -> u32 {
         return 0; // cross-kind totality: a bytes buffer is never itself an immediate
     }
     // Leaf fast path (and null-benign): today's behavior, unchanged.
-    let is_leaf = match unsafe { buf.0.as_ref() } {
+    let is_leaf = match unsafe { buf.node_ref() } {
         None => return 0,
         Some(n) => n.handles.is_empty(),
     };
     if is_leaf {
-        return match unsafe { buf.0.as_ref() } {
+        return match unsafe { buf.node_ref() } {
             None => 0,
             Some(n) => match n.raw.get(index as usize) {
                 Some(&b) => b as u32,
@@ -3728,7 +3759,7 @@ fn bytes_flatten(h: Handle) {
     if len <= INLINE_RAW_CAP {
         let mut buf = [0u8; INLINE_RAW_CAP];
         fill_rope_bytes(h, &mut buf[..len], len);
-        let children = match unsafe { h.0.as_mut() } {
+        let children = match unsafe { h.node_mut() } {
             Some(n) => {
                 n.raw = Raw::Inline {
                     len: len as u8,
@@ -3748,7 +3779,7 @@ fn bytes_flatten(h: Handle) {
     // Convert `h` to a leaf: install the bytes and take its children out (so `h` no longer references
     // them), THEN release those references. Order matters — `h` is a leaf before the drops, so a
     // child freed here can never be reached through `h`.
-    let children = match unsafe { h.0.as_mut() } {
+    let children = match unsafe { h.node_mut() } {
         Some(n) => {
             n.raw = Raw::from(dst); // the flattened bytes (a wide rope leaf → Heap)
             n.handles.take() // the (now-orphaned) rope children (an owned `Handles`) to drop below
@@ -3777,7 +3808,7 @@ fn fill_rope_bytes(h: Handle, dst: &mut [u8], len: usize) {
             if count == 0 {
                 continue;
             }
-            let n = match unsafe { node.0.as_ref() } {
+            let n = match unsafe { node.node_ref() } {
                 Some(n) => n,
                 None => continue, // null child — benign
             };
@@ -3923,7 +3954,7 @@ fn op_bytes_compact(buf: Handle) -> Handle {
 #[cfg(target_arch = "wasm32")]
 fn op_str_nfc(s: Handle) -> Handle {
     bytes_flatten(s);
-    let bytes = unsafe { s.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    let bytes = unsafe { s.node_ref() }.map_or(&[][..], |n| n.raw.as_slice());
     let normalized = bindings::cadenza::nfc::normalize::nfc(bytes);
     // FAST PATH (the common case — ASCII / already-NFC text): if normalization changed nothing, `s` is
     // ALREADY its own NFC form, so return the input handle unchanged rather than allocating a fresh leaf +
@@ -4076,7 +4107,7 @@ fn op_map_set(m: Handle, index: u32, key: Handle, value: Handle) -> Handle {
         return m; // defensive (mirrors the map readers): a map is never an immediate; return the
         // handle unchanged (no-op write), never deref the tagged bits
     }
-    match unsafe { m.0.as_mut() } {
+    match unsafe { m.node_mut() } {
         None => {}
         Some(n) => {
             let base = (index as usize) * 2;
@@ -4094,7 +4125,7 @@ fn op_map_key(m: Handle, index: u32) -> Handle {
     if is_immediate(m) {
         return Handle::NULL; // defensive: a map is never an immediate; benign default like null-in
     }
-    match unsafe { m.0.as_ref() } {
+    match unsafe { m.node_ref() } {
         None => Handle::NULL,
         Some(n) => match n.handles.get((index as usize) * 2) {
             Some(&h) => h,
@@ -4106,7 +4137,7 @@ fn op_map_val(m: Handle, index: u32) -> Handle {
     if is_immediate(m) {
         return Handle::NULL; // defensive: a map is never an immediate; benign default like null-in
     }
-    match unsafe { m.0.as_ref() } {
+    match unsafe { m.node_ref() } {
         None => Handle::NULL,
         Some(n) => match n.handles.get((index as usize) * 2 + 1) {
             Some(&h) => h,
@@ -4143,7 +4174,7 @@ fn op_mark_immortal(h: Handle) -> Handle {
     if is_immediate(h) {
         return h;
     }
-    if let Some(node) = unsafe { h.0.as_mut() }
+    if let Some(node) = unsafe { h.node_mut() }
         && node.rc != IMMORTAL
     {
         node.rc = IMMORTAL;
@@ -4173,7 +4204,7 @@ fn op_mark_immortal_deep(root: Handle) -> Handle {
         if is_immediate(cur) {
             continue; // an immediate owns no heap node — nothing to mark
         }
-        if let Some(node) = unsafe { cur.0.as_mut() }
+        if let Some(node) = unsafe { cur.node_mut() }
             && node.rc != IMMORTAL
         {
             node.rc = IMMORTAL;
@@ -4194,7 +4225,7 @@ fn op_dup(h: Handle) {
     if is_immediate(h) {
         return; // an immediate owns no heap — nothing to retain
     }
-    if let Some(node) = unsafe { h.0.as_mut() } {
+    if let Some(node) = unsafe { h.node_mut() } {
         // UAF/wild-handle guard (debug only): retaining a freed or fabricated cell is a bug.
         #[cfg(any(test, feature = "debug-counters"))]
         assert_node_live(h.0, node.guard, "dup");
@@ -4239,7 +4270,7 @@ fn op_drop(root: Handle) {
     if is_immediate(root) {
         return; // an immediate owns no heap — nothing to release
     }
-    let node = match unsafe { root.0.as_mut() } {
+    let node = match unsafe { root.node_mut() } {
         Some(n) => n,
         None => return, // null — benign
     };
@@ -4308,7 +4339,7 @@ fn op_drop(root: Handle) {
         if is_immediate(cur) {
             continue; // an inline child owns no heap — the hottest RC path (doc-named)
         }
-        let n = match unsafe { cur.0.as_mut() } {
+        let n = match unsafe { cur.node_mut() } {
             Some(n) => n,
             None => continue, // null child slot — benign
         };
@@ -4403,19 +4434,19 @@ fn op_reset(node: Handle) -> Handle {
         return Handle::NULL; // an immediate owns no shell to reuse (covers the borrows below)
     }
     // Read rc through a short-lived borrow that ends before we recurse into children.
-    let rc = match unsafe { node.0.as_ref() } {
+    let rc = match unsafe { node.node_ref() } {
         Some(n) => n.rc,
         None => return Handle::NULL, // null: nothing to reuse
     };
     if rc > 1 {
-        if let Some(n) = unsafe { node.0.as_mut() } {
+        if let Some(n) = unsafe { node.node_mut() } {
             n.rc -= 1; // shared: another owner keeps it intact; no reuse token
         }
         return Handle::NULL;
     }
     // Unique. Take the children out (ending the borrow before the drops), release each, then put
     // the now-empty backing Vec back so the shell keeps its allocation for the coming refit.
-    let mut children = match unsafe { node.0.as_mut() } {
+    let mut children = match unsafe { node.node_mut() } {
         Some(n) => core::mem::take(&mut n.handles),
         None => return Handle::NULL,
     };
@@ -4423,7 +4454,7 @@ fn op_reset(node: Handle) -> Handle {
         op_drop(child); // cascades; a child dup'd by the compiler before reset survives
     }
     children.clear(); // 0 elements, capacity retained
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         n.handles = children; // restore the (empty, capacity-bearing) backing
         n.raw.clear();
     }
@@ -4446,7 +4477,7 @@ fn op_arr_alloc_reuse(len: u32, token: Handle) -> Handle {
         op_drop(token); // childless unique shell → frees exactly the token node
         return imm_unit();
     }
-    match unsafe { token.0.as_mut() } {
+    match unsafe { token.node_mut() } {
         None => op_arr_alloc(len),
         Some(n) => {
             n.rc = 1;
@@ -4484,7 +4515,7 @@ fn op_sum_new_reuse(disc: u32, payload: Handle, token: Handle) -> Handle {
     if is_immediate(token) {
         return op_sum_new(disc, payload); // defensive: reset never yields an immediate token
     }
-    match unsafe { token.0.as_mut() } {
+    match unsafe { token.node_mut() } {
         None => op_sum_new(disc, payload),
         Some(n) => {
             n.rc = 1;
@@ -4673,7 +4704,7 @@ fn set_bit(bits: u32, i: usize, v: bool) -> u32 {
 /// mutators TOTAL (deterministic, never a miscompile) if the compiler ever emitted a mixed list.
 fn packed_leaf_unpack_inplace(node: Handle) {
     let (count, bits) = packed_leaf_parts(node);
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         let mut hs = Handles::new();
         for i in 0..count as usize {
             hs.push(imm_bool((bits >> i) & 1 != 0));
@@ -4727,14 +4758,14 @@ fn packed_leaf_push_inplace(node: Handle, e: Handle) {
     if imm_is_bool(e) {
         let (count, bits) = packed_leaf_parts(node);
         if (count as usize) < 32 {
-            if let Some(n) = unsafe { node.0.as_mut() } {
+            if let Some(n) = unsafe { node.node_mut() } {
                 n.raw = packed_leaf_raw(count + 1, set_bit(bits, count as usize, imm_as_bool(e)));
             }
             return;
         }
     }
     packed_leaf_unpack_inplace(node);
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         n.handles.push(e);
     }
 }
@@ -4745,13 +4776,13 @@ fn packed_leaf_push_inplace(node: Handle, e: Handle) {
 fn packed_leaf_set_inplace(node: Handle, sub: usize, e: Handle) {
     if imm_is_bool(e) {
         let (count, bits) = packed_leaf_parts(node);
-        if let Some(n) = unsafe { node.0.as_mut() } {
+        if let Some(n) = unsafe { node.node_mut() } {
             n.raw = packed_leaf_raw(count, set_bit(bits, sub, imm_as_bool(e)));
         }
         return;
     }
     packed_leaf_unpack_inplace(node);
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         if let Some(slot) = n.handles.get_mut(sub) {
             *slot = e;
         }
@@ -4947,7 +4978,7 @@ fn vec_relaxed_grow_last(node: Handle, last: usize, new_child: Handle) -> Handle
     let copy = vec_node_replace_keep_raw(node, last, new_child);
     // `copy` is a fresh sole owner (rc 1) carrying the old size table; add 1 to its final u32 entry.
     // Mutate in place via `as_mut` — the same discipline the reuse ops use for a just-allocated node.
-    if let Some(n) = unsafe { copy.0.as_mut() } {
+    if let Some(n) = unsafe { copy.node_mut() } {
         let off = n.raw.len() - 4; // raw.len() == 4*arity ≥ 4 for a relaxed node
         let bumped = read_u32_at(&n.raw, off) + 1;
         n.raw.as_mut_slice()[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
@@ -5192,7 +5223,7 @@ fn vec_set_child_inplace(node: Handle, sub: usize, child: Handle) {
         packed_leaf_set_inplace(node, sub, child);
         return;
     }
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         if let Some(slot) = n.handles.get_mut(sub) {
             *slot = child;
         }
@@ -5207,7 +5238,7 @@ fn vec_push_child_inplace(node: Handle, child: Handle) {
         packed_leaf_push_inplace(node, child);
         return;
     }
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         n.handles.push(child);
     }
 }
@@ -5220,7 +5251,7 @@ fn vec_push_child_inplace(node: Handle, child: Handle) {
 /// showed up as `vec_set_header_inplace` + `Raw::extend_from_slice` in the vec profile. The defensive
 /// branch (a header somehow not 8 bytes — never in correct operation) rebuilds via clear+extend.
 fn vec_set_header_inplace(v: Handle, count: u32, shift: u32) {
-    if let Some(n) = unsafe { v.0.as_mut() } {
+    if let Some(n) = unsafe { v.node_mut() } {
         if n.raw.len() == 8 {
             let r = n.raw.as_mut_slice();
             r[0..4].copy_from_slice(&count.to_le_bytes());
@@ -5236,7 +5267,7 @@ fn vec_set_header_inplace(v: Handle, count: u32, shift: u32) {
 /// In-place add 1 to the FINAL u32 entry of an rc==1 relaxed node's size table (a push into its last
 /// child grew that child by one element). SAFETY: caller verified rc == 1 and the node is relaxed.
 fn vec_bump_last_size_inplace(node: Handle) {
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         let off = n.raw.len() - 4;
         let bumped = read_u32_at(&n.raw, off) + 1;
         n.raw.as_mut_slice()[off..off + 4].copy_from_slice(&bumped.to_le_bytes());
@@ -5254,7 +5285,7 @@ fn vec_relaxed_append_branch_inplace(node: Handle, branch: Handle) {
             vec_relaxed_size_at(node, arity - 1)
         }
     };
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         n.handles.push(branch);
         n.raw.extend_from_slice(&(old_total + 1).to_le_bytes());
     }
@@ -6997,13 +7028,13 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
     // immediates/nulls); a nested child (arity > 0) falls through to the lazy worklist.
     if !is_immediate(a) && !is_immediate(b) && a != b {
         if let Some(result) = unsafe {
-            match (a.0.as_ref(), b.0.as_ref()) {
+            match (a.node_ref(), b.node_ref()) {
                 (Some(na), Some(nb)) => {
                     if *na.raw != *nb.raw || na.handles.len() != nb.handles.len() {
                         Some(false) // roots differ ⇒ not equal, no descent
                     } else if na.handles.iter().chain(nb.handles.iter()).all(|&c| {
                         is_immediate(c)
-                            || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
+                            || c.node_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
                     }) {
                         // Shallow: every child on both sides is arity-0 → compare pairwise inline.
                         let eq = na.handles.iter().zip(nb.handles.iter()).all(|(&cx, &cy)| {
@@ -7045,7 +7076,7 @@ fn champ_eq(a: Handle, b: Handle) -> bool {
                     return false;
                 }
             } else {
-                match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
+                match (unsafe { x.node_ref() }, unsafe { y.node_ref() }) {
                     (None, None) => {}
                     (Some(nx), Some(ny)) => {
                         if *nx.raw != *ny.raw || nx.handles.len() != ny.handles.len() {
@@ -7088,11 +7119,11 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
     // `champ_eq` path (both reduce to the same per-child (raw, arity) compare). Nested ⇒ general walk.
     if !is_immediate(a) && !is_immediate(b) && a != b {
         if let Some(ord) = unsafe {
-            match (a.0.as_ref(), b.0.as_ref()) {
+            match (a.node_ref(), b.node_ref()) {
                 (Some(na), Some(nb)) => {
                     let shallow = na.handles.iter().chain(nb.handles.iter()).all(|&c| {
                         is_immediate(c)
-                            || c.0.as_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
+                            || c.node_ref().map(|cn| cn.handles.is_empty()).unwrap_or(true)
                     });
                     if !shallow {
                         None // a nested child — use the general worklist walk
@@ -7138,7 +7169,7 @@ fn champ_key_cmp(a: Handle, b: Handle) -> core::cmp::Ordering {
                 return ord;
             }
         } else {
-            match (unsafe { x.0.as_ref() }, unsafe { y.0.as_ref() }) {
+            match (unsafe { x.node_ref() }, unsafe { y.node_ref() }) {
                 (None, None) => {} // both null (unreachable given x==y, but total)
                 (None, Some(_)) => return Ordering::Less, // null orders before non-null
                 (Some(_), None) => return Ordering::Greater,
@@ -7216,8 +7247,8 @@ fn compare_scalar_leaf(
             // (the zero-alloc discipline `champ_eq` uses). This is the arm the string-keyed-map sort hits.
             bytes_flatten(a);
             bytes_flatten(b);
-            let av = unsafe { a.0.as_ref() };
-            let bv = unsafe { b.0.as_ref() };
+            let av = unsafe { a.node_ref() };
+            let bv = unsafe { b.node_ref() };
             let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
             let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
             Some(as_.cmp(bs))
@@ -7244,8 +7275,8 @@ fn compare_scalar_leaf(
         Shape::Bytes => {
             bytes_flatten(a);
             bytes_flatten(b);
-            let av = unsafe { a.0.as_ref() };
-            let bv = unsafe { b.0.as_ref() };
+            let av = unsafe { a.node_ref() };
+            let bv = unsafe { b.node_ref() };
             let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
             let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
             Some(as_.cmp(bs))
@@ -7326,8 +7357,8 @@ fn value_cmp_shaped(
                         bytes_flatten(a);
                         bytes_flatten(b);
                         let ord = {
-                            let av = unsafe { a.0.as_ref() };
-                            let bv = unsafe { b.0.as_ref() };
+                            let av = unsafe { a.node_ref() };
+                            let bv = unsafe { b.node_ref() };
                             let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
                             let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
                             as_.cmp(bs)
@@ -7490,8 +7521,8 @@ fn value_eq_shaped(desc: &Descriptor, a: Handle, b: Handle, root_shape: u32) -> 
     fn leaf_bytes_eq(a: Handle, b: Handle) -> bool {
         bytes_flatten(a);
         bytes_flatten(b);
-        let av = unsafe { a.0.as_ref() };
-        let bv = unsafe { b.0.as_ref() };
+        let av = unsafe { a.node_ref() };
+        let bv = unsafe { b.node_ref() };
         let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
         let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
         as_ == bs
@@ -8416,7 +8447,7 @@ fn champ_become_hdr(
     nodemap: u32,
     size: u32,
 ) -> Handle {
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         n.handles = handles.into();
         if n.raw.len() != CHAMP_HEADER_SIZE {
             n.raw.resize(CHAMP_HEADER_SIZE, 0); // defensive; a real CHAMP node is already 12 bytes
@@ -8434,7 +8465,7 @@ fn champ_become_hdr(
 /// returning, so no other reference observes the empty state (single-threaded). Moving a `Handle` out
 /// touches no refcount (`Copy`, no `Drop`). SAFETY: caller verified `node_rc(node) == 1`.
 fn champ_take_handles(node: Handle) -> Handles {
-    match unsafe { node.0.as_mut() } {
+    match unsafe { node.node_mut() } {
         Some(n) => n.handles.take(),
         None => Handles::new(),
     }
@@ -8445,7 +8476,7 @@ fn champ_take_handles(node: Handle) -> Handles {
 /// pointer changes and the subtree count drops by one; datamap/nodemap are unchanged). SAFETY: caller
 /// verified `node_rc(node) == 1` and `slot < handles.len()`, `raw.len() == CHAMP_HEADER_SIZE`.
 fn champ_set_child_and_size_inplace(node: Handle, slot: usize, child: Handle, size: u32) {
-    if let Some(n) = unsafe { node.0.as_mut() } {
+    if let Some(n) = unsafe { node.node_mut() } {
         if let Some(h) = n.handles.get_mut(slot) {
             *h = child;
         }
@@ -8504,7 +8535,7 @@ fn champ_insert_fbip(
     // function returns, so `node` is never observed in the transient empty state (single-threaded).
     // `mut` because the arity-preserving branches (OVERWRITE, DESCEND) mutate a slot in place and
     // reinstall this same vector rather than allocating a fresh one.
-    let mut handles = match unsafe { node.0.as_mut() } {
+    let mut handles = match unsafe { node.node_mut() } {
         Some(n) => n.handles.take(),
         None => Handles::new(),
     };
@@ -9216,7 +9247,7 @@ fn champ_cursor_read(cur: Handle) -> (u32, Vec<Handle>, Slots) {
 /// refcount — `Handle` is `Copy`); the caller MUST reinstall a frame vector via `champ_become_cursor`
 /// before returning (every path does). SAFETY: caller verified `node_rc(cur) == 1`.
 fn champ_cursor_take(cur: Handle) -> (u32, Vec<Handle>, Slots) {
-    match unsafe { cur.0.as_mut() } {
+    match unsafe { cur.node_mut() } {
         Some(n) => {
             let state = read_u32_at(&n.raw, 0);
             let frames = n.handles.take().into_vec(); // cursor frames need Vec semantics (heap arm)
@@ -9303,7 +9334,7 @@ fn op_map_iter(m: Handle) -> Handle {
 /// dup/drop delta before calling); overwriting the old `handles` Vec changes no refcounts (`Handle` is
 /// `Copy`, no `Drop`). SAFETY: caller verified `node_rc(cur) == 1`.
 fn champ_become_cursor(cur: Handle, frames: Vec<Handle>, slots: Slots, state: u32) -> Handle {
-    if let Some(n) = unsafe { cur.0.as_mut() } {
+    if let Some(n) = unsafe { cur.node_mut() } {
         // Reuse the cursor's EXISTING `raw` allocation (clear keeps its capacity) instead of allocating
         // a fresh Vec — the cursor is rc==1, and its raw already held a `[state]slots…` of comparable
         // size, so the re-extend rarely reallocates. Saves one Vec allocation per advance step.
@@ -20212,6 +20243,19 @@ mod tests {
         let h = bytes_leaf(&[6, 7]);
         op_drop(h);
         let _ = node_rc(h); // read of a freed node → UAF panic
+    }
+
+    /// Read-after-free through a DIRECT INDEX GETTER (`op_arr_get` → `Handle::node_ref`, which BYPASSES
+    /// the `with_node` / `with_raw_arity` chokepoints) is now caught too. This is the access-site-coverage
+    /// win: the guard moved from the two chokepoints onto every direct node deref, so a freed container
+    /// consumed by a getter traps at the getter instead of reading poisoned/garbage bytes. (Before the
+    /// `node_ref` refactor this read would have dereffed the freed cell unguarded.)
+    #[test]
+    #[should_panic(expected = "use-after-free")]
+    fn read_after_free_through_a_direct_getter_is_caught_as_use_after_free() {
+        let arr = op_arr_alloc(2);
+        op_drop(arr); // last ref → frees the array node, poisoning the retained cell
+        let _ = op_arr_get(arr, 0); // direct getter deref of a freed node → UAF panic via node_ref
     }
 
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
