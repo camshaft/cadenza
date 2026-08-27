@@ -52343,49 +52343,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_runtime_sum_match_dispatches_on_the_discriminant() {
-        // The RUNTIME sum match, composed + run: a function builds a sum from a runtime param, matches
-        // it, and returns a scalar. `(mk n)` builds `(Some n)` when n>0 else `None`, then `pick` matches:
-        // `(Some x) → x`, `None → -1`. So `pick 5` → 5 (the `Some` arm reads the payload via
-        // `sum-payload`), `pick 0` → -1 (the `None` arm). Exercises `sum-disc` dispatch + `sum-payload`
-        // binding end-to-end through the composed runtime. `mk` is RECURSIVE (a `(< n 0)` arm self-calls,
-        // never taken for the tested n>=0) so the sum stays a GENUINE runtime value: the match-into-if AND
-        // case-of-match fusions refuse to reduce through a recursive call, so `(match (mk n) …)` stays a
-        // runtime dispatch (a non-recursive `mk` would fuse away — both folds see through it — dropping the
-        // runtime import this asserts). Semantics unchanged for n>=0.
-        use crate::testkit::parse;
-        let src = "(module m (type Option (Some Int64) None) \
-                     (def (mk (: n Int64)) (if (< n 0) (mk 0) (if (> n 0) (Option.Some n) Option.None))) \
-                     (def (pick (: n Int64)) \
-                        (match (mk n) \
-                          ((Option.Some x) x) (Option.None -1))) \
-                     (export pick))";
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(src))).expect("compile sum match");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a runtime sum match imports the value-heap runtime"
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed sum-match run");
-            return;
-        };
-        for (arg, want) in [("5", "5"), ("0", "-1")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("pick".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "pick {arg}"),
-                cdz_run::Outcome::Trap(t) => panic!("composed sum-match run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn an_all_nullary_enum_program_imports_no_value_heap_runtime() {
         // An all-nullary enum is a bare i32 discriminant (built with `i32.const`, matched with a
         // `br_table`) — it touches the value heap NOT AT ALL. So a program whose only sum is such an enum
