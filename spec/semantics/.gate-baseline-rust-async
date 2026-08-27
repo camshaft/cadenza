@@ -2965,6 +2965,7 @@ pass	a param-shadowing let with a param-referencing initializer folds at a const
 pass	a parameter annotation contradicting its use is rejected
 pass	a parameter carries a type annotation in the signature
 pass	a parameter named tuple is applied as the bound function
+pass	a parameter passed to a polymorphic callee is not over-constrained
 pass	a parameterized called function's free names resolve lexically while its argument substitutes
 pass	a parameterized compound-return export forwards distinct arguments to make
 pass	a parameterized export builds a list of tuples by a runtime-length loop and measures it

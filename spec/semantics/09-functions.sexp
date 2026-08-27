@@ -4679,6 +4679,18 @@
             (def (main) (id true)) (export main)))
   (output (: true Bool)))
 
+(case "a parameter passed to a polymorphic callee is not over-constrained"
+  (doc    "The argument-position constraint is PRECISE — it fires only when the callee's k-th parameter is
+           DETERMINED. `g`'s param `v` is passed to the polymorphic `id` (whose param is unconstrained),
+           so `g` gets NO spurious constraint from that call and stays usable at any type: `(+ (g 3) (g
+           4))` = 7, `g`'s param inlining from each concrete argument. A generation that constrained `g`'s
+           param from the `id` call would pin `g` to one type and reject (or miscompile) the second use.")
+  (input  (do
+            (def (id x) x)
+            (def (g v) (id v))
+            (def (main) (+ (g 3) (g 4))) (export main)))
+  (output (: 7 Int64)))
+
 (case "one generic identity instantiated at a scalar, a heap string, and a compound in one program"
   (doc    "The three-representation stress of the id pins above (each instantiates at ONE type): the SAME
            `id` applied to a runtime Int64 (scalar), a String literal (heap rope handle), and a tuple
