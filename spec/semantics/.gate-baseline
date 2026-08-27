@@ -716,10 +716,13 @@ pass	a CONSTANT in-range Int 12 truncation keeps its value (no sign bit set)
 pass	a CONSTANT match on a high-bit UInt64 scalar decides its literal patterns unsigned
 pass	a CONSTANT match on the Int64.min/max boundary decides its literal patterns exactly
 pass	a CONSTANT recursive sum compares equal to a differently-built RUNTIME one
+pass	a CONSTANT shift by a count at or beyond the UInt64 bit width is rejected
 pass	a CONSTANT signed nibble truncation of an all-ones nibble is -1
 pass	a CONSTANT signed nibble truncation sign-extends — the const-fold companion of the runtime .wrap
 pass	a CONSTANT signed truncation of an all-ones Int 12 is -1
 pass	a CONSTANT signed truncation sign-extends at a WIDER storage width (Int 12, i16 storage)
+pass	a CONSTANT wide-UInt64 left shift whose result overflows the width is rejected
+pass	a CONSTANT wide-UInt64 shift/bitwise op folds over the solved width, not the i64-only path
 pass	a CONSTANT-failure `?` inside the arm's helper — the cut stays in the helper, dispatch unharmed
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
 pass	a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value
@@ -2103,6 +2106,7 @@ pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuil
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
 pass	a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)
 pass	a fold whose accumulator applies each list closure IN SEQUENCE (apply-all chain)
+pass	a folded recursive-newtype ANNOTATION unifies with the unfolded value type
 pass	a foreign-performing op ARGUMENT bound to a multiply-used arm param runs the effect exactly once
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
@@ -3218,6 +3222,7 @@ pass	a performing closure called TWICE observes the state advance between its ca
 pass	a performing closure duplicated through a generic tuple applies twice with stepping state
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
+pass	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
 pass	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
 pass	a performing condition's advance survives an inner abort and is read by a post-handle observer
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
@@ -7041,6 +7046,10 @@ pass	oos1 a NESTED-Option STATE ladder — None to Some None to Some Some v and 
 pass	op1 a WHOLE nested handle expression as an op's ARGUMENT beside an outer draw
 pass	op1 the STD Option as handler state — None seeds to Some on first feed, the payload accumulates thereafter
 pass	op2 an Option RESUME value from a single-site arm — Some carries the excess, None answers the shortfall row
+pass	ope1 an Option.expect payload consumed per-iteration is retained (no drift)
+pass	ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained
+pass	ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)
+pass	ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)
 pass	opposite-direction comparisons over a disjoint gap fold their and to false
 pass	opposite-direction comparisons that cover the line fold their or to true
 pass	oqc1 an extraction-Some payload consumed by an OPAQUE user-fn call reclaims (the call balances the retain)
@@ -7746,6 +7755,9 @@ pass	sk4 a Set of TUPLES as handler state with three arms — insert in one arm,
 pass	sk4c a closure through the one-shot helper capturing an outer let binder folds via the escaped-closure recovery (pinned-capture memo preserved)
 pass	sky1 SKYLINE visibility with demolition — feeds answer whether the building tops all before it, demolish removes EVERY copy of the max forcing the threshold to recompute from survivors
 pass	sl1 a STRING slot grows by a mod-picked suffix and its BYTE-LEN seeds a nested handle — the composed face of the slot-clobber fix
+pass	slc1 a SINGLE-consumed String.slice result leaks its dup (the minimal post-#4425 residue cell)
+pass	slc2 a slice-of-slice (two view layers) multi-consumed leaks both layers' dups
+pass	slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue
 pass	slicing a byte sequence built at run time yields Some of the sub-range
 pass	slicing a runtime byte sequence past the end yields None
 pass	slicing a runtime byte sequence with a negative start yields None
@@ -8695,7 +8707,6 @@ todo	a closed literal closure forwarded through const-wrapper hops is not a fals
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
-pass	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
@@ -8742,11 +8753,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	ope1 an Option.expect payload consumed per-iteration is retained (no drift)
-pass	ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained
-pass	ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)
-pass	ope4 a chained Unit-payload Option.expect runs (nested sentinel drop, valid module)
-pass	a folded recursive-newtype ANNOTATION unifies with the unfolded value type
-pass	slc1 a SINGLE-consumed String.slice result leaks its dup (the minimal post-#4425 residue cell)
-pass	slc2 a slice-of-slice (two view layers) multi-consumed leaks both layers' dups
-pass	slc3 a slice inside a DUAL-USED tuple (projection + walker) stacks the dqe leg-1 leak on the slice residue
