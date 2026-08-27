@@ -525,6 +525,23 @@ interface heap {
   //    Returns the same handle; an immediate (no node) is returned unchanged. APPENDED last (frozen-contract
   //    rule). See `op_mark_immortal`.
   mark-immortal: func(handle: u32) -> u32;             // 95 — convert a heap node to IMMORTAL: dup/drop no-op + census-excluded (build-once statics)
+
+  //  mark-immortal-deep(handle) -> handle
+  //    The TRANSITIVE mark-immortal (idx 96): convert the root node AND every node transitively reachable
+  //    through its child handles into IMMORTAL (each rc → `u32::MAX`, each excluded from the census). The
+  //    DEEP analogue of `mark-immortal` (idx 95), for a build-once static whose value is a MULTI-NODE heap
+  //    structure with no compile-time per-node handle — a LARGE list (`>32`, an RRB trie of interior + leaf
+  //    nodes) or a MAP (a CHAMP HAMT of interior nodes + `[k,v]` data entries). One walk over `handles`
+  //    covers the structural nodes AND the payload handles they own (a data entry's key + value, a list
+  //    leaf's elements, any nested compound) — the SAME child set `drop`'s free-cascade scans — so a
+  //    constant map's constant keys/values and a constant list's elements are all marked, not just the
+  //    spine (else they'd leak / be freed under the immortal). Idempotent + DAG-safe: an already-IMMORTAL
+  //    node is skipped (persistent structures SHARE nodes — each marks once, no double census-decrement, no
+  //    cycle); an immediate handle is skipped. `node-rc` reports the sentinel (≠ 1) for every marked node,
+  //    so a runtime `List.push`/`Map.insert` onto the immortal base FBIP path-copies, never mutating the
+  //    shared immortal. Returns the same root handle. APPENDED last (frozen-contract rule). See
+  //    `op_mark_immortal_deep`.
+  mark-immortal-deep: func(handle: u32) -> u32;        // 96 — transitively convert a heap value + all reachable nodes (RRB/CHAMP internals + k/v/elements) to IMMORTAL
 }
 
 world runtime {

@@ -4086,6 +4086,43 @@ fn op_mark_immortal(h: Handle) -> Handle {
     h
 }
 
+/// `mark-immortal-deep(handle)` (heap index 96) — the TRANSITIVE [`op_mark_immortal`]: mark the root node
+/// AND every node reachable through child handles IMMORTAL. For a build-once static whose value is a
+/// MULTI-NODE heap structure with no compile-time per-node handle — a `>32` RRB list (interior + leaf
+/// nodes) or a CHAMP map (interior nodes + `[k,v]` data entries). The walk is over `node.handles` — the
+/// SAME child set `op_drop`'s free-cascade scans — so a map's key+value handles, a list's element handles,
+/// and any nested compound payloads are ALL marked, not just the spine (else the payloads would stay
+/// mortal and leak, or be freed under the immortal). ITERATIVE (an explicit worklist, no recursion) so a
+/// deep RRB trie cannot overflow the wasm stack. IDEMPOTENT + DAG-safe: an already-IMMORTAL node is
+/// skipped, so a shared node (persistent structures share) marks exactly once — no double census-decrement,
+/// no cycle. An immediate (non-heap) handle owns no node and is skipped. Returns the same root handle.
+fn op_mark_immortal_deep(root: Handle) -> Handle {
+    // A LIFO worklist of handles yet to mark. Seeded with the root; a node's children are pushed as it is
+    // marked. Handles are `Copy` (a pointer/immediate), so pushing a child READS it — the node stays live
+    // and immortal (unlike `op_drop`, which takes the handles as it frees).
+    let mut worklist: Vec<Handle> = Vec::new();
+    worklist.push(root);
+    while let Some(cur) = worklist.pop() {
+        if is_immediate(cur) {
+            continue; // an immediate owns no heap node — nothing to mark
+        }
+        if let Some(node) = unsafe { cur.0.as_mut() }
+            && node.rc != IMMORTAL
+        {
+            node.rc = IMMORTAL;
+            #[cfg(any(test, feature = "debug-counters"))]
+            LIVE_NODES.with(|n| n.set(n.get() - 1));
+            // Mark this node's children transitively. `handles` derefs to `[Handle]`, covering the inline
+            // (≤2, e.g. a CHAMP `[k,v]` entry) and heap-spilled (a wide RRB/CHAMP node) cases uniformly.
+            for &child in node.handles.iter() {
+                worklist.push(child);
+            }
+        }
+        // An already-IMMORTAL node: skip (its subtree was already marked on the path that first reached it).
+    }
+    root
+}
+
 fn op_dup(h: Handle) {
     if is_immediate(h) {
         return; // an immediate owns no heap — nothing to retain
@@ -6418,6 +6455,14 @@ impl Guest for Component {
     // census-excluded). See `op_mark_immortal`.
     fn mark_immortal(handle: u32) -> u32 {
         op_mark_immortal(Handle::from_u32(handle)).to_u32()
+    }
+    // Mark-immortal-DEEP (index 96) — transitively mark a heap value AND every node reachable through its
+    // child handles IMMORTAL (RRB list interior+leaf nodes, CHAMP map interior nodes + `[k,v]` entries, and
+    // the k/v/element payloads they own). The deep analogue of `mark-immortal` for a build-once static whose
+    // value is a multi-node structure (a `>32` list, a map) with no compile-time per-node handle. See
+    // `op_mark_immortal_deep`.
+    fn mark_immortal_deep(handle: u32) -> u32 {
+        op_mark_immortal_deep(Handle::from_u32(handle)).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
@@ -19895,6 +19940,69 @@ mod tests {
             bytes_to_vec(stat),
             vec![7, 8],
             "the embedded immortal Bytes is readable intact after the parent drop (no UAF)"
+        );
+    }
+
+    /// DEEP mark-immortal (op 96, v-static-data large-list/map build-once hoist): `op_mark_immortal_deep`
+    /// marks a MULTI-NODE structure AND its payloads immortal transitively — the RRB list's interior/leaf
+    /// nodes AND its element handles, the CHAMP map's interior nodes AND its `[k,v]` payload handles — so a
+    /// build-once constant list(>32)/map nets to ZERO census (no leak) and every node dup/drop-no-ops (no
+    /// UAF under a runtime consumer). The crux (v-static-data): the ELEMENTS/KEYS/VALUES, not just the
+    /// spine, must be marked — asserted via `node_rc` on a read-back element/value.
+    #[test]
+    fn mark_immortal_deep_covers_list_elements_and_map_kv() {
+        // A >32-element LIST of HEAP elements → a multi-level RRB (interior + leaf nodes) with 40 element
+        // leaves. Deep-marking must reach the element leaves, not just the trie structure.
+        let base = LIVE_NODES.with(|n| n.get());
+        let mut xs = op_vec_empty(); // an RRB VECTOR seed (`vec-push`-able); an `arr-alloc(0)` is the empty TUPLE (an immediate), which `vec-push` cannot read a header from
+        for i in 0..40u32 {
+            xs = op_vec_push(xs, bytes_leaf(&[i as u8]));
+        }
+        assert!(LIVE_NODES.with(|n| n.get()) > base, "the built list holds live nodes");
+        let xs = op_mark_immortal_deep(xs);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "deep-mark excludes the WHOLE list (trie nodes + all 40 element leaves) from the census"
+        );
+        assert_eq!(node_rc(xs), IMMORTAL, "the list root is immortal");
+        assert_eq!(op_vec_len(xs), 40, "the immortal list is readable (len)");
+        assert_eq!(
+            node_rc(op_vec_get(xs, 17)),
+            IMMORTAL,
+            "an ELEMENT leaf is immortal too (deep, not just the spine) — the census-crux"
+        );
+        op_dup(xs);
+        op_drop(xs);
+        assert_eq!(node_rc(xs), IMMORTAL, "dup/drop no-op on the immortal list root");
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "census unchanged across dup/drop of the deep-immortal list"
+        );
+
+        // A MAP with HEAP keys + HEAP values → a CHAMP with `[k,v]` data entries. Deep-marking must reach
+        // the key AND value handles inside each entry, not just the HAMT nodes.
+        let base2 = LIVE_NODES.with(|n| n.get());
+        let mut m = op_map_empty();
+        for i in 0..8u32 {
+            m = op_map_insert(m, bytes_leaf(&[i as u8, 0xAA]), bytes_leaf(&[i as u8, 0xBB]));
+        }
+        assert!(LIVE_NODES.with(|n| n.get()) > base2, "the built map holds live nodes");
+        let m = op_mark_immortal_deep(m);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base2,
+            "deep-mark excludes the WHOLE map (HAMT nodes + every key + every value) from the census"
+        );
+        assert_eq!(node_rc(m), IMMORTAL, "the map root is immortal");
+        assert_eq!(op_map_size(m), 8, "the immortal map is readable (size)");
+        op_dup(m);
+        op_drop(m);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base2,
+            "census unchanged across dup/drop of the deep-immortal map"
         );
     }
 
