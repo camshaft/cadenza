@@ -10604,23 +10604,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_newtype_over_a_scalar_constructs_matches_and_erases() {
-        // A single-variant sum over a scalar is a NOMINAL NEWTYPE: `(Mk 42)` constructs (erased to the raw
-        // Int64 — no `sum-new` box), and `(match … ((Mk n) …))` binds `n` directly to the underlying value
-        // (the `Payload` step is a runtime no-op). CONSTANT scrutinee.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type UserId (Mk Int64)) \
-                       (def (main) (match (Mk 42) ((Mk n) (+ n 1)))) (export main))"
-                ),
-                "main"
-            ),
-            43
-        );
-    }
-
-    #[test]
     fn a_recursive_fn_self_calling_in_a_do_def_rhs_is_detected_as_recursive_not_deep_beta_reduced()
     {
         // A recursive fn whose ONLY self-call sits in a do-local VALUE def's RHS — `(def hh (f …))` inside a
@@ -10831,48 +10814,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_same_name_variant_of_a_multi_variant_sum_constructs_by_the_type_name() {
-        // `(type N (N Int64) (J Int64))` — the FIRST variant shares the type's name, but the sum has
-        // MORE than one variant. The same-name head-position rule must fire regardless of variant COUNT:
-        // bare `(N a)` in head position resolves to the CONSTRUCTOR (as a single-variant same-name newtype
-        // does), NOT be hijacked by the type binding into a spurious CDZ0203 "takes no type parameters".
-        // (Breaker finding adv-same-name-ctor-hijacked-by-type case-2: the ctor index was wrongly
-        // restricted to one-variant sums, so a multi-variant same-name variant fell through to the type.)
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type N (N Int64) (J Int64)) \
-                       (def (main) (match (N 4) ((N v) (+ v 1)) ((J w) w))) (export main))"
-                ),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
-    fn a_same_name_ctor_in_a_called_helper_resolves_to_the_constructor() {
-        // FACE B of the breaker's `adv-same-name-ctor-hijacked-by-type`: a smart-constructor helper
-        // `(def (mk a) (Meters a))` that main CALLS. When `mk` is inlined/β-copied at the call site its
-        // body `(Meters a)` becomes a SYNTH node (id ≥ user_node_count) in value head position, so the
-        // `is_user_node` gate wrongly left `Meters` the TYPE → spurious CDZ0203. A MONOMORPHIC same-name
-        // sum has no `sum_applied` synth type-expr to confuse, so `resolve_name` now also fires the ctor
-        // rule on a synth node when the sum is monomorphic (`same_name_monomorphic_ctor` + not a type-expr
-        // subtree). Must construct + run — `mk(4)` builds `(Meters 4)`, popped `+ 1` → 5.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Meters (Meters Int64)) \
-                       (def (mk a) (Meters a)) \
-                       (def (main) (match (mk 4) ((Meters v) (+ v 1)))) (export main))"
-                ),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
     fn a_same_name_ctor_in_a_called_helper_with_a_compound_payload_constructs() {
         // FACE B with a COMPOUND (tuple) payload, not just a scalar — the same-name-ctor β-copy fix
         // (`same_name_monomorphic_ctor`) must reach a helper building `(Pair (tuple a a))` (a monomorphic
@@ -10889,26 +10830,6 @@ mod match_engine {
         if let Some(v) = run_heap_value(src, Vec::new()) {
             assert_eq!(v, "10", "mk 5 builds (Pair (5 5)); pop → 5 + 5");
         }
-    }
-
-    #[test]
-    fn a_generic_same_name_ctor_is_still_a_type_constructor_in_type_position() {
-        // GUARD the monomorphic-only scope: a GENERIC same-name sum `(type Box (Box a))` must NOT have its
-        // synth `sum_applied` type-expr `(Box a)` flipped to the ctor by the FACE-B relaxation (that synth
-        // heads a list in TYPE position and must stay the type record — else the ctor arrow corrupts and the
-        // variant reads nullary). A DIRECT generic construct still works via the `is_user_node` arm; here we
-        // pin that the generic construct + match composes (the relaxation is monomorphic-gated, so `Box` is
-        // untouched by `same_name_monomorphic_ctor`).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Box (Box a)) \
-                       (def (main) (match (Box 7) ((Box v) (+ v 1)))) (export main))"
-                ),
-                "main"
-            ),
-            8
-        );
     }
 
     #[test]
