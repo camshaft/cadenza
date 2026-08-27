@@ -3082,6 +3082,55 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 503 Int64)))
 
+(case "a state-destructuring arm under a multi-perform body folds to 6"
+  (doc    "A handler arm that DESTRUCTURES its state with a `match` and resumes inside EACH branch —
+           `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))` — folds under a MULTI-perform
+           body when the branches thread the SAME next-state. The perform arm peels the resume from each match
+           branch and rebuilds BOTH a value-match and a next-state-match over the (pure) scrutinee `s`, so the
+           match-valued next-state threads forward to the next perform (`peel_resume_from_arm_body`). Over a
+           `(Some 5)` seed, both `get`s read `(Some 5)` -> 5 (both branches thread `s` unchanged), so
+           `(+ 1 5)` = 6.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St (Some 5)
+                ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s)))))
+                (do (St.get) (+ 1 (St.get)))))
+            (export main)))
+  (call   main) (output (: 6 Int64)))
+
+(case "a single-perform body over a state-destructuring arm folds to 6"
+  (doc    "The single-perform companion of the multi-perform state-destructuring fold: one `(St.get)` under the
+           same match-shaped resume arm over a `(Some 5)` seed. The `Some` branch resumes `n` = 5 threading `s`
+           unchanged, so `(+ 1 5)` = 6. Confirms the match-shaped resume peel folds the base single-perform
+           shape as well as the multi-perform one.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St (Some 5)
+                ((get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s)))))
+                (+ 1 (St.get))))
+            (export main)))
+  (call   main) (output (: 6 Int64)))
+
+(case "a branch-divergent next-state under a multi-perform body folds to 18"
+  (doc    "A state-destructuring arm whose branches thread a DIFFERENT advanced state per branch —
+           `(get (u) s (match s ((Some n) (resume n (Some (+ n 1)))) (None (resume 0 s))))` — folds, and to
+           the CORRECT value: the match-valued next-state threads forward as a `(match arg (pat s)...)`
+           expression whose branches carry each branch's own advanced state, so a subsequent perform reading
+           the state re-evaluates the match against the (pure) arg and sees the right per-branch state. Over a
+           `(Some 5)` seed, L->R the seed advances 5->6->7 (each `get` reads then the `(Some (+ n 1))`
+           next-state bumps it), so `5 + (6 + 7)` = 18. A regression that re-declines OR folds to a wrong value
+           (the state-threading ledger's wrong-branch hazard) is caught here.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (def (main)
+              (handle St (Some 5)
+                ((get (u) s (match s ((Some n) (resume n (Some (+ n 1)))) (None (resume 0 s)))))
+                (+ (St.get) (+ (St.get) (St.get)))))
+            (export main)))
+  (call   main) (output (: 18 Int64)))
+
 (case "a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold"
   (doc    "The GROUP-AWARE multi-value fold over a mutually-recursive SCC. `typeof` and `compute` mutually
            recurse, and `compute` performs `put` then reads the accumulated state via `get` AFTER recursing
