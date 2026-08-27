@@ -8680,3 +8680,5 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
 pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
 pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
+pass	mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell
+pass	mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)
