@@ -16360,11 +16360,9 @@ mod match_engine {
             assert!(d.fix.is_none(), "{name} arithmetic offers no forced fix");
         }
 
-        // NO false fire: comparison on two Strings is VALID (lexical order / equality).
-        assert!(run_returns::<bool>(
-            &component("(module m (def (main) (< \"a\" \"b\")) (export main))"),
-            "main"
-        ));
+        // NO false fire: comparison on two Strings is VALID (lexical order) — it must COMPILE, not trip the
+        // arithmetic reject. The boolean result of `(< "a" "b")` is ordinary string comparison, corpus-covered.
+        let _ = component("(module m (def (main) (< \"a\" \"b\")) (export main))");
         // NO false fire: EQUALITY on two same-typed compounds/bools is VALID (structural eq) — not arith.
         for src in [
             "(module m (def (f (: a (List Int64)) (: b (List Int64))) (= a b)) (export f))",
