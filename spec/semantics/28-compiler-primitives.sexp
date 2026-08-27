@@ -2159,3 +2159,30 @@
                ((Option.None) (trap "chm2 EMPTY")))))
     (export main)))
   (error CDZ0304 (message "chm2 head is b")))
+
+; -- List.len fold trap-preservation (migrated from rcdzc list_len_fold_preserves_a_trapping_element_construction,
+; 2026-08-27): List.len folds to the constant arity ONLY when every element construction is provably
+; trap-free. An element with a RUNTIME-computed value that can trap must NOT be dropped by the fold —
+; the runtime length must evaluate the construction so the trap still surfaces. The trap-free constant
+; twin still folds. Before the guard this ran to the arity on all backends and swallowed the trap.
+
+(case "List.len does NOT fold away a trapping element construction (runtime denominator)"
+  (doc    "List.len folds to the constant arity only when every element construction is provably
+           trap-free. A `(Rational.of 3 d)` element with a RUNTIME denominator is not trap-free — at
+           d=0 it is a zero-denominator trap — so List.len must emit the runtime length (evaluating the
+           construction) rather than fold to the constant 2 and DROP the trap.")
+  (input (do
+    (def (main (: d Int64))
+      (List.len (list (Rational.of 1 2) (Rational.of 3 d))))
+    (export main)))
+  (call main (: 0 Int64))
+  (trap "unreachable")
+  (call main (: 2 Int64))
+  (output (: 2 Int64)))
+
+(case "List.len of a trap-free constant list still folds to its arity"
+  (doc    "The trap-free twin of the guard above: every element of `(list 1 2 3)` is a provably
+           trap-free literal, so List.len folds to the constant arity 3 — the trap-preservation guard
+           did not over-decline on constant lists.")
+  (input (do (def (main) (List.len (list 1 2 3))) (export main)))
+  (output (: 3 Int64)))

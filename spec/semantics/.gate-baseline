@@ -184,8 +184,10 @@ pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	List.at in-bounds control alongside the huge-index guard reads the right elements
 pass	List.at over a let-bound constant list folds through the binder on both backends
 pass	List.at with near-i64::MAX and i32-wrap indices declines to None, not a wrapped read
+pass	List.len does NOT fold away a trapping element construction (runtime denominator)
 pass	List.len of a concat of call-site lists with runtime elements folds to the summed arity
 pass	List.len of a list built at the call site from runtime elements folds to the arity
+pass	List.len of a trap-free constant list still folds to its arity
 pass	List.len over a NESTED owned-producer chain (concat of two pushes) reclaims every temporary (no live objects)
 pass	List.len over a let-bound constant list folds to the arity on both backends
 pass	List.len over a list with a TRAPPING element construction preserves the trap (does not fold it away)
@@ -5271,6 +5273,7 @@ pass	ca1c a closure over a performing nested-let-init capture folds via the capt
 pass	ca1m a capture-once closure applied TWICE shares the single draw across both applications
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
+pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
 pass	cbk1 a CIRCUIT-BREAKER state machine — two failures trip it open, open requests answer the -1 sentinel while a cooldown counts down to half-open, the half-open probe either restores closed on success or re-trips on failure, and the final draw reads the mode
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
@@ -7059,6 +7062,8 @@ pass	rt1 Ok/Err resume values with a DEPENDENT second dispatch — the sign of t
 pass	rt2 an Err SHORT-CIRCUITS a recursive Result walk — Ok accumulates, the first Err multiplies out and stops
 pass	rt3 the Err VALUE seeds a RECOVERY region — a fallback same-effect handle runs inside the Err arm
 pass	ruf1 a twice-unwrapped payload persistently updated through one binding reads original through the other (the two-sided balance fence)
+pass	ruf2 the two-sided balance fence over a twice-unwrapped Result Ok payload
+pass	ruf3 the two-sided balance fence over a twice-unwrapped user-generic payload
 pass	run-length encode/decode round-trips a runtime list of tuples
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
@@ -8176,6 +8181,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
-pass	ruf2 the two-sided balance fence over a twice-unwrapped Result Ok payload
-pass	ruf3 the two-sided balance fence over a twice-unwrapped user-generic payload
