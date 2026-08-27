@@ -2478,3 +2478,35 @@
   (input (do (def (main (: a Int64) (: b Int64)) (let ((p (< a b))) (if p (if p 1 2) 3))) (export main)))
   (call main (: 1 Int64) (: 9 Int64)) (output (: 1 Int64))
   (call main (: 9 Int64) (: 1 Int64)) (output (: 3 Int64)))
+
+(case "a nested-if tower sharing an arm flattens and preserves the truth table"
+  (doc    "(if c1 x (if c2 x y)) = (if (or c1 c2) x y) [shared THEN]; (if c1 (if c2 x y) y) =
+           (if (and c1 c2) x y) [shared ELSE]. main = 100*A1 + A2 with x=10,y=20: (T,T)→1010, (T,F)→1020,
+           (F,T)→1020, (F,F)→2020.")
+  (input (do
+    (def (main (: c1 Bool) (: c2 Bool))
+      (+ (* 100 (if c1 10 (if c2 10 20))) (if c1 (if c2 10 20) 20)))
+    (export main)))
+  (call main (: true Bool) (: true Bool))   (output (: 1010 Int64))
+  (call main (: true Bool) (: false Bool))  (output (: 1020 Int64))
+  (call main (: false Bool) (: true Bool))  (output (: 1020 Int64))
+  (call main (: false Bool) (: false Bool)) (output (: 2020 Int64)))
+
+(case "a flattened nested-if shared arm preserves trap shielding (reached only when a condition selects it)"
+  (doc    "(if c1 (/ 10 n) (if c2 (/ 10 n) 20)): the shared `/` is reached exactly when c1||c2. Neither
+           selects (F,F) at n=0 → 20 (shielded); reached via c1 or c2 at n=0 → traps.")
+  (input (do
+    (def (main (: c1 Bool) (: c2 Bool) (: n Int64)) (if c1 (/ 10 n) (if c2 (/ 10 n) 20)))
+    (export main)))
+  (call main (: false Bool) (: false Bool) (: 0 Int64)) (output (: 20 Int64))
+  (call main (: true Bool) (: false Bool) (: 0 Int64))  (trap "divide by zero")
+  (call main (: false Bool) (: true Bool) (: 0 Int64))  (trap "divide by zero"))
+
+(case "a flattened nested-if combined condition short-circuits a trapping second condition"
+  (doc    "(if c1 10 (if (> (/ 10 n) 0) 10 20)): the trapping c2 `/` is evaluated only when c1 is false
+           (short-circuit or). c1=true,n=0 → 10 (shielded); c1=false,n=0 → traps.")
+  (input (do
+    (def (main (: c1 Bool) (: n Int64)) (if c1 10 (if (> (/ 10 n) 0) 10 20)))
+    (export main)))
+  (call main (: true Bool) (: 0 Int64))  (output (: 10 Int64))
+  (call main (: false Bool) (: 0 Int64)) (trap "divide by zero"))

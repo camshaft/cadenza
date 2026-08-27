@@ -1960,6 +1960,8 @@ pass	a flat String inserted into an empty set boxes by its own type (not box-int
 pass	a flat multi-param lambda stored in a tuple is applied through curried syntax
 pass	a flat multi-shot arm with two performs on a strict spine folds the cross-product
 pass	a flat string map key is found by a runtime rope twin
+pass	a flattened nested-if combined condition short-circuits a trapping second condition
+pass	a flattened nested-if shared arm preserves trap shielding (reached only when a condition selects it)
 pass	a float annotation reaches the 32-bit width
 pass	a float at f64::MAX renders its full 309-digit expansion (large-significand codec)
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
@@ -2807,6 +2809,7 @@ pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-compound Float32 equality const-folds through the demoting compare
 pass	a nested-handler ctl arm whose continuation-consuming body ALSO performs an OUTER effect folds
+pass	a nested-if tower sharing an arm flattens and preserves the truth table
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
 pass	a nested-list-rest arm reads BOTH the inner rest and the outer rest binders
