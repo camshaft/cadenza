@@ -5233,7 +5233,7 @@
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (output (: 76 Int64))
   (call   main (: 4 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread"
   (input  (do
@@ -10447,7 +10447,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 303071191 Int64))
   (call   main (: 1 Int64)) (output (: 303040161 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 13))
 
 ; --- breaker batch 265: Lamport clock, debounce gate, op-log replay ---
 (case "lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to max(local,remote)+1; the stale remote (already-past timestamp) still ticks by one through the max"

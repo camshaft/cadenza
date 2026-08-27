@@ -2556,7 +2556,7 @@
             (def (main) (h (Map.insert (map) "x" 1) 1))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a map threaded through recursion is read at every depth and once more at the base"
   (doc    "The MULTI-DEPTH borrow face of the recursive seam above (that one pins persistence across
@@ -2913,7 +2913,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 2030 Int64))
   (call main (: 2 Int64)) (output (: 2040 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a map consumed by Map.swap in one operand is unchanged for a later read of the same binding"
   (doc    "The VALUE-YIELDING-insert twin of the Map.insert persistence case above: `Map.swap` returns
@@ -8748,7 +8748,7 @@
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 200 Int64))
   (call   main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "re-inserting a LIST row into a map replaces that row and leaves the original map's row intact"
   (doc    "The overwrite+persistence face of the map-of-lists (the query pins read; this WRITES a row):
@@ -8785,7 +8785,7 @@
   (call   main (: 1 Int64) (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 1 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64) (: 1 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a list of records: a runtime index then reads a field of the found record"
   (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned
@@ -8835,7 +8835,7 @@
   (call   main (: 1 Int64) (: 10 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 99 Int64)) (output (: 0 Int64))
   (call   main (: 9 Int64) (: 10 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a map as a map value: a nested lookup queries the inner map through the outer lookup"
   (doc    "The Map-of-Maps case — a Map whose VALUE is itself a Map (nested CHAMP-in-CHAMP), the fourth
@@ -8857,7 +8857,7 @@
   (call   main (: 2 Int64) (: 20 Int64)) (output (: 200 Int64))
   (call   main (: 1 Int64) (: 99 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact"
   (doc    "The WRITE path of the map-of-maps case above (that one only reads): `bump` is a two-level
@@ -8896,7 +8896,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 103752099 Int64))
   (call   main (: -100 Int64)) (output (: 752099 Int64))
-  (live-objects known-leak 59))
+  (live-objects known-leak 24))
 
 (case "ONE inner map shared under TWO outer keys updates independently (no aliasing cross-talk)"
   (doc    "The map-of-maps rows above store DISTINCT inner maps; this pins the SHARED-value face: one
@@ -14374,7 +14374,7 @@
             (def (main) (ev ((. E Add) ((. E Bind) ((. E Var))) ((. E Var))) (Map.insert (map) 0 1)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a runtime set shared across two recursive-call operands is not mutated by an insert in one"
   (doc    "The `Set` face of the same aliasing invariant, in the recursive interpreter shape: `ev` threads a
@@ -14395,7 +14395,7 @@
             (def (main) (ev ((. E Add) ((. E Grow) ((. E Leaf))) ((. E Leaf))) (Set.insert (Set.of (list)) 1)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a recursive sum consumer whose arguments are recursive sum producers compiles"
   (doc    "The self-hosting compiler's spine: a recursive tree-walk (`lower`) whose arms combine the
@@ -15200,7 +15200,7 @@
                   ((Some inner) (Map.len inner))
                   ((None _) 0))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; A map's KEY type is likewise unrestricted — a KEY may itself be a MAP. Keys are compared BY VALUE under
 ; structural equality (collections-and-text.md #Keys Are Compared By Value), and a map value is CANONICAL
@@ -18559,7 +18559,7 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a Set taken out of a map grows independently of the original binding"
   (doc    "The SET-as-VALUE escape face: {7 -> {1,2}} taken apart by Map.take — the taken set reads
@@ -18585,7 +18585,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a record key with a SET field matches by set content across build orders"
   (doc    "The record-key family descends into a full sub-CHAMP: the key's `s` field is a SET, so
@@ -19263,7 +19263,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 4 Int64))
   (call   main (: 4 Int64)) (output (: 8 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a shared runtime rope survives per-level extension ropes that are read or dropped"
   (doc    "The rope-String twin: the shared base `\"ab\"+\"cde\"` (5 bytes, a runtime concat) threads
@@ -19328,7 +19328,7 @@
                       (Map.len m0)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 212 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ; pr1 (breaker): prepend onto a CONCAT-merged RRB vector — the new front element and the
 ; original seam-adjacent elements all read back correctly through the merged trie.

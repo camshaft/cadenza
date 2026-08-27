@@ -10675,8 +10675,32 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal-deep")); // [map] — transitively immortal (CHAMP spine + k/v)
             Ok(())
         }
+        // A constant SET — the set analogue of the Map arm (CHAMP-minus-value-column): `set-empty` + per-element
+        // box-by-type + rope-compact / list-element-canonicalize + `set-insert` (CONSUMES set+element, moves in,
+        // no copy), then ONE `mark-immortal-deep` on the final root (marks the whole HAMT + element handles).
+        Core::SetOf { elems, elem_ty } => {
+            let slots: HashMap<StructId, u32> = HashMap::new();
+            let mut high = 0u32;
+            let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
+            out.push(Lir::CallImport(OP_SET_EMPTY)); // [set]
+            for &e in elems.iter() {
+                let elem_base = high;
+                emit(db, e, &slots, elem_base, &mut high, &mut scratch_ty, layout, out)?; // [set, elem]
+                let elem_boxed = box_op_for(db, e, &elem_ty)?;
+                emit_heap_store_tail(db, e, elem_boxed, out); // [set, elem-handle]
+                if key_needs_compaction(db, e) {
+                    out.push(Lir::CallImport(OP_BYTES_COMPACT)); // rope element → canonical flat leaf
+                }
+                if key_needs_canonicalize(db, e) {
+                    emit_key_canonicalize(db, e, &elem_ty, &mut high, &mut scratch_ty, out)?; // [set, canon-elem]
+                }
+                out.push(Lir::CallImport(OP_SET_INSERT)); // → [set'] (consumes set, elem)
+            }
+            out.push(Lir::CallImport("mark-immortal-deep")); // [set] — transitively immortal (CHAMP spine + elems)
+            Ok(())
+        }
         _ => Err(Reject::decline(
-            "emit_immortal_static reached a non-markable node (only markable Tuple/Record/List/Map are collected)"
+            "emit_immortal_static reached a non-markable node (only markable Tuple/Record/List/Map/Set are collected)"
                 .to_string(),
         )),
     }
@@ -11974,6 +11998,11 @@ fn emit(
             key_ty,
             val_ty,
         } => {
+            // §2d STATIC: a markable constant map in the build-once table is built ONCE (immortal, deep-marked)
+            // by the `start` init; read it here with a bare `global.get`. Else build inline below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::CallImport(OP_MAP_EMPTY)); // → [map]
             for &(k, v) in entries.iter() {
                 // Each key/value sub-expression starts its scratch ABOVE the running high-water, NOT at a
@@ -12105,6 +12134,11 @@ fn emit(
         // which CONSUMES the set + element and RETURNS the new set, threading the handle through (like a
         // map insert). A duplicate element is a no-op at insert (the set dedups). Leaves the set handle.
         Core::SetOf { elems, elem_ty } => {
+            // §2d STATIC: a markable constant set in the build-once table is built ONCE (immortal, deep-marked)
+            // by the `start` init; read it here with a bare `global.get`. Else build inline below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::CallImport(OP_SET_EMPTY)); // → [set]
             for &e in elems.iter() {
                 // Each element starts its scratch ABOVE the running high-water, NOT at a fixed `base` —
