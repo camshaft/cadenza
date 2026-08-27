@@ -16287,9 +16287,8 @@ fn reify_effect_to_tuple(
     // `(= name value)` triple. `resolve_record` reads the fields into a name-SORTED BTreeMap, so the slot order
     // is canonical regardless of the order written here.
     let field = |db: &mut Db, name: &str, val: StructId| -> StructId {
-        let eq = db.push_name("=");
         let n = db.push_name(name);
-        db.push_list(vec![eq, n, val])
+        db.push_field_pair(n, val)
     };
     let record_head = db.push_str("record");
     let corr = field(db, "correlation", correlation_field);
@@ -16521,7 +16520,6 @@ fn template_value_ast_flagged(
             // A record is a positional heap array in canonical (sorted) field order — the same order the
             // BTreeMap iterates, so the `arr-get` index is the field's position in that order.
             for (i, (name, t)) in fields.iter().enumerate() {
-                let eq = b.name("=");
                 let fname = b.name(&*name.name);
                 path.push(i as u32);
                 let fval = template_value_ast_flagged(b, t, path, out, via_sum_payload)?;
@@ -16529,7 +16527,7 @@ fn template_value_ast_flagged(
                 // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
                 // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
                 // 2026-08-09). Mirrors the runtime `value_encode` + rust `cdz_render` record renders.
-                children.push(b.list(vec![eq, fname, fval]));
+                children.push(b.field_pair(fname, fval));
             }
             Some(b.list(children))
         }
@@ -16841,13 +16839,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             let mut children = vec![head];
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
             for (name, &v) in fields.iter() {
-                let eq = b.name("=");
                 let fname = b.name(&*name.name);
                 let fval = const_value_ast(db, b, v)?;
                 // `(= name value)` ascription form (record-type Phase B full-symmetry migration —
                 // literals, patterns, AND value-output all spell `(= name value)`; operator-ruled
                 // 2026-08-09). Distinct from a map's `(key value)` pairs, which stay pair-form.
-                children.push(b.list(vec![eq, fname, fval]));
+                children.push(b.field_pair(fname, fval));
             }
             Some(b.list(children))
         }
