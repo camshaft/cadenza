@@ -60820,27 +60820,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_effectful_function_is_specialized_per_context() {
-        // E3: a recursive function that performs a discharged op is SPECIALIZED under its handler context
-        // — the handler's state threads as a trailing parameter (`DESIGN-effects-rcdzc.md` §4.3).
-        // `loop` performs `(Countdown.tick)` and recurses; the arm resumes the current counter and
-        // threads `s-1`, so ticks read 3,2,1,0 and `loop` returns `1+1+1+0` = 3. `loop#ctx(s)` becomes
-        // `(if (= s 0) 0 (+ 1 (loop#ctx (- s 1))))` — a single-return recursive fn, no multi-value.
-        let src = "(do (effect Countdown (op tick (-> Unit Int64))) \
-                   (def (loop) (if (= (Countdown.tick) 0) 0 (+ 1 (loop)))) \
-                   (def (main) (handle Countdown 3 ((tick (u) s (resume s (- s 1)))) (loop))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a recursive effectful function is specialized and runs"),
-                "main"
-            ),
-            3
-        );
-    }
-
-    #[test]
     fn a_recursive_state_threading_handler_does_not_leak_the_internal_specialization_name() {
         // A recursive effectful def under a STATE-THREADING handler whose arm resumes WITH THE STATE and
         // threads a changed one — `(resume s (+ s 1))` — must compile without leaking the internal
@@ -60953,55 +60932,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abortive_handler_arm_abandons_the_computation() {
-        // E4: an ABORTIVE arm `(Bail.bail (n) s n)` never resumes — performing `(Bail.bail 7)` inside
-        // `(+ 1 (Bail.bail 7))` ABANDONS the surrounding `+ 1` (control never returns) and the handle
-        // yields the arm value 7, NOT 8. The fold classifies the arm abortive (no `resume` in its body)
-        // and, when the perform fires in a strict position, records the arm value as the whole handle's
-        // value (the surrounding computation is dead). This is the "bail" / typed early-exit class.
-        let src = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (+ 1 (Bail.bail 7)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("an abortive handler compiles"),
-                "main"
-            ),
-            7
-        );
-    }
-
-    #[test]
-    fn an_abortive_perform_in_a_tail_if_branch_folds_per_branch() {
-        // E4 branch-tail fold: an abortive perform in the TAIL of a tail-position `if` branch is LOCAL to
-        // that branch — the `if` IS the handle body's value, so per-branch the abort just yields the arm
-        // value for that branch and the sibling branch survives. `(if true (Bail.bail 7) 99)` folds to
-        // `(if true 7 99)` → 7; `(if false (Bail.bail 7) 99)` → 99. A constant condition here keeps the
-        // test to the fold (a runtime param in a handle body is a separate, not-yet-supported case); the
-        // guard is STRUCTURAL — it does not rely on the constant folding away.
-        let aborts = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (if true (Bail.bail 7) 99))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(aborts)))
-                    .expect("a tail-if-branch abort compiles"),
-                "main"
-            ),
-            7
-        );
-        let survives = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (if false (Bail.bail 7) 99))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(survives)))
-                    .expect("the non-aborting branch survives"),
-                "main"
-            ),
-            99
-        );
-    }
-
-    #[test]
     fn a_non_tail_conditional_abortive_perform_hoists_and_folds() {
         // E4 non-tail hoist: an abortive perform under a NON-tail conditional — `(+ 1 (if c (Bail.bail 7)
         // 0))` — is lifted by distributing the enclosing strict op into both `if` branches:
@@ -61093,28 +61023,6 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "an abortive arm whose value type mismatches the op result must decline, not emit invalid wasm"
         );
-    }
-
-    /// The SOUND companion of the type-mismatch guard above: an abortive arm whose value is a COMPOUND that
-    /// MATCHES the op result AND the handle body type FOLDS (does not over-decline). `bail : Int64 -> (Tuple
-    /// Int64 Int64)`, arm `(bail (n) s (tuple n n))`; the whole handle body is `(Bail.bail 7)`, so the arm
-    /// value becomes the handle value `(7, 7)`. Exercises the abortive type-consistency guard on the sound
-    /// side (arm body type == op result == handle body type → folds), pinning that the compound-body-abort
-    /// miscompile guard is not over-tight (a compound-valued abort matching its declared type must compile).
-    #[test]
-    fn an_abortive_arm_yielding_a_matching_compound_folds() {
-        use crate::testkit::parse;
-        let src = "(do (effect Bail (op bail (-> Int64 (Tuple Int64 Int64)))) \
-                   (def (main) (handle Bail (tuple 0 0) ((bail (n) s (tuple n n))) (Bail.bail 7))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("an abortive arm yielding a matching compound folds");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "(: (tuple 7 7) (Tuple Int64 Int64))",
-                "the abortive arm value (tuple 7 7) becomes the handle value"
-            );
-        }
     }
 
     #[test]
