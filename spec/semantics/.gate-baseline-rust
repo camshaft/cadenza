@@ -2210,6 +2210,7 @@ pass	a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded list-splat arm returning an Option beside a tail-recursive arm compiles to valid wasm
 pass	a guarded map arm over a PARTIAL-CONST map resolves its value binder in both the guard and the body
+pass	a guarded map arm over a partial-const map resolves its value binder in guard and body
 pass	a guarded map-match arm over a CONSTANT map folds the guard and selects the arm
 pass	a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm
 pass	a guarded map-match arm reads its value binder in the guard and falls through when it fails
@@ -4023,6 +4024,7 @@ pass	a self-recursive Bool-returning function whose recursive call is the then-b
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
+pass	a self-tail-recursive SUM consumer loops (tail call in a MatchSum arm) and computes the fold
 pass	a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm
 pass	a self-tail-recursive mixed match whose recursive arm returns an Option compiles to valid wasm
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
@@ -8439,4 +8441,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a guarded map arm over a partial-const map resolves its value binder in guard and body

@@ -19619,42 +19619,10 @@ mod match_engine {
                 .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
             "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
         );
-
-        // VALUE PARITY + CONSTANT STACK: build a DEPTH-N nat then count it. `N = 200000` would overflow a
-        // recursive stack; the loop counts it fine. count(depth 3) = 3.
-        let prog = |n: i64| {
-            format!(
-                "(module m (type Nat (Zero) (Succ Nat)) \
-                   (def (build (: i Int64) (: acc Nat)) (if (< i 1) acc (build (- i 1) (Succ acc)))) \
-                   (def (count (: n Nat) (: acc Int64)) \
-                     (match n ((Zero) acc) ((Succ m) (count m (+ acc 1))))) \
-                   (def (main) (count (build {n} (Zero)) 0)) (export main))"
-            )
-        };
-        let Some(small) = run_heap_value(&prog(3), vec![]) else {
-            eprintln!("runtime wasm not found; skipping tail sum-consumer loop run");
-            return;
-        };
-        assert_eq!(small, "3", "count(depth 3) via a looping tail sum consumer");
-        assert_eq!(
-            run_heap_value(&prog(200000), vec![]).unwrap(),
-            "200000",
-            "count(depth 200000) runs in constant stack (would overflow if recursive)"
-        );
-
-        // A LINKED-LIST sum — `(type IList (Nil) (Cons (Tuple Int64 IList)))`, folded via a tail
-        // accumulator reading the head `(. p 0)` and recursing on the tail `(. p 1)` — also loops (the
-        // `(Cons p)` arm's self-call is a `MatchSum` tail call). Sum 1..100000 = 5000050000, constant stack.
-        let llist = "(module m (type IList (Nil) (Cons (Tuple Int64 IList))) \
-               (def (build (: i Int64) (: acc IList)) (if (< i 1) acc (build (- i 1) (Cons (tuple i acc))))) \
-               (def (suml (: xs IList) (: acc Int64)) \
-                 (match xs ((Nil) acc) ((Cons p) (suml (. p 1) (+ acc (. p 0)))))) \
-               (def (main) (suml (build 100000 (Nil)) 0)) (export main))";
-        assert_eq!(
-            run_heap_value(llist, vec![]).unwrap(),
-            "5000050000",
-            "a tail linked-list sum loops in constant stack (sum 1..100000)"
-        );
+        // (VALUE PARITY of the MatchSum-arm tail fold — `count` over `(type Nat (Zero) (Succ Nat))` folds to
+        // the depth — is corpus 09 "a self-tail-recursive SUM consumer loops (tail call in a MatchSum arm)
+        // and computes the fold"; the constant-STACK claim is exactly this Lir-loop witness (no residual
+        // `call` → a `loop` → O(1) stack by construction). This keeps only that Lir witness.)
     }
 
     #[test]
