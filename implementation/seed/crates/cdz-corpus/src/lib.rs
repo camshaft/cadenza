@@ -44,6 +44,12 @@ pub struct Record {
     /// compiled alone, exactly as before). When non-empty, the gate driver writes every module + the
     /// entry to a temp dir and runs `cdz compile <files> --entry main`.
     pub modules: Vec<Module>,
+    /// PEER components of a CROSS-COMPONENT case, each a `(interface, provider-program)` from a `(peer
+    /// "<iface>" <prog>)` clause — separately-compiled providers the entry (a consumer) binds across the
+    /// live boundary via `(extern <iface> …)`. Empty for the common single-component case. When non-empty,
+    /// the gate compiles each peer to its OWN component and runs the entry with `cdz-run --peer
+    /// <iface>=<path>` (`run_with_peers`), rather than linking them into one component like `modules`.
+    pub peers: Vec<Peer>,
     /// One or more TRIALS: each pairs an optional `(call …)` with the result it must produce. A case
     /// with a single `(output)`/`(error)`/`(trap)` and no `(call …)` is ONE trial with `call: None`
     /// (the common nullary case — invoke the sole export with no arguments). A case that INTERLEAVES
@@ -109,6 +115,24 @@ pub struct Module {
     pub program: String,
     /// The module's program as BINARY AST (`codec::encode`) — the shred's `module-<name>.ast`, built
     /// from the one normalized arena alongside `program` (no reparse).
+    pub program_ast: Vec<u8>,
+}
+
+/// One PEER component of a CROSS-COMPONENT case (`DESIGN-cross-component-interop-rcdzc.md`): a separately-
+/// compiled provider the case's entry (a consumer) binds across the live boundary. Unlike a [`Module`] (a
+/// library file LINKED into the entry's one component), a peer is its OWN finished component — the entry
+/// imports its interface via `(extern <iface> …)` and the gate composes them with `cdz-run --peer
+/// <iface>=<path>` (`run_with_peers`). A `(peer "<iface>" <prog>)` clause produces one of these.
+pub struct Peer {
+    /// The interface the peer EXPORTS and the consumer imports under (`cadenza:<pkg>/<iface>`), e.g.
+    /// `cadenza:math/api` — the `--peer <interface>=<path>` key.
+    pub interface: String,
+    /// The peer's program, one-line s-expression text (normalized like the entry — it is a full program
+    /// exporting `interface`, compiled to its own component).
+    pub program: String,
+    /// The peer's program as BINARY AST (`codec::encode`) — the shred's `peer-<iface>.ast`, compiled to a
+    /// standalone component by the gate/nix build (NOT linked as a module), built from the one normalized
+    /// arena alongside `program` (no reparse).
     pub program_ast: Vec<u8>,
 }
 
@@ -358,6 +382,16 @@ pub fn render(records: &[Record]) -> String {
             out.push_str(&m.name);
             out.push('\t');
             out.push_str(&m.program);
+            out.push('\n');
+        }
+        // PEER components (cross-component case): one `peer\t<interface>\t<program>` line each, after any
+        // modules. The gate compiles each to its own component and composes via `--peer <iface>=<path>`.
+        // Absent for a single-component case (byte-identical to before).
+        for p in &r.peers {
+            out.push_str("peer\t");
+            out.push_str(&p.interface);
+            out.push('\t');
+            out.push_str(&p.program);
             out.push('\n');
         }
         // One group of lines per TRIAL: its `call`/`arg` lines (if any) then its `expect`, which ends
@@ -676,6 +710,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
 
     let mut input: Option<StructId> = None;
     let mut modules: Vec<Module> = Vec::new();
+    let mut peers: Vec<Peer> = Vec::new();
     let mut host_responses: Vec<(String, String)> = Vec::new();
     let mut host_calls: Vec<String> = Vec::new();
     let mut warns: Vec<(String, Option<String>)> = Vec::new();
@@ -711,6 +746,24 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
                     let (program, program_ast) = normalize_program_text_and_ast(a, prog);
                     modules.push(Module {
                         name,
+                        program,
+                        program_ast,
+                    });
+                }
+            }
+            Some("peer") => {
+                // `(peer "<iface>" <prog>)` — a separately-compiled PEER provider the entry binds across the
+                // live boundary (cross-component). The INTERFACE is a string literal (the `(extern <iface>
+                // …)` target + the `--peer <iface>=<path>` key); its program is normalized like the entry (a
+                // full program exporting `iface`, compiled to its OWN component — NOT linked like a module).
+                if let Some(tail) = a.as_form(clause, "peer")
+                    && let Some(&iface_id) = tail.first()
+                    && let Some(interface) = string_leaf(a, iface_id)
+                    && let Some(&prog) = tail.get(1)
+                {
+                    let (program, program_ast) = normalize_program_text_and_ast(a, prog);
+                    peers.push(Peer {
+                        interface,
                         program,
                         program_ast,
                     });
@@ -971,6 +1024,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         program,
         program_ast,
         modules,
+        peers,
         trials,
         host_responses,
         host_calls,
@@ -2003,6 +2057,36 @@ mod tests {
         assert!(
             !text.contains("\ncall\t"),
             "a method case emits no call line, got: {text:?}"
+        );
+    }
+
+    /// A `(peer "<iface>" <prog>)` clause records a separately-compiled peer component (interface +
+    /// normalized provider program) on the record, and serializes to a `peer\t<iface>\t<program>` line —
+    /// distinct from a `(module …)` (which links into the entry's component).
+    #[test]
+    fn a_peer_clause_records_a_cross_component_provider() {
+        let src = r#"(case "x"
+             (input (do (extern cadenza:math/api (op f (-> Int64 Int64)))
+                        (def (main (: x Int64)) (* (cadenza:math/api.f x) 10)) (export main)))
+             (peer "cadenza:math/api" (do (def (f (: x Int64)) (+ x 1)) (export f)))
+             (call main (: 5 Int64))
+             (output (: 60 Int64)))"#;
+        let recs = read(src).unwrap();
+        assert_eq!(recs[0].peers.len(), 1, "one peer recorded");
+        assert_eq!(recs[0].peers[0].interface, "cadenza:math/api");
+        assert!(
+            recs[0].peers[0].program.contains("(export f)"),
+            "peer program normalized: {}",
+            recs[0].peers[0].program
+        );
+        assert!(
+            !recs[0].peers[0].program_ast.is_empty(),
+            "peer program AST built"
+        );
+        let text = to_records(src).unwrap();
+        assert!(
+            text.contains("peer\tcadenza:math/api\t"),
+            "peer line serialized, got: {text:?}"
         );
     }
 
