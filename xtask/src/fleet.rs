@@ -533,6 +533,11 @@ pub enum FleetCmd {
         /// change you really do own.
         #[arg(long)]
         force: bool,
+        /// Sender-declared urgency so the recipient knows how to prioritize: `low` | `normal` | `high`
+        /// | `urgent`. Defaults to `normal`. An elevated level is TAGGED in the recipient's `fleet
+        /// inbox` listing so it stands out (the drain stays oldest-first). Rejected if not a known level.
+        #[arg(long, default_value = "normal")]
+        urgency: String,
     },
     /// Stamp an agent's `lastTick` — the presence heartbeat the loop calls at the top of every tick.
     Heartbeat {
@@ -1057,6 +1062,38 @@ struct Message {
     /// existed / by a hand-`send` rather than `ack`, which audit reports as "unverifiable", not orphaned.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     in_reply_to: String,
+    /// Sender-declared URGENCY (`low`|`normal`|`high`|`urgent`) so a draining agent knows how to
+    /// prioritize (operator request 2026-08-27). `normal` by default — and a pre-urgency message with no
+    /// field deserializes to `normal` (the serde default), so this is fully back-compatible. The inbox
+    /// listing TAGS an elevated (`high`/`urgent`) message so it stands out; it does NOT reorder the
+    /// oldest-first drain (a signal, not a reorder — reordering vs draining-order is an open operator Q).
+    #[serde(default = "default_urgency")]
+    urgency: String,
+}
+
+/// The urgency levels `fleet send --urgency` accepts, low→high. `normal` is the default and what a
+/// pre-urgency message (no field) deserializes to.
+const URGENCY_LEVELS: [&str; 4] = ["low", "normal", "high", "urgent"];
+
+fn default_urgency() -> String {
+    "normal".to_string()
+}
+
+/// Whether `u` is a recognized urgency level (`fleet send` validates its `--urgency` flag against this
+/// so a typo is refused at the source rather than silently persisted as an unknown level).
+fn is_valid_urgency(u: &str) -> bool {
+    URGENCY_LEVELS.contains(&u)
+}
+
+/// The compact inbox-line tag for a message's urgency: elevated levels get a loud suffix so they stand
+/// out in the oldest-first listing; `normal`/`low`/unknown get nothing (keeps the common line identical,
+/// so the tag reads as a genuine "prioritize this" signal rather than noise on every row).
+fn urgency_tag(u: &str) -> &'static str {
+    match u {
+        "urgent" => "  <<URGENT>>",
+        "high" => "  <high>",
+        _ => "",
+    }
 }
 
 pub fn run(paths: &Paths, cmd: FleetCmd) {
@@ -1090,8 +1127,9 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             from,
             no_wake,
             force,
+            urgency,
         } => send(
-            &fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake, force,
+            &fleet, &to, &kind, &subject, &r#ref, &body, from, no_wake, force, &urgency,
         ),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
@@ -1845,6 +1883,7 @@ fn add(
                     body: format!("Seed case copied to your inbox at {}.", dest.display()),
                     seq: next_seq(),
                     in_reply_to: String::new(),
+                    urgency: default_urgency(),
                 },
             );
         } else {
@@ -2020,7 +2059,17 @@ fn send(
     from: Option<String>,
     no_wake: bool,
     force: bool,
+    urgency: &str,
 ) {
+    // Validate the urgency level at the source — refuse a typo rather than persist an unknown level that
+    // the inbox tag then silently ignores (leaving the sender to believe they flagged it urgent).
+    if !is_valid_urgency(urgency) {
+        eprintln!(
+            "fleet send: REFUSING — unknown --urgency `{urgency}`. Valid levels: {}.",
+            URGENCY_LEVELS.join(" | ")
+        );
+        std::process::exit(1);
+    }
     // Resolve the sender robustly. Priority: explicit `--from`, then `$FLEET_AGENT`, then DERIVE it —
     // first from the current worktree's BRANCH (`fleet/<agent>` → `<agent>`), then, if that fails, from
     // the current worktree's PATH via the registry (worktree → agent). The derivation is the key
@@ -2136,6 +2185,7 @@ fn send(
             body: body.to_string(),
             seq: next_seq(),
             in_reply_to: String::new(),
+            urgency: urgency.to_string(),
         },
     );
     println!("fleet send: {from} → {to} [{kind}] {subject}");
@@ -2275,6 +2325,7 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
             body: body.to_string(),
             seq: next_seq(),
             in_reply_to: request_fname,
+            urgency: default_urgency(),
         },
     );
     println!(
@@ -3110,6 +3161,7 @@ fn reroute_unknown(fleet: &Fleet, dry_run: bool) {
                 ),
                 seq: next_seq(),
                 in_reply_to: msg.in_reply_to.clone(),
+                urgency: default_urgency(),
             },
         );
         // Remove the graveyard copy now that it's re-delivered (idempotent re-runs).
@@ -3639,6 +3691,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                     seq: next_seq(),
                     r#ref: String::new(),
                     in_reply_to: String::new(),
+                    urgency: default_urgency(),
                 },
             );
             stamp_sat_notify(fleet, key);
@@ -3951,6 +4004,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             seq: next_seq(),
                             r#ref: String::new(),
                             in_reply_to: String::new(),
+                            urgency: default_urgency(),
                         },
                     );
                     stamp_drain_notify(fleet, &a.name, flagged);
@@ -4262,6 +4316,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             seq: next_seq(),
                             r#ref: String::new(),
                             in_reply_to: String::new(),
+                            urgency: default_urgency(),
                         },
                     );
                     stamp_sat_notify(fleet, &a.name);
@@ -4384,6 +4439,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                         seq: next_seq(),
                         r#ref: String::new(),
                         in_reply_to: String::new(),
+                        urgency: default_urgency(),
                     },
                 );
                 stamp_sat_notify(fleet, &key);
@@ -7729,21 +7785,28 @@ fn inbox_list(fleet: &Fleet, name: &str) {
         return;
     }
     let mut actionable = 0usize;
+    let mut elevated = 0usize;
     for n in &names {
-        // Cheap peek at from/kind without a hard serde dependency on every field being present.
-        let (from, kind) = std::fs::read_to_string(dir.join(n))
+        // Cheap peek at from/kind/urgency without a hard serde dependency on every field being present.
+        let (from, kind, urgency) = std::fs::read_to_string(dir.join(n))
             .ok()
             .and_then(|t| serde_json::from_str::<Message>(&t).ok())
-            .map(|m| (m.from, m.kind))
-            .unwrap_or_else(|| ("?".to_string(), "?".to_string()));
+            .map(|m| (m.from, m.kind, m.urgency))
+            .unwrap_or_else(|| ("?".to_string(), "?".to_string(), default_urgency()));
         // Flag actionable mail (must DO something) vs informational (read-and-archive) — same
         // classifier the watchdog's drain-stall signal uses, so the CLI and the health check agree.
         let is_act = message_kind_is_actionable(&kind);
         if is_act {
             actionable += 1;
         }
+        let utag = urgency_tag(&urgency);
+        if !utag.is_empty() {
+            elevated += 1;
+        }
         let mark = if is_act { "⚑" } else { "·" };
-        println!("  {mark} {n}  [{kind}] from {from}");
+        // The urgency tag is a SUFFIX so an elevated message stands out, but the row stays in the same
+        // oldest-first position (the drain order is unchanged — urgency is a signal, not a reorder).
+        println!("  {mark} {n}  [{kind}] from {from}{utag}");
     }
     // Summary: the actionable/informational split so an agent knows at a glance whether idling is a
     // real drain-stall (has ⚑ work) or just un-archived FYI mail (only ·). Mirrors the drain-stall
@@ -7757,6 +7820,11 @@ fn inbox_list(fleet: &Fleet, name: &str) {
          {informational} informational (· {})",
         INFORMATIONAL_KINDS.join("/")
     );
+    if elevated > 0 {
+        println!(
+            "  ── {elevated} message(s) flagged high/urgent (<high> / <<URGENT>>) — prioritize reading these"
+        );
+    }
     if actionable == 0 {
         println!(
             "  ✓ nothing ACTIONABLE queued — the informational mail is safe to archive to processed/ \
@@ -11946,6 +12014,7 @@ fn schedule_pass_local_gate(
                         seq: next_seq(),
                         r#ref: String::new(),
                         in_reply_to: String::new(),
+                        urgency: default_urgency(),
                     },
                 );
                 stamp_sat_notify(fleet, key);
@@ -14261,6 +14330,38 @@ mod tests {
     }
 
     #[test]
+    fn urgency_validation_and_tag() {
+        // Every declared level validates; a typo is refused at the source (fleet send exits non-zero).
+        for lvl in ["low", "normal", "high", "urgent"] {
+            assert!(is_valid_urgency(lvl), "{lvl} is a valid level");
+        }
+        assert!(!is_valid_urgency("URGENT"), "levels are case-sensitive");
+        assert!(!is_valid_urgency("critical"), "an unknown level is refused");
+        assert!(!is_valid_urgency(""), "empty is not a level");
+        // A pre-urgency message with no field deserializes to the default.
+        assert_eq!(default_urgency(), "normal");
+        // Only elevated levels get a loud inbox tag; normal/low/unknown stay untagged so the common
+        // row is unchanged (the tag is a genuine prioritize-this signal, not per-row noise).
+        assert_eq!(urgency_tag("urgent"), "  <<URGENT>>");
+        assert_eq!(urgency_tag("high"), "  <high>");
+        assert_eq!(urgency_tag("normal"), "");
+        assert_eq!(urgency_tag("low"), "");
+        assert_eq!(urgency_tag("mystery"), "");
+    }
+
+    #[test]
+    fn message_urgency_is_back_compatible_and_round_trips() {
+        // A message JSON WITHOUT an urgency field (pre-feature) must parse (serde default = normal).
+        let old = r#"{"from":"a","to":"b","kind":"note","subject":"s","seq":1}"#;
+        let m: Message = serde_json::from_str(old).expect("pre-urgency message still parses");
+        assert_eq!(m.urgency, "normal", "absent field defaults to normal");
+        // A message WITH urgency round-trips.
+        let with = r#"{"from":"a","to":"b","kind":"ask","subject":"s","seq":1,"urgency":"urgent"}"#;
+        let m2: Message = serde_json::from_str(with).expect("urgent message parses");
+        assert_eq!(m2.urgency, "urgent");
+    }
+
+    #[test]
     fn materialize_source_deploys_disk_hygiene_scripts_executable_into_the_hub() {
         // Pins the deploy invariant (#3793 target-dir tool + the /tmp-inode tool): `fleet up` must
         // materialize each tracked disk-hygiene script from `fleet/` into the hub runtime dir WITH the
@@ -14417,6 +14518,7 @@ mod tests {
             body: "ok".into(),
             seq: 1,
             in_reply_to: "000000000001-42-merge-request.json".into(),
+            urgency: default_urgency(),
         };
         let json = serde_json::to_string(&reply).unwrap();
         assert!(json.contains("in_reply_to"));
@@ -15153,6 +15255,7 @@ mod tests {
             body: String::new(),
             seq: 1,
             in_reply_to: String::new(),
+            urgency: default_urgency(),
         };
 
         // Deliver one MR (arrived while idle), drain: seen.
@@ -15225,6 +15328,7 @@ mod tests {
             body: String::new(),
             seq: 1,
             in_reply_to: String::new(),
+            urgency: default_urgency(),
         };
         let mr = |r#ref: &str| Message {
             from: "v-x".into(),
@@ -15235,6 +15339,7 @@ mod tests {
             body: String::new(),
             seq: 1,
             in_reply_to: String::new(),
+            urgency: default_urgency(),
         };
 
         // Empty inbox → nothing to drop.
@@ -19090,6 +19195,7 @@ branch refs/heads/fleet/trunk-tools
             body: String::new(),
             seq: 1,
             in_reply_to: String::new(),
+            urgency: default_urgency(),
         };
         let replay = vec![
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
