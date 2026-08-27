@@ -1282,6 +1282,7 @@ pass	a bare literal grounded to a narrow width through a BITWISE spine is range-
 pass	a bare literal grounded to a narrow width through a DIVISION spine is range-checked
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a SUBTRACTION spine is range-checked
+pass	a bare literal grounds to BigInt in a constructor payload and round-trips the exact value
 pass	a bare literal in an if branch grounds to the narrow result width of the sibling branch
 pass	a bare literal that FITS its contextually-grounded narrow width through an arith spine computes
 pass	a bare literal that overflows the annotated width does not fit it
@@ -1760,6 +1761,7 @@ pass	a declaration in a do block shadows an outer binding
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
+pass	a deep 50-argument curried application spine reduces to the right value
 pass	a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth
 pass	a deep balanced tree is built and folded to a scalar, consuming both children
 pass	a deep chain of runtime-list let-bindings compiles and returns the final length
@@ -4112,6 +4114,7 @@ pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a tuple-destructuring fn (lambda) parameter binds its parts
+pass	a tuple-destructuring lambda parameter binds like a def param
 pass	a tuple-of-HEAP state — every dispatch grows BOTH components in one rebuild
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
 pass	a tuple-parameter export returns a BigInt computed from its fields

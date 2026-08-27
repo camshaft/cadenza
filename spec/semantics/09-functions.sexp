@@ -9075,3 +9075,15 @@
   (input (do (def (main (: t (Tuple Int64 Int64))) (+ (* 100 (. t 0)) (. t 1))) (export main)))
   (call main (: (tuple 5 7) (Tuple Int64 Int64)))
   (output (: 507 Int64)))
+
+(case "a tuple-destructuring lambda parameter binds like a def param"
+  (doc    "An irrefutable tuple pattern as a `fn` parameter binds x,y: (fn ((tuple x y)) (+ (* x 10) y))
+           applied to (tuple 3 4) = 34.")
+  (input (do (def (main) (let ((f (fn ((tuple x y)) (+ (* x 10) y)))) (f (tuple 3 4)))) (export main)))
+  (output (: 34 Int64)))
+
+(case "a deep 50-argument curried application spine reduces to the right value"
+  (doc    "A 50-arg curried spine ((((f 0) 1) 2)…49) sums 0+1+…+49 = 1225 (regression: declined CDZ0999
+           at N~32 before the spine reduction was flattened).")
+  (input (do (def (f (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64) (: p6 Int64) (: p7 Int64) (: p8 Int64) (: p9 Int64) (: p10 Int64) (: p11 Int64) (: p12 Int64) (: p13 Int64) (: p14 Int64) (: p15 Int64) (: p16 Int64) (: p17 Int64) (: p18 Int64) (: p19 Int64) (: p20 Int64) (: p21 Int64) (: p22 Int64) (: p23 Int64) (: p24 Int64) (: p25 Int64) (: p26 Int64) (: p27 Int64) (: p28 Int64) (: p29 Int64) (: p30 Int64) (: p31 Int64) (: p32 Int64) (: p33 Int64) (: p34 Int64) (: p35 Int64) (: p36 Int64) (: p37 Int64) (: p38 Int64) (: p39 Int64) (: p40 Int64) (: p41 Int64) (: p42 Int64) (: p43 Int64) (: p44 Int64) (: p45 Int64) (: p46 Int64) (: p47 Int64) (: p48 Int64) (: p49 Int64)) (+ p0 (+ p1 (+ p2 (+ p3 (+ p4 (+ p5 (+ p6 (+ p7 (+ p8 (+ p9 (+ p10 (+ p11 (+ p12 (+ p13 (+ p14 (+ p15 (+ p16 (+ p17 (+ p18 (+ p19 (+ p20 (+ p21 (+ p22 (+ p23 (+ p24 (+ p25 (+ p26 (+ p27 (+ p28 (+ p29 (+ p30 (+ p31 (+ p32 (+ p33 (+ p34 (+ p35 (+ p36 (+ p37 (+ p38 (+ p39 (+ p40 (+ p41 (+ p42 (+ p43 (+ p44 (+ p45 (+ p46 (+ p47 (+ p48 p49)))))))))))))))))))))))))))))))))))))))))))))))))) (def (main) ((((((((((((((((((((((((((((((((((((((((((((((((((f 0) 1) 2) 3) 4) 5) 6) 7) 8) 9) 10) 11) 12) 13) 14) 15) 16) 17) 18) 19) 20) 21) 22) 23) 24) 25) 26) 27) 28) 29) 30) 31) 32) 33) 34) 35) 36) 37) 38) 39) 40) 41) 42) 43) 44) 45) 46) 47) 48) 49)) (export main)))
+  (output (: 1225 Int64)))
