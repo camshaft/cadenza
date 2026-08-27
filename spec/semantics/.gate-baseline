@@ -1953,6 +1953,7 @@ pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a distributed if-branch reading an enclosing parameter folds through the one-hole continuation
+pass	a distributed if-branch that folds to an ill-typed arm composition declines
 pass	a distributed match arm re-resolves its pattern binder inside the pushed handle
 pass	a diverging expression unifies with an integer position
 pass	a dividend provably below its divisor folds div to zero and rem to the dividend
@@ -3273,6 +3274,7 @@ pass	a pure one-hole conditional nested inside a strict operator folds
 pass	a pure one-hole continuation body reads an enclosing function parameter and folds
 pass	a pure one-hole continuation folds with pure siblings around the hole
 pass	a pure one-hole fold passes a PURE perform-arg the op reads
+pass	a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled
 pass	a pure one-hole in a FIRST let init with a later init using its binder folds
 pass	a pure one-hole in a let BODY (pure init) folds
 pass	a pure one-hole locates the hole NESTED several operators deep
@@ -4074,6 +4076,8 @@ pass	a saturating OR-mask over a refined range folds to the constant (value + tr
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
+pass	a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)
+pass	a scalar abort in a TUPLE-typed handle body declines (type-consistency)
 pass	a scalar do-def shared across both resume slots in a state-advancing add handler
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
@@ -6563,6 +6567,9 @@ pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — oute
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
 pass	iso-b a let-bound escaped-closure helper-call answer inside the handle body folds — the recovery forces the re-parented load-time ref onto the structural walk so it resolves against the rebuilt let (was a false CDZ0101)
+pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
+pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
+pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
 pass	ivl1 INTERVAL OVERLAP counting — each add answers how many existing intervals the newcomer overlaps (closed-interval test lo<=b and a<=hi) before inserting itself; the seeded interval slides in or out of range
 pass	iwr1 a SIGNED Int8 handler state — wrapping-add crosses the sign boundary through the thread, the widened answers expose the sign-extension
 pass	ix1 the op argument INDEXES a list held in a two-slot state — in-range reads project, out-of-range yields the arm's fallback
@@ -6786,6 +6793,8 @@ pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested patt
 pass	mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair
 pass	mps2 fifty frames alternating two constant Maps reclaim to zero
 pass	mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)
+pass	mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell
+pass	mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)
 pass	mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed
 pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
 pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
@@ -8677,8 +8686,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	itf1 an immortal 33-trie compares structurally equal to a runtime-BUILT equal list, and the runtime side reclaims
-pass	itf2 an immortal 33-trie as a champ MAP key is hit by a runtime-built equal probe key, which reclaims
-pass	itf3 fifty frames of List.concat off an immortal 33-trie (runtime-indexed reads) reclaim every produced trie
-pass	mps4 fifty frames of runtime-indexed lookups over an immortal 40-key deep CHAMP hit every key and the miss cell
-pass	mps5 fifty frames of persistent Map.insert against an immortal 40-key deep CHAMP never corrupt it (interior-node copy fence)

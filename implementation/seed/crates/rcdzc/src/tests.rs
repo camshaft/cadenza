@@ -40239,46 +40239,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_abort_in_a_compound_typed_body_declines_rather_than_miscompiles() {
-        // E4 abort-value / handle-body TYPE-CONSISTENCY (a MISCOMPILE regression). An abort makes its arm
-        // value the WHOLE handle's value, so the value must have the handle body's type. `(tuple 1
-        // (Bail.bail 7))` has a compound body `(Tuple Int64 Int64)` but the abort yields a scalar Int64 —
-        // they disagree. The two syntactic shapes even INFERRED different handle types (a bare tuple-operand
-        // abort typed the handle Int64 and collapsed to 7; the same via `(if true …)` typed it a tuple and
-        // MISCOMPILED to `(1,7)` — the abort value substituted into the tuple instead of abandoning it), and
-        // the hoist emitted an ill-typed `if` (invalid wasm). `reduce_handle` now declines when an abortive
-        // arm's value type differs from the handle body's type. Both shapes must decline.
-        let bare = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (Bail.bail 7)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(bare))).is_err(),
-            "a scalar abort in a tuple-typed body must decline"
-        );
-        let cond = "(do (effect Bail (op bail (-> Int64 Int64))) \
-                   (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(cond))).is_err(),
-            "a scalar abort in a conditional tuple operand must decline, not miscompile to (1,7)"
-        );
-    }
-
-    #[test]
-    fn a_distributed_branch_type_mismatch_declines_not_miscompiles() {
-        // ADVERSARIAL (from a distribution soundness sweep): the type-consistency guard must still fire on a
-        // DISTRIBUTED branch. `(if (< 3 5) (< (Amb.flip) 5) false)` — the true branch folds to `(< 10 5)` =
-        // Bool, but the arm `(+ 1 (resume 10 s))` (an Int64 `+`) consumes the resume result at Int64. The
-        // arm-over-Bool composition is ill-typed; the fold's re-run `type_errors` on the distributed branch
-        // catches it and DECLINES (rather than emit invalid wasm). Pins that distribution does not bypass
-        // the type guard.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (< (Amb.flip) 5) false))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "an ill-typed distributed branch must decline, never miscompile"
-        );
-    }
-
-    #[test]
     fn a_host_op_composed_with_the_value_heap_runtime_emits_a_valid_component() {
         // HOST + RUNTIME COMPOSITION: a host op result fed into a value-heap runtime op (`Map.insert` on the
         // runtime `ask.ask` value imports the `"heap"` runtime; `ask` imports `"host"`). Previously declined
@@ -40616,20 +40576,6 @@ mod stage1 {
             err.message.contains("more than one host effect"),
             "the multi-host-effect bytes-resource decline must name the cause: {}",
             err.message
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_fold_that_would_be_ill_typed_is_rejected_not_miscompiled() {
-        // SOUNDNESS: the fold is a source-to-source rewrite that then TYPE-CHECKS normally, so a fold that
-        // produces an ill-typed term REJECTS rather than miscompiles. Here `C = (< □ 5)` : Bool, so the arm
-        // `(+ 1 (resume 10 s))` folds to `(+ 1 (< 10 5))` — an integer `+` over a Bool — which the type
-        // checker rejects. Pins that the pure-continuation fold does not smuggle a type error past inference.
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (< (Amb.flip) 5))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_err(),
-            "a fold that yields an ill-typed term (+ over Bool) must be rejected, not miscompiled"
         );
     }
 
@@ -41227,25 +41173,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "a map-state handler mutated across multiple performs must compile"
-        );
-    }
-
-    #[test]
-    fn resuming_with_a_wrong_type_value_is_cdz0201() {
-        // E1c-2: the value a handler resumes with is returned to the perform site, so it must have the
-        // operation's declared RESULT type (`capabilities-and-effects.md` §Performing An Operation Is
-        // Typed). `(resume true s)` for an `(-> Int64 Int64)` op resumes with a Bool — CDZ0201 (the
-        // result-type companion of the perform-argument check). Without the check the fold would silently
-        // substitute `true` as `(E.op 1)`'s value, a type-confusion miscompile.
-        let src = "(do (effect E (op op (-> Int64 Int64))) \
-                   (def (main) (handle E unit ((op (n) s (resume true s))) (E.op 1))) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(src)))
-            .expect_err("a wrong-type resume value must be rejected");
-        assert_eq!(
-            err.code.as_deref(),
-            Some("CDZ0201"),
-            "expected CDZ0201 (resume value vs result type), got: {}",
-            err.message
         );
     }
 

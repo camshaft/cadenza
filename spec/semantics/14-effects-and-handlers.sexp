@@ -9576,6 +9576,48 @@
             (export main)))
   (declines))
 
+(case "a scalar abort in a TUPLE-typed handle body declines (type-consistency)"
+  (doc    "An abort makes its arm value the WHOLE handle's value, so it must have the body's type. `(tuple 1
+           (Bail.bail 7))` has a compound body `(Tuple Int64 Int64)` but the abort yields a scalar Int64 —
+           they disagree, so reduce_handle declines rather than miscompile (a scalar substituted into the
+           tuple → (1,7)).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (Bail.bail 7))))
+            (export main)))
+  (declines))
+
+(case "a scalar abort in a CONDITIONAL tuple operand declines (type-consistency)"
+  (doc    "The conditional twin: `(tuple 1 (if true (Bail.bail 7) 5))` — the scalar abort in a conditional
+           tuple operand also disagrees with the tuple body type, so it declines rather than miscompile to
+           (1,7).")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (tuple 1 (if true (Bail.bail 7) 5))))
+            (export main)))
+  (declines))
+
+(case "a distributed if-branch that folds to an ill-typed arm composition declines"
+  (doc    "The type-consistency guard fires on a DISTRIBUTED branch: `(if (< 3 5) (< (Amb.flip) 5) false)` —
+           the true branch folds to `(< 10 5)` = Bool, but the arm `(+ 1 (resume 10 s))` consumes the resume
+           result at Int64, so the arm-over-Bool composition is ill-typed; the fold's re-run type check
+           catches it and declines rather than emit invalid wasm.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (< (Amb.flip) 5) false)))
+            (export main)))
+  (declines))
+
+(case "a pure one-hole fold that would yield an ill-typed term is rejected, not miscompiled"
+  (doc    "The pure one-hole fold is a source-to-source rewrite that type-checks normally. `C = (< □ 5)` :
+           Bool, so the arm `(+ 1 (resume 10 s))` folds to `(+ 1 (< 10 5))` — an integer `+` over a Bool —
+           which the type checker rejects. Pins that the fold does not smuggle a type error past inference.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (< (Amb.flip) 5)))
+            (export main)))
+  (declines))
+
 (case "a pure one-hole continuation body reads an enclosing function parameter and folds"
   (doc    "The pure one-hole fold synthesizes the folded body with the perform replaced by the resume value;
            an outer name in the body — the enclosing function PARAMETER `x` — must re-anchor to the handle's
