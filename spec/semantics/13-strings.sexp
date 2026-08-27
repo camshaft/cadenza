@@ -4692,3 +4692,25 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 0 Int64))
   (live-objects known-leak 1))
+
+; ── Reclaim (known-leak): Option.expect over a dead-after-borrowed String.slice leaks the Some shell (migrated from rcdzc) ──
+(case "Option.expect over a dead-after-borrowed String.slice leaks the Some shell each iteration"
+  (doc    "The compound-Some-shell reclaim gap (node-keyed payload-escape backlog). `sl` slices [1,3) out of
+           its String param (a `Some` of a 2-scalar rope slice), `Option.expect`s it, then `String.scalar-len`
+           BORROWS the extracted slice (no consume). The `SumExpect` emit drops the owned Some shell only for
+           a scalar or dup'd-compound payload — here the payload is a non-dup'd COMPOUND (the slice) dead after
+           the borrow, so the shell + its slice are left un-dropped: ~2 cells per iteration. Looping `sl` over
+           an owned base rope 5× (base a param, so the slice is a genuine runtime owned temporary, not a const
+           fold) leaks 2·5 + 1 (the once-built base) = 11 cells, value-correct throughout: scalar-len of
+           slice[1,3) of \"hixxx\" = \"ix\" = 2, summed 5× = 10 (a UAF would trap/corrupt; a wrong reclaim
+           would garble the count). Flips to 0 when the node-keyed payload-escape fix lands (drop the shell
+           after the last borrow when the payload does not flow out).")
+  (input  (do
+            (def (sl (: s String))
+              ((. String scalar-len) ((. Option expect) ((. String slice) s 1 3) "e")))
+            (def (loop (: j Int64) (: n Int64) (: base String) (: tot Int64))
+              (if (< j n) (loop (+ j 1) n base (+ tot (sl base))) tot))
+            (def (f (: h Int64)) (loop 0 5 "hixxx" 0))
+            (export f)))
+  (call   f (: 0 Int64)) (output (: 10 Int64))
+  (live-objects known-leak 11))
