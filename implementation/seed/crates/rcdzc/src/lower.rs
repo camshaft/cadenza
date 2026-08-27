@@ -23437,6 +23437,21 @@ fn const_key_order(db: &mut Db, a: StructId, b: StructId) -> Option<std::cmp::Or
             }
             Some(std::cmp::Ordering::Equal)
         }
+        // Lists order LEXICOGRAPHICALLY element-wise (position 0, then 1, …) via THIS canonical order — the
+        // runtime `value_cmp_shaped` List order (03-equality "a runtime list orders lexicographically by its
+        // elements" + "a proper prefix orders less than its extension"; Rust `[T]: Ord`). The first non-equal
+        // element decides; when one list is a proper PREFIX of the other the SHORTER is less. UNLIKE a tuple
+        // (fixed arity — a length mismatch is a DIFFERENT type, so it declines), two lists of DIFFERENT length
+        // are the SAME type and order by prefix-then-length. A non-orderable element declines the compare (`?`).
+        (Core::ListNew { elems: xe }, Core::ListNew { elems: ye }) => {
+            for (&xi, &yi) in xe.iter().zip(ye.iter()) {
+                match const_key_order(db, xi, yi)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(xe.len().cmp(&ye.len()))
+        }
         // Sums order by DISCRIMINANT first (the variant index, as the canonical byte form encodes it), then by
         // PAYLOAD within the same variant — the runtime `value_cmp_shaped` Sum order. Different discs decide
         // immediately; same disc compares payloads element-wise via this canonical order. A non-orderable
@@ -23524,6 +23539,18 @@ fn cval_key_order(a: &CVal, b: &CVal) -> Option<std::cmp::Ordering> {
                 }
             }
             Some(std::cmp::Ordering::Equal)
+        }
+        // Lists: LEXICOGRAPHIC element-wise, prefix-then-length tiebreak — the const_eval twin of
+        // `const_key_order`'s List arm (runtime `value_cmp_shaped` List order; Rust `[T]: Ord`). Two lists of
+        // different length are the SAME type (order by prefix, then shorter-is-less), UNLIKE a fixed-arity tuple.
+        (CVal::List(xe), CVal::List(ye)) => {
+            for (xi, yi) in xe.iter().zip(ye.iter()) {
+                match cval_key_order(xi, yi)? {
+                    std::cmp::Ordering::Equal => {}
+                    ord => return Some(ord),
+                }
+            }
+            Some(xe.len().cmp(&ye.len()))
         }
         // Sums: DISCRIMINANT first, then payload element-wise — the const_eval twin of const_key_order's Sum
         // arm (runtime value_cmp_shaped Sum order). A non-orderable payload declines.
