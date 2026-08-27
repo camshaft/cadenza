@@ -23273,3 +23273,37 @@
   (call main (: 3 Int64))
   (output (: 439 Int64))
   (live-objects 0))
+
+; ── breaker batch 564: the SET-side mutation/algebra completion (mirrors mrf on maps). srf1 =
+; fifty RUNTIME-keyed Set.removes against the immortal 40-element HAMT (the removal must copy;
+; the sibling keeps every key — an all-constant draft folded whole, the vacuity trap; the
+; per-frame (% k 40)+1 key defeats it). srf2 = intersection + difference off the immortal with a
+; runtime probe set: results exact and reclaimed, the immortal untouched.
+
+(case "srf1 fifty runtime-keyed persistent Set.removes against an immortal 40-element HAMT never corrupt it (the remove-side set FBIP fence)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((key (+ (% k 40) 1))
+            (c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
+            (u (Set.remove (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (+ (% k 40) 1))))
+        (+ (+ (if (Set.contains c key) 1 0) (if (Set.contains u key) 10 0))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50 Int64))
+  (live-objects 0))
+
+(case "srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched"
+  (input (do
+(def (main (: n Int64))
+  (let ((c (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)))
+        (probe (Set.insert (Set.insert (Set.of (list)) n) 999)))
+    (+ (* 100 (Set.len (Set.intersection c probe)))
+       (+ (Set.len (Set.difference c probe))
+          (if (Set.contains c 999) 1000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 139 Int64))
+  (live-objects 0))

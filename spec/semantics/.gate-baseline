@@ -8984,3 +8984,5 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)
 pass	mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors
+pass	srf1 fifty runtime-keyed persistent Set.removes against an immortal 40-element HAMT never corrupt it (the remove-side set FBIP fence)
+pass	srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched
