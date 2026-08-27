@@ -52,10 +52,12 @@ struct Sizes {
     oz: i64,
 }
 
-/// Build the per-case sexpr record. Returns an `(optimal ...)` marker when `-O3`
-/// finds no size reduction (delta <= 0) — the aggregator drops those; otherwise a
-/// `(gap ...)` record with the changed metrics, the dominant dropped category, and
-/// the routing `owner-lane`.
+/// Build the per-case sexpr record. When `-O3` finds a size reduction, a `(gap …)`
+/// record. When it does not (delta <= 0), the case is optimal on the PRIMARY (o3)
+/// signal — but `-Oz` (the size-only tier) may still shrink it below what `-O3`
+/// reaches: that is surfaced as an `(optimal-o3 …)` record carrying the oz-only
+/// delta (a size-only opportunity the aggregator can list separately), rather than
+/// silently dropped. Only when neither tier shrinks it is it fully `(optimal …)`.
 fn format_record(
     case: &str,
     module: u32,
@@ -66,9 +68,17 @@ fn format_record(
     let d3 = sizes.orig - sizes.o3;
     let dz = sizes.orig - sizes.oz;
     if d3 <= 0 {
+        // Optimal under -O3 (the primary signal). If -Oz still shrinks it, record
+        // the size-only floor so it is not lost; otherwise fully optimal.
+        if dz > 0 {
+            return format!(
+                "(optimal-o3 (case {case:?}) (module {module}) (size (orig {}) (oz {})) (oz-delta {dz}))",
+                sizes.orig, sizes.oz
+            );
+        }
         return format!(
-            "(optimal (case {:?}) (module {}) (size (orig {})))",
-            case, module, sizes.orig
+            "(optimal (case {case:?}) (module {module}) (size (orig {})))",
+            sizes.orig
         );
     }
 
@@ -233,5 +243,31 @@ mod tests {
         );
         assert!(rec.starts_with("(optimal"), "record was: {rec}");
         assert!(rec.contains("(case \"arith\")"));
+        // fully optimal (oz == orig too) → plain (optimal …), no oz-only marker
+        assert!(!rec.contains("optimal-o3"), "record was: {rec}");
+    }
+
+    #[test]
+    fn oz_only_reduction_is_not_dropped() {
+        // -O3 finds nothing (o3 == orig) but -Oz shrinks it: a size-only floor that
+        // must surface as (optimal-o3 …) with the oz-only delta, not a bare optimal.
+        let ours = parse_metrics(OURS);
+        let rec = format_record(
+            "sizefloor",
+            0,
+            &Sizes {
+                orig: 200,
+                o3: 200,
+                oz: 188,
+            },
+            &ours,
+            &ours,
+        );
+        assert!(rec.starts_with("(optimal-o3"), "record was: {rec}");
+        assert!(rec.contains("(oz-delta 12)"), "record was: {rec}");
+        assert!(
+            rec.contains("(size (orig 200) (oz 188))"),
+            "record was: {rec}"
+        );
     }
 }

@@ -147,6 +147,11 @@ Field notes:
   honest — see the first-findings note below (the biggest deltas are `inliner`).
 - Keep it flat and grep-friendly: an agent greps `(owner-lane wasm-opt)` for its
   own backlog and sorts records by `(delta (o3 N))` for priority.
+- A case with NO `-O3` reduction is optimal on the primary signal, but `-Oz` (the
+  size-only tier) may still shrink it. That is NOT dropped: it is emitted as
+  `(optimal-o3 (case …) (module …) (size (orig N) (oz N)) (oz-delta N))` — a
+  size-only opportunity the aggregator can list apart from the true `(gap …)`
+  rows. Only when neither tier shrinks it is it a bare `(optimal (case …))`.
 
 ## Runnable target + per-case WAT diff
 
