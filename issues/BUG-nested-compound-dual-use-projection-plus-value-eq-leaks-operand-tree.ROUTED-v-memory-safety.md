@@ -112,3 +112,23 @@ So the under-drop family has TWO distinct legs:
 Pinned dqe13-15 (batch 525) as 0-CONTROLS documenting the discrimination: they must STAY 0 and
 their values must hold if the fix touches the match/record paths (an over-drop there corrupts the
 reads these cases make after the walker).
+
+## Leg-2 trigger table (breaker, tick 299, 2026-08-27)
+
+| cell | census |
+|---|---|
+| walker-cond branch, taken arm escapes an OPERAND (dqe10/11) | 6 = escapee ×2 |
+| walker-cond branch, taken arm escapes a NON-operand heap binding | **2** = the escapee's tree once |
+| walker-cond branch, escape arm UNTAKEN (operands unequal) | 0 |
+| SCALAR-cond branch, taken arm escapes a heap value | 0 |
+| walker-cond branch, scalar arms (dqe2/dqe9) | 0 |
+
+Leg-2 exact trigger: **the CONDITION is a walker result AND the taken arm yields a heap value —
+that escapee's tree leaks once (twice when the escapee is also a walker operand).** The dup is
+minted on the taken path only (untaken arm clean); a scalar condition never leaks. So both legs
+are dups minted in the shadow of a WALKER call that end-of-scope never releases — leg 1 keyed by
+tuple-index extraction, leg 2 by branch-arm escape under a walker condition.
+
+Cross-scope note: leg 1 reproduces on a RETURNED binding in the CALLER (projection + walker on
+`r = f(n)` leaks r's tree, 3) — the fix must key on the binding's consumers, not on where it was
+constructed. Pinned dqe19.

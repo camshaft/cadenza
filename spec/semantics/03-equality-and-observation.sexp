@@ -3380,3 +3380,66 @@
   (call main (: 1 Int64))
   (output (: 102000 Int64))
   (live-objects 0))
+
+; ── breaker batch 526: leg-2 trigger table (walker-conditioned branch arm-escape). The escapee's
+; tree leaks ONCE when it is a non-operand (dqe16), TWICE when it is an operand (dqe10/11);
+; untaken escape arms (dqe17) and scalar conditions (dqe18) are clean — the dup is minted on the
+; TAKEN path in the shadow of the walker call. dqe19 = leg-1 cross-scope: projection + walker on
+; a RETURNED binding leaks in the caller exactly as on a local.
+
+(case "dqe16 a walker-conditioned branch escaping a NON-operand heap binding leaks the escapee's tree once"
+  (input (do
+(def (f (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n))))
+        (c (tuple n (tuple n n))))
+    (if (= a b) c (tuple 9 (tuple 9 9)))))
+(def (main (: n Int64))
+  (let ((r (f n)))
+    (+ (* 1000 (. (. r 1) 1)) (. r 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1001 Int64))
+  (live-objects known-leak 2))
+
+(case "dqe17 a walker-conditioned escape arm left UNTAKEN (operands unequal) reclaims clean — the dup is minted on the taken path only"
+  (input (do
+(def (f (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple (+ n 1) (tuple n (tuple n n)))))
+    (if (= a b) a (tuple 9 (tuple 9 (tuple 9 9))))))
+(def (main (: n Int64))
+  (let ((r (f n)))
+    (+ (* 1000 (. (. (. r 1) 1) 1)) (. r 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 9009 Int64))
+  (live-objects 0))
+
+(case "dqe18 a SCALAR-conditioned branch escaping a heap value reclaims clean — leg-2 requires the walker condition"
+  (input (do
+(def (f (: n Int64))
+  (let ((a (tuple n (list n 5)))
+        (b (tuple (+ n 1) (list n 6))))
+    (if (> n 0) a b)))
+(def (main (: n Int64))
+  (let ((r (f n)))
+    (+ (* 1000 (List.len (. r 1))) (. r 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 2001 Int64))
+  (live-objects 0))
+
+(case "dqe19 leg-1 cross-scope: projection + walker on a RETURNED binding leaks its tree in the caller"
+  (input (do
+(def (f (: n Int64))
+  (let ((a (tuple n (list n 5)))
+        (b (tuple (+ n 1) (list n 6))))
+    (if (> n 0) a b)))
+(def (main (: n Int64))
+  (let ((r (f n)))
+    (+ (* 1000 (List.len (. r 1))) (+ (. r 0) (if (= r (tuple n (list n 5))) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102001 Int64))
+  (live-objects known-leak 3))
