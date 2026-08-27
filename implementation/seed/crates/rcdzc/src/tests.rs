@@ -7647,16 +7647,13 @@ fn a_performing_lambda_applied_under_a_handler_via_a_fn_param_is_homed_at_the_ap
                  (def (with-seed (: body (-> Unit Int64))) \
                    (handle Rand 5 ((roll (u) s (resume s s))) (body unit))) \
                  (def (main) (with-seed (fn (u) (Rand.roll)))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(homed))).expect(
+    // The homing COMPILES (does not false-reject CDZ0401); the RUN value (roll resumes seed 5 → 5) is
+    // pinned in the corpus by 14-effects "a performing closure passed to a function that applies it UNDER a
+    // handler is homed at the apply site" (= 5), so no wasmtime run here.
+    compile_component(&crate::codec::encode(&parse(homed))).expect(
         "a performing lambda applied under a handler (via a fn-param) is homed at the apply site, \
          not falsely CDZ0401'd at its definition site",
     );
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(
-            v, "5",
-            "the roll arm resumes with the seed 5 → body unit reads 5"
-        );
-    }
     // SOUNDNESS: the same lambda applied by a callee with NO handler must STILL be rejected CDZ0401 (the
     // apply-site handled set is empty, so the ungranted effect is not homed). The blanket-skip bug dropped
     // this to an uncoded decline; the apply-site discipline keeps the coded reject.
@@ -7685,11 +7682,11 @@ fn a_performing_lambda_homed_transitively_through_a_pass_through_function() {
                  (def (inner (: b (-> Unit Int64))) (handle R 5 ((roll (u) s (resume s s))) (b unit))) \
                  (def (outer (: b (-> Unit Int64))) (inner b)) \
                  (def (main) (outer (fn (u) (R.roll)))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(homed)))
+    // The transitive homing COMPILES (does not false-reject); the RUN value (=5) is pinned in the corpus
+    // by 14-effects "a performing closure homed TRANSITIVELY through a pass-through function is not falsely
+    // rejected" (= 5), so no wasmtime run here.
+    compile_component(&crate::codec::encode(&parse(homed)))
         .expect("a performing lambda applied under a handler through a pass-through fn is homed transitively");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "5", "the roll arm resumes with seed 5");
-    }
     // SOUNDNESS: pass-through whose target has NO handler → stays rejected.
     let unhomed = "(do (effect R (op roll (-> Unit Int64))) \
                    (def (inner (: b (-> Unit Int64))) (b unit)) \
