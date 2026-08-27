@@ -27,7 +27,12 @@ pub mod sidecar;
 pub mod watchdog;
 
 pub use config::{Config, SlackTokens};
-pub use format::{Intent, help_text, parse_operator_message, render_fleet_message};
-pub use inbox::{Drained, Message, deliver, drain, inbox_dir, is_valid_agent_name, mark_processed};
+pub use format::{
+    Intent, RELAY_QUEUE_WARN, RelayPlan, help_text, parse_operator_message, relay_plan,
+    render_fleet_message, render_fleet_message_plain,
+};
+pub use inbox::{
+    Drained, Message, deliver, drain, inbox_dir, is_valid_agent_name, mark_failed, mark_processed,
+};
 pub use sidecar::{MirroredAsk, ThreadMap, ToMirror, is_mirrored_kind, select_to_mirror};
 pub use watchdog::{WatchdogSpec, due};

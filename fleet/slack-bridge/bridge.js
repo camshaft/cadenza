@@ -34,8 +34,17 @@
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { App } = require("@slack/bolt");
-const { deliver, drain, markProcessed } = require("./inbox.js");
-const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault } = require("./format.js");
+const { deliver, drain, markProcessed, markFailed } = require("./inbox.js");
+const {
+  parseOperatorMessage,
+  renderFleetMessage,
+  renderFleetMessagePlain,
+  relayPlan,
+  isContentPostError,
+  RELAY_QUEUE_WARN,
+  helpText,
+  isTransientSocketModeFault,
+} = require("./format.js");
 
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const APP_TOKEN = process.env.SLACK_APP_TOKEN || "";
@@ -156,18 +165,56 @@ function main() {
   });
 
   // ── fleet → Slack ────────────────────────────────────────────────────────────────────────────
-  // Poll the bridge's own inbox; post each message to the bridge channel, then archive it. Sequential
-  // per tick so ordering is preserved and a post failure leaves the file for a retry (not processed).
+  // Per-message CONTENT-failure counts (inbox basename → count) so a deterministically un-postable message
+  // escalates degrade→quarantine across polls WITHOUT blocking the queue. In-memory: a restart resets it,
+  // which is fine — the message re-drains and re-clears in a bounded number of polls (never forever, the
+  // ~11h/57-message wedge this fixes).
+  const relayFailures = new Map();
+
+  // Poll the bridge's own inbox; post each message to the bridge channel, then archive it. A message that
+  // deterministically fails to post must NEVER head-of-line-block the queue: a transport/transient fault
+  // retries in place (order preserved), but a CONTENT-class failure escalates per-message (degrade to a
+  // plain variant, then dead-letter to failed/) and we SKIP PAST it so the rest flow.
   async function pumpInbox() {
     if (!BRIDGE_CHANNEL) return; // nowhere to post; DMs are inbound-only
     const pending = drain(FLEET_DIR, BRIDGE_AGENT);
+    if (pending.length >= RELAY_QUEUE_WARN) {
+      console.warn(
+        `outbound relay queue backlog: depth ${pending.length}, oldest ${path.basename(pending[0].file)} ` +
+          "— a message may be failing to post",
+      );
+    }
     for (const { file, msg } of pending) {
+      const key = path.basename(file);
+      const fails = relayFailures.get(key) || 0;
+      const plan = relayPlan(fails);
+      if (plan === "quarantine") {
+        console.error(
+          `outbound relay: quarantining un-postable message ${key} after ${fails} content failures ` +
+            "— dead-lettering to failed/ (full text preserved), draining the rest",
+        );
+        markFailed(file);
+        relayFailures.delete(key);
+        continue; // a poison message must never block the rest
+      }
+      const text = plan === "degraded" ? renderFleetMessagePlain(msg) : renderFleetMessage(msg);
+      const req = { channel: BRIDGE_CHANNEL, text };
+      if (plan === "degraded") req.mrkdwn = false; // extra belt: also disable mrkdwn parse for the plain variant
       try {
-        await app.client.chat.postMessage({ channel: BRIDGE_CHANNEL, text: renderFleetMessage(msg) });
+        await app.client.chat.postMessage(req);
         markProcessed(file);
+        relayFailures.delete(key);
       } catch (e) {
-        console.error("post to Slack failed (will retry):", e);
-        break; // preserve order; retry this + the rest next poll
+        if (isContentPostError(e)) {
+          const n = fails + 1;
+          relayFailures.set(key, n);
+          const reason = (e && e.data && e.data.error) || (e && e.message) || e;
+          console.error(`outbound relay: content post error for ${key} (attempt ${n}, plan=${plan}): ${reason}`);
+          continue; // skip past it this poll so the rest flow; it degrades/quarantines on later polls
+        }
+        // Transport/transient fault (outage, rate limit): retry this + the rest next poll, order preserved.
+        console.error("post to Slack failed (transient — will retry):", (e && e.message) || e);
+        break;
       }
     }
   }

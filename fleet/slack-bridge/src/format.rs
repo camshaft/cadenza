@@ -155,6 +155,117 @@ fn cap_for_slack(s: String) -> String {
     format!("{head}{marker}")
 }
 
+// ── OUTBOUND-RELAY RESILIENCE (fleet → Slack) ─────────────────────────────────────────────────────
+//
+// A message that DETERMINISTICALLY fails to post must never head-of-line-block the outbound relay. This
+// once wedged the whole queue (57 messages, ~11h): the pump posted in order and `break`'d on the first
+// post error, and a single message that reliably returned Slack `internal_error` (a content/length quirk in
+// Slack's mrkdwn parse — a 400-char truncation of the SAME message posted fine) blocked every message
+// behind it forever, and re-blocked identically after a process restart (the poison message re-reads from
+// disk). The relay now: (1) retries a transport/transient fault in place (order preserved, never
+// dead-lettered); (2) counts only CONTENT-class failures per message and, past [`RELAY_DEGRADE_AFTER`],
+// posts a degraded plain variant ([`render_fleet_message_plain`]); (3) past [`RELAY_QUARANTINE_AFTER`],
+// dead-letters the message (moves it to `failed/`, preserving it) and keeps draining the rest.
+
+/// Content-class post failures after which the relay stops sending the rich render and falls back to the
+/// degraded plain variant (which strips mrkdwn triggers + truncates, so it can't re-hit the parse quirk).
+pub const RELAY_DEGRADE_AFTER: u32 = 2;
+/// Content-class post failures after which the relay gives up and dead-letters the message to `failed/`,
+/// so a truly un-postable message is preserved for inspection yet can never block the queue.
+pub const RELAY_QUARANTINE_AFTER: u32 = 4;
+/// Relay queue depth at/above which the pump logs a backlog warning, so a wedge/backlog is VISIBLE (a
+/// health signal) instead of silently piling up as it did during the ~11h wedge.
+pub const RELAY_QUEUE_WARN: usize = 25;
+
+/// The proven-safe length for the degraded post. Slack rejected a ~2073-char rendered mrkdwn message with
+/// `internal_error` while a 400-char truncation of the same message posted fine — so the degraded variant
+/// truncates to this. A message the operator still SEES (with a pointer to the full text in the fleet
+/// inbox) beats one silently dead-lettered.
+const PLAIN_TEXT_CAP: usize = 400;
+
+/// What the relay should do with a message given how many CONTENT-class post failures it has already had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayPlan {
+    /// Post the normal (rich mrkdwn) render.
+    Normal,
+    /// Post the degraded plain variant — the rich render keeps failing on content.
+    Degraded,
+    /// Give up: dead-letter the message to `failed/` and move on.
+    Quarantine,
+}
+
+/// Decide the relay plan from the count of CONTENT-class failures so far (transient/transport failures are
+/// retried in place and do NOT advance this count). Pure so the Rust and Node relays stay in lockstep.
+pub fn relay_plan(content_failures: u32) -> RelayPlan {
+    if content_failures >= RELAY_QUARANTINE_AFTER {
+        RelayPlan::Quarantine
+    } else if content_failures >= RELAY_DEGRADE_AFTER {
+        RelayPlan::Degraded
+    } else {
+        RelayPlan::Normal
+    }
+}
+
+/// Replace every character Slack's mrkdwn/entity parser treats as control (formatting `*_~`` `, entity/link
+/// markup `<>&|`) with a space and collapse runs of whitespace. We neutralize the trigger in the CONTENT
+/// (rather than a per-post `mrkdwn=false` flag, which neither transport exposes uniformly) so the degraded
+/// post can't re-trigger the parse quirk that failed the rich render.
+fn strip_mrkdwn(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        let c = if matches!(c, '*' | '_' | '~' | '`' | '<' | '>' | '&' | '|') || c.is_whitespace() {
+            ' '
+        } else {
+            c
+        };
+        if c == ' ' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Render a fleet message as a DEGRADED, plain, mrkdwn-safe, hard-truncated Slack string — the outbound
+/// relay's fallback when the normal render deterministically fails to post. No mrkdwn markup, control chars
+/// stripped from every field, capped at [`PLAIN_TEXT_CAP`] scalars with a marker pointing at the fleet inbox.
+pub fn render_fleet_message_plain(msg: &crate::inbox::Message) -> String {
+    let from = strip_mrkdwn(if msg.from.is_empty() {
+        "unknown"
+    } else {
+        &msg.from
+    });
+    let kind = strip_mrkdwn(if msg.kind.is_empty() {
+        "note"
+    } else {
+        &msg.kind
+    });
+    let subject = strip_mrkdwn(&msg.subject);
+    let mut head = format!("[plain] {from} {kind}");
+    if !subject.is_empty() {
+        head.push_str(&format!(": {subject}"));
+    }
+    let body = strip_mrkdwn(&msg.body);
+    let out = if body.is_empty() {
+        head
+    } else {
+        format!("{head} — {body}")
+    };
+    if out.chars().count() <= PLAIN_TEXT_CAP {
+        return out;
+    }
+    let marker = " …[truncated — full text in the fleet inbox]";
+    let keep = PLAIN_TEXT_CAP.saturating_sub(marker.chars().count());
+    let head: String = out.chars().take(keep).collect();
+    format!("{head}{marker}")
+}
+
 /// A short usage/help string shown when the operator sends an empty message or `help`.
 pub fn help_text(default_to: &str) -> String {
     format!(
@@ -375,6 +486,68 @@ mod tests {
         ];
         want.sort_unstable();
         assert_eq!(got, want, "KNOWN_KINDS drifted from the fleet protocol set");
+    }
+
+    // ── OUTBOUND-RELAY RESILIENCE: plan escalation + degraded plain render ──────────────────────────
+
+    #[test]
+    fn relay_plan_escalates_normal_then_degraded_then_quarantine() {
+        // 0..DEGRADE → normal; DEGRADE..QUARANTINE → degraded; >=QUARANTINE → quarantine. Pins the exact
+        // escalation so a poison message is bounded to a finite number of polls before it's dead-lettered
+        // (it can never block the queue forever, the ~11h wedge this fix exists for).
+        assert_eq!(relay_plan(0), RelayPlan::Normal);
+        assert_eq!(relay_plan(RELAY_DEGRADE_AFTER - 1), RelayPlan::Normal);
+        assert_eq!(relay_plan(RELAY_DEGRADE_AFTER), RelayPlan::Degraded);
+        assert_eq!(relay_plan(RELAY_QUARANTINE_AFTER - 1), RelayPlan::Degraded);
+        assert_eq!(relay_plan(RELAY_QUARANTINE_AFTER), RelayPlan::Quarantine);
+        assert_eq!(
+            relay_plan(RELAY_QUARANTINE_AFTER + 100),
+            RelayPlan::Quarantine
+        );
+    }
+
+    #[test]
+    fn plain_render_strips_mrkdwn_and_is_bounded() {
+        // The degraded variant must carry NO mrkdwn/entity control chars (the rich render's `*..*`/`_.._`
+        // markup + any in the body) so it can't re-trigger Slack's parse quirk, and must be length-bounded.
+        let m = Message::new("pr-sync", "slack-bridge", "ask", "decide *A* or `B`")
+            .with_body("use <https://x> & _emphasis_ ~strike~ | pipe");
+        let s = render_fleet_message_plain(&m);
+        for bad in ['*', '_', '~', '`', '<', '>', '&', '|'] {
+            assert!(
+                !s.contains(bad),
+                "plain render must not contain {bad:?}: {s}"
+            );
+        }
+        assert!(
+            s.contains("pr-sync") && s.contains("ask"),
+            "keeps who/what: {s}"
+        );
+        assert!(s.chars().count() <= PLAIN_TEXT_CAP);
+    }
+
+    #[test]
+    fn plain_render_truncates_a_huge_body_with_marker() {
+        // The proven-safe degraded post: a message that failed the rich post must degrade to a short,
+        // operator-visible line (with a pointer to the full text) rather than being dead-lettered outright.
+        let m = Message::new("v-x", "slack-bridge", "ask", "big").with_body("x".repeat(9000));
+        let s = render_fleet_message_plain(&m);
+        assert!(
+            s.chars().count() <= PLAIN_TEXT_CAP,
+            "capped: {}",
+            s.chars().count()
+        );
+        assert!(s.contains("truncated"), "elision marker present");
+        assert!(s.contains("v-x"), "header survives the cap");
+    }
+
+    #[test]
+    fn plain_render_caps_astral_by_scalar_no_split() {
+        // Cap by Unicode scalar so an emoji body never splits into a lone surrogate / replacement char.
+        let m = Message::new("v-x", "slack-bridge", "ask", "emoji").with_body("👍".repeat(4000));
+        let s = render_fleet_message_plain(&m);
+        assert!(s.chars().count() <= PLAIN_TEXT_CAP);
+        assert!(!s.contains('\u{FFFD}'), "no replacement char");
     }
 
     // ── SECURITY: a `@..`-style retarget must not parse as a traversal agent name (PR #391) ─────────

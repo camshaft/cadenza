@@ -113,4 +113,19 @@ function markProcessed(file) {
   }
 }
 
-module.exports = { deliver, drain, markProcessed, inboxDir, nextSeq, isValidAgentName };
+/// Move an un-postable inbox file into a `failed/` dead-letter dir (created on demand), a sibling of
+/// `processed/`. The outbound relay quarantines a message here when it deterministically fails to post, so
+/// it can NEVER head-of-line-block the queue while still being PRESERVED (not dropped) for inspection.
+/// Mirrors `markProcessed`; a missing source is ignored (already moved).
+function markFailed(file) {
+  const dir = path.dirname(file);
+  const failed = path.join(dir, "failed");
+  fs.mkdirSync(failed, { recursive: true });
+  try {
+    fs.renameSync(file, path.join(failed, path.basename(file)));
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+}
+
+module.exports = { deliver, drain, markProcessed, markFailed, inboxDir, nextSeq, isValidAgentName };
