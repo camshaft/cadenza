@@ -7700,3 +7700,7 @@ todo	a compound-result borrowed closure handle is called twice on the same handl
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
+pass	ssc1 a String entry param captured by a local closure applied twice
+pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
+pass	ssc3 a String entry param read inside a handle body alongside a dispatch
+pass	lbr1 a List entry param relayed to a helper def that only borrows its length

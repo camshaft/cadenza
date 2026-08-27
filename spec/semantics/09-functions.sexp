@@ -8808,9 +8808,9 @@
 ; -- breaker batch 478 (2026-08-27): Option-param COMPOSITIONS (the elc/grx lenses applied to the
 ; #3923 lift). All three ADMITTED and 0-leak — including the cross-def relay (eoc2), which the
 ; borrowed LIST lift declines: the Option lift REBUILDS an owned guest sum, so passing it to
-; another def is free, while a borrowed list vec cannot escape. That ownership asymmetry is the
-; one-line answer to "why do Option params compose more freely than list params" for the
-; consuming-slice implementer. eoc3 confirms the repeat-unwrap family needs a HEAP payload — a
+; another def is free. (CORRECTED batch 485: a borrowed list RELAYS fine too when the callee only
+; BORROWS — lbr1; the escape-gate is USE-KIND-based (consume/recursive-reach decline, borrows pass),
+; not call-boundary-based. The asymmetry vs lists is about consuming uses only.) eoc3 confirms the repeat-unwrap family needs a HEAP payload — a
 ; twice-matched boundary Option with a scalar payload reclaims.
 
 (case "eoc1 an Option entry param captured by a local closure applied twice"
@@ -8896,3 +8896,42 @@
     (match r ((Ok v) (* v 2)) ((Err e) (- 0 e)))) (export main)))
   (call main (: (Ok 21) (Result Int64 Int64)))
   (output (: 42 Int64)))
+
+; -- breaker batch 485 (2026-08-27): String-param compositions (the eoc lenses on slice-1's String
+; lift) + the borrow-relay cell that CORRECTS the eoc2 comment. All pass 0-leak: capture (ssc1),
+; cross-def borrow relay (ssc2 — and lbr1 proves the same for LISTS: the escape-gate keys on the
+; USE (consume/recursive-reach decline; borrows pass), not the call boundary), and the effects-fold
+; read (ssc3).
+
+(case "ssc1 a String entry param captured by a local closure applied twice"
+  (input (do (def (main (: s String))
+    (let ((f (fn ((: k Int64)) (+ k (String.byte-len s)))))
+      (+ (f 10) (f 100)))) (export main)))
+  (call main (: "hello" String))
+  (output (: 120 Int64)))
+
+(case "ssc2 a String entry param relayed to a helper def that borrows its byte-length"
+  (input (do
+    (def (measure (: t String)) (String.byte-len t))
+    (def (main (: s String)) (* 2 (measure s)))
+    (export main)))
+  (call main (: "hello" String))
+  (output (: 10 Int64)))
+
+(case "ssc3 a String entry param read inside a handle body alongside a dispatch"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: s String))
+      (handle St 10 ((get (u) st (resume st st)))
+        (+ (St.get) (String.byte-len s))))
+    (export main)))
+  (call main (: "hello" String))
+  (output (: 15 Int64)))
+
+(case "lbr1 a List entry param relayed to a helper def that only borrows its length"
+  (input (do
+    (def (measure (: t (List Int64))) (List.len t))
+    (def (main (: xs (List Int64))) (* 2 (measure xs)))
+    (export main)))
+  (call main (: (list 4 5 6) (List Int64)))
+  (output (: 6 Int64)))
