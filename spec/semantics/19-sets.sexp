@@ -44,6 +44,14 @@
   (input  (= (Set.of (list 1 2 2 3)) (Set.of (list 1 2 3))))
   (output (: true Bool)))
 
+(case "a set collapses a duplicate STRING element (a non-int scalar key path)"
+  (doc    "The dedup case above uses Int64 elements; a String element deduplicates the same way through
+           the non-int scalar key path: `(Set.of (list \"a\" \"b\" \"a\"))` names \"a\" twice but the set
+           holds it once — it equals `(Set.of (list \"a\" \"b\"))`. Pins that construction deduplicates by
+           value for a String (scalar-key) element, not only for Int64. MUST be true.")
+  (input  (= (Set.of (list "a" "b" "a")) (Set.of (list "a" "b"))))
+  (output (: true Bool)))
+
 (case "set equality is independent of the order elements are written"
   (doc    "Witnesses collections-and-text.md #A Set Is A Collection Of Unique Elements (3rd sentence:
            two sets are equal exactly when they contain equal elements, independent of insertion order):
