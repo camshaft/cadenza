@@ -4080,7 +4080,10 @@ fn a_recursive_type_value_codec_declines_on_rust_not_hangs() {
             .iter()
             .any(|d| d.message.contains("recursive-type value codec")),
         "the decline must name the recursive-type-codec constraint: {:?}",
-        out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        out.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -9091,25 +9094,10 @@ mod runtime_ops {
             "signed (< x 0) keeps lt_s (not folded); got {s:?}"
         );
 
-        // VALUE PARITY over runtime unsigned inputs (the fold must agree with the true comparison).
-        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(0)]));
-        assert!(!run::<bool>("(: u UInt64)", "(< u 0)", &[Val::U64(5)]));
-        assert!(!run::<bool>(
-            "(: u UInt64)",
-            "(< u 0)",
-            &[Val::U64(u64::MAX)]
-        ));
-        assert!(run::<bool>("(: u UInt64)", "(>= u 0)", &[Val::U64(0)]));
-        assert!(run::<bool>(
-            "(: u UInt64)",
-            "(>= u 0)",
-            &[Val::U64(u64::MAX)]
-        ));
-        assert!(run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(0)]));
-        assert!(!run::<bool>("(: u UInt64)", "(<= u 0)", &[Val::U64(1)]));
-        // The LEFT-const mirror computes identically.
-        assert!(run::<bool>("(: u UInt64)", "(<= 0 u)", &[Val::U64(9)]));
-        assert!(!run::<bool>("(: u UInt64)", "(> 0 u)", &[Val::U64(9)]));
+        // The VALUE PARITY over runtime unsigned inputs (the folds agree with the true comparison, both
+        // operand orders) is the corpus case "unsigned comparisons against zero simplify and agree with
+        // the true comparison" in spec/semantics/06-numeric-model.sexp — this stays a white-box Lir fold
+        // check.
     }
 
     #[test]

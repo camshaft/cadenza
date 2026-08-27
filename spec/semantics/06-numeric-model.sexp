@@ -10143,3 +10143,24 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 111 Int64)))
+
+; -- unsigned comparison-with-zero simplification parity (behavioral half migrated from rcdzc
+; unsigned_comparison_with_zero_is_simplified, 2026-08-27; the white-box Lir fold inspection — (< u 0)
+; → const false, (>= u 0) → const true, (<= u 0) → eqz, signed (< x 0) keeps lt_s — stays a
+; wasmtime-free rcdzc unit test): the folds must agree with the true unsigned comparison.
+
+(case "unsigned comparisons against zero simplify and agree with the true comparison"
+  (doc    "For UInt64 u: (< u 0) is always false, (>= u 0) always true, (<= u 0) true only at 0,
+           (<= 0 u) always true, (> 0 u) always false. main weights the flags so one output pins all
+           five: u=0 → 1110 (>=0→10, <=0→100, 0<=u→1000); u≥1 → 1010 (the <=0 flag drops).")
+  (input (do
+    (def (main (: u UInt64))
+      (+ (if (< u 0) 1 0)
+         (+ (if (>= u 0) 10 0)
+            (+ (if (<= u 0) 100 0)
+               (+ (if (<= 0 u) 1000 0)
+                  (if (> 0 u) 10000 0))))))
+    (export main)))
+  (call main (: 0 UInt64))                    (output (: 1110 Int64))
+  (call main (: 5 UInt64))                     (output (: 1010 Int64))
+  (call main (: 18446744073709551615 UInt64))  (output (: 1010 Int64)))
