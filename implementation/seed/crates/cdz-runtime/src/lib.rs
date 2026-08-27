@@ -20258,6 +20258,71 @@ mod tests {
         let _ = op_arr_get(arr, 0); // direct getter deref of a freed node → UAF panic via node_ref
     }
 
+    /// Empirically settles the §5 TUPLE-PAYLOAD two-shell reclaim rc-model (v-core-opt's ss1 shape: a
+    /// `Cons` sum whose payload is a `(head, tail)` tuple box). Two scenarios pin exactly WHEN a single
+    /// cascading drop reclaims both boxes vs when an explicit second drop is required:
+    ///  (A) BORROW-ONLY reads (`op_sum_payload` + `op_arr_get` both borrow): the tuple box stays
+    ///      UNIQUELY Cons-owned, so one cascading `op_drop(cons)` frees BOTH the Cons shell AND the
+    ///      tuple box, and a prior `op_dup(tail)` carries the tail forward — a net reclaim of 2/iter.
+    ///  (B) the arm MATERIALIZES the tuple box (an extra `op_dup`, rc 2 — what binding the tuple to an
+    ///      owned local does): now `op_drop(cons)` only decrements it to rc 1 (LEAK), so the emit MUST
+    ///      also drop that extra ref. That explicit tuple-box drop is NOT a double-free — it matches
+    ///      the materialization dup. This is the CORRECTED co-design answer for a net-no-op emit.
+    #[test]
+    fn tuple_payload_spine_reclaim_single_cascade_vs_materialized_tuple_box() {
+        // ---- (A) borrow-only reads → single cascading drop frees both boxes ----
+        let base = live_nodes();
+        let head_a = op_box_int(7);
+        assert!(is_immediate(head_a), "small int is an immediate — no head box in this shape");
+        let tail_a = bytes_leaf(&[1, 2, 3]); // +1 node (the carried tail, standing in for IntList)
+        let tup_a = op_arr_alloc(2); // +1 node (tuple box)
+        op_arr_set(tup_a, 0, head_a);
+        op_arr_set(tup_a, 1, tail_a);
+        let cons_a = op_sum_new(0, tup_a); // +1 node (Cons owns the tuple box)
+        assert_eq!(live_nodes() - base, 3, "Cons + tuple box + tail");
+        // Reads mirror the emit for `(smt t (+ acc h))` — both BORROW, no rc bump on the tuple box.
+        let t_read = op_arr_get(op_sum_payload(cons_a), 1);
+        let _h_read = op_arr_get(op_sum_payload(cons_a), 0); // head path (second SumPayload nav)
+        op_dup(t_read); // carry the tail forward before the reclaim drop
+        op_drop(cons_a); // single cascading drop
+        assert_eq!(
+            live_nodes() - base,
+            1,
+            "(A) one cascading drop of Cons reclaims BOTH boxes; only the dup'd tail survives"
+        );
+        op_drop(t_read);
+        assert_eq!(live_nodes() - base, 0, "(A) tail reclaimed → balanced");
+
+        // ---- (B) tuple box materialized (rc 2) → single drop leaks it; explicit drop reclaims ----
+        let base_b = live_nodes();
+        let head_b = op_box_int(7);
+        let tail_b = bytes_leaf(&[4, 5, 6]);
+        let tup_b = op_arr_alloc(2);
+        op_arr_set(tup_b, 0, head_b);
+        op_arr_set(tup_b, 1, tail_b);
+        let cons_b = op_sum_new(0, tup_b);
+        // The arm materializes (owns) the tuple box: an extra dup → tuple box rc 1→2.
+        let tup_owned = op_sum_payload(cons_b); // borrow → tuple box handle
+        op_dup(tup_owned); // materialize
+        let t_read_b = op_arr_get(tup_owned, 1);
+        op_dup(t_read_b); // carry the tail
+        op_drop(cons_b); // cascades: tuple box 2→1 (NOT freed) → LEAK
+        assert_eq!(
+            live_nodes() - base_b,
+            2,
+            "(B) tuple box materialized (rc 2) → one drop of Cons leaves it at rc 1: tuple box + tail leak"
+        );
+        // The emit must ALSO drop the materialized ref — SOUND (matches the dup), not a double-free.
+        op_drop(tup_owned); // tuple box 1→0 → free, cascade drops tail 2→1
+        assert_eq!(
+            live_nodes() - base_b,
+            1,
+            "(B) explicit drop of the materialized tuple-box ref reclaims it; tail survives"
+        );
+        op_drop(t_read_b);
+        assert_eq!(live_nodes() - base_b, 0, "(B) balanced");
+    }
+
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
     /// leaf, a ROPE (which must flatten first), and the empty input. This pins the RUNTIME half of the
     /// design's §9 byte-identity invariant (DESIGN-compiler-primitives.md): the compile-time `Blake3.of`
