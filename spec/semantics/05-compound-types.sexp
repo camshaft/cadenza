@@ -839,7 +839,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 2 Int64)) (output (: 30 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two fallible reads of one collection parameter share its resident handle slot"
   (doc    "TWO `List.at` reads of the SAME parameter list `xs` at different indices. `xs` is resident in its
@@ -3710,7 +3710,7 @@
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 30 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "two lists are concatenated into one flat list"
   (doc    "`(List.concat (list 1 2) (list 3 4))` produces `(list 1 2 3 4)` — the elements of the first
@@ -5634,7 +5634,7 @@
                   (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0))))
               (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; A list-arm element may also be a MAP key-value pattern — a list of key-value records destructured by key
 ; in one arm. Like a refutable constructor element, a `(map (k v)…)` element is refutable (it matches only a
@@ -8010,7 +8010,7 @@
                 ((None _)               -1)))
             (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main)))
   (output (: 200 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a linear index-of search returns the POSITION of a runtime key, or -1 past the end"
   (doc    "The index-returning twin of the assoc-list search above (that returns the stored VALUE with
@@ -8029,7 +8029,7 @@
             (export main)))
   (call   main (: 30 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
@@ -8250,7 +8250,7 @@
   (call   main (: 2 Int64) (: 1 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "the length of a list looked up from a map by a runtime key"
   (doc    "`(List.len xs)` where `xs` is the list value found by `(Map.lookup … k)`: the two keys hold lists
@@ -8467,7 +8467,7 @@
   (call   main (: 2 Int64)) (output (: 6 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 247))
+  (live-objects known-leak 245))
 
 (case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
   (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
@@ -8513,7 +8513,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 16))
 
 (case "LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima"
   (doc    "The DP trio's third indexing shape (coin-change indexes by AMOUNT, LIS by POSITION, this
@@ -8559,7 +8559,7 @@
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 73))
+  (live-objects known-leak 61))
 
 (case "a memoizing fold caches computed results in a Map and counts its hits"
   (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
@@ -8973,7 +8973,7 @@
   (call   main (: 2 Int64) (: 0 Int64)) (output (: 221 Int64))
   (call   main (: 1 Int64) (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf"
   (doc    "One level deeper than the three-level query above, adding a RECORD as the innermost layer —
@@ -8996,7 +8996,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 300 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a set nested in a tuple compares equal with a runtime element, order-independent"
   (doc    "`(= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))` compares two tuples whose second
@@ -10734,7 +10734,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1233589258 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 18))
 
 (case "INTERLEAVE alternates two spines and drains the longer tail after the shorter empties"
   (doc    "The order-blind counterpart of the sorted MERGE above (merge picks by COMPARISON; weave
@@ -10932,7 +10932,7 @@
   (call   main (: 2 Int64)) (output (: 0 Int64))
   (call   main (: 3 Int64)) (output (: 10 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow"
   (doc    "The bounded-selection composite: each element insorts into a DESCENDING list (`>=` walk —
@@ -11195,7 +11195,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1425363 Int64))
   (call   main (: 0 Int64)) (output (: 1420363 Int64))
-  (live-objects known-leak 47))
+  (live-objects known-leak 45))
 
 (case "ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix"
   (doc    "The rotation as a COMPOSITION law: rot90 = transpose ∘ reverse-rows (reversing first then
@@ -11256,7 +11256,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 4152631 Int64))
   (call   main (: 9 Int64)) (output (: 4152691 Int64))
-  (live-objects known-leak 207))
+  (live-objects known-leak 205))
 
 (case "CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact"
   (doc    "The inverse-of-flatten builder (transpose above builds a list-of-lists by COLUMN; chunk
@@ -11304,7 +11304,7 @@
   (call   main (: 2 Int64)) (output (: 4101 Int64))
   (call   main (: 3 Int64)) (output (: 3101 Int64))
   (call   main (: 7 Int64)) (output (: 1701 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 16))
 
 (case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
   (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint
@@ -11341,7 +11341,7 @@
   (call   main (: 35 Int64)) (output (: -1 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length"
   (doc    "The asymmetric partition (the general partition below keeps BOTH sides as lists; here one
@@ -11379,7 +11379,7 @@
   (call   main (: 1 Int64)) (output (: 1031200005 Int64))
   (call   main (: 2 Int64)) (output (: 3 Int64))
   (call   main (: 3 Int64)) (output (: 102033 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 25))
 
 (case "a PARTITION fold splits one spine into two lists by a runtime predicate"
   (doc    "The partition idiom: ONE walk over `(4 n 7 1 8 2)` grows TWO accumulator lists — `(< h 5)`
@@ -11495,7 +11495,7 @@
   (call   main (: 3 Int64)) (output (: 5 Int64))
   (call   main (: 5 Int64)) (output (: 9 Int64))
   (call   main (: 6 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 32))
+  (live-objects known-leak 30))
 
 (case "a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted"
   (doc    "The three-way upgrade of the two-way partition and quickselect pins above: ONE walk routes
@@ -11533,7 +11533,7 @@
   (call   main (: 5 Int64)) (output (: 21330078 Int64))
   (call   main (: 1 Int64)) (output (: 5285853 Int64))
   (call   main (: 9 Int64)) (output (: 5275185300000 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 24))
 
 (case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
   (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
@@ -11603,7 +11603,7 @@
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
   (doc    "The QUERY side of the prefix table (the scan above pins construction): `rq(i,j) =
@@ -11763,7 +11763,7 @@
   (call   main (: 10 Int64) (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 10 Int64) (: 10 Int64)) (output (: 11 Int64))
   (call   main (: 20 Int64) (: 10 Int64)) (output (: 1847561 Int64))
-  (live-objects known-leak 110))
+  (live-objects known-leak 108))
 
 (case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
   (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
@@ -12093,7 +12093,7 @@
   (call   main (: 0 Int64)) (output (: 123451 Int64))
   (call   main (: 7 Int64)) (output (: 345121 Int64))
   (call   main (: 5 Int64)) (output (: 123451 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
   (doc    "The stable-dedup idiom couples a GROWING CHAMP set to a growing list in one fold: each new
@@ -14206,7 +14206,7 @@
             (def (both e) (+ (* 10 (use e 1)) (use e 2)))
             (def (main) (both (list))) (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 ; The case above shares an EMPTY-LITERAL list under CONSTANT arithmetic, which const-folds away before the
 ; heap runs — so it does not actually exercise the runtime reference-count discipline. The cases below force
@@ -18603,7 +18603,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7223 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Scale faces: the 5000-deep recursive-sum spine and the 33-variant wide sum. ---
 
@@ -18935,7 +18935,7 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1950 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 20))
 
 ; --- Remove-path canonicalization under runtime whole-map equality: the existing runtime map
 ; equality pins build both sides by INSERT only; these pin that a map reached VIA a remove
@@ -19584,7 +19584,7 @@
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
   (call   main (: -4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 4))
 
 ;; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
 (case "lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects"

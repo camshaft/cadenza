@@ -6204,7 +6204,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 301 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 ; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
 ; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member

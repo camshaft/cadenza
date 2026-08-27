@@ -2171,7 +2171,7 @@
             (def (main) (List.len (f 7)))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value"
   (doc    "The trap half of the heap-result postcondition above. `@ensures(> (List.len ret) 0)` on
@@ -4100,7 +4100,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 32 Int64))
   (call   main (: 0 Int64)) (trap "unreachable")
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "an @ensures relating the RESULT to a PARAM over heap values enforces growth"
   (doc    "`@ensures (> (List.len ret) (List.len xs))` — the postcondition compares the RESULT's length

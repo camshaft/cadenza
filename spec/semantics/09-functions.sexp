@@ -493,7 +493,7 @@
               (count (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))) (list 1 2 3 4) 0))
             (export main)))
   (output (: 10 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 16))
 
 ; TWO NESTED recursive const-closure drivers — `filter-step` re-passes its const `step` closure AND is
 ; itself the const step a `drive` fold consumes. This composition (a const-driver whose closure is
@@ -529,7 +529,7 @@
             (def (main) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2)))))
             (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 27))
 
 ; TWO specializations of ONE driver on DIFFERENT closures must not collide in the spec memo. Both `em`
 ; and `ef` call the same `sum`→`drive` (a `const`-closure recursive fold), but with different wrapped step
@@ -564,7 +564,7 @@
             (export em) (export ef)))
   (call   em) (output (: 36 Int64))
   (call   ef) (output (: 12 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 19))
 
 ; A CLOSED literal closure FORWARDED through several `const`-parameter call hops (`sum` → `fold` →
 ; `drive`'s `const g`) — the const-WRAPPER-CHAIN. This used to be a false CDZ0201 reject: a β-substitution
@@ -1120,7 +1120,7 @@
                 ((Option.Some p) (match p ((tuple x s2) x)))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 12))
 
 ; --- Tail recursion compiles to a constant-stack loop -------------------------------------------
 ; core-semantics.md: a SELF tail-call updates the parameter locals and `br`s back to the function's own
@@ -4111,7 +4111,7 @@
             (def (main) (match (twostep (list 1 2 3 4)) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 12))
 
 ; The GUARD companion of the Option-returning mixed-match tail case above. The prior cases that combine a
 ; `(guard …)` arm with a tail-recursive fall-through (03-equality: guarded-wildcard / literal-probe /
@@ -4142,7 +4142,7 @@
               (match (find (list 1 2 3 4) lim) ((Some (tuple y r)) y) ((None) 0)))
             (export main)))
   (call   main (: 2 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 ; A CONTROL-FLOW companion of the guarded-tail cases: the guard EXPRESSION itself calls a (non-tail)
 ; RECURSIVE helper. Every other guard×tail-loop pin uses a flat guard condition (a comparison or a
@@ -4244,7 +4244,7 @@
                 ((None) (- 0 1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 4 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 12))
 
 (case "nested mixed-match tail loops compose — an outer accumulator loop driving an inner seeking loop"
   (doc    "`inner` is the Option-returning mixed-match tail loop of the pin above (skip elements ≤ 2, return
@@ -4271,7 +4271,7 @@
               (outer (list 1 3 2 4 5) 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 12 Int64))
-  (live-objects known-leak 29))
+  (live-objects known-leak 27))
 
 ; The same i32/i64 scratch-slot-aliasing family at a HIGHER local count, in a decode-loop shape the
 ; self-hosted compiler's reader is written in: a self-tail loop whose position advance projects BOTH
@@ -4346,7 +4346,7 @@
             (def (main (: i Int64)) (loop (list 7 8 9) i 0))
             (export main)))
   (call   main (: 1 Int64)) (output (: 8 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "functions are single-arity and curried"
   (doc    "Witnesses core-semantics.md §Functions Are Single-Arity: a function takes exactly one
@@ -5818,7 +5818,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 10 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 22))
 
 ; A recursive-generic PRODUCER applied to a list whose ELEMENTS are themselves results of the SAME
 ; producer — `(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64`,
@@ -5855,7 +5855,7 @@
             (def (main) (icount (from-list (list (inner) (inner)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 26))
 
 (case "an annotation on a nested generic-call argument grounds the self-nested producer and it runs"
   (doc    "The WORKAROUND for the decline above (the one the CDZ0201 message names): annotating a nested
@@ -5876,7 +5876,7 @@
             (def (main) (icount (from-list (list (: (inner) (Iter Int64)) (inner)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 26))
 
 ; A recursive-generic TRANSFORMER whose ELEMENT is itself the SAME nested generic — `flatten : Iter(Iter a)
 ; -> Iter a`, `(match it ((Iter.Nil)(Iter.Nil)) ((Iter.Cons h rest)(append h (flatten rest))))`, chaining
@@ -5908,7 +5908,7 @@
               (icount (flatten (from-list (list (from-list (list 1 2)) (from-list (list 3 4 5)))))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 45))
+  (live-objects known-leak 41))
 
 ; A recursive-generic flatten `Iter(Iter a) -> Iter a` composing at TWO element types in one program — the
 ; transformer-over-nested-generic tie at ≥2 instantiations. This DECLINED (the untied nested-generic tie:
@@ -5943,7 +5943,7 @@
                  (icount (flatten (from-list (list (from-list (list "a" "b")) (from-list (list "c"))))))))
             (export main)))
   (output (: 8 Int64))
-  (live-objects known-leak 78))
+  (live-objects known-leak 70))
 
 ; The SOUNDNESS SENTINEL for the tie above: broadening `collect_param_constraints` to accept a SumPayload-of-
 ; a-param arg (so the element flows into the callee's domain) must NOT loosen type-safety — a threaded element
@@ -5997,7 +5997,7 @@
                  (icount (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 36))
 
 (case "a recursive-generic filter threading a predicate closure composes at two element types"
   (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
@@ -6020,7 +6020,7 @@
                  (icount (filt (from-list (list "a" "bb")) (fn (s) (> (String.byte-len s) 1))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak 30))
 
 (case "a recursive-generic transformer with a bare-Nil STOP branch composes at two element types"
   (doc    "`take-while : (Iter a) → (a → Bool) → (Iter a)` keeps a leading run, STOPPING at a bare
@@ -6046,7 +6046,7 @@
                  (icount (take-while (from-list (list "a" "bb" "ccc")) (fn (s) (< (String.byte-len s) 3))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 36))
 
 (case "a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict"
   (doc    "AD-HOC POLYMORPHISM via a record of functions, generic over the element type — a `(: t Type)`
@@ -6096,7 +6096,7 @@
             (def (main) (icount (take-while (from-list (list 1 2 3)) (fn (x) (< x 100)))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak 20))
 
 (case "take-while where the first element fails the predicate returns the empty run"
   (doc    "The immediate-stop edge: when the FIRST element fails `p`, the `else` bare-Nil branch fires at once
@@ -6116,7 +6116,7 @@
             (def (main) (icount (take-while (from-list (list 5 1 2)) (fn (x) (< x 3)))))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "take-while excludes the failing element and everything after it (content, not just count)"
   (doc    "The content edge: take-while must drop the first failing element AND its entire tail, not merely
@@ -6137,7 +6137,7 @@
             (def (main) (isum (take-while (from-list (list 10 20 3 100 5)) (fn (x) (> x 5)))))
             (export main)))
   (output (: 30 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 26))
 
 (case "take-while composed after a map threads both transformers' closures"
   (doc    "take-while consuming the output of another closure-threading transformer: map `(* 10)` over
@@ -6159,7 +6159,7 @@
             (def (main) (isum (take-while (imap (from-list (list 1 2 3 4)) (fn (x) (* x 10))) (fn (y) (< y 35)))))
             (export main)))
   (output (: 60 Int64))
-  (live-objects known-leak 36))
+  (live-objects known-leak 34))
 
 ; scan (RUNNING FOLD) behavioral edges (breaker): the just-landed giter.cdz scan (slice 7) emits each
 ; intermediate accumulator — the seed first, one per element, so n+1 outputs — threading an accumulator AND
@@ -6184,7 +6184,7 @@
             (def (main) (icount (scan (from-list (list 1 2 3 4)) 0 (fn (a x) (+ a x)))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 28))
 
 (case "scan threads its accumulator left-to-right (an order-sensitive folder)"
   (doc    "The accumulator is threaded LEFT-TO-RIGHT: with an order-sensitive folder `(a*10 + x)` over
@@ -6204,7 +6204,7 @@
             (def (main) (last (scan (from-list (list 1 2 3)) 0 (fn (a x) (+ (* a 10) x)))))
             (export main)))
   (output (: 123 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 22))
 
 (case "scan's kth emitted accumulator is the running fold of the first k elements"
   (doc    "Indexing INTO the running fold: the accumulator at index 2 of `scan [10,20,30] 0 (+)` is the sum
@@ -6222,7 +6222,7 @@
             (def (main) (nth (scan (from-list (list 10 20 30)) 0 (fn (a x) (+ a x))) 2))
             (export main)))
   (output (: 30 Int64))
-  (live-objects known-leak 24))
+  (live-objects known-leak 22))
 
 (case "scan over an empty iterator emits just the seed"
   (doc    "The base case: `scan` over an EMPTY iterator emits only the seed accumulator — one output, length
@@ -6262,7 +6262,7 @@
             (def (main) (icount (gmap (from-list (list "a" "b")) (fn (s) s))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "a recursive-generic transformer threading an IDENTITY closure composes at TWO element types"
   (doc    "The multi-instantiation closure tie: a pure IDENTITY closure `(fn (s) s)` composes at a SINGLE
@@ -6286,7 +6286,7 @@
                            (icount (gmap (from-list (list "a" "b")) (fn (s) s)))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 38))
+  (live-objects known-leak 34))
 
 ; A TRANSITIVE recursive-generic tie: a `reduce`-shaped WRAPPER (`reduce1`) whose `Cons` arm seeds a
 ; SECOND recursive-generic helper (`go`) with the HEAD element, used at TWO element types in one program
@@ -6896,7 +6896,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 666 Int64))
   (call   main (: 0 Int64)) (output (: 666 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 ; --- The recursive-generic element tie: value-flow and composition faces ----------------------------
 ; 7793d4841 (Part C) ties a recursive-generic producer's result element to its argument's (the
@@ -6922,7 +6922,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 5))
 
 (case "the element tie survives producer self-composition"
   (doc    "`(wrap (wrap xs))` — the producer feeds ITSELF, so the inner instantiation's result
@@ -6941,7 +6941,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 10 Int64))
-  (live-objects known-leak 13))
+  (live-objects known-leak 9))
 
 (case "an Option-producing recursive generic ties its payload to the list element"
   (doc    "`last : List a → Option a` (recursive, the base arm builds None, the singleton arm wraps
@@ -6983,7 +6983,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 3 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a recursive-generic transformer composes with itself"
   (doc    "`gmap (*2) (gmap (+1) [3])` = [(3+1)·2] = [8]: the inner map's RESULT element must tie to
@@ -7000,7 +7000,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 ; --- Identity/constant closures through a recursive-generic HOF -----------------------------------
 ; An IDENTITY closure through a recursive-generic list HOF composes at ONE element type AND at TWO
@@ -7018,7 +7018,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "an identity closure threads through a recursive-generic HOF at TWO element types"
   (doc    "The multi-instantiation face: the SAME `gmap` list HOF used with a pure IDENTITY closure at
@@ -7035,7 +7035,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 5 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 (case "a constant-returning closure threads through a recursive-generic HOF"
   (doc    "`gmap (fn (x) 9) [1 2]` → [9 9], element 0 = 9: a closure that IGNORES its parameter and
@@ -7050,7 +7050,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 9 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 ; --- PASS-THROUGH closure NEIGHBORS of the domain-tie fix (single element type) ----------------------
 ; The domain-tie fix ties a pass-through closure's RESULT to its DOMAIN, so `(fn (s) s)` composes through
@@ -7076,7 +7076,7 @@
             (def (main) (icount (gmap (gmap (from-list (list 1 2 3)) (fn (s) s)) (fn (s) s))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 28))
 
 (case "an identity closure composes over a COMPOUND (tuple) element at one element type"
   (doc    "The pass-through result←domain flow over a COMPOUND element, not a scalar: `(fn (s) s)` over an
@@ -7093,7 +7093,7 @@
             (def (main) (icount (gmap (from-list (list (tuple 1 "x") (tuple 2 "y"))) (fn (s) s))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "an identity closure composes at a single Int element type (not only String)"
   (doc    "The landed single-type case used a String element; this pins an Int element so the tie is shown
@@ -7109,7 +7109,7 @@
             (def (main) (icount (gmap (from-list (list 10 20)) (fn (s) s))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "a pass-through closure that returns its arg via a trivial let composes at one element type"
   (doc    "The pass-through body need not be a BARE variable: `(fn (s) (let ((x s)) x))` still has its
@@ -7126,7 +7126,7 @@
             (def (main) (icount (gmap (from-list (list "p" "q")) (fn (s) (let ((x s)) x)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 ; ============================================================================================
 ; NON-SCALAR entry arguments across the exported-entry / (call …) boundary. The rust GATE DRIVER used to
@@ -8511,7 +8511,7 @@
               (if (>= n 0) (+ (sink xs) (walk (- n 1) xs)) 0))
             (def (main (: n Int64)) (walk n ((. List push) ((. List push) ((. List push) (list) 1) 2) 3)))
             (export main)))
-  (call   main (: 2 Int64)) (output (: 9 Int64)) (live-objects known-leak 2))
+  (call   main (: 2 Int64)) (output (: 9 Int64)) (live-objects 0))
 
 ; -- breaker batch 468 (2026-08-27): compile-robustness pins from the depth/width sweep. wep1 pins
 ; the SIXTEEN-param entry edge — the component-model max-flat-params boundary; 17+ currently emits
