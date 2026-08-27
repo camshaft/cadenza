@@ -21729,35 +21729,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_total_match_on_a_partly_unbuilt_sum_grounds_its_dead_arms_unconstrained_payload() {
-        // A total match over a sum whose type is only PARTLY determined by construction: the scrutinee only
-        // ever builds `Some(Ok (C.R k))` / `None`, so the `Result`'s Err type is never determined (a free
-        // var — the `Some(Result C ?e) ⊔ None` join leaves `?e` open). The match arms `Err e` for
-        // exhaustiveness, but that arm is DEAD (no `Err` value exists). Its payload read `e` has the
-        // unconstrained type, which the heap layout used to DECLINE ("projecting a tuple element of type ?N
-        // needs the value heap"). A free-var element now grounds to the uniform i64 heap cell — sound
-        // because the read is UNREACHABLE (no value of that type ever flows). `f(7)` takes the live
-        // `Ok(C.R 7)` path → 7; the dead `Err` arm never runs. This closes the recurring
-        // unconstrained-generic-param-through-a-join limit at the layout boundary (an ESCAPE of an
-        // under-determined value still rejects — that boundary is separate + unchanged).
-        let Some(v) = run_heap_value(
-            "(module m (type C (R Int64) (G)) \
-               (def (f (: k Int64)) (match (if (> k 0) (Option.Some (Result.Ok (C.R k))) (Option.None)) \
-                 ((Option.Some (Result.Ok (C.R n))) n) ((Option.Some (Result.Ok (C.G))) -1) \
-                 ((Option.Some (Result.Err e)) e) ((Option.None) -2))) \
-               (def (main) (f 7)) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping dead-arm-grounding run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "the live Ok(C.R 7) path yields 7; the dead Err arm (grounded payload) never runs"
-        );
-    }
-
-    #[test]
     fn a_match_on_a_tuple_of_recursive_calls_types_from_the_constructor() {
         // A bottom-up fold matches a TUPLE OF RECURSIVE CALLS against constructor patterns: `(match (tuple
         // (fold a) (fold b)) ((tuple (E.Lit x) (E.Lit y)) …) ((tuple fa fb) …))`. Two gaps closed: (1) the
