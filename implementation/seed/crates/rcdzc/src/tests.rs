@@ -40932,7 +40932,9 @@ mod stage1 {
              (def (main) (+ (apply2 (record (op (fn (n) (+ n 10)))) 5) \
                             (apply2 (record (op (fn (n) (+ n 10)))) 100))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 145);
+        // The fold VALUE (145) is covered by the corpus dictionary-erasure family (09-functions "a recursive
+        // consumer of a dictionary record inlines and erases the dictionary" + companions); only the
+        // emit witness (0 call_indirect — the dict inlined, no runtime record) stays here.
         let indirect = count_opcode(&bytes, |op| {
             matches!(op, wasmparser::Operator::CallIndirect { .. })
         });
@@ -41048,7 +41050,8 @@ mod stage1 {
                  (+ (* x 11) (+ (* x 13) (+ (* x 17) (* x 19))))))))) \
              (def (main) (+ (big 2) (big 3))) (export main))";
         let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 385);
+        // The fold VALUE (385) is an ordinary compile-time const-fold covered by the corpus const-fold
+        // families; only the emit witness (0 Call — the const-arg call fully folded, no runtime call) stays.
         let calls = count_opcode(&bytes, |op| matches!(op, wasmparser::Operator::Call { .. }));
         assert_eq!(
             calls, 0,
