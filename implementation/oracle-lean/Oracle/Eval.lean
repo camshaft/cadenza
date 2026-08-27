@@ -221,6 +221,47 @@ def evalArithOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
 /-- The recognized binary arithmetic operator heads. -/
 def arithOps : List String := ["+", "-", "*", "/", "%"]
 
+/-- The recognized binary BITWISE / SHIFT operator heads (symbolic + named). -/
+def bitwiseOps : List String := ["&", "|", "^", "<<", ">>", "band", "bor", "bxor", "shl", "shr"]
+
+/-- Evaluate a binary bitwise / shift operator on integers, per the width `ty` (derived from the corpus:
+`&`/`|`/`^` operate on the two's-complement width-bit pattern; `>>` is ARITHMETIC for a signed type
+(floor-division toward −∞: `-256 >> 7 = -2`, `-1 >> 1 = -1`) and logical for unsigned; `<<` is `x·2ⁿ`
+range-checked per the width (a runtime out-of-range shift → the `overflow` trap). A shift count `< 0` or
+`≥ width` traps `shift count out of range` (→ the `unreachable` kind); the CONST such cases fail-loud at
+compile time (CDZ0304) and the checker skips them. `unknown` width → unsupported; on `BigInt`, shifts are
+exact and unbounded but bitwise and/or/xor is not modeled (unbounded two's complement). -/
+def evalBitOp (op : String) (a b : Int) (ty : IntTy) : Outcome :=
+  match ty.width with
+  | .unknown => .unsupported "eval: bitwise/shift at an unresolved (unknown) integer width"
+  | .big =>
+    if op == "<<" || op == "shl" then
+      if b < 0 then .unsupported "eval: negative shift count on BigInt" else .value (.int (a * (2 : Int) ^ b.toNat))
+    else if op == ">>" || op == "shr" then
+      if b < 0 then .unsupported "eval: negative shift count on BigInt" else .value (.int (Int.fdiv a ((2 : Int) ^ b.toNat)))
+    else .unsupported "eval: bitwise and/or/xor on BigInt not modeled (unbounded two's complement)"
+  | .bits w =>
+    let modw : Int := (2 : Int) ^ w
+    let pat : Int → Nat := fun x => (((x % modw) + modw) % modw).toNat        -- two's-complement w-bit pattern
+    let ofPat : Nat → Int := fun p =>
+      let pi : Int := Int.ofNat p
+      if ty.signed && pi ≥ (2 : Int) ^ (w - 1) then pi - modw else pi          -- reinterpret the pattern (signed)
+    if op == "&" || op == "band" then .value (.int (ofPat (Nat.land (pat a) (pat b))))
+    else if op == "|" || op == "bor" then .value (.int (ofPat (Nat.lor (pat a) (pat b))))
+    else if op == "^" || op == "bxor" then .value (.int (ofPat (Nat.xor (pat a) (pat b))))
+    else if op == "<<" || op == "shl" then
+      if b < 0 || b ≥ Int.ofNat w then .trap "shift count out of range"
+      else
+        let r := a * (2 : Int) ^ b.toNat
+        let lo : Int := if ty.signed then -((2 : Int) ^ (w - 1)) else 0
+        let hi : Int := if ty.signed then (2 : Int) ^ (w - 1) else (2 : Int) ^ w
+        if lo ≤ r && r < hi then .value (.int r) else .trap "overflow"
+    else if op == ">>" || op == "shr" then
+      if b < 0 || b ≥ Int.ofNat w then .trap "shift count out of range"
+      else if ty.signed then .value (.int (Int.fdiv a ((2 : Int) ^ b.toNat)))   -- arithmetic shift
+      else .value (.int (Int.ofNat (Nat.shiftRight (pat a) b.toNat)))           -- logical shift
+    else .unsupported s!"eval: unknown bitwise op {op}"
+
 /-- The recognized binary ORDERING operator heads (three-way relational, spec §A Total Order). -/
 def cmpOps : List String := ["<", ">", "<=", ">="]
 
@@ -352,6 +393,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if h == "match".toUTF8 then evalMatch m env ty fuel children
         else match String.fromUTF8? h with
              | some hs => if arithOps.contains hs then evalArith m env ty fuel hs children
+                          else if bitwiseOps.contains hs then evalBitwise m env ty fuel hs children
                           else if hs == "=" then evalEq m env fuel children
                           else if cmpOps.contains hs then evalCmp m env fuel hs children
                           else if hs == "not" then evalNot m env fuel children
@@ -437,6 +479,29 @@ partial def evalArith (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : S
       | _, .trap t => .trap t
       | .value (.int a), .value (.int b) => evalArithOp op a b opTy
       | _, _ => .unsupported "eval: non-integer operand to arithmetic"
+  | _, _ => .unsupported s!"eval: malformed {op}"
+
+/-- `(op a b)` for a binary bitwise / shift operator — same operand evaluation + width inference as
+`evalArith` (precedence unsupported > diverges > trap > value), then apply `evalBitOp`. -/
+partial def evalBitwise (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (op : String) (children : Array Nat) : Outcome :=
+  match children[1]?, children[2]? with
+  | some aId, some bId =>
+    if children.size != 3 then .unsupported s!"eval: {op} expects 2 operands"
+    else
+      let operandTyIn := fun (i : Nat) =>
+        (operandTy? m i).orElse (fun _ => (nameOf? m i).bind (fun nm => (env.lookup? nm).bind (·.2)))
+      let opTy := ((operandTyIn aId).orElse (fun _ => operandTyIn bId)).getD ty
+      let oa := evalNode m env opTy fuel aId
+      let ob := evalNode m env opTy fuel bId
+      match oa, ob with
+      | .unsupported r, _ => .unsupported r
+      | _, .unsupported r => .unsupported r
+      | .diverges, _ => .diverges
+      | _, .diverges => .diverges
+      | .trap t, _ => .trap t
+      | _, .trap t => .trap t
+      | .value (.int a), .value (.int b) => evalBitOp op a b opTy
+      | _, _ => .unsupported "eval: non-integer operand to bitwise/shift"
   | _, _ => .unsupported s!"eval: malformed {op}"
 
 /-- A unary constructor `(Ctor e)` (Some/Ok/Err): wrap the payload, storing a non-value payload as a
