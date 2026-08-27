@@ -756,27 +756,30 @@ pub enum TrapCode {
 }
 
 impl TrapCode {
-    /// The STABLE id token for this code — the canonical spelling a `(trap "<id>")` corpus expectation uses,
-    /// and the token [`TrapCode::from_id`] round-trips. Fixed forever: a backend reason's wording may drift,
-    /// but this id must not (the diagnostics.md #every-diagnostic-has-a-stable-code discipline, for traps).
+    /// The STABLE `CDZ07xx` id for this code — the canonical spelling a `(trap "CDZ07xx")` corpus expectation
+    /// uses, and the token [`TrapCode::from_id`] round-trips (operator ruling 2026-08-27: "I'm wanting CDZxxxx
+    /// codes for trap reasons" — matching the `diag::Code` error/warning scheme). Fixed forever: a backend
+    /// reason's wording may drift, but this id must not (the diagnostics.md #every-diagnostic-has-a-stable-code
+    /// discipline, for traps). `CDZ07xx` is the RUNTIME-TRAP block, distinct from the compile-diagnostic ranges
+    /// in `rcdzc::diag::Code` (through `CDZ06xx` + `CDZ0999`) — keep new trap codes here to avoid collision.
     pub fn code(self) -> &'static str {
         match self {
-            TrapCode::DivByZero => "div-by-zero",
-            TrapCode::OutOfBounds => "out-of-bounds",
-            TrapCode::Overflow => "overflow",
-            TrapCode::Unreachable => "unreachable",
+            TrapCode::DivByZero => "CDZ0701",
+            TrapCode::OutOfBounds => "CDZ0702",
+            TrapCode::Overflow => "CDZ0703",
+            TrapCode::Unreachable => "CDZ0704",
         }
     }
 
     /// Parse a corpus `(trap "…")` token as an explicit trap CODE id (the [`TrapCode::code`] inverse). `None`
     /// if the token is not a code id — the grader then falls back to [`classify`] for a legacy English reason,
-    /// so old `(trap "divide by zero")` cases keep grading while new cases use the stable `(trap "div-by-zero")`.
+    /// so old `(trap "divide by zero")` cases keep grading while new cases use the stable `(trap "CDZ0701")`.
     pub fn from_id(token: &str) -> Option<TrapCode> {
         match token.trim() {
-            "div-by-zero" => Some(TrapCode::DivByZero),
-            "out-of-bounds" => Some(TrapCode::OutOfBounds),
-            "overflow" => Some(TrapCode::Overflow),
-            "unreachable" => Some(TrapCode::Unreachable),
+            "CDZ0701" => Some(TrapCode::DivByZero),
+            "CDZ0702" => Some(TrapCode::OutOfBounds),
+            "CDZ0703" => Some(TrapCode::Overflow),
+            "CDZ0704" => Some(TrapCode::Unreachable),
             _ => None,
         }
     }
@@ -862,11 +865,11 @@ mod tests {
             );
         }
         assert_eq!(TrapCode::from_id("not-a-code"), None);
-        // A `(trap "<code-id>")` expectation grades against a runtime English reason by CODE equality — the
-        // authored side is the stable id, not English.
+        // A `(trap "CDZ07xx")` code-id expectation grades against a runtime English reason by CODE equality —
+        // the authored side is the stable id, not English.
         assert_eq!(
             grade_trial(
-                &GExpect::Trap("div-by-zero".into()),
+                &GExpect::Trap("CDZ0701".into()),
                 &Outcome::Trap("cdz-run: trap: wasm trap: integer divide by zero".into())
             ),
             Grade::Pass
@@ -882,7 +885,7 @@ mod tests {
         // A code id that does NOT match the actual kind is Todo (unconfirmed), never a false Pass.
         assert!(matches!(
             grade_trial(
-                &GExpect::Trap("overflow".into()),
+                &GExpect::Trap("CDZ0703".into()),
                 &Outcome::Trap("integer divide by zero".into())
             ),
             Grade::Todo(_)
