@@ -377,6 +377,45 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
        Emitting the identical drop at the exit arm is symmetric-safe. The escape gate (`binding_escapes`)
        guards the general case (a returned expr that DOES reference the operand keeps its drop suppressed).
        mts1's borrow-into-`m` question is DISTINCT and still needs v-runtime; ZIP does not.
+     - **v-runtime DEFINITIVE (2026-08-27d, lib.rs cites):** `vec-drop`(handle,i32) = op_vec_split (L5693):
+       CONSUMES the vec, frees the boundary spine, returns the OWNED rc-1 TAIL — so the recursive arm's
+       `vec-drop(xs,1)`/`vec-drop(ys,1)` prove `xs`/`ys` are OWNED loop-carried operands. `vec-get` (L5042)
+       head = BORROW (no dup). RULE: **exit-drop is SOUND only for OWNED binders** (the vec operand / split
+       tail), UNSOUND for a borrowed head (UAF into the parent vec). ZIP operands are owned ⇒ sound.
+     - **EMIT-SPEC (pinned, awaiting v-runtime soundness sign-off before code):** `zip-sum` compiles to a
+       self-tail-LOOP (`func 16`); `xs`/`ys` are loop-carried, reassigned each iter to their split tails; the
+       two empty-match arms EXIT the loop returning `acc` and drop NEITHER surviving operand. Fix = at a
+       loop-exit match arm, emit a FULL `drop` (heap op 7, cascades + skips immortal children per lib.rs
+       L4229) of each loop-carried OWNED heap operand NOT referenced by the returned expr. Gate = owned
+       (same classification that made the sibling recursive arm drop it) ∩ `binding_escapes`==false. This is
+       a general Perceus drop-placement gap: an operand consumed in one match arm but not a sibling arm is
+       not dropped in the non-consuming arm. Acceptance = ZIP/UNZIP/matmul → 0 on `052KQzQP` + value-wrong-
+       grep + flap-detect + 0-regress local gate. HIGH-UAF-RISK area (loop-carried × match-arm drop) ⇒
+       circulate-before-emit per leak-beats-UAF.
+     - **SEAM LOCATED (2026-08-27d, select.rs — machinery ALREADY EXISTS, ZIP escapes it).** The loop-exit
+       owned-heap-param drop is `looped_owned_param_drops` (L3757) gated by `param_only_borrowed_or_backedge`
+       (L6132, NARROW default-DENY whitelist) + emitted in `select_body`. It fires TODAY only for an
+       IDENTITY-carried owned param (same handle every iteration, dropped once at exit). **ZIP's `xs`/`ys` are
+       VARYING-owned** — each iteration the slot is reassigned to the split TAIL (`xt`), the previous tail
+       consumed by that `vec-split`. The code explicitly DECLINES varying params (L3825 "varying across a
+       back-edge — a single exit drop would be wrong"; L5759) — this is precisely the "general owned-heap-param
+       pass … documented follow-up, not landed here" (L6146). So the fix is NOT new machinery: it is a NARROW
+       WIDENING admitting a varying param whose EVERY back-edge reassignment is a CONSUMING SPLIT of itself
+       (`xt` from a `MatchList`/`vec-split` of the same param), for which the current slot value at exit is
+       owned + the prior value was consumed ⇒ a single exit-arm drop of the current slot is sound. Widen the
+       whitelist's `Call` back-edge arm (L6186) to accept a split-tail arg (not just `Param` identity), and
+       have `looped_owned_param_drops`/L3825 admit that varying class. STILL default-DENY: any reassignment
+       that is a re-box / mutate-in-place / share (not a consuming self-split) keeps declining (leak, never
+       UAF). Circulate this widening to v-runtime for sign-off BEFORE landing (they own the ownership model
+       and confirmed the owned-tail-drop soundness).
+     - **mts1 RESOLVED — STAYS FENCED (retire the mts1 reclaim sub-arc).** v-runtime definitive: `Map.lookup`
+       (op_map_lookup L7826) + the `Some p` unwrap (L1486) are BOTH uniform BORROWS (no dup) — `p` aliases
+       `m`'s live CHAMP [k,v] storage. A plain drop of `p` = UAF into `m` (threaded to resume/Map.insert).
+       The tick-27a fence was CORRECT. The leak-2 is NOT `p` (nothing owned to reclaim from it) — it is the
+       rebuilt `pair` (consumed by BOTH `resume` AND `Map.insert` = a two-consumer thread needing a dup) or
+       the `Some` wrapper node, and `pair` is resume-threaded ⇒ 2c.3-adjacent (Core-invisible, fenced). mts1
+       is NOT reclaimable in-lane; drop it from the active list. (v-runtime offered a `map-lookup-owned` op
+       that dups before returning — declined: it would only relocate the dup, not remove the resume-thread.)
 3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
    + `code.dup_sites` count out of `emit_loop_iteration`).
 
