@@ -21660,3 +21660,14 @@
   (call main (: 1 Int64))
   (output (: 31 Int64))
   (live-objects known-leak 3))
+
+(case "a qualified nullary variant pattern resolves in a nested match on the same scrutinee"
+  (doc    "REGRESSION (resolve, both surfaces): a qualified NULLARY-variant pattern `(. Ty TInt)` whose arm body is itself a nested match on the SAME scrutinee — `(match x ((. Ty TBool) 0) ((. Ty TInt) (match x …)))` — faulted CDZ0201 'member access requires a record' on the nested arm, while the identical OUTER arm compiled. The binder walk mis-parsed `(. Ty TInt)` as a variant ctor whose payload binders were `Ty`/`TInt` (the `.` atom read as the ctor head), poisoning scope so the nested arm's identical `Ty`/`TInt` occurrences classified as shadowed/inert and the member operand no longer reduced to the type record. A `.`-atom head means the whole list IS a nullary-member ctor (no payload binders). `x` is `TInt` → outer `TInt` arm → inner match `TInt` arm → 9. A run to 9 witnesses BOTH the clean lower (no CDZ0201) and the correct dispatch.")
+  (input (do
+(type Ty (TInt) (TBool))
+(def (g (: x Ty))
+  (match x ((. Ty TBool) 0) ((. Ty TInt) (match x ((. Ty TBool) 8) ((. Ty TInt) 9)))))
+(def (main) (g (Ty.TInt)))
+(export main)))
+  (call main)
+  (output (: 9 Int64)))
