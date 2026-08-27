@@ -7789,7 +7789,14 @@ fn emit_tail(
             // payload copies out (no alias), so the drop is safe; a compound shell is left un-dropped (leak,
             // value-correct) pending a sound compound-reclaim increment.
             let reclaim_shell = !arms_tail_call
-                && sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges, &root);
+                && sum_shell_reclaim_ok(
+                    db,
+                    scrutinee,
+                    &scrut_ty,
+                    stashed_slot,
+                    never_diverges,
+                    &root,
+                );
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -13681,8 +13688,14 @@ fn emit(
             // shells, value-correct/non-OOB, tracked as the reclaim-the-compound-shell increment) rather than
             // risk the UAF. The `collect_shell_reclaim_child_dups` dup-injection is now a no-op (empty for a
             // scalar sum) — retained but never fires here.
-            let reclaim_shell =
-                sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges, &root);
+            let reclaim_shell = sum_shell_reclaim_ok(
+                db,
+                scrutinee,
+                &scrut_ty,
+                stashed_slot,
+                never_diverges,
+                &root,
+            );
             emit_sum_cont(
                 db,
                 scrutinee,
