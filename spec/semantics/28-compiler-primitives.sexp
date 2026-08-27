@@ -1471,6 +1471,32 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "cdv1 integer DIV and REM threaded through a const recursion fold (const_eval arithmetic arm)"
+  (doc    "`apply_const_prim` folded Add/Sub/Mul but not `/`/`%`, so a recursion doing integer division declined
+           and the `(const ...)` rejected — though `core_of` folds a direct `(/ n 10)`. `grow` extracts the base-10
+           DIGITS of `n` by threading `(% n 10)` into a `(Set Int64)` accumulator and recursing on `(/ n 10)`;
+           the un-materializable Set forces whole-expression const_eval, so `/`/`%` route through
+           `apply_const_prim`. 12345 → digits {5,4,3,2,1}, `Set.len` = 5. Was a REJECT (Div/Rem returned None).")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: n Int64)))
+              (if (< n 1) s (grow (Set.insert s (% n 10)) (/ n 10))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 12345))))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "cdv2 a const-recursion divide-by-ZERO is fail-loud CDZ0304, not a silent decline"
+  (doc    "The soundness face: a `/` by a computed 0 inside a const recursion must TRAP fail-loud (CDZ0304
+           'division by zero'), matching `core_of` + the runtime — NOT return None (which would DECLINE the fold and
+           surface a generic 'cannot reduce' reject that masks the fault). `grow` computes `(/ 100 (- n n))` — the
+           divisor `(- n n)` is 0 — so `apply_const_prim`'s Div folds to a `CVal::Trap` that propagates out of the
+           recursion + Set.insert + Set.len to the const demand.")
+  (input  (do
+            (def (grow (const (: s (Set Int64))) (const (: n Int64)))
+              (if (< n 1) s (grow (Set.insert s (/ 100 (- n n))) (- n 1))))
+            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (export main)))
+  (error CDZ0304 (message "division by zero")))
+
 ;; -- closed pure handles fold under (const ...) across state kinds: scalar, String, tuple, record (breaker batch 386; List/Map/Set states = the open collection-state seam) --
 (case "chk1 a closed pure handle with SCALAR state folds under (const ...)"
   (input (do
