@@ -3671,6 +3671,7 @@ pass	a runtime list aliased into two record fields is read intact through both
 pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list of record elements escapes rendering each element as its named-field record form
 pass	a runtime list of sum-typed elements escapes rendering each element as its sum value-form
 pass	a runtime list of tuples is equal element-wise, descending into each tuple component
 pass	a runtime list orders lexicographically by its elements
@@ -7893,6 +7894,7 @@ pass	two sequential lookups on the same Map with perform-threaded keys stay inde
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
+pass	two sibling Option fields of different arg do not alias in the value-encode descriptor
 pass	two sibling memoize demands of one key: the first's put threads to the second
 pass	two sibling modules may each define a private helper of the same name
 pass	two slices of one parent both read after the parent is dead

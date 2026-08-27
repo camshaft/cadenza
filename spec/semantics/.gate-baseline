@@ -3835,6 +3835,7 @@ pass	a runtime list aliased into two record fields is read intact through both
 pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list of record elements escapes rendering each element as its named-field record form
 pass	a runtime list of sum-typed elements escapes rendering each element as its sum value-form
 pass	a runtime list of tuples is equal element-wise, descending into each tuple component
 pass	a runtime list orders lexicographically by its elements
@@ -6668,6 +6669,9 @@ pass	mf3 one performing helper called from an ARM's resume-value AND the body �
 pass	mha1 an op with TWO heap arguments — both read by the arm, both reclaim
 pass	mha2 the arm resumes with the op's OWN heap argument as the answer (arg becomes answer)
 pass	mha3 the arm TRANSFORMS the heap arg into the answer (prepend then resume)
+pass	mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)
+pass	mhn2 fifty frames persistently updating THROUGH the projection of a constant tuple's 33-element list child never corrupt the constant
+pass	mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct
 pass	mi1 enumeration DELTA across dispatches — dumps before and after keyed inserts, collision rows shrink the delta
 pass	mi2 SORTED Set enumeration survives a draw-keyed insert — positional reads, the collision row exposes the missing third slot
 pass	mi3 the arm AGGREGATES map values via a to-list walk — the n=1 row OVERWRITES the seed value, shrinking the total
@@ -6717,6 +6721,9 @@ pass	mp2 map VALUES are draws inserted in key order — weighted lookups replay 
 pass	mp3 a draw picks the Map.remove key — lookups of all three keys show exactly one hole where the thread pointed
 pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
 pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
+pass	mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair
+pass	mps2 fifty frames alternating two constant Maps reclaim to zero
+pass	mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)
 pass	mr1 THREE Map.remove GENERATIONS share structure — each ancestor still holds what its descendant removed
 pass	mr1 mutual recursion drawing at EVERY level — even levels weight their draw x10, odd levels x1
 pass	mr2 the mutual pair draws from DIFFERENT effects — ev advances P, od advances Q, both threads interleave down the descent
@@ -7706,6 +7713,7 @@ pass	structural equality holds component-wise
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	structural equality on an Ast.List is element-COUNT sensitive
 pass	structural equality on an Ast.List is element-ORDER sensitive
+pass	sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)
 pass	stt1 a SET-OF-TUPLES state seeded by Set.of — structural dedup across dispatches: the repeated pair does not grow the set and the order-swapped pair only counts when the components differ
 pass	su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter
 pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised
@@ -8322,6 +8330,7 @@ pass	two sequential lookups on the same Map with perform-threaded keys stay inde
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
+pass	two sibling Option fields of different arg do not alias in the value-encode descriptor
 pass	two sibling memoize demands of one key: the first's put threads to the second
 pass	two sibling modules may each define a private helper of the same name
 pass	two slices of one parent both read after the parent is dead
@@ -8589,10 +8598,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)
-pass	mhn2 fifty frames persistently updating THROUGH the projection of a constant tuple's 33-element list child never corrupt the constant
-pass	mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct
-pass	mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair
-pass	mps2 fifty frames alternating two constant Maps reclaim to zero
-pass	mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)
-pass	sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)

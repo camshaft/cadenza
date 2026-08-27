@@ -17894,6 +17894,39 @@
   (output (: (list (None unit) (Some 1)) (List (Option Int64))))
   (live-objects known-leak 4))
 
+(case "a runtime list of record elements escapes rendering each element as its named-field record form"
+  (doc    "The record-element companion of the sum-element escape above — the exact shape of a reducer
+           apply's result `(List <record>)`. The value-encode walker recurses List → per-element RECORD,
+           rendering each `(= name value)` field in canonical (name-sorted) order. `build i n` pushes
+           `(record (op \"x\") (seq i))` for i in 0..n → two records; fields sort op<seq. The seed list is
+           annotated so the element record type is fully determined. Renders `(list (record (= op \"x\")
+           (= seq 0)) (record (= op \"x\") (= seq 1)))` under `(List (record (op String) (seq Int64)))`.")
+  (input  (do (def (build i n out)
+                (if (< i n) (build (+ i 1) n (List.push out (record (op "x") (seq i)))) out))
+              (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main)))
+  (output (: (list (record (= op "x") (= seq 0)) (record (= op "x") (= seq 1)))
+             (List (record (op String) (seq Int64)))))
+  (live-objects known-leak 6))
+
+(case "two sibling Option fields of different arg do not alias in the value-encode descriptor"
+  (doc    "REJECT-DON'T-MISCOMPILE regression: a runtime record with TWO sibling Option fields — `pl :
+           Option<P>` (P a nominal sum) beside `corr : Option<Bytes>` — must value-encode each field by its
+           OWN instantiation, NOT alias one onto the other. The shape memo keyed each sum/nominal by its decl
+           ALONE, but a GENERIC decl like `Option a` is one decl across ALL instantiations, so whichever of
+           `Option<P>`/`Option<Bytes>` built first won the `Option` slot and the sibling short-circuited to a
+           `Ref` onto it — `Option<P>` rendered as `Option<Bytes>`'s EMPTY-bytes leaf `(Some b\"\")`, silent
+           data loss. The memo is now keyed by (decl, instantiation), so `pl` renders its OWN sum value-form
+           `(Some (B (record (= x \"hi\"))))` and `corr` its `(None unit)`. Recursion (the `build` helper)
+           defeats const-fold so this takes the value-encode WALKER, not the const path.")
+  (input  (do (type P (A Bytes) (B (Record (: x String))))
+              (def (build i) (if (< i 1) (build (+ i 1))
+                (record (pl (: ((. Option Some) (: ((. P B) (record (x "hi"))) P)) (Option P)))
+                        (corr (: (. Option None) (Option Bytes))))))
+              (def (main) (build 0)) (export main)))
+  (output (: (record (= corr (None unit)) (= pl (Some (B (record (= x "hi"))))))
+             (record (corr (Option Bytes)) (pl (Option P)))))
+  (live-objects known-leak 6))
+
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
 ; lowers its decision tree so a non-refining column's fall-through is a SHARED `Rc<SumCont>`. At EMIT the

@@ -22189,64 +22189,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_runtime_list_of_records_escapes_via_value_encode() {
-        // §3c REDUCER-RESULT de-risk: a runtime `(List <record>)` — a list whose ELEMENTS are records —
-        // is the exact shape of a reducer apply's result `(List EffectRequest)`. The value-encode walker
-        // recurses List -> per-element record -> `(= name value)` fields (sorted by name). Pins that step
-        // 2b's result_desc (`sum_shape_descriptor` on `List(record)`) + the walker render the reducer
-        // result cleanly. `build i n` pushes `(record (op "x") (seq i))` for i in 0..n; fields sort op<seq.
-        // The seed list is annotated so the element record type is fully determined (else the loop
-        // counter `i` in `(seq i)` stays a type var -> `Any` field -> CDZ0203 not-fully-determined).
-        let Some(out) = escape_render(
-            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (record (op \"x\") (seq i)))) out)) \
-                       (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime list-of-records escape run");
-            return;
-        };
-        assert_eq!(
-            out,
-            "(: (list (record (= op \"x\") (= seq 0)) (record (= op \"x\") (= seq 1))) (List (record (op String) (seq Int64))))",
-            "runtime list-of-records renders each element as a (= name value) record under (List <record>)"
-        );
-    }
-
-    #[test]
-    fn two_sibling_option_fields_of_different_arg_do_not_alias_in_the_value_encode_descriptor() {
-        // SILENT MISCOMPILE (concierge issue, v-effects-diagnosed): a runtime record with TWO sibling
-        // Option fields — `pl: Option<P>` (P a nominal sum) beside `corr: Option<Bytes>` — value-encoded the
-        // Option-of-sum field as an EMPTY bytes-leaf (`(Some b"")`) instead of the sum value-form, silent
-        // data loss = reject-don't-miscompile violated at the artifact. ROOT (`ShapeTableBuilder.sums`,
-        // lower.rs): the shape memo keyed each `Ty::Sum`/`Ty::Nominal` by its `decl` (StructId) ALONE, but a
-        // GENERIC decl like `Option a` is one decl across ALL instantiations — so whichever of `Option<P>` /
-        // `Option<Bytes>` built first won the `Option`-decl slot and the sibling short-circuited to a `Ref`
-        // onto it (`Option<P>` aliased onto `Option<Bytes>`'s empty-bytes descriptor). `Ty::Sum`'s own doc:
-        // two sums agree iff decl AND args agree. FIX: key the memo by (decl, ty_instantiation_key(ty)) — the
-        // full instantiation — so `Option<P>` and `Option<Bytes>` get DISTINCT entries; a recursive
-        // self-reference still shares the same instantiation key and closes to a `Ref`. Recursion defeats
-        // const-fold here (the `build` helper) so this takes the value-encode WALKER, not the const path.
-        let Some(out) = escape_render(
-            "(module m (type P (A Bytes) (B (Record (: x String)))) \
-               (def (build i) (if (< i 1) (build (+ i 1)) \
-                 (record (pl (: ((. Option Some) (: ((. P B) (record (x \"hi\"))) P)) (Option P))) \
-                         (corr (: (. Option None) (Option Bytes)))))) \
-               (def (main) (build 0)) (export main))",
-        ) else {
-            eprintln!(
-                "runtime wasm not found; skipping sibling-Option descriptor-alias escape run"
-            );
-            return;
-        };
-        assert_eq!(
-            out,
-            "(: (record (= corr (None unit)) (= pl (Some (B (record (= x \"hi\")))))) \
-(record (corr (Option Bytes)) (pl (Option P))))",
-            "the Option<P> field must render its OWN sum value-form (Some (B (record (= x \"hi\")))), NOT \
-alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
-        );
-    }
-
-    #[test]
     fn a_runtime_list_is_matched_by_element_and_rest_patterns() {
         // L4: a match over a RUNTIME `List` scrutinee dispatches by LENGTH (`Core::MatchList` → `vec-len`),
         // binds leading elements via `vec-get` (`SumPayload{Elem(i)}`), and the REST binder via `vec-drop`
