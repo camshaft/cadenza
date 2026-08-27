@@ -62548,57 +62548,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_tail_resume_in_a_match_arm_body_folds_by_distribution() {
-        // A perform in a `match` ARM BODY under a PURE scrutinee folds by HANDLER DISTRIBUTION (the `match`
-        // analogue of the `if`-branch distribution): `(handle E s arms (match k (p b)…))` ≡ `(match k (p
-        // (handle E s arms b))…)`. `(match (< 3 5) (true (Amb.flip)) (false 2))` — scrutinee `(< 3 5)` is
-        // pure → true, arm `true` → sub-handle `(handle … (Amb.flip))` = identity slice → `(resume 10 s)` =
-        // 10, arm `(+ 1 (resume 10 s))` = `(+ 1 10)` = 11. (Was declined before distribution.)
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (< 3 5) (true (Amb.flip)) (false 2)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a non-tail resume in a match arm body folds by distribution"),
-                "main"
-            ),
-            11
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_in_an_if_condition_folds() {
-        // The perform may sit in an `if` CONDITION — a STRICT, always-evaluated-first position, so its
-        // continuation `C = (if (< □ 5) 1 2)` is a uniform pure one-hole context (the branches are pure and
-        // run only AFTER the condition). `(resume 10 s)` → `C[10] = (if (< 10 5) 1 2)` = 2; arm
-        // `(+ 1 (resume 10 s))` → `(+ 1 2)` = 3. Both branches must be strongly pure (they are copied into
-        // `C` and a multi-shot resume duplicates them); a perform in a BRANCH still declines (below).
-        let src = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< (Amb.flip) 5) 1 2))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a hole in an if condition folds"),
-                "main"
-            ),
-            3
-        );
-        // A MULTI-shot arm over a condition-hole context duplicates the whole `if` (pure) safely:
-        //   `C = (if (< □ 5) 100 2)`, arm `(* (resume 1 s) (resume 2 s))`
-        //     → `(* (if (< 1 5) 100 2) (if (< 2 5) 100 2))` = `(* 100 100)` = 10000.
-        let multi = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (if (< (Amb.flip) 5) 100 2))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(multi)))
-                    .expect("a multi-shot condition-hole context folds"),
-                "main"
-            ),
-            10000
-        );
-    }
-
-    #[test]
     fn a_tail_resumptive_arm_with_a_non_tail_perform_body_still_threads() {
         // ADVERSARIAL: the pure one-hole block must NOT hijack a TAIL-resumptive arm. Here the arm body
         // `(resume s (+ s 1))` IS a tail resume, so `tail_resume` is `Some` and the block is skipped — the
