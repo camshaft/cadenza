@@ -8835,6 +8835,28 @@
   (call main (: (Some 7) (Option Int64)))
   (output (: 77 Int64)))
 
+; -- v-rust-backend (2026-08-27): the #3923 Option-lift INTERLEAVE invariants (from a post-land safety
+; sweep, 0 miscompiles found). eoi1 pins the flattened-leaf CURSOR threading across TWO consecutive sum
+; params (each option flattens to `(disc, payload)`; the wrapper must advance the cursor by the full
+; flattened width of the first before reading the second). eoi2 pins a MEM-LEAF param (String → (ptr,len))
+; and a SUM param COMPOSING in one signature — the wrapper lifts the string leaf THEN reads the option's
+; disc/payload at the advanced cursor, the two lift mechanisms interleaving without clobbering each other's
+; leaf indices. Both are v-rust-backend's own emit invariants (distinct from the breaker's eoc/eop
+; composition rows); they guard the cursor arithmetic a future param-shape change could silently break.
+
+(case "eoi1 TWO Option entry params thread the flattened-leaf cursor independently"
+  (input (do (def (main (: a (Option Int64)) (: b (Option Int64)))
+    (+ (match a ((Option.Some v) v) ((Option.None) 0))
+       (match b ((Option.Some v) v) ((Option.None) 0)))) (export main)))
+  (call main (: (Some 10) (Option Int64)) (: (Some 5) (Option Int64)))
+  (output (: 15 Int64)))
+
+(case "eoi2 a String (mem-leaf) param and an Option (sum) param interleave in one signature"
+  (input (do (def (main (: s String) (: o (Option Int64)))
+    (+ (String.byte-len s) (match o ((Option.Some v) v) ((Option.None) 0)))) (export main)))
+  (call main (: "abc" String) (: (Some 10) (Option Int64)))
+  (output (: 13 Int64)))
+
 ; -- breaker batch 482 (2026-08-27): sharing through DEF-CALL bindings — the pure-allocation
 ; contrast to the cp4 inline-duplication (a PERFORMING nullary call inlined per use loses its
 ; one-draw sharing; filed to v-inference). A def-call whose body merely ALLOCATES binds once:
