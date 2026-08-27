@@ -9192,3 +9192,22 @@
     (def (find (: n Int64)) (if (= (mk n) (mk 3)) n (find (+ n 1))))
     (export find)))
   (call find (: 0 Int64)) (output (: 3 Int64)))
+
+; -- breaker batch 512 (2026-08-27): incr6's hoist SCOPE, calibrated through returns. A let-bound
+; WHOLE constant tuple/record hoists immortal (ctd1 reads 0) — but a constant EMBEDDED in a
+; runtime constructor still allocates per-eval: the inner (tuple 1 2) counts in the census (imc1 =
+; outer 1 + inner 1; imc2 = list 2 + both tuples 2). Reported to v-static-data as observed scope
+; (constructor-arg positions pending). If a future increment hoists embedded positions these
+; clauses DROP (1 and 3) — the flip is that increment's acceptance.
+
+(case "imc1 a constant tuple embedded in a runtime tuple return still allocates (hoist scope: let-bound wholes only)"
+  (input (do (def (main (: n Int64)) (tuple n (tuple 1 2))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple 5 (tuple 1 2)) (Tuple Int64 (Tuple Int64 Int64))))
+  (live-objects 2))
+
+(case "imc2 a constant tuple as a runtime list element still allocates likewise"
+  (input (do (def (main (: n Int64)) (list (tuple 1 2) (tuple n 9))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (list (tuple 1 2) (tuple 5 9)) (List (Tuple Int64 Int64))))
+  (live-objects 4))
