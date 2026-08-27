@@ -121,7 +121,36 @@ heap payload**; prelude-ness is incidental (`Option`/`Result` leak because they 
 scopes the reclaim increment: the shells that reach the reclaim gate are the instantiated-generic ones
 the fusion pass leaves un-deforested.
 
-## Acceptance and fence (corpus-pinned by breaker #3863/#3865, measured on the debug runtime)
+## A second site: the extraction-op retain (site B′)
+
+v-runtime + breaker localized a distinct leak mechanism that shares the sum-shell shape but is NOT the
+construct-then-destructure gap above (#3874/#3875/#3876/#3878). A fallible read — `List.at`, `Bytes.at`,
+`Map.lookup`, `Bytes.slice` — returns a runtime `Option` whose discriminant depends on bounds, so it
+CANNOT deforest: it builds a real `Some` shell AND `dup`s the extracted compound into that shell
+(`heap_operand_ownership` @16069-71). When the arm unwraps the `Some` and the shell is deep-dropped, the
+drop takes the shell's own ref (rc 2 → 1) but the extracted payload survives at rc 1 — a leak of exactly
+the payload's cells. The witnesses:
+
+- `lar1` (`List.at`-extracted inner list, borrow-only via `List.len`) leaks 3; `lar2` (scalar element)
+  is the 0 control.
+- `mlr1` (`Map.lookup`-extracted, borrowed) leaks 3 identically — so it is the Option-shell extraction
+  family, not `List.at`-specific.
+- `mlr2` (extracted vec CONSUMED via `List.concat`) STILL leaks 3 — the extraction's retain is never
+  paired with a drop REGARDLESS of whether the payload is then borrowed or consumed.
+- `mlr3` (a plain tuple projection of a list field, no `Option` shell) is 0 — confirming the leak is
+  specifically the `Option`-shell-mediated extraction.
+- `xar1`/`xar3` (a handler ARM doing its own extraction) leak PER DISPATCH (`xar1` = 6 at 2 dispatches =
+  2× `lar1`), so the fix must reach ARM scope, not only straight-line def bodies.
+- `osx3` (`Bytes.slice` wrapping a FRESH view in a `Some`) leaks 2 — an adjacent cell that may flip for
+  free if the release is at the `Some` unwrap.
+
+The fix is orthogonal to escape/reuse-clean: it must RELEASE the extraction-op's dup-retain when the
+`Some` is unwrapped, on BOTH the borrow path (the shell deep-drop) and the consume path (`mlr2`). Open
+with v-runtime (their runtime-reclaim call): place the release at the `MatchSum`/`SumExpect` `Some`
+unwrap (drop the extra retained ref once the payload is bound), or at the extraction op itself (do not
+`dup` into the shell when the `Some` is a dead temporary consumed by the immediate match).
+
+## Acceptance and fence (corpus-pinned by breaker #3863/#3865/#3874/#3875/#3876/#3878, on the debug runtime)
 
 - Reclaim-to-zero (flip `(live-objects known-leak N)` → `(live-objects 0)` in the SAME PR, per v-nix):
   `d4=3` (minimal Option), `dm1=7`/`d3=5` (scaling), `drs1=3` (Result), `drs2=4` (nested Option),
@@ -129,10 +158,14 @@ the fusion pass leaves un-deforested.
   generic-user-sum witness); plus the self-loop `fold`/`count` family for site A. (Note the corpus
   renames that dodge handler-state prefix collisions: the acceptance `rs1`/`rs2`/`rs3` are `drs1`/`drs2`/
   `drs3`, and `d2` is `dt2` — the un-prefixed `rs*` in the corpus are UNRELATED handler-state cases.)
+  Extraction-family (site B′): `lar1=3`, `mlr1=3`, `mlr2=3`, `xar1=6`, `xar3=3`, `osx3=2` → 0.
 - Fence (must STAY at its current value — leaking is acceptable, a UAF is not, and a control must not be
   over-corrected): the three trap witnesses `mts1`/`mmx1`/`rrb1` stay `known-leak` (must NOT be reclaimed
-  until the reuse-clean predicate proves them safe); the zero-controls `dt2`/`d6`/`dst2`/`dst5`/`dst6`
-  (and the deforesting `d5`/`drs3`/`df1`/`df3`/`df4`) stay `(live-objects 0)`.
+  until the reuse-clean predicate proves them safe); the zero-controls `dt2`/`d6`/`dst2`/`dst5`/`dst6`/
+  `lar2`/`mlr3` (and the deforesting `d5`/`drs3`/`df1`/`df3`/`df4`) stay `(live-objects 0)`. Note `d6` is a
+  DEFORESTATION control (a directly-constructed `Option` compound emits ZERO sum ops → no shell to
+  reclaim), NOT a witness that the reclaim works — the reclaim witnesses are the extraction-built shells
+  (`lar1`/`mlr1`/…) which cannot deforest.
 - Repros: the acceptance/`df` rows in `05-compound-types.sexp`; `ap1`/`mts1`/`mmx1`/`rrb1` in
   `14c-effects-and-handlers.sexp`; site-A minimal
   `(def (go (: xs (List Int64)) (: acc Int64)) (match xs ((list) acc) ((list h .. t) (go t (+ acc h)))))`
@@ -152,15 +185,25 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
 
 ## Increment order
 
-1. Site B, escape-clean only, reuse-clean = "no heap payload at all beyond scalars" (i.e. the current
-   floor) — no behavior change, refactor the two `MatchSum` gates (@7791 tail, @13475 non-tail) and the
-   `SumExpect` gate (@13031) to share one `shell_reclaim_decision` helper. The helper THREADS `TailPos` so
-   the tail-gate `arms_tail_call`/`never_diverges` skip stays (a `br` arm never reaches the post-match
-   drop — the same reason site A's back-edge skip exists in `list_shell_reclaim_slot`). Gate: no corpus
-   delta.
-2. Site B, widen to escape-clean + reuse-clean over the `d4`/`dm1`/`rs1`/`rs2`/`ap1` acceptance set; the
-   `mts1`/`mmx1`/`rrb1` fence must stay `known-leak`. Marker flip in the same PR.
-3. Site A, spine-cell reclaim on the back-edge over the fold/count family.
+1. DONE (#3877, merged, v-runtime-verified 0-delta): the two `MatchSum` gates (@7791 tail, @13475
+   non-tail) share one `sum_shell_reclaim_ok` helper (the common 5-clause predicate). No behavior change.
+   The tail gate keeps its `!arms_tail_call` at the CALL SITE — it needs the `MatchSum` decision tree and
+   is NOT equivalent to `TailPos::Tail(Some(_))` (a `Tail(Some)` match whose arm is a constructor still
+   has a valid reclaim point), so threading `TailPos` generically would NOT be no-delta. The `SumExpect`
+   gate (@13031) stays as-is — it is the dup-then-deep-drop TEMPLATE, structurally different.
+2a. Widen `sum_shell_reclaim_ok` past the all-scalar floor to admit a COMPOUND heap payload when the arm
+   is escape-clean (every heap payload sub-value non-escaping: `binding_escapes_dup_aware` over a
+   materialized `LocalRef` binder + `arm_borrows_heap_subvalue` over inline reads) AND reuse-clean (no
+   arm constructor FBIP-reuses a shell-reachable cell). Re-enable the (currently no-op)
+   `collect_shell_reclaim_child_dups` so consumed compound children are `dup`'d before the deep-drop.
+   Flips `d4`/`dm1`/`d3`/`drs1`/`drs2`/`ap1`/`df2` → 0; `mts1`/`mmx1`/`rrb1` stay `known-leak`. Marker
+   flip in the same PR.
+2b. Release the EXTRACTION-OP retain (site B′) on `Some` unwrap, on both the borrow and consume paths.
+   Flips `lar1`/`mlr1`/`mlr2`/`xar1`/`xar3`/`osx3` → 0; `lar2`/`mlr3` stay 0. Unblocks v-rb's nested-lift
+   (`el8`/`eln1-3`). Placement (unwrap vs extraction op) pending v-runtime's runtime-reclaim call.
+3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
+   + `code.dup_sites` count out of `emit_loop_iteration`).
 
-Each increment lands as a gh PR (base origin/main, self-merge on 0-regressed local gate + the rc-leak
-probe family), reviewed by v-runtime against the acceptance/fence set on the debug runtime before merge.
+Each increment lands as a gh PR (base origin/main, admin-merge on 0-regressed LOCAL gate + the rc-leak
+probe family — CI is starved, local green is merge-truth), reviewed by v-runtime against the acceptance/
+fence set on the debug runtime `052KQzQP` before merge, with the marker flip in the same PR (per v-nix).
