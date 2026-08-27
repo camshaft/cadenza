@@ -3481,14 +3481,28 @@ fn set_interval(fleet: &Fleet, name: &str, interval: &str) {
     }
 }
 
-fn heartbeat(fleet: &Fleet, name: &str) {
+/// The testable core of `heartbeat`: refresh the agent's liveness touch-file UNLESS it is stopped, and
+/// report whether it is stopped. A STOPPED agent (its `remove`/`down` stop-file present) must NOT
+/// refresh liveness — if a still-in-flight tick heartbeats after a `remove`, refreshing the touch-file
+/// would reset the agent's `hb_age` and make a just-removed agent look freshly-alive on the board / to
+/// any liveness check that keys on heartbeat recency (concierge robustness report 2026-08-27). So the
+/// stop-file is checked FIRST and, when present, the touch-file is left untouched. Returns `true` if
+/// stopped (the caller stands down, exit 2). Registry status is owned by add/remove/resume — a
+/// heartbeat never writes it either way, so a stopped agent stays stopped.
+fn heartbeat_refresh_liveness(fleet: &Fleet, name: &str) -> bool {
+    if fleet.stopfile(name).exists() {
+        return true;
+    }
     // Presence is a touch-file per agent under `.claude/fleet/heartbeat/<name>` — cheap, and avoids
     // rewriting the whole registry on every tick (which would contend with `add`/`remove`).
     let dir = fleet.root.join("heartbeat");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), "tick\n").ok();
-    // If a stop-file exists, tell the caller to stand down (exit code 2 = "you are stopped").
-    if fleet.stopfile(name).exists() {
+    false
+}
+
+fn heartbeat(fleet: &Fleet, name: &str) {
+    if heartbeat_refresh_liveness(fleet, name) {
         println!("STOPPED");
         std::process::exit(2);
     }
@@ -14268,6 +14282,47 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn heartbeat_does_not_refresh_liveness_for_a_stopped_agent() {
+        // Concierge robustness report: a still-in-flight tick that heartbeats AFTER `fleet remove` must
+        // not make the just-removed agent look freshly-alive. So when the stop-file is present, the
+        // liveness touch-file is left UNTOUCHED and the caller is told to stand down.
+        let root = std::env::temp_dir().join(format!("cdz-hb-stopped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: root.join("worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let hb = root.join("heartbeat").join("v-x");
+
+        // Live agent (no stop-file): heartbeat refreshes liveness and does NOT stand down.
+        assert!(
+            !heartbeat_refresh_liveness(&fleet, "v-x"),
+            "a live agent is not stopped"
+        );
+        assert!(
+            hb.exists(),
+            "a live heartbeat writes the liveness touch-file"
+        );
+
+        // Remove drops a stop-file; delete the touch-file to prove the next heartbeat does NOT re-create it.
+        std::fs::create_dir_all(fleet.stopfile("v-x").parent().unwrap()).unwrap();
+        std::fs::write(fleet.stopfile("v-x"), "removed\n").unwrap();
+        std::fs::remove_file(&hb).unwrap();
+        assert!(
+            heartbeat_refresh_liveness(&fleet, "v-x"),
+            "a stopped agent's heartbeat reports stopped (caller stands down)"
+        );
+        assert!(
+            !hb.exists(),
+            "a stopped agent's heartbeat must NOT refresh liveness — no touch-file re-created"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
