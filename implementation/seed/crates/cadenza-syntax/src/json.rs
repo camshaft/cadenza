@@ -781,7 +781,7 @@ mod tests {
         match a.get(a.root) {
             crate::ast::Struct::Atom(l) => match a.leaf(*l) {
                 Leaf::Int { value, .. } => {
-                    assert_eq!(value.to_str_radix(10), "123456789012345678901234567890")
+                    assert_eq!(value.to_decimal_string(), "123456789012345678901234567890")
                 }
                 _ => panic!("expected an Int leaf"),
             },

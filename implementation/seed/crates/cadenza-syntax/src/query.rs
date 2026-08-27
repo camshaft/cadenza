@@ -795,7 +795,9 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
                 let n = items
                     .get(1)
                     .and_then(|t| match t {
-                        Tree::Atom(Leaf::Int { value, .. }, _) => usize::try_from(value).ok(),
+                        Tree::Atom(Leaf::Int { value, .. }, _) => {
+                            value.to_u128().and_then(|u| usize::try_from(u).ok())
+                        }
                         _ => None,
                     })
                     .ok_or_else(|| {
@@ -810,7 +812,7 @@ fn compile_guard(t: &Tree) -> Result<Guard, PatternError> {
                 let n = items
                     .get(1)
                     .and_then(|t| match t {
-                        Tree::Atom(Leaf::Int { value, .. }, _) => usize::try_from(value).ok(),
+                        Tree::Atom(Leaf::Int { value, .. }, _) => value.to_u128().and_then(|u| usize::try_from(u).ok()),
                         _ => None,
                     })
                     .ok_or_else(|| {
@@ -3941,14 +3943,19 @@ pub mod hash {
         match leaf {
             Leaf::Int { value, radix } => {
                 h.update([TAG_INT, radix_byte(*radix)]);
-                let bytes = value.to_signed_bytes_le();
+                let bytes = value.to_bigint().to_signed_bytes_le();
                 h.update((bytes.len() as u64).to_be_bytes());
                 h.update(&bytes);
             }
             Leaf::Float(d) => {
                 h.update([TAG_FLOAT, d.negative as u8]);
                 h.update(d.exponent.to_be_bytes());
-                let sig = d.significand.to_signed_bytes_le();
+                let sig = crate::ast::IntValue {
+                    negative: false,
+                    magnitude: d.significand.clone(),
+                }
+                .to_bigint()
+                .to_signed_bytes_le();
                 h.update((sig.len() as u64).to_be_bytes());
                 h.update(&sig);
             }
@@ -3976,14 +3983,19 @@ pub mod hash {
                 match value {
                     crate::ast::SuffixBody::Int { value, radix } => {
                         h.update([TAG_INT, radix_byte(*radix)]);
-                        let bytes = value.to_signed_bytes_le();
+                        let bytes = value.to_bigint().to_signed_bytes_le();
                         h.update((bytes.len() as u64).to_be_bytes());
                         h.update(&bytes);
                     }
                     crate::ast::SuffixBody::Float(d) => {
                         h.update([TAG_FLOAT, d.negative as u8]);
                         h.update(d.exponent.to_be_bytes());
-                        let sig = d.significand.to_signed_bytes_le();
+                        let sig = crate::ast::IntValue {
+                            negative: false,
+                            magnitude: d.significand.clone(),
+                        }
+                        .to_bigint()
+                        .to_signed_bytes_le();
                         h.update((sig.len() as u64).to_be_bytes());
                         h.update(&sig);
                     }
@@ -5655,7 +5667,7 @@ mod tests {
         if depth == 0 || rng.next().is_multiple_of(3) {
             let leaf = match rng.next() % 7 {
                 0 => Leaf::Int {
-                    value: num_bigint::BigInt::from(rng.next() as i64),
+                    value: crate::ast::IntValue::from_i64(rng.next() as i64),
                     radix: [crate::ast::Radix::Dec, crate::ast::Radix::Hex]
                         [(rng.next() % 2) as usize],
                 },

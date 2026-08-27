@@ -1193,28 +1193,28 @@ mod tests {
             (
                 "Int-dec-neg",
                 Leaf::Int {
-                    value: BigInt::from(-42),
+                    value: crate::ast::IntValue::from_i64(-42),
                     radix: Radix::Dec,
                 },
             ),
             (
                 "Int-hex",
                 Leaf::Int {
-                    value: BigInt::from(255),
+                    value: crate::ast::IntValue::from_i64(255),
                     radix: Radix::Hex,
                 },
             ),
             (
                 "Int-bin",
                 Leaf::Int {
-                    value: BigInt::from(10),
+                    value: crate::ast::IntValue::from_i64(10),
                     radix: Radix::Bin,
                 },
             ),
             (
                 "Int-zero",
                 Leaf::Int {
-                    value: BigInt::from(0),
+                    value: crate::ast::IntValue::from_i64(0),
                     radix: Radix::Dec,
                 },
             ),
@@ -1222,7 +1222,7 @@ mod tests {
                 "Float-neg",
                 Leaf::Float(Decimal {
                     negative: true,
-                    significand: BigInt::from(125),
+                    significand: crate::ast::IntValue::from_i64(125).magnitude,
                     exponent: -2,
                 }),
             ),
@@ -1513,8 +1513,8 @@ mod tests {
         match a.leaf(*l) {
             Leaf::Int { value, radix } => {
                 assert_eq!(
-                    value,
-                    &BigInt::from_str("123456789012345678901234567890").unwrap()
+                    value.to_bigint(),
+                    BigInt::from_str("123456789012345678901234567890").unwrap()
                 );
                 assert_eq!(*radix, Radix::Dec);
             }
@@ -1536,7 +1536,7 @@ mod tests {
             assert_eq!(
                 a.leaf(*l),
                 &Leaf::Int {
-                    value: BigInt::from(val),
+                    value: crate::ast::IntValue::from_i64(val),
                     radix
                 },
                 "src {src}"
@@ -1554,7 +1554,7 @@ mod tests {
             a.leaf(*l),
             &Leaf::Float(Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: crate::ast::IntValue::from_i64(15).magnitude,
                 exponent: -1
             })
         );
@@ -1571,7 +1571,7 @@ mod tests {
             a.leaf(*l),
             &Leaf::Float(Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: crate::ast::IntValue::from_i64(15).magnitude,
                 exponent: 9
             })
         );
@@ -1643,7 +1643,7 @@ mod tests {
         assert_eq!(
             a.leaf(*l),
             &Leaf::Int {
-                value: BigInt::from(1_000_000),
+                value: crate::ast::IntValue::from_i64(1_000_000),
                 radix: Radix::Dec
             }
         );

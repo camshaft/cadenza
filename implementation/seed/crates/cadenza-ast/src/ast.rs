@@ -36,7 +36,7 @@ pub enum Leaf {
     /// (`42`, `0x2A`, `0b101010` are the same value) but is recorded so the printed form re-reads to
     /// the same leaf — a faithful text round-trip. Digit-separator (`_`) positions are NOT recorded.
     Int {
-        value: BigInt,
+        value: IntValue,
         radix: Radix,
     },
     Float(Decimal),
@@ -106,7 +106,7 @@ pub enum Leaf {
 /// width-free decimal, the same two shapes the bare `Int`/`Float` leaves carry.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SuffixBody {
-    Int { value: BigInt, radix: Radix },
+    Int { value: IntValue, radix: Radix },
     Float(Decimal),
 }
 
@@ -208,9 +208,753 @@ pub struct StructId(pub u32);
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Decimal {
     pub negative: bool,
-    pub significand: BigInt,
+    /// Big-endian non-negative magnitude of the significand (empty = zero) — a dependency-light byte
+    /// magnitude (no num-bigint) so the codec-core is `no_std`. Matches the rcdzc codec twin.
+    pub significand: Vec<u8>,
     /// Base-10 exponent.
     pub exponent: i64,
+}
+
+/// An arbitrary-precision integer value: a sign plus a big-endian magnitude — a dependency-light
+/// bignum (no num-bigint) so the codec-core is `no_std`+alloc-only. Canonical form: the magnitude
+/// carries no leading zero byte and is empty iff the value is zero (so equal values share one
+/// representation, hence one leaf-pool entry and one encoding). The Int rep `Leaf::Int` / `Decimal`
+/// converge on (mirrors the rcdzc codec twin); num-bigint is a `std`-side convenience via
+/// [`IntValue::to_bigint`]/[`IntValue::from_bigint`].
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct IntValue {
+    pub negative: bool,
+    /// Big-endian magnitude bytes (most-significant first). Empty represents zero.
+    pub magnitude: Vec<u8>,
+}
+
+impl IntValue {
+    /// The integer zero (positive sign, empty magnitude — zero is never negative on the wire).
+    pub fn zero() -> IntValue {
+        IntValue {
+            negative: false,
+            magnitude: Vec::new(),
+        }
+    }
+
+    /// Build from a machine `i64`, producing the canonical minimal big-endian magnitude.
+    pub fn from_i64(v: i64) -> IntValue {
+        if v == 0 {
+            return IntValue::zero();
+        }
+        // Widen before taking the magnitude so `i64::MIN` does not overflow.
+        let mag: u128 = (v as i128).unsigned_abs();
+        let bytes = mag.to_be_bytes();
+        // Strip leading zero bytes: the first non-zero byte begins the minimal magnitude.
+        let mut start = 0;
+        while start < bytes.len() && bytes[start] == 0 {
+            start += 1;
+        }
+        IntValue {
+            negative: v < 0,
+            magnitude: bytes[start..].to_vec(),
+        }
+    }
+
+    /// Build from an unsigned `u128`, producing the canonical minimal big-endian magnitude. Covers
+    /// every unsigned bound up to 128 bits — in particular `UInt64.max = 2^64 - 1`, which does not fit
+    /// an `i64`.
+    pub fn from_u128(v: u128) -> IntValue {
+        if v == 0 {
+            return IntValue::zero();
+        }
+        let bytes = v.to_be_bytes();
+        let mut start = 0;
+        while start < bytes.len() && bytes[start] == 0 {
+            start += 1;
+        }
+        IntValue {
+            negative: false,
+            magnitude: bytes[start..].to_vec(),
+        }
+    }
+
+    /// Build the signed value `-v` for an unsigned magnitude `v` (v ≤ 2^127) — the negative integer
+    /// bounds (`Int64.min = -(2^63)`) whose magnitude fits `u128` but whose value is negative.
+    pub fn from_neg_u128(v: u128) -> IntValue {
+        let mut iv = IntValue::from_u128(v);
+        iv.negative = v != 0;
+        iv
+    }
+
+    /// Whether this value fits a `(signed, width)` integer type — the range check an annotation
+    /// `(: v IntN)` / `(: v UIntN)` performs: a signed N-bit holds `-(2^(N-1)) ..= 2^(N-1) - 1`, an
+    /// unsigned N-bit holds `0 ..= 2^N - 1`. A value outside the range is rejected (never truncated).
+    /// Widths `1..=128` are supported here (the fold's arbitrary-precision range).
+    pub fn fits_width(&self, signed: bool, width: u32) -> bool {
+        if width == 0 || width > 128 {
+            return false;
+        }
+        // The magnitude as a u128 (values wider than 128 bits never fit a ≤128 width).
+        if self.magnitude.len() > 16 {
+            return false;
+        }
+        let mut mag: u128 = 0;
+        for &b in &self.magnitude {
+            mag = (mag << 8) | (b as u128);
+        }
+        if signed {
+            if self.negative {
+                // -mag fits iff mag <= 2^(width-1).
+                mag <= (1u128 << (width - 1))
+            } else {
+                // +mag fits iff mag < 2^(width-1)  (i.e. <= 2^(width-1) - 1).
+                mag < (1u128 << (width - 1))
+            }
+        } else {
+            // Unsigned: no negatives; mag < 2^width  (i.e. <= 2^width - 1). (width==128 max = u128::MAX.)
+            if self.negative && mag != 0 {
+                return false;
+            }
+            if width == 128 {
+                true
+            } else {
+                mag < (1u128 << width)
+            }
+        }
+    }
+
+    /// The 64-bit two's-complement BIT PATTERN of this value, as the `i64` an `i64.const` carries. For
+    /// a value in signed range this is the value itself; for an UNSIGNED value at/above `2^63` (e.g.
+    /// `UInt64.max = 2^64-1`) it is the negative `i64` with the same 64 bits (`-1`), which the unsigned
+    /// boundary lift reinterprets correctly. Assumes the value FITS 64 bits (checked before selection).
+    pub fn to_i64_bits(&self) -> i64 {
+        let mut acc: u64 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u64);
+        }
+        let bits = if self.negative {
+            acc.wrapping_neg()
+        } else {
+            acc
+        };
+        bits as i64
+    }
+
+    /// The 32-bit two's-complement bit pattern for a ≤32-bit value, as the `i32` an `i32.const`
+    /// carries — the low 32 bits of the value's two's-complement representation. A SIGNED negative
+    /// (`-128 : Int8`) keeps its sign (`-128` as i32, sign-extended — NOT the truncated `0x80`); an
+    /// UNSIGNED value at/above `2^31` (`UInt32.max = 2^32-1`) is the negative i32 with the same bits
+    /// (`-1`), which the unsigned boundary lift reinterprets. Assumes the value FITS the width (checked
+    /// before selection), so the low 32 bits are exactly the value — no width-masking that would strip
+    /// a sign bit.
+    pub fn to_i32_bits(&self, _width: u32) -> i32 {
+        self.to_i64_bits() as i32
+    }
+
+    /// TRUNCATE this value to a `(signed, width)` integer, keeping the low `width` bits of its two's-
+    /// complement representation and interpreting them at the target — the value `T.wrap` produces. A
+    /// value already in range is unchanged (`200 → UInt8 200`); one out of range keeps its low bits
+    /// (`256 → UInt8 0`, `-1 → UInt8 255`, `-1 → Int8 -1`). Total (never traps), the defining property of
+    /// `wrap`. Returns the truncated value as a canonical [`IntValue`]. Widths `1..=128` supported.
+    ///
+    /// The low-`width` bits are taken from the value's INFINITE two's-complement expansion (a negative
+    /// value has an all-ones high extension), so `-1` wrapped to any width is that width's all-ones
+    /// pattern. Reinterpreting those bits at the target sign then decides the result's sign: unsigned
+    /// keeps them as a magnitude; signed treats bit `width-1` as the sign bit.
+    pub fn wrap_to(&self, signed: bool, width: u32) -> IntValue {
+        debug_assert!((1..=128).contains(&width), "width out of range");
+        // The value's low-128-bit two's-complement pattern (enough for widths ≤ 128): a magnitude for a
+        // non-negative value, its two's-complement negation for a negative one.
+        let mut mag: u128 = 0;
+        for &b in &self.magnitude {
+            mag = mag.wrapping_shl(8) | (b as u128);
+        }
+        let bits: u128 = if self.negative {
+            mag.wrapping_neg()
+        } else {
+            mag
+        };
+        // Keep the low `width` bits.
+        let low = if width >= 128 {
+            bits
+        } else {
+            bits & ((1u128 << width) - 1)
+        };
+        if signed && width >= 1 && (low >> (width - 1)) & 1 == 1 {
+            // The target's sign bit is set → a negative value: `low - 2^width`, i.e. magnitude
+            // `2^width - low`, negative.
+            let modulus = if width >= 128 { 0u128 } else { 1u128 << width };
+            // width < 128 here (a 128-bit signed value with its top bit set still fits u128 magnitude
+            // 2^128 - low, which overflows u128 only when low==0 — but low==0 means non-negative, so the
+            // sign-bit branch is unreachable at width==128; guard with wrapping to stay total).
+            let magnitude = modulus.wrapping_sub(low);
+            IntValue::from_neg_u128(magnitude)
+        } else {
+            // Non-negative: the low bits ARE the magnitude.
+            IntValue::from_u128(low)
+        }
+    }
+
+    /// Narrow to a machine `i64`, or `None` if the value does not fit. Used where a downstream pass
+    /// requires a fixed-width integer and must decline (not truncate) an out-of-range literal.
+    pub fn to_i64(&self) -> Option<i64> {
+        if self.magnitude.len() > 8 {
+            return None;
+        }
+        let mut acc: u128 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u128);
+        }
+        if self.negative {
+            // A negative value fits iff its magnitude is ≤ |i64::MIN| = 2^63.
+            if acc > (i64::MAX as u128) + 1 {
+                return None;
+            }
+            Some(-(acc as i128) as i64)
+        } else {
+            if acc > i64::MAX as u128 {
+                return None;
+            }
+            Some(acc as i64)
+        }
+    }
+
+    /// Narrow to a machine `i128`, or `None` if the value does not fit (magnitude over 128 bits, or the
+    /// `i128::MIN` boundary). A pure conversion — no arbitrary-precision ARITHMETIC (this crate has
+    /// none). Used to read a compile-time unit-SCALE ratio, which is always a small machine integer
+    /// (`tera` = 10¹², `tebi` = 2⁴⁰) — comfortably inside `i128`.
+    pub fn to_i128(&self) -> Option<i128> {
+        if self.magnitude.len() > 16 {
+            return None;
+        }
+        let mut acc: u128 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u128);
+        }
+        if self.negative {
+            if acc > (i128::MAX as u128) + 1 {
+                return None;
+            }
+            if acc == (i128::MAX as u128) + 1 {
+                Some(i128::MIN)
+            } else {
+                Some(-(acc as i128))
+            }
+        } else {
+            if acc > i128::MAX as u128 {
+                return None;
+            }
+            Some(acc as i128)
+        }
+    }
+
+    /// The NON-NEGATIVE magnitude as a `u128`, or `None` if it exceeds 128 bits OR the value is negative.
+    /// A pure read of the magnitude bytes (big-endian) — used to fold a wide UNSIGNED shift/bitwise op over
+    /// the low-width bit pattern (the operand reaching that fold is a non-negative unsigned value, so its
+    /// magnitude IS its bit pattern). The unsigned twin of [`to_i128`].
+    pub fn to_u128(&self) -> Option<u128> {
+        if self.negative && !self.is_zero() {
+            return None;
+        }
+        if self.magnitude.len() > 16 {
+            return None;
+        }
+        let mut acc: u128 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u128);
+        }
+        Some(acc)
+    }
+
+    /// Build from a machine `i128`, the inverse of [`to_i128`] — the canonical minimal-magnitude form.
+    /// A pure conversion (no arithmetic): used to rebuild an `IntValue` from a folded unit-conversion
+    /// result, which is always a machine-range integer.
+    pub fn from_i128(v: i128) -> IntValue {
+        if v == 0 {
+            return IntValue::zero();
+        }
+        let mag: u128 = v.unsigned_abs();
+        let bytes = mag.to_be_bytes();
+        let mut start = 0;
+        while start < bytes.len() && bytes[start] == 0 {
+            start += 1;
+        }
+        IntValue {
+            negative: v < 0,
+            magnitude: bytes[start..].to_vec(),
+        }
+    }
+
+    /// Whether two integers are EQUAL BY VALUE, independent of magnitude representation. The struct
+    /// derives `PartialEq` over the raw fields, but the magnitude is NOT canonicalized on every path —
+    /// a literal `0` may carry `[0]` while a folded `0` carries `[]` (empty), and both denote zero. So
+    /// value comparisons (e.g. a match probe testing a folded scrutinee against a literal pattern) MUST
+    /// use this, not `==`: strip leading zero bytes, and treat a zero magnitude as sign-agnostic.
+    pub fn eq_value(&self, other: &IntValue) -> bool {
+        fn trimmed(m: &[u8]) -> &[u8] {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            &m[i..]
+        }
+        let (a, b) = (trimmed(&self.magnitude), trimmed(&other.magnitude));
+        if a != b {
+            return false;
+        }
+        // Equal magnitudes: sign matters only for a non-zero value (zero is never "negative").
+        a.is_empty() || self.negative == other.negative
+    }
+
+    // ── Arbitrary-precision arithmetic (the "later compile-time-evaluation concern" this crate's
+    // Cargo.toml names). Hand-written schoolbook algorithms over the big-endian magnitude bytes — the
+    // COPY-DON'T-DEPEND rule forbids a bignum crate here (the compiler ports to Cadenza then back to
+    // Rust; a shared external crate would break that round-trip). Used by `Rational` constant folding
+    // (normalize via `gcd`, arithmetic via `mul`/`divmod`) and BigInt constant compare. Every op keeps
+    // the canonical minimal magnitude (no leading zero bytes; zero is the empty magnitude, never
+    // negative). ─────────────────────────────────────────────────────────────────────────────────────
+
+    /// True iff the value is zero (empty canonical magnitude, or all-zero bytes).
+    pub fn is_zero(&self) -> bool {
+        self.magnitude.iter().all(|&b| b == 0)
+    }
+
+    /// Strip leading zero bytes + force a zero value to the canonical (positive, empty) form.
+    fn normalize(mut neg: bool, mut mag: Vec<u8>) -> IntValue {
+        let mut start = 0;
+        while start < mag.len() && mag[start] == 0 {
+            start += 1;
+        }
+        mag.drain(..start);
+        if mag.is_empty() {
+            neg = false; // zero is never negative
+        }
+        IntValue {
+            negative: neg,
+            magnitude: mag,
+        }
+    }
+
+    /// Compare two MAGNITUDES (unsigned) — big-endian byte vectors, ignoring leading zeros. `Less`/
+    /// `Equal`/`Greater` on the numeric magnitude.
+    fn cmp_mag(a: &[u8], b: &[u8]) -> core::cmp::Ordering {
+        let trim = |m: &[u8]| {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            m.len() - i
+        };
+        let (la, lb) = (trim(a), trim(b));
+        if la != lb {
+            return la.cmp(&lb);
+        }
+        // Same significant length: compare the significant bytes MSB-first.
+        let (sa, sb) = (&a[a.len() - la..], &b[b.len() - lb..]);
+        sa.cmp(sb)
+    }
+
+    /// Add two magnitudes (unsigned big-endian), returning the canonical minimal sum magnitude.
+    fn add_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(a.len().max(b.len()) + 1);
+        let mut carry = 0u16;
+        let (mut ia, mut ib) = (a.len(), b.len());
+        while ia > 0 || ib > 0 || carry > 0 {
+            let da = if ia > 0 {
+                ia -= 1;
+                a[ia] as u16
+            } else {
+                0
+            };
+            let db = if ib > 0 {
+                ib -= 1;
+                b[ib] as u16
+            } else {
+                0
+            };
+            let s = da + db + carry;
+            out.push((s & 0xff) as u8);
+            carry = s >> 8;
+        }
+        out.reverse();
+        out
+    }
+
+    /// Subtract two magnitudes (unsigned big-endian), REQUIRES `a >= b`. Returns the canonical minimal
+    /// difference magnitude.
+    fn sub_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(a.len());
+        let mut borrow = 0i16;
+        let (mut ia, mut ib) = (a.len(), b.len());
+        while ia > 0 {
+            ia -= 1;
+            let da = a[ia] as i16;
+            let db = if ib > 0 {
+                ib -= 1;
+                b[ib] as i16
+            } else {
+                0
+            };
+            let mut d = da - db - borrow;
+            if d < 0 {
+                d += 256;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            out.push(d as u8);
+        }
+        out.reverse();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Multiply two magnitudes (unsigned big-endian), returning the canonical minimal product magnitude.
+    fn mul_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        if a.is_empty() || b.is_empty() {
+            return Vec::new();
+        }
+        // Schoolbook: product limb array is little-endian during accumulation, then reversed.
+        let mut acc = vec![0u32; a.len() + b.len()];
+        for (i, &ai) in a.iter().rev().enumerate() {
+            let mut carry = 0u32;
+            for (j, &bj) in b.iter().rev().enumerate() {
+                let idx = i + j;
+                let cur = acc[idx] + (ai as u32) * (bj as u32) + carry;
+                acc[idx] = cur & 0xff;
+                carry = cur >> 8;
+            }
+            let mut k = i + b.len();
+            while carry > 0 {
+                let cur = acc[k] + carry;
+                acc[k] = cur & 0xff;
+                carry = cur >> 8;
+                k += 1;
+            }
+        }
+        let mut out: Vec<u8> = acc.iter().rev().map(|&d| d as u8).collect();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Divide magnitude `a` by magnitude `b` (unsigned big-endian, `b` nonzero), returning `(quotient,
+    /// remainder)` magnitudes, both canonical. Bit-at-a-time long division — `a` is small at compile
+    /// time (a folded literal), so simplicity beats a limb-wise Knuth division.
+    fn divmod_mag(a: &[u8], b: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        // Number of significant bits in `a` (MSB-first).
+        let sig = |m: &[u8]| -> usize {
+            let mut i = 0;
+            while i < m.len() && m[i] == 0 {
+                i += 1;
+            }
+            m.len() - i
+        };
+        let a_sig = sig(a);
+        if a_sig == 0 || IntValue::cmp_mag(a, b) == core::cmp::Ordering::Less {
+            // a < b → quotient 0, remainder a (canonicalized).
+            return (Vec::new(), IntValue::sub_mag(a, &[]));
+        }
+        let total_bits = a_sig * 8;
+        // Build the quotient bit-by-bit from the most-significant bit down.
+        let bit = |m: &[u8], idx: usize| -> u8 {
+            // idx counts from LSB (0) up; return that bit.
+            let byte_from_end = idx / 8;
+            let bit_in_byte = idx % 8;
+            if byte_from_end >= m.len() {
+                return 0;
+            }
+            (m[m.len() - 1 - byte_from_end] >> bit_in_byte) & 1
+        };
+        let mut rem: Vec<u8> = Vec::new(); // running remainder magnitude (canonical)
+        let mut quo_bits: Vec<u8> = Vec::with_capacity(total_bits);
+        for i in (0..total_bits).rev() {
+            // rem = rem << 1 | bit_i(a)
+            rem = IntValue::shl1_mag(&rem);
+            if bit(a, i) == 1 {
+                // set the low bit of rem
+                if rem.is_empty() {
+                    rem = vec![1];
+                } else {
+                    let last = rem.len() - 1;
+                    rem[last] |= 1;
+                }
+            }
+            if IntValue::cmp_mag(&rem, b) != core::cmp::Ordering::Less {
+                rem = IntValue::sub_mag(&rem, b);
+                quo_bits.push(1);
+            } else {
+                quo_bits.push(0);
+            }
+        }
+        // quo_bits is MSB-first; pack into bytes.
+        let quo = IntValue::pack_bits_be(&quo_bits);
+        (quo, rem)
+    }
+
+    /// Shift a magnitude left by one bit (multiply by 2), canonical result.
+    fn shl1_mag(m: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(m.len() + 1);
+        let mut carry = 0u8;
+        for &byte in m.iter().rev() {
+            let v = ((byte as u16) << 1) | carry as u16;
+            out.push((v & 0xff) as u8);
+            carry = (v >> 8) as u8;
+        }
+        if carry > 0 {
+            out.push(carry);
+        }
+        out.reverse();
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Shift a magnitude RIGHT by one bit (divide by 2, floor), canonical result. The LSB of each byte
+    /// flows into the MSB (bit 7) of the next-less-significant byte's result, processing MSB-first.
+    fn shr1_mag(m: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(m.len());
+        let mut carry = 0u8; // the low bit of the more-significant byte just processed
+        for &byte in m.iter() {
+            out.push((carry << 7) | (byte >> 1));
+            carry = byte & 1;
+        }
+        let mut start = 0;
+        while start < out.len() && out[start] == 0 {
+            start += 1;
+        }
+        out.drain(..start);
+        out
+    }
+
+    /// Pack an MSB-first bit vector into canonical big-endian bytes.
+    fn pack_bits_be(bits: &[u8]) -> Vec<u8> {
+        // Drop leading zero bits.
+        let first_one = bits.iter().position(|&b| b == 1);
+        let Some(first) = first_one else {
+            return Vec::new();
+        };
+        let sig = &bits[first..];
+        let pad = (8 - sig.len() % 8) % 8;
+        let mut out = Vec::new();
+        let mut cur = 0u8;
+        let mut count = 0usize;
+        for &b in core::iter::repeat_n(&0u8, pad).chain(sig.iter()) {
+            cur = (cur << 1) | b;
+            count += 1;
+            if count == 8 {
+                out.push(cur);
+                cur = 0;
+                count = 0;
+            }
+        }
+        out
+    }
+
+    /// The greatest common divisor of two MAGNITUDES (unsigned). `gcd(0,0)=0`; `gcd(a,0)=a`.
+    ///
+    /// BINARY GCD (Stein's algorithm), not Euclidean: it uses only halving (`shr1_mag`), subtraction, and
+    /// comparison — never `divmod_mag`. This is the HOT compile-time path (`normalized_rational` reduces
+    /// every folded `Rational` to lowest terms), and `divmod_mag` is bit-serial (`8·len(a)` iterations per
+    /// call regardless of quotient size), so a Euclidean gcd of two large coprime magnitudes — the shape a
+    /// chained exact-rational sum produces, where distinct denominators MULTIPLY without cancellation — was
+    /// super-cubic (a 160-term `(+ (Rational.of 1 p0) …)` fold: ~1.8s, 99% in `divmod_mag`). Binary GCD
+    /// removes the trial division entirely: each step strips shared/individual factors of two and does one
+    /// subtract, so it is O(bits²) with a small constant on the same shape (the fold drops to milliseconds).
+    fn gcd_mag(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let mut x = IntValue::sub_mag(a, &[]); // canonicalize (strip leading zeros)
+        let mut y = IntValue::sub_mag(b, &[]);
+        // gcd(a,0)=a, gcd(0,b)=b (and gcd(0,0)=0 falls out — x stays empty).
+        if x.is_empty() {
+            return y;
+        }
+        if y.is_empty() {
+            return x;
+        }
+        // Factor out the largest power of two dividing BOTH — `shift` common trailing zero bits. `gcd =
+        // 2^shift · gcd(x>>shift, y>>shift)`, restored by shifting the odd-core result back up at the end.
+        let mut shift = 0usize;
+        while (x[x.len() - 1] & 1) == 0 && (y[y.len() - 1] & 1) == 0 {
+            x = IntValue::shr1_mag(&x);
+            y = IntValue::shr1_mag(&y);
+            shift += 1;
+        }
+        // Remove remaining factors of two from x, so x is odd at each loop entry.
+        while (x[x.len() - 1] & 1) == 0 {
+            x = IntValue::shr1_mag(&x);
+        }
+        loop {
+            // y is made odd (its factors of two cannot be common — x is odd).
+            while !y.is_empty() && (y[y.len() - 1] & 1) == 0 {
+                y = IntValue::shr1_mag(&y);
+            }
+            if y.is_empty() {
+                break;
+            }
+            // Both x and y are now odd; subtract the smaller from the larger (the difference is even and
+            // handled by the halving at the loop top). Keep x ≤ y so x holds the running gcd core.
+            if IntValue::cmp_mag(&x, &y) == core::cmp::Ordering::Greater {
+                core::mem::swap(&mut x, &mut y);
+            }
+            y = IntValue::sub_mag(&y, &x);
+        }
+        // Restore the common factors of two.
+        for _ in 0..shift {
+            x = IntValue::shl1_mag(&x);
+        }
+        x
+    }
+
+    /// Signed comparison of two integer values (canonical or not) — the NUMERIC order, which is NOT the
+    /// derived field order (`Ord` on the struct would compare `negative` then the raw magnitude bytes,
+    /// getting negatives and non-canonical magnitudes wrong), so this is a named method, not an `Ord` impl.
+    #[allow(clippy::should_implement_trait)]
+    pub fn cmp(&self, other: &IntValue) -> core::cmp::Ordering {
+        use core::cmp::Ordering::*;
+        let (za, zb) = (self.is_zero(), other.is_zero());
+        match (za, zb) {
+            (true, true) => return Equal,
+            (true, false) => return if other.negative { Greater } else { Less },
+            (false, true) => return if self.negative { Less } else { Greater },
+            (false, false) => {}
+        }
+        match (self.negative, other.negative) {
+            (false, true) => Greater,
+            (true, false) => Less,
+            (false, false) => IntValue::cmp_mag(&self.magnitude, &other.magnitude),
+            (true, true) => IntValue::cmp_mag(&other.magnitude, &self.magnitude),
+        }
+    }
+
+    /// Signed addition.
+    pub fn add(&self, other: &IntValue) -> IntValue {
+        if self.negative == other.negative {
+            // Same sign: add magnitudes, keep the sign.
+            IntValue::normalize(
+                self.negative,
+                IntValue::add_mag(&self.magnitude, &other.magnitude),
+            )
+        } else {
+            // Opposite signs: subtract the smaller magnitude from the larger; sign of the larger.
+            match IntValue::cmp_mag(&self.magnitude, &other.magnitude) {
+                core::cmp::Ordering::Equal => IntValue::zero(),
+                core::cmp::Ordering::Greater => IntValue::normalize(
+                    self.negative,
+                    IntValue::sub_mag(&self.magnitude, &other.magnitude),
+                ),
+                core::cmp::Ordering::Less => IntValue::normalize(
+                    other.negative,
+                    IntValue::sub_mag(&other.magnitude, &self.magnitude),
+                ),
+            }
+        }
+    }
+
+    /// Signed negation.
+    pub fn neg(&self) -> IntValue {
+        if self.is_zero() {
+            IntValue::zero()
+        } else {
+            IntValue {
+                negative: !self.negative,
+                magnitude: self.magnitude.clone(),
+            }
+        }
+    }
+
+    /// Signed subtraction (`self - other`).
+    pub fn sub(&self, other: &IntValue) -> IntValue {
+        self.add(&other.neg())
+    }
+
+    /// Signed multiplication.
+    pub fn mul(&self, other: &IntValue) -> IntValue {
+        let mag = IntValue::mul_mag(&self.magnitude, &other.magnitude);
+        IntValue::normalize(self.negative != other.negative, mag)
+    }
+
+    /// Truncating signed division `(quotient, remainder)` — quotient toward zero, remainder takes the
+    /// DIVIDEND's sign (matching fixed-width `/`/`%`). Returns `None` on a zero divisor. `q*d + r == n`.
+    pub fn divmod(&self, other: &IntValue) -> Option<(IntValue, IntValue)> {
+        if other.is_zero() {
+            return None;
+        }
+        let (q_mag, r_mag) = IntValue::divmod_mag(&self.magnitude, &other.magnitude);
+        let q = IntValue::normalize(self.negative != other.negative, q_mag);
+        let r = IntValue::normalize(self.negative, r_mag); // remainder takes the dividend's sign
+        Some((q, r))
+    }
+
+    /// The GCD of two values (by magnitude — the result is non-negative). `gcd(0,0)=0`.
+    pub fn gcd(&self, other: &IntValue) -> IntValue {
+        IntValue::normalize(false, IntValue::gcd_mag(&self.magnitude, &other.magnitude))
+    }
+
+    /// The DECIMAL string of this value (with a leading `-` for a negative), independent of magnitude
+    /// size — extracts digits by repeated division by 10 over the magnitude (this crate has no bignum
+    /// crate, so `to_i128` + `format!` would cap the value; a folded Rational numerator can exceed i128).
+    /// `0` renders `"0"`.
+    pub fn to_decimal_string(&self) -> String {
+        if self.is_zero() {
+            return "0".to_string();
+        }
+        let ten = [10u8];
+        let mut mag = IntValue::sub_mag(&self.magnitude, &[]); // canonical copy
+        let mut digits = Vec::new();
+        while !mag.is_empty() {
+            let (q, r) = IntValue::divmod_mag(&mag, &ten);
+            let d = r.last().copied().unwrap_or(0);
+            digits.push(b'0' + d);
+            mag = q;
+        }
+        if self.negative {
+            digits.push(b'-');
+        }
+        digits.reverse();
+        String::from_utf8(digits).expect("ascii digits")
+    }
+}
+
+impl IntValue {
+    /// Convert to `num_bigint::BigInt` — the bridge used while the front-end still holds some values as
+    /// `BigInt` (arbitrary-precision arithmetic / parsing). Sign + big-endian magnitude map directly
+    /// onto `BigInt::from_bytes_be`. (Will be `std`-feature-gated when num-bigint becomes optional.)
+    pub fn to_bigint(&self) -> num_bigint::BigInt {
+        use num_bigint::Sign;
+        let sign = if self.magnitude.is_empty() {
+            Sign::NoSign
+        } else if self.negative {
+            Sign::Minus
+        } else {
+            Sign::Plus
+        };
+        num_bigint::BigInt::from_bytes_be(sign, &self.magnitude)
+    }
+
+    /// Build from a `num_bigint::BigInt`, canonicalizing to the minimal big-endian magnitude (empty =
+    /// zero, sign cleared on zero) — the inverse of [`Self::to_bigint`].
+    pub fn from_bigint(b: &num_bigint::BigInt) -> IntValue {
+        use num_bigint::Sign;
+        let (sign, mut magnitude) = b.to_bytes_be();
+        if sign == Sign::NoSign {
+            magnitude.clear();
+        }
+        let start = magnitude
+            .iter()
+            .position(|&x| x != 0)
+            .unwrap_or(magnitude.len());
+        magnitude.drain(..start);
+        IntValue {
+            negative: sign == Sign::Minus,
+            magnitude,
+        }
+    }
 }
 
 impl Decimal {
@@ -267,7 +1011,10 @@ impl Decimal {
         if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        let significand = BigInt::parse_bytes(digits.as_bytes(), 10)?;
+        // Parse the non-negative digit string to a byte magnitude. This std-side path uses num-bigint
+        // for the decimal→binary conversion, then keeps the canonical minimal big-endian magnitude.
+        let b = BigInt::parse_bytes(digits.as_bytes(), 10)?;
+        let significand = IntValue::from_bigint(&b).magnitude;
         Some(Decimal {
             negative,
             significand,
@@ -773,7 +1520,7 @@ impl Arenas {
     pub fn as_int_usize(&self, id: StructId) -> Option<usize> {
         match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
-                Leaf::Int { value, .. } => usize::try_from(value).ok(),
+                Leaf::Int { value, .. } => value.to_u128().and_then(|u| usize::try_from(u).ok()),
                 _ => None,
             },
             _ => None,
@@ -920,9 +1667,45 @@ mod tests {
     fn dec(neg: bool, sig: &str, exp: i64) -> Decimal {
         Decimal {
             negative: neg,
-            significand: BigInt::from_str(sig).unwrap(),
+            significand: IntValue::from_bigint(&BigInt::from_str(sig).unwrap()).magnitude,
             exponent: exp,
         }
+    }
+
+    #[test]
+    fn intvalue_bigint_bridge_round_trips_and_canonicalizes() {
+        // The IntValue<->BigInt bridge (used while the front-end migrates off num-bigint) must be an
+        // exact inverse and preserve IntValue's canonical minimal-magnitude form. Covers zero (empty
+        // magnitude, non-negative), both signs, and a >u128 magnitude (arbitrary precision).
+        for s in [
+            "0",
+            "1",
+            "-1",
+            "255",
+            "256",
+            "-256",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "340282366920938463463374607431768211456",
+            "-123456789012345678901234567890",
+        ] {
+            let b = BigInt::from_str(s).unwrap();
+            let iv = IntValue::from_bigint(&b);
+            assert_eq!(iv.to_bigint(), b, "IntValue<->BigInt round-trip for {s}");
+            // Canonical form: zero is a non-negative empty magnitude; a non-zero value has no leading
+            // zero byte.
+            if b == BigInt::from(0) {
+                assert!(
+                    !iv.negative && iv.magnitude.is_empty(),
+                    "zero is empty + non-negative"
+                );
+            } else {
+                assert_ne!(iv.magnitude.first(), Some(&0), "no leading zero byte: {s}");
+            }
+        }
+        // from_bigint(iv.to_bigint()) is also identity on a hand-built IntValue.
+        let iv = IntValue::from_i64(-42);
+        assert_eq!(IntValue::from_bigint(&iv.to_bigint()), iv);
     }
 
     #[test]
@@ -950,7 +1733,11 @@ mod tests {
             let s = format!(
                 "{}{}e{}",
                 if d.negative { "-" } else { "" },
-                d.significand,
+                IntValue {
+                    negative: false,
+                    magnitude: d.significand.clone()
+                }
+                .to_decimal_string(),
                 d.exponent
             );
             assert_eq!(
@@ -1227,14 +2014,14 @@ mod tests {
             let name_headed = form(
                 Leaf::Name(ctor.into()),
                 &[Leaf::Int {
-                    value: BigInt::from(1),
+                    value: IntValue::from_i64(1),
                     radix: Radix::Dec,
                 }],
             );
             let str_headed = form(
                 Leaf::Str(ctor.into()),
                 &[Leaf::Int {
-                    value: BigInt::from(1),
+                    value: IntValue::from_i64(1),
                     radix: Radix::Dec,
                 }],
             );
@@ -1393,12 +2180,12 @@ mod tests {
     fn gen_leaf(rng: &mut Rng) -> Leaf {
         match rng.below(11) {
             0 => Leaf::Int {
-                value: BigInt::from(rng.next() as i64),
+                value: IntValue::from_i64(rng.next() as i64),
                 radix: [Radix::Dec, Radix::Hex, Radix::Bin][rng.below(3)],
             },
             1 => Leaf::Float(Decimal {
                 negative: rng.next() & 1 == 0,
-                significand: BigInt::from(rng.next() % 10_000),
+                significand: IntValue::from_i64((rng.next() % 10_000) as i64).magnitude,
                 exponent: (rng.next() % 9) as i64 - 4,
             }),
             2 => Leaf::Str(["", "hi", "a\nb", "λ中🎉"][rng.below(4)].into()),
@@ -1411,7 +2198,7 @@ mod tests {
             9 => Leaf::BadChar("u+D800".into()),
             _ => Leaf::Suffixed {
                 value: SuffixBody::Int {
-                    value: BigInt::from(rng.next() % 1000),
+                    value: IntValue::from_i64((rng.next() % 1000) as i64),
                     radix: Radix::Dec,
                 },
                 kind: [SuffixKind::BigInt, SuffixKind::Rational][rng.below(2)],

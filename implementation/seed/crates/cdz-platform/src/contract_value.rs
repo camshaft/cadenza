@@ -28,7 +28,6 @@
 
 use crate::{Bytes, Hash};
 use cadenza_ast::ast::{Builder, Leaf, Radix, Struct, StructId};
-use num_bigint::BigInt;
 use std::sync::Arc;
 
 // --- builders ---
@@ -109,7 +108,7 @@ pub fn bytes_leaf(b: &mut Builder, bytes: &[u8]) -> StructId {
 #[must_use]
 pub fn uint_leaf(b: &mut Builder, value: u64) -> StructId {
     b.atom_leaf(Leaf::Int {
-        value: BigInt::from(value),
+        value: cadenza_ast::ast::IntValue::from_u128(value as u128),
         radix: Radix::Dec,
     })
 }
@@ -207,7 +206,7 @@ pub fn read_bytes(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<Byt
 pub fn read_uint(arenas: &cadenza_ast::ast::Arenas, id: StructId) -> Option<u64> {
     match arenas.get(id) {
         Struct::Atom(leaf) => match arenas.leaf(*leaf) {
-            Leaf::Int { value, .. } => u64::try_from(value).ok(),
+            Leaf::Int { value, .. } => value.to_u128().and_then(|u| u64::try_from(u).ok()),
             _ => None,
         },
         Struct::List(_) => None,
@@ -434,7 +433,7 @@ mod tests {
         // The reader enforces the declared non-negative range: a negative value is not a valid u64.
         let neg = built(|b| {
             b.atom_leaf(Leaf::Int {
-                value: (-1).into(),
+                value: cadenza_ast::ast::IntValue::from_i64(-1),
                 radix: Radix::Dec,
             })
         });

@@ -40,7 +40,6 @@ use crate::arena_read::{child_tail, int_leaf, list_items, str_leaf};
 use crate::ast::{Arenas, Builder, Leaf, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
-use num_bigint::BigInt;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Parse CommonMark `src` into a `(document …)` arena (with GFM tables + strikethrough).
@@ -427,7 +426,7 @@ impl<'b> Md<'b> {
     fn mk_int(&mut self, n: i64, span: Span) -> StructId {
         self.mk_atom_leaf(
             Leaf::Int {
-                value: BigInt::from(n),
+                value: crate::ast::IntValue::from_i64(n),
                 radix: crate::ast::Radix::Dec,
             },
             span,

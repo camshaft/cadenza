@@ -50,7 +50,6 @@ use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
 use crate::span::Span;
 use crate::spans::{FileId, SpanTable};
 use cedar_policy::pst;
-use num_bigint::BigInt;
 use std::sync::Arc;
 
 /// A Cedar parse failure, with a human-readable message (mirrors `sexpr::ReadError`).
@@ -408,7 +407,7 @@ impl<'b> Cedar<'b> {
             pst::Literal::Long(n) => {
                 let head = self.mk_name("lit-long");
                 let v = self.mk_atom_leaf(Leaf::Int {
-                    value: BigInt::from(*n),
+                    value: crate::ast::IntValue::from_i64(*n),
                     radix: Radix::Dec,
                 });
                 self.mk_list(vec![head, v])
