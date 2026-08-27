@@ -9447,10 +9447,9 @@
 ; CANNOT enter the corpus until fixed (they red the rust battery) — the map lives in the issue
 ; file. Pinned here: the three cells that are green/attributable today. All carry the
 ; recursive-sum known-leak (the rsl1 class): these clauses flip to 0 on the reclaim fix.
-; gtx2/gtx3 are rust/rust-async clean DECLINES today (over-conservative per the issue analysis —
-; the programs are well-typed); when v-inference lands the element-type tie they should flip to
-; rust PASS with value 5 / 2 — but as leak-clause cases they are wasm-only rows, so that
-; acceptance is checked via the issue file's matrix, not baseline flips.
+; RESOLVED #4319 (verified tick 301): gtx1/4/6/7 E0308→PASS and gtx2 decline→PASS(5) on both
+; rust targets. RESIDUAL: gtx3 (single-domain) still declines on rust — over-conservative, wasm
+; proves 2; flips whenever the single-domain tie lands. Leak clauses unchanged (rsl1 class).
 
 (case "gtx2 a generic transformer's tuple-result closure with a consumer that PROJECTS the element (vars pinned by the consumer body)"
   (input (do
