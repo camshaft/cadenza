@@ -17230,7 +17230,7 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 12030 Int64))
   (call   main (: 0 Int64)) (output (: -990 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 (case "pyrs1 probe: a (Result Int64 Int64) HANDLER STATE threaded across three dispatches — tick answers (Ok v -> v*10 / Err e -> -e) and threads (Ok v -> Ok(v+1) / Err e -> Ok e, recovering on the first tick); seed Err 7 when n%3=0 else Ok(n%3), so the state slot carries a two-arm SUM and the Err arm recovers into Ok mid-thread"
   (input (do
   (effect E (op tick (-> Int64)))
@@ -17242,7 +17242,7 @@
   (export main)))
   (call   main (: 10 Int64)) (output (: 12030 Int64))
   (call   main (: 0 Int64)) (output (: 80 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 (case "pystr2 probe: a STRING handler state that GROWS per dispatch — tick answers (String.scalar-len s) and threads (String.concat s \"x\"), so each dispatch reads the current length then appends; seed is a 1/2/3-char string by n%3, exercising a heap String value threaded and rebuilt across the resume seam"
   (input (do
   (effect E (op tick (-> Int64)))

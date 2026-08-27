@@ -20579,7 +20579,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "xop5 a helper-BUILT compound-payload Option matched twice in the caller leaks the same payload"
   (input (do
@@ -20591,7 +20591,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- breaker batch 467 (2026-08-27): the repeat-unwrap map COMPLETED (extends xop4/xop5). The gap
 ; generalizes across sum kinds — prelude Result (ruw1) and a user generic (ruw2) leak the same 3
@@ -20608,7 +20608,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "ruw2 a fresh user-generic sum with a list payload matched twice leaks the payload identically"
   (input (do
@@ -20620,7 +20620,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs"
   (input (do
@@ -20632,7 +20632,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 222 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- breaker batch 469 (2026-08-27): type-level and data-segment WIDTH robustness pins (companion
 ; to batch 468's depth/width sweep; nothing else exercises these paths at scale). A HUNDRED-ctor
@@ -20918,7 +20918,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 99005 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- breaker batch 501 (2026-08-27): the ruf1 two-sided fence GENERALIZED to the other sum kinds
 ; (same contract: today 99005/known-leak-3 → correct 2c.1 flips the clause to 0 with the value
@@ -20942,7 +20942,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 99005 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "ruf3 the two-sided balance fence over a twice-unwrapped user-generic payload"
   (input (do
@@ -20961,4 +20961,4 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 99005 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
