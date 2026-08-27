@@ -6773,6 +6773,7 @@ pass	runtime Set.of at THREE different element types in one program all build vi
 pass	runtime Set.of at two different element types in one program each build via a per-site monomorphic fold
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
 pass	runtime UInt64 division and remainder above the Int64 boundary compute unsigned
+pass	runtime bitwise and/or/xor over two Int64 operands compute correctly
 pass	runtime char-literal match dispatches by Unicode code point
 pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
@@ -6781,12 +6782,14 @@ pass	runtime float multiplication overflows to infinity, not a trap or a wrap
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder
+pass	runtime signed division truncates toward zero and remainder takes the dividend sign
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
 pass	runtime string ordering surfaces all four relational operators
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	runtime unsigned division is by magnitude and traps on divide-by-zero
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
 pass	runtime-payload `?`s in BOTH branches of a runtime if take their own continuations
