@@ -241,7 +241,7 @@ impl<'b> Toml<'b> {
             }
             Value::Integer(f) => {
                 let val = Leaf::Int {
-                    value: num_bigint::BigInt::from(*f.value()),
+                    value: crate::ast::IntValue::from_i64(*f.value()),
                     radix: Radix::Dec,
                 };
                 self.scalar_with("toml-integer", &pre, &suf, &f.display_repr(), Some(val))
@@ -368,7 +368,7 @@ impl<'b> Toml<'b> {
 
     fn mk_int(&mut self, n: i64) -> StructId {
         self.mk_atom_leaf(Leaf::Int {
-            value: num_bigint::BigInt::from(n),
+            value: crate::ast::IntValue::from_i64(n),
             radix: Radix::Dec,
         })
     }

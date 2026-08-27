@@ -2561,7 +2561,7 @@ impl<'a> Parser<'a> {
             let resource_head = self.name("resource", span);
             let idx_atom = self.atom(
                 Leaf::Int {
-                    value: num_bigint::BigInt::from(idx),
+                    value: crate::ast::IntValue::from_i64(idx as i64),
                     radix: crate::ast::Radix::Dec,
                 },
                 span,

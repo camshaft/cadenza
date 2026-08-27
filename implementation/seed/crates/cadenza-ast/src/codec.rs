@@ -78,10 +78,11 @@
 //! is an optional strengthening of the same check — the refuse-on-mismatch guarantee holds today, and
 //! swapping the tag's content is a drop-in change.
 
-use crate::ast::{Arenas, Decimal, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind};
+use crate::ast::{
+    Arenas, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind,
+};
 use crate::dict::{DictSet, Hash};
 use crate::leb128::{self, Reader};
-use num_bigint::{BigInt, Sign};
 
 // Leaf kind tags. Int folds (sign, radix) into the tag.
 const KIND_INT_POS_DEC: u8 = 0;
@@ -187,8 +188,7 @@ const TRANSPORT_HEADER: [u8; 8] = *b"cdzast\x00\x02";
 /// The content-hash width in a transport artifact's import section (a [`Hash`] = 32 bytes).
 const HASH_LEN: usize = 32;
 
-fn int_kind(sign: Sign, radix: Radix) -> u8 {
-    let neg = matches!(sign, Sign::Minus);
+fn int_kind(neg: bool, radix: Radix) -> u8 {
     match (neg, radix) {
         (false, Radix::Dec) => KIND_INT_POS_DEC,
         (false, Radix::Hex) => KIND_INT_POS_HEX,
@@ -487,11 +487,12 @@ pub fn encode_with_dict(arenas: &Arenas, dicts: &DictSet) -> Vec<u8> {
 /// magnitude. Shared by the bare [`Leaf::Int`] leaf (whose kind tag IS this leading byte) and the
 /// [`SuffixBody::Int`] body (which prefixes a `BODY_INT` marker, then this identical sequence), so both
 /// emit byte-identical bytes. Its inverse is [`read_int_body`].
-fn write_int_body(out: &mut Vec<u8>, value: &BigInt, radix: Radix) {
-    let (sign, mag) = value.to_bytes_be();
-    out.push(int_kind(sign, radix));
-    leb128::write_u64(out, mag.len() as u64);
-    out.extend_from_slice(&mag);
+fn write_int_body(out: &mut Vec<u8>, value: &IntValue, radix: Radix) {
+    // Zero is never the negative kind (empty magnitude, positive) — the canonical wire form.
+    let neg = value.negative && !value.magnitude.is_empty();
+    out.push(int_kind(neg, radix));
+    leb128::write_u64(out, value.magnitude.len() as u64);
+    out.extend_from_slice(&value.magnitude);
 }
 
 /// Serialize a float/decimal body: the `negative` flag, the LEB i64 exponent, then the LEB-framed
@@ -501,9 +502,9 @@ fn write_int_body(out: &mut Vec<u8>, value: &BigInt, radix: Radix) {
 fn write_float_body(out: &mut Vec<u8>, d: &Decimal) {
     out.push(d.negative as u8);
     leb128::write_i64_be(out, d.exponent);
-    let (_sign, mag) = d.significand.to_bytes_be();
-    leb128::write_u64(out, mag.len() as u64);
-    out.extend_from_slice(&mag);
+    // The significand is already a non-negative big-endian magnitude (empty = zero).
+    leb128::write_u64(out, d.significand.len() as u64);
+    out.extend_from_slice(&d.significand);
 }
 
 fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
@@ -1135,12 +1136,19 @@ fn verify_tree(arenas: &Arenas) -> Result<(), DecodeError> {
 /// big-endian magnitude and rebuild the signed `BigInt`. The inverse of [`write_int_body`], shared by the
 /// bare [`Leaf::Int`] arm (which reads the kind tag as the leaf discriminator) and the [`SuffixBody::Int`]
 /// arm (which reads the kind tag after its `BODY_INT` marker).
-fn read_int_body(r: &mut Reader, kind: u8) -> Result<(BigInt, Radix), DecodeError> {
+fn read_int_body(r: &mut Reader, kind: u8) -> Result<(IntValue, Radix), DecodeError> {
     let (neg, radix) = int_kind_parts(kind)?;
     let len = r.read_var_len_checked()?;
-    let mag = r.take(len).ok_or(DecodeError::Truncated)?;
-    let sign = if neg { Sign::Minus } else { Sign::Plus };
-    Ok((BigInt::from_bytes_be(sign, mag), radix))
+    let magnitude = r.take(len).ok_or(DecodeError::Truncated)?.to_vec();
+    // Store the magnitude verbatim; zero (empty magnitude) is never negative (canonical).
+    let negative = neg && !magnitude.is_empty();
+    Ok((
+        IntValue {
+            negative,
+            magnitude,
+        },
+        radix,
+    ))
 }
 
 /// Decode a float/decimal body: the `negative` flag, the i64 exponent, then the LEB-framed big-endian
@@ -1150,10 +1158,10 @@ fn read_float_body(r: &mut Reader) -> Result<Decimal, DecodeError> {
     let negative = read_bool(r)?;
     let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
     let sig_len = r.read_var_len_checked()?;
-    let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
+    let magnitude = r.take(sig_len).ok_or(DecodeError::Truncated)?.to_vec();
     Ok(Decimal {
         negative,
-        significand: BigInt::from_bytes_be(Sign::Plus, mag),
+        significand: magnitude,
         exponent,
     })
 }
@@ -1271,20 +1279,22 @@ mod tests {
         let x1 = b.name("x");
         let x2 = b.name("x");
         let big = b.atom_leaf(Leaf::Int {
-            value: BigInt::from_str("123456789012345678901234567890").unwrap(),
+            value: IntValue::from_bigint(
+                &BigInt::from_str("123456789012345678901234567890").unwrap(),
+            ),
             radix: Radix::Dec,
         });
         let hex = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(0x2A),
+            value: IntValue::from_i64(0x2A),
             radix: Radix::Hex,
         });
         let neg = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(-42),
+            value: IntValue::from_i64(-42),
             radix: Radix::Dec,
         });
         let flt = b.atom_leaf(Leaf::Float(Decimal {
             negative: false,
-            significand: BigInt::from_str("15").unwrap(),
+            significand: IntValue::from_bigint(&BigInt::from_str("15").unwrap()).magnitude,
             exponent: -1,
         }));
         let s = b.atom_leaf(Leaf::Str("héllo".into()));
@@ -1318,11 +1328,11 @@ mod tests {
         // value form: (tuple 5 105)
         let th = b.name("tuple");
         let i5 = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(5),
+            value: IntValue::from_i64(5),
             radix: Radix::Dec,
         });
         let i105 = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(105),
+            value: IntValue::from_i64(105),
             radix: Radix::Dec,
         });
         let tuple_v = b.list(vec![th, i5, i105]);
@@ -1367,7 +1377,7 @@ mod tests {
 
     fn int(b: &mut Builder, n: i64) -> crate::ast::StructId {
         b.atom_leaf(Leaf::Int {
-            value: BigInt::from(n),
+            value: IntValue::from_i64(n),
             radix: Radix::Dec,
         })
     }
@@ -1778,15 +1788,15 @@ mod tests {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();
         let dec = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(42),
+            value: IntValue::from_i64(42),
             radix: Radix::Dec,
         });
         let hex = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(42),
+            value: IntValue::from_i64(42),
             radix: Radix::Hex,
         });
         let bin = b.atom_leaf(Leaf::Int {
-            value: BigInt::from(42),
+            value: IntValue::from_i64(42),
             radix: Radix::Bin,
         });
         let root = b.list(vec![dec, hex, bin]);
@@ -1801,7 +1811,7 @@ mod tests {
         let mut b = Builder::new();
         let neg_zero = b.atom_leaf(Leaf::Float(Decimal {
             negative: true,
-            significand: BigInt::from(0u32),
+            significand: IntValue::from_i64((0u32) as i64).magnitude,
             exponent: 0,
         }));
         let a = b.finish(neg_zero);
@@ -1968,12 +1978,12 @@ mod tests {
         for kind in [SuffixKind::BigInt, SuffixKind::Rational] {
             for body in [
                 SuffixBody::Int {
-                    value: BigInt::from(-255),
+                    value: IntValue::from_i64(-255),
                     radix: Radix::Hex,
                 },
                 SuffixBody::Float(Decimal {
                     negative: true,
-                    significand: BigInt::from(15),
+                    significand: IntValue::from_i64(15).magnitude,
                     exponent: -1,
                 }),
             ] {
@@ -2272,7 +2282,7 @@ mod tests {
         let esc = b.atom_leaf(Leaf::BadEscape('z'));
         let suf = b.atom_leaf(Leaf::Suffixed {
             value: SuffixBody::Int {
-                value: BigInt::from(255),
+                value: IntValue::from_i64(255),
                 radix: Radix::Hex,
             },
             kind: SuffixKind::BigInt,

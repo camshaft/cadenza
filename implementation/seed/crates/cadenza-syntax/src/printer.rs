@@ -3969,7 +3969,7 @@ impl<'a> Printer<'a> {
     fn is_nonneg_number(&self, id: StructId) -> bool {
         match self.a.get(id) {
             Struct::Atom(l) => match self.a.leaf(*l) {
-                Leaf::Int { value, .. } => value.sign() != num_bigint::Sign::Minus,
+                Leaf::Int { value, .. } => !value.negative,
                 Leaf::Float(d) => !d.negative,
                 _ => false,
             },
@@ -4010,9 +4010,7 @@ impl<'a> Printer<'a> {
                 Leaf::Int {
                     value,
                     radix: crate::ast::Radix::Dec,
-                } if value.sign() != num_bigint::Sign::Minus => {
-                    Some(literal::render_int(value, crate::ast::Radix::Dec))
-                }
+                } if !value.negative => Some(literal::render_int(value, crate::ast::Radix::Dec)),
                 _ => None,
             },
             _ => None,
@@ -4027,7 +4025,7 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::Atom(l) => matches!(
                 self.a.leaf(*l),
-                Leaf::Int { radix: crate::ast::Radix::Dec, value } if value.sign() != num_bigint::Sign::Minus
+                Leaf::Int { radix: crate::ast::Radix::Dec, value } if !value.negative
             ),
             Struct::List(items) => {
                 // a `(. inner NUMERIC)` renders `inner.N`, ending in the numeric key's digit.

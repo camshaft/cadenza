@@ -10,7 +10,7 @@
 //! (`_`) positions are not preserved; the integer's base (dec/hex/bin) IS, so the printed form
 //! re-reads to the same leaf.
 
-use crate::ast::{Decimal, Leaf, Radix, SuffixBody, SuffixKind};
+use crate::ast::{Decimal, IntValue, Leaf, Radix, SuffixBody, SuffixKind};
 use num_bigint::BigInt;
 use std::str::FromStr;
 use unicode_normalization::UnicodeNormalization;
@@ -153,7 +153,7 @@ pub fn render_char(c: char) -> String {
 
 /// Parse a decimal / `0x…` / `0b…` integer token into its exact value and the base its text used,
 /// or `None` if it is not a well-formed integer literal. No magnitude ceiling.
-pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {
+pub fn parse_int(tok: &str) -> Option<(IntValue, Radix)> {
     let (neg, body) = match tok.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, tok.strip_prefix('+').unwrap_or(tok)),
@@ -177,7 +177,10 @@ pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {
         let radix = if is_hex { 16 } else { 2 };
         let mag = BigInt::parse_bytes(digits.as_bytes(), radix)?;
         let value = if neg { -mag } else { mag };
-        return Some((value, if is_hex { Radix::Hex } else { Radix::Bin }));
+        return Some((
+            IntValue::from_bigint(&value),
+            if is_hex { Radix::Hex } else { Radix::Bin },
+        ));
     }
     // Plain decimal: must start with a digit, only digits + between-digits `_`.
     let starts_digit = body.chars().next().is_some_and(|c| c.is_ascii_digit());
@@ -190,7 +193,10 @@ pub fn parse_int(tok: &str) -> Option<(BigInt, Radix)> {
     }
     let digits: String = body.chars().filter(|&c| c != '_').collect();
     let mag = BigInt::from_str(&digits).ok()?;
-    Some((if neg { -mag } else { mag }, Radix::Dec))
+    Some((
+        IntValue::from_bigint(&if neg { -mag } else { mag }),
+        Radix::Dec,
+    ))
 }
 
 /// Parse a float token into an exact `Decimal`, or `None`. A float must start with a digit and
@@ -256,7 +262,7 @@ fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64)
     if significand.sign() == Sign::NoSign {
         return Decimal {
             negative,
-            significand,
+            significand: IntValue::from_bigint(&significand).magnitude,
             exponent: 0,
         };
     }
@@ -267,7 +273,8 @@ fn normalize_decimal(negative: bool, mut significand: BigInt, mut exponent: i64)
     }
     Decimal {
         negative,
-        significand,
+        // The Decimal significand is a non-negative byte magnitude; the sign lives in `negative`.
+        significand: IntValue::from_bigint(&significand).magnitude,
         exponent,
     }
 }
@@ -526,8 +533,9 @@ pub fn unescape_backtick_name(token: &str) -> String {
 
 /// Render an integer in the base its text used, so it re-reads to the same `Int` leaf. Hex/bin get
 /// their `0x`/`0b` prefix (with the sign, if any, before the prefix, as the reader accepts).
-pub fn render_int(value: &BigInt, radix: Radix) -> String {
+pub fn render_int(value: &IntValue, radix: Radix) -> String {
     use num_bigint::Sign;
+    let value = value.to_bigint();
     let (sign, mag) = value.to_bytes_be();
     let neg = matches!(sign, Sign::Minus);
     let digits = match radix {
@@ -561,7 +569,13 @@ pub fn render_suffixed(value: &SuffixBody, kind: SuffixKind) -> String {
 /// are names), so this only ever renders a finite value; `-0.0` prints with its sign.
 pub fn render_decimal(d: &Decimal) -> String {
     let sign = if d.negative { "-" } else { "" };
-    let digits = d.significand.to_str_radix(10); // non-negative magnitude
+    // The significand is a non-negative byte magnitude; bridge to BigInt for the decimal digits.
+    let digits = IntValue {
+        negative: false,
+        magnitude: d.significand.clone(),
+    }
+    .to_bigint()
+    .to_str_radix(10); // non-negative magnitude
     // Place the decimal point per the base-10 exponent: value = digits * 10^exponent.
     let text = if d.exponent == 0 {
         // integer-valued: force a fractional part so it lexes as a float
@@ -810,33 +824,42 @@ mod tests {
             let mag: Vec<u8> = (0..nbytes).map(|_| (rng.next() & 0xff) as u8).collect();
             let base = BigInt::from_bytes_be(Sign::Plus, &mag); // non-negative magnitude
             // Negate roughly half the time — but a zero value is never negative (no signed-zero int).
-            let value = if base != BigInt::from(0) && rng.next() & 1 == 0 {
+            let value = IntValue::from_bigint(&if base != BigInt::from(0) && rng.next() & 1 == 0 {
                 -base
             } else {
                 base
-            };
+            });
             let radix = radices[(rng.next() as usize) % radices.len()];
             let rendered = render_int(&value, radix);
             let (v2, radix2) = parse_int(&rendered).unwrap_or_else(|| {
-                panic!("render_int({value}, {radix:?})={rendered:?} did not parse")
+                panic!("render_int({value:?}, {radix:?})={rendered:?} did not parse")
             });
             assert_eq!(
                 (&value, radix),
                 (&v2, radix2),
-                "int {value} @ {radix:?} → {rendered:?} did not round-trip"
+                "int {value:?} @ {radix:?} → {rendered:?} did not round-trip"
             );
         }
     }
 
     #[test]
     fn ints_with_base() {
-        assert_eq!(parse_int("42"), Some((BigInt::from(42), Radix::Dec)));
-        assert_eq!(parse_int("0x2A"), Some((BigInt::from(42), Radix::Hex)));
-        assert_eq!(parse_int("0b101010"), Some((BigInt::from(42), Radix::Bin)));
-        assert_eq!(parse_int("-0x10"), Some((BigInt::from(-16), Radix::Hex)));
+        assert_eq!(parse_int("42"), Some((IntValue::from_i64(42), Radix::Dec)));
+        assert_eq!(
+            parse_int("0x2A"),
+            Some((IntValue::from_i64(42), Radix::Hex))
+        );
+        assert_eq!(
+            parse_int("0b101010"),
+            Some((IntValue::from_i64(42), Radix::Bin))
+        );
+        assert_eq!(
+            parse_int("-0x10"),
+            Some((IntValue::from_i64(-16), Radix::Hex))
+        );
         assert_eq!(
             parse_int("1_000_000"),
-            Some((BigInt::from(1_000_000), Radix::Dec))
+            Some((IntValue::from_i64(1_000_000), Radix::Dec))
         );
     }
 
@@ -893,7 +916,7 @@ mod tests {
             parse_float("1.5"),
             Some(Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: IntValue::from_i64(15).magnitude,
                 exponent: -1
             })
         );
@@ -901,7 +924,7 @@ mod tests {
             parse_float("1.5e10"),
             Some(Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: IntValue::from_i64(15).magnitude,
                 exponent: 9
             })
         );
@@ -909,7 +932,7 @@ mod tests {
             parse_float("-0.25"),
             Some(Decimal {
                 negative: true,
-                significand: BigInt::from(25),
+                significand: IntValue::from_i64(25).magnitude,
                 exponent: -2
             })
         );
@@ -921,7 +944,7 @@ mod tests {
         assert_eq!(
             classify_word("42"),
             Leaf::Int {
-                value: BigInt::from(42),
+                value: IntValue::from_i64(42),
                 radix: Radix::Dec
             }
         );
@@ -944,7 +967,7 @@ mod tests {
             (255, Radix::Hex),
             (-1, Radix::Dec),
         ] {
-            let value = BigInt::from(v);
+            let value = IntValue::from_i64(v);
             let text = render_int(&value, r);
             assert_eq!(
                 parse_int(&text),
@@ -959,32 +982,32 @@ mod tests {
         for d in [
             Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: IntValue::from_i64(15).magnitude,
                 exponent: -1,
             }, // 1.5
             Decimal {
                 negative: false,
-                significand: BigInt::from(15),
+                significand: IntValue::from_i64(15).magnitude,
                 exponent: 9,
             }, // 15e9
             Decimal {
                 negative: true,
-                significand: BigInt::from(25),
+                significand: IntValue::from_i64(25).magnitude,
                 exponent: -2,
             }, // -0.25
             Decimal {
                 negative: false,
-                significand: BigInt::from(5),
+                significand: IntValue::from_i64(5).magnitude,
                 exponent: 0,
             }, // 5.0
             Decimal {
                 negative: true,
-                significand: BigInt::from(0u32),
+                significand: IntValue::from_i64(0).magnitude,
                 exponent: 0,
             }, // -0.0
             Decimal {
                 negative: false,
-                significand: BigInt::from(1),
+                significand: IntValue::from_i64(1).magnitude,
                 exponent: -10,
             }, // 0.0000000001
         ] {
@@ -1002,11 +1025,12 @@ mod tests {
     /// denominator so two decimals compare by cross-multiplication. Sign folded into the numerator.
     fn decimal_value(d: &Decimal) -> (BigInt, BigInt) {
         let ten = BigInt::from(10u32);
-        let sig = if d.negative {
-            -d.significand.clone()
-        } else {
-            d.significand.clone()
-        };
+        let sig_mag = IntValue {
+            negative: false,
+            magnitude: d.significand.clone(),
+        }
+        .to_bigint();
+        let sig = if d.negative { -sig_mag } else { sig_mag };
         if d.exponent >= 0 {
             (sig * ten.pow(d.exponent as u32), BigInt::from(1u32))
         } else {
@@ -1035,7 +1059,7 @@ mod tests {
             let exponent = (rng.next() % 25) as i64 - 12; // -12..=12
             let d = Decimal {
                 negative,
-                significand,
+                significand: IntValue::from_bigint(&significand).magnitude,
                 exponent,
             };
             let text = render_decimal(&d);

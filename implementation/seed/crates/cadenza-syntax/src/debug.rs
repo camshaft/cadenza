@@ -104,7 +104,9 @@ fn node(a: &Arenas, root: StructId, depth: usize, out: &mut String) {
 /// A leaf's kind and value in a compact, unambiguous form.
 fn leaf(l: &Leaf) -> String {
     match l {
-        Leaf::Int { value, radix } => format!("Int {value} ({})", radix_name(*radix)),
+        Leaf::Int { value, radix } => {
+            format!("Int {} ({})", value.to_decimal_string(), radix_name(*radix))
+        }
         Leaf::Float(d) => format!("Float {}", crate::literal::render_decimal(d)),
         Leaf::FloatNan => "FloatNan".to_string(),
         Leaf::FloatInf { negative } => {
@@ -141,7 +143,6 @@ mod tests {
     use super::*;
     use crate::ast::{Builder, Decimal, SuffixBody, SuffixKind};
     use crate::sexpr;
-    use num_bigint::BigInt;
 
     /// Build an `n`-deep single-child `List` chain wrapping one atom — a minimal-width, maximal-depth
     /// arena (the shape a crafted-but-valid binary AST uses to attack a recursive walker).
@@ -196,7 +197,7 @@ mod tests {
         let leaves = [
             (
                 Leaf::Int {
-                    value: BigInt::from(42),
+                    value: crate::ast::IntValue::from_i64(42),
                     radix: Radix::Hex,
                 },
                 "Int 42 (hex)",
@@ -204,7 +205,7 @@ mod tests {
             (
                 Leaf::Float(Decimal {
                     negative: false,
-                    significand: BigInt::from(15),
+                    significand: crate::ast::IntValue::from_i64(15).magnitude,
                     exponent: -1,
                 }),
                 "Float 1.5",
@@ -220,7 +221,7 @@ mod tests {
             (
                 Leaf::Suffixed {
                     value: SuffixBody::Int {
-                        value: BigInt::from(100),
+                        value: crate::ast::IntValue::from_i64(100),
                         radix: Radix::Dec,
                     },
                     kind: SuffixKind::BigInt,
@@ -306,7 +307,7 @@ mod tests {
             let leaf = match rng.below(4) {
                 0 => Leaf::Name(["a", "b", "cc", "x"][rng.below(4)].into()),
                 1 => Leaf::Int {
-                    value: BigInt::from(rng.below(1000) as i64),
+                    value: crate::ast::IntValue::from_i64(rng.below(1000) as i64),
                     radix: Radix::Dec,
                 },
                 2 => Leaf::Bool(rng.below(2) == 0),

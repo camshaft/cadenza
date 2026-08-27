@@ -35,7 +35,7 @@ pub(crate) fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
 pub(crate) fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
     match a.get(id) {
         crate::ast::Struct::Atom(l) => match a.leaf(*l) {
-            Leaf::Int { value, .. } => i64::try_from(value).ok(),
+            Leaf::Int { value, .. } => value.to_i64(),
             _ => None,
         },
         _ => None,
