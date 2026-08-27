@@ -1191,6 +1191,7 @@ pass	a THREE-cycle argument rotation permutes correctly through repeated tail ca
 pass	a THREE-deep constructor-woven Ast destructures through nested patterns to its runtime leaf
 pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested records
 pass	a THREE-deep transitive closure-capture chain applies with each level's own capture live
+pass	a THREE-hole one-shot handle body folds via the recursing refold
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a THREE-phase state machine — Idle to Running(count,peak) to Done(total), the sentinel input drives the final transition
@@ -2073,6 +2074,7 @@ pass	a fold over Map.to-list REBUILDS a filtered map at depth (the select-rebuil
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
 pass	a fold walks 40 keys with a FRESH lookup per iteration (the map as a loop-carried borrow)
 pass	a fold whose accumulator applies each list closure IN SEQUENCE (apply-all chain)
+pass	a foreign-performing op ARGUMENT bound to a multiply-used arm param runs the effect exactly once
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm

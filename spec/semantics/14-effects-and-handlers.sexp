@@ -6780,6 +6780,35 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
 
+(case "a THREE-hole one-shot handle body folds via the recursing refold"
+  (doc    "Three performs on a strict spine under a ONE-SHOT non-tail arm `(+ 1 (resume 10 s))` fold by the
+           refold recursing once per perform. Each flip resumes 10 into `C = (+ 1 □)`: `(+ (Amb.flip) (+
+           (Amb.flip) (Amb.flip)))` = 1 + (1 + (1 + 30))... each flip = 10 and the outer arm adds 1 per level
+           → 33. Each refold removes one perform, so it terminates.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (+ (Amb.flip) (Amb.flip)))))
+            (export main)))
+  (output (: 33 Int64)))
+
+(case "a foreign-performing op ARGUMENT bound to a multiply-used arm param runs the effect exactly once"
+  (doc    "OP-ARG LET-LIFT: an operation whose ARGUMENT carries a FOREIGN perform, bound to an arm param the
+           arm uses MORE THAN ONCE, folds by binding the arg to a fresh let ONCE and duplicating the pure
+           reference, so the foreign effect runs EXACTLY once. `Add.sum`'s arm reads `(. p 0)` and `(. p 1)`;
+           the argument `(tuple (Ask.get) (Ask.get))` carries two `Ask` gets foreign to `Add`. The op arg is
+           evaluated once (seeded 10 → 10 then 11, tuple (10,11)), then the arm reads that ONE tuple twice →
+           `(+ (* 10 100) 11)` = 1011. A naive β-copy would run four gets (wrong); this pins run-once.")
+  (input  (do
+            (effect Ask (op get (-> Unit Int64)))
+            (effect Add (op sum (-> (Tuple Int64 Int64) Int64)))
+            (def (main)
+              (handle Ask 10 ((get (u) s (resume s (+ s 1))))
+                (handle Add 0 ((sum (p) s (resume (+ (* (. p 0) 100) (. p 1)) s)))
+                  (Add.sum (tuple (Ask.get) (Ask.get))))))
+            (export main)))
+  (output (: 1011 Int64)))
+
 (case "a NON-tail one-shot arm that ADVANCES the state threads the advance through the re-reduced continuation"
   (doc    "The two-perform re-reducing fold above holds the state CONSTANT (`(resume 10 s)`); this pins the
            sharper composition where the arm is BOTH non-tail (work wraps the resume) AND state-advancing.
