@@ -17866,6 +17866,34 @@
   (output (: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64)))
   (live-objects known-leak 3))
 
+(case "a runtime-built list nested in a record field crosses the host boundary rendering the nested collection"
+  (doc    "The RECORD twin of the tuple-nested escape above (the operator's named-field `(data, n)` shape): a
+           record whose FIELD is a runtime-built list crosses the boundary, the field rendered `(= name
+           value)` with the nested collection AND its type. `build 2` recurses pushing 1,2 → the list, in the
+           `data` field beside a scalar `n`. Renders `(record (= data (list 1 2)) (= n 2))` under `(record
+           (data (List Int64)) (n Int64))` — the record analogue of the tuple case, same descriptor-routing
+           fix for a variable-length nested element.")
+  (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
+              (def (main) (record (data (build 2)) (n 2)))
+              (export main)))
+  (output (: (record (= data (list 1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
+  (live-objects known-leak 3))
+
+(case "a runtime list of sum-typed elements escapes rendering each element as its sum value-form"
+  (doc    "A runtime `(List (Option Int64))` — a list whose ELEMENTS are sums — escapes via the value-encode
+           walker, which recurses List → per-element SUM (a disc switch + payload render), the reducer-result
+           shape when a result element is a variant. `build i n` pushes `(Some i)` for i>0 else `None` for i=0
+           → [None, (Some 1)], rendered `(list (None unit) (Some 1))` under `(List (Option Int64))`. Pins that
+           the walker renders a sum element's value-form (nullary `None` as `(None unit)`, `Some` with its
+           payload), distinct from the record/scalar element cases.")
+  (input  (do (def (build i n out)
+                (if (< i n)
+                    (build (+ i 1) n ((. List push) out (if (> i 0) (: ((. Option Some) i) (Option Int64)) (: (. Option None) (Option Int64)))))
+                    out))
+              (def (main) (build 0 2 (: (list) (List (Option Int64))))) (export main)))
+  (output (: (list (None unit) (Some 1)) (List (Option Int64))))
+  (live-objects known-leak 4))
+
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
 ; lowers its decision tree so a non-refining column's fall-through is a SHARED `Rc<SumCont>`. At EMIT the

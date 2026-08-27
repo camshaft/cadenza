@@ -22506,63 +22506,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_runtime_list_of_sums_escapes_via_value_encode() {
-        // §3c REDUCER-RESULT de-risk (the sum case): a runtime `(List <sum>)` — the reducer result shape
-        // `(List EffectRequest)` IF EffectRequest is a SUM (a variant per effect kind) rather than a record.
-        // The value-encode walker recurses List -> per-element SUM (sum-disc switch + payload render). This
-        // is the value-encode escape path, DISTINCT from `a_provider_returning_a_list_of_sum_...` which
-        // crosses (List (Sum ..)) as a peer HANDLE. Pins that step 2b's result_desc + walker serve a
-        // list-of-sums result too. `build i n` pushes `(Some i)` for i>0 else `None` -> [None, (Some 1)].
-        let Some(out) = escape_render(
-            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (if (> i 0) (: ((. Option Some) i) (Option Int64)) (: (. Option None) (Option Int64))))) out)) \
-                       (def (main) (build 0 2 (: (list) (List (Option Int64))))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime list-of-sums escape run");
-            return;
-        };
-        assert_eq!(
-            out, "(: (list (None unit) (Some 1)) (List (Option Int64)))",
-            "runtime list-of-sums renders each element as a sum under (List (Option Int64))"
-        );
-    }
-
-    #[test]
-    fn a_runtime_collection_nested_in_a_tuple_or_record_escapes() {
-        // v-guide-infra gap: a runtime-built COLLECTION nested inside a Tuple/Record used to DECLINE at
-        // compile ("value-form walker that loops to a runtime-determined depth … is not yet emitted") while
-        // a BARE runtime collection crossed fine. The value-encode walker + `sum_shape_descriptor` already
-        // handle a nested collection (`shape_of` recurses, the Tuple/Record descriptor arm exists); the gap
-        // was purely ROUTING in the resource-escape emit — a Tuple/Record fell to `runtime_value_form_template`
-        // (None for a variable-length element → decline) instead of the descriptor path. Now a Tuple/Record
-        // whose template is None falls back to `sum_shape_descriptor` + the value-encode walker. This is the
-        // operator's "show DATA + RESULT together" example pattern (a runtime-built list + a computed scalar).
-        // `build 3` → [1 2 3]; `(tuple (build 3) 30)` → the pair with the list first.
-        let Some(out) = escape_render(
-            "(module m (def (build n) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n))) \
-                       (def (main) (tuple (build 3) 30)) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime-collection-in-tuple escape run");
-            return;
-        };
-        assert_eq!(
-            out, "(: (tuple (list 1 2 3) 30) (Tuple (List Int64) Int64))",
-            "a runtime list nested in a tuple crosses, rendering the nested collection + its type"
-        );
-
-        // A RECORD whose field is a runtime-built list — the operator's `(ages, average)`-style
-        // named-field shape. `{data: (build 2), n: 2}` → the record with a runtime list in `data`.
-        let out = escape_render(
-            "(module m (def (build n) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n))) \
-                       (def (main) (record (data (build 2)) (n 2))) (export main))",
-        )
-        .expect("runtime present");
-        assert_eq!(
-            out, "(: (record (= data (list 1 2)) (= n 2)) (record (data (List Int64)) (n Int64)))",
-            "a runtime list nested in a record field crosses, rendering the nested collection + its type"
-        );
-    }
-
-    #[test]
     fn a_runtime_list_is_matched_by_element_and_rest_patterns() {
         // L4: a match over a RUNTIME `List` scrutinee dispatches by LENGTH (`Core::MatchList` → `vec-len`),
         // binds leading elements via `vec-get` (`SumPayload{Elem(i)}`), and the REST binder via `vec-drop`

@@ -2262,6 +2262,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host op interleaving runtime Bytes and scalar args keeps regions and slots distinct
 pass	a host op mixing a const String and a runtime Bytes arg routes each to its own path
+pass	a host op result escapes as a single-byte Bytes resource
 pass	a host op returning Bool crosses the boundary and drives a branch
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 pass	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
@@ -3664,6 +3665,7 @@ pass	a runtime list aliased into two record fields is read intact through both
 pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list of sum-typed elements escapes rendering each element as its sum value-form
 pass	a runtime list of tuples is equal element-wise, descending into each tuple component
 pass	a runtime list orders lexicographically by its elements
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
@@ -3797,6 +3799,7 @@ pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built generic user sum escapes with its parametric type frame
+pass	a runtime-built list nested in a record field crosses the host boundary rendering the nested collection
 pass	a runtime-built list nested in a tuple crosses the host boundary rendering the nested collection
 pass	a runtime-built string crosses the boundary as its value form
 pass	a runtime-computed BigInt result crosses the host boundary
@@ -8157,4 +8160,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a host op result escapes as a single-byte Bytes resource
