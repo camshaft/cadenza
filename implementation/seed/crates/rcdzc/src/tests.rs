@@ -45586,6 +45586,64 @@ mod stage1 {
     }
 
     #[test]
+    fn a_generic_transformer_closure_result_ties_every_structural_aggregate_shape_on_rust() {
+        // COVERAGE (v-inference, breaker gtx family map, #4299): the closure-aggregate-result miscompile the
+        // sibling test pins for a TUPLE spans EVERY structural aggregate — record (gtx4), List (gtx6), and
+        // nested tuple (gtx7) all erased their element types to `Unit` on rust identically before the
+        // `apply_scheme_to_args` recovered-arrow fix (3f6dc755c). The tuple cell is now a 3-backend corpus
+        // run case (#4338); this pins the OTHER three shapes so a future change can't regress record/List/
+        // nested while the tuple stays green (the fix re-solves the whole closure body under the pinned
+        // domain, so it is shape-agnostic — but the emit paths for record/List/tuple differ, so each is a
+        // distinct regression surface worth witnessing). Each: `count(gmap(from-list [1,2], fn(x) => <agg>))`
+        // at Int64 + a String domain; assert the rust emit grounds the element CONCRETELY, never to `Unit`.
+        let emit_rust = |src: &str| -> String {
+            let mut db = crate::db::Db::load(parse(src));
+            let lay =
+                crate::layout::compute(&mut db).expect("structural-aggregate transformer lays out");
+            let rs = crate::backend::emit(crate::backend::Target::Rust, &mut db, &lay, None, None)
+                .expect("structural-aggregate transformer emits rust");
+            String::from_utf8(rs).expect("utf8")
+        };
+        let prog = |agg: &str| -> String {
+            format!(
+                "(module m \
+                (type GIter (Nil) (Cons a (GIter a))) \
+                (def (from-list xs) \
+                  (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t))))) \
+                (def (count it) \
+                  (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest))))) \
+                (def (gmap it f) \
+                  (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f))))) \
+                (def (main) \
+                  (+ (count (gmap (from-list (list 1 2)) (fn (x) {agg}))) \
+                     (count (gmap (from-list (list \"a\" \"b\")) (fn (s) (String.concat s s)))))) \
+                (export main))"
+            )
+        };
+
+        // RECORD result `(record (= lo x) (= hi x))` — lowers to a rust 2-tuple of the field types.
+        let rec = emit_rust(&prog("(record (= lo x) (= hi x))"));
+        assert!(
+            rec.contains("GIter<(i64, i64)>") && !rec.contains("((), ())"),
+            "a record-result closure element must ground to i64, not erase to Unit; got:\n{rec}"
+        );
+
+        // LIST result `(list x x)` — element `Vec<i64>`, never `Vec<()>`.
+        let lst = emit_rust(&prog("(list x x)"));
+        assert!(
+            lst.contains("GIter<Vec<i64>>") && !lst.contains("Vec<()>"),
+            "a List-result closure element must ground to Vec<i64>, not Vec<()>; got:\n{lst}"
+        );
+
+        // NESTED-TUPLE result `(tuple (tuple x x) x)` — `((i64, i64), i64)`, never a Unit at any depth.
+        let nest = emit_rust(&prog("(tuple (tuple x x) x)"));
+        assert!(
+            nest.contains("GIter<((i64, i64), i64)>") && !nest.contains("((), ())"),
+            "a nested-tuple-result closure element must ground at every depth, not erase to Unit; got:\n{nest}"
+        );
+    }
+
+    #[test]
     fn a_closure_payload_sum_from_an_if_helper_with_a_reused_arg_compiles_not_cdz0101() {
         // REGRESSION (v-patterns adv-closure-payload-sum-picked-by-if-helper): a closure-payload 2-variant
         // sum built by an `if`-helper `mk`, matched + applied by `run`, with the caller reusing its param
