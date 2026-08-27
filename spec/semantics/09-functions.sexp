@@ -9128,3 +9128,19 @@
            (export pos) (export neg)))
   (call pos) (output (: 12 Int64))
   (call neg) (output (: 77 Int64)))
+(case "a multi-use param bound to a pure recursive-helper call inlines and computes"
+  (doc    "A helper `bc` using a param in >=2 match arms is inlined into a caller that binds it to a pure
+           fuel-recursive resolver; the pure recursive arg substitutes correctly. resolve(3)=SFix(go 0 3)
+           =SFix(6); bc(SFix 6, SFix 6)= fa+fb = 12.")
+  (input (do
+    (type S (SVar Int64) (SFix Int64))
+    (def (go (: acc Int64) (: n Int64)) (if (= n 0) acc (go (+ acc n) (- n 1))))
+    (def (resolve (: v Int64)) (S.SFix (go 0 v)))
+    (def (bc (: ra S) (: rb S))
+      (match ra
+        ((S.SVar ia) (match rb ((S.SVar ib) (+ ia ib)) ((S.SFix fb) (+ ia fb))))
+        ((S.SFix fa) (match rb ((S.SVar ib) (+ fa ib)) ((S.SFix fb) (+ fa fb))))))
+    (def (mid (: a Int64) (: b Int64)) (bc (resolve a) (resolve b)))
+    (def (main (: k Int64)) (mid k k))
+    (export main)))
+  (call main (: 3 Int64)) (output (: 12 Int64)))
