@@ -2325,3 +2325,25 @@
             (def (main (: k Int64)) (u (Mk k)))
             (export main)))
   (call main (: 5 Int64)) (output (: 5 Int64)))
+
+; -- a user-generic constructor PATTERN binds and computes through nesting, self-nesting, and a record
+; field (behavioral migration from rcdzc a_nested_generic_ctor_pattern_binds_and_computes_through_the_inner_ctor
+; + a_record_literal_field_holding_a_user_generic_ctor_projects_and_matches, 2026-08-27): a generic ctor
+; pattern `(Mk …)` must resolve the inner binder through both ctor layers — wrapping a built-in `(Some/None)`,
+; wrapping ITSELF `(Mk (Mk v))`, and reached by projecting an inline record field holding the generic value.
+(case "a user-generic constructor pattern binds and computes through nesting, self-nesting, and a record field"
+  (input (do
+           (type (Box a) (Mk a))
+           (def (nsome)    (match (Mk (Some 5)) ((Mk (Some v)) v) ((Mk (None)) 0)))
+           (def (nnone)    (match (Mk (None)) ((Mk (Some v)) v) ((Mk (None)) 99)))
+           (def (selfnest) (match (Mk (Mk 7)) ((Mk (Mk v)) v)))
+           (def (recfield) (match (. (record (b (Mk 7))) b) ((Mk v) v)))
+           (def (recsome)  (match (. (record (b (Mk (Some 5)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
+           (def (recnone)  (match (. (record (b (Mk (None)))) b) ((Mk (Some v)) v) ((Mk (None)) 0)))
+           (export nsome) (export nnone) (export selfnest) (export recfield) (export recsome) (export recnone)))
+  (call nsome)    (output (: 5 Int64))
+  (call nnone)    (output (: 99 Int64))
+  (call selfnest) (output (: 7 Int64))
+  (call recfield) (output (: 7 Int64))
+  (call recsome)  (output (: 5 Int64))
+  (call recnone)  (output (: 0 Int64)))
