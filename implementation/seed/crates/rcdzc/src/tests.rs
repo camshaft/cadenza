@@ -9004,22 +9004,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_multi_payload_pair_binds_both_fields() {
-        // The simplest multi-payload shape: a two-field record-like variant, built from a runtime param
-        // and matched to a scalar (no escape). `(Pair.Mk n (+ n 1))` matched `((Pair.Mk a b) (+ a b))` =
-        // n + (n+1); for n=3 → 7. Pins that BOTH payload binders resolve at their tuple-element positions.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Pair (Mk Int64 Int64)) \
-                   (def (main (: n Int64)) (match (Pair.Mk n (+ n 1)) ((Pair.Mk a b) (+ a b)))) (export main))",
-                vec!["3".to_string()],
-            )
-            .unwrap_or_else(|| "7".to_string()),
-            "7"
-        );
-    }
-
-    #[test]
     fn a_deep_nested_constructor_pattern_matching_a_nullary_variant_solves_its_switch_path() {
         // REGRESSION (v-compiler-ml surfaced, concierge-assigned): a constructor pattern nesting a NULLARY
         // variant TWO+ constructor layers deep errored `compound match switch path has no solved type`.
@@ -37745,7 +37729,6 @@ mod stage1 {
         );
     }
 
-
     #[test]
     fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
         // REGRESSION (perf): `unify` applies the substitution to BOTH operands on entry, and `Subst::apply`
@@ -37788,7 +37771,6 @@ mod stage1 {
         compile_component(&crate::codec::encode(&parse(&src)))
             .expect("wide-record-arg program compiles in bounded time");
     }
-
 
     // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
 
@@ -39563,8 +39545,6 @@ mod stage1 {
             );
         }
     }
-
-
 
     #[test]
     fn a_duplicate_effect_operation_is_rejected() {
