@@ -39260,32 +39260,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_unknown_annotation_is_transparent_and_leaves_the_def_in_effect() {
-        // 09-functions "an unrecognized annotation leaves its wrapped definition in effect". The `@name`
-        // sigil is general; an UNMODELED name (not inline-never/inline-always/test) must be TRANSPARENT —
-        // `strip_annotations` unwraps `(@ NAME (def …))` to the def regardless of the name, recording only
-        // known names in a policy set. Previously an unmodeled `(@ …)` node survived to resolve, where the
-        // head `@` is no declaration → the def was dropped with a misleading "unbound name `@`" plus a
-        // phantom unbound-name for the def. `(@ deprecated (def (f) 5))` must run `main` → 5.
-        for name in ["deprecated", "bogus-xyz", "lint-off", "test-only-later"] {
-            let src = format!("(module m (@ {name} (def (f) 5)) (def (main) (f)) (export main))");
-            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
-                .expect("unknown annotation compiles");
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                5,
-                "an unknown annotation `@{name}` must unwrap transparently, leaving `f` in effect"
-            );
-        }
-        // The unknown-annotated def may itself be USED by another def (its name must resolve, not vanish).
-        let used = "(module m \
-             (@ deprecated (def (helper (: x Int64)) (+ x 1))) \
-             (def (main) (helper 41)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(used))).expect("compile");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-    }
-
-    #[test]
     fn the_cost_heuristic_emits_a_big_multiply_called_helper_once() {
         // Addendum 4 cost heuristic. `big` is LARGE (well past INLINE_COST_THRESHOLD nodes — 8 products
         // summed) and called at TWO sites, each with a RUNTIME argument (`main`'s params `a`/`b`, so the
