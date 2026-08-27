@@ -1726,6 +1726,7 @@ pass	a contradictory arrow annotation on a function INSIDE a compound is rejecte
 pass	a contradictory arrow annotation on a function in a SUM payload is rejected
 pass	a contradictory arrow annotation on a function in a runtime Map value is rejected
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
+pass	a control-flow operand of a narrow op still range-checks the enclosing overflow
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle
 pass	a cross-function fold whose out-state is NOT observed stays single-return
@@ -2321,6 +2322,7 @@ pass	a let-bound variable derived from a runtime parameter passed as a call argu
 pass	a let-bound variable is in scope inside a boolean connective operand
 pass	a let-bound variable passed as a function-call argument resolves at the call site
 pass	a let-bound variable passed to a let-bound lambda resolves at the call site
+pass	a let-shaped control-flow operand of a narrow op is width-normalized
 pass	a let-wrapped resume in the arm body threads a computed next-state (stateful PRNG)
 pass	a line comment wrapping a top-level form does not hide it
 pass	a line comment wrapping a type declaration is seen through
@@ -2539,6 +2541,7 @@ pass	a match-join of two capturing lambdas let-bound and called applies the sele
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a match-scrutinee self-call preceding an arm-body perform folds via multi-value return
 pass	a match-shaped arm body peels its resume per branch when performed in a sequence
+pass	a match-shaped control-flow operand of a narrow op is width-normalized
 pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a member access with no field operand is rejected, not a crash
@@ -2687,6 +2690,7 @@ pass	a narrow match binder used in arithmetic with the scrutinee
 pass	a narrow multiplication reconciles a constant LEFT operand to the variable's width
 pass	a narrow newtype boxed as a map value round-trips through lookup at the widened cell
 pass	a narrow newtype boxed in a list round-trips two payloads through binder reads
+pass	a narrow op takes its width from a PARAM while a control-flow operand is normalized
 pass	a narrow value in the else branch opposite a bare literal computes at the narrow width
 pass	a narrow-Int quantity stored in a List reads back through List.at and unwraps
 pass	a narrow-UInt8-guarded div is not select-ified — the guard shields the trap
@@ -4744,6 +4748,10 @@ pass	an identity closure threads through a recursive-generic HOF at one element 
 pass	an identity conversion unwraps the magnitude unchanged
 pass	an if choosing between two nullary enum variants selects branchlessly on the discriminant
 pass	an if on Type.eq selects a branch at compile time
+pass	an if operand of a narrow add is width-normalized to the op
+pass	an if operand of a narrow bitwise-and is width-normalized to the op
+pass	an if operand of a narrow multiply is width-normalized to the op
+pass	an if operand of a narrow op is width-normalized at each width that fits the slot
 pass	an if over different-length list arms keeps each branch's own list
 pass	an if over two quantities at the SAME unit joins normally
 pass	an if over two same-dimension quantities at different units is a type mismatch (no auto-convert)
@@ -4884,6 +4892,9 @@ pass	an out-of-range literal SET element via Set.of is rejected
 pass	an out-of-range literal argument caught transitively through a two-call chain of narrow params
 pass	an outer Int64 let binder survives an inner String shadow of the same name
 pass	an outer definition references a sibling nested module by bare name
+pass	an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)
+pass	an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)
+pass	an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)
 pass	an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an overflowing literal in a RECORD op argument's narrow field is rejected
@@ -7985,11 +7996,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	an if operand of a narrow add is width-normalized to the op
-pass	an if operand of a narrow op is width-normalized at each width that fits the slot
-pass	an if operand of a narrow bitwise-and is width-normalized to the op
-pass	an if operand of a narrow multiply is width-normalized to the op
-pass	a narrow op takes its width from a PARAM while a control-flow operand is normalized
-pass	a let-shaped control-flow operand of a narrow op is width-normalized
-pass	a match-shaped control-flow operand of a narrow op is width-normalized
-pass	a control-flow operand of a narrow op still range-checks the enclosing overflow
