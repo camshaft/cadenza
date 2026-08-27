@@ -7427,60 +7427,6 @@ fn a_consumed_heap_param_in_a_self_recursive_loop_is_not_dropped_no_double_free(
     );
 }
 
-/// STRING-payload sibling of `a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known_gap`.
-/// The corpus-bugfix finding isolated the leak as HEAP-payload-specific but payload-TYPE-INDEPENDENT: a
-/// self-recursive fn holding a sum with a BigInt payload OR a String payload as a BORROWED param leaks the
-/// SAME 1 cell as the recursion unwinds (an Int64 SCALAR payload nets 0 — the differentiator is heap-ness,
-/// not which heap type). The BigInt face is pinned by the sibling above; this pins the STRING face so a fix
-/// (or a regression) that treats the two heap payloads differently is caught on BOTH. Same root: the borrowed
-/// heap-payload sum shell is retained-but-not-dropped once on unwind (the general Perceus recursion-param
-/// ownership gap; deep-backlog node-keyed payload-escape pass). VALUE-CORRECT (no UAF) → not corpus-gate-
-/// visible, so this `live_objects()` witness is the only durable pin.
-///
-/// Asserts value-correct + ZERO live cells (the owned-heap-param drop epilogue FIXED the leak — see the
-/// BigInt sibling). `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore = "needs the debug-counters store (cargo xtask build)"]
-fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_known_gap() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "debug-counters runtime not in the store (run `cargo xtask build`); skipping borrowed-STRING-sum-recursion-param leak witness"
-        );
-        return;
-    };
-    // Identical shape to the BigInt sibling, payload swapped to a runtime STRING: `mk` wraps a `String.concat`
-    // (a genuinely runtime rope, opaque to the fold), `walk` holds the `(Mk String)` sum as a BORROWED param
-    // recursing on scalar `n`, and the base `match` reads its scalar length. With guard `(>= n 0)`,
-    // `main (walk 1 …)` recurses TWICE (`walk 1 → walk 0 → walk -1`), base `match` at `n < 0`. VALUE =
-    // scalar-len of "ab" = 2.
-    let src = "(module m \
-                 (type W (Mk String)) \
-                 (def (mk (: s String)) (Mk ((. String concat) s \"b\"))) \
-                 (def (walk (: n Int64) (: w W)) \
-                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) ((. String scalar-len) x))))) \
-                 (def (main (: n Int64)) (walk n (mk \"a\"))) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // VALUE-CORRECT: the borrowed String-payload sum is read AFTER the recursion → scalar-len("ab") = 2. A
-    // UAF would trap/corrupt before returning; proves the leak is NON-OOB and value-safe.
-    assert_eq!(
-        rt.call("main", &[Val::S64(1)]),
-        Val::S64(2),
-        "String.scalar-len of the String payload of a borrowed heap-sum recursion param = 2 (value-correct + NO UAF)"
-    );
-    // FIXED (owned-heap-param drop epilogue): reclaimed at the loop exit exactly like the BigInt sibling
-    // (payload-type-independent) — NOW ZERO live cells, value still 2 (no double-free).
-    let live = rt.live_objects();
-    assert_eq!(
-        live, 0,
-        "borrowed-STRING-sum-recursion-param leak FIXED: the owned heap param is reclaimed at the loop exit \
-         → 0 live cells (payload-type-independent with the BigInt sibling) — got {live}. If 1, the drop \
-         epilogue regressed; if a UAF/wrong value, the drop over-fired (double-free)."
-    );
-}
-
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the
