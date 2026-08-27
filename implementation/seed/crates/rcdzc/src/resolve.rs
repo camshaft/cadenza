@@ -6461,6 +6461,13 @@ fn resolve_map(db: &Db, id: StructId) -> Resolved {
     let tail = db.ast.as_ctor_form(id, "map").unwrap_or(&[]);
     let mut entries: Vec<(StructId, StructId)> = Vec::with_capacity(tail.len());
     for &entry in tail {
+        // Prefer the canonical `(= key value)` FieldPair — map entries unify with record fields
+        // (operator-ruled 2026-08-27: "prefer `=` for maps"; the `#map((= k v))` surface). The legacy
+        // raw `(key value)` pair is still accepted through the migration (corpus migrates at M3).
+        if let Some((k, v)) = db.ast.field_pair(entry) {
+            entries.push((k, v));
+            continue;
+        }
         match db.ast.get(entry) {
             Struct::List(items) if items.len() == 2 => entries.push((items[0], items[1])),
             Struct::List(items) => {

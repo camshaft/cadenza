@@ -13712,6 +13712,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // entries' faults are already collected. Do NOT `collect` the raw entry pairs.
                 for &entry in args.iter() {
                     match db.ast.get(entry) {
+                        // The canonical `(= key value)` FieldPair (map entries unify with record fields).
+                        crate::ast::Struct::List(_) if db.ast.field_pair(entry).is_some() => {}
+                        // The legacy raw `(key value)` pair (accepted through the migration).
                         crate::ast::Struct::List(items) if items.len() == 2 => {}
                         // A wrong-arity entry — a SURPLUS element gets the shared delete fix, too few is
                         // message-only (mirrors `resolve_map`; this path handles the `(map …)` NAME alias).
