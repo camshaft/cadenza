@@ -8573,34 +8573,6 @@ fn a_wide_unsigned_constant_add_that_overflows_i64_but_fits_u64_folds() {
     );
 }
 
-/// A recursive effectful walk whose self-call is `let`-BOUND and whose perform runs AFTER it (in the
-/// `let` body) observes the recursion's OUT-state — the single-return specialization threads only the
-/// INCOMING state, so it CANNOT fold this. It must DECLINE CLEANLY (a "not yet compiled" todo), NOT leak
-/// the internal `walk#eff2$s0` state-param name in a confusing CDZ0101. The operand-scan guard missed the
-/// `let`-bound shape (the self-call is buried in the init, the body's `(+ rest (Ctr.tick))` has only a
-/// `Ref` + a perform as operands); the `let`-sequencing arm of `selfcall_precedes_perform_in_operands`
-/// catches it. The direct-operand `(+ (walk …) (Ctr.tick))` form folds (accumulator-introduction rewrites
-/// it to tail form first) — this is specifically the leaked-internal-name check≡compile gap.
-#[test]
-fn a_let_bound_selfcall_then_perform_folds_via_multivalue_return() {
-    use crate::testkit::parse;
-    // OUT-STATE-OBSERVING SIBLING PERFORM, now FOLDED (repro-1 multi-value return). A recursive-effectful
-    // walk whose SELF-CALL precedes a PERFORM on a strict spine — here `(let ((rest (walk (- n 1)))) (+ rest
-    // (Ctr.tick)))` — has the perform read the recursion's OUT-state. This used to DECLINE (single-return
-    // could not carry the out-state); the multi-value specialization (`walk#eff` returns `(value, out-state)`,
-    // each self-call let-bound and its out-state threaded to the following perform) now folds it correctly.
-    // `walk 3` seeded 0: the deepest `walk 1` draws id 0, `walk 2` draws 1, `walk 3` draws 2 — the value is
-    // `rest + tick` accumulating `1 + 2 = 3` (rest of walk 3 = walk 2's value 1, its own tick draws 2).
-    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
-               (def (walk (: n Int64)) (if (= n 0) 0 (let ((rest (walk (- n 1)))) (+ rest (Ctr.tick))))) \
-               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the let-bound selfcall-then-perform shape folds via multi-value return");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "3");
-    }
-}
-
 /// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
 /// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
 /// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
@@ -8723,48 +8695,6 @@ fn a_selfcall_hidden_in_a_nested_fold_closure_declines_not_a_stack_overflow() {
     );
 }
 
-/// A recursive effectful walk whose self-call and a following perform sit in a `do`-SEQUENCE — `(do (walk
-/// (- n 1)) (Ctr.tick))` — is the SAME out-state-observing shape: the `do` runs the self-call for effect,
-/// then the perform reads the recursion's OUT-state. This used to DECLINE (single-return did not carry the
-/// out-state; folding against the INCOMING state gave the wrong value 0). The multi-value return (repro-1)
-/// now folds it: the self-call is let-bound and its out-state threads to the following `Ctr.tick`. `walk 3`
-/// seeded 0 runs three ticks drawing 0, 1, 2; the `do` yields the LAST tick's value → 2. The perform-BEFORE-
-/// self-call form `(do (Ctr.tick) (walk …))` still folds via the single-return path (the corpus case).
-#[test]
-fn a_do_sequence_selfcall_then_perform_folds_via_multivalue_return() {
-    use crate::testkit::parse;
-    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
-               (def (walk (: n Int64)) (if (= n 0) 0 (do (walk (- n 1)) (Ctr.tick)))) \
-               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the do-sequence selfcall-then-perform shape folds via multi-value return");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "2");
-    }
-}
-
-/// TWO SIBLING self-recursive calls in one arm, `let`-sequenced (`(let ((a (walk l))) (let ((b (walk r)))
-/// (+ a b)))`) under a STATE-threading handler — the natural effectful TREE WALK found by the compiler-ml
-/// port (iter 38). It once SILENTLY MISCOMPILED (the second sibling `(walk r)` threaded against the INCOMING
-/// state, both leaves drawing id 0 → 0 where the answer is 1), then was DECLINED as a stopgap. The
-/// multi-value return (repro-1) now folds it CORRECTLY: `walk#eff` returns `(value, out-state)`, the first
-/// sibling `a = walk l` is let-bound and its out-state threads into `b = walk r`, so `walk (Node Leaf Leaf)`
-/// draws ids 0 and 1 → `0 + 1 = 1`. A SINGLE recursive call in the arm still folds via the single-return path.
-#[test]
-fn two_sibling_self_recursive_calls_in_a_let_fold_via_multivalue_return() {
-    use crate::testkit::parse;
-    let src = "(do (type T (Leaf) (Node T T)) (effect Fresh (op next (-> Int64))) \
-               (def (walk (: t T)) (match t ((T.Leaf) (Fresh.next)) \
-                 ((T.Node l r) (let ((a (walk l))) (let ((b (walk r))) (+ a b)))))) \
-               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
-                 (walk (T.Node (T.Leaf) (T.Leaf))))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("two sibling self-recursive calls fold via multi-value return");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "1");
-    }
-}
-
 /// A perform in a TUPLE/LIST CONSTRUCTOR element (the STRING-HEADED primitive `("tuple" …)`, what the ML
 /// tuple/list literal lowers to) now THREADS like an arithmetic operand / call argument (reported by the
 /// compiler-ml port, iter 38 — was an honest decline). `thread_bounded` gained a `Resolved::Tuple`/`List`
@@ -8814,46 +8744,6 @@ fn a_perform_in_a_map_entry_value_threads() {
         compile_component(&crate::codec::encode(&parse(src))).is_ok(),
         "a perform in a string-headed map ctor entry value must thread, not decline"
     );
-}
-
-/// A recursive effectful walk whose self-call is the `match` SCRUTINEE and whose perform is in an arm BODY
-/// — `(match (walk (- n 1)) (_ (Ctr.tick)))` — is the same out-state-observing shape: the scrutinee runs
-/// the recursion, then the arm-body perform reads its OUT-state. This used to leak the internal
-/// `walk#eff2$s0` name (a confusing CDZ0101) then decline; the multi-value return (repro-1) now folds it —
-/// the scrutinee self-call is let-bound and its out-state threads into the arm-body `Ctr.tick`. `walk 3`
-/// seeded 0 draws 0, 1, 2 and the arm yields the last tick → 2. A PERFORMING scrutinee with no self-call
-/// still folds via the single-return path.
-#[test]
-fn a_match_scrutinee_selfcall_then_arm_perform_folds_via_multivalue_return() {
-    use crate::testkit::parse;
-    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
-               (def (walk (: n Int64)) (if (= n 0) 0 (match (walk (- n 1)) (_ (Ctr.tick))))) \
-               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the match-scrutinee selfcall-then-perform shape folds via multi-value return");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "2");
-    }
-}
-
-/// A recursive effectful walk whose self-call is in the `if` CONDITION and whose perform is in a BRANCH —
-/// `(if (< (walk (- n 1)) 100) (Ctr.tick) 99)` — is the same out-state-observing shape: the condition runs
-/// the recursion, then a branch perform reads its OUT-state. This used to leak the internal `walk#eff2$s0`
-/// name then decline; the multi-value return (repro-1) now folds it — the condition self-call is let-bound
-/// (drained around the whole `if`) and its out-state threads into the branch `Ctr.tick`. `walk 3` seeded 0:
-/// three recursions draw ids under 100 so the `<` is true each level, the taken branch draws 0, 1, 2 → 2.
-/// The OPPOSITE order — a perform in the COND, a self-call in a BRANCH (countdown) — still folds single-return.
-#[test]
-fn an_if_condition_selfcall_then_branch_perform_folds_via_multivalue_return() {
-    use crate::testkit::parse;
-    let src = "(do (effect Ctr (op tick (-> Unit Int64))) \
-               (def (walk (: n Int64)) (if (= n 0) 0 (if (< (walk (- n 1)) 100) (Ctr.tick) 99))) \
-               (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("the if-condition selfcall-then-perform shape folds via multi-value return");
-    if let Some(v) = run_linked(&bytes, "main") {
-        assert_eq!(v, "2");
-    }
 }
 
 /// A self-call GATED behind a NESTED conditional INSIDE an `if` condition (or a `match` scrutinee) must

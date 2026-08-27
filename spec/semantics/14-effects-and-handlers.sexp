@@ -1588,6 +1588,76 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
 
+; A recursive effectful walk whose SELF-CALL precedes an OUT-STATE-OBSERVING perform folds via the
+; multi-value return (the callee returns `(value, out-state)`, the self-call is let-bound and its out-state
+; threads into the following perform). The single-return specialization threads only the INCOMING state, so
+; folding against it gives a wrong value; the multi-value marking fixes it. These pin the fold across the
+; syntactic SITE of the self-call: a let-init, a do-sequence, two let-sequenced siblings, a match scrutinee,
+; and an if condition — each seeded 0 so the drawn ids are observable in the result.
+
+(case "a let-bound self-call preceding an out-state-observing perform folds via multi-value return"
+  (doc    "`(let ((rest (walk (- n 1)))) (+ rest (Ctr.tick)))` — the self-call is let-bound in the init and
+           the following `Ctr.tick` reads the recursion's OUT-state. `walk 3` seeded 0 draws ids 0,1,2 down
+           the recursion; the value is `rest + tick` = walk2's value (1) + this level's tick (2) = 3. A
+           single-return fold against the incoming state would give the wrong value.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (let ((rest (walk (- n 1)))) (+ rest (Ctr.tick)))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (call   main) (output (: 3 Int64)))
+
+(case "a do-sequenced self-call preceding a perform folds via multi-value return"
+  (doc    "`(do (walk (- n 1)) (Ctr.tick))` — the self-call runs first in a do-sequence, then the trailing
+           `Ctr.tick` reads its OUT-state and the `do` yields that last tick. `walk 3` seeded 0 runs three
+           ticks drawing 0,1,2 → the do yields the last, 2. Pins the do-sequence site of the multi-value fold.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (do (walk (- n 1)) (Ctr.tick))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "two let-sequenced sibling self-calls thread out-state via multi-value return"
+  (doc    "The effectful TREE WALK: `(let ((a (walk l))) (let ((b (walk r))) (+ a b)))` — the first sibling's
+           OUT-state threads into the second (each leaf draws a fresh id). `walk (Node Leaf Leaf)` seeded 0
+           draws 0 for the left leaf and 1 for the right → 0 + 1 = 1. A fold that threaded the second sibling
+           against the INCOMING state would draw 0 twice → 0 (a silent wrong value).")
+  (input  (do
+            (type T (Leaf) (Node T T))
+            (effect Fresh (op next (-> Int64)))
+            (def (walk (: t T))
+              (match t
+                ((T.Leaf) (Fresh.next))
+                ((T.Node l r) (let ((a (walk l))) (let ((b (walk r))) (+ a b))))))
+            (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) (walk (T.Node (T.Leaf) (T.Leaf)))))
+            (export main)))
+  (call   main) (output (: 1 Int64))
+  (live-objects known-leak 4))
+
+(case "a match-scrutinee self-call preceding an arm-body perform folds via multi-value return"
+  (doc    "`(match (walk (- n 1)) (_ (Ctr.tick)))` — the self-call is the match scrutinee and the arm body
+           performs, reading the scrutinee's OUT-state. `walk 3` seeded 0 draws 0,1,2 and the arm yields the
+           last tick → 2. Pins the match-scrutinee site of the multi-value fold.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (match (walk (- n 1)) (_ (Ctr.tick)))))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "an if-condition self-call preceding a branch perform folds via multi-value return"
+  (doc    "`(if (< (walk (- n 1)) 100) (Ctr.tick) 99)` — the self-call is in the if condition and the taken
+           branch performs, reading the condition's OUT-state. `walk 3` seeded 0: each level's drawn id is
+           under 100 so the `<` holds and the taken branch draws 0,1,2 → 2. Pins the if-condition site of the
+           multi-value fold (the condition self-call is drained around the whole if).")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (walk (: n Int64)) (if (= n 0) 0 (if (< (walk (- n 1)) 100) (Ctr.tick) 99)))
+            (def (main) (handle Ctr 0 ((tick (u) s (resume s (+ s 1)))) (walk 3)))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the
