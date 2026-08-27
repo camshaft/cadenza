@@ -21430,3 +21430,49 @@
   (call main (: 50 Int64))
   (output (: 50000 Int64))
   (live-objects 0))
+
+; ── breaker batch 518: MIXED-hoistability nesting (a hoistable-KIND compound holding a >32-list
+; child). The seam between the static-data hoist and the deferred deep-mark: an immortal parent
+; over an under-marked mortal child would let a consuming read free the child beneath a live
+; static pointer (UAF), and an rc=1 child under FBIP would update IN PLACE and corrupt the
+; constant. Verified today the assembler DECLINES the mixed hoist (wasm-tools: only the fully-
+; hoistable small twins emit static globals) — so these are drop-safety fences that must also
+; hold unchanged when deep-mark lands and the mixed constants START hoisting (census stays 0;
+; the VALUE reads are the fence, mhn2 two-sided via update-through-projection x50).
+
+(case "mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)"
+  (input (do (def (main (: n Int64))
+  (let ((a (if (= n 1) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))))
+        (b (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
+    (+ (* 1000 (. a 0)) (+ (List.len (. b 1)) (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 107033 Int64))
+  (live-objects 0))
+
+(case "mhn2 fifty frames persistently updating THROUGH the projection of a constant tuple's 33-element list child never corrupt the constant"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (if (> k 0) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))))
+            (u (List.update (. (if (> k 0) (tuple 7 (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)) (tuple 0 (list 9))) 1) 0 999)))
+        (+ (+ (match (List.at (. c 1) 0) ((Option.Some v) v) ((Option.None) -1))
+              (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50000 Int64))
+  (live-objects 0))
+
+(case "mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct"
+  (input (do (def (main (: n Int64))
+  (let ((a (if (= n 1) (list (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 5)) (list (list 9))))
+        (b (list (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 5))))
+    (+ (* 1000 (List.len a))
+       (+ (match (List.at b 0) ((Option.Some xs) (List.len xs)) ((Option.None) -1))
+          (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102033 Int64))
+  (live-objects 0))
