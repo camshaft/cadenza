@@ -1901,6 +1901,9 @@ pass	a do-sequence of unit-returning performs runs each for effect, then yields 
 pass	a do-sequenced perform train under its OWN inner handle threads state
 pass	a do-sequenced self-call preceding a perform folds via multi-value return
 pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)
+pass	a doc wrapping a definition from outside names the in-definition placement
+pass	a documented payload sum keeps its variant discriminants
+pass	a documented value definition binding a record is projected by a sibling
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a double fused match chain through a shared callee computes both calls
 pass	a double same-dimension annotation preserves the original scale
@@ -2025,6 +2028,7 @@ pass	a function chosen by a runtime condition is applied (false branch)
 pass	a function chosen by a runtime condition is applied (true branch)
 pass	a function declaration in a do block calls an earlier sibling declaration
 pass	a function declaration in a do block is callable by the following forms
+pass	a function definition may carry a leading doc, ignored for the computation
 pass	a function deriving a velocity from a distance and a time
 pass	a function is passed as an argument (higher-order)
 pass	a function is returned as a result
@@ -4282,6 +4286,7 @@ pass	a two-step seed sequence advances (successive draws differ)
 pass	a two-variant enum match with constant arms dispatches branchlessly — first variant
 pass	a two-variant enum match with constant arms dispatches branchlessly — second variant
 pass	a type annotation consistent with the value is transparent
+pass	a type declaration may carry a leading doc, ignored for the variants
 pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
@@ -4885,6 +4890,7 @@ pass	an imported helper's performs discharge at a handler whose STATE is the imp
 pass	an imported name resolves to a sibling file's exported definition
 pass	an imported nullary accessor projecting a field off a recursive self-reflected record descriptor folds
 pass	an in-bounds slice yields Some of the bytes at that range
+pass	an in-definition doc clause is valid and the definition computes
 pass	an in-program handler OVERRIDES an effect's peer binding (the test-mock, no peer call)
 pass	an in-program two-site handler runs INSIDE a host block beside a host call
 pass	an in-range constant argument to a narrow parameter computes at the parameter width
