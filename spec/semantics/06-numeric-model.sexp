@@ -10509,6 +10509,7 @@
   (doc    "`(<< x 4)` at x=2^60 shifts to 2^64, overflowing Int64 — the overflow guard is kept.")
   (input (do (def (main (: x Int64)) (<< x 4)) (export main)))
   (call main (: 1152921504606846976 Int64)) (trap "overflow"))
+
 ; -- division/modulo strength-reduction value+trap parity (behavioral half migrated as a BATCH from rcdzc
 ; unsigned_div_rem_by_a_power_of_two_strength_reduces, a_dividend_provably_below_its_divisor_folds_div_
 ; to_zero_and_rem_to_itself, a_nested_modulo_by_a_dividing_constant_collapses_to_one, 2026-08-27; the
@@ -10730,3 +10731,34 @@
   (doc    "`(^ (^ x -1) -1)` = x ^ (-1 ^ -1 = 0) = x: 42 → 42.")
   (input (do (def (main (: x Int64)) (^ (^ x -1) -1)) (export main)))
   (call main (: 42 Int64)) (output (: 42 Int64)))
+
+; -- runtime checked-arithmetic range/overflow guards (behavioral half of the runtime checked-arith
+; family migrated from rcdzc, 2026-08-27, run/traps wasmtime sweep). The unsigned full-width add/sub/mul
+; overflow faces are ALREADY covered (cases at "a runtime full-width UInt64 {addition,subtraction,
+; multiplication} that overflows/underflows traps rather than wrapping") so those rcdzc tests are
+; pure-deleted with a citation; these three pin the still-uncovered observables: the RUNTIME-emitted
+; unsigned less-than (i64.lt_u, the const-fold dual only was pinned) and the narrow Int8 add/sub range
+; checks at their exact boundaries (the existing narrow-add case pins only the gross 100+100 overflow).
+
+(case "una1 a runtime unsigned less-than orders by magnitude (i64.lt_u), the runtime dual of the const-fold"
+  (doc    "`(< a b)` over runtime UInt64 emits i64.lt_u: 0 < UInt64.max is true (a signed lt_s reads
+           UInt64.max as -1 and answers false); the reverse is false. Pins the RUNTIME-emitted unsigned
+           compare (the existing magnitude case const-folds it).")
+  (input (do (def (main (: a UInt64) (: b UInt64)) (< a b)) (export main)))
+  (call main (: 0 UInt64) (: 18446744073709551615 UInt64)) (output (: true Bool))
+  (call main (: 18446744073709551615 UInt64) (: 0 UInt64)) (output (: false Bool)))
+
+(case "nsa1 a narrow Int8 addition computes at the max boundary and traps one past it"
+  (doc    "Int8 add computes in i32 and range-checks back to [-128,127]: 100+27=127 fits (Int8.max),
+           100+28=128 does not and traps (a wrap would give -128).")
+  (input (do (def (main (: a Int8) (: b Int8)) (+ a b)) (export main)))
+  (call main (: 100 Int8) (: 27 Int8)) (output (: 127 Int8))
+  (call main (: 100 Int8) (: 28 Int8)) (trap "overflow"))
+
+(case "nss1 a narrow Int8 subtraction range-checks both edges"
+  (doc    "Int8 sub range-checks the exact result: -100-27=-127 fits; 100-(-50)=150 traps the upper edge;
+           -100-50=-150 traps the lower edge.")
+  (input (do (def (main (: a Int8) (: b Int8)) (- a b)) (export main)))
+  (call main (: -100 Int8) (: 27 Int8)) (output (: -127 Int8))
+  (call main (: 100 Int8) (: -50 Int8)) (trap "overflow")
+  (call main (: -100 Int8) (: 50 Int8)) (trap "overflow"))
