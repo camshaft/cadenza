@@ -10478,3 +10478,77 @@
   (doc    "`(<< x 4)` at x=2^60 shifts to 2^64, overflowing Int64 — the overflow guard is kept.")
   (input (do (def (main (: x Int64)) (<< x 4)) (export main)))
   (call main (: 1152921504606846976 Int64)) (trap "overflow"))
+; -- division/modulo strength-reduction value+trap parity (behavioral half migrated as a BATCH from rcdzc
+; unsigned_div_rem_by_a_power_of_two_strength_reduces, a_dividend_provably_below_its_divisor_folds_div_
+; to_zero_and_rem_to_itself, a_nested_modulo_by_a_dividing_constant_collapses_to_one, 2026-08-27; the
+; white-box Lir shift/mask/rem-count inspections stay wasmtime-free rcdzc unit tests): the reduced forms
+; compute the same value as the divide, truncating toward zero for negatives, and keep a trapping operand.
+
+(case "unsigned power-of-two div/rem strength-reduces (UInt64, by magnitude)"
+  (doc    "UInt64 (/ a 4)/(% a 4) via shift/mask: a=17 → 4 rem 1 (checksum 100*q+r = 401); (/ a 2) is
+           unsigned magnitude so UInt64.max/2 = 2^63-1, not a sign-shifted -1.")
+  (input (do (def (main (: a UInt64)) (+ (* 100 (/ a 4)) (% a 4))) (export main)))
+  (call main (: 17 UInt64)) (output (: 401 Int64)))
+
+(case "unsigned div by two is magnitude at UInt64.max"
+  (input (do (def (main (: a UInt64)) (/ a 2)) (export main)))
+  (call main (: 18446744073709551615 UInt64)) (output (: 9223372036854775807 UInt64)))
+
+(case "unsigned power-of-two div/rem strength-reduces (UInt32)"
+  (input (do (def (main (: a UInt32)) (+ (* 100 (/ a 8)) (% a 8))) (export main)))
+  (call main (: 100 UInt32)) (output (: 1204 Int64)))
+
+(case "signed power-of-two div/rem truncates toward zero (Int64 + narrow Int32)"
+  (doc    "(/ a 4)/(% a 4) reduced via the bias sequence must truncate toward ZERO like div_s/rem_s (not
+           floor): a=17 → 4 rem 1 (401); a=-17 → -4 rem -1 (-401, not -5); exact -8/8 = -1 rem 0.")
+  (input (do (def (main (: a Int64)) (+ (* 100 (/ a 4)) (% a 4))) (export main)))
+  (call main (: 17 Int64))  (output (: 401 Int64))
+  (call main (: -17 Int64)) (output (: -401 Int64)))
+
+(case "signed div by two is exact at Int64.min"
+  (input (do (def (main (: a Int64)) (/ a 2)) (export main)))
+  (call main (: -9223372036854775808 Int64)) (output (: -4611686018427387904 Int64)))
+
+(case "narrow signed power-of-two div/rem truncates toward zero (Int32)"
+  (input (do (def (main (: a Int32)) (+ (* 100 (/ a 8)) (% a 8))) (export main)))
+  (call main (: -100 Int32)) (output (: -1204 Int64)))
+
+(case "a dividend provably below its divisor folds div to zero and rem to the dividend"
+  (doc    "`(& x 7)` lands in [0,7] so `(% (& x 7) 100)` = (& x 7) and `(/ (& x 7) 100)` = 0. checksum
+           1000*(% ..) + (/ ..): x=255 → (& 255 7)=7 → 7000 + 0.")
+  (input (do
+    (def (main (: x Int64)) (+ (* 1000 (% (: (& x 7) Int64) 100)) (/ (: (& x 7) Int64) 100)))
+    (export main)))
+  (call main (: 255 Int64)) (output (: 7000 Int64)))
+
+(case "a derived-range remainder keeps the modulo when the range is not strictly below the divisor"
+  (doc    "`(& x 15)` ∈ [0,15]: `(% (& x 15) 16)` = (& x 15); `(% (& x 15) 15)` folds 15→0 but 8→8.")
+  (input (do
+    (def (main (: x Int64)) (+ (* 100 (% (: (& x 15) Int64) 16)) (% (: (& x 15) Int64) 15)))
+    (export main)))
+  (call main (: 200 Int64)) (output (: 808 Int64))
+  (call main (: 255 Int64)) (output (: 1500 Int64)))
+
+(case "a dividend-below-divisor div fold keeps a trapping dividend's trap"
+  (doc    "`(/ (& (/ 100 z) 7) 100)`: the discarding `/`-fold declines because the dividend is not
+           trap-free, so z=0 still divides-by-zero; z=2 → (/ 100 2)=50, & 7 = 2, / 100 = 0.")
+  (input (do
+    (def (main (: z Int64)) (/ (: (& (: (/ 100 z) Int64) 7) Int64) 100))
+    (export main)))
+  (call main (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
+
+(case "a nested modulo by a dividing constant collapses to one modulo (across signs)"
+  (doc    "10 | 100, so `(% (% x 100) 10)` = (% x 10): x=12347 → 7; x=-25 → -5 (rem_s sign); x=-105 → -5.")
+  (input (do
+    (def (main (: x Int64)) (% (: (% x 100) Int64) 10))
+    (export main)))
+  (call main (: 12347 Int64)) (output (: 7 Int64))
+  (call main (: -25 Int64))   (output (: -5 Int64))
+  (call main (: -105 Int64))  (output (: -5 Int64)))
+
+(case "a nested modulo does NOT collapse when the inner divisor does not divide the outer"
+  (doc    "7 does not divide 100, so `(% (% x 100) 7)` is NOT `(% x 7)`: x=101 → (101%100)=1, 1%7 = 1
+           (not 101%7 = 3). A trapping inner operand still traps.")
+  (input (do (def (main (: x Int64)) (% (: (% x 100) Int64) 7)) (export main)))
+  (call main (: 101 Int64)) (output (: 1 Int64)))
