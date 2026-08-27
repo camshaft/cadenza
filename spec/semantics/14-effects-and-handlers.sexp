@@ -859,6 +859,77 @@
                 (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
   (output (: 5000000000 Int64)))
 
+(case "a continuation filed through a RECURSIVE pqueue insert (base arm) declines cleanly, never miscompiles"
+  (doc    "The DES inc-4 recursive-insert reach. A boxed continuation `(KBox (fn (_u) (resume unit wake)))`
+           is filed into a pqueue via a RECURSIVE sorted-insert `pins`, then popped + applied by `sched-step`.
+           The direct-entry companion already folds to 5e9 (the multi-payload pqueue case above); this variant
+           differs only in that the entry flows through `pins`'s recursion before the pop. The concrete arg
+           `(PQ.PQNil ())` selects `pins`'s NON-recursive base arm, so the stored KBox survives to the pop —
+           its oracle is the same 5e9. Today the deferred-resume fold refuses to symbolically evaluate a
+           recursive helper, so this DECLINES cleanly (a folds-or-declines-never-miscompiles guard); when the
+           base-arm unfold lands it must fold to exactly 5e9.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (pins (: q PQ) (: t Instant) (: kb KBox))
+              (match q
+                ((PQ.PQNil _) (PQ.PQCons (tuple t kb (PQ.PQNil ()))))
+                ((PQ.PQCons (tuple ht hk r))
+                  (if (before? t ht)
+                      (PQ.PQCons (tuple t kb (PQ.PQCons (tuple ht hk r))))
+                      (PQ.PQCons (tuple ht hk (pins r t kb)))))))
+            (def (sched-step (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s
+                    (sched-step (pins (PQ.PQNil ()) wake (KBox.KBox (fn (_u) (resume unit wake)))))))
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now)))))
+            (export main)))
+  (declines))
+
+(case "a GENUINELY-recursive pqueue insert (recursion taken) declines cleanly, never folds the wrong entry"
+  (doc    "The complement of the base-arm pin: a genuinely-recursive insert where the recursion is actually
+           TAKEN. `pins` is handed a NON-empty queue whose head has an EARLIER waketime (Instant 1) than the
+           inserted continuation's (wake = 5e9), so `before? wake 1` is false and the `(pins r t kb)` self-call
+           fires — the entry is placed AFTER the head. The recursion-unfold accept guard must REFUSE this: a
+           one-level unfold would drop the remaining insertions and pop the WRONG entry (a miscompile), so the
+           fold declines cleanly. It must NEVER fold to the later inserted 5e9 entry; if a future increment
+           folds it, it must pop the earlier head (waketime 1) and read 1.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (pins (: q PQ) (: t Instant) (: kb KBox))
+              (match q
+                ((PQ.PQNil _) (PQ.PQCons (tuple t kb (PQ.PQNil ()))))
+                ((PQ.PQCons (tuple ht hk r))
+                  (if (before? t ht)
+                      (PQ.PQCons (tuple t kb (PQ.PQCons (tuple ht hk r))))
+                      (PQ.PQCons (tuple ht hk (pins r t kb)))))))
+            (def (sched-step (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s
+                    (sched-step (pins (PQ.PQCons (tuple (Instant.Instant 1) (KBox.KBox (fn (_z) (resume unit (Instant.Instant 1)))) (PQ.PQNil ()))) wake (KBox.KBox (fn (_u) (resume unit wake)))))))
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now)))))
+            (export main)))
+  (declines))
+
 (case "a two-entry directly-built pqueue pops the HEAD continuation, not the tail"
   (doc    "The multi-TASK scheduler shape: the pqueue holds TWO entries and the pop must bind the HEAD
            entry's continuation, ignoring the tail. `sched-step` matches `(PQCons (tuple wake kb rest))`
