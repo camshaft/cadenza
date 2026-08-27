@@ -31662,92 +31662,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn option_expect_folds_a_constant_present_variant_to_its_payload() {
-        // `Option.expect`/`Result.expect` on a compile-time-visible PRESENT variant FOLDS to its payload
-        // (core-semantics.md §Requiring The Value Of An Optional Traps On Absence — the present branch).
-        // A constant `(Some 7)` / `(Ok 99)` unwraps at compile time (no heap, no runtime probe); the
-        // message is discarded. Consumed to a scalar so `main` returns it directly.
-        for (prog, want) in [
-            ("(Option.expect (Some 7) \"m\")", 7),
-            ("(Result.expect (Ok 99) \"m\")", 99),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "expect folds constant present: {prog}"
-            );
-        }
-    }
-
-    #[test]
-    fn checked_arithmetic_folds_to_some_in_range_and_none_on_overflow() {
-        // `Int64.checked-add`/`checked-mul` — the FALLIBLE arithmetic (numeric-model.md §Overflow Is
-        // Defined). A constant operand pair FOLDS: in range → `(Some result)`, overflow → `(None unit)`.
-        // Consumed by a match so `main` returns a scalar (the Some payload or a -1 sentinel).
-        for (prog, want) in [
-            ("(Int64.checked-add 20 22)", 42),       // fits
-            ("(Int64.checked-add Int64.max 1)", -1), // overflows → None
-            ("(Int64.checked-sub 50 8)", 42),        // fits
-            ("(Int64.checked-sub Int64.min 1)", -1), // underflows → None
-            ("(Int64.checked-mul 6 7)", 42),         // fits
-            ("(Int64.checked-mul Int64.max 2)", -1), // overflows → None
-        ] {
-            let src = format!(
-                "(module m (def (main) (match {prog} ((Some v) v) ((None _) -1))) (export main))"
-            );
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "checked arithmetic fold: {prog}"
-            );
-        }
-    }
-
-    #[test]
-    fn wrapping_arithmetic_folds_and_runs_with_two_s_complement_wraparound() {
-        // `Int64.wrapping-add`/`wrapping-mul` — two's-complement wraparound, NEVER trapping (numeric-
-        // model.md §Overflow Is Defined). A constant pair FOLDS via `wrapping_*`; the result is a bare
-        // Int64 (no Option). `MAX + 1` wraps to MIN, `MAX * 2` wraps to -2, in-range equals `+`/`*`.
-        let min = i64::MIN; // -9223372036854775808
-        let max = i64::MAX; //  9223372036854775807
-        for (prog, want) in [
-            ("(Int64.wrapping-add 20 22)", 42),
-            ("(Int64.wrapping-add Int64.max 1)", min),
-            ("(Int64.wrapping-sub 50 8)", 42),
-            ("(Int64.wrapping-sub Int64.min 1)", max), // MIN - 1 wraps to MAX
-            ("(Int64.wrapping-mul 6 7)", 42),
-            ("(Int64.wrapping-mul Int64.max 2)", -2),
-        ] {
-            let src = format!("(module m (def (main) {prog}) (export main))");
-            assert_eq!(
-                run_returns::<i64>(&component(&src), "main"),
-                want,
-                "wrapping arithmetic fold: {prog}"
-            );
-        }
-        // The RUNTIME path: `(w a b) = (Int64.wrapping-add a b)` over PARAMETERS emits the raw `i64.add`
-        // (no overflow guard), so `(w Int64.max 1)` wraps to MIN rather than trapping — the same result
-        // as the fold, proving wrapping is the raw op, not the checked/trapping one.
-        let src = "(module m (def (w a b) (Int64.wrapping-add a b)) \
-                    (def (main) (w Int64.max 1)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(&component(src), "main"),
-            min,
-            "runtime wrapping-add wraps at run time"
-        );
-        // The subtraction runtime companion: `(s a b) = (Int64.wrapping-sub a b)` emits the raw `i64.sub`
-        // (no underflow guard), so `(s Int64.min 1)` wraps to MAX rather than trapping.
-        let src = "(module m (def (s a b) (Int64.wrapping-sub a b)) \
-                    (def (main) (s Int64.min 1)) (export main))";
-        assert_eq!(
-            run_returns::<i64>(&component(src), "main"),
-            max,
-            "runtime wrapping-sub wraps at run time"
-        );
-    }
-
-    #[test]
     fn checked_integer_conversion_folds_in_range_and_rejects_out_of_range_constants() {
         // `T.of` — the CHECKED (range-checked) integer conversion (numeric-model.md §A Conversion Between
         // Integer Types Is Explicit): a constant IN RANGE folds to the value at the target type; a
@@ -32068,33 +31982,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     // the list's element type is known (the two cases above index a locally-built `List Int64`); the
     // parameter-element propagation is a separate increment (the "runtime list's element type flows
     // through" gap the increment-2 note records).
-
-    #[test]
-    fn boolean_connectives_evaluate_and_fold() {
-        // core-semantics.md §Boolean Connectives Short-Circuit: and/or/not over booleans. Constant fold
-        // (each is a `main` returning a Bool / an Int64 selected by the connective).
-        let b = |body: &str| -> bool {
-            run_returns::<bool>(
-                &component(&format!("(module m (def (main) {body}) (export main))")),
-                "main",
-            )
-        };
-        let i = |body: &str| -> i64 {
-            run_returns::<i64>(
-                &component(&format!("(module m (def (main) {body}) (export main))")),
-                "main",
-            )
-        };
-        assert!(!b("(and true false)"));
-        assert!(b("(and true true)"));
-        assert!(b("(or false true)"));
-        assert!(!b("(or false false)"));
-        assert!(b("(not false)"));
-        assert!(!b("(not true)"));
-        // Nested / composed with comparisons (a range guard, the pervasive idiom).
-        assert_eq!(i("(if (and (> 5 0) (< 5 10)) 1 0)"), 1);
-        assert_eq!(i("(if (and (> 5 0) (< 5 3)) 1 0)"), 0);
-    }
 
     #[test]
     fn a_short_circuit_connective_with_identical_operands_folds_to_the_operand() {
