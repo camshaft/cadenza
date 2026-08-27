@@ -10950,3 +10950,70 @@
     (export rec)))
   (call rec (: 0 Int64)) (output (: true Bool))
   (call rec (: 3 Int64)) (output (: true Bool)))
+; -- type-width-bounded logical-shift mask elision (migrated from rcdzc runtime_ops
+; a_logical_shift_of_an_unbounded_value_bounds_the_result_by_the_type_width; the Lir mask-elided/kept
+; assertions stay in rcdzc): a bare unsigned value has an unknown upper bound, but the TYPE WIDTH still
+; bounds `x >>ᵤ k < 2^(W-k)`, so a covering mask drops; a narrower/insufficient mask is kept.
+(case "lsu1 a mask covering a UInt64 top-byte logical shift is elided (value parity)"
+  (doc    "`(& (>> x 56) 255)` on a UInt64: x>>56 ∈ [0,255] (width bound), so `& 255` is redundant; the top
+           byte 0xFF → 255, 0x05 → 5.")
+  (input (do (def (main (: x UInt64)) (& (>> x 56) 255)) (export main)))
+  (call main (: 18374686479671623680 UInt64)) (output (: 255 UInt64))
+  (call main (: 360287970189639680 UInt64))   (output (: 5 UInt64)))
+
+(case "lsu2 a mask covering a UInt32 high-nibble logical shift is elided"
+  (doc    "`(& (>> x 28) 15)` on a UInt32: x>>28 ∈ [0,15], so `& 15` drops; 0xA0000000>>28 = 10.")
+  (input (do (def (main (: x UInt32)) (& (>> x 28) 15)) (export main)))
+  (call main (: 2684354560 UInt32)) (output (: 10 UInt32)))
+
+(case "lsu3 a mask that does not cover the shifted range is kept (UInt64 x>>8)"
+  (doc    "`(& (>> x 8) 255)` on a UInt64: x>>8 ∈ [0, 2^56-1] exceeds 255, so the mask is KEPT and masks;
+           0x1234>>8 = 0x12 = 18.")
+  (input (do (def (main (: x UInt64)) (& (>> x 8) 255)) (export main)))
+  (call main (: 4660 UInt64)) (output (: 18 UInt64)))
+
+; -- 63-bit-wide range does not overflow the range lattice (migrated from rcdzc runtime_ops
+; a_63_bit_wide_range_does_not_overflow_the_range_lattice; the compiler-panic regression guard — the
+; `compiles(...)` calls — stays in rcdzc): a `UInt64 >> 1` has range [0, 2^63-1] (bits=63), the boundary
+; the lattice used to overflow on. These pin the runtime value at that boundary.
+(case "b63a a UInt64 logical right shift by one halves the value"
+  (input (do (def (main (: x UInt64)) (>> x 1)) (export main)))
+  (call main (: 100 UInt64)) (output (: 50 UInt64)))
+
+(case "b63b a nonneg UInt64 logical shift satisfies the >= 0 tautology"
+  (doc    "`(>= (>> x 1) 0)` is always true (a logical shift of a nonneg is nonneg): 100 → 111.")
+  (input (do (def (main (: x UInt64)) (if (>= (>> x 1) 0) 111 222)) (export main)))
+  (call main (: 100 UInt64)) (output (: 111 Int64)))
+
+(case "b63c a mask covering the 2^63-1 range of a UInt64 >> 1 is a no-op"
+  (doc    "`(& (>> x 1) 9223372036854775807)` — the mask covers the [0, 2^63-1] range so it is a no-op;
+           9223372036854775806 >> 1 = 4611686018427387903.")
+  (input (do (def (main (: x UInt64)) (& (>> x 1) 9223372036854775807)) (export main)))
+  (call main (: 9223372036854775806 UInt64)) (output (: 4611686018427387903 UInt64)))
+
+; -- provably-in-range arith computes the same value without a guard (fully migrated from rcdzc
+; a_provably_in_range_arith_computes_the_same_value_without_a_guard; PURE parity, no IR inspection ->
+; rcdzc test deleted): a masked operand lands in a known interval, so the checked op's guard is elided
+; and the machine op still produces the exact value (including negatives and chained propagation).
+(case "pir1 a sum of two masked nibbles is guard-free and exact"
+  (input (do (def (main (: x Int64) (: y Int64)) (+ (& x 15) (& y 15))) (export main)))
+  (call main (: 255 Int64) (: 255 Int64)) (output (: 30 Int64))
+  (call main (: -1 Int64) (: 8 Int64))    (output (: 23 Int64)))
+
+(case "pir2 a masked nibble times three is guard-free and exact"
+  (input (do (def (main (: x Int64)) (* (& x 15) 3)) (export main)))
+  (call main (: 255 Int64)) (output (: 45 Int64))
+  (call main (: 4 Int64))   (output (: 12 Int64)))
+
+(case "pir3 a narrow UInt8 sum of two masked values fits the width guard-free"
+  (input (do (def (main (: x UInt8) (: y UInt8)) (+ (& x 3) (& y 3))) (export main)))
+  (call main (: 255 UInt8) (: 254 UInt8)) (output (: 5 UInt8)))
+
+(case "pir4 a masked-nibble subtraction with a negative result is guard-free and exact"
+  (input (do (def (main (: x Int64) (: y Int64)) (- (& x 15) (& y 15))) (export main)))
+  (call main (: 3 Int64) (: 10 Int64)) (output (: -7 Int64)))
+
+(case "pir5 a chained masked-nibble sum propagates its range and stays guard-free"
+  (input (do (def (main (: x Int64) (: y Int64) (: z Int64)) (+ (+ (& x 15) (& y 15)) (& z 15))) (export main)))
+  (call main (: 255 Int64) (: 255 Int64) (: 255 Int64)) (output (: 45 Int64))
+  (call main (: 1 Int64) (: 2 Int64) (: 4 Int64))       (output (: 7 Int64)))
