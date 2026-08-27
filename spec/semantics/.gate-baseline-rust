@@ -5631,6 +5631,9 @@ pass	grx1 the entry List param flows through a two-deep non-recursive helper cha
 pass	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 pass	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 pass	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
+pass	eln1 an EMPTY nested-list entry param has outer length zero
+pass	eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length
+pass	eln3 a THREE-level nested-list entry param reads a leaf through two descents
 pass	gry1 a GRAY-CODE generator — each tick answers the threaded counter's Gray encoding (n XOR n>>1) then advances; the body XOR-popcounts consecutive answers proving the single-bit-change law
 pass	gs1 a user-declared GENERIC sum resolves by NAME in a param annotation — the applied (Container Int64) checks and the payload unwraps
 pass	gs2 a TWO-parameter generic sum by name — (Pair Int64 Int64) in the annotation, both payload slots extracted
