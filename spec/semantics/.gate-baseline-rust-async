@@ -7646,3 +7646,6 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	rcw2 a hundred-field record projects its first and last fields
+pass	rcw3 a fifty-element tuple projects its first and last positions
+pass	rcw4 a sixty-four-KiB string literal measures across the wasm page boundary
