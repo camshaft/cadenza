@@ -1633,6 +1633,7 @@ pass	a concat-of-concat chain keeps every intermediate binding readable
 pass	a concat-reached string equals a slice-reached string of the same content and not a decoy
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
+pass	a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
 pass	a conditional performs only the taken branch's effect — else
 pass	a conditional performs only the taken branch's effect — then
@@ -2980,6 +2981,7 @@ pass	a parameterized export returns a tuple computed from its argument
 pass	a parameterized plain export alongside a closure export applies its argument
 pass	a parameterized plain export alongside a closure export — the closure captures and applies
 pass	a parenthesized-head generic type de-dups a repeated head parameter to arity one and resolves
+pass	a partial application of a named def keeps its annotated param type across the recursive-HOF beta copy
 pass	a partial application persists its capture across two applications
 pass	a partial constructor bound in a let completes when applied
 pass	a partial constructor bound in a let-tuple completes when applied to a runtime arg
@@ -3282,6 +3284,7 @@ pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
+pass	a recursive fn threads TWO nested stateful handlers' states at once
 pass	a recursive fn under a two-arm single-effect handler specializes with one state param
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
@@ -4629,6 +4632,7 @@ pass	an abortive handler arm never resumes, so its value becomes the handle's va
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
+pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
@@ -4636,6 +4640,7 @@ pass	an abortive perform in a MATCH ARM body is branch-local and folds per arm
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a conditional let binding abandons the computation
+pass	an abortive perform in a conditional let-INIT hoists (aborting branch) and folds
 pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
 pass	an abortive perform in a contracted body skips the @ensures (an abandoned body has no result)
 pass	an abortive perform in a fused-match arm carries the payload binder out and abandons the rest
@@ -7825,6 +7830,7 @@ pass	two mutually-recursive functions instantiate one generic chooser at differe
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
+pass	two nested intra-program handlers compose inside-out
 pass	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
 pass	two newtypes over the SAME inner type do not cross-assign
 pass	two pattern keys match with one satisfied by the runtime-keyed entry
@@ -8141,8 +8147,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	an abortive perform in a conditional let-INIT hoists (aborting branch) and folds
-pass	a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch
-pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
-pass	two nested intra-program handlers compose inside-out
-pass	a recursive fn threads TWO nested stateful handlers' states at once

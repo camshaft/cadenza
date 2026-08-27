@@ -2787,6 +2787,25 @@
   (output (: 13 Int64))
   (live-objects known-leak 1))
 
+; The NAMED-DEF twin: a partial application of a top-level def `(add 5)` (rather than a lambda) passed to a
+; recursive HOF. `add`'s parameters are annotated, and the residual `(fn (b) (+ 5 b))` must keep those
+; declared types across the beta-copy that carries it into the recursive `apply-sum` — a residual that lost
+; its annotated param type declined. `apply-sum (add 5) 3` = (5+3)+(5+2)+(5+1) = 21.
+
+(case "a partial application of a named def keeps its annotated param type across the recursive-HOF beta copy"
+  (doc    "`(add 5)` partially applies the top-level `add` to its first arg; the residual `(fn (b) (+ 5 b))`
+           escapes into the recursive `apply-sum` and runs as a runtime closure, its second parameter's
+           declared Int64 type preserved through the beta-copy into the callee. apply-sum (add 5) 3 = 21.")
+  (input  (do
+            (def (add (: a Int64) (: b Int64)) (+ a b))
+            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64))
+              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1)))))
+            (def (main (: n Int64)) (apply-sum (add 5) n))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 21 Int64))
+  (live-objects known-leak 1))
+
 ; The complement of the escaping-partial case above: the partial is over a RUNTIME closure (boxed in a sum,
 ; extracted by a match), NOT a statically-known lambda, and a `let` breaks the curried-spine flatten —
 ; `(match p ((Box.C f) (let ((g (f 3))) (g 4))))`. That gathers 1 of the closure's 2 curried args and would
