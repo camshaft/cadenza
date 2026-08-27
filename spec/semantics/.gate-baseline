@@ -8532,3 +8532,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key
+pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
