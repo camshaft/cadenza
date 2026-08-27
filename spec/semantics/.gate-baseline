@@ -8970,3 +8970,4 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a fallible Result peer op result crosses and its Ok arm matches
 pass	a fallible Result peer op result crosses and its Err arm matches
+pass	hs1 a LIST state threads through the mutual-SCC fold correctly but leaks the final state linearly (the xat2-class threading leak on the mutrec fold)

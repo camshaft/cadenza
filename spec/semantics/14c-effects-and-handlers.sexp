@@ -18721,3 +18721,20 @@
 (export main)))
   (call main (: 4 Int64))
   (output (: 2001 Int64)))
+
+(case "hs1 a LIST state threads through the mutual-SCC fold correctly but leaks the final state linearly (the xat2-class threading leak on the mutrec fold)"
+  (doc    "The intersection of two families: the #4575 mutual-SCC group-wide multi-value fold handles a
+           HEAP (List) handler state correctly — values exact — but the final threaded state list never
+           drops at handle exit: leak = n+1 exactly (n=2→3, 4→5, 8→9, 16→17, measured). Joins the
+           {xat2, xcl1} spec-param-drop flip-watch: this clause drops to 0 with them.")
+  (input (do (effect S (op push (-> Int64 Int64)))
+(def (evn (: k Int64) (: acc Int64)) (if (= k 0) acc (odd (- k 1) (+ acc (S.push k)))))
+(def (odd (: k Int64) (: acc Int64)) (if (= k 0) acc (evn (- k 1) (+ acc (* 10 (S.push k))))))
+(def (main (: n Int64))
+  (handle S (list)
+    ((push (x) s (resume (List.len s) (List.push s x))))
+    (evn n 0)))
+(export main)))
+  (call main (: 4 Int64))
+  (output (: 42 Int64))
+  (live-objects known-leak 5))
