@@ -21476,3 +21476,62 @@
   (call main (: 1 Int64))
   (output (: 102033 Int64))
   (live-objects 0))
+
+; ── breaker batch 519: the Map/Set members of the static-data fence family, PRE-ARMED. Constant
+; Maps/Sets (const-folded insert chains / Set.of literals) emit NO static globals today (verified
+; wasm-tools — map/set hoisting is the roadmap's deferred deep-mark increment) and build per-eval,
+; reclaiming to zero. Same contract as sbd/ssd/csd/ctd: when CHAMP hoisting lands these must hold
+; UNCHANGED (census 0, values pristine). mps3/sts1 are the two-sided FBIP fences: a persistent
+; insert through one binding of the constant must COPY — an in-place update of a shared/hoisted
+; CHAMP corrupts the sibling read loudly (mps3 sum skews; sts1 reads a 7 that must not be there).
+
+(case "mps1 two occurrences of one constant Map — branch-selected use, lookups, and runtime equality across the pair"
+  (input (do (def (main (: n Int64))
+  (let ((a (if (= n 1) (Map.insert (Map.insert (Map.empty) 1 10) 2 20) (Map.insert (Map.empty) 9 9)))
+        (b (Map.insert (Map.insert (Map.empty) 1 10) 2 20)))
+    (+ (* 1000 (match (Map.lookup a 1) ((Some v) v) ((None u) -1)))
+       (+ (match (Map.lookup b 2) ((Some v) v) ((None u) -1))
+          (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 110020 Int64))
+  (live-objects 0))
+
+(case "mps2 fifty frames alternating two constant Maps reclaim to zero"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((m (if (= (% k 2) 0) (Map.insert (Map.insert (Map.empty) 1 10) 2 20) (Map.insert (Map.empty) 3 30))))
+        (+ (match (Map.lookup m (if (= (% k 2) 0) 1 3)) ((Some v) v) ((None u) -1))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 1000 Int64))
+  (live-objects 0))
+
+(case "mps3 fifty frames of persistent Map.insert against a constant Map never corrupt the constant (sibling lookup stays pristine)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (if (> k 0) (Map.insert (Map.insert (Map.empty) 1 10) 2 20) (Map.insert (Map.empty) 9 9)))
+            (u (Map.insert (if (> k 0) (Map.insert (Map.insert (Map.empty) 1 10) 2 20) (Map.insert (Map.empty) 9 9)) 1 999)))
+        (+ (+ (match (Map.lookup c 1) ((Some v) v) ((None u) -1))
+              (match (Map.lookup u 1) ((Some v) v) ((None u) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50450 Int64))
+  (live-objects 0))
+
+(case "sts1 a persistent Set.insert against a constant Set leaves the constant without the new element (two-sided contains fence)"
+  (input (do (def (main (: n Int64))
+  (let ((c (if (= n 1) (Set.of (list 1 2 3)) (Set.of (list 9))))
+        (u (Set.insert (if (= n 1) (Set.of (list 1 2 3)) (Set.of (list 9))) 7)))
+    (+ (if (Set.contains c 7) 100 0)
+       (+ (if (Set.contains u 7) 10 0) (if (= c u) 1000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 10 Int64))
+  (live-objects 0))
