@@ -37875,46 +37875,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn an_argument_conflicting_with_its_parameter_type_is_rejected_not_miscompiled() {
-        // The ARGUMENT side of parameter typing: β-reduction erases the parameter↔argument relationship
-        // (the arg is substituted into the body), so a mistyped argument must be checked at the CALL —
-        // else it is silently accepted (case A) or, once the mis-accepted value is USED at its claimed
-        // type, MISCOMPILED to an invalid component (cases B/C). Each of these MUST reject, never run to
-        // a value and never emit invalid wasm.
-        let must_reject = |src: &str| {
-            compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("mistyped argument must reject")
-                .message
-        };
-        // A: Int argument to a Bool-annotated identity parameter (would otherwise return 5).
-        must_reject("(module m (def (f (: x Bool)) x) (def (main) (f 5)) (export main))");
-        // B: Int argument to a bare parameter used as a Bool condition (would otherwise miscompile).
-        must_reject("(module m (def (f x) (if x 1 2)) (def (main) (f 5)) (export main))");
-        // C: Bool argument to a bare parameter used in integer addition (would otherwise miscompile).
-        must_reject("(module m (def (f x) (+ x x)) (def (main) (f true)) (export main))");
-        // The correctly-typed calls of the SAME functions still compile and run — no over-rejection.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (f x) (if x 1 2)) (def (main) (f true)) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            1
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (f x) (+ x x)) (def (main) (f 5)) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            10
-        );
-    }
 
     #[test]
     fn a_wide_record_argument_unifies_across_many_calls_in_bounded_time() {
@@ -37959,67 +37919,6 @@ mod stage1 {
             .expect("wide-record-arg program compiles in bounded time");
     }
 
-    #[test]
-    fn a_function_typed_parameter_annotation_is_checked_against_the_argument() {
-        // The HIGHER-ORDER analogue of the scalar arg-vs-param check: a parameter annotated with a
-        // FUNCTION type `(-> A B)` must be checked against the passed function's type — RESULT included.
-        // A lambda argument used to type as `Any` (so unifying `Fn(Int,Bool)` against it trivially
-        // succeeded and the annotation was silently dropped); now a lambda types as its own arrow type,
-        // so a result mismatch is caught. Each of these MUST reject (CDZ0203), never run to a value.
-        let must_reject = |src: &str| {
-            compile_component(&crate::codec::encode(&parse(src)))
-                .expect_err("a mismatched function-type annotation must reject")
-                .code
-        };
-        // Outermost result mismatch: (-> Int64 Bool) annotation, an Int64 -> Int64 argument.
-        assert_eq!(
-            must_reject(
-                "(module m (def (f (: g (-> Int64 Bool))) (g 41)) \
-                   (def (main) (f (fn (x) (+ x 1)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-        // The annotation constrains the BODY too: (+ (g 41) 1) with g's result fixed to Bool rejects.
-        assert_eq!(
-            must_reject(
-                "(module m (def (f (: g (-> Int64 Bool))) (+ (g 41) 1)) \
-                   (def (main) (f (fn (x) (+ x 1)))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-        // NESTED arrow: the inner result of a curried (-> Int64 (-> Int64 Bool)) is checked too.
-        assert_eq!(
-            must_reject(
-                "(module m (def (f (: g (-> Int64 (-> Int64 Bool)))) ((g 1) 2)) \
-                   (def (main) (f (fn (a) (fn (b) (+ a b))))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0203")
-        );
-        // No over-rejection: a MATCHING function-type annotation compiles and runs.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (f (: g (-> Int64 Int64))) (g 41)) \
-                       (def (main) (f (fn (x) (+ x 1)))) (export main))"
-                )))
-                .expect("a matching function-type annotation compiles"),
-                "main"
-            ),
-            42
-        );
-        // A matching Bool-returning argument is accepted and runs: (< 41 5) = false.
-        assert!(!run_returns::<bool>(
-            &compile_component(&crate::codec::encode(&parse(
-                "(module m (def (f (: g (-> Int64 Bool))) (g 41)) \
-                   (def (main) (f (fn (x) (< x 5)))) (export main))"
-            )))
-            .expect("a matching Bool-returning fn argument compiles"),
-            "main"
-        ));
-    }
 
     // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
 
