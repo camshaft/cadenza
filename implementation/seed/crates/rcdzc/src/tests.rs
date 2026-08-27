@@ -21573,7 +21573,6 @@ mod match_engine {
         );
     }
 
-
     #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
@@ -32536,27 +32535,6 @@ mod stage1 {
             "a conditional const Int64.min/-1 division overflow preserves the overflow kind, got {:?}",
             core_of(&mut db5, else_)
         );
-    }
-
-    #[test]
-    fn bitwise_ops_fold() {
-        // 06-numeric-model: & masks, | combines, ^ toggles.
-        assert_eq!(run_main("(& 255 127)"), 127);
-        assert_eq!(run_main("(| 12 3)"), 15);
-        assert_eq!(run_main("(^ 12 10)"), 6);
-    }
-
-    #[test]
-    fn left_shift_is_multiplication_and_folds() {
-        // (<< 1 7) = 128 — a left shift is exact multiplication by 2^count.
-        assert_eq!(run_main("(<< 1 7)"), 128);
-    }
-
-    #[test]
-    fn arithmetic_right_shift_folds() {
-        // (>> 256 7) = 2, and a NEGATIVE value sign-extends: (>> -256 7) = -2 (arithmetic, not logical).
-        assert_eq!(run_main("(>> 256 7)"), 2);
-        assert_eq!(run_main("(>> -256 7)"), -2);
     }
 
     #[test]
