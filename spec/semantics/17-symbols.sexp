@@ -919,3 +919,21 @@
   (input (do (type W (Mk Symbol)) (def (f (: w W)) (match w ((Mk #"add") 1) ((Mk _) 0)))
              (def (main) (f (Mk (Symbol.of (String.concat "su" "b"))))) (export main)))
   (call main) (output (: 0 Int64)))
+
+; -- runtime Symbol.of interning + Symbol.to-string round-trip (Symbol.of over a runtime rope defeats the
+; fold; migration from rcdzc a_runtime_string_interns_to_a_symbol_by_content, 2026-08-27).
+
+(case "a runtime Symbol.of of a rope equals a symbol literal by content"
+  (input (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+             (def (main) (if (= (Symbol.of (rep "" 3)) #"xxx") 1 0)) (export main)))
+  (call main) (output (: 1 Int64)))
+
+(case "a runtime Symbol.of of a different-length rope does not equal the literal"
+  (input (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+             (def (main) (if (= (Symbol.of (rep "" 2)) #"xxx") 1 0)) (export main)))
+  (call main) (output (: 0 Int64)))
+
+(case "a runtime Symbol.of then Symbol.to-string round-trips the bytes"
+  (input (do (def (rep s n) (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+             (def (main) (String.byte-len (Symbol.to-string (Symbol.of (rep "xx" 3))))) (export main)))
+  (call main) (output (: 5 Int64)))
