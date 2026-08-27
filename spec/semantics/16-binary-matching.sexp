@@ -2538,3 +2538,36 @@
     ((bin (u8 n) (bytes payload n)) (Bytes.len payload)) (_ -1))) (export main)))
   (call main (: 2 Int64)) (output (: 2 Int64))
   (call main (: 1 Int64)) (output (: -1 Int64)))
+
+; -- runtime bin-match decode over a param-built scrutinee (defeats the const fold; exercises the runtime
+; BinIntRead + literal-tag dispatch emit; migration from rcdzc a_runtime_bin_match_decodes_..., 2026-08-27).
+
+(case "a runtime bin-match u16 round-trips the built value"
+  (input (do (def (main (: n UInt16)) (match (bin (u16 n)) ((bin (u16 m)) m) (_ -9))) (export main)))
+  (call main (: 258 UInt16)) (output (: 258 Int64)))
+
+(case "a runtime bin-match signed i8 decodes two's complement"
+  (input (do (def (main (: n Int8)) (match (bin (i8 n)) ((bin (i8 m)) m) (_ -9))) (export main)))
+  (call main (: -1 Int8)) (output (: -1 Int64)))
+
+(case "a runtime bin-match little-endian read matches the little-endian build"
+  (input (do (def (main (: n UInt16)) (match (bin (u16 n le)) ((bin (u16 m le)) m) (_ -9))) (export main)))
+  (call main (: 258 UInt16)) (output (: 258 Int64)))
+
+(case "a runtime bin-match leading literal tag dispatches to the decode"
+  (input (do (def (main (: n UInt16)) (match (bin (u8 1) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main)))
+  (call main (: 300 UInt16)) (output (: 300 Int64)))
+
+(case "a runtime bin-match mismatched literal tag falls to the catch-all"
+  (input (do (def (main (: n UInt16)) (match (bin (u8 2) (u16 n)) ((bin (u8 1) (u16 m)) m) (_ -9))) (export main)))
+  (call main (: 300 UInt16)) (output (: -9 Int64)))
+
+(case "a runtime bin-match whole-scrutinee length mismatch falls to the catch-all"
+  (input (do (def (main (: n UInt8)) (match (bin (u8 n)) ((bin (u16 m)) m) (_ -9))) (export main)))
+  (call main (: 5 UInt8)) (output (: -9 Int64)))
+
+(case "a runtime bin-match multi-arm dispatch selects by the leading literal tag"
+  (input (do (def (main (: t UInt8) (: v UInt16)) (match (bin (u8 t) (u16 v)) ((bin (u8 1) (u16 x)) x) ((bin (u8 2) (u16 y)) (+ y 1000)) (_ -1))) (export main)))
+  (call main (: 1 UInt8) (: 42 UInt16)) (output (: 42 Int64))
+  (call main (: 2 UInt8) (: 42 UInt16)) (output (: 1042 Int64))
+  (call main (: 9 UInt8) (: 42 UInt16)) (output (: -1 Int64)))
