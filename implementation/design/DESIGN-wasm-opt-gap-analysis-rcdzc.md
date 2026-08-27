@@ -153,6 +153,40 @@ Field notes:
   size-only opportunity the aggregator can list apart from the true `(gap …)`
   rows. Only when neither tier shrinks it is it a bare `(optimal (case …))`.
 
+## Querying the report with `cdz query`
+
+Because the report is sexpr, the built-in structural query engine
+(`cdz query PATTERN FILE --from sexpr`) reads it directly — no bespoke parser.
+A PATTERN is sexpr text with `,x` (bind one node) and `,@xs` (bind a run of
+siblings, including an empty run); `,@_` is a throwaway run. `--count` prints the
+match count, `--json` prints each match with its bindings. Ranking by a numeric
+field is done on the `--json` (the engine is a structural MATCH tool; value-sort
+composes externally via `jq`/a one-liner). Verified recipes:
+
+```sh
+# My backlog: every gap this vertical owns (funcs-drop gaps route to the inliner).
+cdz query '(owner-lane wasm-opt)' wasm-opt-gaps.sexp --from sexpr
+
+# Inliner-lane gaps (route to v-compiler-ml / v-core-opt), just the count.
+cdz query '(owner-lane inliner)' wasm-opt-gaps.sexp --from sexpr --count
+
+# Rank ALL gaps by -O3 size delta, descending — binds case + delta, sorts on JSON.
+cdz query '(gap (case ,c ,t) ,@_ (delta (o3 ,d) ,@_) ,@_)' \
+    wasm-opt-gaps.sexp --from sexpr --json \
+  | jq -r 'sort_by(-(.bindings.d|tonumber))[] | "\(.bindings.d)\t\(.bindings.c)"'
+
+# My-lane gaps WITH their deltas (filter + bind in one pattern; owner-lane is last).
+cdz query '(gap (case ,c ,t) ,@_ (delta (o3 ,d) ,@_) ,@_ (owner-lane wasm-opt))' \
+    wasm-opt-gaps.sexp --from sexpr --json
+
+# Size-only (`-Oz`-only) opportunities, and the fully-optimal cases.
+cdz query '(optimal-o3 ,@_)' wasm-opt-gaps.sexp --from sexpr --count
+```
+
+The metavar-run binds across siblings on BOTH sides of a fixed node, so a record's
+field order can evolve without breaking these patterns as long as the named child
+(`(delta …)`, `(owner-lane …)`) is present.
+
 ## Runnable target + per-case WAT diff
 
 `v-nix` wires a nix target so any agent can run the analysis and inspect a case
