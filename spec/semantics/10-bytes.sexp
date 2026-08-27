@@ -2277,3 +2277,42 @@
   (call   main (: 50 Int64))
   (output (: 875 Int64))
   (live-objects 0))
+
+; -- breaker batch 447 (2026-08-27): the two ConstBytes REPRESENTATIONS #3837 unifies, probed at
+; runtime. A compile-time-constant Bytes reaches the backend two ways — a Core::BytesOf of constants
+; (the b"…" reader sugar) and a baked Core::ConstBytes leaf (a const-transform fold such as
+; Blake3.of) — and #3837 makes both build-once hoist targets. These pin content-correctness and
+; drop-safety across that split; sbd1/sbd2 above pin the single-representation case.
+
+(case "mrd1 a byte-string literal and a const-folded Bytes.of with identical content compare equal at runtime"
+  (doc    "`a` branch-selects (runtime arg) between b\"ABC\" and a different literal; `b` is
+           `(Bytes.of (list 65 66 67))` — the same three bytes reaching the backend as a folded constant.
+           n=1: 100*3 + 3 + 1000 (a=b) = 1303. Whether the two representations dedup onto one static or
+           stay separate, content equality and both length reads must hold, and both drop clean. MUST be
+           1303, live-objects 0.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((a (if (= n 1) b"ABC" b"zz"))
+                    (b (Bytes.of (list 65 66 67))))
+                (+ (* 100 (Bytes.len a)) (+ (Bytes.len b) (if (= a b) 1000 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1303 Int64))
+  (live-objects 0))
+
+(case "mrd2 a Blake3-baked constant Bytes used twice with drops between — equal hashes, thirty-two bytes each, no live objects"
+  (doc    "`Blake3.of` of a constant folds to a baked ConstBytes leaf (the representation #3837 newly
+           recognizes as a hoist target). `h` branch-selects between the hashes of two different constant
+           inputs; `h2` re-evaluates the shared one. n=1: both are the 32-byte hash of b\"stable-input\" ->
+           100*32 + 32 + 1000 (h=h2) = 4232, and the drops between uses must not free the baked payload.
+           MUST be 4232, live-objects 0.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((h (if (= n 1) (Blake3.of b"stable-input") (Blake3.of b"other-input")))
+                    (x (Bytes.len h))
+                    (h2 (Blake3.of b"stable-input")))
+                (+ (* 100 x) (+ (Bytes.len h2) (if (= h h2) 1000 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 4232 Int64))
+  (live-objects 0))
