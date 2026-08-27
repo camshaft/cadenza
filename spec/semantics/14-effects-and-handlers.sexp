@@ -8445,3 +8445,23 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 50 Int64)))
+
+; -- breaker batch 481 (2026-08-27): the SINGLE-application control for the cp4 factory-body
+; sharing bug. A nullary factory whose BODY performs, called once and applied once, folds
+; correctly (a = seed, 50) — the bug (v-effects isolation: the upstream inline pass duplicates
+; the performing nullary-def-call across MULTIPLE use sites BEFORE reduce_handle, so one draw
+; becomes two independent draws; filed to v-inference as the resolve/inline owner) is invisible
+; with a single use. The multi-application shape (correct value 150, currently 170) stays
+; UNPINNED until the inliner binds-once; this control fences the fix from breaking the
+; single-use path.
+
+(case "cpf1 a performing nullary factory called once and applied once folds capture-once"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (mk) (let ((a (St.next))) (fn ((: x Int64)) (* a x))))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((f (mk))) (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 50 Int64)))
