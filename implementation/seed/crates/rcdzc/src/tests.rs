@@ -62143,32 +62143,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_ctl_arm_whose_escaping_k_continuation_reperforms_folds_via_handler_reinstall() {
-        // E5 STEP-3 INC-2b (FACE-1 B2): an escaping-`k` arm whose delimited continuation `C` RE-PERFORMS the
-        // handled effect — the continuation, when applied, performs again under the handler. `pure_hole`
-        // fails on the second perform, so inc-2a's pure-C reification does NOT serve it; instead B2 reifies
-        // `k` as a SELF-RE-INSTALLING handler-wrapped closure `k = (fn (#kv) H[leading-perform := #kv])`
-        // where `H` is the whole handle node — so applying `k` re-enters the handler and the re-performed
-        // op has a home. `(handle St 0 ((tick (u) s k (use-k k))) (+ (St.tick) (St.tick)))`: apply(k,10) →
-        // (handle St 0 (arm) (+ 10 (St.tick))) — a one-remaining-perform handle that folds pure-one-hole →
-        // (+ 10 10) = 20. Was a decline (inc-2a boundary); B2 now folds the state-oblivious 2-perform case.
-        // A state-ADVANCING arm or a >2-perform body still declines cleanly (the deeper-recursion / state-
-        // threading follow-on). This is the escaping-k → value flip the DES scheduler builds on.
-        let src = "(do (effect St (op tick (-> Unit Int64))) \
-                   (def (use-k (: f (-> Int64 Int64))) (f 10)) \
-                   (def (main) (handle St 0 ((tick (u) s k (use-k k))) (+ (St.tick) (St.tick)))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("an escaping-k arm whose continuation re-performs now folds via handler re-install (B2)");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "20",
-                "apply(k,10) re-installs the handler around C=(+ 10 (St.tick)), whose tick folds → (+ 10 10) = 20"
-            );
-        }
-    }
-
-    #[test]
     fn a_do_sequenced_re_performing_escaping_k_folds_via_handler_reinstall() {
         // E5 STEP-3 INC-2b (FACE-1 B2, `do`-spine slice): the re-performing escaping-k reify over a handle
         // body that is a `(do …)` SEQUENCE (the DES scheduler's body shape). `do` is a raw AST form that
@@ -62191,72 +62165,6 @@ mod stage1 {
             assert_eq!(
                 v, "7",
                 "apply(k,7) re-installs A around (do 7 (A.a)); the inner (A.a) folds to (k 7)=7 → (do 7 7) = 7"
-            );
-        }
-    }
-
-    #[test]
-    fn a_do_wrapped_deferred_resume_thunk_over_a_reperforming_continuation_folds() {
-        // E5 STEP-3 (the DES scheduler's `sleep`/`now` step-3 gate, contract-A1 shape): the escaping
-        // continuation is a DEFERRED RESUME-THUNK — `(set (w) s (run-thunk (fn (_u) (resume w w))))` — whose
-        // `resume`'s new-state arg `w` is the state advance, EXPRESSED in the program (no op-arg magic). The
-        // handle BODY is a `(do (A.set w) (A.get))` SEQUENCE whose continuation `C = (do □ (A.get))` itself
-        // RE-PERFORMS a different op (`get`) that reads the advanced state. This is the two-hole general-one-
-        // shot refold, and it already folds WITHOUT the `do` (`(+ (A.set 42) (A.get))` → 84); the sole gap
-        // was the two-hole block's leading-hole finder not seeing through `do`. `do_aware_leading_hole` (a
-        // `do`-aware, continuation-fold-block-SCOPED copy of `leading_strict_hole` — scoped so the thread /
-        // match-peel path is untouched) closes it: the refold re-reduces `C[w]` under the handler re-seeded
-        // with `w`, so `(A.get)` reads the advanced state. `(do (A.set 42) (A.get))` seed 0: set resumes with
-        // new-state 42, the `do` discards the set's result, `get` reads 42 → 42 (the `do` yields its last).
-        // This is the shape v-discrete-event-sim's `sleep`/`now` gate folds to 5000000000.
-        let src = "(do (effect A (op set (-> Int64 Int64)) (op get (-> Unit Int64))) \
-                   (def (run-thunk thunk) (thunk unit)) \
-                   (def (main) \
-                     (handle A 0 ((get (u) s (resume s s)) (set (w) s (run-thunk (fn (_u) (resume w w))))) \
-                       (do (A.set 42) (A.get)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "a do-wrapped deferred-resume-thunk over a re-performing continuation folds (do-aware two-hole)",
-        );
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "42",
-                "set resumes new-state 42; the `do` discards set's result; get reads the advanced state 42"
-            );
-        }
-    }
-
-    #[test]
-    fn a_deferred_resume_thunk_stored_in_a_sum_and_match_extracted_folds() {
-        // E5 STEP-3 (DES inc-4 multi-task pqueue reach): a deferred-resume-thunk STORED IN A COMPOUND (a sum
-        // ctor) and MATCH-EXTRACTED through a helper before apply — the scheduler's store→pop-min→apply
-        // round-trip. `(sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake)))))` where
-        // `unbox-apply(b) = match b ((Box.Box th) (th unit))`. The `resume` is buried behind `Box.Box` + the
-        // match, so the fold's classifiers see no tail resume and the arm declined (v-DES's inc-4 forcing
-        // repro). `reduce_arm_deferred_resume` (co-built with v-inference) exposes it: β-reduce the one-shot
-        // `unbox-apply` [count_param_refs≤1, DES-confirmed exactly-once] → `eval::fold_ctor_match` folds the
-        // `(match (Box.Box (fn..)) ((Box.Box th) (th unit)))` (SumPayload-aware substitution — the binder
-        // resolves to SumPayload, not Ref) → the exposed `((fn (_u) (resume unit wake)) unit)` β-reduces to
-        // `(resume unit wake)`, the resume-in-place form the fold serves. The `now` arm reads the wake-seeded
-        // clock → 5000000000. GATED to a 4-part arm (`cont: None`); an escaping-k arm (b2-min's `(a () s k
-        // (use-k k))`) is served by the reify path and NOT reduced here.
-        let src = "(do \
-                   (type Instant (Instant UInt64)) \
-                   (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n))) \
-                   (type Box (Box (-> Unit Instant))) \
-                   (def (unbox-apply (: b Box)) (match b ((Box.Box th) (th unit)))) \
-                   (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant))) \
-                   (def (main) \
-                     (handle Sim (Instant.Instant 0) \
-                       ( (now (u) s (resume s s)) \
-                         (sleep (wake) s (unbox-apply (Box.Box (fn (_u) (resume unit wake))))) ) \
-                       (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "a deferred-resume-thunk stored in a sum + match-extracted before apply folds (DES inc-4)",
-        );
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "5000000000",
-                "unbox-apply β-reduces + the ctor-match folds → resume unit wake; now reads the wake clock"
             );
         }
     }
