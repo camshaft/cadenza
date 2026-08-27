@@ -3296,3 +3296,49 @@
   (call main (: 1 Int64))
   (output (: 100001 Int64))
   (live-objects 0))
+
+; ── breaker batch 524: the ESCAPE cells of the dual-borrow leak (ownership settled: v-core-opt,
+; mark_binder_dups end-of-scope drop). A walked operand ESCAPING through a branch arm leaks BOTH
+; sides today (6) — an existing under-drop. The coming fix must drop the dead sibling WITHOUT
+; dropping the escapee: the 1001 values (read through the returned tree in the caller) fence the
+; UAF side; the known-leak 6 clauses flip to 0. dqe12 = callee-scope eq-only 0-control.
+
+(case "dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)"
+  (input (do
+(def (f (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (if (= a b) a (tuple 9 (tuple 9 (tuple 9 9))))))
+(def (main (: n Int64))
+  (let ((r (f n)))
+    (+ (* 1000 (. (. (. r 1) 1) 1)) (. r 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1001 Int64))
+  (live-objects known-leak 6))
+
+(case "dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)"
+  (input (do
+(def (h (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (if (= a b) (. a 1) (tuple 9 (tuple 9 9)))))
+(def (main (: n Int64))
+  (let ((r (h n)))
+    (+ (* 1000 (. (. r 1) 1)) (. r 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1001 Int64))
+  (live-objects known-leak 6))
+
+(case "dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean"
+  (input (do
+(def (g (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 100000 (if (= a b) 1 0)) 0)))
+(def (main (: n Int64)) (g n))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100000 Int64))
+  (live-objects 0))
