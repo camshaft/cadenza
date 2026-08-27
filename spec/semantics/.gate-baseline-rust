@@ -2558,7 +2558,9 @@ pass	a map inserted-into in one recursive sub-call is unchanged for a sibling su
 pass	a map inserted-into on one path and size-read on another keeps copy-on-write across recursion
 pass	a map keyed by inserting under a runtime Bytes ROPE is found by its flat twin and adds no leak
 pass	a map literal with keys of two different types is a type error
+pass	a map match over a map literal with a non-matching runtime key falls through
 pass	a map match over a map literal with a runtime key selects by value, not a const fold
+pass	a map match over a map literal with a runtime key selects the arm by value
 pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a map mixing integer and float values is a type error
 pass	a map nested as a VALUE persists across a two-level update via Map.swap
