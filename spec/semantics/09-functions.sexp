@@ -1139,6 +1139,15 @@
             (export main)))
   (call   main (: 1000000 Int64)) (output (: 1000000 Int64)))
 
+(case "a self-tail-recursive SUM consumer loops (tail call in a MatchSum arm) and computes the fold"
+  (doc    "The sum-type companion of the scalar tail loop above: `count` over `(type Nat (Zero) (Succ Nat))` self-tail-calls from INSIDE its `((Succ m) (count m (+ acc 1)))` match arm — the tail call sits in a sum decision-tree leaf, so the loop transform must thread tail position through the `MatchSum` (not only a bare / `if` tail), and the fold must compute correctly. `build` makes a depth-1000 Nat and `count` folds it → 1000. (That this compiles to a `loop` rather than a stack-growing `call` — the constant-stack STRUCTURE — is unit-pinned at the Lir level in rcdzc; here we pin the value parity of the MatchSum-arm tail fold.) The walked `Succ` spine reclaims per iteration, leaving one live cell.")
+  (input  (do (type Nat (Zero) (Succ Nat))
+              (def (build (: i Int64) (: acc Nat)) (if (< i 1) acc (build (- i 1) (Succ acc))))
+              (def (count (: n Nat) (: acc Int64)) (match n ((Zero) acc) ((Succ m) (count m (+ acc 1)))))
+              (def (main) (count (build 1000 (Zero)) 0)) (export main)))
+  (call   main) (output (: 1000 Int64))
+  (live-objects known-leak 1))
+
 (case "a same-signature mutual tail cycle shares one constant-stack loop"
   (doc    "`even`/`odd` are a SAME-SIGNATURE mutual tail-recursive pair: each cross-call is in tail
            position, so the group compiles to ONE shared `loop` with a `which` dispatch — a cross-call
