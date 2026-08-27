@@ -4209,6 +4209,7 @@ pass	a self-comparison of a trapping operand still traps (less-than)
 pass	a self-recursive AST walker consumes a node's child list while the node is threaded unchanged
 pass	a self-recursive Bool-returning function whose recursive call is the then-branch
 pass	a self-recursive effectful loop sums a fresh-id draw per step — the gensym idiom
+pass	a self-referential-shaped HOF that is not actually recursive folds
 pass	a self-shielding or does not hoist its trapping right operand past the short-circuit
 pass	a self-tail call passing a heap-match argument compiles to valid wasm
 pass	a self-tail loop advancing by a tuple projection while accumulating compound-sum nodes compiles
@@ -7308,6 +7309,7 @@ pass	pir5 a chained masked-nibble sum propagates its range and stays guard-free
 pass	pjr1 a consuming projection of a let-bound tuple's list child is retained (re-projection reads original)
 pass	pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
+pass	pkc1 fifty let-bound multi-consumed peer results reclaim to zero (the leak keys to escape, not consumption)
 pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
 pass	pla1 a list argument crosses inbound to a peer and is read by the peer op
 pass	plr1 a peer LIST result escapes the entrypoint via the fused envelope
@@ -7961,8 +7963,11 @@ pass	sn2 TWO whole-state snapshots straddle interleaved bumps — the first snap
 pass	sn3 the snapshot crosses to a DEF helper — the crossed state tuple is consumed by a function parameter, not a body match
 pass	sos1 a SET-OF-STRINGS state with ARM-BUILT rope keys — the concat-built key dedups structurally against the FLAT seed literal, parity routes which inserts are no-ops
 pass	sp1 SCALAR param + 2-field record result lifts (minimal face, no spill)
+pass	sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) leaks the full spine (position-matrix cell)
 pass	sp2 SCALAR param + 20-field record result lifts (spill-sized, same fix)
+pass	sp2 a RECORD-payload spine leaks the full spine (position-matrix cell)
 pass	sp3 SCALAR param + record result with an Option field (Some side)
+pass	sp3 a THREE-tuple payload spine (rec-ref at Elem 2) leaks the full spine (position-matrix cell)
 pass	sp3n SCALAR param + record result with an Option field (None side, branch-selected)
 pass	sp4 SCALAR param + bare option result
 pass	sp5 SCALAR param + list result
@@ -8951,5 +8956,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	pkc1 fifty let-bound multi-consumed peer results reclaim to zero (the leak keys to escape, not consumption)
-pass	a self-referential-shaped HOF that is not actually recursive folds
