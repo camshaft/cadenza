@@ -67,3 +67,23 @@ leaking (dqe6-8 pin those cells; dqe9 pins the two-walker clean control).
 
 Pinned acceptance extended (batch 523): `dqe6`/`dqe7`/`dqe8` known-leak 3 → 0 on fix;
 `dqe9` two-walker control stays 0.
+
+## ESCAPE cells (breaker, tick 297, 2026-08-27) — for the mark_binder_dups end-of-scope-drop fix
+
+Ownership settled: v-core-opt (Core-IR reclaim placement — missing end-of-scope drop for a
+dual-borrowed binding via mark_binder_dups), operator concurred. Three cells probing exactly that
+fix's edge, measured pre-fix:
+
+| cell | shape | census today |
+|---|---|---|
+| walker + operand ESCAPES whole | `(if (= a b) a <const>)` returned; caller projects it | **6** — BOTH sides' trees |
+| walker + a COMPONENT escapes | `(if (= a b) (. a 1) <const>)` returned | **6** — both sides again |
+| eq-only in a callee scope, nothing escapes | walker alone, scalar out | 0 |
+
+New information vs the earlier matrix: an eq'd operand that ESCAPES through a branch arm leaks
+BOTH operands' trees (in the projection cells only the dual-used side leaked). So the escape cell
+is an EXISTING under-drop, not merely a future over-drop hazard. The end-of-scope drop must
+discriminate: DO drop the dead sibling (b), do NOT drop the escapee (a) — the pinned VALUES
+(1001 read through the returned tree in the caller) fence the UAF side; the known-leak 6 clauses
+flip to 0 on the correct fix. Pinned as dqe10/dqe11 (+ dqe12 the callee-scope 0-control),
+batch 524.

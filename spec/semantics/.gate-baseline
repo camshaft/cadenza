@@ -8636,3 +8636,6 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype
+pass	dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)
+pass	dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)
+pass	dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean
