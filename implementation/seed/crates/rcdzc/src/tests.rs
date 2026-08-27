@@ -61527,49 +61527,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_effectful_def_with_a_post_recursion_sibling_perform_folds_via_multivalue_return()
-    {
-        // OUT-STATE-OBSERVING SIBLING PERFORM, now FOLDED (repro-1 multi-value return). A recursive-effectful
-        // def whose SELF-CALL precedes a PERFORM on a strict spine — `(- (build (- n 1)) (Idx.next))`,
-        // `((. List push) (build …) (Idx.next))` — has the perform read the recursion's OUT-state. This used
-        // to DECLINE (single-return could not carry the out-state, and folding against the incoming state
-        // miscompiled); the multi-value specialization (`build#eff` returns `(value, out-state)`, the
-        // self-call let-bound and its out-state threaded into the following `Idx.next`) now folds it.
-        // LIST case: `((. List push) (build (- n 1)) (Idx.next))` — build 3 seeded 1 pushes 3 elements → len 3.
-        let list_src = "(do (effect Idx (op next (-> Unit Int64))) \
-             (def (build (: n Int64)) (if (= n 0) (list) ((. List push) (build (- n 1)) (Idx.next)))) \
-             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3)))) (export main))";
-        let list_bytes = compile_component(&crate::codec::encode(&parse(list_src)))
-            .expect("the list-push post-recursion perform folds via multi-value return");
-        if let Some(v) = crate::tests::run_linked(&list_bytes, "main") {
-            assert_eq!(v, "3");
-        }
-        // ARITH case: `(- (build (- n 1)) (Idx.next))` seeded 1 — deepest recursion first, so the ids draw 1,
-        // 2, 3 bottom-up: build 1 = 0-1 = -1, build 2 = -1-2 = -3, build 3 = -3-3 = -6.
-        let arith_src = "(do (effect Idx (op next (-> Unit Int64))) \
-             (def (build (: n Int64)) (if (= n 0) 0 (- (build (- n 1)) (Idx.next)))) \
-             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))";
-        let arith_bytes = compile_component(&crate::codec::encode(&parse(arith_src)))
-            .expect("the arithmetic post-recursion perform folds via multi-value return");
-        if let Some(v) = crate::tests::run_linked(&arith_bytes, "main") {
-            assert_eq!(v, "-6");
-        }
-        // The MIRROR shape — a perform BEFORE the self-call (reads pre-recursion = incoming state) — still
-        // FOLDS via the single-return path: `(- (Idx.next) (build (- n 1)))` seeded 1 → 2.
-        let folds = "(do (effect Idx (op next (-> Unit Int64))) \
-             (def (build (: n Int64)) (if (= n 0) 0 (- (Idx.next) (build (- n 1))))) \
-             (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(folds)))
-                    .expect("a perform BEFORE the self-call folds"),
-                "main",
-            ),
-            2
-        );
-    }
-
-    #[test]
     fn nested_intra_program_handlers_compose_inside_out() {
         // E3-nested: two nested `handle`s compose — the fold reduces the INNER handle first (discharging
         // its effect), leaving the OUTER effect's performs for the outer fold. `(A.a)` resumes 22 (inner),

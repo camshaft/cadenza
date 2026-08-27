@@ -1658,6 +1658,52 @@
             (export main)))
   (call   main) (output (: 2 Int64)))
 
+; The DIRECT-sibling-operand site of the multi-value fold (companion of the let-init/do-seq/match/if sites
+; above): the recursive self-call and a following perform are the two STRICT OPERANDS of one form — the
+; arguments of a call (`(. List push)`) or the operands of an arithmetic op (`-`) — with NO intervening
+; `let`. The self-call is drained around the operand list and its out-state threads into the sibling
+; perform. A single-return fold against the incoming state would miscompute the sibling's draw.
+
+(case "a self-call and a sibling perform as direct list-push operands thread out-state via multi-value return"
+  (doc    "`((. List push) (build (- n 1)) (Idx.next))` — the recursive `build` and the `(Idx.next)` perform
+           are the two arguments of `List.push`, no let. `build 3` seeded 1 pushes one element per level
+           (3 draws) → the list has length 3. Pins the list-push direct-operand site of the multi-value
+           fold (the self-call's out-state threads into the sibling push-argument perform).")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64)) (if (= n 0) (list) ((. List push) (build (- n 1)) (Idx.next))))
+            (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) ((. List len) (build 3))))
+            (export main)))
+  (call   main) (output (: 3 Int64))
+  (live-objects known-leak 10))
+
+(case "a self-call and a sibling perform as direct subtraction operands thread out-state via multi-value return"
+  (doc    "`(- (build (- n 1)) (Idx.next))` — the recursive self-call is the LEFT operand and the perform the
+           RIGHT operand of an order-sensitive `-`, no let. Seeded 1, the deepest recursion draws first so
+           ids go 1,2,3 bottom-up: build 1 = 0-1 = -1, build 2 = -1-2 = -3, build 3 = -3-3 = -6. A fold that
+           threaded the perform against the incoming (pre-recursion) state would miscompute. Pins the
+           arithmetic-operand direct-sibling site.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64)) (if (= n 0) 0 (- (build (- n 1)) (Idx.next))))
+            (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3)))
+            (export main)))
+  (call   main) (output (: -6 Int64)))
+
+(case "a perform BEFORE the self-call in a subtraction folds via the single-return path"
+  (doc    "The mirror of the arithmetic direct-operand case: the perform is the LEFT operand and the
+           self-call the RIGHT — `(- (Idx.next) (build (- n 1)))` — so the perform reads the PRE-recursion
+           (incoming) state and the single-return path suffices (no out-state threading needed). Seeded 1:
+           the outermost `(Idx.next)` draws 1, and `build 2` recurses drawing before its own subtractions;
+           the whole folds to 2. Pins that the perform-before-self-call order still folds (single-return),
+           bracketing the multi-value cases above.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (build (: n Int64)) (if (= n 0) 0 (- (Idx.next) (build (- n 1)))))
+            (def (main) (handle Idx 1 ((next (u) s (resume s (+ s 1)))) (build 3)))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "a NON-recursive helper calling a nested op whose resume performs the outer effect folds"
   (doc    "The non-recursive-helper twin of the resume-value-performs-outer case above (v-effects self-probe).
            A non-recursive `helper` calls the inner `B.step` (whose arm resumes with `(A.tick)`, performing the
