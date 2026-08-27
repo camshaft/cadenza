@@ -2983,6 +2983,26 @@
   (call   main (: 4 Int64)) (output (: 12 Int64))
   (live-objects known-leak 3))
 
+(case "an index loop's loop-invariant List.len over a heap operand is still LICM-hoisted (value correct)"
+  (doc    "The SIBLING boundary of the LICM heap-hoist guard above: the guard refuses to hoist a heap-TYPED
+           root, but a SCALAR read whose OPERAND is heap — `(List.len xs)` in the loop CONDITION — must STILL
+           be hoisted (copying the scalar length is rc-neutral, and `xs` is only BORROWED). This index loop
+           sums `(Option.expect (List.at xs i) …)` for i in 0..len(xs) with the invariant `(List.len xs)`
+           read each iteration; the value must be Σ i = n(n-1)/2 regardless of whether the length read is
+           hoisted, so it witnesses that the hoist (or its absence) is value-preserving. `mb` builds a genuine
+           runtime list so `List.len` is a real `Core::ListLen` (a const-length list would fold it away).")
+  (input  (do
+            (def (mb (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (mb (+ i 1) n (List.push acc i)) acc))
+            (def (loop (: i Int64) (: xs (List Int64)) (: acc Int64))
+              (if (< i (List.len xs)) (loop (+ i 1) xs (+ acc (Option.expect (List.at xs i) "v"))) acc))
+            (def (main (: n Int64)) (loop 0 (mb 0 n (list)) 0))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 4 Int64)) (output (: 6 Int64))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (live-objects 0))
+
 (case "a sum-match payload's heap child consumed while the scrutinee is live is retained"
   (doc    "The SUM-PAYLOAD face of the still-live-binding family: a sum-match payload binder lowers to a
            `Core::SumPayload` = a BORROW of the scrutinee's payload (`sum-payload`/`arr-get`, no rc++).

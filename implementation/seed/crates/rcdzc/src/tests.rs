@@ -19512,46 +19512,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_loop_invariant_heap_projection_consumed_in_the_body_is_not_licm_hoisted() {
-        // MISCOMPILE (found + fixed 2026-07-16, v-memory-safety): LICM hoists a loop-invariant subexpression
-        // ONCE into a persistent slot read back each iteration. That is sound for a SCALAR (a count/index),
-        // but a heap-HANDLE hoist root emits its retain ONCE in the prologue while the body CONSUMES it once
-        // PER ITERATION — so a single hoisted dup covers only the first consume; the next iteration consumes a
-        // shared handle at rc==1 and FBIP-mutates it in place → the loop-carried value DRIFTS. Here `pr` is a
-        // TUPLE threaded unchanged, carrying the list; `(. pr 0)` is loop-invariant, and the body consumes it
-        // with `List.push`. Want len 3 each of m iterations → 3*m. Before the fix the projection was hoisted
-        // with one dup → per-iter len drifted 3,3,4,5,… (m=3 → 10 not 9, m=4 → 15 not 12). Fix: LICM does not
-        // hoist a heap-TYPED root (`is_heap_type` guard in `collect_hoistable`) — a heap invariant only
-        // BORROWED in the body still hoists as the enclosing SCALAR read, so only the dangerous handle-alone
-        // hoist is refused.
-        let carrier = "(module m \
-               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (loop j lim pr tot) \
-                 (if (< j lim) (loop (+ j 1) lim pr (+ tot ((. List len) ((. List push) (. pr 0) 99)))) tot)) \
-               (def (main) (loop 0 4 (tuple (mb 0 2 (list)) 0) 0)) (export main))";
-        if let Some(out) = run_on_heap(carrier) {
-            assert_eq!(
-                out, "12",
-                "a threaded tuple's projected list consumed per-iteration must not drift (4 iters × len 3)"
-            );
-        }
-        // A SCALAR loop-invariant read whose OPERAND is heap (`List.len xs` in an index loop) must STILL be
-        // hoisted — the guard only refuses a heap-TYPED root, not a scalar read over a heap operand. The
-        // hoisted `vec-len` runs once, so the component imports `vec-len` and the sum is correct.
-        let idx_loop = "(module m \
-               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (loop i xs acc) \
-                 (if (< i ((. List len) xs)) (loop (+ i 1) xs (+ acc ((. Option expect) ((. List at) xs i) \"v\"))) acc)) \
-               (def (main) (loop 0 (mb 0 3 (list)) 0)) (export main))";
-        if let Some(out) = run_on_heap(idx_loop) {
-            assert_eq!(
-                out, "3",
-                "index-loop over a hoisted List.len must be correct (0+1+2)"
-            );
-        }
-    }
-
-    #[test]
     fn a_string_param_threaded_and_concatenated_in_a_selfrec_loop_is_retained_not_freed() {
         // REGRESSION (OOB TRAP): a String PARAM threaded UNCHANGED through a self-recursive loop AND consumed
         // by `String.concat` each step — `build(s, n, acc) = build(s, n-1, String.concat(acc, s))` — trapped
