@@ -561,8 +561,8 @@ fn import_envelope_matches_component_builder_oracle() {
     assert_eq!(ours, oracle, "import envelope mismatch vs ComponentBuilder");
 }
 
-/// Value-heap H1b: the hand-emitted import envelope PARSES and TYPE-CHECKS under wasmtime
-/// (`Component::new`) — structural + component-type validity, the semantic floor that catches every
+/// Value-heap H1b: the hand-emitted import envelope PARSES and TYPE-CHECKS structurally (`wasmparser`)
+/// — structural + component-type validity, the semantic floor that catches every
 /// index/layout error the byte diff might not localize. It also carries the versioned, hashed import
 /// name `cdz-run` composes the runtime by. (Instantiation needs the runtime linked, so this checks
 /// validity/type only — the end-to-end run lands in H2 with a real compound op + the composed runtime.)
@@ -580,13 +580,11 @@ fn import_envelope_is_a_valid_component_with_the_versioned_import() {
     let bytes = assemble(&core, &exports, &[OPS.arr_alloc], &import_name);
 
     // Structural + type validity: a bad section order, wrong index, or malformed item fails here.
-    let engine = wasmtime::Engine::default();
-    let component = wasmtime::component::Component::from_binary(&engine, &bytes);
-    assert!(
-        component.is_ok(),
-        "import envelope failed to load under wasmtime: {:?}",
-        component.err()
-    );
+    // (wasmparser, not wasmtime — the rcdzc wasmtime dev-dep drop, v-wasmtime-migration; instantiation/run
+    // validity lands in the corpus heap-runs that compose the runtime via this import.)
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&bytes)
+        .expect("import envelope must be a structurally valid component");
 
     // The emitted bytes carry the exact versioned import name (interface@semver+hash) verbatim — the
     // name the linker matches the composed runtime against. Assert its literal bytes are present.
@@ -80876,8 +80874,8 @@ mod closure_host_resource {
             &[s64_comp], // one s64 closure arg (component primitive byte)
             s64_comp,    // s64 result (component primitive byte)
         );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &component)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&component)
             .expect("the host+runtime closure-resource component must be valid");
     }
 
@@ -81948,11 +81946,11 @@ mod closure_host_resource {
     #[test]
     fn a_closure_export_delegating_a_build_time_effect_emits_a_valid_component() {
         use crate::testkit::parse;
-        let engine = wasmtime::Engine::default();
         let emits_valid = |src: &str, what: &str| {
             let bytes = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
                 .unwrap_or_else(|e| panic!("{what} must emit, got decline: {}", e.message));
-            wasmtime::component::Component::from_binary(&engine, &bytes)
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+                .validate_all(&bytes)
                 .unwrap_or_else(|e| panic!("{what} must be a VALID component: {e}"));
         };
         // The canonical case + two other capture positions — all now emit valid components.
@@ -87221,8 +87219,8 @@ mod cross_component_oracle {
             .expect(
                 "a scalar host-effect resource escape now emits (assemble_host_runtime_resource)",
             );
-        let engine = wasmtime::Engine::default();
-        wasmtime::component::Component::from_binary(&engine, &bytes)
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&bytes)
             .expect("the host-resource-escape component must be valid");
     }
 
