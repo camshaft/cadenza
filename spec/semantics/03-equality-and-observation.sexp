@@ -3250,3 +3250,49 @@
   (call main (: 1 Int64))
   (output (: 101001 Int64))
   (live-objects known-leak 6))
+
+; ── breaker batch 523: the dual-use leak GENERALIZED (same issue file, scope corrected) — the
+; second consumer can be ANY heap walker (order / champ-key / Set.contains), not just value-eq;
+; two walkers WITHOUT a projection are clean (dqe9). Fix must target the generic dup/drop
+; placement for projected-and-walked nested compounds; an eq-only fix leaves dqe6-8 red.
+
+(case "dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (. (. (. a 1) 1) 1)) (if (< a b) 100000 1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1001 Int64))
+  (live-objects known-leak 3))
+
+(case "dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (. (. (. a 1) 1) 1))
+       (match (Map.lookup (Map.insert (Map.empty) a 42) b) ((Some v) v) ((None u) -1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1042 Int64))
+  (live-objects known-leak 3))
+
+(case "dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (* 1000 (. (. (. a 1) 1) 1)) (if (Set.contains (Set.of (list a)) b) 100 0))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1100 Int64))
+  (live-objects known-leak 3))
+
+(case "dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean"
+  (input (do (def (main (: n Int64))
+  (let ((a (tuple n (tuple n (tuple n n))))
+        (b (tuple n (tuple n (tuple n n)))))
+    (+ (if (= a b) 100000 0) (if (< a b) 10000 1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100001 Int64))
+  (live-objects 0))

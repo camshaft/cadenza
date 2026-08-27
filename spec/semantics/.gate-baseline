@@ -8627,3 +8627,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)
+pass	dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree
+pass	dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree
+pass	dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean
