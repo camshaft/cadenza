@@ -1057,6 +1057,36 @@
   (call   run 20)
   (output (: true Bool)))
 
+; --- Primitive 2: const Set/Map.to-list folds SUM elements/keys by discriminant-then-payload order -----------
+; A sum (Option / Result / user variant) orders by DISCRIMINANT first (the variant index), then by PAYLOAD
+; within the same variant — the runtime `value_cmp_shaped` Sum order. `const_key_order`/`cval_key_order` now
+; rank sums, so a const Set/Map of sums materializes its to-list byte-matching the runtime (operator: full
+; generality across ALL shapes). A payload the canonical order cannot rank still declines.
+
+(case "a const Set.to-list of SUM (Option) elements folds by discriminant-then-payload, dedup'd"
+  (doc    "`{Some 5, None, Some 1}` folds to 3 members; `Set.to-list` orders the `Some` variant (by payload:
+           1 before 5) before/after `None` by discriminant, and the head here is `Some 1` (the Some disc sorts
+           first, smallest payload). Pins disc-first-then-payload + dedup of a repeated `Some`.")
+  (input  (do (def (main)
+                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (Option.Some 5) (Option.None) (Option.Some 1) (Option.Some 1))))))
+                          (match (List.at (Set.to-list (Set.of (list (Option.Some 5) (Option.None) (Option.Some 1)))) 0)
+                            ((Option.Some (Option.Some v)) v)
+                            ((Option.Some (Option.None)) -100)
+                            ((Option.None) -1)))))
+              (export main)))
+  (output (: 3001 Int64)))
+
+(case "a const Set.to-list of SUM elements byte-matches the RUNTIME set-to-list (cross-check)"
+  (doc    "The soundness cross-check: a RUNTIME `Option` Set.to-list (built via a runtime `Set.insert (Option.Some
+           n)`) equals the COMPILE-TIME fold of `{Some 1, Some 5, None}` — both disc-then-payload ordered. Pins
+           that `const_key_order`'s Sum arm agrees with the runtime `value_cmp_shaped` Sum order.")
+  (input  (do (def (run (: n Int64))
+                (= (Set.to-list (Set.insert (Set.of (list (Option.Some 1) (Option.None))) (Option.Some n)))
+                   (const (Set.to-list (Set.of (list (Option.Some 1) (Option.Some 5) (Option.None)))))))
+              (export run)))
+  (call   run 5)
+  (output (: true Bool)))
+
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
 ; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
