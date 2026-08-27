@@ -5056,17 +5056,20 @@ fn classify(reason: &str) -> Option<TrapCode> {
         // grades pass on BOTH backends. (Rust's second shift panic, "integer overflow in left shift",
         // already classifies via the "overflow" arm above.)
         Some(TrapCode::Unreachable)
-    } else if r.contains("signature mismatch") {
-        // A cross-component PEER compose-time reject: cdz-run's peer signature check refuses to compose a
-        // peer whose exported op arity/signature does not match the consumer's binding (the signature/
-        // arity/type reject family). Both the corpus `(trap "signature mismatch")` legacy reason and
-        // cdz-run's full "peer `<iface>` op `<f>` signature mismatch: …" reason classify here — so a
+    } else if r.contains("signature mismatch") || r.contains("type mismatch") {
+        // A cross-component PEER compose-time reject in the SIGNATURE family: cdz-run's peer signature check
+        // refuses to compose a peer whose exported op does not match the consumer's binding — either an
+        // ARITY mismatch ("peer `<iface>` op `<f>` signature mismatch: …") or a per-argument/result TYPE
+        // mismatch ("peer `<iface>` op `<f>` type mismatch at argument <n>: …"). Both cdz-run phrases, and
+        // the corpus `(trap "signature mismatch")` / `(trap "CDZ0705")` expectation, classify here — so a
         // compose-time reject grades PASS, not an unconfirmed todo. (A compose reject is neither a compile
         // `(declines)`/`(error)` — both components compile — nor a runtime arithmetic trap; it is its own kind.)
         Some(TrapCode::PeerSignatureMismatch)
-    } else if r.contains("does not export the interface") {
-        // A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface
-        // compose reject). The corpus `(trap "does not export the interface")` reason classifies here.
+    } else if r.contains("does not export op") || r.contains("does not export the interface") {
+        // A peer that does not export a bound OP ("peer `<iface>` does not export op `<f>`, … offers …") or
+        // does not export the bound INTERFACE at all ("peer does not export the interface `<iface>`") — the
+        // missing-op / wrong-interface compose reject. Matched on the two SPECIFIC peer phrases (not a bare
+        // "does not export", which would also catch unrelated runtime/reducer/NFC infrastructure errors).
         Some(TrapCode::PeerMissingInterface)
     } else {
         None
