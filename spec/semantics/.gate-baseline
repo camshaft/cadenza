@@ -8613,3 +8613,9 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a MULTI-shot arm over a pure effect-free call in the continuation folds
+pass	NESTED effect-free calls in the continuation compose and fold
+pass	a continuation call whose body ITSELF performs is not effect-free and declines
+pass	a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform
+pass	two nested distinct effects both tail-resumptive fold via the threading path
+pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)

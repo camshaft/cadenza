@@ -8183,3 +8183,9 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a MULTI-shot arm over a pure effect-free call in the continuation folds
+pass	NESTED effect-free calls in the continuation compose and fold
+pass	a continuation call whose body ITSELF performs is not effect-free and declines
+pass	a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform
+pass	two nested distinct effects both tail-resumptive fold via the threading path
+pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
