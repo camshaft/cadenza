@@ -7296,6 +7296,43 @@
               (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (and (< 3 5) (< (Amb.flip) 5)))) (export main)))
   (output (: true Bool)))
 
+(case "an or whose left operand short-circuits elides the performing right operand"
+  (doc    "The short-circuit-soundness twin of the and-right-operand case: `(or l r)` desugars to `(if l
+           true r)`, so a TRUE left operand selects the `true` branch and the right operand — which here
+           PERFORMS — is DEAD and must not run. `(or true (< (Amb.flip) 5))` under arm `(not (resume 10 s))`
+           short-circuits on `true`, so `Amb.flip` never fires and the handle is its body value `true`.
+           Pins that distribution preserves short-circuit: the elided branch's perform does not execute.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (not (resume 10 s)))) (or true (< (Amb.flip) 5)))) (export main)))
+  (output (: true Bool)))
+
+(case "a two-hole perform in a match scrutinee AND an arm folds via the one-shot refold"
+  (doc    "A perform in BOTH a `match` scrutinee AND an arm body composes the one-shot refold with match
+           distribution. `(match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip))))` — the refold takes the SCRUTINEE
+           flip as the leading hole `C = (match [] (0 5) (_ (+ 1 (Amb.flip))))`; `(resume 10 s)` re-reduces
+           `C[10] = (match 10 (0 5) (_ (+ 1 (Amb.flip))))`, whose scrutinee is now the pure constant 10, so
+           distribution fires over the arm perform: the `_` arm `(+ 1 (Amb.flip))` folds to `(+ 1 (+ 1 10))`
+           = 12 and is selected → 12; the outer arm `(+ 1 (resume 10 s))` = `(+ 1 12)` = 13. One-shot, so no
+           effect is duplicated.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (match (Amb.flip) (0 5) (_ (+ 1 (Amb.flip)))))) (export main)))
+  (output (: 13 Int64)))
+
+(case "a MULTI-shot arm over a distributed match arm-body hole folds"
+  (doc    "A MULTI-shot arm (resumes twice) over a match whose selected arm body performs: each distributed
+           arm's sub-handle duplicates its pure continuation safely. `(match 1 (0 5) (_ (Amb.flip)))` — the
+           scrutinee 1 selects the `_` arm, an identity slice `(handle … (Amb.flip))`, so `(resume 1 s)` = 1
+           and `(resume 2 s)` = 2; the arm `(* (resume 1 s) (resume 2 s))` = `(* 1 2)` = 2.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (* (resume 1 s) (resume 2 s)))) (match 1 (0 5) (_ (Amb.flip))))) (export main)))
+  (output (: 2 Int64)))
+
 ; --- A handler folds state across the operations it discharges ----------------------------------
 ; capabilities-and-effects.md #A Handler Threads State Across The Operations It Discharges. Every handle
 ; seeds an initial state; each arm binds the current state and resume threads the next state forward; the
