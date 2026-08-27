@@ -2839,10 +2839,7 @@ fn guard_cond_record_binds(
         return None;
     }
     let pattern = g[0];
-    let fields = db
-        .ast
-        .as_form(pattern, "record")
-        .or_else(|| db.ast.as_ctor_form(pattern, "record"))?;
+    let fields = db.ast.compound_form_of(pattern, CompoundCtor::Record)?;
     // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
     let arm = db.parent_of(form)?;
     let Struct::List(pb) = db.ast.get(arm) else {
@@ -2969,10 +2966,7 @@ fn match_arm_record_binds(
         return None;
     }
     // The pattern must be a `(record (key value) …)` form.
-    let fields = db
-        .ast
-        .as_form(record_pat, "record")
-        .or_else(|| db.ast.as_ctor_form(record_pat, "record"))?;
+    let fields = db.ast.compound_form_of(record_pat, CompoundCtor::Record)?;
     // `form` must be an arm of an enclosing `(match scrutinee arm…)`, not the scrutinee itself.
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
@@ -3112,10 +3106,7 @@ fn find_leading_binder_in_list_pattern(
     }
     // SLOW PATH (a pattern with a nested element — never one of the two measured explosions, and a wide
     // nested-element list arm declines at lowering anyway): the exact element-by-element descent.
-    let elems = db
-        .ast
-        .as_ctor_form(list_pat, "list")
-        .or_else(|| db.ast.as_form(list_pat, "list"))?;
+    let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
     // The LEADING positions are those before a `..` marker (all of them for a fixed-arity pattern).
     let lead = elems
         .iter()
@@ -3182,10 +3173,7 @@ fn build_simple_list_binders(
     db: &Db,
     list_pat: StructId,
 ) -> Option<std::rc::Rc<crate::db::SimpleListBinders>> {
-    let elems = db
-        .ast
-        .as_ctor_form(list_pat, "list")
-        .or_else(|| db.ast.as_form(list_pat, "list"))?;
+    let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
     let dd = elems.iter().position(|&e| db.ast.as_name(e) == Some(".."));
     let lead = dd.unwrap_or(elems.len());
     let mut by_name: crate::fxhash::FxHashMap<String, Vec<crate::core::PathStep>> =
@@ -3245,10 +3233,7 @@ fn find_rest_binder_in_list_pattern(db: &Db, list_pat: StructId, name: &str) -> 
             });
     }
     // SLOW PATH (a nested-element pattern): the exact `..`-position scan.
-    let elems = db
-        .ast
-        .as_ctor_form(list_pat, "list")
-        .or_else(|| db.ast.as_form(list_pat, "list"))?;
+    let elems = db.ast.compound_form_of(list_pat, CompoundCtor::List)?;
     let dd = elems
         .iter()
         .position(|&e| db.ast.as_name(e) == Some(".."))?;
@@ -3345,11 +3330,7 @@ fn list_pattern_rest_binds(
 /// owns), returns `false`. (The predicate keys on `as_name(...).is_none()`, so it covers literals as well
 /// as compound sub-patterns — the comment and the message both say "name or `_`", not "nested", to match.)
 fn list_form_has_nested_rest(db: &Db, pat: StructId) -> bool {
-    let Some(elems) = db
-        .ast
-        .as_ctor_form(pat, "list")
-        .or_else(|| db.ast.as_form(pat, "list"))
-    else {
+    let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
     match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
@@ -3369,11 +3350,7 @@ fn nested_rest_slot_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     if name == "_" || name == ".." {
         return false;
     }
-    let Some(elems) = db
-        .ast
-        .as_ctor_form(pat, "list")
-        .or_else(|| db.ast.as_form(pat, "list"))
-    else {
+    let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
     let Some(i) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
@@ -3635,10 +3612,7 @@ pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
     // A map pattern is a `(map …)` form — either the STRING-head primitive `("map" …)` or the NAME-head
     // `(map …)` (the shadowable alias, how the corpus writes it) — its tail is entry pairs, optionally
     // ending in `.. rest`. Accept both spellings (like the list matcher's `as_ctor_form.or_else(as_form)`).
-    let tail = db
-        .ast
-        .as_ctor_form(pat, "map")
-        .or_else(|| db.ast.as_form(pat, "map"))?;
+    let tail = db.ast.compound_form_of(pat, CompoundCtor::Map)?;
     // Split at a `..` marker: the entries before it, then exactly one rest binder after.
     let (entries_tail, rest) = match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
         Some(i) => {
@@ -3669,11 +3643,7 @@ pub(crate) fn map_pattern_of(db: &Db, pat: StructId) -> Option<MapPattern> {
 /// and so [`is_map_pattern_binder_occurrence`] can still classify the binders inert (suppressing the
 /// unbound cascade — the map twin of how the list rest-shape check keeps its binders inert while faulting).
 pub(crate) fn map_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
-    let Some(tail) = db
-        .ast
-        .as_ctor_form(pat, "map")
-        .or_else(|| db.ast.as_form(pat, "map"))
-    else {
+    let Some(tail) = db.ast.compound_form_of(pat, CompoundCtor::Map) else {
         return false;
     };
     match tail.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
@@ -3694,11 +3664,7 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
     if name == "_" || name == ".." {
         return false;
     }
-    let Some(tail) = db
-        .ast
-        .as_ctor_form(pat, "map")
-        .or_else(|| db.ast.as_form(pat, "map"))
-    else {
+    let Some(tail) = db.ast.compound_form_of(pat, CompoundCtor::Map) else {
         return false;
     };
     let dotdot = tail.iter().position(|&e| db.ast.as_name(e) == Some(".."));
@@ -3748,11 +3714,7 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
 /// suppressing the cascade. (`find_rest_binder_in_list_pattern` recognizes ONLY the single binder at
 /// `dd + 1`, so the extras are neither a valid binder nor otherwise classified.)
 fn list_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
-    let Some(elems) = db
-        .ast
-        .as_ctor_form(pat, "list")
-        .or_else(|| db.ast.as_form(pat, "list"))
-    else {
+    let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
     match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
@@ -3772,11 +3734,7 @@ fn list_form_binds_post_rest_name(db: &Db, pat: StructId, name: &str) -> bool {
     if name == "_" || name == ".." {
         return false;
     }
-    let Some(elems) = db
-        .ast
-        .as_ctor_form(pat, "list")
-        .or_else(|| db.ast.as_form(pat, "list"))
-    else {
+    let Some(elems) = db.ast.compound_form_of(pat, CompoundCtor::List) else {
         return false;
     };
     let Some(dd) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
@@ -4046,8 +4004,7 @@ fn find_binder_in_list(
 ) -> bool {
     let raw: Vec<StructId> = db
         .ast
-        .as_form(pattern, "list")
-        .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+        .compound_form_of(pattern, CompoundCtor::List)
         .unwrap_or(&[])
         .to_vec();
     // Split off a trailing `.. rest`: the rest binder (the single element after the `..` marker) binds the
@@ -4103,8 +4060,7 @@ fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
 fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool {
     let Some(fields) = db
         .ast
-        .as_form(record_pat, "record")
-        .or_else(|| db.ast.as_ctor_form(record_pat, "record"))
+        .compound_form_of(record_pat, CompoundCtor::Record)
         .map(<[_]>::to_vec)
     else {
         return false;
@@ -4161,8 +4117,7 @@ fn find_binder_in_tuple(
 ) -> bool {
     let elems: &[StructId] = db
         .ast
-        .as_form(pattern, "tuple")
-        .or_else(|| db.ast.as_ctor_form(pattern, "tuple"))
+        .compound_form_of(pattern, CompoundCtor::Tuple)
         .unwrap_or(&[]);
     for (i, &elem) in elems.iter().enumerate() {
         // Try this element position. Record the `Elem(i)` step, then match the element pattern; on a
@@ -4272,15 +4227,13 @@ fn find_map_binder_in_pattern(
     // A TUPLE / LIST pattern: try each element position at `Elem(i)`, recursing for a nested map.
     let elems: Option<Vec<StructId>> = if is_tuple_pattern(db, pattern) {
         db.ast
-            .as_form(pattern, "tuple")
-            .or_else(|| db.ast.as_ctor_form(pattern, "tuple"))
+            .compound_form_of(pattern, CompoundCtor::Tuple)
             .map(<[StructId]>::to_vec)
     } else if is_list_pattern(db, pattern) {
         // Only LEADING (fixed) elements compose an `Elem(i)`; a `.. rest` sublist is not descended for a
         // nested map (a runtime sublist read — out of scope, as `find_binder_in_list`'s rest is).
         db.ast
-            .as_form(pattern, "list")
-            .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+            .compound_form_of(pattern, CompoundCtor::List)
             .map(
                 |t| match t.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
                     Some(k) => t[..k].to_vec(),
@@ -4407,10 +4360,7 @@ fn find_record_binder_in_pattern(
     if db.ast.as_form(pattern, "record").is_some()
         || db.ast.as_ctor_form(pattern, "record").is_some()
     {
-        let fields = db
-            .ast
-            .as_form(pattern, "record")
-            .or_else(|| db.ast.as_ctor_form(pattern, "record"))?;
+        let fields = db.ast.compound_form_of(pattern, CompoundCtor::Record)?;
         for &pair in fields {
             if let Some((key_id, sub)) = record_pattern_field_kv(db, pair)
                 && db.ast.as_name(sub) == Some(name)
@@ -4428,15 +4378,13 @@ fn find_record_binder_in_pattern(
     // is pushed for an `Elem` step (its type comes from tuple/list-indexing, not a variant head).
     let elems: Option<Vec<StructId>> = if is_tuple_pattern(db, pattern) {
         db.ast
-            .as_form(pattern, "tuple")
-            .or_else(|| db.ast.as_ctor_form(pattern, "tuple"))
+            .compound_form_of(pattern, CompoundCtor::Tuple)
             .map(<[StructId]>::to_vec)
     } else if is_list_pattern(db, pattern) {
         // Only LEADING (fixed) elements compose an `Elem(i)`; a `.. rest` sublist is not descended (mirrors
         // `find_map_binder_in_pattern`).
         db.ast
-            .as_form(pattern, "list")
-            .or_else(|| db.ast.as_ctor_form(pattern, "list"))
+            .compound_form_of(pattern, CompoundCtor::List)
             .map(
                 |t| match t.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
                     Some(k) => t[..k].to_vec(),
@@ -4652,8 +4600,7 @@ fn last_binder_named(
             // a nested compound field value is declined there, so it never reaches a body reference here.
             else if let Some(fields) = db
                 .ast
-                .as_form(lhs, "record")
-                .or_else(|| db.ast.as_ctor_form(lhs, "record"))
+                .compound_form_of(lhs, CompoundCtor::Record)
                 .map(<[_]>::to_vec)
             {
                 for pair in &fields {

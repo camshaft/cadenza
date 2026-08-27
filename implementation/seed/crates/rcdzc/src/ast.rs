@@ -1422,6 +1422,21 @@ impl Arenas {
         }
     }
 
+    /// The child occurrences of `id` if it is a `List` headed by the compound ctor `want`, accepting
+    /// EITHER head spelling (the transitional dual-read of [`compound_ctor_either`]) — the tag-typed twin
+    /// of the `as_form(id, "…").or_else(|| as_ctor_form(id, "…"))` idiom for the four compound ctors.
+    /// Like `as_form`/`as_ctor_form`, an empty tail (a head-only list) yields `Some(&[])`.
+    pub fn compound_form_of(&self, id: StructId, want: CompoundCtor) -> Option<&[StructId]> {
+        match self.get(id) {
+            Struct::List(items) => {
+                let &h = items.first()?;
+                let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
+                (CompoundCtor::from_spelling(spelling) == Some(want)).then_some(&items[1..])
+            }
+            _ => None,
+        }
+    }
+
     /// If `id` is a `List` headed by the NAME `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1691,6 +1706,46 @@ mod tests {
         assert_eq!(a.compound_ctor(name_list), None);
         // A non-ctor head is neither.
         assert_eq!(a.compound_ctor_either(non_ctor_form), None);
+    }
+
+    #[test]
+    fn compound_form_of_returns_children_for_either_head_of_the_wanted_ctor() {
+        let mut b = Builder::new();
+        // `("tuple" a b)` — STRING head, two elements.
+        let th = b.atom_leaf(Leaf::Str("tuple".into()));
+        let a1 = b.name("a");
+        let b1 = b.name("b");
+        let str_tuple = b.list(vec![th, a1, b1]);
+        // `(tuple c)` — NAME head, one element.
+        let nh = b.name("tuple");
+        let c1 = b.name("c");
+        let name_tuple = b.list(vec![nh, c1]);
+        // `(record …)` — a different ctor.
+        let rh = b.name("record");
+        let rec = b.list(vec![rh]);
+        let root = b.list(vec![str_tuple, name_tuple, rec]);
+        let a = b.finish(root);
+
+        // Either head of the wanted ctor yields the tail (children)...
+        assert_eq!(
+            a.compound_form_of(str_tuple, CompoundCtor::Tuple)
+                .map(|t| t.len()),
+            Some(2)
+        );
+        assert_eq!(
+            a.compound_form_of(name_tuple, CompoundCtor::Tuple)
+                .map(|t| t.len()),
+            Some(1)
+        );
+        // ...the wrong ctor yields None...
+        assert_eq!(a.compound_form_of(rec, CompoundCtor::Tuple), None);
+        assert_eq!(a.compound_form_of(str_tuple, CompoundCtor::Record), None);
+        // ...and a record head is recognized as Record.
+        assert_eq!(
+            a.compound_form_of(rec, CompoundCtor::Record)
+                .map(|t| t.len()),
+            Some(0)
+        );
     }
 
     #[test]
