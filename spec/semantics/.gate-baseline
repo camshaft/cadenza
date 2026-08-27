@@ -1705,6 +1705,7 @@ pass	a consumed and a borrowed read of one loop invariant coexist per iteration
 pass	a consumed bare None type-checks without annotation (ambiguity is escape-only)
 pass	a consumed closure is applied once per iteration of a recursive loop
 pass	a consumed empty list type-checks without annotation (ambiguity is escape-only)
+pass	a consumed heap param on a self-recursive loop's non-tail spine is not double-freed
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
