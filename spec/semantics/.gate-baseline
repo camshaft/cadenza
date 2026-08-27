@@ -1206,6 +1206,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a THREE-phase state machine — Idle to Running(count,peak) to Done(total), the sentinel input drives the final transition
 pass	a THREE-site and a TWO-site arm interleaved fold (site counts mix freely)
 pass	a THREE-site arm (nested if, three resume sites) folds
+pass	a THREE-way mutually-recursive effectful cycle specializes and runs
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
@@ -2822,6 +2823,7 @@ pass	a multiply by a constant power of two on the left strength-reduces
 pass	a multiply by a constant power of two strength-reduces and traps like the multiply
 pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
+pass	a mutual group performing in an IF base-case branch and recursing in the other threads and runs
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutual-group demand-perform-demand arm in a let-wrapped dispatch folds down a runtime-opaque spine
 pass	a mutual-recursion pair where each side performs against its OWN handler (two nested frames)
@@ -4920,6 +4922,7 @@ pass	an abortive handler arm never resumes, so its value becomes the handle's va
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it
 pass	an abortive handler arm with a runtime perform argument yields that runtime value as the handle's value
 pass	an abortive handler discards a suspended body holding live rope and map handles
+pass	an abortive handler over a non-tail MUTUAL recursion declines cleanly
 pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an abortive perform beside an effectful sibling under a nested handle folds via inner pre-reduction
@@ -6567,6 +6570,8 @@ pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count 
 pass	io1 a shared pure subexpression reads the same value twice (value parity: shared, self-subtract, commuted)
 pass	io2 a shared min-select reads the same value twice (value parity, both operand orders)
 pass	io3 a shared subexpression keeps its overflow trap (computed once still traps)
+pass	irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)
+pass	irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
 pass	is3 the ARM's NEXT-STATE is computed by a nested SAME-effect handle — the shadow feeds the outer state thread
@@ -8693,5 +8698,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)
-pass	irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)
