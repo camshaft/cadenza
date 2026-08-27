@@ -2033,7 +2033,23 @@ fn with_lease(fleet: &Fleet, command: &[String]) {
     // free slot under the cap, so a heavy churner cycle pauses while the merge gate runs. `_lease` must
     // outlive the command — held until this fn returns (RAII), never dropped early.
     let _lease = acquire_check_lease(&fleet.repo, false);
-    let status = Command::new(program).args(args).status();
+    // CORE cap (not just a build-COUNT cap): the lease bounds how MANY builds run at once, but a single
+    // `nix build .#checks…` forks ~N rustc, so N holders still oversubscribe. Inject a per-holder
+    // `NIX_CONFIG` (`max-jobs`/`cores`) so each leased build self-limits its fan-out — total leased load
+    // stays near half the box across all holders, leaving headroom for the fleet's own cargo.
+    let nproc = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let budget = std::env::var("CDZ_LEASE_NIX_BUDGET")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| lease_nix_fanout_budget(nproc, check_lease_max()));
+    let nix_config = lease_nix_config(std::env::var("NIX_CONFIG").ok().as_deref(), budget);
+    let status = Command::new(program)
+        .args(args)
+        .env("NIX_CONFIG", nix_config)
+        .status();
     match status {
         Ok(s) => {
             // Propagate the wrapped command's exit code (default 1 if it was killed by a signal → no code).
@@ -5387,6 +5403,32 @@ fn check_lease_max() -> usize {
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(3)
+}
+
+/// Per-HOLDER nix fan-out budget (cores) for a leased build. The check-lease caps the NUMBER of
+/// concurrent builds but is CORE-BLIND: each `nix build .#checks…corpus-<file>` forks ~N rustc (per-case
+/// derivations + intra-build cargo `-j`), so `LEASE_MAX` holders × that fan-out oversubscribed the box
+/// (v-nix 2026-08-27: load 85 / 54 rustc, in-flight builds externally evicted). `with_lease` injects a
+/// per-holder `NIX_CONFIG` (`max-jobs` + `cores` = this budget) so each leased build self-limits. Sizing:
+/// up to `lease_max` VERTICAL holders + pr-sync's priority slot ≈ `lease_max + 1` concurrent; a budget of
+/// `nproc / (2·(lease_max+1))` keeps TOTAL leased fan-out near half the box, leaving headroom for the
+/// fleet's own cargo (capped at `jobs = 4` each in `.cargo/config.toml`). Floor of 1 (never 0). Pure so
+/// the sizing is unit-testable; `CDZ_LEASE_NIX_BUDGET` overrides the computed value for host tuning.
+fn lease_nix_fanout_budget(nproc: usize, lease_max: usize) -> usize {
+    (nproc / (2 * (lease_max + 1))).max(1)
+}
+
+/// Build the `NIX_CONFIG` value for a leased build: APPEND `max-jobs`/`cores` caps to any inherited
+/// `NIX_CONFIG` (never clobber — the fleet relies on inherited lines like `experimental-features =
+/// ca-derivations`; nix takes the LAST value when a key repeats, so our trailing caps win). Newline-
+/// separated `key = value` lines, matching nix.conf syntax.
+fn lease_nix_config(existing: Option<&str>, budget: usize) -> String {
+    let mut cfg = existing.unwrap_or("").to_string();
+    if !cfg.is_empty() && !cfg.ends_with('\n') {
+        cfg.push('\n');
+    }
+    cfg.push_str(&format!("max-jobs = {budget}\ncores = {budget}\n"));
+    cfg
 }
 
 /// A lease older than this (no live holder refreshing it) is reclaimed. Must EXCEED the longest legit
@@ -19541,6 +19583,43 @@ branch refs/heads/fleet/trunk-tools
         assert!(
             !check_lease_go(false, 1, 0, 3),
             "a held priority lease makes vertical yield even with free slots"
+        );
+    }
+
+    #[test]
+    fn lease_nix_fanout_budget_bounds_total_below_nproc_and_floors_at_one() {
+        // 64-core host, default lease_max=3 → 3 vertical + 1 priority = 4 holders. Budget = 64/(2*4) = 8;
+        // 4 holders × 8 = 32 ≈ half the box (headroom for the fleet's jobs=4 cargo).
+        assert_eq!(lease_nix_fanout_budget(64, 3), 8);
+        // Total leased fan-out (holders × budget) must stay at/under nproc for any sane lease_max.
+        for lm in 1..=8 {
+            let holders = lm + 1;
+            assert!(
+                lease_nix_fanout_budget(64, lm) * holders <= 64,
+                "lease_max={lm}: total leased fan-out must not oversubscribe the box"
+            );
+        }
+        // Never 0 — a tiny host / large lease_max still gets a usable 1-core budget.
+        assert_eq!(lease_nix_fanout_budget(4, 8), 1);
+        assert_eq!(lease_nix_fanout_budget(1, 1), 1);
+    }
+
+    #[test]
+    fn lease_nix_config_appends_caps_without_clobbering_inherited() {
+        // No inherited config → just our caps.
+        assert_eq!(lease_nix_config(None, 8), "max-jobs = 8\ncores = 8\n");
+        // Inherited config is PRESERVED (e.g. experimental-features) and our caps appended AFTER it, so
+        // nix's last-value-wins gives our max-jobs/cores while keeping the inherited line.
+        let got = lease_nix_config(Some("experimental-features = ca-derivations"), 4);
+        assert_eq!(
+            got,
+            "experimental-features = ca-derivations\nmax-jobs = 4\ncores = 4\n"
+        );
+        assert!(got.contains("experimental-features = ca-derivations"));
+        // A trailing newline on the inherited value is not doubled.
+        assert_eq!(
+            lease_nix_config(Some("cores = 99\n"), 2),
+            "cores = 99\nmax-jobs = 2\ncores = 2\n"
         );
     }
 
