@@ -7,10 +7,32 @@
 name: nix-store-cache
 description: Restore/save the /nix/store via GHA cache, keyed off the flake, save+purge gated to the default branch.
 
+# ============================================================================
+# TEMPORARILY DISABLED (2026-08-27, v-fleet-tooling) — nix-daemon "Connection reset by peer".
+#
+# ROOT CAUSE (confirmed from a failing rustfmt job log, reproduces on BOTH ubuntu-24.04 AND
+# ubuntu-22.04, so it is runner-image-INDEPENDENT): the nix-installer-action installs Determinate
+# Nix with `start-daemon: true`, so the daemon is ALREADY RUNNING when this cache action's restore
+# runs. Its post-restore DB-merge then `chown`s /nix/var/nix/db to runner AND `rm -f db.sqlite` +
+# `mv merged.sqlite` into place — swapping the store DB out from under the live daemon. The next
+# `nix build` client connection is reset. The regression is the floating Determinate `stable` daemon
+# (installed from cf.install.determinate.systems/.../stable), which changed server-side between the
+# Aug-25 green and Aug-27 red with IDENTICAL action SHAs. daemon-restart (#4303), chown-db-to-root
+# (#4385), and ubuntu-22.04 pin (#4472) ALL failed — they fought the runner image, not the DB swap.
+#
+# STOPGAP: skip the /nix/store cache entirely (this is the pre-#2214 CI state) so no DB swap occurs
+# and the daemon stays healthy. Consuming jobs build the closure COLD (slower, but GREEN instead of a
+# fast red). CI is advisory/non-blocking (required checks off since 08-09) so cold-but-green is a net
+# win. REVERT this whole action.yml to its prior revision to re-enable caching once Determinate ships
+# a daemon that tolerates the cache-action DB swap (or the action defers daemon start past restore).
+# ============================================================================
 runs:
   using: composite
   steps:
-    - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (resolved 2026-08-04)
+    - shell: bash
+      run: echo "nix-store-cache DISABLED (daemon-reset stopgap, see action.yml header) — building cold"
+    - if: ${{ false }} # DISABLED — see header; kept for a one-line re-enable when Determinate is fixed
+      uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7 (resolved 2026-08-04)
       with:
         # Key off BOTH flake.lock AND flake.nix: GHA caches are immutable per key (a saved key restores,
         # never overwrites), so keying on flake.lock alone would leave main restoring a STALE /nix/store
