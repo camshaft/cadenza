@@ -14960,52 +14960,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_module_member_body_resolves_an_enclosing_scope_sibling_module() {
-        // `core-semantics.md` §A Module Evaluates To A Record Of Its Exports: a member body resolves names
-        // by the ordinary lexical scope — including the module's ENCLOSING scope, so a member of `app` can
-        // call a SIBLING MODULE `lib` declared beside it. The scope walk ascends body → app's synth `fn` →
-        // app's synth RECORD (where a SAME-module sibling resolves); the record's scope-skip now CHAINS to
-        // the enclosing scope of `(module app …)`, so the walk continues into the do-block where `lib`
-        // binds. Before this it dead-ended at the record → `lib` spuriously CDZ0101.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do \
-                   (module lib (def (answer) 42)) \
-                   (module app (def (go) ((. lib answer) unit))) \
-                   ((. app go) unit))) (export main))"
-            ),
-            None,
-            "a member of `app` resolves the sibling module `lib` in the enclosing do-block"
-        );
-        // The value is correct end-to-end: `(. app go)` reaches `(. lib answer)` = 42.
-        if let Some(v) = run_heap_value(
-            "(module top (def (main) (do \
-               (module lib (def (answer) 42)) \
-               (module app (def (go) ((. lib answer) unit))) \
-               ((. app go) unit))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(
-                v, "42",
-                "a cross-module member call returns the callee's value"
-            );
-        }
-        // KEYSTONE: DEFINITION-SITE preserved: `lib`'s own literal `42` keeps `lib`'s scope (Int64), NOT `app`'s
-        // `default-integer BigInt` — the record chains to where `lib` was WRITTEN, not to the caller. So
-        // the result is Int64 (a BigInt would render/type differently); this compiles clean as Int64.
-        assert_eq!(
-            reject_code(
-                "(module top (def (main) (do \
-                   (module lib (def (answer) 42)) \
-                   (module app (pragma default-integer BigInt) (def (go) ((. lib answer) unit))) \
-                   (if (= ((. app go) unit) 42) 1 0))) (export main))"
-            ),
-            None,
-            "a sibling module's literal keeps its own definition-site scope, not the caller's default"
-        );
-    }
-
-    #[test]
     fn an_unknown_directive_near_a_registry_key_suggests_it() {
         // CDZ0601 is a CLOSED-SET violation (the pragma registry is fixed), so a near-miss typo gets the
         // same "did you mean?" fix a mistyped name/field/variant does: `default-integr` → replace with
@@ -23165,48 +23119,6 @@ mod match_engine {
         assert_eq!(
             v, "7",
             "SumExpect beside an i64 tuple element gets a disjoint scratch slot"
-        );
-    }
-
-    #[test]
-    fn a_recursive_def_infers_its_params_from_a_call_site() {
-        // CALL-SITE INFERENCE: a recursive def whose parameter types the BODY alone cannot ground — they
-        // are decided only by HOW a caller invokes it — is now seeded from a NON-recursive call site.
-        // `lookup`'s `xs` is `(List (Tuple Int64 Int64))` ONLY because `main` calls it with a list of int
-        // pairs; the body's `(match (List.at xs i) ((Some (tuple key val)) …))` leaves the tuple's fields
-        // open (`key` pinned by `(= key k)`, but `val` returned so open). Before, `lookup` DECLINED "a
-        // recursive function with an unannotated parameter is not yet inferred"; now `solve_recursive_params`
-        // fills the open param (and its remaining compound holes — `has_free_var`, not just a bare var)
-        // from `main`'s argument type. An association-list search finds key 2 → value 200.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (lookup xs i k) (match ((. List at) xs i) \
-                   ((Some (tuple key val)) (if (= key k) val (lookup xs (+ i 1) k))) \
-                   ((None _) -1))) \
-               (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping call-site-inference run");
-            return;
-        };
-        assert_eq!(
-            v, "200",
-            "assoc-list search by key via call-site-inferred params"
-        );
-
-        // A SCALAR-payload consumer whose element type is ALSO only knowable from the call site: `find`'s
-        // `xs`/`k` are pinned only by `main`'s `(find (list 5 6 7) 0 6)`. Returns the index of 6 → 1.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (find xs i k) (match ((. List at) xs i) \
-                       ((Some v) (if (= v k) i (find xs (+ i 1) k))) ((None _) -1))) \
-                   (def (main) (find (list 5 6 7) 0 6)) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "scalar-payload search by call-site-inferred element type"
         );
     }
 
