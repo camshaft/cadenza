@@ -5024,6 +5024,7 @@ pass	an in-range constant argument to a narrow parameter computes at the paramet
 pass	an in-range left shift on an unusual signed width computes at the declared width
 pass	an in-range literal to a narrow effect-op parameter crosses and the arm observes it
 pass	an in-range unusual-width division computes at the declared width
+pass	an index loop's loop-invariant List.len over a heap operand is still LICM-hoisted (value correct)
 pass	an indexed list walk performing per element — element × advancing draw, summed
 pass	an indexed read is not shared across a shadowing rebinding
 pass	an indexed read of an updated list is not shared with the original's
