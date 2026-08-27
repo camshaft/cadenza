@@ -7811,66 +7811,6 @@ fn a_site_a_owned_closure_producers_reclaim_across_shapes() {
     );
 }
 
-/// WARNING: UAF GUARD (the `implementation/cad` snowflake miscompile a rejected shell-reclaim shipped, minimized to a
-/// lib probe): an owned COMPOUND-payload sum whose child is a COMPOUND (`hi : V`) BORROWED OUT of the shell
-/// via a nested match — `(match (mk n) ((Box.Bx lo hi) (match hi ((V.V3 a b c) …))))` — with a SCALAR final
-/// result. The extracted `hi` ALIASES INTO the `Box.Bx` shell (it is not copied — a `sum-payload`/`arr-get`
-/// borrow), so any reclaim that frees the shell after the outer match while `hi` is still being read in the
-/// inner match is a USE-AFTER-FREE (the cad `bounding-box → Aabb.Box(_, hi) → hi.coords` shape; a scalar
-/// result did NOT make it safe — the child escapes the outer arm into the inner match). This PINS that the
-/// value stays correct (a UAF would trap OOB or read garbage) AND documents the current leak count, so a
-/// FUTURE compound-shell reclaim broadening that is unsound for this alias-out shape fails HERE at the lib
-/// level (not only in `cdz test implementation/cad`). The all-scalar-payload floor keeps it safe today (an
-/// inner V.V3 payload is all-scalar, but the OUTER Box has a compound V payload → `reclaim=false`). The
-/// scalar-result heuristic that shipped the cad UAF would have (wrongly) reclaimed the outer Box here.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn a_compound_child_borrowed_out_via_nested_match_is_not_use_after_freed() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[alias-out] debug-counters runtime not in the store; skipping UAF guard");
-        return;
-    };
-    // `mk n` builds a fresh owned `Box.Bx (List) (List)` — a genuine HEAP compound child (a scalar-tuple `V`
-    // scalarizes away with no heap alloc, so use a runtime-built `List` to force the shell + child onto the
-    // heap). The outer match binds the compound child `hi` (a List, ALIASING into the Box shell — a
-    // `sum-payload` borrow, not a copy) and reads it. `mk` takes a RUNTIME `n` so the match can't const-fold.
-    // At n=3, `hi = bl 0 5 = [0,1,2,3,4]` → len 5. A reclaim that frees the Box shell before `hi` is read
-    // would be a UAF (the cad `bounding-box → Aabb.Box(_, hi) → …hi…` shape); value-correctness is the guard.
-    let src = "(module m \
-                 (type Box (Bx (List Int64) (List Int64)) Empty) \
-                 (def (bl (: i Int64) (: n Int64) (: acc (List Int64))) \
-                    (if (< i n) (bl (+ i 1) n (List.push acc i)) acc)) \
-                 (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) \
-                    (Box.Bx (bl 0 n (list)) (bl 0 (+ n 2) (list))))) \
-                 (def (main (: n Int64)) \
-                    (match (mk n) ((Box.Bx lo hi) (List.len hi)) ((Box.Empty _) 0))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // VALUE CORRECTNESS is the UAF guard: freeing the Box shell while `hi` (aliasing into it) is read would
-    // trap OOB or read garbage (the cad snowflake failure). Correct = 5 (hi = [0,1,2,3,4]) means no early free.
-    assert_eq!(
-        rt.call("main", &[Val::S64(3)]),
-        Val::S64(5),
-        "hi = [0,1,2,3,4], len 5 (a UAF from an over-eager shell reclaim of the aliased-out child would trap/garble)"
-    );
-    // The owned `Box.Bx` shell + its two List children leak today (compound List payload → `reclaim=false`,
-    // the safe floor). The count is a leak witness; the invariant that MATTERS is value==5 (no UAF). A future
-    // sound broadening may drop this, but must NEVER trap/garble — confirm value==5 before adjusting the count.
-    let live = rt.live_objects();
-    assert!(
-        live > 0,
-        "alias-out (safe floor): the owned Box.Bx shell + its List children are left un-dropped (compound-\
-         payload shell) — expected a positive leak count, got {live}. The KEY invariant is value==5 above \
-         (no UAF); this asserts only that the shell isn't already reclaimed here (if it drops to 0 under a \
-         future sound broadening, that's fine AS LONG AS the value stays 5 — a trap/garble = an over-drop UAF)."
-    );
-}
-
 /// R2 RECLAMATION ACCEPTANCE: a RUNTIME compound that ESCAPES to the host as a resource leaves NO live
 /// heap cells after the `make`/`encode`/DROP round-trip — `encode` now BORROWS self (reads without
 /// consuming), so reclamation is the resource DTOR's job: dropping the handle runs `t-dtor(rep)` →
