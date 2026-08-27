@@ -1684,6 +1684,7 @@ pass	a compose combinator over HEAP-typed functions pipelines list transformers
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound Ast SUBTREE rides a template hole into the expansion intact
+pass	a compound built from two distinct peers escapes the entrypoint as a resource
 pass	a compound child borrowed out of a sum shell via a match binder is not use-after-freed -- UAF guard + known leak
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
@@ -2784,6 +2785,7 @@ pass	a mirrored equality pair under or folds by commutativity to one equality
 pass	a missed literal tag falls to a BINDER bin arm that decodes the scrutinee
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
+pass	a mixed String and scalar argument cross to a peer in one op, each in its own ABI lane
 pass	a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder
 pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
@@ -4390,6 +4392,7 @@ pass	a string literal
 pass	a string literal is normalized to the canonical text form
 pass	a string literal payload refines a ctor list element
 pass	a string passed to a function as a runtime argument is measured by its byte length
+pass	a string result chained through two peers escapes the entrypoint via the methods envelope
 pass	a string spelled like a keyword round-trips as an Ast.Str, not an Ast.Bool or Ast.Name
 pass	a string-literal pattern in a Symbol sum payload is a type error
 pass	a string-literal pattern in a match selects by string equality, distinguishing Unicode
@@ -8987,5 +8990,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a compound built from two distinct peers escapes the entrypoint as a resource
-pass	a string result chained through two peers escapes the entrypoint via the methods envelope

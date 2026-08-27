@@ -460,6 +460,19 @@
   (call   main)
   (output (: 5 Int64)))
 
+(case "a mixed String and scalar argument cross to a peer in one op, each in its own ABI lane"
+  (doc    "A single peer op taking `(-> String Int64 …)` crosses a String AND a scalar in ONE call: the
+           String lowers to a rope HANDLE (an i32 handle), the Int64 lowers DIRECTLY (an i64), pushed in
+           declaration order, and the peer reads BOTH — `blen-plus(\"hello\", 7)` = byte-len(\"hello\") + 7 =
+           5 + 7 = 12. Pins that the two DISTINCT arg-emit paths (heap-handle vs direct scalar) INTERLEAVE
+           correctly in one call (a mis-order would misalign the peer's params) — the exact call shape a
+           `(-> String Int64 …)` model op takes.")
+  (peer   "cadenza:mix/api" (do (def (blen-plus (: s String) (: n Int64)) (+ (String.byte-len s) n)) (export blen-plus)))
+  (input  (do (effect S (op blen-plus (-> String Int64 Int64))) (bind S "cadenza:mix/api")
+              (def (main) (host (S) (S.blen-plus "hello" 7))) (export main)))
+  (call   main)
+  (output (: 12 Int64)))
+
 ; ── breaker batch 542: the two peer-matrix cells the landed coverage misses — the heap-ARG
 ; direction (consumer→provider lowering; the landed pcl/pcm cases are all RESULT-crossing) and
 ; the cross-boundary CENSUS (peer-returned heap consumed ×50 must reclaim on the consumer side;

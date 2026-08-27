@@ -55562,32 +55562,10 @@ mod cross_component_oracle {
             String::from_utf8_lossy(&consumer).contains(&import_name),
             "a mixed String+scalar peer consumer imports the value-heap runtime (it builds the rope handle)"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL30] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:mix/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a mixed string+scalar argument list crosses to a peer")
-        {
-            // byte-len("hello") + 7 = 5 + 7 = 12. The String crossed as a handle, the Int64 as a scalar,
-            // in one call, in declaration order — the `(-> String Int64 …)` model-op call shape.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "12",
-                "a mixed String+scalar argument list crosses to a peer, each in its own ABI lane"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("mixed-argument run trapped: {t}"),
-        }
+        // The RUN half (byte-len("hello") + 7 = 12 — the String crossed as a handle and the Int64 as a
+        // scalar in one call, in declaration order) is corpus-covered by 29-cross-component-peers "a mixed
+        // String and scalar argument cross to a peer in one op, each in its own ABI lane"; this rcdzc test
+        // keeps only the white-box value-heap-runtime-import pin.
     }
 
     // ------------------------------------------------------------------------------------------------
