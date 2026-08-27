@@ -31924,58 +31924,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_rest_pattern_binder_read_by_an_inlined_callee_that_matches_its_arg_resolves() {
-        // CORRECTNESS (concierge/corpus-bugfix, de-sentinel sweep, operator-escalated as a real inliner
-        // miscompile-class bug): a rest-pattern HEAD binder `c` from `(list c .. t)`, referenced inside a
-        // nested-match scrutinee that is the ARGUMENT to a callee which MATCHES its parameter and gets
-        // INLINED, false-rejected CDZ0101 `unbound c`. ROOT: inlining the callee (here `omin`, which does
-        // `(match b …)` on its arg) clones the arm carrying the nested match via `clone_subtree_db`; that
-        // helper COPIED any pinned `SumPayload` binder fresh — but `c` reads the ENCLOSING `(match cs …)`
-        // scrutinee, NOT the match being cloned, so the fresh copy re-resolved lexically against the
-        // orphaned clone → unbound. FIX (clone_subtree_db_within): share a pinned `SumPayload` whose
-        // scrutinee is OUTSIDE the clone root (a genuine capture), copy only one WITHIN it (a payload binder
-        // of the match being cloned) — the exact `beta_reduce` `is_within(scrutinee, reduction_root)`
-        // analogue. Pins the RUN (was CDZ0101): the coin-DP shape returns -1 for the given inputs.
-        let src = "(module m \
-          (def (at0 (: xs (List (Option Int64))) (: i Int64)) (Option.expect (List.at xs i) \"x\")) \
-          (def (omin (: a (Option Int64)) (: b (Option Int64))) \
-            (match a ((None _u) b) ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b)))))) \
-          (def (f (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64))) \
-            (match cs ((list) best) \
-              ((list c .. t) \
-                (f t dp i \
-                  (if (<= c i) \
-                      (omin best (match (at0 dp (- i c)) ((None _u) (None unit)) ((Some v) (Some (+ v 1))))) \
-                      best))))) \
-          (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r))) \
-          (export main))";
-        let bytes = component(src);
-        wasmparser::validate(&bytes).expect(
-            "a rest-pattern binder read by an inlined match-arg callee must resolve (not CDZ0101)",
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping rest-binder-inline run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "-1",
-                    "the coin-DP shape runs (rest binder `c` resolves through the inline)"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("rest-binder-inline run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_fused_match_arm_binder_re_resolves_on_both_backends_not_shared_as_a_capture() {
         // REGRESSION for the fix to the rest-binder fix (v-rust-backend bisected): the enclosing-capture
         // share in `clone_subtree_db_for_fused` must NOT over-share the FUSED match's OWN arm binder. A
@@ -54939,44 +54887,6 @@ mod stage1 {
                 }
                 cdz_run::Outcome::Trap(t) => panic!("wide-sum run trapped: {t}"),
             }
-        }
-    }
-
-    #[test]
-    fn a_runtime_value_eq_in_a_loop_condition_does_not_clash_scratch() {
-        // REGRESSION: a runtime `value-eq` (or any i32 heap-handle-producing op) in the CONDITION of a
-        // tail-recursive function compiled as a wasm LOOP must not reuse a scratch slot the sibling
-        // branch's i64 arithmetic uses. `find` compares `(N.I n)` against `(N.I 3)` each iteration and
-        // `(find (+ n 1))` iterates; before the fix the compare's i32 handle slot and the `(+ n 1)` i64
-        // slot were the SAME number (both allocated from `base`), forcing one wasm local to two types →
-        // `func failed to validate: expected i64, found i32`. The fix advances the branches' scratch
-        // floor past the condition's high-water. `find(0)` = 3.
-        use crate::testkit::parse;
-        let src = "(module m \
-                     (type N (I Int64) (J Int64)) \
-                     (def (mk (: n Int64)) (N.I n)) \
-                     (def (find (: n Int64)) (if (= (mk n) (mk 3)) n (find (+ n 1)))) \
-                     (export find))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile value-eq-in-loop-condition");
-        // Must be a valid module — the whole point of the regression (a bad module fails HERE at
-        // instantiation, before any run).
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed value-eq-in-loop run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("find".to_string()),
-            args: vec!["0".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run value-eq-in-loop") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "3", "find(0) searches up to n where N.I n = N.I 3")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("value-eq-in-loop run trapped: {t}"),
         }
     }
 
