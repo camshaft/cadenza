@@ -8148,3 +8148,4 @@ todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list fo
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 pass	hfr1 a handler fold's list result crosses the return boundary (two threaded draws, two reachable cells)
 pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
+todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
