@@ -10061,3 +10061,23 @@
   (input (do (def (main (: a Int64) (: b Int64)) (if (< (/ a b) (/ a b)) 1 0)) (export main)))
   (call main (: 10 Int64) (: 2 Int64)) (output (: 0 Int64))
   (call main (: 1 Int64) (: 0 Int64))  (trap "divide by zero"))
+
+; -- breaker batch 504 (2026-08-27): the #4060 Div/Rem folds, fresh-surface verified fold-vs-
+; runtime (truncation semantics agree on negative operands: -7/2=-3, -7%2=-1). The const
+; divide-by-zero and Int64.min/-1 both fail loud with precise CDZ0304 messages. OPEN QUESTION
+; filed with v-compiler-primitives (dv3 witness held out of corpus pending the ruling): the fold
+; rejects a constant division-by-zero in an UNTAKEN branch — (if (> n 0) 7 (/ 1 0)) at n>0 never
+; evaluates the division (runtime semantics return 7), but compile hard-errors. Per the dc05
+; trap-in-main precedent (no const demand → runtime semantics) that is a mis-reject; per a
+; static-error-by-design stance it is intended. Awaiting ruling before pinning either way.
+
+(case "dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (> n 0) 7 99)) (b (if (> n 0) 2 3)) (c (if (> n 0) -7 99)))
+      (+ (if (= (/ 7 2) (/ a b)) 1 0)
+         (+ (* 10 (if (= (% 7 2) (% a b)) 1 0))
+            (+ (* 100 (if (= (/ -7 2) (/ c b)) 1 0))
+               (* 1000 (if (= (% -7 2) (% c b)) 1 0)))))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 1111 Int64)))
