@@ -4797,6 +4797,7 @@ pass	an and of two runtime negations computes their conjunction
 pass	an annihilator identity folds to zero when its operand is trap-free
 pass	an annotated argument joins a callee-side quantity at its own scale
 pass	an annotated destructuring let binder
+pass	an annotated destructuring let binder that contradicts an element type is rejected
 pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
 pass	an annotated lambda parameter binds
