@@ -393,6 +393,7 @@ pass	String.from-bytes decodes a multibyte RUNTIME Bytes ROPE, flattening before
 pass	String.from-bytes does not NFC-normalize — a decomposed form stays distinct (known gap)
 pass	String.from-bytes of a runtime slice decodes the WINDOW only
 pass	String.from-bytes of an ill-formed RUNTIME byte sequence yields None (never traps)
+pass	String.from-bytes over a dead-after-borrowed compound Some shell leaks it each iteration
 pass	String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut
 pass	String.from-bytes rejects a lone continuation byte
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts

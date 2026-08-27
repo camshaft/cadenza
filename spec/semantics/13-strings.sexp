@@ -4714,3 +4714,25 @@
             (export f)))
   (call   f (: 0 Int64)) (output (: 10 Int64))
   (live-objects known-leak 11))
+
+; ── Reclaim (known-leak): String.from-bytes over a dead-after-borrowed compound Some shell (migrated from rcdzc) ──
+(case "String.from-bytes over a dead-after-borrowed compound Some shell leaks it each iteration"
+  (doc    "The String.from-bytes op-face of the compound-Some-shell reclaim gap (same node-keyed
+           payload-escape root as the Option.expect/String.slice sibling, distinct leak magnitude — op
+           specific). Each iteration builds a fresh runtime rope \"hiii\" (0x68 + 3x 0x69), `String.from-bytes`
+           it to a `Some(String)` compound shell, then BORROWS the payload via `String.byte-len` (4). The
+           non-dup'd compound Some shell is dead after the borrow and left un-dropped: 2 cells per iteration
+           (no once-built base — the rope is rebuilt each iter), so 5 iters leak 10 cells, value-correct
+           throughout (byte-len \"hiii\" = 4, summed 5x = 20; a UAF would trap, a wrong reclaim would garble).
+           Flips to 0 when the node-keyed payload-escape fix lands (select.rs).")
+  (input  (do
+            (def (rep (: acc Bytes) (: n Int64))
+              (if (= n 0) acc (rep (Bytes.concat acc b"\x69") (- n 1))))
+            (def (loop (: k Int64) (: sum Int64))
+              (if (= k 0) sum
+                 (loop (- k 1) (+ sum (match (String.from-bytes (rep b"\x68" 3))
+                                        ((Some s) (String.byte-len s)) ((None _) 0))))))
+            (def (main (: n Int64)) (loop n 0))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20 Int64))
+  (live-objects known-leak 10))

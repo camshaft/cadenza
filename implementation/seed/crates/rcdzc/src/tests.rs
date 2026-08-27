@@ -2653,66 +2653,6 @@ fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
     }
 }
 
-/// `String.from-bytes` over a runtime buffer builds a `Some(String)` — a `sum-new` Some shell around an
-/// OWNED COMPOUND (String) payload — which, matched and then BORROWED-then-dead in the arm (`String.byte-len`
-/// is a `bytes-len` walk, no consume), hits the KNOWN compound Some-shell reclaim gap: the non-dup'd
-/// dead-after-borrow compound shell is left un-dropped for want of a node-keyed payload-escape analysis. This
-/// is the from-bytes FACE of the exact gap `option_expect_over_a_dead_after_borrowed_compound_payload_...`
-/// pins for `String.slice`; both share the root at select.rs ~8771. VALUE-CORRECT + NON-OOB (the shell
-/// outlives the borrow — nothing freed early), so the value/drop-import tests miss it; only the live-objects
-/// counter sees it (~2 cells/iter). When the escape-analysis increment lands, flip the guard to `== 0`.
-///
-/// WARNING: HISTORY: this was `..._leaks_no_more_than_the_twin_option_builder`, a DIFFERENTIAL against a `Bytes.at`
-/// twin — but that twin's `Some` payload is a SCALAR byte value (Int64) that scalar-shell + owned-temporary
-/// reclaim later drove to 0, while this COMPOUND `Some(String)` still leaks the gap → the `==` went stale
-/// (decode=10 vs scalar-twin=0 at k=5). A COMPOUND twin (`Bytes.slice → Some(Bytes)`) doesn't rescue it
-/// either: leak MAGNITUDE is op-specific (`Bytes.slice` leaked 45 vs from-bytes' 10 at k=5), so no clean
-/// twin exists. Recast as a single-program ABSOLUTE-count known-gap witness (mirrors the `option_expect_...`
-/// sibling), renamed `..._known_gap` so it is self-documenting. `#[ignore]` — needs the debug-counters
-/// store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore]
-fn a_runtime_string_from_bytes_over_a_borrowed_compound_some_shell_leaks_known_gap() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[from-bytes] debug-counters runtime not in the store; skipping known-gap probe");
-        return;
-    };
-    // `loop k`: k times, build a fresh runtime rope "hiii" (0x68 + 3× 0x69), `String.from-bytes` it → a
-    // `Some(String)` compound shell, then BORROW the payload via `String.byte-len` (4) and sum. Value = 4k.
-    // The non-dup'd compound Some shell is dead after the borrow → the known ~2-cells/iter shell leak.
-    let src = "(module m \
-                 (def (rep (: acc Bytes) (: n Int64)) \
-                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
-                 (def (loop (: k Int64) (: sum Int64)) \
-                    (if (= k 0) sum \
-                       (loop (- k 1) (+ sum (match (String.from-bytes (rep b\"\\x68\" 3)) \
-                                              ((Some s) (String.byte-len s)) ((None _) 0)))))) \
-                 (def (main (: n Int64)) (loop n 0)) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // VALUE-CORRECT: byte-len "hiii" = 4 per iter × 100 iters = 400. A UAF would trap before returning; a
-    // wrong reclaim would corrupt the count. This proves the leak is NON-OOB and value-safe.
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[Val::S64(100)]),
-        Val::S64(400),
-        "String.byte-len of String.from-bytes(\"hiii\") = 4 per iter × 100 = 400 (value-correct + NO UAF)"
-    );
-    // KNOWN LEAK (pinned, not yet fixed): the non-dup'd dead-after-borrow compound Some shell is left
-    // un-dropped. Assert PRESENT + BOUNDED (a witness, not a `== 0` gate) so a regression that made it WORSE
-    // — or a spurious UAF that made it 0-via-double-free — is still caught. When the node-keyed payload-escape
-    // fix lands (select.rs ~8771), flip this to `assert_eq!(rt.live_objects(), 0, …)`.
-    let live = rt.live_objects();
-    assert!(
-        live > 0 && live <= 400,
-        "from-bytes compound Some-shell leak: expected a KNOWN bounded leak (≈2 cells × 100 iters) pending \
-         the node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if \
-         far above 400, a NEW leak compounded it."
-    );
-}
-
 /// `String.to-bytes` on a RUNTIME `String` (one the compiler cannot fold to a constant) lowers to the
 /// runtime encoding rather than declining. A String IS a UTF-8 Bytes leaf (byte-identical), so the
 /// encoding is TOTAL and needs no conversion — it only flattens the string's byte-rope into a canonical
