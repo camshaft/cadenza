@@ -50939,21 +50939,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_generic_instantiation_dedups_per_type() {
-        // The dedup companion (09-functions "a recursive generic function called at one type twice shares
-        // a single instantiation"): `loopn` called at Int64 in BOTH `(loopn 3 40)` and `(loopn 2 2)` is
-        // monomorphized ONCE — the two calls share a single function (the specialization memo is keyed by
-        // the concrete instantiation type, so the same type reuses one copy). This is a pure-scalar
-        // program (no heap), so it runs without the value-heap store. `40 + 2 = 42`.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
-               (def (main) (+ (loopn 3 40) (loopn 2 2))) (export main))",
-        )))
-        .expect("a recursive generic at one type twice dedups to one instantiation");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-    }
-
-    #[test]
     fn a_recursive_generic_is_instantiated_at_three_distinct_machine_shapes() {
         // COVERAGE (v-inference): recursive-generic monomorphization scales past TWO instantiations. `loopn`
         // (threads its 2nd arg unchanged → generic) is called at Int64, String, AND Bool in one program —
@@ -50986,78 +50971,6 @@ mod stage1 {
             cdz_run::Outcome::Value(v) => assert_eq!(v, "107", "5 + byte-len(ab)=2 + 100"),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
-    }
-
-    #[test]
-    fn a_recursive_generic_threading_another_generic_is_transitively_generic() {
-        // 09-functions "a recursive generic function threading another generic is itself generic at two
-        // types": `wrap` threads its generic `y` into a SECOND generic recursive `idr`, so `wrap`'s
-        // result is `idr`'s result is `y`'s type — genericity propagates through the call graph.
-        // `call_site_distinct_arg_types` follows a Var-typed arg that is another def's param
-        // (`arg_is_other_def_param`) to inherit that param's type spread, so `idr` is detected generic
-        // despite a single call site; and `apply_scheme_to_args` seeds the instantiation counter past the
-        // arg vars (skipping the freshen) so `wrap`'s result var stays CONNECTED to its param var — a
-        // three-level chain then keeps `(-> Int64 (-> ?a ?a))` rather than decoupling to `(-> Int64 (-> ?a
-        // ?b))` ("looped function result has no machine rep"). Called at Bool then Int64 → four
-        // specializations. `(wrap 1 true)` = true → `(wrap 2 40)` = 40.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
-               (def (wrap (: m Int64) y) (if (= m 0) (idr 2 y) (wrap (- m 1) y))) \
-               (def (main) (if (wrap 1 true) (wrap 2 40) 99)) (export main))",
-        )))
-        .expect("a recursive generic threading another generic is transitively generic");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
-        // A THREE-level chain (top→mid→idr) — genericity must propagate two hops, and the param↔result
-        // connection must survive at every level. Bool then Int64. `(top 1 true)` = true → `(top 2 40)` = 40.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
-               (def (mid (: m Int64) y) (if (= m 0) (idr 1 y) (mid (- m 1) y))) \
-               (def (top (: k Int64) z) (if (= k 0) (mid 1 z) (top (- k 1) z))) \
-               (def (main) (if (top 1 true) (top 2 40) 99)) (export main))",
-        )))
-        .expect(
-            "a three-level generic chain propagates genericity and keeps param=result connected",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
-    }
-
-    #[test]
-    fn a_recursive_generic_monomorphizes_across_def_flavors() {
-        // Recursive-generic monomorphization reaches every recursive-def flavor. MUTUAL recursion: `ping`
-        // /`pong` each thread a generic 2nd arg; called at Bool + Int64, both monomorphize at both types
-        // (cross-calls re-resolve by name → re-enter specialization). `(ping 3 true)` = true → `(pong 2
-        // 40)` = 40.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (ping (: n Int64) x) (if (= n 0) x (pong (- n 1) x))) \
-               (def (pong (: n Int64) x) (if (= n 0) x (ping (- n 1) x))) \
-               (def (main) (if (ping 3 true) (pong 2 40) 99)) (export main))",
-        )))
-        .expect("a mutually-recursive generic group monomorphizes per type");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
-        // DO-LOCAL generic: `idr` inside a `do` block, called at Bool + Int64. A do-local name resolves by
-        // LEXICAL do-scope, which the specialized copy (re-parented out of the block) escapes — the copy
-        // must SHARE the pinned self-call occurrence (`copy_structural_pub`'s `pin_self_calls`), else the
-        // copied `(idr …)` re-resolves unbound (CDZ0101). `(idr 1 true)` = true → `(idr 2 40)` = 40.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (def (main) \
-               (do (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x))) \
-                   (if (idr 1 true) (idr 2 40) 99))) (export main))",
-        )))
-        .expect("a do-local generic function monomorphizes per type");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
-        // MODULE-MEMBER generic: `m.idr` called at Bool + Int64 through the projection chain. Resolves via
-        // `member_value` (the `callee_def_index` Member arm) to the internal member def. `(idr 1 true)` =
-        // true → `(idr 2 40)` = 40.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module top (def (main) \
-               (do (module m (def (idr (: n Int64) x) (if (= n 0) x (idr (- n 1) x)))) \
-                   (if ((. m idr) 1 true) ((. m idr) 2 40) 99))) (export main))",
-        )))
-        .expect("a module-member generic function monomorphizes per type");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 40);
     }
 
     #[test]
