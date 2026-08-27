@@ -8808,11 +8808,10 @@ fn expr_rematches_scrutinee(
         if s2 == scrutinee {
             return true;
         }
-        if let Some(b) = tgt_binder {
-            if matches!(core_of(db, s2), Core::Param { binder } | Core::LocalRef { binder } if binder == b)
-            {
-                return true;
-            }
+        if let Some(b) = tgt_binder
+            && matches!(core_of(db, s2), Core::Param { binder } | Core::LocalRef { binder } if binder == b)
+        {
+            return true;
         }
     }
     core_child_ids(db, id)
