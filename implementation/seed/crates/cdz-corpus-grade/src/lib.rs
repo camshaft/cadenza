@@ -380,6 +380,17 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
                 let want = TrapCode::from_id(reason).or_else(|| classify(reason));
                 match (want, classify(actual)) {
                     (Some(w), Some(g)) if w == g => Grade::Pass,
+                    // BOTH sides classify to KNOWN trap codes but they DIFFER → a hard disagreement (a
+                    // miscompile, or a wrong-kind expectation), graded FAIL exactly like a wrong output value.
+                    // Now that trap codes are semantic (CDZ07xx), a mismatched KIND between two traps is a real
+                    // disagreement, NOT an unconfirmed Todo that hides it + exits 0 (breaker's grading-gap catch).
+                    (Some(w), Some(g)) => Grade::Fail(format!(
+                        "expected trap {} ({reason}) but trapped {} ({actual}) — wrong trap kind",
+                        w.code(),
+                        g.code()
+                    )),
+                    // The actual reason (or the expectation) classifies to NO known code → genuinely
+                    // unconfirmed; stays Todo (never a false Pass, and never a false Fail on a novel trap).
                     _ => Grade::Todo(format!(
                         "trapped ({actual}) but reason kind ≠ expected ({reason})"
                     )),
@@ -882,11 +893,21 @@ mod tests {
             ),
             Grade::Pass
         );
-        // A code id that does NOT match the actual kind is Todo (unconfirmed), never a false Pass.
+        // A code id that classifies but MISMATCHES the actual (both known, differ) is a hard FAIL — a wrong
+        // trap kind is a real disagreement, not a hidden Todo (breaker's grading-gap fix).
         assert!(matches!(
             grade_trial(
                 &GExpect::Trap("CDZ0703".into()),
                 &Outcome::Trap("integer divide by zero".into())
+            ),
+            Grade::Fail(_)
+        ));
+        // But when the ACTUAL reason classifies to no known code, it stays Todo (a novel/unclassifiable trap
+        // is genuinely unconfirmed — never a false Fail).
+        assert!(matches!(
+            grade_trial(
+                &GExpect::Trap("CDZ0701".into()),
+                &Outcome::Trap("some novel host failure".into())
             ),
             Grade::Todo(_)
         ));

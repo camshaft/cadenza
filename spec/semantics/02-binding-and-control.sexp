@@ -2716,13 +2716,17 @@
   (output (: 44 Int64)))
 
 (case "expect on an overflowing checked add traps"
-  (doc    "The overflow companion: `(add-ck Int64.max 1)` computes a checked add that overflows, so its
-           `Option<Int64>` is None and expect traps — the overflow-trapping arithmetic expect+checked
-           compose into. Contrast `(Int64.wrapping-add Int64.max 1)`, which wraps to MIN without trapping.")
+  (doc    "`(add-ck Int64.max 1)`: `Int64.checked-add` OVERFLOWS, so it returns `None` WITHOUT trapping (that is
+           the point of a checked add), and `Option.expect None …` then traps on the ABSENCE — a bare
+           `unreachable` (the expect message `\"overflow\"` is the author's label, DROPPED at the boundary; the
+           trap KIND is the expect-absence unreachable, NOT an arithmetic overflow). Contrast
+           `(Int64.wrapping-add Int64.max 1)`, which wraps to MIN without trapping at all. (Corrected from a
+           stale `(trap \"overflow\")` expectation that never matched — surfaced once a trap-vs-trap KIND
+           mismatch became a hard fail instead of a hidden todo.)")
   (input  (do
             (def (add-ck a b) (Option.expect (Int64.checked-add a b) "overflow"))
             (def (main) (add-ck Int64.max 1)) (export main)))
-  (trap   "overflow"))
+  (trap   "unreachable"))
 
 (case "expect unwraps the ok case of a runtime result"
   (doc    "`Result.expect` is the Result twin of `Option.expect`: `(g (Ok 99))` on `(Result.expect r \"m\")`
