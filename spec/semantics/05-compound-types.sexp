@@ -21671,3 +21671,27 @@
 (export main)))
   (call main)
   (output (: 9 Int64)))
+
+(case "a nested element pattern dispatches on a non-variant-0 list-payload sum (disc read via vec-get, not arr-get)"
+  (doc    "REGRESSION (miscompile): a sum `Ast` whose LAST variant `List` carries `(List Ast)`, matched by a nested list-element pattern `(Ast.List (list (Ast.Name n) .. rest))`. The disc-walk resolved the `Payload` step's type via VARIANT 0 (`Int`, payload `Int64` — NOT a list) and emitted `arr-get` on the RRB vec, reading a GARBAGE discriminant → the arm mis-dispatched and head-of SILENTLY returned 0 though the head IS a Name (`cdz check` clean). Fix records the ENTERED variant's payload type as the switch descends so `Payload` resolves to the real `List Ast` and `Elem(0)` reads with `vec-get`. Scrutinee is genuinely runtime (threaded through a recursive `idast`, never folds). Name head → 100; Int head falls through the wildcard → 0; combined `1000*100 + 0` = 100000 pins that dispatch reads the element disc, not always the first arm.")
+  (input (do
+(type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+(def (head-of (: node Ast)) (match node ((Ast.List (list (Ast.Name n) .. rest)) 100) (_ 0)))
+(def (idast (: k Int64) (: node Ast)) (if (<= k 0) node (idast (- k 1) node)))
+(def (main)
+  (+ (* 1000 (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
+     (head-of (idast 3 (Ast.List (list (Ast.Int 9) (Ast.Int 5)))))))
+(export main)))
+  (call main)
+  (output (: 100000 Int64)))
+
+(case "a binder read off a non-variant-0 list-payload element reads the right value (vec-get read walk)"
+  (doc    "The read-walk companion of the disc-walk fix above: bind `k` from `(Ast.List (list (Ast.Int k) .. rest))` on the same non-variant-0 list payload and read it — the read walk must ALSO resolve the `Payload` step to `List Ast` and pick `vec-get`, not `arr-get`. Runtime scrutinee via `idast` → 42.")
+  (input (do
+(type Ast (Int Int64) (Str String) (Bool Bool) (Name String) (List (List Ast)))
+(def (first-int (: node Ast)) (match node ((Ast.List (list (Ast.Int k) .. rest)) k) (_ -1)))
+(def (idast (: j Int64) (: node Ast)) (if (<= j 0) node (idast (- j 1) node)))
+(def (main) (first-int (idast 3 (Ast.List (list (Ast.Int 42) (Ast.Int 5))))))
+(export main)))
+  (call main)
+  (output (: 42 Int64)))
