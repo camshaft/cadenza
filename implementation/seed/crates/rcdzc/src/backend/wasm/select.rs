@@ -10547,6 +10547,142 @@ fn try_emit_static_bytes(db: &mut Db, id: StructId, layout: &Layout, out: &mut E
     false
 }
 
+/// §2d STATIC COMPOUNDS (`DESIGN-static-data.md` increment 6): if `id` is a markable constant
+/// `Tuple`/`Record` in the build-once table, emit a bare `global.get` of its module global and return
+/// `true`. Compound globals are laid AFTER the static-bytes globals, so compound `pos`'s global index is
+/// `static_bytes.len() + pos`. The tree was built ONCE (immortal, per-node marked) by the `start` init, so a
+/// use just reads the handle (`op_dup`/`op_drop` no-op on the immortal root; FBIP path-copies). `false`
+/// (build the compound inline per-eval, as before) for a non-tabled or runtime compound.
+fn try_emit_static_compound(db: &mut Db, id: StructId, layout: &Layout, out: &mut Emit) -> bool {
+    let _ = db;
+    if let Some(pos) = layout.static_compounds.iter().position(|&c| c == id) {
+        out.push(Lir::GlobalGet((layout.static_bytes.len() + pos) as u32)); // [handle] — immortal compound
+        return true;
+    }
+    false
+}
+
+/// §2d increment 6: emit the IMMORTAL build of a markable constant compound `id` into the `start` init,
+/// leaving its handle on the stack. Builds every node inline and marks it IMMORTAL per node (`mark-immortal`
+/// is shallow, so the WHOLE tree must be marked to be census-excluded + drop-safe): `arr-alloc(n)` then, per
+/// element, build its handle + `arr-set`, then `mark-immortal` the root array. Mirrors the runtime
+/// `Core::Tuple`/`Core::Record` emit (a record IS a tuple at run time) but recurses for a nested compound
+/// and marks each node. Self-contained — references no other global — so ordering across the init is
+/// irrelevant. Called ONLY on a `Tuple`/`Record` collected by `collect_static_compounds`.
+fn emit_immortal_static(
+    db: &mut Db,
+    id: StructId,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    match core_of(db, id) {
+        Core::Tuple { elems } => {
+            let elem_tys = match type_of(db, id).strip_nominal() {
+                Ty::Tuple(ts) => Some(ts.clone()),
+                _ => None,
+            };
+            out.push(Lir::ConstI32(elems.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [arr]
+            for (i, &elem) in elems.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [arr, i]
+                emit_immortal_elem(db, elem, elem_tys.as_ref().and_then(|ts| ts.get(i)), layout, out)?;
+                out.push(Lir::CallImport(OP_ARR_SET)); // [arr]
+            }
+            out.push(Lir::CallImport("mark-immortal")); // [arr] — the tuple root, immortal
+            Ok(())
+        }
+        Core::Record { fields } => {
+            let field_tys = match type_of(db, id).strip_nominal() {
+                Ty::Record(m) => Some((*m).clone()),
+                _ => None,
+            };
+            out.push(Lir::ConstI32(fields.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [arr] (a record IS a tuple at run time)
+            for (i, (name, &value)) in fields.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [arr, i]
+                let declared = field_tys.as_ref().and_then(|m| m.get(name));
+                emit_immortal_elem(db, value, declared, layout, out)?;
+                out.push(Lir::CallImport(OP_ARR_SET)); // [arr]
+            }
+            out.push(Lir::CallImport("mark-immortal")); // [arr] — the record root, immortal
+            Ok(())
+        }
+        _ => Err(Reject::decline(
+            "emit_immortal_static reached a non-compound (only markable Tuple/Record are collected)"
+                .to_string(),
+        )),
+    }
+}
+
+/// One element of an immortal static compound (see [`emit_immortal_static`]), leaving its handle on the
+/// stack: a nested markable `Tuple`/`Record` recurses (its whole subtree is built + marked immortal); a
+/// constant `Bytes`/`String` builds its OWN inline immortal leaf (self-contained — not the shared static-
+/// bytes global, so init ordering is irrelevant + a tiny duplication is harmless); a constant scalar emits
+/// its value, boxes it by the declared element type, and marks the freshly-boxed node immortal (a `Unit`
+/// stores the inline `IMM_UNIT` sentinel — no heap node, no mark).
+fn emit_immortal_elem(
+    db: &mut Db,
+    elem: StructId,
+    declared: Option<&Ty>,
+    layout: &Layout,
+    out: &mut Emit,
+) -> Result<(), Reject> {
+    match core_of(db, elem) {
+        Core::Tuple { .. } | Core::Record { .. } => emit_immortal_static(db, elem, layout, out),
+        _ => {
+            if let Some(payload) = crate::lower::constant_bytes_value(db, elem)
+                .or_else(|| crate::lower::constant_string_value(db, elem))
+            {
+                out.push(Lir::ConstI32(payload.len() as i32));
+                out.push(Lir::CallImport(OP_BYTES_ALLOC)); // [buf]
+                for (bi, &b) in payload.iter().enumerate() {
+                    out.push(Lir::ConstI32(bi as i32)); // [buf, i]
+                    out.push(Lir::ConstI32(b as i32)); // [buf, i, byte]
+                    out.push(Lir::CallImport(OP_BYTES_SET)); // [buf]
+                }
+                out.push(Lir::CallImport("mark-immortal")); // [leaf] — immortal
+                return Ok(());
+            }
+            // A constant scalar (Int/Bool/Unit): emit the value (no scratch — a constant needs none), box it,
+            // and mark the box. A fresh empty emit context is safe because a `Core::ConstInt`/`ConstBool`/
+            // `Unit` pushes only an inline constant.
+            let slots: HashMap<StructId, u32> = HashMap::new();
+            let mut high = 0u32;
+            let mut scratch_ty: HashMap<u32, ValType> = HashMap::new();
+            emit(db, elem, &slots, 0, &mut high, &mut scratch_ty, layout, out)?; // [.., value]
+            let boxed = match declared {
+                Some(d) => box_op_for(db, elem, d)?,
+                None => box_op(db, elem)?,
+            };
+            emit_heap_store_tail(db, elem, boxed, out); // [.., handle] (box, or the unit sentinel)
+            if boxed.is_some() {
+                out.push(Lir::CallImport("mark-immortal")); // mark the freshly-boxed scalar node
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Build the `start`-init `Lir` for all static compounds (`DESIGN-static-data.md` §2d, increment 6): for each
+/// entry in `layout.static_compounds`, emit its immortal tree ([`emit_immortal_static`]) and `global.set` it
+/// to `static_bytes.len() + k` (compound globals follow the byte globals). Called by the backend (which has
+/// `Db` — the tree walk needs `core_of`/`type_of`/box selection) and stored in the `Layout`, so
+/// `core_module_impl` (which has no `Db`) can APPEND it to the static-bytes init in the START function.
+/// Empty `Vec` when there are no static compounds (no additions → byte-identical).
+pub fn build_static_compound_init(
+    db: &mut Db,
+    compounds: &[StructId],
+    byte_base: usize,
+    layout: &Layout,
+) -> Result<Vec<Lir>, Reject> {
+    let mut out = Emit::new();
+    for (k, &root) in compounds.iter().enumerate() {
+        emit_immortal_static(db, root, layout, &mut out)?; // [handle]
+        out.push(Lir::GlobalSet((byte_base + k) as u32)); // store the once-built immortal handle → []
+    }
+    Ok(std::mem::take(&mut *out))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit(
     db: &mut Db,
@@ -10775,6 +10911,11 @@ fn emit(
         // handle on the stack. (A record consumed only to read a field folds away in `lower`; a record
         // that survives to selection is a genuine runtime value — e.g. one that escapes to the host.)
         Core::Record { fields } => {
+            // §2d STATIC COMPOUNDS: a markable constant record in the build-once table is built ONCE
+            // (immortal) by the `start` init; read it here with a bare `global.get`. Else build inline below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::ConstI32(fields.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             // The record's OWN solved type carries each field's DECLARED type by name — box each field by
@@ -10840,6 +10981,12 @@ fn emit(
         // elements — no scratch local — because `arr-set` returns it. Each element is BOXED to a u32
         // handle by its type (`box-int`/`box-bool`); the tuple itself is a u32 handle.
         Core::Tuple { elems } => {
+            // §2d STATIC COMPOUNDS: a markable constant tuple in the build-once table is built ONCE (immortal)
+            // by the `start` init; read it here with a bare `global.get` instead of the per-eval arr-alloc +
+            // boxed arr-set. Else build inline below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             // Box each element by the tuple's OWN solved element type (positional), not the element NODE's

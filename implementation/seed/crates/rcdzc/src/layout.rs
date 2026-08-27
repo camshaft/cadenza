@@ -160,6 +160,19 @@ pub struct Layout {
     /// constant literal to its global and `core_module_impl` can emit the GLOBAL + START sections. Empty
     /// for a program with no constant bytes literal → no GLOBAL/START additions, byte-identical to before.
     pub static_bytes: Vec<Vec<u8>>,
+    /// STATIC COMPOUNDS (`DESIGN-static-data.md` §2d, increment 6): the markable constant `Tuple`/`Record`
+    /// ROOT node ids the program builds ONCE (`collect_static_compounds`). Each occupies a module GLOBAL laid
+    /// AFTER the `static_bytes` globals — so compound `k`'s global index is `static_bytes.len() + k`. The
+    /// `Core::Tuple`/`Core::Record` emit arm routes a node whose id is here to that global; the `start` init
+    /// builds each once (immortal). Keyed by node id: two uses of the same node share one global. Empty →
+    /// no compound globals, byte-identical.
+    pub static_compounds: Vec<StructId>,
+    /// The PRECOMPUTED `start`-init body for the static compounds — the flat `Lir` that, for each entry in
+    /// `static_compounds`, builds its immortal tree (`select::emit_immortal_static`) and `global.set`s it to
+    /// `static_bytes.len() + k`. Built with `Db` access in the backend (the tree walk needs `core_of`/
+    /// `type_of`/box selection), then handed to `core_module_impl` (which has no `Db`) to APPEND to the
+    /// static-bytes init in the START function. Parallel to `static_compounds`; empty when there are none.
+    pub static_compound_init: Vec<crate::backend::wasm::lir::Lir>,
 }
 
 impl Layout {
@@ -203,6 +216,8 @@ impl Layout {
             cross_edge_import: std::collections::HashMap::new(),
             spec_merge: std::collections::HashMap::new(),
             static_bytes: Vec::new(),
+            static_compounds: Vec::new(),
+            static_compound_init: Vec::new(),
         }
     }
 
@@ -318,6 +333,23 @@ impl Layout {
     pub fn with_static_bytes(&self, static_bytes: Vec<Vec<u8>>) -> Layout {
         Layout {
             static_bytes,
+            ..self.clone()
+        }
+    }
+
+    /// A copy of this layout with the STATIC COMPOUNDS table + its precomputed `start`-init body set
+    /// (`DESIGN-static-data.md` §2d, increment 6). `compounds` are the markable constant Tuple/Record root
+    /// node ids (`collect_static_compounds`); `init` is the flat `Lir` (`select::build_static_compound_init`)
+    /// that builds each immortal + `global.set`s it. Set by the backend before selection so the
+    /// `Core::Tuple`/`Core::Record` arm can route a constant literal to its global.
+    pub fn with_static_compounds(
+        &self,
+        static_compounds: Vec<StructId>,
+        static_compound_init: Vec<crate::backend::wasm::lir::Lir>,
+    ) -> Layout {
+        Layout {
+            static_compounds,
+            static_compound_init,
             ..self.clone()
         }
     }
