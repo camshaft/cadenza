@@ -29465,6 +29465,44 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_reachable_const_trap_warning_names_the_specific_trap_kind() {
+        // CDZ0309 (potentially-reachable const trap) must say WHICH trap kind the demoted operation will
+        // raise (operator 2026-08-27: "we want to say what kind of trap it is"). Each of these puts a
+        // compile-provable trap of a distinct kind in a RUNTIME-guarded `if` else branch; the warning names
+        // the kind (parenthesized) while keeping the "potentially reachable trap" wording the corpus grades on.
+        for (trap_expr, kind) in [
+            ("(/ 1 0)", "divide by zero"),
+            (
+                "(* 9223372036854775807 9223372036854775807)",
+                "overflows Int64",
+            ),
+            ("(<< 1 100)", "out of range"),
+        ] {
+            let src = format!(
+                "(module m (def (main (: n Int64)) (if (> n 0) 7 {trap_expr})) (export main))"
+            );
+            let warns: Vec<_> = warnings_of(&src)
+                .into_iter()
+                .filter(|d| d.code.as_deref() == Some("CDZ0309"))
+                .collect();
+            assert_eq!(
+                warns.len(),
+                1,
+                "exactly one CDZ0309 for `{trap_expr}`, got {warns:?}"
+            );
+            let msg = &warns[0].message;
+            assert!(
+                msg.contains("potentially reachable trap"),
+                "keeps the corpus-graded wording: {msg}"
+            );
+            assert!(
+                msg.contains(kind),
+                "names the specific trap kind `{kind}` for `{trap_expr}`: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unused_non_normalizing_let_init_warns_but_still_compiles() {
         // The dead-computation warning (CDZ0305) covers a computation with NO VALUE, not only a trapping
         // one: a non-normalizing self-application `((fn (v0) (v0 v0)) (fn (v1) (v1 (v1 v1))))` (no normal
@@ -34434,6 +34472,65 @@ mod stage1 {
         // (/ MIN -1) overflows Int64 (the result 2^63 doesn't fit) — CDZ0304, named as an overflow (NOT
         // a divide-by-zero: the divisor is -1, and the fold distinguishes the two Div traps).
         assert!(expect_decline("(/ -9223372036854775808 -1)").contains("overflows Int64"));
+    }
+
+    #[test]
+    fn a_conditional_const_divide_by_zero_demotes_to_a_kind_preserving_trap() {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        // dzb2/dzb3 (operator ruling 2026-08-27, Lean-oracle finding): a const `(/ 1 0)` in a
+        // conditionally-reached `if` branch DEMOTES to a runtime trap that PRESERVES the divide-by-zero
+        // KIND — `Core::TrapDivZero`, NOT the bare `Core::Trap` (which would report the kind as
+        // "unreachable"). Assert the else branch lowered to the kind-preserving trap.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main has a body");
+        let Core::If { else_, .. } = core_of(&mut db, body) else {
+            panic!("main lowers to a runtime `if` (the guard is a runtime value)");
+        };
+        assert!(
+            matches!(core_of(&mut db, else_), Core::TrapDivZero),
+            "the demoted const-divide-by-zero else branch preserves the div-by-zero kind, got {:?}",
+            core_of(&mut db, else_)
+        );
+
+        // A conditional const INTEGER OVERFLOW demotes to the KIND-PRESERVING `Core::TrapOverflow` (the
+        // overflow twin — operator: "add a dedicated overflow core op as well"). `(* MAX MAX)` overflows
+        // Int64, so the else branch surfaces the "overflow" kind at runtime, not bare "unreachable".
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (main (: n Int64)) \
+               (if (> n 0) 7 (* 9223372036854775807 9223372036854775807))) (export main))",
+        ));
+        let d2 = db2.def_by_name("main").expect("def main");
+        let body2 = db2.defs[d2].body.expect("main has a body");
+        let Core::If { else_, .. } = core_of(&mut db2, body2) else {
+            panic!("main lowers to a runtime `if`");
+        };
+        assert!(
+            matches!(core_of(&mut db2, else_), Core::TrapOverflow),
+            "the demoted const-overflow else branch preserves the overflow kind, got {:?}",
+            core_of(&mut db2, else_)
+        );
+
+        // DISCRIMINATION: a shift-COUNT-out-of-range const trap still demotes to the kind-LESS `Core::Trap`
+        // — wasm masks the shift count (no native overflow trap to surface), and the cause message names an
+        // out-of-range count, not "overflow"/"divide by zero", so it stays the generic `unreachable` trap.
+        let mut db3 = Db::load(crate::testkit::parse(
+            "(module m (def (main (: n Int64)) (if (> n 0) 7 (<< 1 100))) (export main))",
+        ));
+        let d3 = db3.def_by_name("main").expect("def main");
+        let body3 = db3.defs[d3].body.expect("main has a body");
+        let Core::If { else_, .. } = core_of(&mut db3, body3) else {
+            panic!("main lowers to a runtime `if`");
+        };
+        assert!(
+            matches!(core_of(&mut db3, else_), Core::Trap),
+            "a shift-count-out-of-range conditional const trap stays the kind-less Core::Trap, got {:?}",
+            core_of(&mut db3, else_)
+        );
     }
 
     #[test]

@@ -21510,10 +21510,47 @@ fn demote_conditional_trap(db: &mut Db, branch: StructId) -> StructId {
         && r.code == Some(Code::ConstTrap)
     {
         let ty = crate::infer::type_of(db, branch);
+        // PRESERVE the trap KIND across the demote (operator ruling 2026-08-27, Lean-oracle finding): a const
+        // divide/remainder-by-zero must surface "divide by zero" at runtime — the SAME kind a runtime `(/ n 0)`
+        // raises — not the bare "unreachable" a plain `Core::Trap` reports. The ConstTrap message names its
+        // cause (`const_trap_cause`: "divide by zero — …" / the const-eval "division by zero"), so classify off
+        // it (the same vocabulary `cdz-corpus-grade::trap_kind` canonicalizes to `div-by-zero`). Any other
+        // provable-trap kind still demotes to the kind-less `Core::Trap` (its corpus expectation is unchanged).
+        if is_div_by_zero_trap(&r.message) {
+            trace!(target: "rcdzc::lower", branch = branch.0, "demote a provable const DIVIDE-BY-ZERO in a conditionally-reached branch to a KIND-PRESERVING runtime Core::TrapDivZero (operator ruling)");
+            return synth_core(db, Core::TrapDivZero, ty);
+        }
+        if is_overflow_trap(&r.message) {
+            trace!(target: "rcdzc::lower", branch = branch.0, "demote a provable const INTEGER-OVERFLOW in a conditionally-reached branch to a KIND-PRESERVING runtime Core::TrapOverflow (operator ruling)");
+            return synth_core(db, Core::TrapOverflow, ty);
+        }
         trace!(target: "rcdzc::lower", branch = branch.0, "demote a provable ConstTrap in a conditionally-reached branch to a runtime Core::Trap (cn02 / operator ruling)");
         return synth_core(db, Core::Trap, ty);
     }
     branch
+}
+
+/// Whether a `ConstTrap` poison message names a DIVIDE/REMAINDER-BY-ZERO cause — the demote reads this to
+/// preserve the specific trap kind (see [`demote_conditional_trap`]). Mirrors the vocabulary
+/// `cdz-corpus-grade::trap_kind` canonicalizes to `div-by-zero` (`const_trap_cause`'s "divide by zero"
+/// wording and the const-eval `CVal::Trap("division by zero")`), so the demoted trap grades identically to a
+/// runtime division-by-zero on both backends.
+fn is_div_by_zero_trap(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("divide by zero")
+        || m.contains("division by zero")
+        || m.contains("remainder by zero")
+}
+
+/// Whether a `ConstTrap` poison message names an INTEGER-OVERFLOW cause — the demote reads this to preserve
+/// the "overflow" trap kind (see [`demote_conditional_trap`]). Every arithmetic-overflow message
+/// `const_trap_cause` emits says "overflow" ("the result overflows Int64", "the quotient overflows Int64",
+/// "the shifted result overflows Int64"), which `cdz-corpus-grade::trap_kind` canonicalizes to `overflow`.
+/// Checked AFTER div-by-zero (a `Div` by 0 says "divide by zero", not "overflow"), so the two never collide.
+/// A shift-COUNT-out-of-range ("shift count N is out of range 0..64") does NOT say "overflow" — it stays a
+/// kind-less `Core::Trap` (wasm masks the count, so there is no native overflow trap to surface for it).
+fn is_overflow_trap(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("overflow")
 }
 
 /// The type to use for a comparison's compound-ORDERABILITY check (and the `ValueCmp` descriptor). The type

@@ -1023,6 +1023,32 @@ pub enum Core {
     //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
     //# A trap MUST halt the program at a defined point rather than continue with an unspecified value.
     Trap,
+    /// A KIND-PRESERVING runtime divide-by-zero trap — the demote target for a CONST divide/remainder-by-zero
+    /// (`(/ 1 0)`) in a conditionally-reached `if` branch / `match` arm (`lower::demote_conditional_trap`).
+    /// A bare `Core::Trap` (`unreachable`) would report the trap KIND as "unreachable", but the operator ruled
+    /// (2026-08-27) the demote MUST PRESERVE the "divide by zero" kind — the same kind a RUNTIME `(/ n 0)`
+    /// surfaces — so a fold-provable const div-by-zero reads identically to its runtime twin at the trap site.
+    /// The backend emits a guaranteed-trapping division whose NATIVE reason names the kind: wasm `i64.const 0;
+    /// i64.const 0; i64.div_s` (traps "integer divide by zero") followed by `unreachable` to keep the stack
+    /// polymorphic (so it validates in ANY result position, exactly like `Core::Trap`); rust `panic!("divide by
+    /// zero")` (whose `trap_kind` classifies as `div-by-zero`, agreeing with wasm). Diverges like `Core::Trap`.
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
+    TrapDivZero,
+    /// A KIND-PRESERVING runtime INTEGER-OVERFLOW trap — the demote target for a CONST arithmetic overflow
+    /// (`(* MAX MAX)`, `Int64.min / -1`, a shift whose exact result overflows) in a conditionally-reached
+    /// branch/arm (`lower::demote_conditional_trap`). The overflow twin of [`Core::TrapDivZero`]: preserving
+    /// the "overflow" kind means a fold-provable const overflow reads identically to its RUNTIME counterpart
+    /// (a checked `+`/`*`/narrowing that overflows) at the trap site, rather than the bare "unreachable" a
+    /// plain `Core::Trap` reports. The backend emits the one arithmetic op wasm traps as "integer overflow":
+    /// `i32.const i32::MIN; i32.const -1; i32.div_s` (the same trick `Lir::IfIntegerOverflowEnd` uses),
+    /// followed by `unreachable` to keep the stack polymorphic (valid in ANY result position, like
+    /// `Core::Trap`); rust `panic!("integer overflow")` (whose `trap_kind` is `overflow`, agreeing with wasm).
+    /// Diverges like `Core::Trap`. NOT used for a shift-COUNT-out-of-range (wasm masks the count — no native
+    /// trap — so that stays a guarded `Core::Trap`/`unreachable`).
+    //= spec/capabilities/core-semantics.md#a-trap-halts-execution-at-a-defined-point
+    //# The kind of trap a given operation raises MUST be a deterministic function of the operation and its inputs.
+    TrapOverflow,
     /// A two-way conditional over atoms; structured control retained. Children are AST `StructId`s. The
     /// backend emits a wasm `if`/`else`, so ONLY the branch the condition selects executes:
     //= spec/capabilities/core-semantics.md#conditionals-evaluate-one-branch

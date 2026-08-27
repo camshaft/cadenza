@@ -1840,6 +1840,8 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Param { .. }
         | Core::Captured { .. }
         | Core::LocalRef { .. }

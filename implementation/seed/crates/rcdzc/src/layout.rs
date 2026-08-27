@@ -1537,6 +1537,8 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         | Core::ConstFloatInf
         | Core::Unit
         | Core::Trap
+        | Core::TrapDivZero
+        | Core::TrapOverflow
         | Core::Param { .. }
         | Core::Captured { .. }
         | Core::LocalRef { .. }
@@ -1887,6 +1889,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
         | crate::core::Core::ConstFloatInf
         | crate::core::Core::Unit
         | crate::core::Core::Trap
+        | crate::core::Core::TrapDivZero
+        | crate::core::Core::TrapOverflow
         | crate::core::Core::Param { .. }
         | crate::core::Core::Captured { .. }
         | crate::core::Core::LocalRef { .. }
