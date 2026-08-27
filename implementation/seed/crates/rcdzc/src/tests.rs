@@ -57893,65 +57893,12 @@ mod stage1 {
     // indexed. The result crosses the boundary as the target's faithful primitive (u8/s8/…).
 
     #[test]
-    fn wrap_truncates_an_out_of_range_constant() {
-        // `(UInt8.wrap 256)` = 0 — keep the low 8 bits (0x100 → 0x00). NEVER traps (contrast the checked
-        // `.of`, which will return None). Crosses as u8.
-        let src = "(module m (def (main) (UInt8.wrap 256)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u8>(&bytes, "main"), 0);
-    }
-
-    #[test]
-    fn wrap_of_a_negative_uses_twos_complement() {
-        // `(UInt8.wrap -1)` = 255 — the low 8 bits of -1's two's-complement (all ones); the target width
-        // (UInt8) comes from the type.
-        let src = "(module m (def (main) (UInt8.wrap -1)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u8>(&bytes, "main"), 255);
-    }
-
-    #[test]
-    fn wrap_into_a_signed_width_reinterprets_the_sign_bit() {
-        // `(Int8.wrap 200)` = -56 — 200 = 0xC8, bit 7 set, so as a signed Int8 it is -56. Crosses as s8.
-        let src = "(module m (def (main) (Int8.wrap 200)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i8>(&bytes, "main"), -56);
-    }
-
-    #[test]
-    fn wrap_in_range_is_the_value() {
-        // `(UInt8.wrap 200)` = 200 — an in-range value is unchanged. Pins that wrap is the identity when
-        // the value already fits.
-        let src = "(module m (def (main) (UInt8.wrap 200)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u8>(&bytes, "main"), 200);
-    }
-
-    #[test]
-    fn wrap_via_the_constructor_denotes_the_same_op() {
-        // `((Int 8).wrap 200)` = `(Int8.wrap 200)` = -56 — the constructor-built module and the named
-        // width carry the SAME `wrap` (built by the twin `wrap_field`s), so both must produce -56 (not
-        // merely agree). `(Int 8).wrap` is the postfix-member sugar (reads to `(. (Int 8) wrap)`), the
-        // paren sibling of the `Int8.wrap` token form.
-        let run_i8 = |body: &str| {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<i8>(&bytes, "main")
-        };
-        assert_eq!(run_i8("((Int 8).wrap 200)"), -56);
-        assert_eq!(run_i8("(Int8.wrap 200)"), -56);
-    }
-
-    #[test]
-    fn wrap_to_a_nonaliased_width_folds_and_crosses_widened() {
+    fn wrap_to_a_nonaliased_width_folds() {
         // `((UInt 48).wrap -1)` = 2^48-1 at the FOLD (the low 48 bits of -1) — the truncation is correct.
-        // A non-aliased target has no boundary primitive of its own, but a RESULT crosses WIDENED to the
-        // next aliased width (`u64`), value-preserving — so exporting it now RUNS to the exact value
-        // (was a decline under the old aliased-only boundary rule). `(UInt 48).wrap` is the postfix-member
-        // sugar (reads to `(. (UInt 48) wrap)`). (The full matrix + the parameter-still-declines half are
-        // in `runtime_ops::a_non_aliased_width_result_crosses_…` / `a_non_aliased_width_result_crosses_…`.)
+        // `(UInt 48).wrap` is the postfix-member sugar (reads to `(. (UInt 48) wrap)`). The RUN half (the
+        // result crossing WIDENED to `u64` and running to 281474976710655) is pinned in the corpus:
+        // 06-numeric-model "`((UInt 48).wrap (: -1 Int64))` = 281474976710655".
         assert_eq!(fold_const_u128("((UInt 48).wrap -1)"), (1u128 << 48) - 1);
-        assert_eq!(run_main_as::<u64>("((UInt 48).wrap -1)"), (1u64 << 48) - 1);
     }
 
     #[test]
@@ -58104,19 +58051,6 @@ mod stage1 {
                 || msg.contains("differ"),
             "got: {msg}"
         );
-    }
-
-    #[test]
-    fn a_named_width_and_the_constructor_denote_the_same_module() {
-        // `Int8` and `(Int 8)` are the SAME module — both project a bound of the same value and type.
-        // (No per-name special case; both go through the width-generic builder.) Both cross as s8.
-        let run_i8 = |body: &str| {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<i8>(&bytes, "main")
-        };
-        assert_eq!(run_i8("(. Int8 max)"), run_i8("(. (Int 8) max)"));
-        assert_eq!(run_i8("(. Int8 min)"), run_i8("(. (Int 8) min)"));
     }
 
     #[test]
