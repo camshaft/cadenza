@@ -2334,3 +2334,34 @@
                 ((Some v) v) ((None) (- 0 1))))
             (export main)))
   (call   main) (output (: 42 Int64)) (live-objects 0))
+
+; -- breaker batch 460 (2026-08-27): the Bytes.slice extract-leak isolated on an IMMORTAL source.
+; Post-#3869 a constant Bytes literal is census-excluded, so osx4's baseline is 0 and osx3
+; isolates what the slice extraction itself leaks: exactly 2 (the Some-wrapped slice view, never
+; released after the unwrap). Same Option-shell-mediated extraction shape as the lar1/mlr family
+; (List.at/Map.lookup dup-retain, routed to reclaim-placement increment 2) — the slice variant
+; wraps a FRESH view rather than a retained element, so it is the adjacent cell, filed with the
+; family rather than confirmed identical. Runtime-source slice deltas read larger (~13) only
+; because the Bytes.of fold's own leak class compounds on top.
+
+(case "osx3 a Bytes.slice of an immortal constant source matched by Some and borrowed leaks the view"
+  (input (do
+    (def (main (: n Int64))
+      (let ((a (if (= n 1) b"const-shared-payload" b"other")))
+        (match (Bytes.slice a 2 3)
+          ((Option.Some s) (Bytes.len s))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 3 Int64))
+  (live-objects known-leak 2))
+
+(case "osx4 the immortal constant source alone is census-excluded (the zero baseline for osx3)"
+  (input (do
+    (def (main (: n Int64))
+      (let ((a (if (= n 1) b"const-shared-payload" b"other")))
+        (Bytes.len a)))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 20 Int64))
+  (live-objects 0))
