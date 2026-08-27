@@ -145,6 +145,12 @@ pub struct LoopGroup {
     /// it so every `break` yields the SAME Rust type (a `loop` requires all `break` values agree). `None`
     /// for a non-integer result (Bool/unit). All members share the signature, so one result type serves.
     pub result_it: Option<IntTy>,
+    /// The group's result FLOAT width (32/64), if float — the float twin of `result_it`. A bare-literal
+    /// tail leaf (`break 0.5`) is a `Core::ConstFloat` that DEFAULTS to Float64, so under a `Float32`
+    /// result it would `break f64::from_bits(…)` out of an `-> f32` loop → rustc E0308 (the tail-position
+    /// sibling of the non-tail match-arm float grounding `emit_match_impl`'s `result_fw` already does).
+    /// Ground each break leaf to this width via `emit_grounded_float`. `None` for a non-float result.
+    pub result_ft: Option<u32>,
 }
 
 impl LoopGroup {
@@ -1340,14 +1346,19 @@ fn emit_loop_body(
     mode: Mode,
 ) -> Result<String, Reject> {
     let shared_params: Vec<String> = (0..params.len()).map(|i| format!("__p{i}")).collect();
-    let result_it = match type_of(db, db.defs[self_def].body.unwrap()) {
-        Ty::Int(it) => Some(it),
+    let body_ty = type_of(db, db.defs[self_def].body.unwrap());
+    let result_it = match &body_ty {
+        Ty::Int(it) => Some(*it),
         _ => None,
     };
+    // The float twin: `float_width_of_ty` strips a nominal/Qty wrapper so a `(Qty Float32 …)` result
+    // grounds break leaves to f32. `None` when the result is not a float (it is then int, or a non-scalar).
+    let result_ft = float_width_of_ty(&body_ty);
     let group = LoopGroup {
         members: members.to_vec(),
         shared_params: shared_params.clone(),
         result_it,
+        result_ft,
     };
     let ctx = Ctx {
         mode,
@@ -1965,9 +1976,10 @@ fn emit_tail(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, 
         // Any other tail leaf: its value is the loop's result — `break` it out. A bare-literal leaf is
         // grounded to the function's result width so every `break` in the loop yields the same type.
         _ => {
-            let v = match group.result_it {
-                Some(it) => emit_grounded(db, id, it, env, ctx)?,
-                None => emit(db, id, env, ctx)?,
+            let v = match (group.result_it, group.result_ft) {
+                (Some(it), _) => emit_grounded(db, id, it, env, ctx)?,
+                (None, Some(w)) => emit_grounded_float(db, id, w, env, ctx)?,
+                (None, None) => emit(db, id, env, ctx)?,
             };
             Ok(format!("break {v};"))
         }

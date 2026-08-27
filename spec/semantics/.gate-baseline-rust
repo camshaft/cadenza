@@ -726,6 +726,7 @@ pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not 
 pass	a Float VALUE inserted into an empty (runtime) map boxes with box-float, not box-int
 pass	a Float element inserted into an empty (runtime) set boxes with box-float, not box-int
 pass	a Float32 NaN map key is found by a differently-produced NaN
+pass	a Float32 bare-literal match arm over a self-recursive fn grounds each tail-loop break to f32
 pass	a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer
 pass	a Float32 if-branch literal rounds through binary32, not binary64
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
@@ -5605,6 +5606,9 @@ pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN r
 pass	dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation
 pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
 pass	dxb1 modular exponentiation with the EXPONENT BITS drawn from the handler — the body's square-and-multiply loop consumes the bit stream LSB-first while the arm peels the threaded exponent
+pass	dzc1 a conditionally-reached out-of-range shift demotes to a runtime trap (untaken path answers)
+pass	dzc2 a conditionally-reached Int64.min/-1 overflow demotes likewise
+pass	dzc3 a Rem-by-zero in an untaken MATCH arm demotes likewise
 pass	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
@@ -7970,6 +7974,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	dzc1 a conditionally-reached out-of-range shift demotes to a runtime trap (untaken path answers)
-pass	dzc2 a conditionally-reached Int64.min/-1 overflow demotes likewise
-pass	dzc3 a Rem-by-zero in an untaken MATCH arm demotes likewise

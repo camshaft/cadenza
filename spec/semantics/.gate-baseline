@@ -752,6 +752,7 @@ pass	a Float32 NaN map key is found by a differently-produced NaN
 pass	a Float32 add whose operand is an if of two bare literals grounds to f32
 pass	a Float32 add with a bare LEFT literal grounds it to f32 (position-independent)
 pass	a Float32 add with a bare right literal grounds the literal to f32
+pass	a Float32 bare-literal match arm over a self-recursive fn grounds each tail-loop break to f32
 pass	a Float32 divide with a bare right literal grounds the literal to f32
 pass	a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer
 pass	a Float32 if-branch literal rounds through binary32, not binary64
@@ -5906,6 +5907,9 @@ pass	dv3 division by -1 of a RUNTIME draw — negation across the full non-MIN r
 pass	dvf1 integer Div and Rem folds agree with their runtime twins including negative truncation
 pass	dw1 a list literal mixing an Int32-annotated element with a wider-inferred literal unifies to (List Int32) — every element renders at the unified element width, uniform across backends (fuzzer cdz-smith differential: rust once emitted a heterogeneous vec![i32,i64])
 pass	dxb1 modular exponentiation with the EXPONENT BITS drawn from the handler — the body's square-and-multiply loop consumes the bit stream LSB-first while the arm peels the threaded exponent
+pass	dzc1 a conditionally-reached out-of-range shift demotes to a runtime trap (untaken path answers)
+pass	dzc2 a conditionally-reached Int64.min/-1 overflow demotes likewise
+pass	dzc3 a Rem-by-zero in an untaken MATCH arm demotes likewise
 pass	eab1 a lifted String param CAPTURED by a closure is admitted as borrowed and reclaims
 pass	eab2 a lifted String param as an EFFECT-OP argument is admitted and reclaims
 pass	each definition in a module registers a reachable export field
@@ -8371,6 +8375,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	dzc1 a conditionally-reached out-of-range shift demotes to a runtime trap (untaken path answers)
-pass	dzc2 a conditionally-reached Int64.min/-1 overflow demotes likewise
-pass	dzc3 a Rem-by-zero in an untaken MATCH arm demotes likewise
