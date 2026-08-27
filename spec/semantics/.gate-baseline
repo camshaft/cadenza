@@ -342,6 +342,7 @@ pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Record.with on a map-extracted record leaves the stored original untouched
 pass	Record.with over a RUNTIME field leaves the original record readable (persistence)
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
+pass	Record.with over a runtime record: a PRESERVED sibling reads its source value
 pass	Record.with over a runtime-produced record leaves no live heap objects
 pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
 pass	Record.without over a runtime record leaves no live heap objects
@@ -6959,7 +6960,10 @@ pass	ms2 match ARMS themselves draw after the performing scrutinee advanced the 
 pass	ms3 parity-sum dispatch inside a RECURSIVE walk — each level draws a Mode and accumulates by variant as the thread advances
 pass	ms4 the C arm RE-MATCHES its own payload's parity — a nested pure match inside an arm of the performing-scrutinee match
 pass	msc1 a masked runtime shift count wraps mod the mask (>> x (& k 63))
+pass	msc1 a tail-mutual performer pair folds with per-member state advance (the #4575 shape, independent trace)
+pass	msc2 a THREE-function tail SCC (a→b→c→a) folds with ordered state advance
 pass	msc2 a masked runtime left-shift count elides the count guard but keeps the value-overflow trap
+pass	msc3 a mutual pair where only ONE member performs folds (degenerate half-performing SCC)
 pass	msc3 a narrow UInt8 masked left-shift with an out-of-width count traps
 pass	msr1 a branch-selected owned STRING scrutinee dispatched by literal arms reclaims
 pass	msr2 a branch-selected owned BYTES scrutinee dispatched by a literal arm reclaims
@@ -8909,6 +8913,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	msc1 a tail-mutual performer pair folds with per-member state advance (the #4575 shape, independent trace)
-pass	msc2 a THREE-function tail SCC (a→b→c→a) folds with ordered state advance
-pass	msc3 a mutual pair where only ONE member performs folds (degenerate half-performing SCC)

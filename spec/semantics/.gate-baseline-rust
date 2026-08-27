@@ -326,6 +326,7 @@ pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Record.with on a map-extracted record leaves the stored original untouched
 pass	Record.with over a RUNTIME field leaves the original record readable (persistence)
 pass	Record.with over a perform result — the ORIGINAL record survives beside the update
+pass	Record.with over a runtime record: a PRESERVED sibling reads its source value
 pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Record.without strips a field on a map-extracted record and both maps stay typed
