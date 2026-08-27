@@ -6665,6 +6665,44 @@
   (output (: (Cons (tuple 3 (Cons (tuple 2 (Cons (tuple 1 (Nil unit))))))) IntList))
   (live-objects known-leak 7))
 
+; -- recursive-sum render with a NON-Int64 scalar payload (behavioral migration from rcdzc
+; a_recursive_sum_carrying_a_{string,float64,float32}_renders_via_the_value_encode_walker, 2026-08-27):
+; the value-encode walker renders a recursive sum whose Cons payload carries a String / Float64 / Float32
+; leaf (shape_of emits ShapeNode::Str / Float / Float32), each rendered as its canonical value form. The
+; Int64-payload spine above pins the mechanism; these pin the per-payload-type leaf inside the walk.
+(case "a recursive sum carrying a String renders its full runtime spine"
+  (doc    "`build 2` over a `StrList` whose Cons payload is a String `\"x\"` renders the two-deep spine with
+           a String leaf at each level.")
+  (input  (do
+            (type StrList (Cons (Tuple String StrList)) Nil)
+            (def (build (: n Int64)) (if (< n 1) (StrList.Nil ())
+                                        (StrList.Cons (tuple "x" (build (- n 1))))))
+            (def (main) (build 2)) (export main)))
+  (output (: (Cons (tuple "x" (Cons (tuple "x" (Nil unit))))) StrList))
+  (live-objects known-leak 7))
+
+(case "a recursive sum carrying a Float64 renders its full runtime spine"
+  (doc    "`build 2` over a `FloatList` whose Cons payload is a Float64 `1.5` renders the spine with a
+           Float64 decimal leaf at each level.")
+  (input  (do
+            (type FloatList (Cons (Tuple Float64 FloatList)) Nil)
+            (def (build (: n Int64)) (if (< n 1) (FloatList.Nil ())
+                                        (FloatList.Cons (tuple 1.5 (build (- n 1))))))
+            (def (main) (build 2)) (export main)))
+  (output (: (Cons (tuple 1.5 (Cons (tuple 1.5 (Nil unit))))) FloatList))
+  (live-objects known-leak 7))
+
+(case "a recursive sum carrying a Float32 renders its full runtime spine"
+  (doc    "`build 2` over an `F32List` whose Cons payload is a Float32 `1.5` renders the spine with the
+           f32 shortest-decimal leaf at each level.")
+  (input  (do
+            (type F32List (Cons (Tuple Float32 F32List)) Nil)
+            (def (build (: n Int64)) (if (< n 1) (F32List.Nil ())
+                                        (F32List.Cons (tuple (: 1.5 Float32) (build (- n 1))))))
+            (def (main) (build 2)) (export main)))
+  (output (: (Cons (tuple 1.5 (Cons (tuple 1.5 (Nil unit))))) F32List))
+  (live-objects known-leak 7))
+
 (case "a runtime-PARAMETERIZED recursive sum renders per-call depths from one export"
   (doc    "The parameterized face of the recursive-sum render: the spine/tree render pins above build with
            CONSTANT arguments (depth fixed at authoring time); here `(mk a)` over a runtime boundary
