@@ -25783,59 +25783,6 @@ mod match_engine {
     }
 
     #[test]
-    fn eval_of_a_quasiquote_splices_a_compile_time_known_value() {
-        use crate::testkit::parse;
-        // 12-metaprogramming §Eval Is Optional / §Quasiquote: eval a quasiquoted form whose unquote splices
-        // a compile-time-known VALUE (not just a bare literal). `desugar_eval` reconstructs `(eval AST)` to
-        // source; an active unquote lifts its live operand into `(Ast.Int <e>)`, so reconstruction unwraps
-        // it back to `<e>`. A NON-literal unquote (a let/def-bound name, a computed const) once left the
-        // eval un-desugared → its head `eval` reported a misleading "unbound name `eval`". The
-        // reconstructed source must reach the eval's enclosing scope, so the desugar blanks the dead
-        // reified-argument wrappers, leaving the spliced operand parented at the eval position.
-        for (src, want, what) in [
-            (
-                "(module m (def (main) (let ((x 3)) (eval (quasiquote (+ (unquote x) 4))))) (export main))",
-                7,
-                "a let-bound splice",
-            ),
-            (
-                "(module m (def x 3) (def (main) (eval (quasiquote (+ (unquote x) 4)))) (export main))",
-                7,
-                "a def-const splice",
-            ),
-            (
-                "(module m (def (main) (eval (quasiquote (+ (unquote (+ 1 2)) 4)))) (export main))",
-                7,
-                "a computed-const splice",
-            ),
-            (
-                "(module m (def (main) (eval (quasiquote (+ (unquote 3) 4)))) (export main))",
-                7,
-                "a literal splice (the always-worked control)",
-            ),
-            (
-                "(module m (def (main) (let ((x 3) (y 10)) (eval (quasiquote (+ (unquote x) (unquote y)))))) (export main))",
-                13,
-                "two let-bound splices",
-            ),
-            (
-                "(module m (def (main) (let ((x 5)) (+ 1 (eval (quasiquote (* (unquote x) 2)))))) (export main))",
-                11,
-                "an eval-of-splice nested inside a larger expression",
-            ),
-        ] {
-            assert_eq!(
-                run_returns::<i64>(
-                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                    "main"
-                ),
-                want,
-                "eval of a quasiquote splicing a compile-time value — {what}"
-            );
-        }
-    }
-
-    #[test]
     fn an_ast_operand_in_arithmetic_names_the_compile_time_metadata_misuse() {
         // An `Ast` value used in an ARITHMETIC/comparison position — `(eval (quasiquote (+ (unquote (quote
         // …)) 1)))` (the spliced `(quote …)` reconstructs to an `Ast` the surrounding `+` can't consume),

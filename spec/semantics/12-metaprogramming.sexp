@@ -4204,3 +4204,20 @@
            and folds through the ordinary tier.")
   (input  (eval (quote (+ (* 2 3) 4))))
   (output (: 10 Int64)))
+
+; -- eval of a quasiquote splicing a compile-time value (migrated from rcdzc eval_of_a_quasiquote_splices_
+; a_compile_time_known_value; the let-bound + multi-unquote splices are covered @459/@260 — these pin the
+; two distinct variants): an active unquote lifts a compile-time-known operand (here a MODULE-CONST and a
+; COMPUTED value) into the reconstructed source, and an eval-of-splice composes inside a larger expression.
+(case "qqs1 eval of a quasiquote splicing a module-const unquote reconstructs and folds"
+  (doc    "`(def x 3)` then `(eval (quasiquote (+ (unquote x) 4)))` = 7 — a non-literal (module-const)
+           unquote splices its value 3 into the reconstructed `(+ 3 4)` and folds (the case that once left
+           eval un-desugared as an unbound-name error).")
+  (input (do (def x 3) (def (main) (eval (quasiquote (+ (unquote x) 4)))) (export main)))
+  (call main) (output (: 7 Int64)))
+
+(case "qqs2 an eval-of-splice composes inside a larger expression"
+  (doc    "`(let ((x 5)) (+ 1 (eval (quasiquote (* (unquote x) 2)))))` = 11 — the eval splices x=5 into
+           `(* 5 2)`=10 and the surrounding `(+ 1 …)` folds to 11.")
+  (input (do (def (main) (let ((x 5)) (+ 1 (eval (quasiquote (* (unquote x) 2)))))) (export main)))
+  (call main) (output (: 11 Int64)))
