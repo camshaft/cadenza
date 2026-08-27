@@ -9144,3 +9144,20 @@
     (def (main (: k Int64)) (mid k k))
     (export main)))
   (call main (: 3 Int64)) (output (: 12 Int64)))
+
+(case "a nested tuple-destructuring lambda binds both levels"
+  (doc    "An inner destructuring lambda inside an outer one: g(tuple 3 4) = 30 + (4 + h(tuple 1 2)) =
+           30 + 4 + 3 = 37, where h((tuple c d)) = c+d.")
+  (input (do
+    (def (main)
+      (let ((g (fn ((tuple a b)) (let ((h (fn ((tuple c d)) (+ c d)))) (+ (* a 10) (+ b (h (tuple 1 2))))))))
+        (g (tuple 3 4))))
+    (export main)))
+  (output (: 37 Int64)))
+
+(case "a multi-param lambda mixes a tuple-destructuring param with a bare param"
+  (doc    "f((tuple x y) z) = (x+y)+z: f(tuple 3 4, 5) = 7+5 = 12.")
+  (input (do
+    (def (main) (let ((f (fn ((tuple x y) z) (+ (+ x y) z)))) (f (tuple 3 4) 5)))
+    (export main)))
+  (output (: 12 Int64)))

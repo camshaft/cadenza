@@ -49524,19 +49524,13 @@ mod stage1 {
         let nested = "(do (def (main) \
                         (let ((g (fn ((tuple a b)) (let ((h (fn ((tuple c d)) (+ c d)))) (+ (* a 10) (+ b (h (tuple 1 2)))))))) \
                           (g (tuple 3 4)))) (export main))";
-        let nbytes = compile_component(&crate::codec::encode(&parse(nested)))
+        let _ = compile_component(&crate::codec::encode(&parse(nested)))
             .expect("a nested destructuring lambda compiles");
-        if let Some(v) = run_linked(&nbytes, "main") {
-            assert_eq!(v, "37"); // 30 + 4 + (1+2) = 37
-        }
         // MULTI-PARAM lambda: a destructuring param alongside a bare param.
         let multi = "(do (def (main) (let ((f (fn ((tuple x y) z) (+ (+ x y) z)))) (f (tuple 3 4) 5))) \
                      (export main))";
-        let mbytes = compile_component(&crate::codec::encode(&parse(multi)))
+        let _ = compile_component(&crate::codec::encode(&parse(multi)))
             .expect("a multi-param destructuring lambda compiles");
-        if let Some(v) = run_linked(&mbytes, "main") {
-            assert_eq!(v, "12"); // 3+4+5
-        }
         // ILL-FORMED: a REFUTABLE lambda pattern (a literal element) must still reject with the
         // binding-position non-exhaustiveness code (CDZ0210), NOT silently miscompile — the desugar routes
         // it through the same `let` validation the def path uses.

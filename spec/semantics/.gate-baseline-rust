@@ -698,6 +698,7 @@ pass	a DEPTH-3 nested-op chain WITHOUT a post-observer folds (the no-observer co
 pass	a DEPTH-3 op-arg chain threads across two handler layers
 pass	a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
+pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
@@ -2601,6 +2602,7 @@ pass	a multi-level RRB list persistently updates deep interior-level indices lea
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
+pass	a multi-param lambda mixes a tuple-destructuring param with a bare param
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
 pass	a multi-payload destructure binds the head and recurses on the tail
@@ -2802,6 +2804,7 @@ pass	a nested symbol-literal payload falls through on a non-matching symbol
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
+pass	a nested tuple-destructuring lambda binds both levels
 pass	a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf
 pass	a nested tuple-in-tuple float key is a Map key found by a separately-built equal key
 pass	a nested tuple-pattern parameter destructures a runtime tuple
@@ -3319,6 +3322,7 @@ pass	a rest-pattern head binder read inside an inlined match-arg callee's scruti
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
+pass	a resuming observer of a recursive same-effect advance reads the advanced state (sr4)
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
 pass	a returned lambda captures+applies a closure param bound to a TOP-LEVEL def
@@ -3709,6 +3713,7 @@ pass	a runtime-woven Ast compares structurally equal to an equivalent quote
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
+pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
 pass	a same-name GENERIC constructor via a called helper resolves to the constructor (adv-63)
@@ -7895,6 +7900,7 @@ todo	a performing closure passed to a helper that applies it never miscompiles (
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
+todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
 todo	a runtime Ast value round-trips through the R2 value codec (Value.encode/decode)
@@ -7975,7 +7981,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a resuming observer of a recursive same-effect advance reads the advanced state (sr4)
-pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
-pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
-todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
