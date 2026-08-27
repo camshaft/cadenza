@@ -19129,6 +19129,29 @@
   (output (: 10010 Int64))
   (live-objects known-leak 1))
 
+(case "a self-loop-tail sum-spine walk that ALSO threads the whole node forward SUPPRESSES the reclaim (no UAF)"
+  (doc    "The SUPPRESSION counterpart to the self-loop-tail sum-spine reclaim (the 10000-deep depth-tail /
+           5000-deep count faces reclaim a walked spine to leak 1). `walk` tail-recurses over an `L` spine
+           passing the matched node's payload `rest` back — the reclaim's self-payload back-edge — BUT ALSO
+           threads the WHOLE node `v` forward as `keep`, a direct-param consume. That consume makes the
+           reclaim's count_param_consumes guard non-zero, so the back-edge dup/drop MUST NOT fire: dropping
+           `v`'s shell while it is still live in `keep` would be a use-after-free. The base case READS `keep`
+           (the last node's head), so a wrong reclaim surfaces as a WRONG value (not 1) or a trap, not merely
+           a leak. Pins that the self-loop-tail reclaim suppresses when the walked param escapes into another
+           call argument (the guard's negative edge).")
+  (input  (do
+            (type L (Cons Int64 L) (Nil))
+            (def (mk (: n Int64)) (if (= n 0) (L.Nil) (L.Cons n (mk (- n 1)))))
+            (def (walk (: v L) (: keep L))
+              (match v
+                ((L.Cons _x rest) (walk rest v))
+                ((L.Nil) (match keep ((L.Cons y _r) y) ((L.Nil) -1)))))
+            (def (main (: a Int64)) (walk (mk a) (L.Nil)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64))
+  (live-objects known-leak 22))
+
 (case "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
   (doc    "Corpus sums top out ~6 variants; 33 crosses the 32 boundary (i32-bitmask/5-bit-tag reps saturate; jump-table vs if-chain dispatch switches here). Faces: first/middle/last nullary discriminants, the PAYLOAD variant at index 32, and the wildcard covering the other 29.")
   (input  (do
