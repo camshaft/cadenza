@@ -2226,6 +2226,100 @@
           echo "ok: corpus-rust — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→rust-build→rust-exec caching graph" > "$out"
         '';
 
+        # ── The RUST-ASYNC exec layer — the async/gas-metered rust backend twin of `corpus-rust` ──────────────
+        # Closes the last native-only corpus target: `cargo xtask gate --target rust-async` runs IN-PROCESS
+        # today because rust-async had NO cached nix check (main.rs: "rust-async … no cached check … stay
+        # in-process"). Same per-case shred→build→exec graph as `corpus-rust`, but the build emits
+        # `-t rust-async` and the exec grades with `--async` (links `cdz_rt`, reads the async signature marker)
+        # against `.gate-baseline-rust-async`. Content-addressed build + compiler-free exec, exactly like the
+        # sync rust layer — so a compiler change with identical async emit cache-hits every async exec.
+        mkCorpusRustAsyncBuild = { name, shred, idx }:
+          pkgs.runCommand "corpus-rust-async-build-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzCompile ];
+              __contentAddressed = true;
+              outputHashMode = "recursive";
+              outputHashAlgo = "sha256";
+            } ''
+            set -euo pipefail
+            mkdir -p "$out"
+            case=$(echo ${shred}/${name}/${idx}-*)
+            [ -d "$case" ] || { echo "no shred dir for case ${idx} of ${name}"; exit 1; }
+
+            inputs=("ast:main=$case/program.ast")
+            entry=()
+            for m in "$case"/module-*.ast; do
+              if [ -e "$m" ]; then
+                n=$(basename "$m" .ast); n=''${n#module-}
+                inputs+=("ast:$n=$m")
+                entry=(--entry main)
+              fi
+            done
+
+            if cdz-compile "''${inputs[@]}" "''${entry[@]}" -t rust-async -o "$out/emit.rs" 2>"$out/compile.err"; then
+              printf '0' > "$out/compile.status"
+            else
+              printf '%s' "$?" > "$out/compile.status"
+            fi
+            cp "$case/test-run.ast" "$out/test-run.ast"
+          '';
+
+        mkCorpusRustAsyncExec = { name, build, idx }:
+          pkgs.runCommand "corpus-rust-async-exec-${name}-${idx}"
+            {
+              nativeBuildInputs = [ cdzRustRun rustToolchain ];
+            } ''
+            set -euo pipefail
+            export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+            mkdir -p "$TMPDIR/w"
+            status=$(cat ${build}/compile.status)
+            args=(--grade ${build}/test-run.ast --async --compile-status "$status" --compile-diag ${build}/compile.err
+                  --cdz-rt-dir ${rustRlibs} --cdz-num-dir ${rustRlibs} --cadenza-ast-dir ${rustRlibs}
+                  --baseline ${./spec/semantics/.gate-baseline-rust-async}
+                  --workdir "$TMPDIR/w")
+            if [ -e ${build}/emit.rs ]; then args+=(--module ${build}/emit.rs); fi
+            cdz-rust-run "''${args[@]}"
+            echo "ok: corpus-rust-async ${name} case ${idx}" > "$out"
+          '';
+
+        corpusRustAsyncCaseChecks = { name, file }:
+          let
+            shred = mkCorpusShred { inherit name file; };
+            n = corpusCaseCount file;
+            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+          in
+          builtins.listToAttrs (map
+            (idx: {
+              name = "${name}-${idx}";
+              value = mkCorpusRustAsyncExec {
+                inherit name idx;
+                build = mkCorpusRustAsyncBuild { inherit name shred idx; };
+              };
+            })
+            idxs);
+
+        mkCorpusRustAsyncFileAgg = { name, file }:
+          let cases = corpusRustAsyncCaseChecks { inherit name file; };
+          in
+          assert (builtins.length (builtins.attrNames cases)) > 0;
+          pkgs.runCommand "corpus-rust-async-${name}" { } ''
+            ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues cases)}
+            echo "ok: corpus-rust-async ${name} — ${toString (builtins.length (builtins.attrNames cases))} cases via per-case shred→rust-async-build→rust-async-exec" > "$out"
+          '';
+
+        corpusRustAsyncFileAggs = builtins.listToAttrs (map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            {
+              name = "corpus-rust-async-${stem}";
+              value = mkCorpusRustAsyncFileAgg { name = stem; file = ./spec/semantics + "/${f}"; };
+            })
+          corpusFileNames);
+        corpusRustAsyncAll = pkgs.runCommand "corpus-rust-async-all" { } ''
+          ${pkgs.lib.concatMapStringsSep "\n" (d: ''cat ${d} > /dev/null'') (builtins.attrValues corpusRustAsyncFileAggs)}
+          echo "ok: corpus-rust-async — ${toString (builtins.length corpusFileNames)} files graded via the per-case shred→rust-async-build→rust-async-exec caching graph" > "$out"
+        '';
+
         # VANISHED-check (gap #7 completion) — the GLOBAL half of baseline regression detection the per-case
         # exec cannot do. The per-case `--baseline` check catches a `pass -> not-pass` regression on a case
         # that RAN; it cannot see a baseline case that is no longer in the corpus at all (silently dropped,
@@ -3229,6 +3323,10 @@
             # driver with `rustc` linking the pre-built `rustRlibs` + grades). `corpus-rust` is the whole-corpus
             # aggregate; the per-file `corpus-rust-<file>` aggregates are spread in below.
             corpus-rust = corpusRustAll;
+            # The RUST-ASYNC target's whole-corpus aggregate (the async/gas-metered rust backend) — the last
+            # corpus target to move off the native in-process `xtask gate --target rust-async` into a cached
+            # nix check. Per-file `corpus-rust-async-<file>` aggregates spread in below.
+            corpus-rust-async = corpusRustAsyncAll;
             # The GLOBAL half of gap #7: a baseline case with no corpus case (silently dropped, its verdict
             # unenforced) — what the per-case `--baseline` regression check cannot see. Backend-independent.
             corpus-vanished = corpusVanishedCheck;
@@ -3371,6 +3469,10 @@
           # of the wasm `corpus-<file>` set), so CI can build/cache one file's rust per-case graph in isolation
           # (the top-level `corpus-rust` forces them all).
           // corpusRustFileAggs
+          # PER-FILE rust-ASYNC corpus aggregates: `corpus-rust-async-<file>` (the async rust-target twin),
+          # so CI can build/cache one file's async per-case graph in isolation (top-level `corpus-rust-async`
+          # forces them all). Moves the last native `xtask gate --target rust-async` path into cached nix.
+          // corpusRustAsyncFileAggs
           # PER-FILE wasm-opt-gap aggregates: `wasm-opt-gaps-<file>` for every corpus file, so a slice
           # (01-literals + 10-bytes) builds in isolation while the top-level `wasm-opt-gaps` forces the whole
           # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.
