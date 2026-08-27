@@ -1910,7 +1910,7 @@
             (export main)))
   (call   main (: 1 Int64))  (output (: 1 Int64))
   (call   main (: -1 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)"
   (doc    "`{\"axxx\",\"a\"}` — the flat literal \"a\" is a proper PREFIX of the rope `(rep \"a\" 3)` =
@@ -1929,7 +1929,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; The cases above all enumerate a NON-EMPTY set. The empty boundary matters for a real pass that walks a
 ; possibly-empty symbol table / free-var set: `Set.to-list` of an EMPTY (but element-TYPED) set is the
@@ -3052,7 +3052,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "tuple set elements order by string content across reps then the scalar tiebreak"
   (doc    "The TUPLE leg of the mixed-rep content-order family (list leg banked alongside; the tuple
@@ -3073,7 +3073,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "one string content hashes identically from flat, rope, and view reps in one program"
   (doc    "The TRIPLE-rep completeness witness the pairwise pins imply but never run together: ONE

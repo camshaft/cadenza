@@ -2537,7 +2537,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
   (call   main (: false Bool)) (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "the full contract-descriptor record (Bytes/String/Ast fields) materializes whole at runtime; scalar fields read"
   (doc    "The full self-describing descriptor shape `Record(id: Bytes, name: String, input: Ast, output: Ast,
@@ -2590,7 +2590,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: true Bool))
   (call   main (: false Bool)) (output (: false Bool))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a recursive transform composed over Ast.module const-evaluates at compile time"
   (doc    "The general const-evaluator evaluates a total function applied to `Ast.module` — the reflected
@@ -3736,7 +3736,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 76))
+  (live-objects known-leak 72))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`

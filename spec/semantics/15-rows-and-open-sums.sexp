@@ -484,7 +484,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "the same without-extend chain on a LIST-borne record computes"
   (doc    "Finding #45 control: the identical extend-of-without chain, but the base record is read out of a
@@ -518,7 +518,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 65 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
   (doc    "The ALIAS face of Record.with persistence: the existing persistence pins read the original
@@ -576,7 +576,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 8))
 
 (case "a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value"
   (doc    "Finding #45 witness 2 — the borrowed-operand face (wasm fix v-wasm-opt 8f18044a3, v-memory-safety
@@ -601,7 +601,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 8 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd

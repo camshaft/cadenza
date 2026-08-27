@@ -3153,4 +3153,4 @@
               (match (Map.lookup mp k) ((Some s) (if (= s "hixxx") 1 0)) ((None) (- 0 1))))
             (def (main) (f (Map.insert (Map.empty) "y" "hixxx") "y"))
             (export main)))
-  (call   main) (output (: 1 Int64)) (live-objects known-leak 2))
+  (call   main) (output (: 1 Int64)) (live-objects known-leak 1))

@@ -5387,7 +5387,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 65 Int64))
   (call   main (: 0 Int64)) (output (: -10 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; --- A closure env carrying TWO collection handles across the host boundary. ---
 

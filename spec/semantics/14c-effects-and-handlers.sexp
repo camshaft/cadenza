@@ -3229,7 +3229,7 @@
   (call   main (: 0 Int64)) (output (: 303 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 5 Int64)) (output (: 212 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 ;; ── ta/by/syd: interior aborts in towers, and bytes/symbols via draws ────────
 ;; ta2 aborts INSIDE the inner frame of a same-effect tower (Bail innermost;
@@ -6451,7 +6451,7 @@
   (call   main (: 2 Int64)) (output (: 12 Int64))
   (call   main (: 1 Int64)) (output (: 122 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64))
-  (live-objects known-leak 19))
+  (live-objects known-leak 18))
 
 (case "lk2 a ROLLING-code lock — each successful match advances the key index through a list of string keys, |n mod 3| picks the start"
   (input  (do
@@ -6475,7 +6475,7 @@
   (call   main (: 0 Int64)) (output (: 1101 Int64))
   (call   main (: 1 Int64)) (output (: 101 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 96))
+  (live-objects known-leak 93))
 
 (case "lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter"
   (input  (do
@@ -7324,7 +7324,7 @@
   (call   main (: 5 Int64)) (output (: 2651 Int64))
   (call   main (: 0 Int64)) (output (: 2101 Int64))
   (call   main (: -3 Int64)) (output (: 1771 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 6))
 
 (case "u64s1 a UInt64 handler state ABOVE the i64 boundary — unsigned comparison in the arm stays correct as the thread advances past 2^63"
   (input  (do
@@ -8772,7 +8772,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 230 Int64))
   (call   main (: 1 Int64)) (output (: 120 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run"
   (input  (do
@@ -10101,7 +10101,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 3421 Int64))
   (call   main (: 1 Int64)) (output (: 2321 Int64))
-  (live-objects known-leak 614))
+  (live-objects known-leak 613))
 
 (case "rle2 a RUN-LENGTH ENCODER state — equal-to-last feeds bump the tail pair's count via List.update at len-1, fresh values push a new pair; the n=5 seed merges the middle literal into one long run"
   (input  (do
