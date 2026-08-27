@@ -6563,14 +6563,14 @@ pass	if4 Infinity plus a finite float saturates to Infinity
 pass	if5 runtime division by zero produces Infinity and crosses the boundary
 pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	ifb1 fifty frames of persistent update against a constant list never corrupt the constant
-pass	ifb2 a let-bound constant tuple referenced twice const-propagates into two embedded allocations
+pass	ifb2 a let-bound constant tuple referenced twice: the WHOLE `(tuple t t)` is a constant compound RETURN, so it hoists build-once (WIT static encoding) to a single census-excluded immortal — 0 mortal allocations
 pass	ikc1 a Map keyed by a hoisted constant list is found by a runtime-built equal key
 pass	ikc2 a handler seeded with a hoisted constant list threads functional updates per dispatch
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
-pass	imc1 a constant tuple in a compound RETURN allocates per-eval (the value-encode assembler lacks build-once sections)
-pass	imc2 a constant tuple as a returned list element allocates likewise (same assembler path)
+pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
+pass	imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
