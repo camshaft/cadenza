@@ -3086,6 +3086,7 @@ pass	a partially-applied RUNTIME closure binds its residual to a let, then compl
 pass	a partially-applied function escapes as a value and runs through a recursive HOF
 pass	a partially-applied operator passed to an annotated named HOF applies its remaining operand
 pass	a pass-through closure that returns its arg via a trivial let composes at one element type
+pass	a pass-through parameter re-passed unchanged across a tail loop is not corrupted
 pass	a pattern binds a name scoped to its branch
 pass	a pattern that binds the same name across nested sub-patterns is rejected
 pass	a pattern that binds the same name twice is rejected
@@ -3356,6 +3357,7 @@ pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
 pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
+pass	a recursive bool predicate types as Bool with the self-call in either branch order
 pass	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
@@ -3416,6 +3418,7 @@ pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive match binder used twice over a heap-list sum payload projects a live field
 pass	a recursive multiplication overflow traps across the call chain
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
+pass	a recursive param used only as a call argument infers its type from the callee
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
 pass	a recursive performer of a nested-handler op whose resume performs the outer effect threads the advance

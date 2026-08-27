@@ -9245,3 +9245,33 @@
   (call main (: 5 Int64))
   (output (: (list (tuple 1 2) (tuple 5 9)) (List (Tuple Int64 Int64))))
   (live-objects 4))
+
+(case "a pass-through parameter re-passed unchanged across a tail loop is not corrupted"
+  (doc    "`go(n,k,acc)` re-passes k unchanged each iteration (the back-edge elides the k←k self-move);
+           acc += k over n steps = n*k. main(100,2)=200; main(5,7)=35.")
+  (input (do
+    (def (go (: n Int64) (: k Int64) (: acc Int64)) (if (= n 0) acc (go (- n 1) k (+ acc k))))
+    (def (main (: n Int64) (: k Int64)) (go n k 0))
+    (export main)))
+  (call main (: 100 Int64) (: 2 Int64)) (output (: 200 Int64))
+  (call main (: 5 Int64) (: 7 Int64))   (output (: 35 Int64)))
+
+(case "a recursive bool predicate types as Bool with the self-call in either branch order"
+  (doc    "all-lt has the self-call in the THEN branch, all-ge in the ELSE (the mirror); both type as Bool.
+           main = 10*(all-lt 0 3 bound) + (all-ge 0 3 0): bound=5 → 11 (both true).")
+  (input (do
+    (def (all-lt (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true))
+    (def (all-ge (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true))
+    (def (main (: bound Int64)) (+ (* 10 (if (all-lt 0 3 bound) 1 0)) (if (all-ge 0 3 0) 1 0)))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "a recursive param used only as a call argument infers its type from the callee"
+  (doc    "`a` is passed only to `(twice a)` (never touched by an operator, never annotated); it infers
+           Int64 from twice's parameter. f(5,3) = twice(5)*3 summed = 30.")
+  (input (do
+    (def (twice (: a Int64)) (+ a a))
+    (def (f (: a Int64) (: n Int64)) (if (< n 1) 0 (+ (twice a) (f a (- n 1)))))
+    (def (main (: a Int64) (: n Int64)) (f a n))
+    (export main)))
+  (call main (: 5 Int64) (: 3 Int64)) (output (: 30 Int64)))
