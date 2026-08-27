@@ -759,6 +759,15 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
           | some (.trap t), _ | _, some (.trap t) => .trap t
           | some .diverges, _ | _, some .diverges => .diverges
           | _, _ => .unsupported "Map.lookup: operand")
+  else if (is "List" "at" || is "List" "get") then
+    -- indexed access → Option: `Some l[i]` when 0 ≤ i < len, else `None` (out-of-bounds / negative).
+    some (match a1, a2 with
+          | some (.value (.list es)), some (.value (.int i)) =>
+            if 0 ≤ i && i < Int.ofNat es.size then .value (.some (es[i.toNat]!)) else .value .none
+          | some (.unsupported r), _ | _, some (.unsupported r) => .unsupported r
+          | some (.trap t), _ | _, some (.trap t) => .trap t
+          | some .diverges, _ | _, some .diverges => .diverges
+          | _, _ => .unsupported "List.at: operand")
   else if is "Map" "remove" then
     some (match a1, a2 with
           | some (.value (.map es)), some (.value k) =>
