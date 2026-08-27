@@ -8118,3 +8118,4 @@ pass	a short-circuit connective with a perform in the RHS preserves short-circui
 pass	mutually-recursive do-local functions nested in an inlined helper recurse
 pass	recursion is detected through a nested do around the self-call
 pass	a local let binding shadows a same-named top-level definition
+pass	ttc1 a hole built from the runtime entry param round-trips through the tag weave

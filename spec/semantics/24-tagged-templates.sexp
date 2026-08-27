@@ -638,3 +638,21 @@
   (module "mid" (do (import "tags" (wrap)) (export wrap)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
   (call   main (: 100 Int64)) (output (: 107 Int64)))
+
+; -- breaker batch 514 (2026-08-27): the runtime-param HOLE cell. A hole built from the runtime
+; entry param ((Ast.Int (BigInt.of n))) flows through the compile-time tag weave and matches back
+; carrying the runtime value — the tag runs at compile time over the hole's AST while the value
+; flows at runtime, and the whole reconstruction reclaims. (The compute-with-a-template face is a
+; permanent by-design reject with a teaching-quality CDZ0201 — "bind the template and match on it
+; rather than computing with it" — already documented by this file's header, not pinned.)
+
+(case "ttc1 a hole built from the runtime entry param round-trips through the tag weave"
+  (input (do
+    (def (weave chunks holes) (match holes ((list h) h) (_ (Ast.Int (BigInt.of 0)))))
+    (def (main (: n Int64))
+      (match (tagged-template weave (chunks "") (holes (Ast.Int (BigInt.of n))))
+        ((Ast.Int b) (if (= b (BigInt.of n)) 7 -1))
+        (_ 0)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64)))
