@@ -11497,3 +11497,31 @@
   (call main (: 1 Int64)) (trap "unreachable")
   (call main (: 2 Int64)) (trap "unreachable")
   (call main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "bri1 a constant BigInt (2^65) re-evaluated across fifty frames reclaims to zero (numeric heap constants build per-eval — not in the build-once family)"
+  (doc    "The BigInt/Rational members of the static-data probe matrix: verified 0 static globals
+           (bytes/string/list/tuple/record/map/set hoist; numeric heap constants do NOT — clean gap,
+           per-eval build + full reclaim). If the hoist ever extends here, census stays 0 under the
+           mechanism swap and the values fence it. Runtime-mixed arithmetic defeats the const fold.")
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (if (= (* 36893488147419103232N (BigInt.of (% k 2))) 36893488147419103232N) 1 0)
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 25 Int64))
+  (live-objects 0))
+
+(case "bri2 a constant Rational compared against fifty runtime-built rationals reclaims to zero"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (if (= (Rational.of 1 3) (Rational.of (+ (% k 3) 1) 9)) 1 0)
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 17 Int64))
+  (live-objects 0))
