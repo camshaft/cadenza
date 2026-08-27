@@ -7973,3 +7973,6 @@ pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested p
 pass	mpf2 a GENERIC two-payload ctor's TUPLE field destructured by a nested pattern works (leaking like the family)
 pass	lar1 a List.at-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
 pass	lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)
+pass	mlr1 a Map.lookup-extracted INNER LIST bound by Some and only borrowed leaks the inner vec
+pass	mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain
+pass	mlr3 a TUPLE projection of a list field borrowed by List.len reclaims fully (no Option shell, no retain)
