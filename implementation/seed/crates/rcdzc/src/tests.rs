@@ -33683,8 +33683,6 @@ mod stage1 {
         assert_eq!(run_main(&src), 19900);
     }
 
-
-
     #[test]
     fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
         // 09-functions "a recursive function over a generic recursive sum is monomorphized per element
