@@ -1472,18 +1472,27 @@ fn a_projection_of_an_if_selected_tuple_pushes_into_the_branches() {
 /// is built behind a RECURSIVE call so it stays opaque and the heap read stands.
 #[test]
 fn a_member_read_of_an_if_selected_record_pushes_into_the_branches() {
+    use crate::core::Core;
     use crate::testkit::parse;
     // `.x` of `(if p (record (y b)(x a)) (record (y a)(x b)))` → `(if p a b)`.
     let src = "(module m (def (pick (: p Bool) (: a Int64) (: b Int64)) \
                  (. (if p (record (y b) (x a)) (record (y a) (x b))) x)) (export pick))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Compiles, and the member read PUSHES INTO the branches: the folded Core is a bare `Core::If` over the
+    // selected field values (by NAME — fields written out of order), NOT a `Core::Proj` over an if-of-records
+    // (the un-folded form, which would per-call `arr-alloc` both branch records then arr-get one field back).
+    // A `Core::If` top means both records folded away — no heap, no runtime import. (wasmtime-free: the fold
+    // is inspected on the lowered Core.) Value parity (p true → a, p false → b, by field NAME) is corpus-
+    // covered: case "a member read of an if-selected record selects the branch's field by name" in
+    // spec/semantics/02-binding-and-control.sexp.
+    compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut db = crate::db::Db::load(parse(src));
+    let d = db.def_by_name("pick").expect("def pick");
+    let body = db.defs[d].body.expect("pick has a body");
     assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-        "a single member read of an if-of-records must fold (no per-call arr-alloc, no runtime import)"
+        matches!(crate::lower::core_of(&mut db, body), Core::If { .. }),
+        "a single member read of an if-of-records must fold to a bare `if` over the field values (records \
+         eliminated), not a `Core::Proj` over an if-of-records"
     );
-    // Value parity (p true → a, p false → b; fold is by field NAME, fields out of order) migrated to the
-    // corpus (run via cdz-run): case "a member read of an if-selected record selects the branch's field by
-    // name" in spec/semantics/02-binding-and-control.sexp.
 }
 
 /// The MATCH analogue of the tuple/record `*-INTO-IF` folds: a `match` over a SUM built through an `if`
@@ -37056,20 +37065,29 @@ mod stage1 {
         // (This is a Rust test, not a corpus case, because a `(Record …)` param annotation does not yet
         // round-trip through the ML surface — the pending record-type-syntax gap; the fold itself is what's
         // pinned here.) The fold to a scalar imports NO value-heap runtime — the record never materializes.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
+        let src = "(module m \
                (def (f (const (: r (Record (a Int64) (b Int64))))) \
                  (if (= (. r a) 0) (. r b) (f (record (a (- (. r a) 1)) (b (+ (. r b) 1)))))) \
-               (def (main) (f (record (a 3) (b 0)))) (export main))",
-        )))
-        .expect("a pure-data record const-param recursion compiles");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
-            "the record const param folds to a scalar — no value-heap runtime import (record eliminated)"
-        );
+               (def (main) (f (record (a 3) (b 0)))) (export main))";
+        // Compiles (the activation gate admits a data record — not a decline / machine-repr emit error).
+        compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a pure-data record const-param recursion compiles");
+        // The fold IS the pin (wasmtime-free): `main` folds all the way to the scalar constant 3 — a
+        // `Core::ConstInt`, NOT a `Core::Record`/heap build — so the record never materializes and there is
+        // no value-heap runtime import. `f` counts a=3 down to 0 while accumulating into b → 3.
+        let mut db = crate::db::Db::load(parse(src));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main has a body");
+        let folded = match crate::lower::core_of(&mut db, body) {
+            crate::core::Core::ConstInt(iv) => iv.to_i64(),
+            other => panic!(
+                "a pure-data record const param must fold to the scalar constant 3 (record eliminated), \
+                 got {other:?}"
+            ),
+        }
+        .expect("the folded body is a machine int");
         assert_eq!(
-            run_returns::<i64>(&bytes, "main"),
-            3,
+            folded, 3,
             "f counts a=3 down to 0 while accumulating into b → 3"
         );
     }
