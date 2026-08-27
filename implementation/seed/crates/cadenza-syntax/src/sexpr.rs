@@ -549,6 +549,21 @@ impl<'a, 'b> Reader<'a, 'b> {
             // lexing/escapes, producing a `Leaf::Sym` (distinct from `Leaf::Str`). A base dimension in the
             // units layer is named this way (`(Unit.base #"meter")`).
             Some(b'#') if self.src.get(self.pos + 1) == Some(&b'"') => self.read_symbol(),
+            // A COLLECTION LITERAL `#word(…)` — the explicit-constructor s-expr surface for a compound
+            // (`DESIGN-native-ast-compound-data.md` §D-SURFACE). `#list(1 2 3)` / `#tuple(a b)` /
+            // `#set(a b c)` take flat elements; `#record((x 1) (y 2))` / `#map((k1 v1) (k2 v2))` take
+            // `(key value)` PAIRS the reader implicitly wraps as `(= key value)` (record/map are
+            // pair-shaped, so the `=` is boilerplate the surface omits). Reads to the str-head ctor form
+            // (`("word" …)`, the `compound_ctor` tag), unambiguously distinct from an application
+            // `(list …)`. Input-only for now: the printer still emits the `(word …)` head until the
+            // corpus migrates, so no corpus round-trip is affected. Only the exact `#word(` prefix opens
+            // one; a bare `#` or `#other` reads as an ordinary token.
+            Some(b'#') if self.compound_literal_word().is_some() => {
+                let (word, pairs) = self
+                    .compound_literal_word()
+                    .expect("guarded by compound_literal_word().is_some()");
+                self.read_compound_literal(word, pairs)
+            }
             // `` ` `` / `,` / `,@` sigils, matching the corpus quasiquote display. The inner form is
             // built BEFORE the synthetic head (preserving structure-id order — the reader is the
             // round-trip oracle, so the arena stays byte-identical to the untracked path). The head
@@ -653,6 +668,107 @@ impl<'a, 'b> Reader<'a, 'b> {
         };
         self.depth -= 1;
         result
+    }
+
+    /// At a `#`, whether it opens a `#word(…)` collection literal — the ctor word (`list`/`tuple`/
+    /// `record`/`map`/`set`) immediately followed by `(`. Returns `(word, is_pair_shaped)`; `is_pair_shaped`
+    /// is true for `record`/`map` (their elements are `(key value)` pairs the reader wraps as `(= …)`).
+    /// A bare `#`, or `#word` not followed by `(`, or `#other(`, is not a collection literal (`None`) and
+    /// falls through to ordinary reading. None of the five words is a prefix of another, so order is moot.
+    fn compound_literal_word(&self) -> Option<(&'static str, bool)> {
+        let rest = self.src.get(self.pos + 1..)?;
+        for &(word, pairs) in &[
+            ("record", true),
+            ("tuple", false),
+            ("list", false),
+            ("map", true),
+            ("set", false),
+        ] {
+            if rest.starts_with(word.as_bytes()) && rest.get(word.len()) == Some(&b'(') {
+                return Some((word, pairs));
+            }
+        }
+        None
+    }
+
+    /// Read a `#word(…)` collection literal into the str-head ctor form `("word" child…)` — the
+    /// `compound_ctor` tag, converging with the value reader's canonical compound (a later increment
+    /// flips this one construction site to the ctor leaf kind once `Builder::compound` lands). For a
+    /// pair-shaped ctor (`record`/`map`) each element MUST be a `(key value)` pair and is emitted as
+    /// `(= key value)` — the `=` built first, so the arena matches a directly-written `(= key value)`.
+    fn read_compound_literal(&mut self, word: &'static str, pairs: bool) -> Result<StructId, ReadError> {
+        // Same recursion bound as `read_list`: `#word(…)` bodies descend through `read_node` too.
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ReadError(format!(
+                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
+                self.pos
+            )));
+        }
+        self.depth += 1;
+        let start = self.pos; // at '#'
+        // `#` + the ctor word are ASCII, so advancing by their byte length lands on the '(' cleanly.
+        self.pos += 1 + word.len();
+        // The reserved STRING head names the constructor; span it over the `#word` prefix.
+        let head = self.mk_atom_leaf(Leaf::Str(word.into()), Span::new(start, self.pos));
+        self.bump(); // '('
+        let mut items = vec![head];
+        let result = loop {
+            self.skip_ws();
+            match self.peek() {
+                None => break Err(ReadError(format!("unterminated `#{word}( … )` at byte {}", self.pos))),
+                Some(b')') => {
+                    self.bump();
+                    break Ok(self.mk_list(items, Span::new(start, self.pos)));
+                }
+                Some(_) if pairs => match self.read_pair_entry(word) {
+                    Ok(entry) => items.push(entry),
+                    Err(e) => break Err(e),
+                },
+                Some(_) => match self.read_node() {
+                    Ok(item) => items.push(item),
+                    Err(e) => break Err(e),
+                },
+            }
+        };
+        self.depth -= 1;
+        result
+    }
+
+    /// Read one `(key value)` element of a `#record`/`#map` literal, emitting `(= key value)`. The `=`
+    /// name is built BEFORE the key and value so the resulting arena is byte-identical to a directly
+    /// written `(= key value)` list (same structure-id order). An element that is not a parenthesized
+    /// two-item group is a read error (the surface omits the `=`, not the pairing).
+    fn read_pair_entry(&mut self, word: &'static str) -> Result<StructId, ReadError> {
+        self.skip_ws();
+        let start = self.pos;
+        if self.peek() != Some(b'(') {
+            return Err(ReadError(format!(
+                "a `#{word}(…)` element must be a `(key value)` pair at byte {start}"
+            )));
+        }
+        if self.depth >= MAX_NESTING_DEPTH {
+            return Err(ReadError(format!(
+                "expression nests too deeply to parse (more than {MAX_NESTING_DEPTH} levels) at byte {}",
+                self.pos
+            )));
+        }
+        self.depth += 1;
+        self.bump(); // '('
+        // `=` first (matches the creation order of a directly-written `(= k v)`); span it at the pair `(`.
+        let eq = self.mk_name("=", Span::new(start, start + 1));
+        let key = self.read_node()?;
+        let value = self.read_node()?;
+        self.skip_ws();
+        let closed = self.peek() == Some(b')');
+        self.depth -= 1;
+        if !closed {
+            return Err(ReadError(format!(
+                "a `#{word}(…)` pair must have exactly two items `(key value)` at byte {}",
+                self.pos
+            )));
+        }
+        self.bump(); // ')'
+        Ok(self.mk_list(vec![eq, key, value], Span::new(start, self.pos)))
     }
 
     //= spec/capabilities/collections-and-text.md#a-string-literal-s-escapes-are-a-closed-set
@@ -947,6 +1063,58 @@ mod tests {
     fn reads_a_form() {
         let a = read("(+ 1 2)").unwrap();
         assert_eq!(a.head_name(a.root), Some("+"));
+    }
+
+    // `#word(…)` collection literals (DESIGN-native-ast-compound-data.md §D-SURFACE). The oracle: each
+    // reads to the SAME arena as the str-head ctor form `("word" …)` it desugars to — flat elements for
+    // list/tuple/set, and `(key value)` pairs wrapped as `(= key value)` for record/map.
+    #[test]
+    fn hash_word_flat_literals_equal_the_str_head_form() {
+        assert_eq!(read("#list(1 2 3)").unwrap(), read("(\"list\" 1 2 3)").unwrap());
+        assert_eq!(read("#tuple(a b)").unwrap(), read("(\"tuple\" a b)").unwrap());
+        assert_eq!(read("#set(1 2 3)").unwrap(), read("(\"set\" 1 2 3)").unwrap());
+        assert_eq!(read("#list()").unwrap(), read("(\"list\")").unwrap());
+    }
+
+    #[test]
+    fn hash_record_and_map_pairs_insert_the_equals_node() {
+        assert_eq!(
+            read("#record((x 1) (y 2))").unwrap(),
+            read("(\"record\" (= x 1) (= y 2))").unwrap(),
+        );
+        assert_eq!(
+            read("#map((1 2) (3 4))").unwrap(),
+            read("(\"map\" (= 1 2) (= 3 4))").unwrap(),
+        );
+        // An empty record/map is the bare str-head with no entries.
+        assert_eq!(read("#record()").unwrap(), read("(\"record\")").unwrap());
+    }
+
+    #[test]
+    fn hash_word_literals_nest() {
+        assert_eq!(
+            read("#list(#map((1 2)) #record((a 3)))").unwrap(),
+            read("(\"list\" (\"map\" (= 1 2)) (\"record\" (= a 3)))").unwrap(),
+        );
+    }
+
+    #[test]
+    fn hash_record_map_element_must_be_a_pair() {
+        // A record/map element that is not a `(key value)` group is a read error (the surface omits the
+        // `=`, not the pairing), and a pair must have exactly two items.
+        assert!(read("#record(x 1)").is_err());
+        assert!(read("#map(1 2)").is_err());
+        assert!(read("#map((1 2 3))").is_err());
+    }
+
+    #[test]
+    fn only_the_exact_hash_word_paren_prefix_opens_a_literal() {
+        // Only the exact `#word(` prefix opens a literal. `#list(1)` is one (== the str-head form); but a
+        // longer identifier `#listx(…)` is NOT stolen as a `#list` literal — the `x` breaks the ctor
+        // word so it reads the ordinary way (a bare `#listx` token then a trailing `(1)`, which is a
+        // malformed single form), proving the reader keys on the whole word immediately before `(`.
+        assert_eq!(read("#list(1)").unwrap(), read("(\"list\" 1)").unwrap());
+        assert!(read("#listx(1)").is_err());
     }
 
     #[test]
