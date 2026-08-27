@@ -14484,42 +14484,6 @@ mod match_engine {
     }
 
     #[test]
-    // `3.14` is the test's chosen bare decimal (proving the default-float width at the bits), NOT an
-    // intended approximation of π — clippy's approx_constant would otherwise reject the `3.14f32`/`3.14f64`
-    // oracle values.
-    #[allow(clippy::approx_constant)]
-    fn a_default_float_pragma_makes_a_bare_decimal_literal_take_the_declared_width() {
-        // THE EFFECT (`numeric-model.md` §A Module May Declare Its Default Float Literal Type): a bare,
-        // otherwise-unconstrained DECIMAL literal WRITTEN in a `(pragma default-float Float32)` module takes
-        // `Float32` instead of `Float64`, so it rounds to the nearest binary32 and crosses the host boundary
-        // as an `f32`. Proven at the BITS: `3.14` read back as an `f32` is exactly `3.14f32` (its own
-        // nearest binary32), NOT the binary64 value truncated — the width propagated through inference to
-        // the `Core::ConstFloat` emission (`select.rs` reads `type_of` for the width).
-        let got = run_returns::<f32>(
-            &component(
-                "(module top (def (main) (do (module m (pragma default-float Float32) (def (x) 3.14)) ((. m x) unit))) (export main))",
-            ),
-            "main",
-        );
-        assert_eq!(
-            got.to_bits(),
-            3.14f32.to_bits(),
-            "a bare decimal in a default-float=Float32 module is a Float32, crossing as binary32"
-        );
-        // A decimal OUTSIDE any pragma module keeps the ordinary Float64 default — the binary64 value of
-        // `3.14`, read back as an `f64`.
-        let f64_default = run_returns::<f64>(
-            &component("(module m (def (main) 3.14) (export main))"),
-            "main",
-        );
-        assert_eq!(
-            f64_default.to_bits(),
-            3.14f64.to_bits(),
-            "a decimal outside a default-float module keeps the ordinary Float64 default"
-        );
-    }
-
-    #[test]
     // `3.14` is a chosen bare decimal, not an intended π approximation (see the sibling test) — silence
     // clippy's approx_constant on the `3.14f64` oracle value.
     #[allow(clippy::approx_constant)]

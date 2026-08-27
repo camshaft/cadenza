@@ -3431,6 +3431,22 @@
             ((. m x) unit)))
   (error  CDZ0303))
 
+; The default-FLOAT pragma EFFECT (the positive companion of the reject family below): `(pragma
+; default-float <T>)` names the type a bare, otherwise-unconstrained DECIMAL literal grounds to. In a
+; `default-float Float32` module a bare `3.14` is a Float32 — it rounds to the nearest binary32 and crosses
+; the host boundary as an f32 (its OWN nearest binary32, not the binary64 value truncated); a decimal
+; OUTSIDE any such module keeps the ordinary Float64 default. The width propagates through inference to the
+; ConstFloat emission (select reads type_of for the width).
+(case "a bare decimal in a default-float=Float32 module grounds to Float32"
+  (doc    "`(pragma default-float Float32)` in module `m` makes the bare `3.14` in `(def (x) 3.14)` a Float32, so `((. m x) unit)` is 3.14 rounded to the nearest binary32 = 3.140000104904175 (its exact f32 value). A width that failed to propagate (defaulting to Float64) would render the binary64 3.14 instead — the f32 rounding VISIBLE in the value is the width witness.")
+  (input  (do (module m (pragma default-float Float32) (def (x) 3.14)) (def (main) ((. m x) unit)) (export main)))
+  (call   main) (output (: 3.140000104904175 Float32)))
+
+(case "a bare decimal outside any default-float module keeps the Float64 default"
+  (doc    "The control: `(def (main) 3.14)` with no `default-float` pragma in scope keeps the ordinary Float64 default — the binary64 value of `3.14`. Pairs with the Float32 case above to pin that the pragma, not the bare-decimal default, is what selects the width.")
+  (input  (do (def (main) 3.14) (export main)))
+  (call   main) (output (: 3.14 Float64)))
+
 ; The default-FLOAT pragma domain reject family — the float twin of the default-integer/fraction rejects
 ; above. `(pragma default-float <T>)` names the type bare decimal literals ground to, so <T> MUST be a
 ; float type; a non-float type is the numeric-domain CDZ0303, a missing/extra argument is the structural
