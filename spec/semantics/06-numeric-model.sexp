@@ -10092,3 +10092,37 @@
   (input (do (def (main (: n Int64)) (if (< (list (list)) (list (list 1))) 1 0)) (export main)))
   (call main (: 5 Int64))
   (output (: 1 Int64)))
+; -- tautology-fold trap preservation (fully migrated from rcdzc
+; a_comparison_fold_to_a_constant_preserves_a_trapping_operand, 2026-08-27; pure parity test, no IR
+; inspection -> rcdzc test deleted): a tautology/unsatisfiable comparison folds to a constant, but the
+; fold must NOT discard a trapping runtime operand — the type-bound and derived-range folds refuse to
+; fold when the operand may trap (is_trap_free guard), keeping the runtime compare so the operand is
+; evaluated and still traps. A trap-free operand still folds.
+
+(case "a >= Int64.min tautology keeps a trapping div operand (still traps at z=0, folds otherwise)"
+  (doc    "`(>= (/ 10 z) Int64.min)` is a tautology (every Int64 >= min), but `(/ 10 z)` at z=0 divides
+           by zero and must trap; z=2 → the operand is trap-free so it folds and returns 1.")
+  (input (do (def (main (: z Int64)) (if (>= (/ 10 z) -9223372036854775808) 1 0)) (export main)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
+
+(case "a derived-range < 16 tautology keeps a trapping div operand"
+  (doc    "`(& (/ 10 z) 15)` lands in [0,15] so `< 16` is a derived-range tautology; the fold must keep
+           the div so z=0 still traps; z=5 → (/ 10 5)=2, & 15 = 2, < 16 true → 1.")
+  (input (do (def (main (: z Int64)) (if (< (& (/ 10 z) 15) 16) 1 0)) (export main)))
+  (call main (: 5 Int64)) (output (: 1 Int64))
+  (call main (: 0 Int64)) (trap "divide by zero"))
+
+(case "a >= Int64.min tautology keeps an overflowing operand (checked-add traps at z=MAX)"
+  (doc    "`(+ z z)` at z=Int64.max overflows (checked arithmetic traps); `>= min` is a tautology but the
+           fold must not drop the overflow; z=5 → 10, folds → 1.")
+  (input (do (def (main (: z Int64)) (if (>= (+ z z) -9223372036854775808) 1 0)) (export main)))
+  (call main (: 5 Int64))                   (output (: 1 Int64))
+  (call main (: 9223372036854775807 Int64)) (trap "overflow"))
+
+(case "no over-conservatism: a trap-free masked operand still folds the tautology"
+  (doc    "`(& z 15)` lands in [0,15] so `< 16` is always true and the operand is trap-free — the fold
+           fires and returns 1 for every z (5 → 1, -1 → (& -1 15)=15 < 16 → 1).")
+  (input (do (def (main (: z Int64)) (if (< (& z 15) 16) 1 0)) (export main)))
+  (call main (: 5 Int64))  (output (: 1 Int64))
+  (call main (: -1 Int64)) (output (: 1 Int64)))
