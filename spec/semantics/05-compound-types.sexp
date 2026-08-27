@@ -23194,3 +23194,18 @@
   (call main (: 1 Int64))
   (output (: 7 Int64))
   (live-objects known-leak 7))
+
+(case "sd1 the #set literal resolves first-class (D2): membership, len, and order-independent equality with an insert-built set"
+  (doc    "Completes the #word collection-literal matrix (list/tuple/record/map pinned earlier; set was
+           the D2-pending cell that mis-errored as a String application pre-#4652). The literal equals a
+           differently-ORDERED insert-built set — canonical set semantics through the new Core::SetOf.")
+  (input (do (def (main (: n Int64))
+  (+ (if (Set.contains #set(1 2 3) n) 1000 0)
+     (+ (* 10 (Set.len #set(4 5)))
+        (if (= #set(1 2 3) (Set.insert (Set.insert (Set.insert (Set.of (list)) 3) 1) 2)) 1 0))))
+(export main)))
+  (call main (: 2 Int64))
+  (output (: 1021 Int64))
+  (call main (: 9 Int64))
+  (output (: 21 Int64))
+  (live-objects 0))
