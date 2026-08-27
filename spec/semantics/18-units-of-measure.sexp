@@ -1158,6 +1158,24 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 7 Int64)) (output (: 0 Int64)))
 
+; The SOUNDNESS guard on the same-unit scalar-Int compare-rewrite above: the rewrite `(op a b)` → `(op
+; (Qty.value a) (Qty.value b))` fires ONLY for a same-unit pair. A DIFFERENT-scale pair must route through
+; the mixed-scale CONVERSION arm instead — never a raw magnitude compare. The constant mixed-scale
+; comparisons elsewhere fold at compile time; this pins the RUNTIME scalar-Int arm's guard (the scalar-Int
+; companion of the runtime BigInt mixed-scale comparison — here the inner is a plain i64, so the wrong path
+; would be a bare scalar compare of the unscaled magnitudes).
+(case "a runtime cross-scale scalar-Int quantity comparison converts before comparing, not a raw magnitude compare"
+  (doc    "`(< (Qty.of a kilometer) (Qty.of b meter))` with RUNTIME a, b: a km operand converts to the
+           reference meter (×1000) before the compare. At a=1 km, b=999 m the compare is 1000 m < 999 m =
+           FALSE (0), NOT a raw 1 < 999 (which would be TRUE) — the same-unit fast path's guard never fires
+           across scales. At a=1 km, b=1001 m it is 1000 < 1001 = TRUE (1), confirming the result is the
+           converted ordering and not an always-false collapse.")
+  (input  (do (def (main (: a Int64) (: b Int64))
+                (if (< (Qty.of a (Unit.prefix kilo (Unit.base #"meter")))
+                       (Qty.of b (Unit.base #"meter"))) 1 0)) (export main)))
+  (call   main (: 1 Int64) (: 999 Int64))  (output (: 0 Int64))
+  (call   main (: 1 Int64) (: 1001 Int64)) (output (: 1 Int64)))
+
 (case "a runtime Float quantity comparison against NaN is the IEEE partial order (false)"
   (doc    "`(< (Qty.of nan meter) (Qty.of 5.0 meter))` — a runtime NaN magnitude compares FALSE under the
            IEEE partial order (NaN is unordered), exactly as the bare `nan < 5.0` does: the quantity's Float
