@@ -2499,6 +2499,7 @@ pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argum
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
 pass	a match-scrutinee self-call preceding an arm-body perform folds via multi-value return
+pass	a match-shaped arm body peels its resume per branch when performed in a sequence
 pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a member access with no field operand is rejected, not a crash
@@ -2697,6 +2698,7 @@ pass	a negative-exponent unit cancels its base through a multiply to dimensionle
 pass	a negative-key trie churned back keys and enumerates like the direct build
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
+pass	a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity
 pass	a nested @!param is a misplaced module directive (CDZ0602), not a module parameter
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
@@ -7198,6 +7200,7 @@ pass	the multiplicative-one and subtractive-zero identities preserve a boundary-
 pass	the multiply-by-zero annihilator does not discard a trapping runtime operand
 pass	the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the multiply-by-zero annihilator folds to zero when the discarded constant operand is total
+pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow
 pass	the natural invariant construction over a VIOLATING perform result traps through the handler
 pass	the negative power agrees with dividing into the dimensionless one
 pass	the new map from a runtime-key swap holds the new value at that key
@@ -7786,5 +7789,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a nested (* (* x 2) 4) strength-reduces to shifts and preserves value + Int64 overflow-trap parity
-pass	the narrow Int8 nested (* (* x 2) 4) traps on BOTH inner and outer overflow

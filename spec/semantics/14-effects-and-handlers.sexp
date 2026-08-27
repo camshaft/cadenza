@@ -2763,6 +2763,23 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 62 Int64)))
 
+(case "a match-shaped arm body peels its resume per branch when performed in a sequence"
+  (doc    "A two-op `Db` handler where the `put` arm DESTRUCTURES its arg with a `match` and resumes inside
+           the branch, performed in a `do`-SEQUENCE with a later `get` that READS the state `put` wrote.
+           The `put` arm `(match kv ((tuple k v) (resume unit (+ k v))))` threads a new state from its
+           PATTERN BINDERS (`(+ k v)`); the resume-peel must handle a MATCH-shaped arm body (not just a
+           bare or `do`-shaped one), keeping the branch next-state scoped to its binders. `(do (Db.put
+           (tuple 1 41)) (Db.get 0))`: put threads state 1+41 = 42, get reads it → 42.")
+  (input  (do
+            (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op get (-> Int64 Int64)))
+            (def (main)
+              (handle Db 0
+                ((put (kv) s (match kv ((tuple k v) (resume unit (+ k v)))))
+                 (get (k) s (resume s s)))
+                (do (Db.put (tuple 1 41)) (Db.get 0))))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a THREE-site and a TWO-site arm interleaved fold (site counts mix freely)"
   (doc    "Exact site-count uniformity is NOT required — a 3-site rank and a 2-site sift interleave
            (rank, sift, rank) and fold: 250 (s 100), 7 (s 110), 15 (s 111) → 272. Only the
