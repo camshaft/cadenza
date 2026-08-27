@@ -20890,3 +20890,32 @@
   (call main (: 5 Int64))
   (output (: 2 Int64))
   (live-objects 0))
+
+; -- breaker batch 498 (2026-08-27): the TWO-SIDED repeat-unwrap fence v-core-opt requested for
+; inc2c 2c.1 (the object census can't tell full balance from half-balance — ruw3 reads 3 either
+; way). Mechanism: the payload is bound by TWO unwraps of the same Option; a persistent
+; List.update through the FIRST binding must COPY (the second binding legitimately holds a ref),
+; so the answer reads original-through-in2 = 99005. CONTRACT: today (pre-2c.1) = 99005 with the
+; surplus dup leaking (known-leak 3). A CORRECT 2c.1 = 99005 with (live-objects 0) — flip the
+; clause. An OVER-release (releasing a legitimate ref) drops the payload to rc=1 at the update →
+; FBIP reuses IN PLACE → in2 reads the mutation → 99099, value-WRONG (the case FAILS loudly). An
+; UNDER-release (half-balance) keeps the count >0 (the clause catches it). Both failure sides
+; are observable; the count alone was one-sided.
+
+(case "ruf1 a twice-unwrapped payload persistently updated through one binding reads original through the other (the two-sided balance fence)"
+  (input (do
+    (def (main (: n Int64))
+      (let ((o (if (> n 0) (Option.Some (list n (+ n 1))) Option.None)))
+        (match o
+          ((Option.Some in1)
+            (match o
+              ((Option.Some in2)
+                (let ((upd (List.update in1 0 99)))
+                  (+ (* 1000 (match (List.at upd 0) ((Option.Some v) v) ((Option.None) -1)))
+                     (match (List.at in2 0) ((Option.Some w) w) ((Option.None) -1)))))
+              ((Option.None) -2)))
+          ((Option.None) -1))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 99005 Int64))
+  (live-objects known-leak 3))
