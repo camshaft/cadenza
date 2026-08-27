@@ -670,7 +670,7 @@
         (export main)))
   (call   main (: 7 Int64)) (output (: 10090 Int64))
   (call   main (: 0 Int64)) (output (: 10020 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 8))
 
 ; --- Fixpoint rewriting and payload-derived renames. ---
 

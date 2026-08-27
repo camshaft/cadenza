@@ -14835,6 +14835,29 @@ pub fn is_markable_constant_list(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// Whether the node at `id` is a fully-constant `Core::MapNew` that can hoist as a build-once immortal
+/// static. NON-empty, every entry's KEY and VALUE per-node-buildable via [`is_markable_constant_elem`]. Like
+/// the list case this needs the DEEP mark (op 96): the build-once emit builds the CHAMP (`map-empty` +
+/// per-entry `map-insert`, which CONSUMES the map/key/value) then `mark-immortal-DEEP`s the final root, which
+/// transitively marks the whole HAMT spine + every data-entry key/value handle. Because `map-insert` consumes
+/// (moves, never copies) its arguments, there is no orphan-leak hazard (contrast the all-`Bool` list pack).
+///
+/// EMPTY is excluded (the `map-empty` shared singleton — unsound to mark immortal). A nested `List`/`Map` key
+/// or value is (conservatively) NOT markable yet — [`is_markable_constant_elem`] does not recurse into them,
+/// and the immortal builder's per-key/value path builds only scalar / `Bytes` / `String` / `Tuple` / `Record`
+/// (a later widening reuses the list/map arms for nested collection k/v).
+pub fn is_markable_constant_map(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::MapNew { entries, .. } => {
+            !entries.is_empty()
+                && entries.iter().all(|&(k, v)| {
+                    is_markable_constant_elem(db, k) && is_markable_constant_elem(db, v)
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already

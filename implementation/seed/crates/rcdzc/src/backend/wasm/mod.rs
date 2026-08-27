@@ -565,6 +565,10 @@ pub fn emit(
         // force that too (the per-node shallow `mark-immortal` above still covers tuple/record/scalar/leaf marks).
         used.insert("vec-of-arr");
         used.insert("mark-immortal-deep");
+        // A hoisted constant MAP builds via `map-empty` + per-entry `map-insert` in the init; force both (they
+        // aren't in any body when the only map use is hoisted).
+        used.insert("map-empty");
+        used.insert("map-insert");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -1529,6 +1533,7 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
             }
             if crate::lower::is_markable_constant_compound(db, id)
                 || crate::lower::is_markable_constant_list(db, id)
+                || crate::lower::is_markable_constant_map(db, id)
             {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested
@@ -10350,6 +10355,8 @@ fn emit_bytes_provider_member(
             "vec-of-arr",
             "mark-immortal",
             "mark-immortal-deep",
+            "map-empty",
+            "map-insert",
         ] {
             used.insert(op);
         }

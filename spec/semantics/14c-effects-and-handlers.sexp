@@ -5233,7 +5233,7 @@
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (output (: 76 Int64))
   (call   main (: 4 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 8))
 
 (case "dd5 a do-def BINDS a whole cross-effect handle region — the region's seed draws from the outer thread"
   (input  (do

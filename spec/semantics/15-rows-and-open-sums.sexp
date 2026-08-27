@@ -1376,7 +1376,7 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 6))
 
 ; --- Record.without on a map-extracted record, both maps staying typed. ---
 
