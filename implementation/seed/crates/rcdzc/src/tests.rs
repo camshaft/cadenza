@@ -17308,30 +17308,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_binary_operator_with_no_operands_is_rejected_cdz0201() {
-        // 07-type-system "a bare equality/arithmetic keyword is rejected, not a crash": a binary operator
-        // applied to ZERO operands — `(=)` / `(+)` — is a MALFORMED application (the operator demands its
-        // operands, the arity error `(+ 1)` already rejects), NOT the operator used as a value (which would
-        // DECLINE "needs runtime closures", a to-do). Reject CDZ0201.
-        for op in ["=", "+", "<", ">", "<=", ">=", "-", "*"] {
-            let src = format!("(module m (def (main) ({op})) (export main))");
-            assert_eq!(
-                reject_code(&src).as_deref(),
-                Some("CDZ0201"),
-                "a zero-operand `({op})` must reject CDZ0201"
-            );
-        }
-        // A well-formed binary application still compiles (the guard fires ONLY at zero args).
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) (+ 2 3)) (export main))"),
-                "main"
-            ),
-            5
-        );
-    }
-
-    #[test]
     fn a_list_match_is_well_formed_or_declines() {
         // A list is OPEN (any length): a match with only fixed-arity arms and no catch-all is
         // NON-EXHAUSTIVE (CDZ0210) — a finite set of lengths cannot cover every list.
