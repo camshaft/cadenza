@@ -1141,6 +1141,7 @@ pass	a String host RESULT crosses the boundary and is read twice (byte-len + sca
 pass	a String literal pattern over a Symbol scrutinee is rejected at the nominal boundary
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
+pass	a String match with no wildcard is non-exhaustive
 pass	a String op RESULT selected by the op argument, composed via concat
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
 pass	a String slice OF a slice over a MULTIBYTE concat rope composes scalar offsets
@@ -4629,6 +4630,7 @@ pass	an Instant and a Duration are DISTINCT nominal types — a point cannot be 
 pass	an Int 12 sum past its maximum is rejected CDZ0304
 pass	an Int argument to a Bool-annotated parameter is rejected
 pass	an Int argument to a parameter used as a Bool condition is rejected
+pass	an Int-literal pattern over a String scrutinee is a type error
 pass	an Int16 sum-payload literal-match hits the literal arm, result widens to Int64
 pass	an Int32 sum-payload literal-match misses, binds the payload widened to Int64
 pass	an Int64 sum-payload literal-match needs no widening (width control)

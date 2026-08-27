@@ -3603,6 +3603,24 @@
   (call   main (: 97 Int64))
   (error  CDZ0201))
 
+(case "a String match with no wildcard is non-exhaustive"
+  (doc    "String is an OPEN type (like Int64/Char) — no finite literal set exhausts it — so a `match` whose
+           arms are string literals with no wildcard `_` tail does not cover every string and is rejected
+           CDZ0210 (core-semantics.md #Matching Must Be Exhaustive), EVEN with a constant scrutinee: unlike a
+           constant Int scrutinee that hits a present arm and folds, a String match still owes a total cover.
+           The String analogue of the char/int no-wildcard exhaustiveness rule.")
+  (input  (match "hi" ("hi" 1) ("yo" 2)))
+  (error  CDZ0210))
+
+(case "an Int-literal pattern over a String scrutinee is a type error"
+  (doc    "`(match \"hi\" (5 1) (_ 0))` — an Int64 pattern over a String scrutinee — is a shape/type error
+           rejected CDZ0201, checked structurally before the fold: the pattern's type (Int64) must agree with
+           the scrutinee's (String). The String twin of the char-pattern-over-non-Char case above; the String
+           path derives the pattern type soundly (no cross-nominal leak). The wildcard `_` makes the match
+           exhaustive, so the ONLY fault is the pattern/scrutinee type disagreement.")
+  (input  (match "hi" (5 1) (_ 0)))
+  (error  CDZ0201))
+
 (case "a supplementary-plane char literal matches by scalar value"
   (doc    "`(match #\\😀 (#\\a 1) (#\\😀 2) (_ 0))` is 2 — the supplementary-plane scalar U+1F600 (😀, above
            the BMP) equals the second arm's char literal, dispatched by scalar value. Pins that char-literal
