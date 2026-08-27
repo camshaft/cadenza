@@ -4156,6 +4156,38 @@ fn seventeen_scalar_entry_params_over_max_flat_declines_not_invalid_wasm() {
     );
 }
 
+/// An `option<T>` ENTRY param crosses the plain-export boundary as a native component `option<T>` (flattened
+/// to `(disc, payload)`), lifted by a guest WRAPPER that branches on the boundary disc and builds the guest
+/// `Option` cell via `sum-new` (reusing the closure-arg `SumArgRebuild` via `emit_sum_field`), then drops the
+/// built shell after the call (the def borrows it). `ty_natural_wit` declines a `Ty::Sum`, so the WIT type
+/// comes from the Db-aware `spilled_result_wit_type`. Pins that the bare path emits a valid component for an
+/// Option entry param (the behavioral value/None coverage is corpus `eo1-3`). Off-slice shapes (a non-option
+/// sum, a compound result) still decline — no artifact.
+#[test]
+fn an_option_scalar_entry_param_compiles_to_a_component() {
+    use crate::testkit::parse;
+    let compile_wasm = |src: &str| {
+        crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "main",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        )
+    };
+    // `(match o (Some v -> v) (None -> -1))` — an `Option Int64` param, matched. Compiles to a component.
+    let src = "(do (def (main (: o (Option Int64))) \
+                 (match o ((Option.Some v) v) ((Option.None) -1))) \
+               (export main))";
+    let out = compile_wasm(src);
+    assert!(
+        out.artifact(crate::backend::Target::Wasm.artifact_kind())
+            .is_some(),
+        "an option<Int64> entry param must compile to a component (the sum-lift wrapper)"
+    );
+}
+
 /// VARIANT/ENUM in a derived param resolves to the guest's NAMED sum. A world export member's param type
 /// carries a WIT `variant`/`enum` (here the `error` inside `on-response`'s `result<list<u8>, variant…>`),
 /// which is declared ANONYMOUSLY in the world. A Cadenza sum carries a DECL identity, so the derived boundary
