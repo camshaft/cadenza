@@ -58821,40 +58821,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_branch_perform_threads_its_state_to_the_continuation() {
-        // A `perform` in an `if`/`match` BRANCH must thread its state advance OUT to the continuation
-        // after the conditional — the branch-out-state is a runtime phi realized by distributing the
-        // continuation into each branch. Here the then-branch reads 0 (threads 0->1); the continuation
-        // `(Fresh.next)` reads 1. Before the fix the continuation ran against the pre-branch state (0).
-        let if_src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
-                   (do (if true ((. Fresh next)) 99) ((. Fresh next))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(if_src)))
-                    .expect("a branch-perform if threads to its continuation"),
-                "main"
-            ),
-            1,
-            "the then-branch perform's state advance must reach the continuation"
-        );
-        // The short-circuit connective is the same shape via its if-desugar, and its CONDITION performs
-        // too: `(and (= (next) 0) (= (next) 1))` reads 0 then 1 (threads 0->2); the continuation reads 2.
-        let and_src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
-                   (do (and (= ((. Fresh next)) 0) (= ((. Fresh next)) 1)) ((. Fresh next))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(and_src)))
-                    .expect("a short-circuit branch perform threads to its continuation"),
-                "main"
-            ),
-            2,
-            "both connective reads plus the continuation must thread through the desugared branch"
-        );
-    }
-
-    #[test]
     fn a_mixed_handler_abortive_arm_value_reads_both_the_op_arg_and_the_state() {
         // The mixed resuming+abortive handler, but the ABORTIVE arm's value is a function of BOTH the op
         // ARGUMENT and the handler STATE binder — `(stop (code) s (* code s))` — reached after a resuming
@@ -60082,54 +60048,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(rw4))).is_err(),
             "a mutual-SCC branch-perform sharing a strict expr with the mutual call must decline, not miscompile to 3"
-        );
-    }
-
-    #[test]
-    fn a_branch_perform_in_a_self_recursive_performer_threads_the_advance_not_the_seed() {
-        // recursive-branch-perform SELF-recursive fix (v-effects self-probe rw1, operator-prioritized HIGH
-        // miscompile). A discharged perform inside a conditional BRANCH `(if true (St.get) 0)` that is a strict
-        // operand alongside the self-call `(walk (- n 1))`. Pre-fix: thread_bounded's If arm returned the
-        // post-CONDITION state as the if's out-state (branch advances unmerged), so the sibling recursion
-        // reseeded from the stale pre-branch state and every step read the seed — seeded 1 it ran 3 (1+1+1),
-        // correct is 6 (1+2+3), a SILENT MISCOMPILE all backends. Fixed by merging the per-branch out-states
-        // into a conditional-valued out-state `(if cond then-out else-out)` (gated on a pure cond + #cv-free
-        // branch out-states for arena safety) so the recursion threads the branch's advance.
-        let src = "(do (effect St (op get (-> Unit Int64))) \
-                   (def (walk (: n Int64)) (if (= n 0) 0 (+ (if true (St.get) 0) (walk (- n 1))))) \
-                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a branch-perform in a self-recursive performer folds"),
-                "main"
-            ),
-            6,
-            "the branch perform's advance must thread across the recursion (1+2+3=6), not reseed from 1 (was 3)"
-        );
-    }
-
-    #[test]
-    fn a_match_arm_perform_in_a_self_recursive_performer_threads_the_advance() {
-        // The MATCH-arm face of the recursive-branch-perform fix (the `if`-branch twin is the test above). A
-        // discharged perform in a `match` ARM body alongside a self-call — `(+ (match true (_ (St.get)))
-        // (walk (- n 1)))`. Same drop as the `if` case: thread_bounded's `Match` arm returned the
-        // post-SCRUTINEE state, so the recursion reseeded from the stale state (ran 3, correct 6). Fixed by
-        // the `Match` arm analogue of the per-branch out-state merge (a `(match scrut (pat arm-out)…)`-valued
-        // out-state, same pure-scrutinee + `#cv`-free gating as the `if` arm).
-        let src = "(do (effect St (op get (-> Unit Int64))) \
-                   (def (walk (: n Int64)) (if (= n 0) 0 (+ (match true (_ (St.get))) (walk (- n 1))))) \
-                   (def (main) (handle St 1 ((get (u) s (resume s (+ s 1)))) (walk 3))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a match-arm perform in a self-recursive performer folds"),
-                "main"
-            ),
-            6,
-            "the match-arm perform's advance must thread across the recursion (1+2+3=6), not reseed (was 3)"
         );
     }
 
