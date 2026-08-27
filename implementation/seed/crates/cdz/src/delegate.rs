@@ -268,8 +268,8 @@ fn materialize_specs(inputs: &[Artifact], dir: &Path, prog: &str) -> Option<Vec<
 /// `build_sidecar_request(rs) == rcdzc::sidecar::encode(rs)`). `cdz`'s query drivers only ever send `Query`
 /// requests (emit-tests takes a different path), but all `Request` arms are mirrored for completeness.
 pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
+    use cadenza_syntax::ast::IntValue;
     use cadenza_syntax::{Builder, Leaf, Radix};
-    use num_bigint::BigInt;
 
     let mut b = Builder::new();
     let forms: Vec<_> = requests
@@ -336,11 +336,11 @@ pub fn build_sidecar_request(requests: &[rcdzc::Request]) -> Vec<u8> {
     let root = b.list(forms);
     return cadenza_syntax::codec::encode(&b.finish(root));
 
-    // A `Leaf::Int` node id (a `u32` `StructId`) — `cadenza_syntax`'s Int leaf carries a `num_bigint::BigInt`
-    // (rcdzc's copy names the same wire type `IntValue`), radix `Dec`, matching rcdzc's `atom_int`.
+    // A `Leaf::Int` node id (a `u32` `StructId`) — `cadenza_syntax`'s Int leaf carries an `IntValue`
+    // wire type (the same type rcdzc's copy names `IntValue`), radix `Dec`, matching rcdzc's `atom_int`.
     fn int_leaf(b: &mut Builder, node: u32) -> cadenza_syntax::StructId {
         b.atom_leaf(Leaf::Int {
-            value: BigInt::from(i64::from(node)),
+            value: IntValue::from_i64(i64::from(node)),
             radix: Radix::Dec,
         })
     }
