@@ -1294,6 +1294,8 @@ pass	a bare conditional keyword is rejected, not a crash
 pass	a bare constant string escapes across the boundary and renders
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
+pass	a bare decimal in a default-float=Float32 module grounds to Float32
+pass	a bare decimal outside any default-float module keeps the Float64 default
 pass	a bare effect declaration that is never performed is well-formed
 pass	a bare empty list reflects an undetermined element, distinct from a concrete list type
 pass	a bare equality keyword is rejected, not a crash
@@ -1694,6 +1696,7 @@ pass	a constant BigInt operand of a runtime BigInt op materializes as a heap val
 pass	a constant MUL over a high UInt64 operand that overflows still rejects
 pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
+pass	a constant SIGNED shift-right sign-extends (the unsigned-width fold bails on a signed type)
 pass	a constant add of two high UInt64 operands within range folds to the sum
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant argument out of a narrow parameter's range is rejected, not laundered
@@ -1718,6 +1721,7 @@ pass	a constant shift count at or beyond the width over a high UInt64 still reje
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
 pass	a constant shift-left that overflows a high UInt64 width still rejects
+pass	a constant shift-left whose result exceeds i64 but fits the UInt64 width folds, not declines
 pass	a constant subtraction over a high UInt64 operand folds to the difference
 pass	a constant success `?` folds INLINE in a subexpression with no let-binding
 pass	a constant tuple is returned as a program result
@@ -6750,6 +6754,8 @@ pass	pir2 a masked nibble times three is guard-free and exact
 pass	pir3 a narrow UInt8 sum of two masked values fits the width guard-free
 pass	pir4 a masked-nibble subtraction with a negative result is guard-free and exact
 pass	pir5 a chained masked-nibble sum propagates its range and stays guard-free
+pass	pjr1 a consuming projection of a let-bound tuple's list child is retained (re-projection reads original)
+pass	pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)
 pass	pk1 a BEGIN/END protocol arm — a Bool flag rejects double-begin and end-without-begin, the sequence encodes the violations
 pass	pkg1 FIRST-FIT bin packing over two capacity-ten bins — place walks the bins in order answering bin-index-times-a-hundred plus the remaining room (or -1 when nothing fits), loads packs both levels, and the seed's first item cascades every later placement
 pass	plt2 the LOOP-DRIVEN plateau tracker — the same three-let two-if arm that declines straight-line folds fine when one recursive driver walks the feed list
@@ -8303,7 +8309,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a constant shift-left whose result exceeds i64 but fits the UInt64 width folds, not declines
-pass	a constant SIGNED shift-right sign-extends (the unsigned-width fold bails on a signed type)
-pass	pjr1 a consuming projection of a let-bound tuple's list child is retained (re-projection reads original)
-pass	pjr2 a doubly-nested projected list consumed then re-read is retained (projection-depth face)
