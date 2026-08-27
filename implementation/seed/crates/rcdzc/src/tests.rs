@@ -53592,17 +53592,18 @@ mod stage1 {
         assert!(msg.contains("branches differ"), "got: {msg}");
     }
 
-    /// [cp4 interim safety-decline] A MULTI-USE let-local bound to a NULLARY performing-factory `(mk)`
-    /// whose body is a creation-wrapper capture closure `(let ((a (St.next))) (fn (x) (* a x)))` must
-    /// DECLINE, not silently miscompile: reducing `(f X)` per use re-inlines `(mk)`, whose `lambda_of`
-    /// `Let`-capture arm substitutes the performing `(St.next)` INTO the returned lambda body, turning a
-    /// creation-time draw into a per-application one (`(+ (f 10) (f 20))` at seed 5 folds to 170 instead
-    /// of the capture-once 150). Until v-effects' capture-once fold gets 150, the shape is a clean
-    /// bind-once-or-reject decline (no silent wrong value). The boundary is NARROW: a SINGLE application
-    /// (cpf1) draws once and folds 50; a DIRECT capture-closure (ca1m) folds 150 via the #3894 hoist; a
-    /// closure whose perform is INSIDE the returned lambda (cx8) is per-application-by-design and folds.
+    /// [cp4 capture-once fold] A MULTI-USE let-local bound to a NULLARY performing-factory `(mk)` whose body
+    /// is a creation-wrapper capture closure `(let ((a (St.next))) (fn (x) (* a x)))` folds CAPTURE-ONCE: the
+    /// draw runs once at closure creation and both applications share it (`(+ (f 10) (f 20))` at seed 5 →
+    /// 150). Without the bind-once, reducing `(f X)` per use re-inlines `(mk)`, whose `lambda_of` `Let`-
+    /// capture arm substitutes the performing `(St.next)` INTO the returned lambda body, turning a creation-
+    /// time draw into a per-application one → a silent 170. `bind_once_performing_factory` rebinds `f` to the
+    /// verbatim capture-let (+ the #4006 `deep_fresh_copy` re-anchor) → the ca1m shape #3894 folds to 150.
+    /// NARROW: a SINGLE application (cpf1) draws once and folds 50; a DIRECT capture-closure (ca1m) folds 150
+    /// via the #3894 hoist; a closure whose perform is INSIDE the returned lambda (cx8) is per-application-
+    /// by-design and folds 24.
     #[test]
-    fn cp4_multiuse_performing_nullary_factory_declines_not_miscompiles() {
+    fn cp4_multiuse_performing_nullary_factory_folds_capture_once() {
         let run5 = |prog: &str| -> Result<i64, String> {
             match compile_component(&crate::codec::encode(&parse(prog))) {
                 Ok(c) => Ok(run_returns_with::<i64>(
@@ -53616,13 +53617,14 @@ mod stage1 {
         let mkst = "(effect St (op next (-> Int64))) \
                     (def (mk) (let ((a (St.next))) (fn ((: x Int64)) (* a x)))) ";
         let arm = "((next () s (resume s (+ s 1))))";
-        // cp4: multi-use factory → DECLINE (was a silent 170)
-        assert!(
+        // cp4: multi-use factory → capture-once 150 (bind-once preserves the single creation draw; was a
+        // silent 170). a = St.next drawn ONCE at seed 5, (f 10) + (f 20) = 50 + 100 = 150.
+        assert_eq!(
             run5(&format!(
                 "(do {mkst}(def (main (: n Int64)) (handle St n {arm} (let ((f (mk))) (+ (f 10) (f 20))))) (export main))"
-            ))
-            .is_err(),
-            "cp4 multi-use performing factory must decline, not silently miscompile (170)"
+            )),
+            Ok(150),
+            "cp4 multi-use performing factory must fold capture-once to 150 (not silent 170)"
         );
         // cpf1: single application folds 50 (draws once)
         assert_eq!(
