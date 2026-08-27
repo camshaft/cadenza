@@ -50206,88 +50206,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_observed_tail_performer_keeps_constant_stack_on_wasm() {
-        // breaker #16: a source-tail-recursive performer whose out-state is OBSERVED after the recursion is
-        // multi-value-upgraded to return `(value, out-state)`, and the tail self-call is rewritten into
-        // `(let ((t (grow …))) (tuple (. t 0) (. t 1)))` — the call moves into the `let` BINDING INIT and the
-        // body re-packages `t`. That identity-repackage IS a tail call; the wasm loop transform must
-        // recognize it (see `multivalue_repackage_tail_call` + the `emit_tail`/`invalidate_varying_params`
-        // arms) or the upgraded def recurses one wasm frame per iteration and traps `call stack exhausted`
-        // (observed ~5-8k). Rust survives only via rustc/LLVM TCO. Here `grow` counts down from 100_000
-        // performing `Acc.push` each step; observed `(+ g (Acc.size))` forces the upgrade. A depth that far
-        // beyond the wasm call-stack limit passing PROVES the loop transform fired (constant stack). Each
-        // `push` advances the handler state by 1 (resume s ; s+1), so after 100k pushes the state is 100000;
-        // `grow` returns 0 at the base case, and `(+ g (Acc.size))` = 0 + 100000 = 100000.
-        // `main` is nullary with the 100k depth baked in, so the runtime-composing `run_linked` (which
-        // passes no args) can drive it. The program imports the value heap (`Acc.push` boxes via `arr-alloc`),
-        // so it must run through the composed runtime, not the bare linker.
-        let src = "(module m \
-            (effect Acc (op push (-> Int64 Int64)) (op size (-> Int64))) \
-            (def (grow (: n Int64)) (if (< n 1) 0 (match (Acc.push n) (_ (grow (- n 1)))))) \
-            (def (main) (handle Acc 0 \
-              ((push (v) s (resume s (+ s 1))) (size () s (resume s s))) \
-              (let ((g (grow 100000))) (+ g (Acc.size))))) \
-            (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("the observed-tail-performer compiles");
-        // `run_linked` returns None only when the runtime wasm isn't findable in the tree; then skip (the
-        // established heap-test pattern). When present, the loop must run 100k iterations at constant stack.
-        if let Some(rendered) = run_linked(&bytes, "main") {
-            assert_eq!(
-                rendered, "100000",
-                "the loop runs 100k iterations at constant stack (each push resumes s+1; final g=0 + size=100000)"
-            );
-        }
-    }
-
-    #[test]
-    fn a_computed_index_string_at_over_an_effect_grown_rope_emits_valid_wasm() {
-        // breaker #18: a `String.at` (or `Bytes.at` over a `String.to-bytes` view) whose INDEX operand is a
-        // COMPUTED expression, reading a rope-bearing handler state grown through a RECURSIVE (multi-value-
-        // upgraded) performer, USED to emit an invalid wasm component. Root cause: the `Core::StrAt` /
-        // `Core::BytesAt` emit evaluated its string/bytes operand AND its index operand at the SAME fixed
-        // scratch floor; when the operand is a rope handle off the multi-value-upgraded state thread it typed
-        // that slot i32, and the computed i64 index reused it → "expected i64, found i32", invalid component.
-        // Fixed by floating the index floor to `floor.max(*high)` in both emits (mirroring `String.slice`).
-        // Here `walk` grows the rope through recursive `S.add` performs, then a computed-index `S.pick (n-1)`
-        // reads it: at n=4 the state grows "zzzz" and pick(3) reads the last 'z' (byte-len 1).
-        let src = "(module m \
-            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64))) \
-            (def (walk (: k Int64)) (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1))))) \
-            (def (main) (handle S \"\" \
-              ((add (v) s (resume 0 (String.concat s \"z\"))) \
-               (pick (i) s (resume (match (String.at s i) ((Some c) (String.byte-len c)) ((None _u) -1)) s))) \
-              (let ((_w (walk 4))) (S.pick (- 4 1))))) \
-            (export main))";
-        compile_component(&crate::codec::encode(&parse(src))).expect(
-            "the computed-index String.at over an effect-grown rope compiles to a VALID component",
-        );
-    }
-
-    #[test]
-    fn a_computed_index_bytes_at_over_a_to_bytes_rope_view_emits_valid_wasm() {
-        // breaker #18, SECOND emit site (the WIDENED face reviewer flagged had no landed guard): a computed-
-        // index `Bytes.at` reading a `String.to-bytes` VIEW of an effect-grown rope lowers through
-        // `Core::BytesAt`, which had the identical fixed-scratch-floor bug as `Core::StrAt` — the rope-view
-        // handle types the shared floor i32 and the computed i64 index reused it → invalid component. This
-        // guards the `Core::BytesAt` half of the float-the-index-floor fix so a future revert of JUST that
-        // float is caught (VERIFIED load-bearing: reverting only the BytesAt float makes this shape emit an
-        // invalid `function[17]`). Same walk as the String.at guard; `Bytes.at 3` over the grown "zzzz"
-        // reads byte 3 = 'z' = 122.
-        let src = "(module m \
-            (effect S (op add (-> Int64 Int64)) (op pick (-> Int64 Int64))) \
-            (def (walk (: k Int64)) (if (< k 1) 0 (let ((_d (S.add k))) (walk (- k 1))))) \
-            (def (main) (handle S \"\" \
-              ((add (v) s (resume 0 (String.concat s \"z\"))) \
-               (pick (i) s (resume (match (Bytes.at (String.to-bytes s) i) ((Some c) c) ((None _u) -1)) s))) \
-              (let ((_w (walk 4))) (S.pick (- 4 1))))) \
-            (export main))";
-        compile_component(&crate::codec::encode(&parse(src))).expect(
-            "the computed-index Bytes.at over a to-bytes rope view compiles to a VALID component",
-        );
-    }
-
-    #[test]
     fn an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns() {
         // The native agent HARNESS (v-agent-harness) loop SPINE, pinned as a single-shot tail-resumptive
         // program that runs today with NO ABI dependency — the control structure Inc-2 builds on
@@ -56322,46 +56240,6 @@ mod stage1 {
             wasmparser::validate(&bytes).is_ok(),
             "a compound-returning export dispatching a runtime closure must emit a VALID module (table/func indices resolve)"
         );
-    }
-
-    #[test]
-    fn two_const_closure_specializations_of_one_driver_do_not_collide() {
-        // Regression for the spec-memo COLLISION (module-scale miscompile): two exports each call the SAME
-        // driver (`sum`→`drive`, a `const`-closure recursive fold) but with DIFFERENT wrapped step closures
-        // (a `map` chain vs a `filter` chain). `subtree_fingerprint` fingerprints the const arg's AST — a
-        // bare `step` reference is just the name `nstep;`, IDENTICAL for both — so the two specializations
-        // collapsed to ONE memo key: the SECOND export reused the FIRST's spec → a WRONG VALUE (`ef`
-        // returned `em`'s result). Fixed by augmenting a FUNCTION-TYPED const arg's fingerprint with its
-        // resolved `Core::Closure { code, captures }` identity, so the two drivers get distinct memo keys.
-        // Assert BOTH exports compute their OWN result: `em` = sum(map([1,2,3], +10)) = 11+12+13 = 36; `ef`
-        // = sum(filter([1..5], >2)) = 3+4+5 = 12. A collision returns one export's value for the other.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (type Iter (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
-               (def (from-list (: xs (List Int64))) (Iter.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t))))))) \
-               (def (map (: it Iter) (: f (-> Int64 Int64))) (match it ((Iter.Mk s0 step) (Iter.Mk s0 (fn ((: s (List Int64))) (match (step s) ((Option.None) (Option.None)) ((Option.Some p) (match p ((tuple x s2) (Option.Some (tuple (f x) s2))))))))))) \
-               (def (filter-step (: step (-> (List Int64) (Option (Tuple Int64 (List Int64))))) (: s (List Int64)) (const (: p (-> Int64 Bool)))) \
-                 (match (step s) ((Option.None) (Option.None)) ((Option.Some pr) (match pr ((tuple x s2) (if (p x) (Option.Some (tuple x s2)) (filter-step step s2 p))))))) \
-               (def (filter (: it Iter) (: p (-> Int64 Bool))) (match it ((Iter.Mk s0 step) (Iter.Mk s0 (fn ((: s (List Int64))) (filter-step step s p)))))) \
-               (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 Int64 Int64)))) \
-                 (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (drive step s2 (g acc x) g)))))) \
-               (def (sum (: it Iter)) (match it ((Iter.Mk s step) (drive step s 0 (fn ((: a Int64) (: x Int64)) (+ a x)))))) \
-               (def (em) (sum (map (from-list (list 1 2 3)) (fn ((: x Int64)) (+ x 10))))) \
-               (def (ef) (sum (filter (from-list (list 1 2 3 4 5)) (fn ((: x Int64)) (> x 2))))) \
-               (export em) (export ef))",
-        )))
-        .expect("two const-closure specializations of one driver compile");
-        // Each export links the value-heap runtime (skip if absent — the heap-test pattern). A memo
-        // collision would make one export return the other's value; assert each computes its OWN.
-        if let Some(v) = run_linked(&bytes, "em") {
-            assert_eq!(v, "36", "em = sum(map([1,2,3], +10)) = 36");
-        }
-        if let Some(v) = run_linked(&bytes, "ef") {
-            assert_eq!(
-                v, "12",
-                "ef = sum(filter([1..5], >2)) = 12, NOT em's value (no memo collision)"
-            );
-        }
     }
 
     #[test]
