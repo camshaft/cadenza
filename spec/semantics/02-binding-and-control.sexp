@@ -4838,6 +4838,15 @@
   (input  (do (def (main) (let (((: x Bool) 5)) x)) (export main)))
   (error  CDZ0203))
 
+(case "an annotated destructuring let binder that contradicts an element type is rejected"
+  (doc    "`(let (((: (tuple a b) (Tuple Int64 Bool)) (tuple 3 4))) a)` annotates the pair `(Tuple Int64 Bool)`
+           but binds it to `(tuple 3 4)`, whose second element `4` is Int64, not Bool — a per-ELEMENT
+           contradiction the compiler MUST reject (CDZ0203). The destructuring companion of the scalar Bool/Int
+           contradiction above (and the negative of the positive destructuring binder `(Tuple Int64 Int64)`): an
+           annotation on a DESTRUCTURING binder is checked element-wise against the value, not only whole-shape.")
+  (input  (let (((: (tuple a b) (Tuple Int64 Bool)) (tuple 3 4))) a))
+  (error  CDZ0203))
+
 (case "an annotated let binder narrower than its literal value is rejected (int width)"
   (doc    "`(let (((: x Int8) 999)) x)` — the binder's `Int8` annotation grounds the bound literal, and 999
            overflows Int8 (valid range -128..=127) → CDZ0302 'does not fit', exactly as `(: 999 Int8)` is.
