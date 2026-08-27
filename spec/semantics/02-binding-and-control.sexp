@@ -7987,3 +7987,20 @@
            body re-resolves it against an orphan scope (a spurious CDZ0101). f(3) = dbl(3) + 1 = 7.")
   (input (do (def (dbl x) (* x 2)) (def (f x) (+ (dbl x) 1)) (f 3)))
   (output (: 7 Int64)))
+
+; -- a literal payload pattern refines a sum match, falling through to a same-variant binder (migrated
+; from rcdzc a_literal_payload_pattern_refines_a_sum_match; the (Some 0)->100 hit is covered @3176/@3185):
+; a non-matching literal payload falls through to the same-variant binder arm, and a literal-only arm with
+; no binder fall-through is non-exhaustive (the literal does not cover the variant).
+(case "lps1 a non-matching literal payload falls through to the same-variant binder"
+  (doc    "`(match (Some n) ((Some 0) 100) ((Some k) k) ((None _) -1))` with n=5: the literal `(Some 0)` arm
+           does not match, so it falls through to the binder `(Some k)` -> 5.")
+  (input (do (def (f n) (match (Some n) ((Some 0) 100) ((Some k) k) ((None _) -1)))
+             (def (main) (f 5)) (export main)))
+  (call main) (output (: 5 Int64)))
+
+(case "lps2 a literal-only sum arm with no binder fall-through is non-exhaustive"
+  (doc    "`(match (Some n) ((Some 0) 100) ((None _) -1))` covers only `(Some 0)`, not a `Some` carrying
+           any other value, and has no same-variant binder fall-through -> non-exhaustive, CDZ0210.")
+  (input (do (def (f n) (match (Some n) ((Some 0) 100) ((None _) -1))) (def (main) (f 5)) (export main)))
+  (error CDZ0210))

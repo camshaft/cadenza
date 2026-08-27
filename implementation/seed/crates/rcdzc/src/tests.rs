@@ -44363,50 +44363,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_literal_payload_pattern_refines_a_sum_match() {
-        // A variant pattern whose payload is a LITERAL — `(Some 0)` — matches the variant carrying EXACTLY
-        // that value, falling through to a same-variant binder `(Some k)` otherwise (core-semantics.md
-        // §Pattern Matching: "the literal refines the match"). Was declined "a malformed sum match
-        // pattern"; now a `SumCont::LitTest` at the payload path tests the scalar and threads the
-        // non-matching case to the fall-through. CONSTANT-scrutinee folds (checked here via run_returns):
-        // `(Some 0)` selects the literal arm → 100; `(Some 5)` folds past it to the binder → 5. (The
-        // runtime-payload path is exercised by corpus 02 "a literal inside a constructor pattern matches a
-        // runtime payload"; a nested + Result + bool literal by the sibling corpus cases.)
-        let hit = "(module m (def (main) \
-                     (match (Some 0) ((Some 0) 100) ((Some k) k) ((None _) -1))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(hit))).expect("compile"),
-                "main"
-            ),
-            100,
-            "a matching literal payload selects its arm"
-        );
-        let miss = "(module m (def (main) \
-                      (match (Some 5) ((Some 0) 100) ((Some k) k) ((None _) -1))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(miss))).expect("compile"),
-                "main"
-            ),
-            5,
-            "a non-matching literal payload falls through to the same-variant binder"
-        );
-        // A literal-only arm with no same-variant fall-through is NON-EXHAUSTIVE (the literal does not
-        // cover the variant — a `Some` other than 0 is unmatched), CDZ0210 — the same rule a guard follows.
-        let non_exhaustive = "(module m (def (f n) \
-                               (match (Some n) ((Some 0) 100) ((None _) -1))) \
-                             (def (main) (f 5)) (export main))";
-        let err = compile_component(&crate::codec::encode(&parse(non_exhaustive)))
-            .expect_err("a literal-only Some arm with no binder fall-through must reject");
-        assert!(
-            err.message.contains("non-exhaustive") || err.message.contains("cover every variant"),
-            "a literal payload arm with no same-variant binder fall-through is non-exhaustive; got: {}",
-            err.message
-        );
-    }
-
-    #[test]
     fn a_non_exhaustive_sum_match_is_rejected() {
         // A sum match must cover every variant or end in a wildcard (§190). `(match s ((Some x) x))` —
         // missing the `None` arm, no wildcard — is CDZ0210 (non-exhaustive), not a runtime fallthrough.
