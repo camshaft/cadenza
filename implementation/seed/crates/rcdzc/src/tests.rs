@@ -66131,19 +66131,19 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
     );
 }
 
-/// Pins [`crate::lower::is_markable_constant_small_list`]: a fully-constant `(list …)` of at most 32
-/// per-node-markable elements is a build-once hoist candidate; a `> 32` list (RRB 2-level — its internal
-/// node has no compile-time handle to mark), a list with a runtime element, a list whose element is itself
-/// a list, or a non-list root are NOT. The 32-element boundary is the RRB single-leaf cutoff.
+/// Pins [`crate::lower::is_markable_constant_list`]: a fully-constant `(list …)` of markable elements is a
+/// build-once hoist candidate at ANY size (the emit deep-marks the root, reaching `> 32` trie internals); a
+/// list with a runtime element, an ALL-`Bool` list (packed leaf orphans the marked boxes), an EMPTY list
+/// (shared singleton), a list whose element is itself a list, or a non-list root are NOT.
 #[test]
-fn is_markable_constant_small_list_flags_small_all_const_lists_only() {
+fn is_markable_constant_list_flags_const_non_bool_lists_only() {
     use crate::db::Db;
-    use crate::lower::is_markable_constant_small_list;
+    use crate::lower::is_markable_constant_list;
     let markable = |src: &str, def: &str| -> bool {
         let mut db = Db::load(crate::testkit::parse(src));
         let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
         let body = db.defs[d].body.expect("body");
-        is_markable_constant_small_list(&mut db, body)
+        is_markable_constant_list(&mut db, body)
     };
     let m = "(module m ";
     // A small constant scalar list → markable.
@@ -66170,29 +66170,30 @@ fn is_markable_constant_small_list_flags_small_all_const_lists_only() {
         ),
         "a constant list of markable tuples must be markable"
     );
-    // Exactly 32 elements → still ONE leaf → markable.
-    let l32 = (1..=32)
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        markable(
-            &format!("{m}(def (main) (list {l32})) (export main))"),
-            "main"
-        ),
-        "a 32-element constant list is still one leaf → markable"
-    );
-    // 33 elements → first 2-level RRB trie → NOT markable.
+    // 33 elements (a 2-level RRB trie) → markable now (the root deep-mark reaches the trie internals).
     let l33 = (1..=33)
         .map(|i| i.to_string())
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        !markable(
+        markable(
             &format!("{m}(def (main) (list {l33})) (export main))"),
             "main"
         ),
-        "a 33-element list builds a 2-level trie (internal node unmarkable) → NOT markable"
+        "a 33-element list is markable — deep-mark reaches the trie internals"
+    );
+    // An ALL-`Bool` list → NOT markable (vec-of-arr packs it into a bit-leaf, orphaning the marked boxes).
+    assert!(
+        !markable(
+            &format!("{m}(def (main) (list true false true)) (export main))"),
+            "main"
+        ),
+        "an all-bool list must NOT be markable (packed bit-leaf orphans the element boxes)"
+    );
+    // An EMPTY list → NOT markable (shared vec-empty singleton).
+    assert!(
+        !markable(&format!("{m}(def (main) (list)) (export main))"), "main"),
+        "an empty list must NOT be markable (shared vec-empty singleton)"
     );
     // A list with a RUNTIME element → NOT markable.
     assert!(

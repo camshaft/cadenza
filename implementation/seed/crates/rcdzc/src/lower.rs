@@ -14797,44 +14797,35 @@ pub fn is_markable_constant_compound(db: &mut Db, id: StructId) -> bool {
     }
 }
 
-/// The RRB single-leaf capacity: a `(list …)` of at most this many elements is one strict leaf; the first
-/// element beyond it forces a 2-level trie (see [`is_markable_constant_small_list`]). Matches the runtime's
-/// 32-way (2⁵) radix fan-out (`cdz-runtime` lib.rs "Radix branching bits: 32-way").
-const LIST_SINGLE_LEAF_CAP: usize = 32;
-
-/// Whether the node at `id` is a fully-constant `Core::ListNew` SMALL enough to hoist as a build-once
-/// immortal static: at most [`LIST_SINGLE_LEAF_CAP`] (32) elements, each per-node-markable via the same
-/// [`is_markable_constant_elem`] the compound predicate uses.
-///
-/// The `<= 32` bound is LOAD-BEARING, and is why a list needs a SEPARATE predicate from
+/// Whether the node at `id` is a fully-constant `Core::ListNew` that can hoist as a build-once immortal
+/// static — ANY size (the `> 32` cap is gone). A list needs a SEPARATE predicate from
 /// [`is_markable_constant_compound`] (which excludes EVERY list): a `(list e0…e{n-1})` literal lowers to
-/// `arr-alloc(n)` + n×`arr-set` + ONE `vec-of-arr`. For `n <= 32` the flat `arr` node IS the vector's sole
-/// strict leaf — `vec-of-arr` moves it in as the root (`cdz-runtime` lib.rs: "≤32 = one leaf, 33 = first
-/// 2-level") — so every node the build carries (the arr root + each boxed element) has a compile-time
-/// handle and can be per-node `mark-immortal`ed. For `n > 32` `vec-of-arr` builds a 2-level RRB trie whose
-/// INTERNAL node is created inside the runtime op with NO compile-time handle to mark — that needs a
-/// DEEP-mark op (deferred, the same reason maps and `> 32` lists are excluded from increment 6). So a
-/// `> 32` constant list is NOT markable here and builds inline, per-eval, as before.
+/// `arr-alloc(n)` + n×`arr-set` + ONE `vec-of-arr`, and `vec-of-arr` for `> 32` builds a 2-level RRB trie
+/// whose INTERNAL nodes are minted inside the op with NO compile-time handle. The build-once emit marks the
+/// list ROOT with `mark-immortal-DEEP` (op 96, `#4301`), which transitively marks the whole structure
+/// (header + arr leaf for ≤32; spine + all trie leaves + every element for `> 32`), so those handleless trie
+/// internals ARE reached — which is why the size cap could be lifted.
 ///
-/// Element markability reuses [`is_markable_constant_elem`], which does NOT recurse into a nested
-/// `Core::ListNew` — so a list whose element is itself a list is (conservatively) NOT markable for this
-/// first slice, while a list of markable scalars / `Bytes` / `String` / `Tuple` / `Record` IS.
-///
-/// DETECTION-ONLY for now — the small-list build-once EMIT is a later slice (gated on the corpus-migration
-/// churn settling so its census re-baseline does not thrash). This is the classification that emit will key
-/// on, mirroring the bytes / string / compound detection layers landed ahead of their emit.
-pub fn is_markable_constant_small_list(db: &mut Db, id: StructId) -> bool {
+/// Two shapes stay EXCLUDED (they would leak — see the emit arm): an EMPTY list (the shared `vec-empty`
+/// SINGLETON — unsound to mark a shared node immortal), and an ALL-`Bool` list (`vec-of-arr` PACKS it into a
+/// fresh bit-leaf while dropping the source `arr` that holds the shallow-marked element boxes → those
+/// immortal boxes are orphaned). Element markability reuses [`is_markable_constant_elem`], which does NOT
+/// recurse into a nested `Core::ListNew` — so a list whose element is itself a list is (conservatively) NOT
+/// markable yet (the element builder does not build a nested list), while a list of markable scalars /
+/// `Bytes` / `String` / `Tuple` / `Record` of any size IS.
+pub fn is_markable_constant_list(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ListNew { elems } => {
-            // NON-empty and ≤32 (the single-leaf window), every element per-node-markable, AND not ALL-`Bool`.
-            // Two runtime `vec-of-arr` shapes are un-markable per-node and so excluded here (they build a node
-            // with no compile-time handle for the immortal build to mark — a census leak otherwise, the same
-            // reason `> 32` and maps are excluded): an EMPTY list returns the shared `vec-empty` singleton (no
-            // per-list node to mark), and an ALL-`Bool` list of ≤32 is PACKED into a fresh dense bit-leaf while
-            // the source `arr` is dropped — the packed leaf is created inside the op with no handle to mark.
-            // A mixed / non-bool ≤32 list reuses the `arr` node as the leaf (markable), so it is admitted.
+            // NON-empty, every element markable, AND not ALL-`Bool`. NO size cap: the build-once emit marks the
+            // list root with `mark-immortal-DEEP` (op 96), which transitively marks the whole structure — so a
+            // `> 32` list's RRB trie internals (minted inside `vec-of-arr` with no compile-time handle) ARE
+            // reached, unlike a per-node shallow mark. Two `vec-of-arr` shapes stay excluded because they'd leak:
+            // an EMPTY list returns the shared `vec-empty` SINGLETON (marking a shared singleton immortal is
+            // unsound), and an ALL-`Bool` list is PACKED into a fresh bit-leaf while the source `arr` (holding
+            // the shallow-marked element boxes) is dropped → those immortal boxes are ORPHANED (never freed, not
+            // in the packed leaf) = a leak. A mixed / non-bool list of any size is admitted (its elements are
+            // reused (≤32) or drained into trie leaves (>32), never orphaned).
             !elems.is_empty()
-                && elems.len() <= LIST_SINGLE_LEAF_CAP
                 && !elems
                     .iter()
                     .all(|&e| matches!(core_of(db, e), Core::ConstBool(_)))
