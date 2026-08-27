@@ -5900,14 +5900,25 @@
            case handled a tuple pattern (`find_binder_in_pattern`, used by the variant guard case, excludes
            the `tuple` head; only the list case was covered), so it reported a false CDZ0101 unbound `a`. The
            fix adds `guard_cond_tuple_binds` (resolve Case 6tg) routing a tuple guard to `find_binder_in_tuple`
-           — the tuple analogue of the list-guard support. `f (tuple 3 4)`: (> 7 5) holds → a+b = 7.")
+           — the tuple analogue of the list-guard support. `f (tuple k 4)`: k=3 → (> 7 5) holds → a+b = 7; k=1 → (> 5 5) false → falls through to the catch-all → -1 (the guard cond genuinely gates, not an irrefutable bind).")
   (input  (do
             (def (f (: t (Tuple Int64 Int64)))
               (match t
                 ((guard (tuple a b) (> (+ a b) 5)) (+ a b))
                 (_                                 -1)))
-            (def (main) (f (tuple 3 4))) (export main)))
-  (output (: 7 Int64)))
+            (def (main (: k Int64)) (f (tuple k 4))) (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 1 Int64)) (output (: -1 Int64)))
+
+(case "a guard on a tuple arm reads a NESTED ctor payload binder plus a sibling element binder"
+  (doc    "The nested face of the tuple-guard support: `(guard (tuple (Some n) m) (> (+ n m) 5))` over a `(Tuple (Option Int64) Int64)` — the guard cond reads BOTH a nested constructor payload binder `n` (from `(Some n)` in element 0) AND the sibling element binder `m` (element 1). Both must be in scope for the cond (the tuple-guard resolution descends the nested ctor pattern, not just the top-level element binders). `f (tuple (Some 3) 4)`: n=3, m=4, (> 7 5) holds → 7.")
+  (input  (do
+            (def (f (: t (Tuple (Option Int64) Int64)))
+              (match t
+                ((guard (tuple (Some n) m) (> (+ n m) 5)) (+ n m))
+                (_                                        -1)))
+            (def (main) (f (tuple (Some 3) 4))) (export main)))
+  (call   main) (output (: 7 Int64)))
 
 (case "a guard on a nested-list-in-list element reads the inner list's binder"
   (doc    "A user `(guard …)` on a list arm whose leading element is a NESTED LIST, whose guard cond reads the
