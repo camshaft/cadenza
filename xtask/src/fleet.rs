@@ -309,8 +309,9 @@ impl Fleet {
     ///
     /// WHAT ACTUALLY READS WHAT (do not confuse these — a stale belief here bred re-investigation):
     /// `window.sh` is READ from the hub copy — tmux launches `<hub>/.claude/fleet/window.sh`
-    /// (`fleet.window_sh()`) — and `prune-stale-targets.sh` is RUN from the hub copy (it resolves its
-    /// worktrees/heartbeat paths from its own hub location). The ROLE BODIES (`loops/<role>.md`) + CONTRACT (`AGENTS-fleet.md`) are copied
+    /// (`fleet.window_sh()`) — and the disk-hygiene scripts (`prune-stale-targets.sh`,
+    /// `prune-tmp-inodes.sh`) are RUN from the hub copy (each resolves its scan roots from its own hub
+    /// location). The ROLE BODIES (`loops/<role>.md`) + CONTRACT (`AGENTS-fleet.md`) are copied
     /// here too, but at RUNTIME an agent reads them from its OWN WORKTREE (`$WORKTREE/fleet/...`, so the body
     /// is git-synced with the code it works on — see window.sh's `SRC=$WORKTREE/fleet`), and `fleet add`
     /// validates a role against the tracked source (`self.src`), NOT this hub copy. So the hub `loops/` +
@@ -326,11 +327,17 @@ impl Fleet {
                 }
             }
         }
-        // `prune-stale-targets.sh` (v-nix's disk-hygiene tool) is materialized here too so it is RUN from
-        // the hub copy — it derives its worktrees/heartbeat paths from its own location in
-        // `<hub>/.claude/fleet/`, so the tracked source must be deployed here (like window.sh) rather than
-        // run in place. Any `.sh` we materialize gets the executable bit.
-        for f in ["AGENTS-fleet.md", "window.sh", "prune-stale-targets.sh"] {
+        // The disk-hygiene tools (`prune-stale-targets.sh` for worktree target/ dirs on /local;
+        // `prune-tmp-inodes.sh` for stale Claude task transcripts exhausting /tmp inodes) are
+        // materialized here too so they are RUN from the hub copy — each derives its scan roots from its
+        // own location in `<hub>/.claude/fleet/`, so the tracked source must be deployed here (like
+        // window.sh) rather than run in place. Any `.sh` we materialize gets the executable bit.
+        for f in [
+            "AGENTS-fleet.md",
+            "window.sh",
+            "prune-stale-targets.sh",
+            "prune-tmp-inodes.sh",
+        ] {
             let src = self.src.join(f);
             if src.exists() {
                 let dst = self.root.join(f);
@@ -14220,22 +14227,22 @@ mod tests {
     }
 
     #[test]
-    fn materialize_source_deploys_prune_stale_targets_script_executable_into_the_hub() {
-        // Pins the #3793 deploy invariant: `fleet up` must materialize the disk-hygiene script from the
-        // tracked `fleet/` source into the hub runtime dir WITH the executable bit — the concierge's
-        // maintenance cron calls the hub copy, so a refactor that drops it from the materialize set (or
-        // its chmod) would silently leave the cron pointing at a stale/absent/non-exec file.
+    fn materialize_source_deploys_disk_hygiene_scripts_executable_into_the_hub() {
+        // Pins the deploy invariant (#3793 target-dir tool + the /tmp-inode tool): `fleet up` must
+        // materialize each tracked disk-hygiene script from `fleet/` into the hub runtime dir WITH the
+        // executable bit — the concierge's maintenance cron calls the HUB copies, so a refactor that
+        // drops one from the materialize set (or its chmod) would silently point the cron at a
+        // stale/absent/non-exec file.
+        let scripts = ["prune-stale-targets.sh", "prune-tmp-inodes.sh"];
         let base = std::env::temp_dir().join(format!("cdz-materialize-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let src = base.join("fleet");
         let root = base.join("hub");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            src.join("prune-stale-targets.sh"),
-            "#!/usr/bin/env bash\necho hi\n",
-        )
-        .unwrap();
+        for s in scripts {
+            std::fs::write(src.join(s), format!("#!/usr/bin/env bash\necho {s}\n")).unwrap();
+        }
 
         let fleet = Fleet {
             root: root.clone(),
@@ -14245,18 +14252,20 @@ mod tests {
         };
         fleet.materialize_source();
 
-        let dst = root.join("prune-stale-targets.sh");
-        assert!(dst.exists(), "the script is materialized into the hub");
-        assert_eq!(
-            std::fs::read_to_string(&dst).unwrap(),
-            "#!/usr/bin/env bash\necho hi\n",
-            "content is copied verbatim"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o755, "the materialized .sh gets the executable bit");
+        for s in scripts {
+            let dst = root.join(s);
+            assert!(dst.exists(), "{s} is materialized into the hub");
+            assert_eq!(
+                std::fs::read_to_string(&dst).unwrap(),
+                format!("#!/usr/bin/env bash\necho {s}\n"),
+                "{s} content is copied verbatim"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o755, "the materialized {s} gets the executable bit");
+            }
         }
         let _ = std::fs::remove_dir_all(&base);
     }
