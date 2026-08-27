@@ -55,7 +55,7 @@
 //! Total decode (the codec's discipline): a malformed tree / unknown head / bad operand is a DECLINE (a
 //! diagnostic), never a panic or a silent drop — reject-don't-miscompile at the tool edge.
 
-use crate::ast::{Arenas, Builder, IntValue, Leaf, Radix, Struct, StructId};
+use crate::ast::{Arenas, Builder, CompoundCtor, IntValue, Leaf, Radix, Struct, StructId};
 use crate::db::Db;
 use crate::resolved::Resolved;
 
@@ -1952,7 +1952,7 @@ fn is_label_position(db: &Db, id: StructId) -> bool {
         && pair.len() == 2
         && pair[0] == id
         && let Some(grand) = db.parent_of(parent)
-        && db.ast.head_ctor(grand) == Some("record")
+        && db.ast.compound_ctor(grand) == Some(CompoundCtor::Record)
     {
         return true;
     }

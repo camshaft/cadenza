@@ -4049,7 +4049,7 @@ fn find_binder_in_list(
 /// reader keeps in a pattern) or the `"tuple"` string-literal primitive. Used to route a variant's
 /// tuple payload into element-by-element descent.
 fn is_tuple_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.as_form(id, "tuple").is_some() || db.ast.head_ctor(id) == Some("tuple")
+    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Tuple)
 }
 
 /// Whether a `(record (field value) …)` PATTERN binds `name` anywhere — at a bare field value `(x a)` or
@@ -4093,14 +4093,14 @@ fn record_pattern_binds_name(db: &Db, record_pat: StructId, name: &str) -> bool 
 /// `"list"` string-literal primitive. Routes a variant's list payload into element-by-element binder
 /// descent ([`find_binder_in_list`]), the list analogue of [`is_tuple_pattern`].
 fn is_list_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.as_form(id, "list").is_some() || db.ast.head_ctor(id) == Some("list")
+    db.ast.compound_ctor_either(id) == Some(CompoundCtor::List)
 }
 
 /// Whether `id` is a map PATTERN `(map (k v) … .. rest)` — a `map` NAME head (the shadowable alias) or the
 /// `"map"` string-literal primitive. Routes a NESTED map sub-pattern into [`find_map_binder_in_pattern`]
 /// (the key-directed binder descent), the map analogue of [`is_tuple_pattern`]/[`is_list_pattern`].
 fn is_map_pattern(db: &Db, id: StructId) -> bool {
-    db.ast.as_form(id, "map").is_some() || db.ast.head_ctor(id) == Some("map")
+    db.ast.compound_ctor_either(id) == Some(CompoundCtor::Map)
 }
 
 /// Descend a TUPLE pattern `(tuple p0 p1…)` looking for the binder `name` in one of its element
