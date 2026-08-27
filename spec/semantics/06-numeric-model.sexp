@@ -1680,6 +1680,62 @@
   (call   main (: 200 UInt8) (: true Bool))  (output (: 200 UInt8))
   (call   main (: 200 UInt8) (: false Bool)) (output (: 0 UInt8)))
 
+; --- a CONTROL-FLOW node (if/let/match) as an OPERAND of a narrow op is width-normalized to the op ---
+; When an if/let/match whose branches are bare deferred-width literals is an OPERAND of a narrow arith/
+; bitwise op, the control-flow node types as its own join (Int64 = i64 slot) while the op emits narrow
+; (i32 slot). The i64 operand must be wrapped to i32 at the consuming site (sound: a genuine Int64-vs-
+; narrow disagreement is a compile fault, so an i64 operand reaching a narrow op is a deferred literal
+; whose low bits are its value; the op's own range-check still traps a true overflow). Regression for an
+; "expected i32, found i64" invalid-module miscompile that slipped past both the direct-literal and the
+; bare-if-result grounding paths.
+
+(case "an if operand of a narrow add is width-normalized to the op"
+  (input  (do (def (main (: c Bool)) (: (+ (if c 10 20) 3) Int8)) (export main)))
+  (call   main (: true Bool))  (output (: 13 Int8))
+  (call   main (: false Bool)) (output (: 23 Int8)))
+
+(case "an if operand of a narrow op is width-normalized at each width that fits the slot"
+  (doc    "The same normalization at UInt8 / Int16 / Int32 (all <= 32-bit i32 slots): the deferred-width
+           if operand is wrapped to the op's width uniformly. Int16 shown; the wide Int64 form is unchanged
+           (i64 throughout, no wrap).")
+  (input  (do (def (main (: c Bool)) (: (+ (if c 10 20) 3) Int16)) (export main)))
+  (call   main (: true Bool))  (output (: 13 Int16))
+  (call   main (: false Bool)) (output (: 23 Int16)))
+
+(case "an if operand of a narrow bitwise-and is width-normalized to the op"
+  (input  (do (def (main (: c Bool)) (: (& (if c 10 20) 7) Int8)) (export main)))
+  (call   main (: true Bool))  (output (: 2 Int8))
+  (call   main (: false Bool)) (output (: 4 Int8)))
+
+(case "an if operand of a narrow multiply is width-normalized to the op"
+  (input  (do (def (main (: c Bool)) (: (* (if c 3 4) 5) Int8)) (export main)))
+  (call   main (: true Bool))  (output (: 15 Int8))
+  (call   main (: false Bool)) (output (: 20 Int8)))
+
+(case "a narrow op takes its width from a PARAM while a control-flow operand is normalized"
+  (doc    "No annotation: the op's width comes from the Int8 param `x`, and the `if` operand normalizes to
+           it. x=5 -> 5+2 = 7; x=-3 -> -3+1 = -2 (the `(< x 0)` branch).")
+  (input  (do (def (main (: x Int8)) (+ x (if (< x 0) 1 2))) (export main)))
+  (call   main (: 5 Int8))  (output (: 7 Int8))
+  (call   main (: -3 Int8)) (output (: -2 Int8)))
+
+(case "a let-shaped control-flow operand of a narrow op is width-normalized"
+  (input  (do (def (main (: c Bool)) (: (+ (let ((y (if c 10 20))) y) 3) Int8)) (export main)))
+  (call   main (: true Bool))  (output (: 13 Int8))
+  (call   main (: false Bool)) (output (: 23 Int8)))
+
+(case "a match-shaped control-flow operand of a narrow op is width-normalized"
+  (input  (do (def (main (: x Int8)) (: (& (match x (0 10) (_ 20)) 7) Int8)) (export main)))
+  (call   main (: 1 Int8)) (output (: 4 Int8))
+  (call   main (: 0 Int8)) (output (: 2 Int8)))
+
+(case "a control-flow operand of a narrow op still range-checks the enclosing overflow"
+  (doc    "The op's own overflow guard survives the operand wrap: `(: (+ (if c 100 20) 100) Int8)` gives
+           100+100 = 200 > Int8.max on the true branch -> traps; 20+100 = 120 in range on the false branch.")
+  (input  (do (def (main (: c Bool)) (: (+ (if c 100 20) 100) Int8)) (export main)))
+  (call   main (: true Bool))  (trap   "overflow")
+  (call   main (: false Bool)) (output (: 120 Int8)))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")

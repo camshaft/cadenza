@@ -7985,3 +7985,11 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	an if operand of a narrow add is width-normalized to the op
+pass	an if operand of a narrow op is width-normalized at each width that fits the slot
+pass	an if operand of a narrow bitwise-and is width-normalized to the op
+pass	an if operand of a narrow multiply is width-normalized to the op
+pass	a narrow op takes its width from a PARAM while a control-flow operand is normalized
+pass	a let-shaped control-flow operand of a narrow op is width-normalized
+pass	a match-shaped control-flow operand of a narrow op is width-normalized
+pass	a control-flow operand of a narrow op still range-checks the enclosing overflow

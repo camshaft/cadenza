@@ -8386,3 +8386,11 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	an if operand of a narrow add is width-normalized to the op
+pass	an if operand of a narrow op is width-normalized at each width that fits the slot
+pass	an if operand of a narrow bitwise-and is width-normalized to the op
+pass	an if operand of a narrow multiply is width-normalized to the op
+pass	a narrow op takes its width from a PARAM while a control-flow operand is normalized
+pass	a let-shaped control-flow operand of a narrow op is width-normalized
+pass	a match-shaped control-flow operand of a narrow op is width-normalized
+pass	a control-flow operand of a narrow op still range-checks the enclosing overflow
