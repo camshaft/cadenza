@@ -5596,3 +5596,39 @@
   (then)
   (output (: (tuple 3 3) (Tuple UInt32 UInt32)))
   (live-objects known-leak 5))
+
+(case "a runtime Bytes value exposes a repeatable is-empty member (call-method)"
+  (doc    "The 3-byte runtime Bytes `(uleb 624485)` = E5 8E 26 reached via its emitted `is-empty` member
+           -> false (a non-empty Bytes). A scalar borrow method besides len.")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method is-empty)
+  (output (: false Bool))
+  (live-objects known-leak 5))
+
+(case "a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)"
+  (doc    "`to-bytes` returns the RAW payload (no value-form framing) of the 3-byte runtime Bytes
+           `(uleb 624485)` = E5 8E 26.")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method to-bytes)
+  (output (229 142 38))
+  (live-objects known-leak 1))
+
+(case "a runtime Bytes value's encode member still renders after other member calls (call-method)"
+  (doc    "`encode` returns the Value.encode value-form of the 3-byte runtime Bytes `(uleb 624485)`
+           = E5 8E 26 -> `(: b\"\\xe5\\x8e&\" Bytes)`.")
+  (input  (do (def (uleb (: n UInt64))
+                (if (< n 128)
+                    ((. Bytes of) (list ((. UInt8 wrap) n)))
+                    ((. Bytes concat) ((. Bytes of) (list ((. UInt8 wrap) (| (& n 127) 128)))) (uleb (>> n 7)))))
+              (def (main) (uleb 624485)) (export main)))
+  (call-method encode)
+  (output (: b"\xe5\x8e&" Bytes))
+  (live-objects known-leak 1))

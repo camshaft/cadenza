@@ -3537,6 +3537,9 @@ pass	a runtime Bytes rope is found as a Set element by its flat twin
 pass	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)
+pass	a runtime Bytes value exposes a repeatable is-empty member (call-method)
+pass	a runtime Bytes value exposes a to-bytes member returning the raw payload (call-method)
+pass	a runtime Bytes value's encode member still renders after other member calls (call-method)
 pass	a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)
 pass	a runtime FLOAT width nested in a compound annotation is rejected
 pass	a runtime Float quantity comparison against NaN is the IEEE partial order (false)
