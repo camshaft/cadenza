@@ -1372,6 +1372,20 @@ fn run_program(
             message: String::new(),
         };
     }
+    // A `(then …)` two-call-on-one-handle case is driven ONLY through the WASM harness (make the closure
+    // handle once, call the SAME borrowed handle twice, render the tuple — see `run_closure_resource`'s
+    // `--call-twice`). The Rust/ML backends have no two-call closure drive on this path, so a `(then)` case
+    // is not-yet-supported there → DECLINE (Todo, coverage-not-yet). Without this, those backends run only
+    // the FIRST call and return its scalar (e.g. `15`), a spurious disagreement with the expected
+    // `(tuple 15 17)`; the decline makes a `(then)` case baseline pass-wasm / todo-elsewhere, the same
+    // wasm-only convention `wit-world` uses above.
+    if call.map(|c| c.second_call.is_some()).unwrap_or(false) && !matches!(target, GateTarget::Wasm)
+    {
+        return Ran::Declined {
+            code: None,
+            message: String::new(),
+        };
+    }
     match target {
         GateTarget::Wasm => run_program_wasm(
             tools,
