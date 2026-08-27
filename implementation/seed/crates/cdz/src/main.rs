@@ -5395,6 +5395,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 call_twice: false,
                 then_args: Vec::new(),
                 drop_handle: false,
+                call_member: None,
                 runtime: None,
                 store: store.clone(),
                 host_responses: Vec::new(),
@@ -6120,7 +6121,7 @@ fn run_one_trial_with_pool(
     // so the trial logic below is identical.
     let run_result = match target {
         RunTarget::Standalone(compiled) => {
-            cdz_run::run_capturing_compiled(compiled, &opts, None, false)
+            cdz_run::run_capturing_compiled(compiled, &opts, None, false, None)
         }
         RunTarget::Composed(composition) => cdz_run::run_composition_capturing(composition, &opts),
     };

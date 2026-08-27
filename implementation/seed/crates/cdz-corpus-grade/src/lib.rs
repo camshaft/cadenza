@@ -163,6 +163,9 @@ pub struct GCall {
     /// A `(drop)` clause: resource-drop the minted handle after the call(s) before reading the heap
     /// balance (so a `(live-objects 0)` case pins release) — the grade-path analog of `--drop-handle`.
     pub drop_handle: bool,
+    /// A `(call-method <member>)` clause: the NAMED value-resource member to reach (grade-path analog of
+    /// `--call-member`). `None` = an ordinary call/escape; `Some` = no export, reach this member after make.
+    pub method: Option<String>,
 }
 
 /// The expected outcome of a trial. `Output`/`Trap` are RUN outcomes (graded against the run); `Error`/
@@ -566,6 +569,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
 fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     let items = a.as_form(id, "trial")?;
     let mut export: Option<String> = None;
+    let mut method: Option<String> = None;
     let mut args: Vec<String> = Vec::new();
     let mut second_call: Option<Vec<String>> = None;
     let mut drop_handle = false;
@@ -575,6 +579,13 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
             Some("call") => {
                 export = a
                     .as_form(child, "call")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid));
+            }
+            // `(call-method <member>)` — a value-resource member drive (no export).
+            Some("call-method") => {
+                method = a
+                    .as_form(child, "call-method")
                     .and_then(|t| t.first().copied())
                     .and_then(|cid| str_leaf(a, cid));
             }
@@ -635,12 +646,19 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
             _ => {}
         }
     }
-    let call = export.map(|export| GCall {
-        export,
-        args,
-        second_call,
-        drop_handle,
-    });
+    // A trial has a call if it named an export OR a `(call-method)` member (the latter has no export — the
+    // program's producer makes the value-resource, the member is reached after).
+    let call = if export.is_some() || method.is_some() {
+        Some(GCall {
+            export: export.unwrap_or_default(),
+            args,
+            second_call,
+            drop_handle,
+            method,
+        })
+    } else {
+        None
+    };
     Some(GTrial {
         call,
         expect: expect?,

@@ -393,7 +393,7 @@ pub fn validate(component_bytes: &[u8]) -> Result<()> {
 /// export with the (coerced) arguments, and return the rendered outcome. The OBSERVED host calls are
 /// discarded; use [`run_capturing`] to also get the ordered list of host operations the run performed.
 pub fn run(component_bytes: &[u8], opts: &RunOpts) -> Result<Outcome> {
-    run_capturing(component_bytes, opts, None, false).map(|(o, _calls)| o)
+    run_capturing(component_bytes, opts, None, false, None).map(|(o, _calls)| o)
 }
 
 /// Run a RAW CORE wasm MODULE (not a component): instantiate `module_bytes` with NO imports, invoke the
@@ -479,6 +479,7 @@ pub fn run_with_live_objects(
     opts: &RunOpts,
     second_call: Option<&[String]>,
     drop_handle: bool,
+    call_member: Option<&str>,
 ) -> Result<(Outcome, Vec<String>, Option<u32>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -519,6 +520,7 @@ pub fn run_with_live_objects(
         opts,
         second_call,
         drop_handle,
+        call_member,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     // Read the heap balance ONLY on a clean VALUE return: a trapping run aborted mid-computation, so its
@@ -927,6 +929,7 @@ pub fn run_capturing(
     opts: &RunOpts,
     second_call: Option<&[String]>,
     drop_handle: bool,
+    call_member: Option<&str>,
 ) -> Result<(Outcome, Vec<String>)> {
     // The one-shot path: JIT-compile the bytes, then run once. A caller that runs the SAME component many
     // times (the `cdz test` per-@test loop) should instead `compile_component` ONCE and call
@@ -934,7 +937,7 @@ pub fn run_capturing(
     // self-host test component vs ~0.1s to run it), so re-JITing identical bytes per test is the multiplier
     // to avoid. This wrapper keeps the existing single-run API (the corpus/oracle callers) byte-identical.
     let compiled = compile_component(component_bytes)?;
-    run_capturing_compiled(&compiled, opts, second_call, drop_handle)
+    run_capturing_compiled(&compiled, opts, second_call, drop_handle, call_member)
 }
 
 /// A wasmtime-JIT-COMPILED component, ready to run — the reusable half of a run, split from the per-run
@@ -966,6 +969,7 @@ pub fn run_capturing_compiled(
     opts: &RunOpts,
     second_call: Option<&[String]>,
     drop_handle: bool,
+    call_member: Option<&str>,
 ) -> Result<(Outcome, Vec<String>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
@@ -997,6 +1001,7 @@ pub fn run_capturing_compiled(
         opts,
         second_call,
         drop_handle,
+        call_member,
     )?;
     let calls = observed.lock().expect("observed calls mutex").clone();
     Ok((outcome, calls))
@@ -1376,7 +1381,9 @@ fn run_composition_hosted_capturing(
         bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
     }
 
-    let outcome = run_export(&engine, consumer, &mut store, &linker, opts, None, false)?;
+    let outcome = run_export(
+        &engine, consumer, &mut store, &linker, opts, None, false, None,
+    )?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
     let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
@@ -1548,7 +1555,9 @@ where
         Ok(())
     })?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
+    run_export(
+        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+    )
 }
 
 /// Like [`run_agent`], but ALSO binds an AUTHORIZATION op — the full agent-harness shape where the
@@ -1690,7 +1699,9 @@ where
         })?;
     }
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
+    run_export(
+        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+    )
 }
 
 /// Verify a consumer's imported authz op `authz_iface`.`authz_op` has the `(u32) -> s64` boundary shape
@@ -1799,7 +1810,9 @@ pub fn run_agent_hosted(
 
     bind_host_op_bindings(&mut store, &mut linker, &rt_instance, bindings)?;
 
-    run_export(&engine, &consumer, &mut store, &linker, opts, None, false)
+    run_export(
+        &engine, &consumer, &mut store, &linker, opts, None, false, None,
+    )
 }
 
 /// Shape-check each [`HostOpBinding`] against the consumer's declared import (a clear up-front error,
@@ -1994,6 +2007,9 @@ fn check_host_op_shape(
 
 /// Instantiate the linked component and invoke its chosen export (or the resource-escape path), returning
 /// the rendered outcome. Split out of [`run_capturing`] so the host-call observation wraps it.
+// The run context (engine/component/store/linker/opts) plus the resource-drive knobs (second_call/
+// drop_handle/call_member) it forwards to the closure/escape dispatch — genuinely 8 arguments.
+#[allow(clippy::too_many_arguments)]
 fn run_export(
     engine: &Engine,
     component: &Component,
@@ -2004,6 +2020,7 @@ fn run_export(
     // `None` on every non-closure / one-call path. Only the closure-escape dispatch below consults it.
     second_call: Option<&[String]>,
     drop_handle: bool,
+    call_member: Option<&str>,
 ) -> Result<Outcome> {
     let instance = linker
         .instantiate(&mut *store, component)
@@ -2074,7 +2091,14 @@ fn run_export(
             .map(|name| !names_a_top_level_func(&mut *store, name))
             .unwrap_or(true)
     {
-        return run_resource_escape(&mut *store, &instance, &opts.args, drop_handle);
+        return run_resource_escape(
+            &mut *store,
+            &instance,
+            &opts.args,
+            drop_handle,
+            call_member,
+            second_call,
+        );
     }
 
     // The CLOSURE ESCAPE (`DESIGN-closure-host-resource-rcdzc.md`, C-HOST-1): a program whose result is a
@@ -2101,6 +2125,7 @@ fn run_export(
             &opts.args,
             second_call,
             drop_handle,
+            call_member,
         );
     }
 
@@ -2991,6 +3016,9 @@ fn run_closure_resource(
     arg_strs: &[String],
     second_call: Option<&[String]>,
     drop_handle: bool,
+    // Unused here — a closure's member is the fixed `call`; `call_member` only steers the value-resource
+    // ESCAPE path (`run_resource_escape`). Threaded uniformly so `run_export` passes one arg set to both.
+    _call_member: Option<&str>,
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, CLOSURE_INTERFACE)
@@ -3231,14 +3259,21 @@ fn drop_handle_if(store: &mut Store<()>, handle: &Val, drop: bool) -> Result<()>
 /// encoded s-expression is `(: <value> <type>)`), so the host spells no type name — it decodes and
 /// prints. Mirrors the compiler's `constant_value_form`/resource-envelope emission
 /// ([[rcdzc-r1-resource-encode-linking-findings]]).
+#[allow(clippy::too_many_arguments)] // the escape driver needs the run context plus the make/member/repeat/drop knobs
 fn run_resource_escape(
     store: &mut Store<()>,
     instance: &wasmtime::component::Instance,
     args: &[String],
-    // A `(drop)` clause: `encode` BORROWS the handle (reads without consuming), so the escaped resource's
-    // cell stays live after encode. When set, resource-drop the handle after encode so a `(live-objects 0)`
-    // case pins that the escaped resource is reclaimed. No-op by default.
+    // A `(drop)` clause: `encode`/a value-resource member BORROWS the handle (reads without consuming), so
+    // the escaped resource's cell stays live after. When set, resource-drop the handle after the member
+    // call(s) so a `(live-objects 0)` case pins that the escaped resource is reclaimed. No-op by default.
     drop_handle: bool,
+    // A `(call-method <member>)` clause: reach this NAMED member on the run-instance instead of the default
+    // `encode` (e.g. a `Bytes` value's `len`/`is-empty`/`to-bytes`). `None` = the historical encode escape.
+    call_member: Option<&str>,
+    // A `(then …)` continuation: call the member a SECOND time on the SAME handle (a borrow method is
+    // repeatable), rendering the pair as a tuple. Only meaningful with `call_member`.
+    second_call: Option<&[String]>,
 ) -> Result<Outcome> {
     let iface = instance
         .get_export_index(&mut *store, None, RUN_INTERFACE)
@@ -3246,58 +3281,72 @@ fn run_resource_escape(
     let make_idx = instance
         .get_export_index(&mut *store, Some(&iface), "make")
         .ok_or_else(|| anyhow!("resource escape: `{RUN_INTERFACE}` exports no `make`"))?;
-    let encode_idx = instance
-        .get_export_index(&mut *store, Some(&iface), "encode")
-        .ok_or_else(|| anyhow!("resource escape: `{RUN_INTERFACE}` exports no `encode`"))?;
+    // The member to reach on the produced resource: the named one (a `(call-method …)` case) or the default
+    // `encode` (the historical value-escape). Both are instance members whose first param is the handle.
+    let member_name = call_member.unwrap_or("encode");
+    let member_idx = instance
+        .get_export_index(&mut *store, Some(&iface), member_name)
+        .ok_or_else(|| {
+            anyhow!("resource escape: `{RUN_INTERFACE}` exports no member `{member_name}`")
+        })?;
     let make = instance
         .get_func(&mut *store, make_idx)
         .ok_or_else(|| anyhow!("resource escape: `make` is not a function"))?;
-    let encode = instance
-        .get_func(&mut *store, encode_idx)
-        .ok_or_else(|| anyhow!("resource escape: `encode` is not a function"))?;
+    let member = instance
+        .get_func(&mut *store, member_idx)
+        .ok_or_else(|| anyhow!("resource escape: `{member_name}` is not a function"))?;
 
     // `make` forwards the escaping export's parameters: a NULLARY export takes no args (`make()`); a
-    // PARAMETERIZED export (`(def (main (: a Int64)) …)`) takes the `(call …)` args, so the host computes
-    // the heap value from its inputs. Coerce the raw arg strings to `make`'s declared param types.
+    // PARAMETERIZED export (`(def (main (: a Int64)) …)`) takes the leading args. The REMAINING args (past
+    // make's arity) are the member's own arguments (past its leading `self` handle). For the default
+    // `encode` escape and a nullary member both slices are empty → byte-identical to before.
     let make_param_types: Vec<Type> = make
         .params(&*store)
         .iter()
         .map(|(_, t)| t.clone())
         .collect();
-    let make_args = coerce_args(args, &make_param_types)?;
+    let n_make = make_param_types.len().min(args.len());
+    let make_args = coerce_args(&args[..n_make], &make_param_types)?;
     let mut handle = [Val::Bool(false)];
     if let Err(e) = make.call(&mut *store, &make_args, &mut handle) {
         return Ok(Outcome::Trap(trap_message(&e)));
     }
     let _ = make.post_return(&mut *store);
+
+    // The member's args (its params past the leading `self` handle), coerced from the args past make's.
+    let member_param_types: Vec<Type> = member
+        .params(&*store)
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    let member_arg_types = member_param_types.get(1..).unwrap_or(&[]);
+    let coerced = coerce_args(&args[n_make..], member_arg_types)?;
+    let mut call_args = vec![handle[0].clone()];
+    call_args.extend(coerced);
     let mut out = [Val::Bool(false)];
-    if let Err(e) = encode.call(&mut *store, &handle, &mut out) {
+    if let Err(e) = member.call(&mut *store, &call_args, &mut out) {
         return Ok(Outcome::Trap(trap_message(&e)));
     }
-    let _ = encode.post_return(&mut *store);
+    let _ = member.post_return(&mut *store);
 
-    let bytes: Vec<u8> = match &out[0] {
-        Val::List(items) => items
-            .iter()
-            .map(|v| match v {
-                Val::U8(b) => Ok(*b),
-                o => Err(anyhow!(
-                    "resource escape: encode returned a non-u8 element {o:?}"
-                )),
-            })
-            .collect::<Result<_>>()?,
-        o => {
-            return Err(anyhow!(
-                "resource escape: encode returned {o:?}, expected list<u8>"
-            ));
+    // A NAMED member's result renders directly (a scalar/bool via `render_val`, a value-form `list<u8>`
+    // decoded) — the same disambiguation `encode`'s result uses. A `(then …)` repeats the member on the
+    // SAME handle (a borrow method is repeatable) and renders the pair as a tuple.
+    let rendered = if let Some(args2) = second_call {
+        let coerced2 = coerce_args(args2, member_arg_types)?;
+        let mut call_args2 = vec![handle[0].clone()];
+        call_args2.extend(coerced2);
+        let mut out2 = [Val::Bool(false)];
+        if let Err(e) = member.call(&mut *store, &call_args2, &mut out2) {
+            return Ok(Outcome::Trap(trap_message(&e)));
         }
+        let _ = member.post_return(&mut *store);
+        render_two_call_result(out.first(), out2.first())
+    } else {
+        render_closure_call_result(out.first())
     };
-    let arenas = cadenza_syntax::codec::decode(&bytes).ok_or_else(|| {
-        anyhow!("resource escape: encode bytes are not a valid canonical value form")
-    })?;
-    let rendered = cadenza_syntax::sexpr::print(&arenas).trim().to_string();
-    // A `(drop)` clause: reclaim the escaped resource's cell after encode (which only borrowed it), so a
-    // `(live-objects 0)` case reads a released heap.
+    // A `(drop)` clause: reclaim the escaped resource's cell after the member call(s) (which only borrowed
+    // it), so a `(live-objects 0)` case reads a released heap.
     drop_handle_if(&mut *store, &handle[0], drop_handle)?;
     Ok(Outcome::Value(rendered))
 }

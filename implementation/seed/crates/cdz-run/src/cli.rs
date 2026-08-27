@@ -61,6 +61,15 @@ pub struct RunArgs {
     #[arg(long = "drop-handle")]
     pub drop_handle: bool,
 
+    /// Invoke a NAMED member on the value-resource the program produces, instead of the default `encode`.
+    /// A runtime value crossing as a resource in the `cadenza:run/run` instance exposes compiler-emitted
+    /// members (e.g. a `Bytes` value's `len`/`is-empty`/`to-bytes` besides `encode`); this reaches the named
+    /// one and renders its result (a scalar/bool directly, a value-form list<u8> decoded). `--call-twice`/
+    /// `--then-arg` repeat it on the same handle (a borrow method is repeatable); `--drop-handle` reclaims
+    /// after. The corpus `(call-method <member> …)` clause drives this.
+    #[arg(long = "call-member", value_name = "MEMBER")]
+    pub call_member: Option<String>,
+
     /// Override the value-heap runtime `.wasm` (escape hatch). Normally the runtime is resolved BY
     /// CONTENT ADDRESS from the store: the exact hash the component records must be present. This
     /// bypasses that lookup — use for local runtime debugging, not conformance.
@@ -321,6 +330,8 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
     // Whether to resource-drop the closure handle after the call(s) (the `(drop)` clause) — threaded like
     // `second_call` on the run path down to the closure/escape driver.
     let drop_handle = cli.drop_handle;
+    // The named value-resource member to reach (the `(call-method)` clause), threaded like `drop_handle`.
+    let call_member: Option<&str> = cli.call_member.as_deref();
 
     if !peers.is_empty() {
         // Compose the CONSUMER with its peers across the live boundary; the observed host calls are not
@@ -365,8 +376,13 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
                 content_address(rt)
             );
         }
-        let (outcome, observed, live) =
-            run_with_live_objects(&component_bytes, &opts, second_call, drop_handle)?;
+        let (outcome, observed, live) = run_with_live_objects(
+            &component_bytes,
+            &opts,
+            second_call,
+            drop_handle,
+            call_member,
+        )?;
         emit_observed_host_calls(&observed);
         return match outcome {
             Outcome::Value(text) => {
@@ -386,7 +402,13 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         };
     }
 
-    let (outcome, observed) = run_capturing(&component_bytes, &opts, second_call, drop_handle)?;
+    let (outcome, observed) = run_capturing(
+        &component_bytes,
+        &opts,
+        second_call,
+        drop_handle,
+        call_member,
+    )?;
     emit_observed_host_calls(&observed);
     match outcome {
         Outcome::Value(text) => {

@@ -202,8 +202,16 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
     for t in &rec.trials {
         let mut tk = vec![b.name("trial")];
         if let Some(c) = &t.call {
-            let ex = str_leaf(&mut b, &c.export);
-            tk.push(form(&mut b, "call", vec![ex]));
+            // A `(call-method <member>)` case has no export — emit a `(call-method <member>)` node the grade
+            // path reaches on the value-resource (mirrors the direct-gate `--call-member`); otherwise the
+            // ordinary `(call <export>)`.
+            if let Some(member) = &c.method {
+                let ml = str_leaf(&mut b, member);
+                tk.push(form(&mut b, "call-method", vec![ml]));
+            } else {
+                let ex = str_leaf(&mut b, &c.export);
+                tk.push(form(&mut b, "call", vec![ex]));
+            }
             for a in &c.args {
                 let al = str_leaf(&mut b, a);
                 tk.push(form(&mut b, "arg", vec![al]));
