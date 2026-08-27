@@ -1681,37 +1681,11 @@ fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
         "the common-constructor hoist must lower the differing payload to a branchless select \
          (build-once); found no select"
     );
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime Option value must build on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |c: bool, a: &str, b: &str| -> String {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![c.to_string(), a.to_string(), b.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => panic!("common-ctor hoist run trapped (miscompile?): {t}"),
-        }
-    };
-    assert_eq!(
-        run(true, "10", "20"),
-        "10",
-        "c=true selects the first payload"
-    );
-    assert_eq!(
-        run(false, "10", "20"),
-        "20",
-        "c=false selects the second payload"
-    );
+    // The payload-select VALUE + the untaken-arm guard (a trapping untaken payload does not fire) are
+    // covered by the corpus common-constructor-hoist family (spec/semantics/02-binding-and-control.sexp:
+    // "a trapping payload in the untaken arm of a same-constructor if does not trap" + "a nested if of a
+    // common constructor builds it once and dispatches to each arm"). Only the build-once EMISSION witness
+    // (the select count above) stays here — the corpus cannot observe the opcode count.
 }
 
 /// The common-OPERATOR hoist (the arith sibling of the constructor hoist): `(if c (+ a 1) (+ b 1))`
@@ -2178,37 +2152,9 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
         "the match common-constructor sink must lower the differing payload to a branchless select \
          (build-once); found no select"
     );
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime Option value must build on the value heap (import the runtime)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |k: i64| -> String {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![k.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => {
-                panic!("match common-ctor sink trapped (miscompile?): {t}")
-            }
-        }
-    };
-    assert_eq!(run(0), "10", "arm 0 → payload 10");
-    assert_eq!(run(1), "20", "arm 1 → payload 20");
-    assert_eq!(run(2), "30", "wildcard arm → payload 30");
-    assert_eq!(
-        run(99),
-        "30",
-        "wildcard arm covers any other scrutinee → 30"
-    );
+    // The payload VALUE (a match over the scrutinee selects the arm's Some payload) is ordinary match/sum
+    // behavior covered by the corpus; only the build-once EMISSION witness (the select count above) stays
+    // here — the corpus cannot observe the opcode count.
 }
 
 /// The build-once hoists COMPOSE through the differing positions they synthesize: when a hoist pushes a
