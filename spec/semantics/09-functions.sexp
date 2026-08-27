@@ -2437,7 +2437,7 @@
                 (apply-sum (fn ((: x Int64)) (+ (+ x (. p 0)) (. p 1))) 3)))
             (export main)))
   (output (: 96 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; A closure that captures a SUM value and MATCHES it inside the body. The captured `(Some 100)` is a sum
 ; handle stored in the env cell; the body's `match` reads it back and switches on its discriminant. This
@@ -3453,7 +3453,7 @@
               (export main)))
   (call   main)
   (output (: 1 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 19))
 
 ; --- A recursive Bool-returning function used as a condition, in BOTH branch orders --------------
 ; A recursive predicate — "all elements from i satisfy P" — is a byte/element loop whose recursive
@@ -3614,7 +3614,7 @@
   (call   main (: 10 Int64)) (output (: 551 Int64))
   (call   main (: 30 Int64)) (output (: 8320401 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
@@ -7059,7 +7059,7 @@
             (def (main) (icount (gmap (from-list (list (tuple 1 "x") (tuple 2 "y"))) (fn (s) s))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 16))
 
 (case "an identity closure composes at a single Int element type (not only String)"
   (doc    "The landed single-type case used a String element; this pins an Int element so the tie is shown
@@ -7600,7 +7600,7 @@
                               3 0 20)))
             (export main)))
   (output (: 67 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 25))
 
 (case "closures extracted from a list by RUNTIME index and applied dispatch correctly"
   (doc    "The callback-REGISTRY idiom: the list-of-closures pins above store + call directly;

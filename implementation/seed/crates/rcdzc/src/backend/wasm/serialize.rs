@@ -1044,11 +1044,15 @@ fn core_module_impl(
     // func index is `import_count + n + n_wrap + n_realloc`, its functype the last defined-function functype.
     // `n_static == 0` → no GLOBAL/START/init additions and the realloc cursor stays global 0, byte-identical.
     let n_static = layout.static_bytes.len();
-    let n_init = (n_static > 0) as usize;
-    // The realloc bump cursor's global index: it sits AFTER the static-bytes globals, so its `global.get`/
-    // `global.set` in the defined `cabi_realloc` body address `n_static` (0 when there are no static bytes,
-    // byte-identical to before).
-    let realloc_cursor_global = n_static as u64;
+    // §2d increment 6: the build-once static COMPOUND globals (markable constant Tuple/Record), laid AFTER
+    // the byte globals — compound `k`'s global is `n_static + k`. The START init exists if there are static
+    // bytes OR static compounds.
+    let n_compounds = layout.static_compounds.len();
+    let n_init = (n_static > 0 || n_compounds > 0) as usize;
+    // The realloc bump cursor's global index: it sits AFTER both the static-bytes AND static-compound
+    // globals, so its `global.get`/`global.set` in the defined `cabi_realloc` body address
+    // `n_static + n_compounds` (0 when there are no static globals, byte-identical to before).
+    let realloc_cursor_global = (n_static + n_compounds) as u64;
 
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
     // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
@@ -1516,6 +1520,11 @@ fn core_module_impl(
             code.push(Lir::CallImport("mark-immortal")); // → [buf] (rc=IMMORTAL: census-excluded, dup/drop no-op)
             code.push(Lir::GlobalSet(g as u32)); // store the once-built immortal handle → []
         }
+        // §2d increment 6: append the precomputed STATIC-COMPOUND init (`build_static_compound_init`), which
+        // for each markable constant Tuple/Record builds its immortal tree + `global.set`s it to
+        // `n_static + k` (its global follows the byte globals). Built with `Db` in the backend + carried on
+        // the layout (this fn has no `Db`). Empty when there are no static compounds.
+        code.extend_from_slice(&layout.static_compound_init);
         let init = SelectedFunc {
             params: Vec::new(),
             ret: crate::ty::Ty::Unit,
@@ -1596,12 +1605,13 @@ fn core_module_impl(
     } else {
         Vec::new()
     };
-    // GLOBAL (sec 6) — one mutable i32 per STATIC BYTES payload FIRST (indices `0..n_static`, init 0; the
-    // `start` init overwrites each with its once-built handle), then the `cabi_realloc` bump cursor at index
-    // `n_static` when a DEFINED allocator is present (`n_realloc == 1`, init 16 so a returned pointer is
-    // never 0). `n_realloc == 1` already implies `wrapper_needs_memory`. Empty (byte-identical) when there
-    // are neither static bytes nor a defined cursor.
-    let global_sec = if n_static > 0 || n_realloc == 1 {
+    // GLOBAL (sec 6) — one mutable i32 per STATIC BYTES payload FIRST (indices `0..n_static`, init 0), then
+    // one per STATIC COMPOUND (indices `n_static..n_static+n_compounds`, init 0) — the `start` init overwrites
+    // each with its once-built immortal handle — then the `cabi_realloc` bump cursor LAST (index
+    // `n_static+n_compounds`) when a DEFINED allocator is present (`n_realloc == 1`, init 16 so a returned
+    // pointer is never 0). `n_realloc == 1` already implies `wrapper_needs_memory`. Empty (byte-identical)
+    // when there are no static globals nor a defined cursor.
+    let global_sec = if n_static > 0 || n_compounds > 0 || n_realloc == 1 {
         let global_entry = |init: i64| -> Vec<u8> {
             let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
             g.push(op::I32_CONST);
@@ -1610,7 +1620,7 @@ fn core_module_impl(
             g
         };
         let mut items = Vec::new();
-        for _ in 0..n_static {
+        for _ in 0..(n_static + n_compounds) {
             items.extend_from_slice(&global_entry(0));
         }
         if n_realloc == 1 {
@@ -1618,7 +1628,7 @@ fn core_module_impl(
         }
         section(
             wasm_abi::CORE_SEC_GLOBAL,
-            &wasm_vec(n_static + n_realloc, &items),
+            &wasm_vec(n_static + n_compounds + n_realloc, &items),
         )
     } else {
         Vec::new()

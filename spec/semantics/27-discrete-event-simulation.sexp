@@ -978,7 +978,7 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 ; --- The adjacent-pair timeline window. ---
 
@@ -1028,4 +1028,4 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 19 Int64))
   (call   main (: 99 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))

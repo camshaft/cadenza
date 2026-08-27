@@ -822,7 +822,7 @@
   (call   main (: 9 Int64)) (output (: 21 Int64))
   (call   main (: 40 Int64)) (output (: 21 Int64))
   (call   main (: 3888 Int64)) (output (: 151 Int64))
-  (live-objects known-leak 56))
+  (live-objects known-leak 43))
 
 (case "a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer"
   (doc    "The decoder's mechanism is entirely different from the renderer above: a per-scalar value
@@ -877,7 +877,7 @@
   (call   main (: 9 Int64)) (output (: 91 Int64))
   (call   main (: 3888 Int64)) (output (: 38881 Int64))
   (call   main (: 3 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 276))
+  (live-objects known-leak 224))
 
 (case "a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters"
   (doc    "The substitution cipher over the alphabet-table pair: each scalar's position is found by

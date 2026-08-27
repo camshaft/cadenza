@@ -523,6 +523,10 @@ pub fn emit(
     // `bytes-set` + the read-`dup`) join it, and attached to the layout below so selection's `Core::BytesOf`
     // arm can route a constant literal to its global. Empty for a program with no constant bytes literal.
     let static_bytes = collect_static_bytes(db, &layout.order);
+    // §2d increment 6: the markable constant Tuple/Record roots hoisted to build-once immortal globals.
+    // Collected here (before the import set) so its init ops are forced below; the init Lir itself is built
+    // after `with_static_bytes` (it needs the byte-global count for the compound global indices).
+    let static_compounds = collect_static_compounds(db, &layout.order);
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit
@@ -538,6 +542,20 @@ pub fn emit(
     // `mark-immortal` (and a program whose only bytes are all hoisted) might otherwise import neither; force
     // the three the init emits when the table is non-empty. No-op (byte-identical) with no constant bytes.
     if !static_bytes.is_empty() {
+        used.insert("bytes-alloc");
+        used.insert("bytes-set");
+        used.insert("mark-immortal");
+    }
+    // STATIC COMPOUNDS (increment 6): the `start` init builds each tuple/record with `arr-alloc` + a boxed
+    // `arr-set` per element (`box-int`/`box-bool`; nested compounds recurse; a Bytes/String leaf uses
+    // `bytes-alloc`/`bytes-set`), then `mark-immortal` per node. `collect_used_ops` reports the arr/box ops
+    // for the body's `Core::Tuple`/`Record` (even when routed to a global), but the init's `mark-immortal`
+    // isn't in any body — force the full init op set when the compound table is non-empty. Idempotent.
+    if !static_compounds.is_empty() {
+        used.insert("arr-alloc");
+        used.insert("arr-set");
+        used.insert("box-int");
+        used.insert("box-bool");
         used.insert("bytes-alloc");
         used.insert("bytes-set");
         used.insert("mark-immortal");
@@ -743,6 +761,16 @@ pub fn emit(
         // cross-edge block, so each cross-edge shifts up by that count. `0` (the common consumer, no coexisting
         // peer effect) → no-op, byte-identical.
         .with_cross_edge_import_shift(cross_edge_delta);
+    // §2d increment 6: precompute the compound `start`-init now that the layout carries `static_bytes` (its
+    // count fixes the compound global indices = `static_bytes.len() + k`), then attach both the table (for
+    // selection's Tuple/Record routing) and the init (for `core_module_impl` to append to the START fn).
+    let static_compound_init = select::build_static_compound_init(
+        db,
+        &static_compounds,
+        layout.static_bytes.len(),
+        &layout,
+    )?;
+    let layout = layout.with_static_compounds(static_compounds, static_compound_init);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a
@@ -10218,14 +10246,16 @@ fn emit_bytes_provider_member(
     spans: Option<&crate::spans::SpanData>,
 ) -> Result<Vec<u8>, Reject> {
     // §2d STATIC-DATA GUARD: this provider-member path assembles via `bytes_roundtrip_*_core_module`, which
-    // does NOT emit the build-once static-bytes GLOBAL/START sections (only `core_module_impl` does). So the
-    // body it selects MUST NOT route a constant Bytes/String to a `global.get` (`try_emit_static_bytes`) —
-    // that would reference a global this module never declares (an "unknown global: index out of bounds"
-    // validation failure, the #3862 reify regression). Strip `static_bytes` from the layout used here so the
-    // body builds each constant inline (exactly the pre-hoist behavior). Static hoisting stays active on the
-    // ordinary `core_module_impl` path; a reify/provider reducer simply forgoes it until this assembler
-    // grows its own static-globals emit.
-    let layout_no_static = layout.with_static_bytes(Vec::new());
+    // does NOT emit the build-once GLOBAL/START sections (only `core_module_impl` does). So the body it
+    // selects MUST NOT route a constant Bytes/String/Tuple/Record to a `global.get` (`try_emit_static_bytes`/
+    // `try_emit_static_compound`) — that would reference a global this module never declares (an "unknown
+    // global: index out of bounds" validation failure, the #3862 reify regression). Strip BOTH static tables
+    // from the layout used here so the body builds each constant inline (the pre-hoist behavior). Static
+    // hoisting stays active on the ordinary `core_module_impl` path; a reify/provider reducer forgoes it
+    // until this assembler grows its own static-globals emit.
+    let layout_no_static = layout
+        .with_static_bytes(Vec::new())
+        .with_static_compounds(Vec::new(), Vec::new());
     let layout = &layout_no_static;
     // The member's declared param/result types drive both descriptors — the compiler reads them off the
     // export plan, never off a hard-coded contract shape.

@@ -14798,13 +14798,25 @@ pub fn is_markable_constant_compound(db: &mut Db, id: StructId) -> bool {
 }
 
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
-/// [`is_markable_constant_compound`]): a constant `Int64`/`Bool`/`Unit` scalar (boxes to one markable heap
-/// node — `Unit` is the inline `IMM_UNIT` sentinel, already rc-free), a constant `Bytes`/`String` leaf, or
-/// a NESTED markable `Tuple`/`Record`. Anything else — a runtime value, a `ConstFloat`/`ConstChar`, a
-/// `ListNew`, a map — is NOT markable (the compound declines).
+/// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
+/// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
+/// rc-free), a constant `Bytes`/`String` leaf, or a NESTED markable `Tuple`/`Record`.
+///
+/// The `Ty::Int` guard on `ConstInt` is LOAD-BEARING: `(BigInt.of 10)` folds to a `Core::ConstInt` typed
+/// `Ty::BigInt`, but a BigInt const materializes as a `bigint-of-*` HEAP LEAF (not a `box-int` node), which
+/// the compound builder's scalar path (`box_op` → `None` for a handle) would leave UNMARKED → a census leak
+/// (a real bug caught by `06-numeric-model` "a tuple key with an ARITH-built BigInt leaf": expected 0 got 1).
+/// So a BigInt/Rational-typed const (and `ConstFloat`/`ConstChar`, a runtime value, a `ListNew`, a map) is
+/// NOT markable — the compound declines and builds inline, per-eval, as before (a conservative first slice).
 fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
-        Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit => true,
+        Core::ConstBool(_) | Core::Unit => true,
+        // Only a MACHINE int (`box-int` → one node), NOT a BigInt/Rational-typed const (a heap leaf the
+        // scalar path would not mark → leak).
+        Core::ConstInt(_) => matches!(
+            crate::infer::type_of(db, id).strip_nominal(),
+            crate::ty::Ty::Int(_)
+        ),
         Core::Tuple { .. } | Core::Record { .. } => is_markable_constant_compound(db, id),
         _ => is_constant_bytes(db, id) || constant_string_value(db, id).is_some(),
     }
