@@ -7837,3 +7837,40 @@
   (input  (do (def (main (: x UInt8)) (: (if (= x 200) (: (+ x 1) UInt8) 0) UInt8)) (export main)))
   (call main (: 200 UInt8)) (output (: 201 UInt8))
   (call main (: 50 UInt8))  (output (: 0 UInt8)))
+
+; -- MIXED-operator same-direction comparison subsumption (migrated from rcdzc
+; a_mixed_operator_same_direction_comparison_pair_subsumes; the Lir compare-count subsumption inspection
+; stays a wasmtime-free rcdzc unit test): `(< x 5)` and `(<= x 4)` both mean x<=4, so a same-direction
+; pair subsumes to ONE compare REGARDLESS of which of </<= (or >/>=) each side uses — `and` keeps the
+; tighter inclusive bound, `or` the looser. The value must land on the exact inclusive boundary.
+(case "csm1 a mixed-operator and (< with <=) subsumes to the tighter inclusive bound"
+  (doc    "`(and (< x 5) (<= x 4))` normalizes both to x<=4 and keeps one compare: 3→1, 4→1 (the inclusive
+           boundary), 5→0, 6→0.")
+  (input (do (def (main (: x Int64)) (if (and (< x 5) (<= x 4)) 1 0)) (export main)))
+  (call main (: 3 Int64)) (output (: 1 Int64))
+  (call main (: 4 Int64)) (output (: 1 Int64))
+  (call main (: 5 Int64)) (output (: 0 Int64))
+  (call main (: 6 Int64)) (output (: 0 Int64)))
+
+(case "csm2 a mixed-operator or (<= with <) subsumes to the looser inclusive bound"
+  (doc    "`(or (<= x 10) (< x 5))` keeps the looser x<=10: 5→1, 10→1 (inclusive boundary), 11→0, 12→0.")
+  (input (do (def (main (: x Int64)) (if (or (<= x 10) (< x 5)) 1 0)) (export main)))
+  (call main (: 5 Int64))  (output (: 1 Int64))
+  (call main (: 10 Int64)) (output (: 1 Int64))
+  (call main (: 11 Int64)) (output (: 0 Int64))
+  (call main (: 12 Int64)) (output (: 0 Int64)))
+
+(case "csm3 a mixed-operator lower-bound or (> with >=) subsumes to the looser bound"
+  (doc    "`(or (> x 5) (>= x 3))` keeps the looser x>=3: 2→0, 3→1 (inclusive boundary), 4→1, 6→1.")
+  (input (do (def (main (: x Int64)) (if (or (> x 5) (>= x 3)) 1 0)) (export main)))
+  (call main (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 3 Int64)) (output (: 1 Int64))
+  (call main (: 4 Int64)) (output (: 1 Int64))
+  (call main (: 6 Int64)) (output (: 1 Int64)))
+
+(case "csm4 the mixed-operator subsumption keeps a trapping operand's trap"
+  (doc    "The surviving compare still evaluates the shared operand: `(and (< (/ 100 z) 5) (<= (/ 100 z) 4))`
+           at z=0 divides by zero and traps; z=100 → (/100 100)=1, 1<5 and 1<=4 → 1.")
+  (input (do (def (main (: z Int64)) (if (and (< (/ 100 z) 5) (<= (/ 100 z) 4)) 1 0)) (export main)))
+  (call main (: 100 Int64)) (output (: 1 Int64))
+  (call main (: 0 Int64))   (trap "divide by zero"))

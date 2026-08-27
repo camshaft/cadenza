@@ -11912,7 +11912,7 @@ mod recursion {
 // non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
 // wasmtime + assert the rejections.
 mod match_engine {
-    use super::{call_traps, run_returns, run_returns_with};
+    use super::{run_returns, run_returns_with};
     use crate::backend::Target;
     use crate::compile::{compile, compile_component};
     use crate::testkit::parse;
@@ -32561,51 +32561,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             cmps("(: x Int64)", "(: (and (> x 5) (< x 100)) Bool)"),
             2,
             "opposite-direction range kept"
-        );
-
-        // VALUE PARITY at the exact boundaries (the inclusive normalization must not shift a bound).
-        use wasmtime::component::Val;
-        let f = |body: &str| {
-            compile_component(&crate::codec::encode(&crate::testkit::parse(&format!(
-                "(module m (def (f (: x Int64)) (if {body} 1 0)) (export f))"
-            ))))
-            .expect("compile")
-        };
-        // `(and (< x 5) (<= x 4))` = x<=4.
-        let a = f("(and (< x 5) (<= x 4))");
-        for (x, want) in [(3, 1), (4, 1), (5, 0), (6, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&a, "f", &[Val::S64(x)]),
-                want,
-                "and-mixed @{x}"
-            );
-        }
-        // `(or (<= x 10) (< x 5))` = x<=10.
-        let o = f("(or (<= x 10) (< x 5))");
-        for (x, want) in [(5, 1), (10, 1), (11, 0), (12, 0)] {
-            assert_eq!(
-                run_returns_with::<i64>(&o, "f", &[Val::S64(x)]),
-                want,
-                "or-mixed @{x}"
-            );
-        }
-        // `(or (> x 5) (>= x 3))` = x>=3.
-        let l = f("(or (> x 5) (>= x 3))");
-        for (x, want) in [(2, 0), (3, 1), (4, 1), (6, 1)] {
-            assert_eq!(
-                run_returns_with::<i64>(&l, "f", &[Val::S64(x)]),
-                want,
-                "or-lower-mixed @{x}"
-            );
-        }
-        // TRAP SAFETY: the surviving compare still evaluates the trapping operand.
-        let tb = compile_component(&crate::codec::encode(&crate::testkit::parse(
-            "(module m (def (f (: z Int64)) (if (and (< (/ 100 z) 5) (<= (/ 100 z) 4)) 1 0)) (export f))",
-        )))
-        .expect("compile");
-        assert!(
-            call_traps(&tb, "f", &[Val::S64(0)]),
-            "the kept mixed-op comparison preserves the operand's trap"
         );
     }
 
