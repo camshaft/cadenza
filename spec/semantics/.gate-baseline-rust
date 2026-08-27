@@ -2977,6 +2977,8 @@ pass	a pure closure-driver call beside a perform in one handle body
 pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure non-final do-statement whose value is discarded compiles but earns a CDZ0307 discarded-value warning
+pass	a pure one-hole continuation folds with pure siblings around the hole
+pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
 pass	a push-loop tuple-list accumulator infers its tuple element component types
@@ -3914,6 +3916,7 @@ pass	a tail-recursive accumulator over a large runtime count iterates in constan
 pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
+pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail
 pass	a task that sleeps then reads `now` observes the fast-forwarded clock (E5 step-3 gate)
 pass	a task-facing `sleep` wrapper performs Sim.sleep — the surface a simulation is written against
 pass	a tautology comparison against a masked value's derived range still traps on the operand
@@ -5790,6 +5793,7 @@ pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the sel
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
 pass	hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket
+pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
 pass	hygiene: an unquote is uncaptured through two nested same-named template binders
@@ -7693,7 +7697,6 @@ todo	bk4 a Map keyed by a runtime digest is findable by a fresh recompute
 todo	bk5 Blake3-of-encode runtime composition compares equal across recomputation
 todo	bo1 bare order over two runtime encode results compares content-lexicographically
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
-todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
 todo	cj03 Ast.print of a RUNTIME AST value renders
@@ -7701,7 +7704,7 @@ todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
-todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
 todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
 todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
@@ -7753,8 +7756,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
-todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
-pass	a pure one-hole continuation folds with pure siblings around the hole
-pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
-pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail

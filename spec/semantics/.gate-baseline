@@ -5267,6 +5267,7 @@ pass	cc1 a closure over the fn PARAM built before the handle, applied twice insi
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds
 pass	cc2 a closure escaping handle A is applied inside handle B — the A-capture is stable while B's draws feed the args
+pass	cc3 a factory returning a closure over a performing-arg param folds via the capture-once hoist
 pass	cc4 TWO closures over SEQUENTIAL draws inside one region — each captures its own read, applied after both bind
 pass	cc5 composed closures over three draws — g(f(draw)) where f and g each captured an earlier read
 pass	cc6b a closure bound OUTSIDE the outer handle applied inside a nested SHADOW region and after it — capture crosses both boundaries
@@ -5506,6 +5507,7 @@ pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
+pass	cp1 a capture-once closure CAPTURED by a nested closure folds via the deep-copy hoist hygiene
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpf1 a performing nullary factory called once and applied once folds capture-once
@@ -8119,10 +8121,8 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
-todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
-todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
 todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
 todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims

@@ -2333,16 +2333,18 @@ pub fn reduce_handle(
     // hoist; each hoist removes its own match, so it terminates.
     let mut body = body;
     while let Some(hoisted) = hoist_performing_capture_closure(db, body, &ctx) {
-        // The hoist REUSES the returned lambda + let-body sub-nodes but re-parents them under the new
-        // wrapping `let`, so their memoized resolutions are stale — the lambda's captured binder + the body's
-        // `f` refs must re-resolve against the CURRENT structure (the outer hoisted `a`, the inner `f`).
-        // Forget + force-structural-re-resolve the rewritten subtree, exactly as
-        // `inline_escaped_one_shot_perform_call` does after its rebuild; KEEP-PINNED preserves any genuine
-        // outer capture the moved lambda carries (a free var resolved OUTSIDE the hoist region — sk4c).
-        // (The hoist is NARROWED to only fire when the closure binder is applied directly, never captured by
-        // a nested closure — see `binder_escapes_into_nested_lambda` — so this hygiene never faces the stale-
-        // pin-on-a-nested-captured-binder case that neither keep-pinned nor a full forget resolves correctly.)
-        crate::resolve::forget_subtree_keep_pinned(db, hoisted);
+        // The hoist REUSES sub-nodes (the returned lambda, the let body) and re-parents them under the new
+        // wrapping `let`s. A REUSED subtree can SHARE a load-time atom (e.g. a name occurrence) whose SINGLE
+        // parent slot points into a stale/orphaned prior copy — so the exhaustive lexical-scope walk from such
+        // a ref DEAD-ENDS before reaching the new binder → a false CDZ0101 "unbound" that no memo hygiene
+        // (`forget`/`force`) can repair, because the parent CHAIN itself is broken (not just the memo). So
+        // `deep_fresh_copy` the whole rewritten subtree: every node becomes a fresh synth id whose parent is
+        // set correctly by `push_list`, giving a coherent parent chain for the exhaustive walk. Then
+        // `forget_subtree` clears any stale memo and `force_structural_resolution_subtree` routes the
+        // (now-synth) refs through the exhaustive walk against the CURRENT parents. This resolves a
+        // nested-closure capture (cp1: `h` wrapping the hoisted `g`) correctly — no re-draw, no unbound.
+        let hoisted = deep_fresh_copy(db, hoisted);
+        crate::resolve::forget_subtree(db, hoisted);
         db.force_structural_resolution_subtree(hoisted);
         body = hoisted;
     }
@@ -2540,9 +2542,11 @@ pub fn reduce_handle(
     // the let-outside-the-closure workaround (d1) bind the draw in a PLAIN let, not the closure's init-let, so
     // they are untouched; a PURE inner init (d2fix) is not a perform, so it folds.
     if body_has_closure_over_performing_capture(db, body, &ctx) {
-        // A performing-capture closure the early normalization did NOT hoist (the FACTORY face
-        // `(let ((f (mk <performing-arg>…))) …)`, a distinct increment) — decline cleanly rather than fold a
-        // wrong value; the closure re-derives its body per application, re-firing the captured draw.
+        // A performing-capture closure the early capture-once normalization did NOT hoist (a shape neither
+        // FORM A — a let-bound closure-value-let — nor FORM B — an arg'd factory call — matches; e.g. a
+        // conditionally-selected closure). DECLINE cleanly rather than fold a wrong value; the closure would
+        // re-derive its body per application, re-firing the captured draw. (The common let-bound + arg'd
+        // factory faces ARE hoisted above and never reach here.)
         return None;
     }
     // E5 PURE ONE-HOLE-CONTINUATION fold (general one-shot, the pure-continuation case). When the handle
@@ -7589,10 +7593,14 @@ fn body_has_closure_over_performing_capture(db: &mut Db, node: StructId, ctx: &H
 /// re-derives that pure closure without re-drawing (verified: the hoisted single- and multi-app forms
 /// both fold, sharing the ONE draw). Sound: the init runs once, before the body, in the same order —
 /// only the binder's visibility widens (identical in spirit to the do-item let-lift in `thread_bounded`).
-/// Rewrites the FIRST matching binding it finds (structurally); the guard-site re-run of `reduce_handle`
-/// on the result re-fires the guard for any remaining occurrence, so a body with several such closures
-/// converges by fixpoint. Returns the rewritten body, or `None` if no matching binding is present (e.g.
-/// the FACTORY face `(let ((f (mk <performing-arg>…))) …)`, still a clean decline until its own increment).
+/// Rewrites the FIRST matching binding it finds (structurally); the caller's `while` loop re-runs on the
+/// result so a body with several such closures converges by fixpoint. Two faces are handled: FORM A — a
+/// let-bound closure-value-let `(f (let ((a <perform>)…) LAMBDA))` (hoist the inner init out); FORM B — an
+/// arg'd factory call `(f (mk <performing-arg>…))` (hoist each performing arg to a fresh `#cap`, then inline
+/// the factory call to a pure closure over the drawn result). Returns the rewritten body, or `None` if no
+/// matching binding is present. The caller `deep_fresh_copy`s the result so the rewritten tree has coherent
+/// parent pointers (a reused subtree can share a load-time atom whose stale parent chain would otherwise
+/// dead-end the scope walk → a false unbound); see the caller's hygiene comment.
 fn hoist_performing_capture_closure(
     db: &mut Db,
     node: StructId,
@@ -7610,27 +7618,6 @@ fn hoist_performing_capture_closure(
             Struct::Atom(_) => false,
         }
     }
-    // Whether the closure binder `name` is REFERENCED inside a nested `(fn …)` in the body — i.e. captured
-    // by another closure rather than only applied directly `(name v)`. The hoist is SOUND+correct when the
-    // binder is applied directly (ca1c/ca1m fold), but when a nested closure captures it (cp1: `h` wraps
-    // `g`), re-resolving the hoisted tree leaves the captured ref pointing at the pre-hoist performing
-    // binding (→ a re-draw, wrong value) and neither keep-pinned nor a full forget resolves it correctly.
-    // So we DECLINE that shape here (a clean todo, no wrong value); folding it is a later hygiene increment.
-    fn binder_escapes_into_nested_lambda(db: &Db, node: StructId, name: &str) -> bool {
-        // A `(fn params body…)` whose body (any child past the param list) references `name` = a capture.
-        if let Struct::List(children) = db.ast.get(node)
-            && children.first().and_then(|&h| db.ast.as_name(h)) == Some("fn")
-            && children.iter().skip(2).any(|&c| refs_name(db, c, name))
-        {
-            return true;
-        }
-        match db.ast.get(node) {
-            Struct::List(children) => children
-                .iter()
-                .any(|&c| binder_escapes_into_nested_lambda(db, c, name)),
-            Struct::Atom(_) => false,
-        }
-    }
     // Try to rewrite THIS node if it is a `(let (pairs) lbody)` with a matching binding.
     if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
         && form.len() == 2
@@ -7644,9 +7631,57 @@ fn hoist_performing_capture_closure(
                 continue;
             }
             let (binder, value) = (kv[0], kv[1]);
-            // The value is `(let (inner_pairs) LAMBDA)`: a closure-value-let returning a lambda, at least
-            // one of whose inits reaches a discharged/foreign perform AND whose returned lambda references
-            // that performing binder (the exact shape the detector fires on).
+            // FORM B (arg'd FACTORY, cc3) — value is `(mk perf-arg…)`: a non-recursive factory whose body
+            // returns a lambda, with ≥1 arg reaching a discharged/foreign perform. The performing arg's draw
+            // re-runs per application. HOIST each performing arg to a fresh `#cap` wrapping the binding, then
+            // INLINE the factory call `apply_lambda(mk, #cap…)` to a PURE closure over the drawn RESULT `#cap`
+            // (the arg is now a VALUE, so copy-propagating it into the body is safe — no perform duplicated):
+            // `(let (…(f (mk P))…) BODY)` → `(let ((#cap P)…) (let (…(f (mk-body[m:=#cap]))…) BODY))`. The
+            // while-loop's `deep_fresh_copy` then gives the result fresh parents so the `#cap` refs resolve.
+            if let Resolved::Apply { head, args } = resolved_of(db, value)
+                && !args.is_empty()
+                && is_perform(db, head, ctx).is_none()
+                && let Some(callee) = crate::eval::lambda_body(db, head)
+                    .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
+                && !crate::eval::is_recursive(db, callee)
+                && body_returns_lambda(db, callee)
+                && args.iter().any(|&a| {
+                    subtree_reaches_discharged_op(db, a, ctx)
+                        || body_reaches_foreign_perform(db, a, ctx)
+                })
+            {
+                let mut cap_pairs: Vec<StructId> = Vec::new();
+                let mut new_args: Vec<StructId> = Vec::new();
+                for &arg in args.iter() {
+                    if subtree_reaches_discharged_op(db, arg, ctx)
+                        || body_reaches_foreign_perform(db, arg, ctx)
+                    {
+                        let cap = format!("#cap{}", arg.0);
+                        let cap_binder = db.push_name(&cap);
+                        let cap_ref = db.push_name(&cap);
+                        cap_pairs.push(db.push_list(vec![cap_binder, arg]));
+                        new_args.push(cap_ref);
+                    } else {
+                        new_args.push(arg);
+                    }
+                }
+                if !cap_pairs.is_empty()
+                    && let Ok(Some(closure)) = crate::eval::apply_lambda(db, head, &new_args)
+                {
+                    let new_pair = db.push_list(vec![binder, closure]);
+                    let mut new_pairs = pairs.clone();
+                    new_pairs[i] = new_pair;
+                    let new_pairs_list = db.push_list(new_pairs);
+                    let let_head_inner = db.push_name("let");
+                    let inner_let = db.push_list(vec![let_head_inner, new_pairs_list, form[1]]);
+                    let cap_pairs_list = db.push_list(cap_pairs);
+                    let let_head_outer = db.push_name("let");
+                    return Some(db.push_list(vec![let_head_outer, cap_pairs_list, inner_let]));
+                }
+            }
+            // FORM A — the value is `(let (inner_pairs) LAMBDA)`: a closure-value-let returning a lambda, at
+            // least one of whose inits reaches a discharged/foreign perform AND whose returned lambda
+            // references that performing binder (the exact shape the detector fires on).
             let Some(inner) = db.ast.as_form(value, "let").map(|t| t.to_vec()) else {
                 continue;
             };
@@ -7671,15 +7706,6 @@ fn hoist_performing_capture_closure(
                 _ => false,
             });
             if !matches {
-                continue;
-            }
-            // NARROW: only hoist when the closure binder is applied directly in the body, NOT captured by a
-            // nested closure. When another closure captures it (cp1: `h` wrapping `g`), re-resolving the
-            // hoisted tree cannot correctly rebind the captured ref (→ a re-draw / a false CDZ0101), so leave
-            // it to the honest decline rather than fold a wrong value; folding it is a later hygiene increment.
-            if let Some(bname) = db.ast.as_name(binder).map(str::to_string)
-                && binder_escapes_into_nested_lambda(db, form[1], &bname)
-            {
                 continue;
             }
             // Rebuild the current let with binding `i`'s value replaced by the returned LAMBDA, then wrap

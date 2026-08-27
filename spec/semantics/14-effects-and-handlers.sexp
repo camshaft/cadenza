@@ -6944,14 +6944,14 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 150 Int64)))
 
-(case "cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold"
-  (doc    "The FACTORY-arg face of the capture-once decline-witness (v-effects fold arc). A helper mk returns
-           a closure over its param, fed by a performing arg — (let ((f (mk (St.next)))) (+ (f 10) (f
-           (St.next)))) under a +1-stride St handler seeded n — currently DECLINES cleanly (same re-run-the-
-           draw-per-application gap as ca1c). Pinned as a decline-witness (verdict todo) with the CORRECT
-           capture-once value: m = first St.next captured ONCE = seed n; (f 10) = 10*n; the second St.next
-           = n+1, (f (n+1)) = (n+1)*n; sum = n*n + 11*n. At n=5 that is 80 (NOT the old silent 116). Flips
-           to 80 PASS when the fold lands. (Oracle derivation to confirm with v-effects on review.)")
+(case "cc3 a factory returning a closure over a performing-arg param folds via the capture-once hoist"
+  (doc    "The FACTORY-arg face of the capture-once fold (v-effects). A helper mk returns a closure over its
+           param, fed by a performing arg — (let ((f (mk (St.next)))) (+ (f 10) (f (St.next)))) under a
+           +1-stride St handler seeded n — FOLDS: the hoist lifts the performing arg to a fresh #cap wrapping
+           the binding, inlines the factory call (mk #cap) to a pure closure over the drawn RESULT, and
+           deep_fresh_copy gives the rewritten tree a coherent parent chain so #cap resolves. m = first
+           St.next captured ONCE = seed n; (f 10) = 10*n; the second St.next in the body = n+1, (f (n+1)) =
+           (n+1)*n; sum = n*n + 11*n. At n=5 that is 80 (NOT the old silent 116).")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (mk (: m Int64)) (fn ((: x Int64)) (* x m)))
@@ -6975,15 +6975,14 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64)))
 
-(case "cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment"
-  (doc    "Decline-witness (v-effects capture-once). The capture-once closure g is not applied directly but
-           CAPTURED by a wrapping closure h: (let ((g (let ((a (St.next))) (fn (x) (* a x))))) (let ((h (fn
-           (y) (+ (g y) 1)))) (h 10))). The hoist is NARROWED to fire only when the closure binder is applied
-           directly (ca1c/ca1m) — when a nested closure captures it, re-resolving the hoisted tree cannot
-           correctly rebind the captured ref, so this DECLINES cleanly (a todo) rather than fold a wrong
-           value (the un-narrowed hoist folded a silent-miscompile 61). Pinned with the CORRECT capture-once
-           oracle: a = St.next captured ONCE = seed n = 5; h(10) = g(10)+1 = 50+1 = 51. Flips to 51 when the
-           nested-capture resolution-hygiene increment lands.")
+(case "cp1 a capture-once closure CAPTURED by a nested closure folds via the deep-copy hoist hygiene"
+  (doc    "The nested-capture face of the capture-once fold (v-effects). The capture-once closure g is not
+           applied directly but CAPTURED by a wrapping closure h: (let ((g (let ((a (St.next))) (fn (x) (* a
+           x))))) (let ((h (fn (y) (+ (g y) 1)))) (h 10))). FOLDS: the hoist lifts g's draw out, and
+           deep_fresh_copy of the rewritten tree gives every node a coherent parent chain so g's reference
+           inside h resolves to the hoisted binder (without the deep copy, the reused subtree shared a
+           load-time atom whose orphaned parent chain dead-ended the scope walk → a false unbound / a re-draw
+           61). a = St.next captured ONCE = seed n = 5; h(10) = g(10)+1 = 50+1 = 51.")
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
