@@ -8952,3 +8952,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	pkc1 fifty let-bound multi-consumed peer results reclaim to zero (the leak keys to escape, not consumption)
+pass	a self-referential-shaped HOF that is not actually recursive folds
