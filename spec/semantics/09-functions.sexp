@@ -7844,6 +7844,45 @@
   (call main (: (list 7 42 9) (List Int64)))
   (output (: 42 Int64)))
 
+; -- breaker batch 448 (2026-08-27): the slice-2a FOLLOWUP rungs — per-width elements and a
+; compound element, each len+element-read over the lifted vec. Slice 2a admits list<Int64> only
+; (one load width); these decline on wasm today ("no component boundary representation") and pass
+; on the rust reference, so each width/compound followup lands against a ready witness and
+; auto-flips its rung. (List UInt8) is included deliberately: the u8 BOUNDARY shape is owned by
+; Bytes, so a (List UInt8) param is a real decline, not covered by b"…".
+
+(case "el5 a List-of-UInt8 entry param measures and reads an element"
+  (input (do
+    (def (main (: xs (List UInt8)))
+      (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 7 9 5) (List UInt8)))
+  (output (: 309 Int64)))
+
+(case "el6 a List-of-Int32 entry param measures and reads an element"
+  (input (do
+    (def (main (: xs (List Int32)))
+      (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (Int64.of v)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 4 8) (List Int32)))
+  (output (: 208 Int64)))
+
+(case "el7 a List-of-Float64 entry param measures and compares an element"
+  (input (do
+    (def (main (: xs (List Float64)))
+      (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some v) (if (> v 2.5) 1 0)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list 1.5 3.5) (List Float64)))
+  (output (: 201 Int64)))
+
+(case "el8 a nested List-of-List entry param measures both levels"
+  (input (do
+    (def (main (: xs (List (List Int64))))
+      (+ (* 100 (List.len xs)) (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list (list 1) (list 2 3)) (List (List Int64))))
+  (output (: 202 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
