@@ -9477,38 +9477,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_type_value_crosses_the_boundary_rendering_as_its_type_of_types() {
-        // 07-type-system §Types Are First-Class Values: a Type is returned from a nullary export and
-        // crosses the boundary as `(: <TypeName> Type)` — the type of a type-value is `Type`. The value is
-        // fully compile-time-known, so `constant_value_form` bakes the reduced type's name. Both a bare type
-        // name and one FLOWED through `let` bindings reduce (via `typeval_of`'s Ref/Let arms). Crosses via
-        // the constant resource-escape (a compound-shaped result), so decode with `run_heap_value_escape`.
-        for (src, want) in [
-            (
-                "(module m (def (main) Int64) (export main))",
-                "(: Int64 Type)",
-            ),
-            (
-                "(module m (def (main) Bool) (export main))",
-                "(: Bool Type)",
-            ),
-            (
-                "(module m (def (main) (let ((t Int64)) t)) (export main))",
-                "(: Int64 Type)",
-            ),
-            (
-                "(module m (def (main) (let ((t String)) (let ((u t)) u))) (export main))",
-                "(: String Type)",
-            ),
-        ] {
-            if let Some(v) = run_heap_value_escape(src) {
-                assert_eq!(v, want, "a type-value export crosses as {want}: {src}");
-            }
-            // (No runtime store in the build → `None`; the corpus gate exercises the run end-to-end.)
-        }
-    }
-
-    #[test]
     fn a_non_bakeable_type_valued_export_reports_one_coded_error_not_a_cascade() {
         // The complement of the bakeable case: a type-value that CANNOT be baked is still rejected. A
         // PARAMETERIZED export — `(def (main (: n Int64)) Int64)` — would have its result depend on a

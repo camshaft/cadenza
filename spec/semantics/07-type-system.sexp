@@ -1086,6 +1086,16 @@
   (input  (let ((t Int64)) t))
   (output (: Int64 Type)))
 
+(case "a type-value flows through nested let bindings and crosses as its own type-of-types"
+  (doc    "The reduction companion of the first-class-Type case above: a type-value flows through TWO
+           nested `let` bindings — `(let ((t String)) (let ((u t)) u))` binds `String` to `t`, rebinds `t`
+           to `u`, and returns `u`. The compile-time type reducer follows the Let/Ref chain to the ground
+           type `String`, so the program crosses the boundary as `(: String Type)` — a DIFFERENT type name
+           than the Int64 case, confirming the baked boundary form is the reduced type's own name (not
+           hard-wired to one type), and that the reduction descends through more than one binding.")
+  (input  (let ((t String)) (let ((u t)) u)))
+  (output (: String Type)))
+
 (case "a consistent annotation type-checks against the inferred type"
   (doc    "Witnesses type-system.md #Annotations Constrain, Never Contradict and #A Well-Typed Program
            Does Not Go Wrong: `(: (+ 1 2) Int64)` type-checks because inference determines the

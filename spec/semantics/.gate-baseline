@@ -4576,6 +4576,7 @@ pass	a type declaration may carry a leading doc, ignored for the variants
 pass	a type stored in a compound result cannot cross the boundary
 pass	a type variable nested in a generic parameter annotation is an unbound name
 pass	a type-name-colliding variant construct coexists with the width type it collides with
+pass	a type-value flows through nested let bindings and crosses as its own type-of-types
 pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand

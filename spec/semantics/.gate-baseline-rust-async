@@ -8184,6 +8184,7 @@ todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value 
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
+todo	a type-value flows through nested let bindings and crosses as its own type-of-types
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	aeq1 bare equality over two runtime Ast.encode results
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
