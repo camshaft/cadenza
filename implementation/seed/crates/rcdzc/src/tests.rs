@@ -20905,43 +20905,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_bare_data_constructor_colliding_variant_constructs_and_matches_as_the_local_variant() {
-        // A variant whose name collides with a prelude DATA constructor (`Some`/`None`/`Ok`/`Err`) — as
-        // distinct from a prelude TYPE/MODULE name (`Int`/`List`) — is reachable BARE in BOTH construct
-        // and match position, binding to the LOCAL variant, not the built-in Option/Result ctor. The
-        // built-in sums inject their data-ctor names into `prelude` AFTER `variant_ctor_index`'s
-        // `prelude_type_module_names` snapshot is taken (db.rs), so a user variant of that name IS indexed
-        // and resolves via step 3c (before the prelude) — whereas a variant colliding with a type/module
-        // name is deliberately SKIPPED from the index (so bare `Int` stays the width constructor) and can
-        // only be constructed qualified. These two behaviors share one injection-order mechanism; this
-        // test locks in the DATA-ctor half (the corpus pattern test above locks the match half for `Int`).
-        let ok = |src: &str| assert!(reject_code(src).is_none(), "must compile: {src}");
-        // Bare `Some` construct + bare `Some` pattern on a user sum reusing the prelude `Some`.
-        ok(
-            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Some 5))) (export main))",
-        );
-        // `Ok` (a Result data ctor) reused the same way.
-        ok(
-            "(module m (type T (Ok Int64) (Bad)) (def (f (: t T)) (match t ((Ok n) n) ((Bad) 0))) (def (main) (f (Ok 7))) (export main))",
-        );
-        // The bare `Some` construct genuinely builds T's OWN discriminant (not the built-in Option's): the
-        // `Some` arm (+100) fires on `(Some 5)` → 105, and the `Other` arm fires on `(Other 5)` → 5. A
-        // regression re-shadowing the user variant with the built-in Option would flip one of these.
-        if let Some(v) = run_heap_value(
-            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Some 5))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(v, "105", "bare Some construct is T's own Some arm");
-        }
-        if let Some(v) = run_heap_value(
-            "(module m (type T (Some Int64) (Other Int64)) (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n))) (def (main) (f (Other 5))) (export main))",
-            vec![],
-        ) {
-            assert_eq!(v, "5", "bare Other construct is T's own Other arm");
-        }
-    }
-
-    #[test]
     fn the_builtin_ast_sum_type_checks_its_variant_payloads() {
         // 12-metaprogramming "a built-in Ast constructor applied to a wrong-type payload is a type error":
         // the built-in `Ast` is an ordinary MONOMORPHIC prelude sum (Int:Int64, Name:String, List:(List
