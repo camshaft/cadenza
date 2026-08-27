@@ -342,7 +342,7 @@ partial def observeDeep (v : Value) : Outcome :=
   | .poison d => deferredToOutcome d
   | .some x | .ok x | .err x | .variant _ x =>
     match observeDeep x with | .value _ => .value v | other => other
-  | .tuple es | .list es =>
+  | .tuple es | .list es | .set es =>
     match es.findSome? (fun e => match observeDeep e with | .value _ => Option.none | o => Option.some o) with
     | Option.some o => o | Option.none => .value v
   | .record fs =>
@@ -426,6 +426,33 @@ def ctorAppName? (m : Module) (children : Array Nat) : Option ByteArray :=
     | none => none
   | none => none
 
+/-- A qualified application/value head `(. Q M)` → its (qualifier, member) names. Used to recognize a
+prelude MODULE function like `(. Set of)` (a collection builder), distinct from record projection and
+from a sum-ctor `(. T C)` (the ctor is dispatched separately by `variantCtorArity?`). -/
+def qualHead? (m : Module) (children : Array Nat) : Option (ByteArray × ByteArray) :=
+  match children[0]? with
+  | some hid =>
+    match m.nodes[hid]? with
+    | some (Node.list hc) =>
+      match m.headName? (Node.list hc) with
+      | some dh => if dh == ".".toUTF8 then
+                     match (hc[1]?).bind (nameOf? m), (hc[2]?).bind (nameOf? m) with
+                     | some q, some mem => some (q, mem)
+                     | _, _ => none
+                   else none
+      | none => none
+    | _ => none
+  | none => none
+
+/-- Canonicalize a Set's elements: require every element be an orderable scalar (`compareVals` total on
+it), SORT by that order, then DEDUPE adjacent equals — the canonical Set form (spec: a Set renders as
+`(Set.of (list …sorted-unique))`). `none` if any element is unorderable (a compound/poison) → skip. -/
+def canonSet (elems : Array Value) : Option (Array Value) :=
+  if elems.all (fun e => (compareVals e e).isSome) then
+    let sorted := elems.qsort (fun a b => compareVals a b == some Ordering.lt)
+    some (sorted.foldl (fun acc e => if acc.size > 0 && acc[acc.size - 1]! == e then acc else acc.push e) #[])
+  else none
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -453,11 +480,12 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       -- constructor (not shadowed by a local binding). A NEWTYPE ctor ERASES (construction = its
       -- payload); a multi-variant / nullary ctor builds a tagged `variant`.
       let ctorConstruct : Option Outcome :=
-        match (ctorAppName? m children).bind (fun c => if (env.lookup? c).isSome then none else some c) with
-        | some cname =>
-          if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env defaultIntTy fuel pId)
-          else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
-        | none => none
+        (match (ctorAppName? m children).bind (fun c => if (env.lookup? c).isSome then none else some c) with
+         | some cname =>
+           if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env defaultIntTy fuel pId)
+           else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
+         | none => none)
+        <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
       match ctorConstruct with
       | some o => o
       | none =>
@@ -611,6 +639,19 @@ partial def evalUnaryCtor (m : Module) (env : Env) (fuel : Nat) (children : Arra
   match children[1]? with
   | some eId => .value (wrap (outcomeToValue (evalNode m env defaultIntTy fuel eId)))
   | none => .unsupported "eval: malformed unary constructor"
+
+/-- `(Set.of (list e…))` = `((. Set of) (list e…))` — evaluate the list argument, then canonicalize its
+elements (sort + dedupe) into a Set value. A non-list arg or an unorderable element → skip. -/
+partial def evalSetOf (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) : Outcome :=
+  match children[1]? with
+  | some listId =>
+    match evalNode m env defaultIntTy fuel listId with
+    | .value (.list elems) => match canonSet elems with
+                              | some s => .value (.set s)
+                              | none => .unsupported "eval: Set with an unorderable/unobserved element"
+    | .value _ => .unsupported "eval: Set.of argument is not a list"
+    | other => other
+  | none => .unsupported "eval: malformed Set.of"
 
 /-- A generic sum constructor application `(C …)` / `((. T C) …)`: nullary → `variant C unit`; single-field
 → `variant C payload` (payload deferred as a `poison` if non-value, like a tuple/record field — spec Q2). -/

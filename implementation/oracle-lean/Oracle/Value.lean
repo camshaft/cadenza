@@ -54,6 +54,7 @@ inductive Value where
   | tuple (elems : Array Value)
   | list (elems : Array Value)
   | record (fields : Array (ByteArray × Value))  -- fields sorted by key (canonical, order-insensitive)
+  | set (elems : Array Value)                    -- a Set value; elems kept SORTED + DEDUPED (canonical)
   | variant (tag : ByteArray) (payload : Value)  -- a prelude/user sum value `(Ctor payload)` (nullary payload = unit)
   | poison (d : Deferred)         -- a deferred non-value element outcome, surfaced only when observed
   deriving Inhabited, BEq
