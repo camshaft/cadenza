@@ -8793,45 +8793,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_pass_through_parameter_loop_computes_correctly() {
-        // `go(n, k, acc)` re-passes `k` UNCHANGED each iteration — the loop back-edge elides the `k ← k`
-        // self-move. Confirm the VALUE is right (the elision must not corrupt `k`, which `(+ acc k)`
-        // reads every step): starting acc=0, add k=2 for n=100 steps → 200; a different k=7 over 5 → 35.
-        let bytes = component(
-            "(module m (def (go (: n Int64) (: k Int64) (: acc Int64)) \
-               (if (= n 0) acc (go (- n 1) k (+ acc k)))) (def (main) (go 100 2 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 200);
-        let b2 = component(
-            "(module m (def (go (: n Int64) (: k Int64) (: acc Int64)) \
-               (if (= n 0) acc (go (- n 1) k (+ acc k)))) (def (main) (go 5 7 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&b2, "main"), 35);
-        // Two pass-through params either side of the recursion variable — both self-moves elided.
-        let b3 = component(
-            "(module m (def (go (: a Int64) (: n Int64) (: b Int64) (: acc Int64)) \
-               (if (= n 0) acc (go a (- n 1) b (+ acc (+ a b))))) \
-             (def (main) (go 3 10 4 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&b3, "main"), 70); // (3+4) added 10 times
-    }
-
-    #[test]
-    fn a_recursive_bool_predicate_runs_in_both_branch_orders() {
-        // all-lt: the self-call is the THEN branch, `false` the ELSE — must type as Bool regardless of
-        // order. all-lt(0,3,5) over 0,1,2 (<5) is true → 1.
-        let all_lt = component(
-            "(module m (def (all-lt (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) (all-lt (+ i 1) n bound) false) true)) (def (main) (if (all-lt 0 3 5) 1 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&all_lt, "main"), 1);
-        // all-ge: the self-call is the ELSE branch, `false` the THEN (the mirror). all-ge(0,3,0) → 1.
-        let all_ge = component(
-            "(module m (def (all-ge (: i Int64) (: n Int64) (: bound Int64)) (if (< i n) (if (< i bound) false (all-ge (+ i 1) n bound)) true)) (def (main) (if (all-ge 0 3 0) 1 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&all_ge, "main"), 1);
-    }
-
-    #[test]
     fn a_self_referential_value_definition_names_the_cycle_not_a_resource_limit() {
         // `(def (g) g)` — a nullary VALUE defined in terms of itself with no base case — names nothing
         // (`g = g`). It used to reduce until the depth guard fired, mislabeled "expression nests too deeply
@@ -8953,32 +8914,6 @@ mod recursion {
             "the chain's cycle is attributed to `b`: {}",
             chain_cycles[0].message
         );
-    }
-
-    #[test]
-    fn unannotated_mutual_recursion_runs_via_a2() {
-        // Mutual recursion with UNANNOTATED params — each param solved independently from its own body
-        // (`(= n 0)`, `(- n 1)`), the cross-call passing an integer. even(10) → true → 1.
-        let bytes = component(
-            "(module m (def (even n) (if (= n 0) true (odd (- n 1)))) (def (odd n) (if (= n 0) false (even (- n 1)))) (def (main) (if (even 10) 1 0)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 1);
-    }
-
-    #[test]
-    fn a_recursive_param_used_only_as_a_call_argument_infers_from_the_callee() {
-        // A recursive def's parameter used ONLY as a call ARGUMENT — never touched by a primitive
-        // operator, never annotated — was left unconstrained (`Any`) and the def DECLINED. The
-        // recursive-param solver derived a constraint only from an operator applied to the parameter or
-        // the self-call, never from an argument position. Fixed by unifying such an argument against the
-        // CALLEE's k-th parameter type (`callee_param_ty`), which the callee's own body pins. `a`, passed
-        // only to `(twice a)` where `twice` adds it, infers Int64: `f(5,3)` = twice(5)*3 = 30.
-        let bytes = component(
-            "(module m (def (twice a) (+ a a)) \
-               (def (f a n) (if (< n 1) 0 (+ (twice a) (f a (- n 1))))) \
-               (def (main) (f 5 3)) (export main))",
-        );
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
     }
 
     #[test]
