@@ -5660,6 +5660,57 @@ fn s_code(status: &std::process::ExitStatus) -> i32 {
 /// rather than flooding the console; the console shows one ✓ per passing step. The first failing step
 /// prints the whole captured log
 /// (so an agent reads it in place instead of re-running with `| tail`) and its path, then exits.
+/// Run `bash -n <file>` (parse-only, never executes) on each script; return `"<file>: <first stderr
+/// line>"` for each that FAILS to parse. Fail-SOFT: if `bash` itself can't be launched (absent), returns
+/// empty so the caller SKIPS — we never report a parse failure we couldn't actually test. Pure aside from
+/// shelling out; unit-tested with a temp good/bad pair.
+fn sh_syntax_errors(scripts: &[PathBuf]) -> Vec<String> {
+    let mut bad = Vec::new();
+    for s in scripts {
+        let out = match std::process::Command::new("bash").arg("-n").arg(s).output() {
+            Ok(o) => o,
+            Err(_) => return Vec::new(), // bash absent → fail-soft skip of the whole lint
+        };
+        if !out.status.success() {
+            bad.push(format!("{}: {}", s.display(), first_line(&out.stderr)));
+        }
+    }
+    bad
+}
+
+/// Syntax-check the tracked fleet shell scripts (`fleet/*.sh`) with `bash -n` — a cheap gate guarding the
+/// ONLY shell the fleet ships: `window.sh` (the launcher EVERY agent window runs) plus the disk-hygiene
+/// scripts (`prune-stale-targets.sh`, `prune-tmp-inodes.sh`) the concierge cron calls. A syntax error in
+/// any would break agent launch / disk hygiene FLEET-WIDE, and nothing else gates them (they are shell,
+/// not part of the Rust build). Fail-soft when `bash` is absent (mirrors `duvet-check`). Cheap — a parse
+/// of a few tiny files, no build.
+fn fleet_scripts_syntax_lint(paths: &Paths) -> Result<(), String> {
+    let dir = paths.repo.join("fleet");
+    let mut scripts: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sh"))
+            .collect(),
+        Err(_) => return Ok(()), // no fleet/ dir here → nothing to check
+    };
+    scripts.sort();
+    if scripts.is_empty() {
+        return Ok(());
+    }
+    let bad = sh_syntax_errors(&scripts);
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} fleet shell script(s) fail `bash -n` (a syntax error would break agent launch / disk \
+             hygiene fleet-wide):\n    {}",
+            bad.len(),
+            bad.join("\n    ")
+        ))
+    }
+}
+
 fn check(paths: &Paths, profile: &str) {
     // Acquire a fleet-wide check-lease FIRST (operator-mandated concurrency cap). This blocks until a
     // slot is free under the cap, and a vertical check yields to pr-sync's PRIORITY lease so the main
@@ -5974,6 +6025,11 @@ fn check(paths: &Paths, profile: &str) {
     log.step_native("baseline-no-dup-titles", || {
         baseline_no_dup_titles_lint(paths)
     });
+    // Fleet shell-script syntax gate (v-fleet-tooling territory): `bash -n` the tracked `fleet/*.sh` —
+    // `window.sh` (the launcher EVERY agent runs) + the disk-hygiene scripts. A syntax error there breaks
+    // agent launch / disk hygiene fleet-wide and nothing else gates them (they aren't in the Rust build).
+    // Cheap (parse a few tiny files) + fail-soft when `bash` is absent.
+    log.step_native("fleet-scripts-syntax", || fleet_scripts_syntax_lint(paths));
     // Emoji-ban (operator directive 2026-08-07): FAIL the check on any emoji/pictographic/dingbat char in
     // an `implementation/**/*.rs` source COMMENT. Cheap (a text walk, no rebuild) + comment-scoped so it
     // never touches functional emoji in string/char literals (Unicode test strings, output markers) or the
@@ -9048,6 +9104,35 @@ mod trap_grading_tests {
             out, "# gate baseline\n",
             "only the header would survive — the whole-baseline wipe the driver's empty-corpus guard prevents"
         );
+    }
+
+    #[test]
+    fn sh_syntax_errors_flags_only_the_unparseable_script() {
+        // The fleet-scripts-syntax gate: `bash -n` catches a syntax break in window.sh / the hygiene
+        // scripts before it ships. Skip if bash isn't on this host (the lint is fail-soft there anyway).
+        if std::process::Command::new("bash")
+            .arg("-n")
+            .arg("/dev/null")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cdz-shlint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.sh");
+        let bad = dir.join("bad.sh");
+        std::fs::write(&good, "#!/usr/bin/env bash\nif true; then echo ok; fi\n").unwrap();
+        // Missing `fi` — a parse error `bash -n` must catch.
+        std::fs::write(&bad, "#!/usr/bin/env bash\nif true; then echo oops\n").unwrap();
+        let flagged = sh_syntax_errors(&[good.clone(), bad.clone()]);
+        assert_eq!(flagged.len(), 1, "only the unparseable script is flagged");
+        assert!(
+            flagged[0].contains("bad.sh"),
+            "the flagged entry names the offending script"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
