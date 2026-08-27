@@ -6959,3 +6959,54 @@
   (input  (do (def (f (: p Bool) (: a Int64) (: b Int64)) (if p a b)) (export f)))
   (call   f (: true Bool) (: 11 Int64) (: 22 Int64)) (output (: 11 Int64))
   (call   f (: false Bool) (: 11 Int64) (: 22 Int64)) (output (: 22 Int64)))
+
+; ── Match-arm fusion is reclaim-neutral + UAF-free (migrated from rcdzc): a fused arm reading a heap binder twice matches the non-fused shape's reclaim; the anchor pins the residual is the Some-shell gap ──
+(case "a fused match arm reading a heap binder twice is UAF-free and reclaim-neutral vs the non-fused shape"
+  (doc    "Inlining `inner` into the Some-arm triggers the fusion arm-clone that classifies `w` (the heap
+           List Ok-payload, read within the clone, twice). Reading `w` twice must be UAF-free — a wrong SHARE
+           of the binder in the cloned arm would double-drop it, so the second read sees a freed handle
+           (garbage/trap). len([0,1,2]) twice = 6. The fused clone must be RECLAIM-NEUTRAL vs the non-fused
+           Some-shell shape (same known-leak 3, the pre-existing compound-Some-shell residual): an over-copy
+           would push it above 3, a wrong share would double-free (UAF/wrong value). Paired with the
+           non-fused control below (same 3) this pins the neutrality.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+            (def (inner (: r (Result (List Int64) Int64)))
+              (match r ((Ok w) (+ ((. List len) w) ((. List len) w))) ((Err e) e)))
+            (def (f (: c Bool) (: n Int64))
+              (match (if c (Some (build 0 n (list))) (None))
+                ((Some v) (inner (if c (Ok v) (Err 0))))
+                ((None) 0)))
+            (def (main (: n Int64)) (f true n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects known-leak 3))
+
+(case "the non-fused Some-shell control reads a heap binder twice with the same reclaim (no fusion)"
+  (doc    "The non-fused control for the fusion neutrality pin above: the SAME Some-wrapped heap list with
+           `v` used twice DIRECTLY in the arm (no inner match to fuse), isolating the fused arm-clone as the
+           only difference. Same value 6, same known-leak 3 (the compound-Some-shell residual) — so the fused
+           case's equal 3 proves fusing changed neither value nor reclaim.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+            (def (f (: c Bool) (: n Int64))
+              (match (if c (Some (build 0 n (list))) (None))
+                ((Some v) (+ ((. List len) v) ((. List len) v)))
+                ((None) 0)))
+            (def (main (: n Int64)) (f true n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects known-leak 3))
+
+(case "a twice-used heap binder without a Some shell reclaims fully (the fusion-neutrality anchor)"
+  (doc    "The anchor proving the fused/non-fused residual (3) is the pre-existing compound-Some-shell
+           known-gap, NOT the twice-used heap binder's own dup/drop: the SAME heap list let-bound WITHOUT the
+           Some shell, used twice, then dropped, reclaims FULLY — live-objects 0. Value 6. If this leaked, the
+           residual would be mis-attributed to the binder rather than the shell.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+            (def (f (: n Int64)) (let ((v (build 0 n (list)))) (+ ((. List len) v) ((. List len) v))))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 6 Int64)) (live-objects 0))
