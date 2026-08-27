@@ -19798,67 +19798,6 @@ mod match_engine {
     }
 
     #[test]
-    fn list_len_over_an_owned_temporary_list_push_reclaims_it_without_touching_the_accumulator() {
-        // The THIRD list-producer face: `List.push` (`vec-push`) CONSUMES its input list + element and
-        // returns a NEW owned list (persistence), exactly like `List.concat`/`List.update` — so a borrowing
-        // op over an owned-temporary push RESULT (`List.len (List.push (build …) x)`) must reclaim it or it
-        // leaks one vector per call. It was NOT in the Owned classifier, so it leaked (0 drops). Fix
-        // classifies `Core::ListPush` Owned. WARNING: THE DELICATE PART: `List.push` is the FBIP ACCUMULATOR path —
-        // classifying it Owned must NOT perturb `(build i n (List.push acc i))`, where the push is the
-        // RECURSION TAIL (never a borrowing-op operand, so its ownership is never consulted → the
-        // single-consume fast path + alloc bench are untouched), and must NOT double-free a BORROWED/shared
-        // `acc` (rc>1 is `dup`'d before the push by the Perceus retain, so `vec-push` yields a genuinely
-        // fresh result whose drop can't free the live `acc`).
-        let push_owned = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) ((. List len) ((. List push) (build 0 3 (list)) 99))) (export main))";
-        assert!(
-            component_imports_op(&component(push_owned), "drop"),
-            "List.len over an owned-temporary List.push result must import `drop` (reclaim — leak fix)"
-        );
-        if let Some(out) = run_on_heap(push_owned) {
-            assert_eq!(
-                out, "4",
-                "List.push len unchanged by the reclaim (3 + 1 pushed)"
-            );
-        }
-        // ACCUMULATOR path: `build` returns the push as its recursion TAIL — value must stay correct and the
-        // FBIP single-consume fast path must not be perturbed (a spurious drop here would double-free / drift).
-        let accum = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) ((. List len) (build 0 500 (list)))) (export main))";
-        if let Some(out) = run_on_heap(accum) {
-            assert_eq!(
-                out, "500",
-                "the FBIP accumulator (push as recursion tail) is unaffected by the owned-operand reclaim"
-            );
-        }
-        // A BORROWED let-bound push result read TWICE must not be freed by the first read (else double-free).
-        let push_borrowed = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (main) (let ((xs ((. List push) (build 0 3 (list)) 99))) \
-                             (+ ((. List len) xs) ((. List len) xs)))) (export main))";
-        if let Some(out) = run_on_heap(push_borrowed) {
-            assert_eq!(
-                out, "8",
-                "a borrowed push result read twice must not be freed early (4 + 4, no double-free)"
-            );
-        }
-        // Leak stress: 20000× a fresh owned push read+discarded. A leaked vector per call would OOM/drift.
-        let push_stress = "(module m \
-               (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (drive j m tot) (if (< j m) \
-                   (drive (+ j 1) m (+ tot ((. List len) ((. List push) (build 0 3 (list)) 99)))) tot)) \
-               (def (main) (drive 0 20000 0)) (export main))";
-        if let Some(out) = run_on_heap(push_stress) {
-            assert_eq!(
-                out, "80000",
-                "20000 owned-temporary List.push must each reclaim the fresh list (no leak drift)"
-            );
-        }
-    }
-
-    #[test]
     fn list_len_over_an_if_reclaims_when_both_arms_own_but_not_when_an_arm_borrows() {
         // The CONTROL-FLOW JOIN face of the owned-operand reclaim (`join_arm_ownership` in
         // `heap_operand_ownership`): when a borrowing op's operand is an `if`, its ownership is the JOIN of

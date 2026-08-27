@@ -2,6 +2,7 @@
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
+pass	20000 owned-temporary List.push results each reclaim the fresh list (leak-drift stress)
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
 pass	@ensures holds when the guarded def arrives through a runtime branch
 pass	@ensures on a MODULE export is enforced when the def is called across the module-access boundary
@@ -1424,6 +1425,7 @@ pass	a boolean-parameter function applied to false
 pass	a boolean-returning function called with a false result
 pass	a borrow-only compound-payload match shell is left un-dropped -- known gap (all-scalar reclaim floor)
 pass	a borrowed BigInt let-binding used by three ops leaves no live heap objects
+pass	a borrowed List.push result read twice is not freed by the first len (no double-free)
 pass	a borrowed heap-payload sum param in a self-recursive fn is reclaimed at the loop exit (no leak)
 pass	a borrowed runtime String rope compares equal to its flat twin and its compaction is leak-neutral
 pass	a both-diverge MATCH nested in a value position yields the outer value or traps
@@ -7904,6 +7906,7 @@ pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak
 pass	the DES Duration constructors ms / us / ns each scale to the right nanosecond magnitude
 pass	the EMPTY string keys a map — hit by an empty-concat rope, distinct from a 1-char sibling
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
+pass	the FBIP accumulator (List.push as recursion tail) is unaffected by the owned-operand reclaim
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
