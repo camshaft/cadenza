@@ -22030,3 +22030,41 @@
              (def (main) (f 1 (build 0 2 (list)))) (export main)))
   (call main) (output (: 5 Int64))
   (live-objects known-leak 2))
+
+; -- List.len reclaims an owned temporary but leaves a borrowed list to its owner (migrated from rcdzc
+; list_len_over_an_owned_temporary_reclaims_it_but_a_borrowed_list_is_left_to_its_owner): vec-len BORROWS
+; the list + returns a scalar, so an OWNED-TEMPORARY operand must be dropped after the borrow (reclaim, else
+; a leak) — pinned by (live-objects 0); a BORROWED list (bound + read again) must NOT be freed early (the
+; owner reclaims), pinned by the correct value (an early free would double-free/UAF).
+(case "llo1 List.len over an owned temporary list reclaims it (no leak)"
+  (doc    "`(List.len (build 0 3 (list)))` = 3 over a freshly-built owned temporary; vec-len borrows and
+           returns 3, and the temporary is dropped after the borrow (live-objects 0 = reclaimed).")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) ((. List len) (build 0 3 (list)))) (export main)))
+  (call main) (output (: 3 Int64)) (live-objects 0))
+
+(case "llo2 a borrowed list read by List.len is not freed early (owner reclaims)"
+  (doc    "`(let ((xs (build 0 3 (list)))) (+ (List.len xs) (List.len (List.push xs 9))))` — xs is bound and
+           read twice, so List.len must NOT free it (that would double-free before the later use); value
+           len(xs)=3 + len(push xs 9)=4 = 7.")
+  (input (do (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+             (def (main) (let ((xs (build 0 3 (list)))) (+ ((. List len) xs) ((. List len) ((. List push) xs 9))))) (export main)))
+  (call main) (output (: 7 Int64)))
+
+; -- List.at reclaims an owned temporary but keeps a borrowed one (migrated from rcdzc
+; list_at_over_an_owned_temporary_reclaims_it_but_keeps_a_borrowed_one): List.at BORROWS the list (vec-len/
+; vec-get) and dups the read element into the Some, so an OWNED-TEMPORARY must be dropped after the borrows
+; (live-objects 0); a BORROWED list read alongside a later use must NOT be freed early.
+(case "lao1 List.at over an owned temporary list reclaims it (no leak)"
+  (doc    "`(Option.expect (List.at (build 0 3 (list)) 1) \"v\")` = 1 over an owned temporary; the read
+           element is dup'd into Some and the temporary is dropped after the borrow (live-objects 0).")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) ((. Option expect) ((. List at) (build 0 3 (list)) 1) "v")) (export main)))
+  (call main) (output (: 1 Int64)) (live-objects 0))
+
+(case "lao2 a borrowed list read by List.at is not freed early (owner reclaims)"
+  (doc    "`(let ((xs (build 0 3 (list)))) (+ (Option.expect (List.at xs 1) \"v\") (List.len xs)))` — xs is
+           read by List.at AND List.len, so the at must not free it; value at(1)=1 + len=3 = 4.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (main) (let ((xs (build 0 3 (list)))) (+ ((. Option expect) ((. List at) xs 1) "v") ((. List len) xs)))) (export main)))
+  (call main) (output (: 4 Int64)))
