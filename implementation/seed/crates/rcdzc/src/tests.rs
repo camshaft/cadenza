@@ -5929,31 +5929,6 @@ fn an_int_seeded_handler_resuming_with_a_string_next_state_still_rejects_cdz0201
     );
 }
 
-/// ADVERSARIAL companion (task #15, breaker witness): a caller-observed MUTUALLY-recursive effectful callee
-/// must DECLINE CLEANLY, never leak the internal `$s0`/`$t0` state-param names. `ea`/`eb` form an SCC (each
-/// performs `Counter.bump`), and `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's out-state via the
-/// trailing perform. The multi-value tuple machinery threads a SELF-call's out-state but not a mutual-SCC
-/// SIBLING's, so forcing multi-value here would leak `$s0`; the `callee_calls_other_recursive_def` guard
-/// declines instead. Pins that the decline is a clean "not yet reducible" todo (compiles with `expect_err`)
-/// carrying NO leaked internal name — never a wrong value, never a confusing CDZ0101.
-#[test]
-fn a_caller_observed_mutually_recursive_fold_declines_cleanly_no_leak() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect Counter (op bump (-> Int64))) \
-        (def (ea (: n Int64)) (if (= n 0) 0 (+ (eb (- n 1)) (Counter.bump)))) \
-        (def (eb (: n Int64)) (if (= n 0) 0 (+ (ea (- n 1)) (Counter.bump)))) \
-        (def (main) (handle Counter 0 ((bump () s (resume s (+ s 1)))) \
-          (+ (* 1000 (ea 3)) (Counter.bump)))) \
-        (export main))";
-    let err = compile_component(&crate::codec::encode(&parse(src)))
-        .expect_err("a caller-observed mutual-SCC fold is not yet reducible — declines");
-    assert!(
-        !err.message.contains("$s") && !err.message.contains("$t") && !err.message.contains("#eff"),
-        "the decline must not leak an internal specialization name: {}",
-        err.message
-    );
-}
 
 /// A recursive performer whose recursion RESULT feeds a separate HELPER call now COMPILES (was a
 /// "parameter reference has no local slot" decline at emit). `walk` recurses, then a match arm feeds the

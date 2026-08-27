@@ -9445,14 +9445,28 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // register the entire group up front. Whichever member is specialized first becomes the registrar.
     let group_entry = !group_member && ctx.abortive.is_empty() && {
         let scc = mutual_scc_of(db, callee_def, ctx);
+        // A CALLER-observed SCC (the handle body's trailing draw reads the SCC's final out-state — mutrec) is
+        // group-foldable ONLY when it is PURE-mutual — no member SELF-recurses. A member that ALSO self-calls
+        // (frb3: `outer2` self-recurses AND mutual-calls `inner2`) has its `caller_observes_outstate` set by
+        // the recursion-BOUNDARY marking (finding #19, keyed on a self-call's arg reaching a partner), NOT a
+        // handle-body observer; the group fold does not compose that self-recursion out-state with the mutual
+        // threading and silently mis-values (frb3 → 2 not 3). So gate the caller-observed branch on
+        // no-self-call; a within-body partner-precedes-observation SCC is unaffected (its own branch).
+        let caller_observed_pure_mutual = caller_observes_outstate
+            && scc.iter().all(|&m| {
+                db.defs[m]
+                    .body
+                    .is_some_and(|mb| !contains_self_call(db, mb, m))
+            });
         // A genuine mutual SCC (more than just this def) with at least one out-state-observing member, all of
         // whose leaves the group multi-value machinery can bind.
         scc.len() > 1
-            && scc.iter().any(|&m| {
-                db.defs[m]
-                    .body
-                    .is_some_and(|mb| mutual_partner_precedes_observation(db, mb, m, ctx))
-            })
+            && (caller_observed_pure_mutual
+                || scc.iter().any(|&m| {
+                    db.defs[m]
+                        .body
+                        .is_some_and(|mb| mutual_partner_precedes_observation(db, mb, m, ctx))
+                }))
             && scc.iter().all(|&m| {
                 db.defs[m]
                     .body
@@ -9523,7 +9537,9 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     // case (`outer`'s SCC is just `{outer}`) from the still-declining MUTUAL case. (This replaced an
     // unconditional pre-group-detection decline; a caller-observed + transitive shape never reached the
     // group fold under that guard, so declining one here — group-registered or not — matches prior behavior.)
-    if caller_observes_outstate
+    if !group_entry
+        && !group_member
+        && caller_observes_outstate
         && callee_transitively_calls_other_recursive_def(db, orig_body, callee_def, &mut Vec::new())
         && !(multivalue && mutual_scc_of(db, callee_def, ctx).len() <= 1)
     {
