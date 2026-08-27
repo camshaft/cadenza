@@ -19,8 +19,20 @@ namespace Oracle
 
 open Oracle.Ast
 
-/-- The scalar value domain (L0.3). Width is a type-level concern handled by the evaluator; a value
-carries only its magnitude/sign. Compound values arrive in later increments. -/
+/-- A DEFERRED non-value outcome, carried by a `poison` value. A compound ELEMENT that does not
+evaluate to a value (a trap / divergence / unmodeled construct) is stored as a `poison` rather than
+propagated eagerly — so an element that is never OBSERVED (never projected, never flowed to the result)
+never surfaces its outcome (spec core-semantics.md #A Trap Occurs When Observed). Forcing a poison at an
+observation point surfaces the deferred outcome. Mirror of the evaluator's `Outcome` minus `value` (kept
+here to keep `Value` self-contained — `Value` is the lower layer `Eval` imports). -/
+inductive Deferred where
+  | trap (kind : String)
+  | diverges
+  | unsupported (reason : String)
+  deriving Inhabited, BEq
+
+/-- The value domain. Scalars (L0.3) plus compound values (Option/Result/tuple/list/record). A compound
+element may be a `poison` (a deferred trap/divergence/unsupported that has not yet been observed). -/
 inductive Value where
   | int (n : Int)
   | bool (b : Bool)
@@ -34,6 +46,8 @@ inductive Value where
   | err (v : Value)
   | tuple (elems : Array Value)
   | list (elems : Array Value)
+  | record (fields : Array (ByteArray × Value))  -- fields sorted by key (canonical, order-insensitive)
+  | poison (d : Deferred)         -- a deferred non-value element outcome, surfaced only when observed
   deriving Inhabited, BEq
 
 namespace Value
