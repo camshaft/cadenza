@@ -8632,3 +8632,31 @@
     (match (List.at xs 1) ((Option.Some v) (list v v)) ((Option.None) (list -1)))) (export main)))
   (call main (: (list 4 5 6) (List Int64)))
   (output (: (list 5 5) (List Int64))))
+
+; -- breaker batch 474 (2026-08-27): SHARING through the return boundary, discriminated by the
+; census (extends the crr/nrr calibration corpus; drift-guards the sharing-aware emit). shr1 and
+; shr3 RENDER identically but differ in reachable cells: a let-bound inner list referenced twice
+; stays ONE object (4 = outer 2 + inner 2 once), while two separately-built identical lists are
+; distinct (6). A future emit change that breaks sharing flips shr1/shr2 upward — a correlated
+; census delta with no value change, exactly what these pins exist to catch.
+
+(case "shr1 a let-bound inner list referenced twice in a returned list stays one shared object (four cells)"
+  (input (do (def (main (: n Int64))
+    (let ((ys (list n (+ n 1)))) (list ys ys))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (list (list 5 6) (list 5 6)) (List (List Int64))))
+  (live-objects 4))
+
+(case "shr2 a let-bound inner list referenced twice in a returned tuple stays one shared object (three cells)"
+  (input (do (def (main (: n Int64))
+    (let ((ys (list n (+ n 1)))) (tuple ys ys))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (tuple (list 5 6) (list 5 6)) (Tuple (List Int64) (List Int64))))
+  (live-objects 3))
+
+(case "shr3 two separately-built identical inner lists are distinct objects (six cells, the unshared control)"
+  (input (do (def (main (: n Int64))
+    (list (list n (+ n 1)) (list n (+ n 1)))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (list (list 5 6) (list 5 6)) (List (List Int64))))
+  (live-objects 6))
