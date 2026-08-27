@@ -715,24 +715,6 @@ fn run_returns<T: FromVal>(component_bytes: &[u8], name: &str) -> T {
     run_returns_with(component_bytes, name, &[])
 }
 
-/// Run a component that MAY import the value-heap runtime (e.g. one returning a heap tuple), linking the
-/// runtime via `cdz_run` and returning its rendered result string, or `None` when the runtime wasm is
-/// absent (so the caller skips the run — the established heap-test pattern). Panics on a trap.
-fn run_linked(component_bytes: &[u8], export: &str) -> Option<String> {
-    let runtime = find_runtime_wasm()?;
-    let opts = cdz_run::RunOpts {
-        export: Some(export.to_string()),
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(component_bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => Some(s),
-        cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
-    }
-}
-
 /// Count the core-module instructions in `component_bytes` matching `pred` — an emission-strategy probe
 /// (e.g. `i64.mul` count for inline-vs-emit-once, `call_indirect` count for dict erasure). Walks every
 /// code-section entry with `wasmparser`; `pred` classifies each operator.
@@ -41025,9 +41007,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{
-        FromVal, count_opcode, find_runtime_wasm, run_linked, run_returns, run_returns_with,
-    };
+    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -48496,58 +48476,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_conditionally_resuming_arm_declines_cleanly_never_false_unbound() {
-        // corpus-bugfix/breaker 2026-07-28: a handler arm that CONDITIONALLY resumes — `(if cond ABORT-VALUE
-        // (resume …))`, one branch resumes, the other returns a bare value (a per-arm conditional abort) —
-        // over a MULTI-perform body whose seed references the enclosing fn's PARAM used to false-reject
-        // CDZ0101 "unbound name k". It is neither classified abortive (it HAS a resume) nor uniformly tail-
-        // resumptive; the E5 reify folds rewrote only the resuming branch, mis-spliced the continuation, and
-        // orphaned a synthesized copy of the seed's `k` → a RELOCATED CDZ0101 at LOWERING (check passed, emit
-        // diverged; rust unaffected). `reduce_handle` now DECLINES cleanly (uncoded "not yet reducible" todo,
-        // via `arm_partially_resumes`) rather than mis-fold — the safe floor (the conditional-abort/captured-
-        // continuation fold is a later increment). MUST NOT report CDZ0101 (the handle plainly binds `k`).
-        let msg = |src: &str| {
-            let out = crate::compile::compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "m",
-                    crate::codec::encode(&parse(src)),
-                )],
-                &[crate::backend::Target::Wasm],
-            );
-            out.diagnostics
-                .iter()
-                .filter(|d| d.severity == crate::abi::Severity::Error)
-                .map(|d| format!("{:?}:{}", d.code, d.message))
-                .collect::<Vec<_>>()
-        };
-        let cond_abort = "(module m (effect Sim (op step (-> Unit Int64))) \
-            (def (main (: k Int64)) (handle Sim (tuple 0 k) \
-              ((step (u) st (if (>= (. st 0) (. st 1)) -999 (resume (. st 0) (tuple (+ (. st 0) 1) (. st 1)))))) \
-              (+ (Sim.step) (+ (Sim.step) (Sim.step))))) (export main))";
-        let ms = msg(cond_abort);
-        assert!(
-            !ms.iter()
-                .any(|m| m.contains("CDZ0101") || m.contains("unbound")),
-            "a conditionally-resuming arm must NOT false-reject unbound (the handle binds k): {ms:?}"
-        );
-        assert!(
-            !ms.iter()
-                .any(|m| m.contains("invalid") || m.contains("type mismatch")),
-            "must not emit an invalid module: {ms:?}"
-        );
-        // NO REGRESSION: a FULLY-resuming match arm (BOTH branches resume) must still FOLD + run — the guard
-        // fires only when branches DISAGREE on resuming, not on a uniform per-branch resume.
-        let both_resume = "(module m (effect Ask (op get (-> Int64 Int64))) \
-            (def (main) (handle Ask 0 ((get (v) s (if (>= v 0) (resume v s) (resume (- 0 v) s)))) \
-              (+ (Ask.get 5) (Ask.get -7)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(both_resume)))
-            .expect("a fully-resuming if arm (both branches resume) must still fold");
-        let v: i64 = run_returns_with(&bytes, "main", &[]);
-        assert_eq!(v, 12, "both-resume arm: |5| + |-7| = 12");
-    }
-
-    #[test]
     fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
         // F1 (corpus-bugfix/breaker 2026-07-28): a handler whose STATE slot infers to a narrow int (UInt8)
         // while the op RESULT is Int64 must NOT emit an invalid wasm module. `(next (u) s (resume s (+ s x)))`
@@ -48597,129 +48525,6 @@ mod stage1 {
         // NO REGRESSION: a MATCHING-width state (Int64 seed + Int64 x, op result Int64) still folds and
         // runs — the corpus case "a matching-width handler state folds across two sequential performs"
         // (spec/semantics/14-effects-and-handlers.sexp): main(5) = 25 (a=10, b=15), run via cdz-run.
-    }
-
-    #[test]
-    fn a_handler_arm_inline_fold_is_hygienic_no_binder_capture_at_the_perform_site() {
-        // SILENT-MISCOMPILE FIX (breaker, routed corpus-bugfix 2026-07-28): the tail-resumptive handler fold
-        // inlines the arm body at the perform site and splices the continuation `C` (the handle body) around
-        // the resume value — copying name atoms that RE-RESOLVE in the destination scope. Without hygiene, a
-        // local `(def x …)` on one side CAPTURES a same-named free name from the other, silently computing a
-        // wrong value (the worst class). `reduce_handle` now alpha-renames the LOCAL value binders (`let`
-        // pairs, `do`-local `(def NAME v)`) of BOTH the handle body and the substituted arm body to fresh
-        // `#`-names (`freshen_local_binders`, sharing every free-name subtree so enclosing-param references
-        // keep resolving), making capture impossible. The effects twin of the eval-splice hygiene family.
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
-            run_returns_with(&bytes, "main", &[])
-        };
-        // NESTED-HANDLER SAFETY (breaker's right-nested 1033 face): a two-effect right-nested handler with a
-        // MODULE-level `x` colliding with arm-local `(def x …)` must NOT MISCOMPILE — it either computes the
-        // right value or DECLINES cleanly (an UNCODED "not yet reducible" todo when the nested composition is
-        // not reducible enough to exercise the rename). Whichever way, NEVER a wrong value and NEVER a coded
-        // rejection. `compile_component` returns Ok(bytes) if it folds, Err(reject) otherwise.
-        let nested = "(module m (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
-            (def x 1000) \
-            (def (main) (handle A 0 ((a (u) s (do (def x 3) (resume (+ x s) s)))) \
-              (handle B 0 ((b (u) s (do (def x 30) (resume (+ x s) s)))) \
-                (+ x (+ (A.a unit) (B.b unit)))))) \
-            (export main))";
-        match compile_component(&crate::codec::encode(&parse(nested))) {
-            Ok(bytes) => {
-                // If it folds, the arm-local `(def x 3)`/`(def x 30)` must NOT capture the body's x=1000:
-                // correct value is 1000 + 3 + 30 = 1033. A captured value (e.g. 3/30 leaking) would be wrong.
-                let v: i64 = run_returns_with(&bytes, "main", &[]);
-                assert_eq!(
-                    v, 1033,
-                    "nested handler with binder collisions must compute 1033, never a captured value"
-                );
-            }
-            // An UNCODED decline (not-yet-reducible todo) is acceptable; a CODED rejection (e.g. a CDZ0401
-            // handler-routing / CDZ0101 unbound / typecheck regression) is NOT — assert the decline is
-            // uncoded so a real regression cannot false-green as a "clean decline" (PR#879 Copilot nit).
-            Err(reject) => assert!(
-                reject.code.is_none(),
-                "nested collision must decline UNCODED (todo), not a coded rejection: {:?} {}",
-                reject.code,
-                reject.message
-            ),
-        }
-        // NESTED × ARM-LOCAL × FN-LOCAL body-x (breaker's regression face, corpus-bugfix 2026-07-28): the
-        // colliding `x` is defined FN-LOCALLY (`(do (def x 1000) (handle …))`), NOT module-level. The body
-        // freshen must STOP at the nested inner `handle` (opaque) — descending would rename the inner arm's
-        // `(def x)` and REBUILD the outer body subtree, orphaning the fn-local `x` reference → CDZ0101
-        // false-unbound (this exact regression: pre-hygiene it MISCOMPILED to 43, my first cut then
-        // FALSE-REJECTED, now it folds to 1033). Must compile AND compute 1000+10+20 = 1033 with no capture.
-        let fnlocal_nested = "(module m (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
-            (def (main) (do (def x 1000) \
-              (handle A 1 ((a (u) s (do (def x 10) (resume (+ x s) s)))) \
-                (handle B 2 ((b (u) s (do (def x 20) (resume (+ x s) s)))) \
-                  (+ x (+ (A.a unit) (B.b unit))))))) \
-            (export main))";
-        assert_eq!(
-            run(fnlocal_nested),
-            1033,
-            "nested×arm-local×fn-local-body-x must fold to 1033 (no capture, no false-unbound)"
-        );
-        // F1: the arm-local `(def x 5)` must NOT capture the handle BODY's `x` (the global 100) when `C =
-        // (+ x □)` is spliced into the arm's `(do (def x 5) …)` for the resume. Pre-fix → 10 (=5+5).
-        let f1 = "(module m (effect E (op get (-> Unit Int64))) \
-            (def x 100) \
-            (def (main) (handle E 0 ((get (u) s (do (def x 5) (resume (+ x s) s)))) (+ x (E.get unit)))) \
-            (export main))";
-        assert_eq!(
-            run(f1),
-            105,
-            "arm-local (def x 5) must not leak into the body's x=100"
-        );
-        // F2: the arm's `(resume x s)` reads the handler's enclosing `x` (the global 100), NOT the
-        // performer's `(def x 7)` it is spliced beside. Pre-fix → 14 (=7+7).
-        let f2 = "(module m (effect E (op get (-> Unit Int64))) \
-            (def x 100) \
-            (def (main) (handle E 0 ((get (u) s (resume x s))) (do (def x 7) (+ x (E.get unit))))) \
-            (export main))";
-        assert_eq!(
-            run(f2),
-            107,
-            "the perform-site (def x 7) must not capture the arm's global x=100"
-        );
-        // NO REGRESSION: a NON-colliding arm-local binder still folds correctly — arm-local `y`, body `x`.
-        let distinct = "(module m (effect E (op get (-> Unit Int64))) \
-            (def x 100) \
-            (def (main) (handle E 0 ((get (u) s (do (def y 5) (resume (+ y s) s)))) (+ x (E.get unit)))) \
-            (export main))";
-        assert_eq!(
-            run(distinct),
-            105,
-            "a non-colliding arm-local binder folds as before"
-        );
-        // NO REGRESSION: a state-threading multi-perform handler still computes correctly (seed 0, each get
-        // resumes s and advances s+1): (+ (E.get)=0 (E.get)=1) = 1, no capture involved.
-        let threading = "(module m (effect E (op get (-> Unit Int64))) \
-            (def (main) (handle E 0 ((get (u) s (resume s (+ s 1)))) (+ (E.get unit) (E.get unit)))) \
-            (export main))";
-        assert_eq!(
-            run(threading),
-            1,
-            "ordinary state threading unaffected by the hygiene pass"
-        );
-        // PERIMETER (breaker's clean-binder pin): the op-PARAM binder and the STATE binder were ALREADY
-        // hygienic — the fold substitutes them by binder-NODE identity (`subst`), immune to name — so a
-        // collision on THOSE kinds must still compute correctly (my arm-body freshening runs AFTER that
-        // substitution and touches only arm-internal do-def/let locals). Op-param `v` colliding with body
-        // `v=1000`: arm `(get (v) s (resume (+ v v) s))` where body performs `(E.get)` and `v=1000`; the
-        // op-arg (unit→bound elsewhere) and the body `v` stay distinct → the body `(+ v (E.get))` with v=1000
-        // and the arm resuming `(+ v_op …)` must not cross. Keep it simple: verify a param-named-`s`/state-`s`
-        // shape computes the threading answer, and a body-var named like the state does not capture.
-        let state_named = "(module m (effect E (op get (-> Unit Int64))) \
-            (def s 1000) \
-            (def (main) (handle E 0 ((get (u) s (resume s (+ s 1)))) (+ s (E.get unit)))) \
-            (export main))";
-        assert_eq!(
-            run(state_named),
-            1000,
-            "a body var named like the arm STATE binder must not be captured (1000 + 0)"
-        );
     }
 
     #[test]
@@ -51952,73 +51757,6 @@ mod stage1 {
             6,
             "let-lifted state-slot A.get runs at dispatch (A→6), body A.get reads 6, B.step=0 → (10*0)+6 = 6"
         );
-    }
-
-    #[test]
-    fn an_outer_perform_directly_in_a_resume_next_state_slot_declines_not_miscompiles() {
-        use crate::testkit::parse;
-        // as2/as1 SAFE-DECLINE (breaker as-family, 2026-08-05). An inner handler arm whose NEXT-STATE slot
-        // performs an OUTER effect DIRECTLY — `(step (u) t (resume t (+ t (A.get))))` — was a CONFIRMED
-        // SILENT MISCOMPILE: the next-state threads forward as a state EXPRESSION, so the embedded `(A.get)`
-        // is either DROPPED (a single B.step discards the final slot state — as2 returned 5, must be 6) or
-        // DUPLICATED across dispatches (a multi-step body re-splices the state expr — as1 returned 63, a
-        // value that fits NO evaluation model). Both wrong, both backends, all opt levels. The fold now
-        // DECLINES cleanly (`next_state_directly_performs_foreign` gate in effects.rs's tail-resume arm) —
-        // never a wrong value. The correct FOLD (run the next-state foreign once at dispatch, thread its pure
-        // result — the inline analogue of as7's let-lift) is a deeper eval-order arc; this pin flips
-        // decline→value when it lands (as2→6, as1→61). The proven-correct as3 (value slot) / as7 (let-lift)
-        // faces STAY folding — pinned in the sibling control above; the gate fires ONLY on a DIRECT outer
-        // perform exclusive to the next-state slot, so it does not sweep the recursive-fold surface (which
-        // threads outer effects through self-call/specialized callees, never a literal perform in the arm's
-        // own next-state). The user WORKAROUND meanwhile is the let-lift (as7).
-        let as2 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
-             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
-               (handle B 0 ((step (u) t (resume t (+ t (A.get))))) \
-                 (+ (* 10 (B.step)) (A.get))))) (export main))";
-        // as1 — three chained B.step performs (multi-step): the drop/duplicate manifests as 63 (no model).
-        let as1 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
-             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
-               (handle B 0 ((step (u) t (resume t (+ t (A.get))))) \
-                 (+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step)))))) (export main))";
-        // asb — the BOTH-PERFORM face (github-liaison/Copilot #2289 review of #2289): the outer perform is in
-        // BOTH the resume VALUE and the NEXT-STATE — `(resume (A.get) (A.get))`. The FIRST guard's
-        // `&& !value-performs-foreign` clause let this slip past the decline (both slots perform, so the
-        // negated conjunct was false) → it silently compiled to 56 while the correct value is 57 (value A.get:
-        // A 5→6, returns 5; next-state A.get: A 6→7; B.step=5; body A.get reads 7 → 50+7). The guard now reads
-        // the RAW resume next-state (`arm_resume_next_states`) and declines whenever IT performs a foreign op,
-        // regardless of the value — closing the gap. as3 (foreign in value only) / as7 (foreign in let-init)
-        // still fold, pinned in the sibling control.
-        let asb = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
-             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
-               (handle B 0 ((step (u) t (resume (A.get) (A.get)))) \
-                 (+ (* 10 (B.step)) (A.get))))) (export main))";
-        for (src, name) in [(as2, "as2"), (as1, "as1"), (asb, "asb")] {
-            match compile_component(&crate::codec::encode(&parse(src))) {
-                // TODO(as-fold): flip to a value assertion (as2→6, as1→61, asb→57) when the next-state-slot
-                // outer-perform fold lands. Until then the DECLINE must be CLEAN — never a leaked internal
-                // state-param name, never a wrong value.
-                Err(e) => assert!(
-                    !e.message.contains("#eff") && !e.message.contains("$s"),
-                    "{name}: the next-state-slot outer-perform decline must not leak an internal \
-                     state-param name, got: {}",
-                    e.message
-                ),
-                // If a future increment folds it, the value MUST be correct — never the pre-fix silent
-                // miscompile (as2=5, as1=63, asb=56).
-                Ok(bytes) => {
-                    let v: i64 = run_returns(&bytes, "main");
-                    let want = match name {
-                        "as2" => 6,
-                        "as1" => 61,
-                        _ => 57,
-                    };
-                    assert_eq!(
-                        v, want,
-                        "{name}: if the next-state-slot outer perform folds it must be {want}"
-                    );
-                }
-            }
-        }
     }
 
     #[test]

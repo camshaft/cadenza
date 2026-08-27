@@ -1906,6 +1906,55 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+(case "an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)"
+  (doc    "breaker as-family safe-decline. An inner handler arm whose NEXT-STATE slot performs an OUTER effect
+           directly — `(step (u) t (resume t (+ t (A.get))))` — was a confirmed SILENT MISCOMPILE: the
+           next-state threads forward as a state EXPRESSION, so the embedded `(A.get)` is DROPPED (a single
+           B.step discards the final slot state — returned 5, must be 6). The fold now DECLINES cleanly
+           (`next_state_directly_performs_foreign`) rather than emit a wrong value; the correct fold (run the
+           next-state foreign once at dispatch, thread its pure result) is a later increment that flips this
+           to 6. Contrast the HOST-delegated slot perform above, which is served (a host call is sequenced at
+           its evaluation point, not threaded through the state expression).")
+  (input  (do
+            (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((get (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (resume t (+ t (A.get)))))
+                  (+ (* 10 (B.step)) (A.get)))))
+            (export main)))
+  (declines))
+
+(case "an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)"
+  (doc    "The multi-step face of the next-state-slot outer-perform decline: three chained `B.step` performs
+           re-splice the next-state expression, so the embedded outer `(A.get)` is DROPPED or DUPLICATED
+           across dispatches (returned 63, a value that fits no evaluation model). Same
+           `next_state_directly_performs_foreign` gate declines it cleanly; the correct fold is a later
+           increment (flips to 61).")
+  (input  (do
+            (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((get (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (resume t (+ t (A.get)))))
+                  (+ (* 100 (B.step)) (+ (* 10 (B.step)) (B.step))))))
+            (export main)))
+  (declines))
+
+(case "an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)"
+  (doc    "The both-slots face: the outer effect is performed in BOTH the resume VALUE and the NEXT-STATE —
+           `(resume (A.get) (A.get))`. An earlier guard's `&& !value-performs-foreign` clause let this slip
+           past (both slots perform, so the negated conjunct was false) → it silently compiled to 56 while
+           the correct value is 57. The guard now reads the RAW resume next-state and declines whenever IT
+           performs a foreign op regardless of the value, closing the gap; the correct fold (57) is a later
+           increment.")
+  (input  (do
+            (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((get (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (resume (A.get) (A.get))))
+                  (+ (* 10 (B.step)) (A.get)))))
+            (export main)))
+  (declines))
+
 (case "a handler arm forwarding an effect its enclosing scope does not hold is rejected"
   (doc    "Witnesses capabilities-and-effects.md #Capabilities Attenuate: A Handler Forwards A Narrower Row
            (2nd sentence — attenuation never WIDENS): a handler MUST NOT grant its sub-computation an effect
