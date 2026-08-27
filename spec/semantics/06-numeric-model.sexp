@@ -375,6 +375,29 @@
   (call   main (: 7 Int64))
   (output (: 4 Int64)))
 
+; The remaining floor faces the single -7/2 case above does not reach: a POSITIVE non-whole floors with NO
+; adjustment (7/2 → 3 — the −1 fires only on a negative remainder, never a positive one; a floor that
+; subtracted unconditionally would give 2); a sub-one NEGATIVE takes the −1 (−1/2 → −1, toward −∞ from a
+; proper fraction, distinct from truncate's 0); and an EXACT integer is unchanged either sign (8/2 → 4,
+; −8/2 → −4 — no ±1 when the remainder is zero). Runtime rational (param `n`), so the derivation lowers its
+; runtime shape, not a const fold.
+(case "a rational floors a positive non-whole down, a sub-one negative to -1, and an exact integer to itself"
+  (input  (do (def (main (: n Int64)) (Rational.floor (Rational.of n 2))) (export main)))
+  (call   main (: 7 Int64))  (output (: 3 Int64))
+  (call   main (: -1 Int64)) (output (: -1 Int64))
+  (call   main (: 8 Int64))  (output (: 4 Int64))
+  (call   main (: -8 Int64)) (output (: -4 Int64)))
+
+; The mirror ceil faces: a sub-one POSITIVE takes the +1 (1/2 → 1, toward +∞ from a proper fraction, distinct
+; from truncate's 0); a NEGATIVE non-whole ceils with NO adjustment (−7/2 → −3 — the +1 fires only on a
+; positive remainder); and an EXACT integer is unchanged either sign (8/2 → 4, −8/2 → −4).
+(case "a rational ceilings a sub-one positive to 1, a negative non-whole toward zero, and an exact integer to itself"
+  (input  (do (def (main (: n Int64)) (Rational.ceil (Rational.of n 2))) (export main)))
+  (call   main (: 1 Int64))  (output (: 1 Int64))
+  (call   main (: -7 Int64)) (output (: -3 Int64))
+  (call   main (: 8 Int64))  (output (: 4 Int64))
+  (call   main (: -8 Int64)) (output (: -4 Int64)))
+
 ; `Rational.round : Rational → Int64` — round to the NEAREST integer, ties HALF-AWAY-FROM-ZERO (the settled
 ; ruling: symmetric snapping for MIDI/tick boundaries). The last of the exact integer projections (completing
 ; floor/ceil/truncate/round). A DERIVATION: the toward-zero quotient adjusted AWAY from zero (by the value's
@@ -389,6 +412,16 @@
   (input  (do (def (main (: n Int64)) (Rational.round (Rational.of n 2))) (export main)))
   (call   main (: 5 Int64))
   (output (: 3 Int64)))
+
+; The remaining round faces beyond the ±5/2 ties: the small ties still round AWAY (1/2 → 1, 3/2 → 2, −3/2 →
+; −2 — the ≥-half rule at the smallest magnitudes), and a WHOLE rational is unchanged (4/2 → 2 — no
+; adjustment when the remainder is zero, the round analogue of the exact floor/ceil faces).
+(case "a rational rounds small halves away from zero and leaves a whole rational unchanged"
+  (input  (do (def (main (: n Int64)) (Rational.round (Rational.of n 2))) (export main)))
+  (call   main (: 1 Int64))  (output (: 1 Int64))
+  (call   main (: 3 Int64))  (output (: 2 Int64))
+  (call   main (: -3 Int64)) (output (: -2 Int64))
+  (call   main (: 4 Int64))  (output (: 2 Int64)))
 
 (case "a rational rounds a negative half away from zero"
   (doc    "The negative-tie face of half-away-from-zero: `(Rational.of n 2)` at n=-5 is -5/2 = -2.5, an

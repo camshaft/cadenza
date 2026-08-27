@@ -3239,12 +3239,15 @@ pass	a radix literal with an empty body is a malformed literal, not an unbound n
 pass	a rate derived by division mixes with a named rate unit of the same dimension
 pass	a rational built from RUNTIME operands normalizes its sign onto the numerator
 pass	a rational built from a RUNTIME zero denominator traps rather than being a value
+pass	a rational ceilings a sub-one positive to 1, a negative non-whole toward zero, and an exact integer to itself
 pass	a rational ceilings toward positive infinity, narrowed to Int64
+pass	a rational floors a positive non-whole down, a sub-one negative to -1, and an exact integer to itself
 pass	a rational floors toward negative infinity, narrowed to Int64
 pass	a rational is normalized to lowest terms on construction
 pass	a rational of Int64 minimum over Int64 minimum normalizes to one
 pass	a rational operation does not silently promote an integer operand
 pass	a rational rounds a negative half away from zero
+pass	a rational rounds small halves away from zero and leaves a whole rational unchanged
 pass	a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64
 pass	a rational truncates a negative value toward zero, not toward negative infinity
 pass	a rational truncates to its integer part toward zero, narrowed to Int64
