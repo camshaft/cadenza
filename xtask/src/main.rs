@@ -4922,7 +4922,16 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                 match (want, classify(actual)) {
                     // Both classify AND agree → the expected trap fired.
                     (Some(w), Some(g)) if w == g => Grade::Pass,
-                    // Trapped, but the reason doesn't classify or doesn't match — a real trap, unconfirmed.
+                    // Both classify to KNOWN trap codes but DIFFER → a hard disagreement (miscompile or
+                    // wrong-kind expectation), graded FAIL like a wrong output value. With semantic CDZ07xx
+                    // codes a mismatched KIND between two traps is a real disagreement, not a hidden Todo
+                    // (breaker's grading-gap catch). Mirror of `cdz_corpus_grade::grade_trial`.
+                    (Some(w), Some(g)) => Grade::Fail(format!(
+                        "expected trap {} ({payload}) but trapped {} ({actual}) — wrong trap kind",
+                        w.code(),
+                        g.code()
+                    )),
+                    // Reason doesn't classify (or expectation doesn't) — a real trap, but unconfirmed.
                     _ => Grade::Todo,
                 }
             }
