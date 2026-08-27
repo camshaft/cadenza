@@ -8121,6 +8121,8 @@ pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam insid
 pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance
 pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
 pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
+pass	xc1 xor by the same value twice cancels to the operand (runtime, constant, commuted, masked w)
+pass	xc2 a trapping discarded xor operand keeps its trap (the cancellation must not drop it)
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
 pass	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 pass	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
