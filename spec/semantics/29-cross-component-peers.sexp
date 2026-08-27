@@ -186,3 +186,45 @@
               (def (main) (host (A B) (+ (A.fa 1) (B.fb 2)))) (export main)))
   (call   main)
   (output (: 33 Int64)))
+
+; ── map/set peer-result DEPTH: empty-collection edge, nested map-of-list, canonical enumeration order ──
+(case "pcm4 a peer op returning an EMPTY map crosses and reads length zero"
+  (doc    "The size-0 boundary: PROVIDER `mk` returns an empty (Map Int64 Int64); the consumer reads Map.len
+           of the crossed empty map → 0. Pins that an empty collection crosses as a VALID handle (not a
+           null/absent result) and its length reads zero.")
+  (peer   "cadenza:me/api" (do (def (mk (: x Int64)) (: (Map.empty) (Map Int64 Int64))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:me/api")
+              (def (main (: x Int64)) (host (M) (Map.len (M.mk x)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "pcs3 a peer op returning an EMPTY set crosses and reads length zero"
+  (doc    "The size-0 boundary for sets: PROVIDER `mk` returns an empty (Set Int64); Set.len of the crossed
+           empty set → 0. The set analogue of the empty-map edge — an empty CHAMP crosses as a valid handle.")
+  (peer   "cadenza:se/api" (do (def (mk (: x Int64)) (: (Set.of (list)) (Set Int64))) (export mk)))
+  (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:se/api")
+              (def (main (: x Int64)) (host (S) (Set.len (S.mk x)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "pcm5 a peer op returning a map of lists crosses and a value list's length is read"
+  (doc    "Nested collection: PROVIDER `mk(x)` = {1: [x, x+1]} — a (Map Int64 (List Int64)); the consumer
+           looks up key 1 in the crossed map and reads List.len of the value list: mk(5) = {1:[5,6]},
+           Map.lookup 1 → Some [5,6], List.len → 2. Pins that a nested map-of-list crosses with the inner
+           list intact (the value's dynamic depth survived the boundary).")
+  (peer   "cadenza:ml/api" (do (def (mk (: x Int64)) (Map.insert (Map.empty) 1 (list x (+ x 1)))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 (List Int64))))) (bind M "cadenza:ml/api")
+              (def (main (: x Int64)) (host (M) (match (Map.lookup (M.mk x) 1) ((Some l) (List.len l)) (None 0)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
+(case "pcm6 a peer-returned map enumerates in canonical key order regardless of insert order"
+  (doc    "Ordering across the crossing: PROVIDER `mk(x)` inserts keys 3, 1, 2 (NON-sorted insert order); the
+           consumer reads the FIRST entry's key via Map.to-list. Canonical KEY order is 1,2,3, so the head
+           key is 1 regardless of insert order. Pins that deterministic canonical enumeration order survives
+           the cross-component boundary (the crossed map is not left in insert order).")
+  (peer   "cadenza:mo/api" (do (def (mk (: x Int64)) (Map.insert (Map.insert (Map.insert (Map.empty) 3 x) 1 x) 2 x)) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:mo/api")
+              (def (main (: x Int64)) (host (M) (match (Map.to-list (M.mk x)) ((list e .. rest) (. e 0)) ((list) -1)))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 1 Int64)))
