@@ -8619,3 +8619,8 @@ pass	a continuation call whose body ITSELF performs is not effect-free and decli
 pass	a NON-tail outer handler reduces a reducible inner handle first, then folds its own perform
 pass	two nested distinct effects both tail-resumptive fold via the threading path
 pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+pass	dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast
+pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
+pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
+pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
+pass	dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees
