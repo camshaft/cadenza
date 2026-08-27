@@ -38,6 +38,7 @@ inductive Value where
   | bool (b : Bool)
   | str (bytes : ByteArray)       -- UTF-8 string content
   | char (bytes : ByteArray)      -- UTF-8 of exactly one scalar
+  | bytes (b : ByteArray)         -- a `Bytes` value (raw byte-string literal `b"…"`)
   | unit
   -- compound values (their canonical forms, per `cdz-run`'s render): Option, Result, tuple, list
   | some (v : Value)
@@ -71,6 +72,7 @@ def toLeaf? : Value → Option Leaf
   | .bool b => Option.some (.boolLit b)
   | .str b => Option.some (.str b)
   | .char b => Option.some (.char b)
+  | .bytes b => Option.some (.bytesLit b)
   | .unit => Option.some (.name unitName)
   | _ => Option.none  -- compound values are not leaf-backed
 
@@ -83,6 +85,7 @@ def ofLeaf : Leaf → Option Value
   | .boolLit b => Option.some (.bool b)
   | .str b => Option.some (.str b)
   | .char b => Option.some (.char b)
+  | .bytesLit b => Option.some (.bytes b)
   | .name b => if b == unitName then Option.some .unit else Option.none
   | _ => Option.none
 

@@ -247,6 +247,7 @@ def compareVals : Value → Value → Option Ordering
   | .bool a, .bool b => some (compare (a == true) (b == true))  -- false < true
   | .str a, .str b => some (cmpBytes a b)
   | .char a, .char b => some (cmpBytes a b)
+  | .bytes a, .bytes b => some (cmpBytes a b)   -- Bytes: content-lexicographic over unsigned bytes (spec §329)
   | _, _ => none
 
 /-- Whether a relational operator holds given the three-way `Ordering` of its operands. -/
