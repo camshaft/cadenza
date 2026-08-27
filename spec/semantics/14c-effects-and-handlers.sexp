@@ -4572,7 +4572,30 @@
                             (if (= (% n 3) 0) (A.out n) n)))
                    7)))
             (export main)))
-  (call   main (: 3 Int64)) (output (: 9003 Int64)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64))
+  (call   main (: 6 Int64)) (output (: 9006 Int64))
+  (call   main (: 4 Int64)) (output (: 407 Int64)))
+
+(case "abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly"
+  (doc    "The let-wrapped-predicate face of abmin4 with a PURE binding (`(let ((d n)) …)`, no inner
+           performing op): the conditional foreign abort sits under a `let`+`if` one level deeper than the
+           direct `if` the operand hoist matches. The hoist lifts the pure-binding `let` out of the
+           enclosing `(* 100 …)` application so the next pass sees the `if`-abort directly and homes `A.out`
+           to A. n=3 → A.out 3 = 9003 (the abort abandons the ×100/+7, not 900307); n=4 → else branch,
+           100*4 + 7 = 407.")
+  (input  (do
+            (effect A (op out (-> Int64 Int64)))
+            (effect B (op bout (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((out (v) t (+ 9000 v)))
+                (+ (* 100 (handle B 0
+                            ((bout (v) t (+ 500 v)))
+                            (let ((d n)) (if (= (% d 3) 0) (A.out n) n))))
+                   7)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 9003 Int64))
+  (call   main (: 4 Int64)) (output (: 407 Int64)))
 
 (case "abmin2 outer-abort under a LET+IF inside the unrelated inner handle"
   (input  (do
