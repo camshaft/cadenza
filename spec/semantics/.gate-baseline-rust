@@ -4321,6 +4321,7 @@ pass	a user sum whose variant name collides with a built-in renders that head QU
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
 pass	a user-declared generic sum resolves by name in a parameter type annotation
+pass	a user-generic constructor pattern binds and computes through nesting, self-nesting, and a record field
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
