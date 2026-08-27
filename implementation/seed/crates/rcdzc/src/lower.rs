@@ -14795,6 +14795,24 @@ pub fn constant_bytes_value(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
     const_byte_slice(db, id)
 }
 
+/// The UTF-8 BYTES of a fully-constant `String` at `id` — `Some(bytes)` when `core_of(id)` is a
+/// `Core::ConstStr` (a string literal / a compile-time-folded string), else `None`. Groundwork for §2d
+/// STATIC strings (`DESIGN-static-data.md` increment 5): a Cadenza `String` value IS a flat UTF-8
+/// byte-leaf, materialized by the backend with the SAME `bytes-alloc` + a `bytes-set` per byte a `Bytes`
+/// value uses (the `Core::ConstStr` handle emit; see the wrapper `mem_leaf` note "a Cadenza String value IS
+/// a flat UTF-8 byte-leaf, built exactly by bytes-alloc + bytes-set"). So a constant string that escapes as
+/// a runtime handle re-allocates per evaluation exactly as a constant `Bytes` does, and is hoisted by the
+/// identical build-once-global mechanism — its payload is these UTF-8 bytes (the same interning key /
+/// data-segment payload `constant_bytes_value` returns for `Bytes`). Since the runtime rep of a constant
+/// String and a constant `Bytes` with the same bytes is the SAME flat leaf, they can even share one global
+/// (an interning refinement for the string increment). `None` for a runtime string or any non-string node.
+pub fn constant_string_value(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
+    match core_of(db, id) {
+        Core::ConstStr(s) => Some(s.as_bytes().to_vec()),
+        _ => None,
+    }
+}
+
 /// The CANONICAL BINARY VALUE FORM of a fully-constant compound at `id` — the bytes the resource escape
 /// path's `encode()` returns (`DESIGN-value-heap-rcdzc.md` §3a; `contracts/deterministic-value-form.md`).
 /// Reconstructs the s-expression `(: <value> <type>)` as ordinary AST (the value from the constant core,
