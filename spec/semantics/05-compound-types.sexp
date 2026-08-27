@@ -23007,3 +23007,15 @@
   (call main (: 50 Int64))
   (output (: 750 Int64))
   (live-objects known-leak 550))
+
+(case "a runtime map match's rest binder reads the map minus the named key"
+  (doc    "The `.. rest` binder reads the runtime map MINUS the named keys (a Map.remove chain). Over
+           `{\"a\": 1, \"b\": 2, \"c\": 3}` matching `(map (\"a\" v) .. rest)` binds v=1 and rest={\"b\",\"c\"}
+           (size 2) → v + Map.len rest = 1 + 2 = 3. The `Map.empty` else-branch's element type is annotated
+           from the solved construct type (not defaulted to i64), so it composes on the rust backend too
+           (rcdzc #4601). Completes the runtime-map-match family with cases above.")
+  (input  (do (def (pick (: b Bool)) (if b (Map.insert (Map.insert (Map.insert (Map.empty) "a" 1) "b" 2) "c" 3) (Map.empty)))
+              (def (look (: m (Map String Int64))) (match m ((map ("a" v) .. rest) (+ v (Map.len rest))) (_ -1)))
+              (def (main (: b Bool)) (look (pick b))) (export main)))
+  (call   main (: true Bool))
+  (output (: 3 Int64)))
