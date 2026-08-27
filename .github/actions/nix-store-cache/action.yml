@@ -50,3 +50,22 @@ runs:
         purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
         purge-created: 0
         purge-primary-key: never
+    # Reconnect the nix-daemon AFTER the /nix/store cache RESTORE above. The GitHub ubuntu-24.04 runner
+    # image bumped 20260816.277.1 -> 20260823.283.1 (Aug 2026), and on the new image the cache-nix-action
+    # restore (untar ~2.4GB into /nix/store) leaves the store daemon's socket stale, so the FIRST nix
+    # command in each job hit "cannot open connection to remote store daemon: Connection reset by peer"
+    # (fleet-wide non-hermetic red across UNRELATED PRs; the cache-action SHA + nix-installer were
+    # IDENTICAL green-vs-red — only the runner image changed). Restarting the socket + service re-establishes
+    # the connection over the freshly-restored store; a cheap `nix store ping` then fail-fasts if the
+    # reconnect didn't take (a full `nix-store --verify` would rescan the whole restored store per job —
+    # prohibitive; this is a stale-socket/runner interaction, not db corruption). Every composite consumer
+    # runs on Linux (ubuntu-latest / ubuntu-24.04-arm), so only the Linux path is needed; the RUNNER_OS
+    # guard keeps it a safe no-op if a non-Linux job ever adopts this action.
+    - name: reconnect nix-daemon after store-cache restore
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo systemctl restart nix-daemon.socket nix-daemon.service \
+            || sudo systemctl restart nix-daemon || true
+        fi
+        nix store ping
