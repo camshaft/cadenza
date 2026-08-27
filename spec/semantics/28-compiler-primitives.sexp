@@ -1032,7 +1032,7 @@
 ; order — the runtime to-list tuple order (19-sets). `const_key_order`/`cval_key_order` now rank tuples, so a
 ; const Set/Map of tuples materializes its to-list byte-matching the runtime (the operator wants full generality
 ; across ALL shapes). A tuple whose element the canonical order cannot rank (a float / nested collection) still
-; declines. (Record + sum element ordering are the remaining shape increments.)
+; declines. (Sum + record element ordering land in the following sections — every runtime-orderable shape now folds.)
 
 (case "a const Set.to-list of TUPLE elements folds, dedup'd, in element-wise lexicographic order"
   (doc    "`{(3,30),(1,99),(1,10)}` sorts lexicographically — first by element 0, ties broken by element 1 — so
@@ -1085,6 +1085,42 @@
                    (const (Set.to-list (Set.of (list (Option.Some 1) (Option.Some 5) (Option.None)))))))
               (export run)))
   (call   run 5)
+  (output (: true Bool)))
+
+; --- Primitive 2: const Set/Map.to-list folds RECORD elements/keys in canonical (name-lexicographic) field order
+; A record orders FIELD-WISE in its CANONICAL field order — name-lexicographic (`Symbol` orders by name), which is
+; the descriptor field order the runtime `value_cmp_shaped` Record walk uses ("the same canonical order equality/
+; encode use") AND the iteration order of the compiler's `BTreeMap<Symbol, _>` record rep. `const_key_order`/
+; `cval_key_order` now rank records by that order, so a const Set/Map of records materializes its to-list
+; byte-matching the runtime. This is the LAST shape — the fold now covers every shape the runtime orders (operator:
+; full generality). These pin it DISCRIMINATED against source/decl order: the record is written `lo`-first but
+; orders `hi`-first (h < l), so the head is the `hi`-smallest, not the `lo`-smallest.
+
+(case "a const Set.to-list of RECORD elements folds in canonical (name-lexicographic) field order, dedup'd"
+  (doc    "`{(lo 9, hi 1), (lo 0, hi 2), (lo 9, hi 1)}` — a 2-field record written `lo`-FIRST in source, but records
+           order by the CANONICAL name-lexicographic field order (`hi` before `lo`), so the compare reads `hi` first:
+           `hi 1` < `hi 2` makes `{hi:1,lo:9}` the head (NOT the `lo`-smaller `{hi:2,lo:0}` a source/decl order would
+           pick). Reads the head's `lo` (9) and confirms len 2 (the repeat deduped): `2*1000 + 9`. Pins record
+           field-wise order in the name-canonical order matching the runtime, discriminated against source order.")
+  (input  (do (def (main)
+                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)) (record (= lo 9) (= hi 1)))))))
+                          (match (List.at (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))))) 0)
+                            ((Option.Some r) (. r lo))
+                            ((Option.None) -1)))))
+              (export main)))
+  (output (: 2009 Int64)))
+
+(case "a const Set.to-list of RECORD elements byte-matches the RUNTIME set-to-list (cross-check)"
+  (doc    "The soundness cross-check: a RUNTIME record Set.to-list (built via a runtime `Set.insert` of a record
+           whose `hi` field is a runtime `n`) equals the COMPILE-TIME fold of the same 2-record set — both order the
+           records field-wise in the canonical (name-lexicographic) field order (`hi` before `lo`). Pins that
+           `const_key_order`'s Record arm agrees with the runtime `value_cmp_shaped` Record order (descriptor field
+           order == name-canonical == the compiler's `BTreeMap<Symbol>` iteration order).")
+  (input  (do (def (run (: n Int64))
+                (= (Set.to-list (Set.insert (Set.of (list (record (= lo 9) (= hi 1)))) (record (= lo 0) (= hi n))))
+                   (const (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))))))))
+              (export run)))
+  (call   run 2)
   (output (: true Bool)))
 
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
