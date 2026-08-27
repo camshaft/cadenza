@@ -19918,7 +19918,6 @@ mod match_engine {
         );
     }
 
-
     #[test]
     fn a_guard_on_a_nested_list_in_list_element_reads_the_inner_binder() {
         // REGRESSION (false CDZ0101): a user `(guard …)` on a list arm whose leading element is a NESTED LIST,
@@ -32558,19 +32557,10 @@ mod stage1 {
 
     // ── type annotations `(: e T)`: transparent to the value, constrains the type ────────────────
 
-    #[test]
-    fn an_annotation_grounds_a_width_via_int_ctor() {
-        // The type side is a full type EXPRESSION reduced by the evaluator: `(: 5 (Int 64))` uses the
-        // `(Int 64)` constructor application as the annotation type. Runs as 5.
-        assert_eq!(run_main("(: 5 (Int 64))"), 5);
-    }
-
-    #[test]
-    fn a_bool_annotation_on_a_bool_is_transparent() {
-        // `(: true Bool)` — the annotation matches; the comparison-style Bool boundary returns it.
-        assert!(run_main_bool("(: true Bool)"));
-    }
-
+    // The two positive transparency RUN cases — `(: 5 (Int 64))` = 5 (the reduced `(Int 64)` type-ctor
+    // annotation grounds the width) and `(: true Bool)` = true (the Bool boundary is transparent) — are
+    // covered by corpus 07-type-system: "an annotation whose type is a reduced (Int 64) constructor grounds
+    // the value" + "a Bool annotation on a Bool value is transparent". The reject companion stays here.
     #[test]
     fn an_annotation_conflicting_with_the_value_rejects() {
         // `(: true Int64)` — Bool asserted as Int64. Unifying the annotation type against the value's

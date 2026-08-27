@@ -11,6 +11,23 @@
   (input  (: 42 Int64))
   (output (: 42 Int64)))
 
+(case "a Bool annotation on a Bool value is transparent"
+  (doc    "The Bool companion of the transparency rule above: `(: true Bool)` — the annotation matches the
+           value, so it is transparent and the program evaluates to `true`. Exercises the Bool boundary
+           specifically (i1), not only the Int64 case. Relocated from the in-crate rcdzc
+           `a_bool_annotation_on_a_bool_is_transparent`.")
+  (input  (: true Bool))
+  (output (: true Bool)))
+
+(case "an annotation whose type is a reduced (Int 64) constructor grounds the value"
+  (doc    "The annotation's type side is a full type EXPRESSION the evaluator reduces: `(: 5 (Int 64))` uses
+           the `(Int 64)` type-constructor application (not the `Int64` alias) as the annotation type. It
+           grounds the literal at the 64-bit signed width and is transparent → 5. Pins that a constructor-form
+           type annotation reduces + grounds, the positive companion of the ctor-form width rejects in 06.
+           Relocated from the in-crate rcdzc `an_annotation_grounds_a_width_via_int_ctor`.")
+  (input  (: 5 (Int 64)))
+  (output (: 5 Int64)))
+
 (case "an annotation that contradicts the value is rejected"
   (doc    "Witnesses type-system.md #Annotations Constrain, Never Contradict: `(: 42 Bool)` annotates
            an Int64 value with Bool — a contradiction the compiler rejects (CDZ0203). The rejection is
