@@ -395,7 +395,7 @@
            handle and its fields are read by the provider (the record analogue of the compound-arg crossing).")
   (peer   "cadenza:ra/api" (do (def (req (: r (Record (: msg String) (: n Int64)))) (+ (String.byte-len (. r msg)) (. r n))) (export req)))
   (input  (do (effect R (op req (-> (Record (: msg String) (: n Int64)) Int64))) (bind R "cadenza:ra/api")
-              (def (main) (host (R) (R.req (record (msg "hi") (n 4))))) (export main)))
+              (def (main) (host (R) (R.req (record (= msg "hi") (= n 4))))) (export main)))
   (call   main)
   (output (: 6 Int64)))
 
