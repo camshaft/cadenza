@@ -762,3 +762,20 @@
                               (host (Model) (Model.converse (host (Inbox) (Inbox.next)))) "denied")) (export main)))
   (call   main)
   (output (: "R:hi" String)))
+
+(case "a diamond peer graph shares one provider across two middle peers"
+  (doc    "DIAMOND: a shared provider A (cadenza:base/api) base(x)=2x is consumed by TWO middle peers — B
+           (cadenza:b/api) bee(x)=base(x)+1 and C (cadenza:c/api) cee(x)=base(x)+10, each binding A — and the
+           top consumer D binds BOTH B and C: main(x)=bee(x)+cee(x). The harness wires A into BOTH B's and C's
+           linkers (a SHARED transitive dependency) and both middles into D. main(5): base(5)=10, bee=11,
+           cee=20 → 31.")
+  (peer   "cadenza:base/api" (do (def (base (: x Int64)) (* x 2)) (export base)))
+  (peer   "cadenza:b/api" (do (effect BA (op base (-> Int64 Int64))) (bind BA "cadenza:base/api")
+                              (def (bee (: x Int64)) (host (BA) (+ (BA.base x) 1))) (export bee)))
+  (peer   "cadenza:c/api" (do (effect CA (op base (-> Int64 Int64))) (bind CA "cadenza:base/api")
+                              (def (cee (: x Int64)) (host (CA) (+ (CA.base x) 10))) (export cee)))
+  (input  (do (effect DB (op bee (-> Int64 Int64))) (effect DC (op cee (-> Int64 Int64)))
+              (bind DB "cadenza:b/api") (bind DC "cadenza:c/api")
+              (def (main (: x Int64)) (host (DB) (host (DC) (+ (DB.bee x) (DC.cee x))))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 31 Int64)))
