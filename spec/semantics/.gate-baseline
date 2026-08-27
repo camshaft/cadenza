@@ -2052,6 +2052,8 @@ pass	a failure `?` short-circuits BEFORE later computation runs
 pass	a failure `?` short-circuits a RUNTIME error payload (static Err ctor, per-call value)
 pass	a failure `?` short-circuits the enclosing LAMBDA, not the outer function
 pass	a fall-through arm body performs and reads the post-scrutinee state
+pass	a fallible Result peer op result crosses and its Err arm matches
+pass	a fallible Result peer op result crosses and its Ok arm matches
 pass	a fallible helper with a `?` called from INSIDE a handler ARM (success path)
 pass	a fallible helper with a runtime-payload `?` is called from INSIDE a handle body
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
@@ -4280,6 +4282,7 @@ pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
 pass	a sign-changing wrap still sign-extends the low bits
+pass	a signature mismatch in a peer-into-peer (transitive chain) binding is rejected at compose time
 pass	a signature mixing a plain parameter and a tuple-pattern parameter binds both
 pass	a signed dependent size that reads negative falls through, not a backward read
 pass	a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes
@@ -6629,6 +6632,7 @@ pass	hr2 a HANDLE expression as a middle LIST element — the region's result si
 pass	hr3 a HANDLE expression as a map-literal VALUE — the region's result is stored under a key and looked up after
 pass	hr4 a whole HANDLE region as another effect's op ARGUMENT — B's region computes the value A's dispatch consumes
 pass	hrn1 a HORNER polynomial evaluator with a MID-STREAM base swap — feed folds acc*x+c answering the running value, swapx replaces the base answering the old one, and the seed shapes the INITIAL base so the pre-swap accumulations diverge while the post-swap coefficients ride on top
+pass	hs1 a LIST state threads through the mutual-SCC fold correctly but leaks the final state linearly (the xat2-class threading leak on the mutrec fold)
 pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the selected arm and the trailing draw hit the OUTER state
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
@@ -8968,6 +8972,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a fallible Result peer op result crosses and its Ok arm matches
-pass	a fallible Result peer op result crosses and its Err arm matches
-pass	hs1 a LIST state threads through the mutual-SCC fold correctly but leaks the final state linearly (the xat2-class threading leak on the mutrec fold)
