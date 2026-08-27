@@ -1761,7 +1761,31 @@ fn emit_grounded_float(
             format!("f64::from_bits({}u64)", d.to_f64_bits())
         });
     }
-    emit(db, id, env, ctx)
+    let rendered = emit(db, id, env, ctx)?;
+    // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal FLOAT operand — the float twin of `emit_grounded`'s
+    // integer cast (above). An `if`/`match` whose branches are bare deferred-width `ConstFloat`s is solved at
+    // its OWN type, which DEFAULTS to Float64, while the enclosing op wants `width`. Emitting unchanged renders
+    // an `f64` sub-expression where `f32` is required (`x_f32 + (if c 1.0 2.0)` → rustc E0308 / E0277). Cast the
+    // operand to the op's width at the consuming site with `as f32`/`as f64` (the narrowing is exact for a
+    // deferred literal defaulted to f64; a genuine fixed-width disagreement is a type FAULT that aborts before
+    // emit). Like the integer twin, read the CALLEE's result type for a `Core::Call` (the call-site ascription
+    // is type-only and would mask a real mismatch). Only cast a FLOAT operand whose solved width DIFFERS from
+    // `width`; a matching-width or non-float operand emits unchanged (no redundant `as`).
+    let emitted_ty = if let Core::Call { callee, .. } = core_of(db, id) {
+        match db.defs[callee].body {
+            Some(cb) => type_of(db, cb),
+            None => type_of(db, id),
+        }
+    } else {
+        type_of(db, id)
+    };
+    if let Ty::Float(op_ft) = emitted_ty.strip_nominal()
+        && op_ft.ground_width() != width
+    {
+        let target = if width == 32 { "f32" } else { "f64" };
+        return Ok(format!("(({rendered}) as {target})"));
+    }
+    Ok(rendered)
 }
 
 fn emit_grounded(
