@@ -7996,3 +7996,8 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a nested narrow Int8 add with two if operands computes at the consuming width
+pass	a nested narrow Int8 arith with a multiply inner op computes at the consuming width
+pass	a triply-nested narrow Int8 add computes at the consuming width
+pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
+pass	the Int64 control: a nested wide add with if operands needs no normalization
