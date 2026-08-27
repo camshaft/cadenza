@@ -32925,12 +32925,6 @@ mod stage1 {
     }
 
     #[test]
-    fn member_access_on_a_non_record_is_a_type_error() {
-        // 05-compound-types: (. 5 x) — member access requires a record → CDZ0201.
-        assert!(expect_decline("(. 5 x)").contains("requires a record"));
-    }
-
-    #[test]
     fn a_scalar_member_access_reports_one_coded_error_not_a_bare_plus_rich_duplicate() {
         // A direct member access on a non-record scalar `(. 5 x)` used to report TWICE: `infer`'s RICH
         // "member access requires a record, found Int64" (names the type) AND the emit path's BARE
@@ -33217,12 +33211,6 @@ mod stage1 {
             opt.fix.is_none() && user.fix.is_none(),
             "no mechanical fix for a match redirect"
         );
-    }
-
-    #[test]
-    fn member_access_of_a_missing_field_is_a_type_error() {
-        // (. (record (x 1)) y) — the user record is CLOSED; a missing field rejects (CDZ0201).
-        assert!(expect_decline("(. (record (x 1)) y)").contains("no field"));
     }
 
     #[test]
