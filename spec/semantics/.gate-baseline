@@ -1506,6 +1506,7 @@ pass	a chained generic instantiates at a MAP type and both tuple slots share the
 pass	a char literal list element dispatches a runtime list by its value
 pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
+pass	a char literal past the maximum scalar is a reader defect
 pass	a char not among the literal arms falls through to the wildcard
 pass	a char order agrees with its scalar value
 pass	a char-literal pattern nested in a variant payload matches by scalar value
@@ -1946,6 +1947,7 @@ pass	a do-def shared across BOTH resume slots stays in scope (the accumulator-ar
 pass	a do-def value in a handle body flows into a perform's argument and stays in scope
 pass	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
 pass	a do-discarded OUTER perform under an inner handle threads its state advance across the level
+pass	a do-local def shadowing a parameter rebinds the name (does not unbind it)
 pass	a do-local fn capturing a CONSTANT sibling local lowers (capture guard)
 pass	a do-local fn capturing a runtime-computed sibling local survives the enclosing fn's inlining
 pass	a do-local fn capturing a runtime-computed sibling via a LET binding survives inlining
@@ -2294,6 +2296,7 @@ pass	a helper returns the shorter of two borrowed ropes and both caller handles 
 pass	a helper sums two fields of a record parameter
 pass	a heterogeneous TUPLE as op ARGUMENT — the arm destructures both components
 pass	a heterogeneous TUPLE op result (String, Int64) crosses resume and destructures
+pass	a hex code-point char spelling names the same scalar as the plain char
 pass	a hexadecimal integer literal
 pass	a hexadecimal literal is case-insensitive
 pass	a hexadecimal literal past Int64.max is a malformed literal, not a bit pattern
@@ -2372,6 +2375,8 @@ pass	a length-prefixed frame is built from a size segment and a bytes segment
 pass	a let binder may be a record pattern that destructures by field
 pass	a let binder may be a single-variant-sum pattern that destructures the payload
 pass	a let binder may be a tuple pattern that destructures the value
+pass	a let binder shadowing a parameter rebinds within its scope (same type)
+pass	a let binder shadowing a parameter with a DIFFERENT type rebinds correctly
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
 pass	a let binding shadows the record constructor in application-head position
@@ -2796,6 +2801,7 @@ pass	a named arm still dispatches directly rather than forwarding through the op
 pass	a named capturing closure applied directly folds through its capture
 pass	a named capturing closure applied more than once folds at each use
 pass	a named catch-all binder captures the whole sum and re-matches it
+pass	a named control char reads to its scalar code point
 pass	a named family unit combines across DIFFERENT dimensions is a compile-time error
 pass	a named float width alias and its width-indexed expansion name the same type
 pass	a named function is partially applied, bound, and used
@@ -8495,6 +8501,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a let binder shadowing a parameter rebinds within its scope (same type)
-pass	a let binder shadowing a parameter with a DIFFERENT type rebinds correctly
-pass	a do-local def shadowing a parameter rebinds the name (does not unbind it)
