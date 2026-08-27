@@ -24,7 +24,12 @@ HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKTREES="$(cd "$HUB/../worktrees" && pwd)"
 ACTIVE_WINDOW_MIN="${ACTIVE_WINDOW_MIN:-180}"   # heartbeat within this many minutes => agent alive => skip
 TARGET_STALE_MIN="${TARGET_STALE_MIN:-1440}"    # target/ mtime younger than this => recent build => skip
-EXCLUDE_AGENTS="${EXCLUDE_AGENTS:-concierge github-liaison slack-bridge}"
+# Never prune these worktrees' target/. concierge/github-liaison/slack-bridge are the live coordination
+# agents. pr-sync is included too: its registry row is STOPPED, but the concierge maintenance cron runs
+# `cargo xtask fleet watchdog` FROM the pr-sync worktree every tick — so pruning its target/ forces the
+# next watchdog to recompile xtask cold (~32s measured), a recurring penalty (pr-sync report 2026-08-27).
+# It is effectively a live-coordination host (the watchdog's home), so keep its build warm.
+EXCLUDE_AGENTS="${EXCLUDE_AGENTS:-concierge github-liaison slack-bridge pr-sync}"
 
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
