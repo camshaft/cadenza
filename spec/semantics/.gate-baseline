@@ -8132,7 +8132,7 @@ todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow
 todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
-todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
+pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
 todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
