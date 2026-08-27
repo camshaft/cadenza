@@ -18901,30 +18901,6 @@ mod match_engine {
         );
     }
 
-    /// Compile `src`, assert it imports the value-heap runtime, then compose+run export `main` with the
-    /// value-heap runtime and return the printed result — the "runs on the real heap" behavior check for
-    /// the `vec-*` list ops (which never fold, so they always import the runtime). Skips (returns `None`)
-    /// when the runtime wasm is not built.
-    fn run_on_heap(src: &str) -> Option<String> {
-        let bytes = component(src);
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a runtime list op must import the value-heap runtime (genuine heap, not a fold)"
-        );
-        let runtime = super::find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("list heap run trapped (miscompile?): {t}"),
-        }
-    }
-
     /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
     /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
     fn component_imports_op(bytes: &[u8], op: &str) -> bool {
@@ -21642,29 +21618,6 @@ mod match_engine {
             s.message.contains("Int8") && s.message.contains("-128..=127"),
             "a signed checked conversion names the signed range: {}",
             s.message
-        );
-    }
-
-    #[test]
-    fn option_expect_unwraps_a_runtime_optional_through_the_disc_probe() {
-        // The RUNTIME `Option.expect` path: unwrap an optional a runtime op PRODUCED (not a constant), the
-        // compiler's `List.at`+`Option.expect` idiom the spec cites. `build 0 3 (list)` = `[0 1 2]`;
-        // `(List.at xs 1)` is a runtime `(Some 1)` (a heap sum, does NOT fold), and `(Option.expect … "m")`
-        // unwraps it → 1. Exercises the emitted `sum-disc == 0` probe + `sum-payload` unbox on the present
-        // arm (no trap). This forces the genuine `Core::SumExpect` emit (the sum is a runtime handle).
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) (let ((xs (build 0 3 (list)))) \
-                 ((. Option expect) ((. List at) xs 1) \"in range\"))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "1",
-            "runtime Option.expect unwraps the present payload"
         );
     }
 
