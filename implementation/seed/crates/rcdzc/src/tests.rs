@@ -62123,11 +62123,8 @@ mod stage1 {
                (def (main) (use2 (mk 5))) (export main))",
         )))
         .expect("a capturing closure stored in a variant compiles");
-        // The closure cell is a heap value (`arr-alloc`), so link the value-heap runtime (skip if absent,
-        // the established heap-test pattern). Value parity 40 proves the devirtualized call is correct.
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(v, "40");
-        }
+        // Emit-shape pin (wasmparser, wasmtime-free). The runtime value (use2(mk 5) = (5+10)+(5+20) = 40) is
+        // pinned in the corpus; here we assert only the DEVIRTUALIZATION shape.
         // The stored closure's application is DEVIRTUALIZED: the emitted core carries NO `call_indirect`
         // (the table slot is known, so it is a direct call). Scan the code section with `wasmparser`.
         let has_call_indirect = {
@@ -62384,15 +62381,10 @@ mod stage1 {
             "a closed literal closure forwarded through const-wrapper hops must NOT be a false CDZ0201 reject, got: {:?}",
             out.diagnostics
         );
-        // COMPILE + RUN: the forwarded closure specializes correctly and the fold computes 1+2+3 = 6.
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+        // COMPILE: the forwarded closure specializes correctly and the component builds (no false reject).
+        // The runtime value (sum([1,2,3]) with a forwarded const `+` closure folds to 6) is pinned in the corpus.
+        compile_component(&crate::codec::encode(&parse(src)))
             .expect("the const-wrapper-chain program compiles");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "6",
-                "sum([1,2,3]) with a forwarded const `+` closure folds to 6"
-            );
-        }
     }
 
     #[test]
