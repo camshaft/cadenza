@@ -2439,6 +2439,7 @@ pass	a literal-record REBUILD from a map-borne record's fields computes (the #45
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a little-endian u16 bin field stitches its bytes across a rope seam in le order
+pass	a local let binding shadows a same-named top-level definition
 pass	a logical right shift that drops every significant bit of a masked unsigned value folds to zero
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
@@ -3005,6 +3006,8 @@ pass	a perform in an if-CONDITION with a PERFORMING taken branch folds via refol
 pass	a perform in the body's IF CONDITION gates a second perform in the branch
 pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
 pass	a perform result LET-bound then fed to a bin segment builds Bytes under a handler
+pass	a perform threads through a NOT / boolean one-operand form
+pass	a perform threads through a tuple PROJECTION one-operand form
 pass	a perform under NOT in a condition (the negated dispatch gate)
 pass	a perform's result flowing as the ARGUMENT of an enclosing perform threads state inner-to-outer
 pass	a perform-capture through a TUPLE-returning HOF — both results carry the capture
@@ -3091,11 +3094,15 @@ pass	a pure lambda passed as an argument to a performing callee folds
 pass	a pure let-bound lambda and a performing one are both applied in the handle body
 pass	a pure non-final do-statement whose value is discarded compiles but earns a CDZ0307 discarded-value warning
 pass	a pure one-hole MATCH-scrutinee whose selected arm binds and uses the scrutinee re-resolves after the splice
+pass	a pure one-hole arm reading the SEED state folds against a non-zero seed
 pass	a pure one-hole conditional nested inside a strict operator folds
 pass	a pure one-hole continuation body reads an enclosing function parameter and folds
 pass	a pure one-hole continuation folds with pure siblings around the hole
+pass	a pure one-hole fold passes a PURE perform-arg the op reads
 pass	a pure one-hole in a FIRST let init with a later init using its binder folds
 pass	a pure one-hole in a let BODY (pure init) folds
+pass	a pure one-hole locates the hole NESTED several operators deep
+pass	a pure one-hole locates the hole at a NON-LEADING operand
 pass	a pure one-hole match-scrutinee fold selects a non-wildcard arm by the resume value
 pass	a pure shared subexpression computes the same value however the backend optimizes it
 pass	a purely-logical composed proof over a quantified proposition: DISCH then MP
@@ -3922,6 +3929,7 @@ pass	a shared trapping second operand does not preempt a trapping condition
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a shift of a non-numeric operand names the integer requirement
 pass	a short-circuit connective threads a branch perform to the continuation
+pass	a short-circuit connective with a perform in the RHS preserves short-circuit (rhs not run)
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
@@ -5814,6 +5822,8 @@ pass	er1 a Rational entry param in exact arithmetic
 pass	erp1 a Result entry param delivers its Ok payload
 pass	erp2 a Result entry param with two scalar payloads declines pending the Result lift
 pass	esc1 an ESCROW protocol — hold moves funds from balance to escrow only when covered, rollback returns the whole escrow to balance, and the over-balance hold bounces without touching either slot
+pass	eva1 eval of a hand-built Ast.List reconstructs and executes it identically to a quoted form
+pass	eva2 eval of a nested quoted form reconstructs the compound and folds
 pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not execute the result of read — even over a constant string
@@ -6369,6 +6379,7 @@ pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 
 pass	multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
 pass	multiplying quantities multiplies their dimensions
+pass	mutually-recursive do-local functions nested in an inlined helper recurse
 pass	mx1 a THREE-arg op mixing Int64/String/Bool — one arm consumes all three kinds beside the live state
 pass	mx1 mutual recursion with a (List Int64) accumulator (scalar element control)
 pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
@@ -6874,6 +6885,7 @@ pass	record ordering compares in canonical sorted field order, not written order
 pass	record ordering falls to the later canonical field when the earlier ties
 pass	record reshaping is subset comparison as explicit projection
 pass	records reached via MERGE and via WITHOUT dedupe with the direct build as one Set element
+pass	recursion is detected through a nested do around the self-call
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases
@@ -7694,6 +7706,7 @@ pass	tt2 NESTED-tuple resume values across two dispatches — outer destructured
 pass	tt3 a tuple ROTATED through two chained dispatches — each rotation folds the state into the moved slot
 pass	tt4 a MIXED String+Int tuple state — the arm grows the rope and folds the op arg into the counter per dispatch
 pass	tt5 an inner PAIR swapped on counter parity — a nested-tuple state machine, both slots and the counter observed
+pass	ttc1 a hole built from the runtime entry param round-trips through the tag weave
 pass	tth1 TORTOISE-AND-HARE cycle detection — the handler owns the successor function and counts calls, the body's two-speed recursive driver meets inside the cycle and the call tally rides in the answer
 pass	tug1 a TUPLE state pairing TWO collections — a List and a Map advance through different ops, and a cross op reads BOTH halves in one answer
 pass	tuple access on a non-tuple is a type error
@@ -8108,14 +8121,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a pure one-hole fold passes a PURE perform-arg the op reads
-pass	a pure one-hole arm reading the SEED state folds against a non-zero seed
-pass	a pure one-hole locates the hole at a NON-LEADING operand
-pass	a pure one-hole locates the hole NESTED several operators deep
-pass	a perform threads through a NOT / boolean one-operand form
-pass	a perform threads through a tuple PROJECTION one-operand form
-pass	a short-circuit connective with a perform in the RHS preserves short-circuit (rhs not run)
-pass	mutually-recursive do-local functions nested in an inlined helper recurse
-pass	recursion is detected through a nested do around the self-call
-pass	a local let binding shadows a same-named top-level definition
-pass	ttc1 a hole built from the runtime entry param round-trips through the tag weave
