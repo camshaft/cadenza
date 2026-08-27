@@ -20145,7 +20145,8 @@
 ; df quad). The leak covers tuple and record payloads too (dfr1/dfr2), and multi-payload generic
 ; ctors are SOUND under whole-binding (dfr3d, reclaims) — but a NESTED destructure of a heap
 ; payload in a multi-payload generic ctor MISCOMPILES to an unreachable trap on wasm (rust: 111).
-; That trap shape is filed, not pinnable; dfr3d is its passing whole-binding control.
+; That trap shape is now FIXED (v-rust-backend, select.rs elem_field_ty) and pinned as dmp1 below;
+; dfr3d is its passing whole-binding control.
 
 (case "dfr1 a generic sum's TUPLE payload destructured to scalars leaks its shells"
   (input (do
@@ -20212,6 +20213,33 @@
   (call main (: 5 Int64))
   (output (: 111 Int64))
   (live-objects known-leak 3))
+
+; -- v-rust-backend (2026-08-27): dmp1 is the batch 456/457 trap — a GENERIC multi-payload ctor with a
+; nested LIST sub-pattern — now FIXED and PINNED. The wasm select walk reset `cur` to `Ty::Any` after an
+; `arr-get` payload-field read, so the subsequent `Elem` into the nested list mis-picked `arr-get` on the
+; RRB vec (garbage read -> `unreachable`) instead of `vec-get`; `elem_field_ty` now carries the field type
+; forward (select.rs). Value 111; the residual shell leak is the same generic-sum x heap-payload reclaim
+; gap as df2/mpf2 (one more shell for the extra field), v-runtime territory, tracked known-leak 4.
+
+(case "dmp1 a GENERIC multi-payload ctor's nested-LIST field destructures to vec-get, not arr-get"
+  (doc    "The LIST sibling of mpf2 (tuple): the variant carries TWO payloads `(Both (list a b) c)` where
+           field 0 is a heap list and field 1 is a scalar. Matching descends `[Payload, Elem(0)->list,
+           Elem(0)->elem]` to bind `a`/`b` and `[Payload, Elem(1)]` to bind `c`. Without carrying the FIELD
+           type forward, the nested-list element read mis-picked `arr-get` on the RRB vec (garbage ->
+           `unreachable` trap) instead of `vec-get`. Pins that a nested-list field of a multi-payload variant
+           resolves its element op from the field type, not a reset-to-`Any` default. Leaks the payload shells
+           (same generic-sum x heap-payload reclaim gap as df2/mpf2), v-runtime territory, known-leak 4; the
+           VALUE is the invariant this pins. Was batch 456/457's 'filed, not pinnable' trap before the fix.")
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list n (+ n 1)) 100) (GNil unit)) (GPair (List Int64) Int64))
+        ((Both (list a b) c) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 111 Int64))
+  (live-objects known-leak 4))
 
 ; -- breaker batch 458 (2026-08-27): the DEF-side reclaim gap BLOCKING the nested-list entry slice,
 ; reproduced with NO boundary lift. v-rust-backend's nested lift emit was proven value-correct but
