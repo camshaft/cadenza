@@ -3805,6 +3805,18 @@ fn is_ice_signature(message: &str) -> bool {
         || m.contains("internal error")
 }
 
+/// Whether a RUNTIME failure reason is an ARTIFACT-ICE: a compile-success-but-unloadable component (wasmtime
+/// `Component::new`/instantiate rejects it) — the "compiler said yes and produced garbage" ICE (breaker's B1).
+/// Never a legitimate runtime trap, so it FAILs regardless of expectation kind (the trap-expectation channel
+/// otherwise swallows it as Todo, since it classifies to no `TrapCode`). MIRROR of `cdz_corpus_grade`.
+fn is_artifact_ice(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("invalid component")
+        || r.contains("failed to parse webassembly")
+        || r.contains("failed to instantiate")
+        || r.contains("instantiate component")
+}
+
 /// EVERY warning diagnostic on a SUCCESSFUL compile, recovered from `cdz compile` stderr — the
 /// `(warns CODE (message "…"))` clause of the portable-diagnostic-test capability (operator seq353,
 /// inc2). Unlike an error (first-wins), a clean compile can emit a SET of warnings (e.g. two unused
@@ -4967,6 +4979,12 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             Ran::BadArtifact(e) => {
                 Grade::Fail(format!("expected a trap, artifact did not build: {e}"))
             }
+            // An ARTIFACT-ICE actual (compile-success-but-unloadable component) is a compiler bug, never the
+            // expected trap → FAIL, before the kind comparison (breaker's B1; a value-expectation already
+            // FAILs a trap, this closes the trap-expectation channel where it classified to no TrapCode → Todo).
+            Ran::Trap(actual) if is_artifact_ice(actual) => Grade::Fail(format!(
+                "expected a trap, but the compiled artifact failed to LOAD (an ICE — invalid component): {actual}"
+            )),
             Ran::Trap(actual) => {
                 // EXPECTED side: an explicit trap CODE id (`from_id`, preferred stable form) or a legacy
                 // English reason (`classify`, back-compat). Compare by CODE to the actual runtime reason.

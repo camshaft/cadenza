@@ -394,6 +394,16 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             // Resolve the EXPECTED side to a `TrapCode`: an explicit code id (`from_id`, the preferred stable
             // form) or a legacy English reason (`classify`, back-compat). Compare by CODE to `classify(actual)`
             // — the runtime reason (which the backend emits) is the only English matched here.
+            // FIRST: an ARTIFACT-ICE actual (`invalid component` / `failed to parse WebAssembly` — the compiler
+            // said YES and emitted a component that won't even load) is a compiler BUG, never a runtime trap.
+            // It classifies to no `TrapCode`, so a trap-expectation case would otherwise swallow it as Todo
+            // (breaker's B1 catch: value-expectation cases already FAIL such an actual, but the trap channel
+            // hid it). FAIL unconditionally, before the kind comparison — an unloadable artifact is never the
+            // expected trap.
+            Outcome::Trap(actual) if is_artifact_ice(actual) => Grade::Fail(format!(
+                "expected trap {reason}, but the compiled artifact failed to LOAD (an ICE — the compiler \
+                 emitted an invalid component): {actual}"
+            )),
             Outcome::Trap(actual) => {
                 let want = TrapCode::from_id(reason).or_else(|| classify(reason));
                 match (want, classify(actual)) {
@@ -506,6 +516,20 @@ pub fn is_ice_signature(message: &str) -> bool {
         || m.contains("sum match sub-value has no declaration")
         || m.contains("panicked")
         || m.contains("internal error")
+}
+
+/// Whether a RUNTIME failure reason is an ARTIFACT-ICE: the compiler reported success and emitted a component
+/// that then FAILS TO LOAD (wasmtime `Component::new` / instantiate rejects it) — the "compiler said yes and
+/// produced garbage" face of an internal compiler error (breaker's B1). It is NEVER a legitimate runtime trap,
+/// so it must FAIL regardless of the case's expectation kind (a value-expectation already FAILs a trap outcome;
+/// this closes the TRAP-expectation channel, where the unloadable-artifact reason classifies to no `TrapCode`
+/// and would otherwise be swallowed as an unconfirmed Todo).
+pub fn is_artifact_ice(reason: &str) -> bool {
+    let r = reason.to_ascii_lowercase();
+    r.contains("invalid component")
+        || r.contains("failed to parse webassembly")
+        || r.contains("failed to instantiate")
+        || r.contains("instantiate component")
 }
 
 /// EVERY `warning [CODE] (node N): message` in a compiler stderr — a clean compile can emit a SET.
@@ -1054,6 +1078,29 @@ mod tests {
         assert!(matches!(
             grade_trial(&GExpect::Trap("weird".into()), &Outcome::Trap("odd".into())),
             Grade::Todo(_)
+        ));
+    }
+
+    #[test]
+    fn an_artifact_ice_actual_fails_any_expectation_not_todo() {
+        // breaker's B1: a compile-success-but-unloadable component ("invalid component: failed to parse
+        // WebAssembly module") is an ICE, never a runtime trap. On a TRAP expectation it classifies to no
+        // TrapCode, so WITHOUT the guard it would swallow as Todo — assert it FAILs instead.
+        let ice =
+            Outcome::Trap("cdz-run: invalid component: failed to parse WebAssembly module".into());
+        assert!(matches!(
+            grade_trial(&GExpect::Trap("does not export the interface".into()), &ice),
+            Grade::Fail(_)
+        ));
+        assert!(is_artifact_ice(
+            "invalid component: failed to parse WebAssembly module"
+        ));
+        assert!(is_artifact_ice("failed to instantiate component"));
+        assert!(!is_artifact_ice("integer divide by zero"));
+        // A VALUE expectation already FAILs any trap actual (regression guard, unchanged).
+        assert!(matches!(
+            grade_trial(&GExpect::Output("(: 60 Int64)".into()), &ice),
+            Grade::Fail(_)
         ));
     }
 
