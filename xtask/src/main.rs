@@ -5538,6 +5538,21 @@ fn check_baseline(
         }
     }
 
+    // A `fail` verdict is a MISCOMPILE (ran to an outcome disagreeing with the record — the actionable
+    // frontier), never an accepted baseline state (baselines carry only pass/todo). The `regressed`
+    // check above catches a baseline pass→fail, but a case ABSENT from the baseline (a recent
+    // test→corpus migration, a live-objects case) or a baselined todo→fail would FAIL yet slip past
+    // `--check` as "not a regression" — making the fleet landing bar (`gate --check` 0-regressed)
+    // strictly WEAKER than plain `gate` (which exits non-zero on any fail). That hole let ~12 reds
+    // accrue on green `--check` (v-nix report 2026-08-27). Close it: fail on ANY current `fail` that is
+    // not already reported as a pass→fail regression (so no double-count), regardless of baseline
+    // membership. Correct under `--shard` too (a fail in a shard is still a fail).
+    let failing: Vec<&str> = verdicts
+        .iter()
+        .filter(|(d, v)| *v == Verdict::Fail && base.get(d.as_str()) != Some(&Verdict::Pass))
+        .map(|(d, _)| d.as_str())
+        .collect();
+
     if !gained.is_empty() {
         println!("\nnewly passing ({}):", gained.len());
         for g in &gained {
@@ -5556,8 +5571,17 @@ fn check_baseline(
             println!("  ?  {v}");
         }
     }
+    if !failing.is_empty() {
+        println!(
+            "\nFAILING — a fail not caught by the pass-regression check ({}):",
+            failing.len()
+        );
+        for f in &failing {
+            println!("  x  {f}");
+        }
+    }
 
-    if regressed.is_empty() && vanished.is_empty() {
+    if regressed.is_empty() && vanished.is_empty() && failing.is_empty() {
         println!(
             "\ngate --check: OK (no regressions vs baseline; {} newly passing)",
             gained.len()
@@ -5565,9 +5589,10 @@ fn check_baseline(
         0
     } else {
         println!(
-            "\ngate --check: FAIL ({} regressed, {} vanished)",
+            "\ngate --check: FAIL ({} regressed, {} vanished, {} failing)",
             regressed.len(),
-            vanished.len()
+            vanished.len(),
+            failing.len()
         );
         1
     }
@@ -8906,6 +8931,75 @@ mod trap_grading_tests {
         assert!(titles.contains("a case that passes"));
         assert!(titles.contains("a case the backend declines"));
         assert_eq!(titles.len(), 2);
+    }
+
+    #[test]
+    fn gate_check_fails_on_any_fail_not_just_a_pass_regression() {
+        // v-nix gate hole: `--check` only flagged a baseline pass→fail regression, so a case ABSENT from
+        // the baseline (or a baselined todo) that FAILS slipped past as "not a regression" — making the
+        // fleet landing bar weaker than plain `gate`. A fail is never an accepted baseline state, so
+        // `--check` must exit non-zero on ANY current fail.
+        let tick = std::process::id();
+        let root = std::env::temp_dir().join(format!("gate-check-fail-{tick}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("spec/semantics")).unwrap();
+        std::fs::write(
+            root.join("spec/semantics/.gate-baseline"),
+            "# gate baseline\npass\tbaselined pass\ntodo\tbaselined todo\n",
+        )
+        .unwrap();
+        let paths = Paths {
+            seed: root.join("implementation/seed"),
+            repo: root.clone(),
+        };
+        let v = |pairs: &[(&str, Verdict)]| -> Vec<(String, Verdict)> {
+            pairs.iter().map(|(d, x)| (d.to_string(), *x)).collect()
+        };
+
+        // An UNBASELINED case that fails → non-zero (the hole this closes; both baselined cases hold).
+        assert_ne!(
+            check_baseline(
+                &paths,
+                &v(&[
+                    ("baselined pass", Verdict::Pass),
+                    ("baselined todo", Verdict::Todo),
+                    ("brand new migrated case", Verdict::Fail),
+                ]),
+                GateTarget::Wasm,
+                false,
+            ),
+            0,
+            "an unbaselined fail must fail --check"
+        );
+        // A baselined todo→fail (a declined case now miscompiling) must ALSO fail.
+        assert_ne!(
+            check_baseline(
+                &paths,
+                &v(&[
+                    ("baselined pass", Verdict::Pass),
+                    ("baselined todo", Verdict::Fail),
+                ]),
+                GateTarget::Wasm,
+                false,
+            ),
+            0,
+            "a baselined todo→fail must fail --check"
+        );
+        // Control: no fails, both baselined cases hold → OK (exit 0).
+        assert_eq!(
+            check_baseline(
+                &paths,
+                &v(&[
+                    ("baselined pass", Verdict::Pass),
+                    ("baselined todo", Verdict::Todo),
+                ]),
+                GateTarget::Wasm,
+                false,
+            ),
+            0,
+            "no fails + no regressions → --check passes"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
