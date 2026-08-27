@@ -10948,32 +10948,10 @@ mod runtime_ops {
         );
     }
 
-    #[test]
-    fn a_provably_in_range_shift_computes_the_same_value_without_a_guard() {
-        // A `<<` / `* 2^k` whose result provably fits (a masked operand) has its overflow guard elided —
-        // the value must be EXACTLY the guarded result. `(<< (& x 15) 2)` = (x&15)*4 ∈ [0,60].
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(255)]),
-            60
-        ); // 15*4
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(-1)]),
-            60
-        ); // (-1&15)*4
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(<< (& x 15) 2)", &[Val::S64(1)]),
-            4
-        );
-        // `(* (& x 15) 2)` = (x&15)*2 ∈ [0,30], strength-reduced to `<< 1`, guard elided.
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(255)]),
-            30
-        );
-        assert_eq!(
-            run::<i64>("(: x Int64)", "(* (& x 15) 2)", &[Val::S64(7)]),
-            14
-        );
-    }
+    // a_provably_in_range_shift_computes_the_same_value_without_a_guard: pure-run value parity
+    // (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp cases "a provably-in-range
+    // left shift of a masked operand computes the guarded value (shl parity)" + "a provably-in-range
+    // multiply of a masked operand strength-reduces and drops its guard (mul parity)" (wasmtime-drop).
 
     #[test]
     fn a_clear_low_bits_shift_pair_elides_the_left_shift_overflow_guard() {

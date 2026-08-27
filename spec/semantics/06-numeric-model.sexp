@@ -10352,3 +10352,24 @@
     (export main)))
   (call main (: 1 Int32) (: 2 Int32)) (output (: 105 Int64))
   (call main (: 2 Int32) (: 1 Int32)) (output (: 7 Int64)))
+
+; -- provably-in-range shift/strength-reduction value parity (behavioral half migrated from rcdzc
+; a_provably_in_range_shift_computes_the_same_value_without_a_guard, 2026-08-27; that test was
+; PURE-run (no Lir inspection) so it fully migrates here — a masked operand whose shifted/multiplied
+; result provably fits has its overflow guard elided, and the value must equal the guarded result).
+
+(case "a provably-in-range left shift of a masked operand computes the guarded value (shl parity)"
+  (doc    "`(<< (& x 15) 2)` = (x&15)*4 lands in [0,60] so the overflow guard is provably dead and is
+           elided; the value must equal the guarded result. x=255 → 15*4=60, x=-1 → (-1&15)=15*4=60,
+           x=1 → 1*4=4.")
+  (input (do (def (main (: x Int64)) (<< (& x 15) 2)) (export main)))
+  (call main (: 255 Int64)) (output (: 60 Int64))
+  (call main (: -1 Int64))  (output (: 60 Int64))
+  (call main (: 1 Int64))   (output (: 4 Int64)))
+
+(case "a provably-in-range multiply of a masked operand strength-reduces and drops its guard (mul parity)"
+  (doc    "`(* (& x 15) 2)` = (x&15)*2 lands in [0,30] so it is strength-reduced to `<< 1` with its
+           overflow guard elided; the value must equal the multiply. x=255 → 15*2=30, x=7 → 7*2=14.")
+  (input (do (def (main (: x Int64)) (* (& x 15) 2)) (export main)))
+  (call main (: 255 Int64)) (output (: 30 Int64))
+  (call main (: 7 Int64))   (output (: 14 Int64)))
