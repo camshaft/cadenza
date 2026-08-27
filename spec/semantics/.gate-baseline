@@ -3869,6 +3869,7 @@ pass	a set built from a BigInt sum and a BigInt.of over integer arithmetic has b
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
+pass	a set collapses a duplicate STRING element (a non-int scalar key path)
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set consumed by Set.remove in one operand is unchanged for a later read of the same binding
@@ -5248,6 +5249,7 @@ pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-ra
 pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — the fourth emit sees three prior
 pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
 pass	by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads
+pass	byp1 a Bytes entry param measured by Bytes.len reclaims
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -8106,6 +8108,8 @@ todo	a runtime-operand try as a list element declines pending brick 3b
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
+todo	byp2 a Bytes entry param destructured by a runtime bin match declines
+todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 todo	cc3 a factory returning a closure over a performing-arg param declines pending the capture-once fold
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
@@ -8142,6 +8146,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	byp1 a Bytes entry param measured by Bytes.len reclaims
-todo	byp2 a Bytes entry param destructured by a runtime bin match declines
-todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)

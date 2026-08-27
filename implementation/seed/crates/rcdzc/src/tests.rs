@@ -26694,63 +26694,6 @@ mod match_engine {
     }
 
     #[test]
-    fn constant_map_equality_folds_order_independently() {
-        // 05-compound-types §Two Maps Are Equal When They Associate The Same Keys With Equal Values — a
-        // CONSTANT map equality folds structurally, order-independent + by value. `const_compound_eq` gains
-        // a `MapNew` arm so it works standalone AND recursively (a `(list (map …) (map …))` element compare).
-        let run = |src: &str| {
-            run_returns::<bool>(
-                &component(&format!("(module m (def (main) {src}) (export main))")),
-                "main",
-            )
-        };
-        // Same entries in DIFFERENT written order → true (order-independent).
-        assert!(run(
-            "(= (map (\"a\" 1) (\"b\" 2)) (map (\"b\" 2) (\"a\" 1)))"
-        ));
-        // Different key sets → false (same Map<String,Int64> type, NOT a type error).
-        assert!(!run("(= (map (\"a\" 1)) (map (\"b\" 1)))"));
-        // Same key, different value → false.
-        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 2)))"));
-        // Different sizes → false.
-        assert!(!run("(= (map (\"a\" 1)) (map (\"a\" 1) (\"b\" 2)))"));
-        // NESTED: two lists whose elements are maps of different keys — the recursion that previously
-        // declined. Both lists are identical, so the list equality folds true.
-        assert!(run(
-            "(= (list (map (\"a\" 1)) (map (\"b\" 2))) (list (map (\"a\" 1)) (map (\"b\" 2))))"
-        ));
-    }
-
-    #[test]
-    fn constant_set_construction_deduplicates_by_value() {
-        // collections-and-text.md §A Set Is A Collection Of Unique Elements — `Set.of` DEDUPLICATES its
-        // constant elements by value, and set equality is order-independent + by value. This LOCKS IN the
-        // behavior the LINEAR `lower_set_of` dedup (a `ScalarKey` hash-set fast path) preserves: it
-        // replaced an O(elements²) pairwise `const_compound_eq` scan (each re-cloning a `Core`) — a
-        // `(Set.of (list 0 1 … N))` of N distinct ints was quadratic (N=3200 spent ~82% of the compile in
-        // `const_compound_eq`). The verdict is IDENTICAL — first occurrence of each value is kept, order
-        // is unobservable (the canonical form sorts). Folds to a constant `bool`, so no runtime is needed.
-        let run = |src: &str| {
-            run_returns::<bool>(
-                &component(&format!("(module m (def (main) {src}) (export main))")),
-                "main",
-            )
-        };
-        // A duplicate element collapses: {1,2,2,3} == {1,2,3} (corpus 19-sets §"collapses a duplicate").
-        assert!(run("(= (Set.of (list 1 2 2 3)) (Set.of (list 1 2 3)))"));
-        // Order-independent: {3,1,2} == {1,2,3}.
-        assert!(run("(= (Set.of (list 3 1 2)) (Set.of (list 1 2 3)))"));
-        // A repeated value at DIFFERENT list positions still collapses to one element (size 3 vs 4-list).
-        assert!(run("(= (Set.of (list 1 2 3 1 2 3)) (Set.of (list 1 2 3)))"));
-        // Distinct elements are NOT collapsed: {1,2,3} ≠ {1,2}.
-        assert!(!run("(= (Set.of (list 1 2 3)) (Set.of (list 1 2)))"));
-        // String elements dedup the same way (a non-int scalar key path).
-        assert!(run(
-            "(= (Set.of (list \"a\" \"b\" \"a\")) (Set.of (list \"a\" \"b\")))"
-        ));
-    }
-
-    #[test]
     fn symbol_reader_sugar_and_nominal_boundary() {
         // 17-symbols inc 2: `#"text"` reader sugar reads to the SAME value as `(Symbol.of "text")`, and a
         // Symbol is NOMINAL over String — comparing the two ACROSS the boundary is CDZ0202.

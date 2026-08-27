@@ -3379,6 +3379,7 @@ pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match decodes a Bytes.slice sub-range of a larger buffer
+pass	a runtime bin match decodes a FINAL constant-size utf8 segment
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
@@ -3694,6 +3695,7 @@ pass	a set built from a BigInt sum and a BigInt.of over integer arithmetic has b
 pass	a set built from generated values is equal regardless of insertion order (order-independent equality on generated inputs)
 pass	a set chosen by a runtime if is membership-tested with valid wasm
 pass	a set chosen by a runtime if is size-measured with valid wasm
+pass	a set collapses a duplicate STRING element (a non-int scalar key path)
 pass	a set collapses a duplicate element
 pass	a set consumed by Set.insert in one operand is unchanged for a later read of the same binding
 pass	a set consumed by Set.remove in one operand is unchanged for a later read of the same binding
@@ -4267,6 +4269,8 @@ pass	ae6 short-circuit OR with DRAWS on both sides — the right draw fires only
 pass	ae7 draw NESTED under a pure unary call in the first arg slot, second slot a bare draw — nesting must not reorder
 pass	ae8 LIST literal of three draws — element positions carry the draw order into the structure
 pass	ae9 RECORD literal of two draws read back by PROJECTION — field-init order in the literal drives the state thread
+pass	aeq2 bare equality of String.to-bytes twins
+pass	aeq4 a slice VIEW bare-compares equal to its flat twin
 pass	ag2 TWO aggregator effects interleaved — each keeps its own running sum, weighted reads pin the four-feed order
 pass	ag3 one resumptive dispatch then an ABORT on the same handler — the abort arm reads the advanced state
 pass	al1 chained LET locals inside the arm — intermediate names feed both the resume value and the next-state
@@ -4999,6 +5003,9 @@ pass	by2 a SLICE view (start,LEN) of the Bytes state read per dispatch — in-ra
 pass	by3 op-arg values WRAPPED to bytes at runtime accumulate in the state — the fourth emit sees three prior
 pass	by4 nested SAME-effect handlers with independent BYTES states — the outer buffer self-doubles, the inner appends
 pass	by5 the slmin11 slot-clobber shape on a BYTES slot, phi-merged Bytes.concat growth in a tuple state, 2 puts + 2 reads
+pass	byp1 a Bytes entry param measured by Bytes.len reclaims
+pass	byp2 a Bytes entry param destructured by a runtime bin match declines
+pass	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
 pass	byte length agrees with the length of the encoded bytes
 pass	byte length counts the normalized form, not the source spelling
 pass	byte length is the UTF-8 byte count
@@ -7663,15 +7670,12 @@ todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)
-pass	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)
 todo	aeq1 bare equality over two runtime Ast.encode results
-pass	aeq2 bare equality of String.to-bytes twins
 todo	aeq3 arena Bytes laundered through fn params bare-compare equal
-pass	aeq4 a slice VIEW bare-compares equal to its flat twin
 todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	bk1 two runtime Blake3 digests of the same bytes bare-compare equal
@@ -7749,6 +7753,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	byp1 a Bytes entry param measured by Bytes.len reclaims
-pass	byp2 a Bytes entry param destructured by a runtime bin match declines
-pass	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
