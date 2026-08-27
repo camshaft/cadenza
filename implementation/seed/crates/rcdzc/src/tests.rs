@@ -8532,39 +8532,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_tail_loop_threading_a_projected_boxed_sum_accumulator_decodes_correctly() {
-        // A tuple-projected boxed sum threaded through a self-tail loop must SURVIVE the loop step. `one`
-        // returns `(tuple (W.Atom <byte>) (+ pos 1))`; `loop` threads `(. r 0)` (the nested-compound boxed
-        // sum) and `(. r 1)` (the scalar next-position) into its params, so the `W.Atom` child handle
-        // escapes OUT of the tuple into the recursive call as `last`. If the `let`-bound tuple `r` were
-        // reclaimed after its projections (the naive rule saw only borrows — `(. r 1)` copies its scalar
-        // out), the drop would cascade to FREE the escaped boxed sum → use-after-free → garbage 0 instead
-        // of 5. Pins that a nested-compound projection ESCAPES its aggregate (select.rs `binding_escapes`),
-        // so the aggregate is not reclaimed while its extracted child is live. The `if` inside `one` forces
-        // `r` to be a real join-produced heap handle (not a folded constant); all three of {`if`, boxed-sum
-        // accumulator, sibling-projected cursor} are jointly required to trigger the bug.
-        let Some(v) = run_heap_value(
-            "(module m (type W (Atom Int64) (Zero)) \
-               (def (one (: b Bytes) (: pos Int64)) \
-                 (if (= ((. Option expect) ((. Bytes at) b pos) \"t\") 5) \
-                     (tuple ((. W Atom) ((. Option expect) ((. Bytes at) b pos) \"v\")) (+ pos 1)) \
-                     (tuple ((. W Atom) 99) (+ pos 1)))) \
-               (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W)) \
-                 (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0))))) \
-               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0))) \
-               (def (main (: pos Int64)) (wval (loop b\"\\x05\\x07\" 1 pos ((. W Atom) 0)))) (export main))",
-            vec!["0".to_string()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping projected-boxed-sum tail-loop run");
-            return;
-        };
-        assert_eq!(
-            v, "5",
-            "the projected boxed-sum accumulator must survive the tail-loop step, not be freed"
-        );
-    }
-
-    #[test]
     fn a_multi_payload_pattern_with_a_wildcard_and_narrow_widths() {
         // A wildcard in one payload position `(Cons _ t)` binds only the tail (no head binder), and a
         // narrow-width payload (UInt8 beside Int64) boxes/unboxes at its own width in the payload tuple.

@@ -907,6 +907,22 @@
   (call   main (: 0 Int64)) (output (: 9 Int64))
   (live-objects known-leak 3))
 
+(case "a projected boxed-sum accumulator survives the tail-loop step (escape, not reclaimed)"
+  (doc    "The ESCAPE/use-after-free face of the reader loop above (distinct-branch `if`): `one` returns `(tuple (W.Atom <byte>) (+ pos 1))` from an `if` whose two branches DIFFER (`(W.Atom 99)` in the else) — so the `if` cannot be merged/folded and `r` is a REAL join-produced heap handle. `loop` threads `(. r 0)` (the boxed-sum node) as the `last` accumulator and `(. r 1)` (the cursor) as the position, so the `W.Atom` child handle ESCAPES out of the tuple into the recursive call. If the let-bound tuple `r` were reclaimed after its projections (a naive rule seeing only borrows — `(. r 1)` copies its scalar out), the drop would cascade to FREE the escaped boxed sum → use-after-free → garbage 0 instead of 5. Pins that a nested-compound projection ESCAPES its aggregate (`select.rs binding_escapes`), so the aggregate is not reclaimed while its extracted child is live. All three of {distinct `if`, boxed-sum accumulator, sibling-projected cursor} are jointly required to trigger the bug. One step over b\"\\x05\\x07\" from pos 0: byte 5 → then-arm → `(W.Atom 5)` → `wval` = 5.")
+  (input  (do
+            (type W (Atom Int64) (Zero))
+            (def (one (: b Bytes) (: pos Int64))
+              (if (= (Option.expect (Bytes.at b pos) "t") 5)
+                (tuple ((. W Atom) (Option.expect (Bytes.at b pos) "v")) (+ pos 1))
+                (tuple ((. W Atom) 99) (+ pos 1))))
+            (def (loop (: b Bytes) (: n Int64) (: pos Int64) (: last W))
+              (if (= n 0) last (let ((r (one b pos))) (loop b (- n 1) (. r 1) (. r 0)))))
+            (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
+            (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 5 Int64))
+  (live-objects known-leak 1))
+
 (case "a chained access through an if-of-records composes and shields the untaken branch's trap"
   (doc    "The access-into-if fold COMPOSES through a chain: `(. (. (if b R1 R2) a) x)` reads field `a`
            (itself a record) from the if-selected record, then field `x` from that — the projection sinks
