@@ -9025,6 +9025,7 @@ pub fn bytes_roundtrip_core_module(
 /// `h..h+k` (module `"heap"`, resolved by name via `import_index`), then the `"mem"` memory import. The
 /// caller selects `funcs` with import base `h+k` and `host_needs_memory` set; `member_body_abs` is the
 /// member body's absolute core index. Exports the member func + `cabi_realloc` (NOT memory — it is imported).
+#[allow(clippy::too_many_arguments)]
 pub fn bytes_roundtrip_host_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
@@ -9033,10 +9034,20 @@ pub fn bytes_roundtrip_host_core_module(
     param_desc: &[u8],
     result_desc: &[u8],
     member_name: &str,
+    layout: &Layout,
 ) -> Result<Vec<u8>, String> {
     let h = host_fns.len();
     let k = imports.len();
     let n = funcs.len();
+    // §2d STATIC-DATA on the HOST-FUSED provider path (mirrors the pure `bytes_roundtrip_core_module`): a
+    // constant in the reducer body / its returned effect-list builds ONCE in `start` (immortal) + `global.get`
+    // per event. This envelope has NO owned bump cursor (the shared `mem` module owns it), so the static-value
+    // globals are the ONLY globals — indices `0..n_static` (bytes) then `n_static..n_static+n_compounds`
+    // (compounds), matching the `global.get` indices the selected body emits. `n_init == 0` → no GLOBAL/START/
+    // init additions → byte-identical to the pre-static host envelope.
+    let n_static = layout.static_bytes.len();
+    let n_compounds = layout.static_compounds.len();
+    let n_init = (n_static > 0 || n_compounds > 0) as usize;
 
     // ── Type section ── host functypes 0..h, runtime h..h+k, defined h+k..h+k+n, apply (h+k+n), realloc.
     let mut type_items = Vec::new();
@@ -9068,9 +9079,17 @@ pub fn bytes_roundtrip_host_core_module(
         t.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&t);
     }
+    // The `start` init func type `() -> ()` LAST (index h+k+n+1+needs_realloc), present iff there are statics.
+    let init_type_idx = (h + k + n + 1 + needs_realloc as usize) as u32;
+    if n_init == 1 {
+        let mut t = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        t.extend_from_slice(&wasm_vec(0, &[]));
+        t.extend_from_slice(&wasm_vec(0, &[]));
+        type_items.extend_from_slice(&t);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(h + k + n + 1 + needs_realloc as usize, &type_items),
+        &wasm_vec(h + k + n + 1 + needs_realloc as usize + n_init, &type_items),
     );
 
     // ── Import section ── host func imports (module "host", 0..h), runtime ops (module "heap", h..h+k),
@@ -9121,11 +9140,37 @@ pub fn bytes_roundtrip_host_core_module(
         uleb128((h + k + i) as u64, &mut func_items);
     }
     uleb128(apply_type_idx as u64, &mut func_items);
-    let func_sec = section(wasm_abi::CORE_SEC_FUNCTION, &wasm_vec(n + 1, &func_items));
+    // The `start` init defined func LAST (type init_type_idx) so the apply index doesn't shift.
+    if n_init == 1 {
+        uleb128(init_type_idx as u64, &mut func_items);
+    }
+    let func_sec = section(
+        wasm_abi::CORE_SEC_FUNCTION,
+        &wasm_vec(n + 1 + n_init, &func_items),
+    );
     let apply_abs = (h + k + n + needs_realloc as usize) as u32;
+    let init_func_abs = apply_abs + 1; // the START-named init (valid only when n_init == 1)
 
-    // NO memory section — memory 0 is the imported shared `mem`. NO global section — the removed realloc was
-    // its only user; the shared mem module owns the bump cursor now.
+    // NO memory section — memory 0 is the imported shared `mem`. The shared mem module owns the realloc bump
+    // cursor, so this envelope's ONLY globals are the §2d static-value slots (mutable i32, init 0 — the `start`
+    // init overwrites each with the once-built immortal handle): `0..n_static` bytes then compounds, matching
+    // the `global.get` indices the selected body emits. Absent (no global section) when nothing is hoisted.
+    let global_sec = if n_init == 1 {
+        let mut items = Vec::new();
+        for _ in 0..(n_static + n_compounds) {
+            items.push(wasm_abi::CORE_I32);
+            items.push(0x01); // mutable
+            items.push(wasm_abi::op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(0, &mut items);
+            items.push(wasm_abi::op::END);
+        }
+        section(
+            wasm_abi::CORE_SEC_GLOBAL,
+            &wasm_vec(n_static + n_compounds, &items),
+        )
+    } else {
+        Vec::new()
+    };
 
     // ── Export section ── the member func only. `cabi_realloc` is exported by the shared mem module (the
     // apply lift + kv.get lower alias it from THERE), not by the guest.
@@ -9148,14 +9193,54 @@ pub fn bytes_roundtrip_host_core_module(
         member_body_abs,
         &import_index,
     ));
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + 1, &code_items));
+    // The `start` init body LAST (when there are statics): build each constant ONCE + mark-immortal +
+    // global.set — identical to the pure envelope's init, resolved through the same `import_index`.
+    if n_init == 1 {
+        let mut code: Vec<crate::backend::wasm::lir::Lir> = Vec::new();
+        for (g, bytes) in layout.static_bytes.iter().enumerate() {
+            code.push(Lir::ConstI32(bytes.len() as i32));
+            code.push(Lir::CallImport("bytes-alloc"));
+            for (i, &b) in bytes.iter().enumerate() {
+                code.push(Lir::ConstI32(i as i32));
+                code.push(Lir::ConstI32(b as i32));
+                code.push(Lir::CallImport("bytes-set"));
+            }
+            code.push(Lir::CallImport("mark-immortal"));
+            code.push(Lir::GlobalSet(g as u32));
+        }
+        code.extend_from_slice(&layout.static_compound_init);
+        let init = SelectedFunc {
+            params: Vec::new(),
+            ret: crate::ty::Ty::Unit,
+            code,
+            declared: Vec::new(),
+            src_body: None,
+            locals: Vec::new(),
+            scopes: Vec::new(),
+            stmt_lines: Vec::new(),
+        };
+        code_items.extend_from_slice(&code_entry(&init, &import_index));
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + 1 + n_init, &code_items),
+    );
+
+    // ── Start section (8) ── names the init func; between EXPORT (7) and CODE (10). Absent when no statics.
+    let start_sec = if n_init == 1 {
+        section(wasm_abi::CORE_SEC_START, &uleb_bytes(init_func_abs as u64))
+    } else {
+        Vec::new()
+    };
 
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
     core.extend_from_slice(&import_sec);
     core.extend_from_slice(&func_sec);
+    core.extend_from_slice(&global_sec);
     core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&start_sec);
     core.extend_from_slice(&code_sec);
     Ok(core)
 }
