@@ -19650,47 +19650,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_map_match_over_a_map_literal_with_a_runtime_key_selects_by_value() {
-        // The map-MATCH twin of `a_map_literal_with_a_runtime_key_is_not_const_folded_against_a_query`: a
-        // `(map …)` LITERAL scrutinee folds to a `Core::MapNew`, but it can carry a RUNTIME key (a
-        // non-foldable call). `(match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ -1))` — the literal's
-        // KEY `(add 2 3)` is 5 at run time, so the `5` arm matches and binds v=42. The const-fold arm-select
-        // tested key presence with `const_compound_eq`, which reports the runtime key ABSENT (compile-time
-        // equality unknown) → wrongly took the catch-all → -1 (a silent miscompile). The fix: a `MapNew`
-        // scrutinee that is NOT `is_const_value` (a runtime key/value) reads its value binder via the RUNTIME
-        // path (`lower_map_field_runtime` — `Map.lookup` compares keys by VALUE), exactly as any runtime map.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
-               (def (main) (match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) \
-               (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime-key map-match run");
-            return;
-        };
-        assert_eq!(
-            v, "42",
-            "a map match over a map literal whose key is a runtime value (add 2 3 = 5) must select the \
-             `5` arm by value and bind v=42 — never a const-fold that reports the runtime key absent"
-        );
-        // The DUAL: a query key that is genuinely ABSENT at run time falls through to the catch-all. Here
-        // the literal's runtime key is 6 (add 2 4), so the `5` arm misses → -1.
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1)))) \
-                   (def (main) (match (map ((add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) \
-                   (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "-1",
-            "a runtime key that does not equal the pattern key falls through to the catch-all"
-        );
-    }
-
-    #[test]
     fn a_guarded_map_arm_over_a_partial_const_map_resolves_its_value_binder_in_guard_and_body() {
         // WARNING: INVALID-ARTIFACT regression (v-patterns self-probe, both backends): a GUARDED map arm whose
         // LOOKED-UP key's value is a compile-time CONSTANT while the map as a whole is RUNTIME (another key

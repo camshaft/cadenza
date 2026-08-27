@@ -22940,3 +22940,22 @@
   (call main (: 2 Int64))
   (output (: 1020 Int64))
   (live-objects 0))
+
+; ── a map LITERAL scrutinee `(map (K V))` folds to a Core::MapNew, but may carry a RUNTIME (non-foldable)
+;    KEY. A MapNew scrutinee that is NOT a const value must read its matched value via the RUNTIME path
+;    (Map.lookup compares keys by VALUE) — a const-fold arm-select would wrongly report the runtime key
+;    ABSENT and take the catch-all (a silent miscompile the runtime path fixes).
+(case "a map match over a map literal with a runtime key selects the arm by value"
+  (doc    "`(match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ -1))` — the literal's KEY `(add 2 3)` is 5
+           at run time (a non-foldable recursive call), so the `5` arm matches by VALUE and binds v = 42. The
+           const-fold path would report the runtime key absent and wrongly take the catch-all.")
+  (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+              (def (main) (match (map ((add 2 3) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+  (output (: 42 Int64)))
+
+(case "a map match over a map literal with a non-matching runtime key falls through"
+  (doc    "The dual: the literal's runtime key is 6 (`add 2 4`), so the `5` arm misses by value → the match
+           falls through to the catch-all → -1.")
+  (input  (do (def (add (: x Int64) (: n Int64)) (if (< n 1) x (add (+ x 1) (- n 1))))
+              (def (main) (match (map ((add 2 4) 42)) ((map (5 v) .. rest) v) (_ (- 0 1)))) (export main)))
+  (output (: -1 Int64)))
