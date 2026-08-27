@@ -10902,79 +10902,15 @@ mod runtime_ops {
 
     // ── unsigned checked +/-/*: the unsigned overflow guards (carry/borrow) ───────────────────────
 
-    #[test]
-    fn runtime_unsigned_addition_traps_on_carry() {
-        // UInt64 addition wraps in wasm; the guard `r <ᵤ a` traps on carry-out. In range it computes.
-        assert_eq!(
-            run::<u64>(
-                "(: a UInt64) (: b UInt64)",
-                "(+ a b)",
-                &[Val::U64(20), Val::U64(22)]
-            ),
-            42
-        );
-        assert!(traps(
-            "(: a UInt64) (: b UInt64)",
-            "(+ a b)",
-            &[Val::U64(u64::MAX), Val::U64(1)]
-        ));
-    }
+    // runtime_unsigned_addition_traps_on_carry: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 addition that overflows traps rather than wrapping" (cite-and-delete).
 
-    #[test]
-    fn runtime_unsigned_subtraction_traps_below_zero() {
-        // An unsigned value cannot go below 0: 0 - 1 traps (the guard `a <ᵤ b`), it does NOT wrap to MAX.
-        assert_eq!(
-            run::<u64>(
-                "(: a UInt64) (: b UInt64)",
-                "(- a b)",
-                &[Val::U64(10), Val::U64(3)]
-            ),
-            7
-        );
-        assert!(traps(
-            "(: a UInt64) (: b UInt64)",
-            "(- a b)",
-            &[Val::U64(0), Val::U64(1)]
-        ));
-    }
+    // runtime_unsigned_subtraction_traps_below_zero: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 subtraction that underflows traps rather than wrapping" (cite-and-delete).
 
-    #[test]
-    fn runtime_unsigned_multiplication_traps_on_overflow() {
-        // UInt64 mul guard `a≠0 && r/ᵤa≠b`. In range computes; a product past 2^64 traps.
-        assert_eq!(
-            run::<u64>(
-                "(: a UInt64) (: b UInt64)",
-                "(* a b)",
-                &[Val::U64(6), Val::U64(7)]
-            ),
-            42
-        );
-        assert!(traps(
-            "(: a UInt64) (: b UInt64)",
-            "(* a b)",
-            &[Val::U64(u64::MAX), Val::U64(2)]
-        ));
-    }
+    // runtime_unsigned_multiplication_traps_on_overflow: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "a runtime full-width UInt64 multiplication that overflows traps rather than wrapping" (cite-and-delete).
 
     // ── unsigned comparison: _u selection — the dual of the signed-ordering case ──────────────────
 
-    #[test]
-    fn runtime_unsigned_comparison_orders_by_magnitude() {
-        // (< a b) on UInt64: 0 < UInt64.max is true under the UNSIGNED order (i64.lt_u). Read as SIGNED,
-        // UInt64.max's bit pattern is -1, which a lt_s would rank BELOW 0 and answer false. Pins _u
-        // selection off the unsigned type — the dual of the signed `(< Int64.min Int64.max)` case.
-        assert!(run::<bool>(
-            "(: a UInt64) (: b UInt64)",
-            "(< a b)",
-            &[Val::U64(0), Val::U64(u64::MAX)]
-        ));
-        // And the signed operand stays signed: -1 < 1 is true (a lt_u would read -1 as huge → false).
-        assert!(run::<bool>(
-            "(: a Int64) (: b Int64)",
-            "(< a b)",
-            &[Val::S64(-1), Val::S64(1)]
-        ));
-    }
+    // runtime_unsigned_comparison_orders_by_magnitude: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "una1 a runtime unsigned less-than orders by magnitude ..."; the signed half is case "a runtime less-than at the integer extremes is signed".
 
     // ── narrow widths (≤32-bit): compute in i32, range-check back to the N-bit type ───────────────
     //
@@ -10983,50 +10919,9 @@ mod runtime_ops {
     // wasmtime enforces the argument is a valid s8/u8 at the edge, and the ABI lifts/lowers to the i32
     // slot the emitted code computes in — the range-checks keep the core result in the N-bit range.
 
-    #[test]
-    fn runtime_narrow_signed_addition_range_checks() {
-        // Int8 addition: 100+27=127 fits (Int8.max), 100+28=128 does NOT — the i32 add is exact, the
-        // range-check to [-128,127] traps. A wrap would give -128 (the classic signed-overflow bug).
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(+ a b)",
-                &[Val::S8(100), Val::S8(27)]
-            ),
-            127
-        );
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(+ a b)",
-            &[Val::S8(100), Val::S8(28)]
-        ));
-    }
+    // runtime_narrow_signed_addition_range_checks: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "nsa1 a narrow Int8 addition computes at the max boundary and traps one past it".
 
-    #[test]
-    fn runtime_narrow_signed_subtraction_range_checks_both_edges() {
-        // Int8 subtraction relies ENTIRELY on the range-check (a narrow i32 sub cannot overflow the
-        // slot): 100-(-50)=150 > Int8.max(127) traps the UPPER edge; -100-50=-150 < Int8.min(-128) traps
-        // the LOWER edge; -100-27=-127 fits. Pins that both narrow-sub overflow directions trap (the
-        // add case only exercises the upper edge).
-        assert_eq!(
-            run::<i8>(
-                "(: a Int8) (: b Int8)",
-                "(- a b)",
-                &[Val::S8(-100), Val::S8(27)]
-            ),
-            -127
-        );
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(- a b)",
-            &[Val::S8(100), Val::S8(-50)]
-        ));
-        assert!(traps(
-            "(: a Int8) (: b Int8)",
-            "(- a b)",
-            &[Val::S8(-100), Val::S8(50)]
-        ));
-    }
+    // runtime_narrow_signed_subtraction_range_checks_both_edges: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "nss1 a narrow Int8 subtraction range-checks both edges".
 
     #[test]
     fn a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width() {
