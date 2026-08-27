@@ -2686,6 +2686,9 @@ pass	a map-pattern literal value at one key plus a bare binder at another both m
 pass	a map-pattern literal value sub-pattern falls through when the value differs
 pass	a map-pattern literal value sub-pattern selects the arm when the value matches
 pass	a map-pattern non-matching literal value falls through even if the other key matches
+pass	a map-pattern single-variant ctor value sub-pattern binds its payload over a runtime map
+pass	a map-pattern tuple value sub-pattern binds both elements over a runtime map
+pass	a map-pattern tuple value sub-pattern falls through when the key is absent
 pass	a map-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a map-to-map transformer op CHAINED — the second dispatch receives the first's result
 pass	a map-via-effects walk — each element transformed by a dispatch, output order preserved
@@ -6283,6 +6286,10 @@ pass	each multi-shot branch OBSERVES its own divergent state via a trailing peek
 pass	each multi-shot branch observes its own heap-lineage length
 pass	each parameter of a wide six-param signature resolves to its own binder
 pass	each recursion level installs its own handle around a def-bound perform
+pass	ecb1 an empty-LIST if-branch joins with a built list (tri-target)
+pass	ecb2 an empty-MAP if-branch joins with a built map (tri-target)
+pass	ecb3 an empty-SET if-branch joins with a built set (tri-target)
+pass	ecb4 an empty-list MATCH arm joins with the bound rest (the map-rest sibling on lists)
 pass	ecl1 a let-bound hop answer used TWICE folds
 pass	ecl2 a let CHAIN through the hop answer folds
 pass	ecl3 TWO let-bound hop answers fold
@@ -8933,6 +8940,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a map-pattern tuple value sub-pattern binds both elements over a runtime map
-pass	a map-pattern tuple value sub-pattern falls through when the key is absent
-pass	a map-pattern single-variant ctor value sub-pattern binds its payload over a runtime map

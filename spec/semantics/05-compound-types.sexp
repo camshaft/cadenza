@@ -23073,3 +23073,28 @@
               (def (main (: k Int64)) (look (pick true k))) (export main)))
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
+; ── breaker batch 552: empty-collection BRANCH-JOIN matrix (#4601 fixed the map-rest E0308 on
+; rust; these pin that the solved-construct-type annotation generalizes: list/map/set × if/match,
+; tri-target green — leak-free cases with rows in all three baselines).
+
+(case "ecb1 an empty-LIST if-branch joins with a built list (tri-target)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (main (: n Int64)) (List.len (if (> n 3) (list) (bld n)))) (export main)))
+  (call main (: 2 Int64))
+  (output (: 2 Int64)))
+
+(case "ecb2 an empty-MAP if-branch joins with a built map (tri-target)"
+  (input (do (def (main (: n Int64)) (Map.len (if (> n 3) (Map.empty) (Map.insert (Map.empty) n 1)))) (export main)))
+  (call main (: 2 Int64))
+  (output (: 1 Int64)))
+
+(case "ecb3 an empty-SET if-branch joins with a built set (tri-target)"
+  (input (do (def (main (: n Int64)) (Set.len (if (> n 3) (Set.of (list)) (Set.insert (Set.of (list)) n)))) (export main)))
+  (call main (: 2 Int64))
+  (output (: 1 Int64)))
+
+(case "ecb4 an empty-list MATCH arm joins with the bound rest (the map-rest sibling on lists)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (main (: n Int64)) (List.len (match (bld n) ((list) (list)) ((list h .. t) t)))) (export main)))
+  (call main (: 3 Int64))
+  (output (: 2 Int64)))
