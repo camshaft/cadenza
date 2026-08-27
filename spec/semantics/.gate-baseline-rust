@@ -552,6 +552,8 @@ pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
 pass	a 60-key trie captured ACROSS a host call reads intact after the response folds in
 pass	a 64-bit-unsigned closure crosses the host boundary
+pass	a >= Int64.min tautology keeps a trapping div operand (still traps at z=0, folds otherwise)
+pass	a >= Int64.min tautology keeps an overflowing operand (checked-add traps at z=MAX)
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
 pass	a @param accessor read inside a RECURSIVE walk consumes one response per iteration
@@ -1812,6 +1814,7 @@ pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a depth-3 transitive arm-perform cascade threads the innermost state end to end
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
+pass	a derived-range < 16 tautology keeps a trapping div operand
 pass	a derived-unit type annotation in INPUT position round-trips and the param computes
 pass	a destructuring let over a runtime value binds its parts
 pass	a destructuring record let over a runtime value binds its fields
@@ -5029,6 +5032,7 @@ pass	bw2 an XOR accumulator folds four draws through a recursion — bit-mixing 
 pass	bw3 shift-up then shift-back round trip over MASKED draws — both the value and the shift count come from the thread
 pass	bw4 the ARM bit-mixes its argument with the live state — low nibble from the arg, bits 4-5 stamped from the state
 pass	bwa1 THREE parallel bit-accumulators in one state — running AND, OR, and XOR folds over the drawn payloads, read as a sum
+pass	bwf1 shift-left, arithmetic shift-right on a negative, and bitwise-AND folds agree with their runtime twins
 pass	bwl1 a SPARE-CHAIN scorer — each roll adds its pins plus a DOUBLE when the previous two rolls summed to ten, threading a two-roll history through the state, and only the seed whose opening pair hits ten fires the bonus so the scores drift apart from the third row
 pass	by1 a BYTES handler state grows two bytes per dispatch — each arm returns the pre-growth length
 pass	by1 bytes built from THREE draws then read at a draw-picked index — Bytes.at follows the thread into the buffer
@@ -6171,6 +6175,7 @@ pass	nm2 NEGATIVE division TRUNCATES toward zero uniformly — bare and through 
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
+pass	no over-conservatism: a trap-free masked operand still folds the tautology
 pass	noo1 an op whose result is NESTED Option (Option Int64) — the arm classifies the state into None / Some None / Some (Some s), the body's nested match distinguishes all three in one run
 pass	np1 a NESTED record value built from one draw — projections through two levels read the same drawn base
 pass	nrs1 a ROVER state — nested record {pos:{x,y}, steps}; each move applies SIGNED deltas to both inner fields via Record.with and answers the manhattan distance
@@ -7807,7 +7812,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a >= Int64.min tautology keeps a trapping div operand (still traps at z=0, folds otherwise)
-pass	a derived-range < 16 tautology keeps a trapping div operand
-pass	a >= Int64.min tautology keeps an overflowing operand (checked-add traps at z=MAX)
-pass	no over-conservatism: a trap-free masked operand still folds the tautology
