@@ -11096,3 +11096,54 @@
            and (c=true, x=Int64.max) overflows and traps.")
   (input (do (def (main (: c Bool) (: x Int64)) (* (if c x 4) 5)) (export main)))
   (call main (: true Bool) (: 9223372036854775807 Int64)) (trap "overflow"))
+; -- BOUNDED-RESULT / TRAP-FREE-OPERAND arithmetic folds (behavioral halves migrated from rcdzc
+; 2026-08-27; the white-box Lir guard-count / compare-count inspections stay wasmtime-free rcdzc unit
+; tests). A remainder by a constant bounds its result range (letting a downstream checked op shed its
+; guard); a constant-count right shift and a constant-divisor remainder are trap-free, so a tautology
+; comparison over one folds — while a LEFT shift / RUNTIME divisor stays trapping and its trap survives.
+
+(case "a remainder by a constant bounds its result so a downstream checked op sheds its guard (value + trap parity)"
+  (doc    "`(% v C)` has `|v % C| < |C|`, so its bounded range lets a downstream checked op stay in type and
+           shed its overflow guard: `(* (% x 10) 5)` ∈ [-45,45] ⊆ Int8 and `(+ (% x 100) 1)` ∈ [-98,100] ⊆
+           Int8 compute with no guard. A consumer that CAN still overflow — `(* (% x 100) 5)` ∈ [-495,495]
+           — keeps its guard and traps at x=99 (495 > Int8 max). rcdzc: a_remainder_by_a_constant_bounds_its_result_range.")
+  (input  (do
+            (def (m5  (: x Int8)) (: (* (% x 10) 5) Int8))
+            (def (p1  (: x Int8)) (: (+ (% x 100) 1) Int8))
+            (def (big (: x Int8)) (: (* (% x 100) 5) Int8))
+            (export m5) (export p1) (export big)))
+  (call m5  (: 27 Int8))  (output (: 35 Int8))
+  (call m5  (: -27 Int8)) (output (: -35 Int8))
+  (call p1  (: 99 Int8))  (output (: 100 Int8))
+  (call big (: 99 Int8))  (trap "overflow")
+  (call big (: 100 Int8)) (output (: 0 Int8)))
+
+(case "a constant-count shift and constant-divisor remainder are trap-free so a tautology comparison folds (value + trap parity)"
+  (doc    "A RIGHT shift by a constant in-range count and a `/`/`%` by a constant divisor ∉ {0,-1} are
+           trap-free, so a range comparison whose operand is one — a TAUTOLOGY — folds to a constant:
+           `(< (>> x 60) 20)` on UInt64 (∈ [0,15]) → true, `(< (% (& x 255) 10) 10)` (∈ [0,9]) → true; a
+           non-tautology (`< 8`) computes normally. But a LEFT shift can overflow and a RUNTIME divisor can
+           ÷0, so those stay trapping and their trap survives. Wrapping arith is trap-free (a discarded
+           `wrapping-mul` annihilates to 0; a live wrapping-add/mul computes); a tuple projection is
+           trap-free too. rcdzc: a_constant_count_shift_and_constant_divisor_rem_are_trap_free_for_a_discarding_fold.")
+  (input  (do
+            (def (shrtaut (: x UInt64)) (if (< (>> x 60) 20) 111 222))
+            (def (remtaut (: x Int64))  (if (< (% (: (& x 255) Int64) 10) 10) 111 222))
+            (def (shrnon  (: x UInt64)) (if (< (>> x 60) 8) 111 222))
+            (def (lsh     (: x Int64)) (if (>= (<< x 2) -9223372036854775808) 1 0))
+            (def (remdiv  (: x Int64) (: d Int64)) (if (< (% (: (& x 255) Int64) d) 300) 1 0))
+            (def (wadd    (: x Int64)) ((. Int64 wrapping-add) x ((. Int64 wrapping-mul) x x)))
+            (def (wann    (: x Int64)) (* 0 ((. Int64 wrapping-mul) x x)))
+            (def (proj)    (let ((p (tuple 42 7))) (. p 0)))
+            (def (projann) (let ((p (tuple 42 7))) (* 0 (. p 0))))
+            (export shrtaut) (export remtaut) (export shrnon) (export lsh)
+            (export remdiv) (export wadd) (export wann) (export proj) (export projann)))
+  (call shrtaut (: 12345 UInt64)) (output (: 111 Int64))
+  (call remtaut (: 12345 Int64))  (output (: 111 Int64))
+  (call shrnon  (: 12345 UInt64)) (output (: 111 Int64))
+  (call lsh     (: 4611686018427387904 Int64)) (trap "overflow")
+  (call remdiv  (: 12345 Int64) (: 0 Int64))    (trap "divide by zero")
+  (call wadd    (: 6 Int64))  (output (: 42 Int64))
+  (call wann    (: 7 Int64))  (output (: 0 Int64))
+  (call proj)                 (output (: 42 Int64))
+  (call projann)              (output (: 0 Int64)))

@@ -1731,6 +1731,7 @@ pass	a constant subtraction over a high UInt64 operand folds to the difference
 pass	a constant success `?` folds INLINE in a subexpression with no let-binding
 pass	a constant tuple is returned as a program result
 pass	a constant variant carrying a tuple payload destructures by a nested tuple pattern and folds
+pass	a constant-count shift and constant-divisor remainder are trap-free so a tautology comparison folds (value + trap parity)
 pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards
 pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-folded u64 bin binding with the top bit set compares unsigned
@@ -3438,6 +3439,7 @@ pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a region's RESULT seeds a second same-effect region with a DIFFERENT arm shape
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
+pass	a remainder by a constant bounds its result so a downstream checked op sheds its guard (value + trap parity)
 pass	a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated conjunct absorbs to the plain conjunction
