@@ -3424,6 +3424,7 @@ pass	a remainder by a constant bounds its result so a downstream checked op shed
 pass	a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep
 pass	a repeated condition in a nested if collapses to the outer condition (value parity)
 pass	a repeated condition inside a branch propagates the known truth value
+pass	a repeated do-local declaration shadows the earlier one for what follows
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
