@@ -20991,3 +20991,39 @@
     (export main)))
   (call main (: 5 Int64))  (output (: 111 Int64))
   (call main (: -1 Int64)) (output (: 222 Int64)))
+; -- erased single-variant newtype literal-payload match-arm dispatch at each scalar width (behavioral
+; migration from rcdzc a_single_variant_newtype_literal_payload_arm_reads_the_erased_payload_directly +
+; a_narrow_newtype_literal_payload_arm_compares_at_the_payload_width, 2026-08-27). A single-variant
+; `(type W (Wrap T))` ERASES to its inner T (raw scalar, no box), so a literal-payload arm `(W.Wrap k)`
+; reads the raw payload and compares at T's native machine width (i64 for Int64, i32 for a narrow
+; width). A breaker-found regression read the boxed accessor / compared at i64 over an i32 payload,
+; emitting an INVALID component (Int64/narrow) or silently taking the wildcard (Bool, a wrong VALUE).
+(case "an erased single-variant newtype literal-payload match arm dispatches correctly at each scalar width"
+  (doc    "Each export builds `(W.Wrap k)` for a distinct width and matches a literal-payload arm: a hit
+           takes the literal arm, a miss falls to the binding/wildcard arm. Int64 (wide, i64), UInt8/Int32
+           (narrow, i32, incl a nonzero literal exercising i32.eq not just i32.eqz), Bool (the silent-wrong
+           witness), plus a MULTI-variant boxed sum control (always correct via the boxed accessor).")
+  (input (do
+           (type W64 (Wrap Int64))
+           (type W8 (Wrap UInt8))
+           (type W32 (Wrap Int32))
+           (type WB (Wrap Bool))
+           (type WBox (A Int64) (B Int64))
+           (def (i64hit)  (match (W64.Wrap 0) ((W64.Wrap 0) 100) ((W64.Wrap x) x)))
+           (def (i64miss) (match (W64.Wrap 5) ((W64.Wrap 0) 100) ((W64.Wrap x) x)))
+           (def (u8hit)   (match (W8.Wrap 0) ((W8.Wrap 0) 100) ((W8.Wrap x) x)))
+           (def (u8miss)  (match (W8.Wrap 5) ((W8.Wrap 0) 100) ((W8.Wrap x) x)))
+           (def (u8nz)    (match (W8.Wrap 7) ((W8.Wrap 7) 100) ((W8.Wrap x) x)))
+           (def (i32hit)  (match (W32.Wrap 0) ((W32.Wrap 0) 100) ((W32.Wrap x) x)))
+           (def (boolhit) (match (WB.Wrap true) ((WB.Wrap true) 1) ((WB.Wrap _) 0)))
+           (def (boxed)   (match (WBox.A 0) ((WBox.A 0) 100) ((WBox.A x) x) ((WBox.B y) y)))
+           (export i64hit) (export i64miss) (export u8hit) (export u8miss) (export u8nz)
+           (export i32hit) (export boolhit) (export boxed)))
+  (call i64hit)  (output (: 100 Int64))
+  (call i64miss) (output (: 5 Int64))
+  (call u8hit)   (output (: 100 UInt8))
+  (call u8miss)  (output (: 5 UInt8))
+  (call u8nz)    (output (: 100 UInt8))
+  (call i32hit)  (output (: 100 Int32))
+  (call boolhit) (output (: 1 Int64))
+  (call boxed)   (output (: 100 Int64)))
