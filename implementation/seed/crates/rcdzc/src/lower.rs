@@ -25930,6 +25930,20 @@ fn apply_const_prim(prim: Prim, vs: &[CVal]) -> Option<CVal> {
         (Prim::Add, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.add(b))),
         (Prim::Sub, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.sub(b))),
         (Prim::Mul, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Int(a.mul(b))),
+        // Integer `/` and `%` — truncating quotient / remainder via the exact `divmod` (IntValue is a bignum,
+        // so the division is exact; the sibling Add/Sub/Mul arms likewise fold the exact value). A ZERO divisor
+        // makes `divmod` return `None`: fold to a fail-loud `CVal::Trap` (NOT `None`, which would DECLINE the
+        // whole const fold and mask the fault behind a generic "cannot reduce" reject), so a `(const ...)` /
+        // recursive fold that computes a divide-by-zero surfaces the same CDZ0304 "division by zero" the
+        // `core_of` path and the runtime produce. The recursive-engine twin of `core_of`'s Int Div/Rem fold.
+        (Prim::Div, [CVal::Int(a), CVal::Int(b)]) => Some(match a.divmod(b) {
+            Some((q, _)) => CVal::Int(q),
+            None => CVal::Trap(std::rc::Rc::from("division by zero")),
+        }),
+        (Prim::Rem, [CVal::Int(a), CVal::Int(b)]) => Some(match a.divmod(b) {
+            Some((_, r)) => CVal::Int(r),
+            None => CVal::Trap(std::rc::Rc::from("division by zero")),
+        }),
         (Prim::Lt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Less)),
         (Prim::Gt, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) == Ordering::Greater)),
         (Prim::Le, [CVal::Int(a), CVal::Int(b)]) => Some(CVal::Bool(a.cmp(b) != Ordering::Greater)),
