@@ -56742,18 +56742,6 @@ mod stage1 {
     // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
 
     #[test]
-    fn int64_max_is_a_folding_constant() {
-        // `Int64.max` — a built-in reached by the SAME member-access-and-fold path as `p.x`. Folds to
-        // the constant, runs with no value heap. (The reader desugars `Int64.max` to `(. Int64 max)`.)
-        assert_eq!(run_main("(. Int64 max)"), i64::MAX);
-    }
-
-    #[test]
-    fn int64_min_is_a_folding_constant() {
-        assert_eq!(run_main("(. Int64 min)"), i64::MIN);
-    }
-
-    #[test]
     fn a_program_binding_shadows_a_builtin() {
         // The scope-first lookup means a `let`-bound `Int64` HIDES the built-in module — no special
         // case (`prelude-and-resolution.md` §Name Resolution Is One Ordered Lookup).
@@ -56903,52 +56891,7 @@ mod stage1 {
         );
     }
 
-    // ── arithmetic intrinsics: application of a built-in operation, generic over the integer type ──
-
-    #[test]
-    fn addition_folds() {
-        // `(+ 2 3)` = 5 — application of the built-in `+`, folded at compile time (no runtime op).
-        assert_eq!(run_main("(+ 2 3)"), 5);
-    }
-
-    #[test]
-    fn nested_arithmetic_folds() {
-        // `(* 2 (+ 3 4))` = 14 — the fold composes through the tree.
-        assert_eq!(run_main("(* 2 (+ 3 4))"), 14);
-    }
-
-    #[test]
-    fn subtraction_folds() {
-        assert_eq!(run_main("(- 10 3)"), 7);
-    }
-
-    #[test]
-    fn arithmetic_is_generic_over_the_integer_type() {
-        // A built-in bound (`Int64.max`) and a literal share the operation without a hard-coded width:
-        // `(- Int64.max Int64.max)` = 0. Both operands are the signed-64 instance; the op unifies them.
-        assert_eq!(run_main("(- (. Int64 max) (. Int64 max))"), 0);
-    }
-
     // ── the full binary-integer operator set (all fold at width 64) ──────────────────────────────
-
-    #[test]
-    fn division_truncates_toward_zero() {
-        // 06-numeric-model: (/ 7 2) = 3, (/ -7 2) = -3 — truncation toward zero, not floor.
-        assert_eq!(run_main("(/ 7 2)"), 3);
-        assert_eq!(run_main("(/ -7 2)"), -3);
-    }
-
-    #[test]
-    fn remainder_takes_sign_of_dividend() {
-        // (% -7 2) = -1 — the remainder's sign follows the dividend.
-        assert_eq!(run_main("(% -7 2)"), -1);
-    }
-
-    #[test]
-    fn remainder_by_minus_one_is_zero_even_at_min() {
-        // (% MIN -1) = 0 — the one case Rust's `%` panics on; must fold to 0, not trap.
-        assert_eq!(run_main("(% -9223372036854775808 -1)"), 0);
-    }
 
     #[test]
     fn division_by_zero_fails_the_build() {
@@ -57767,45 +57710,6 @@ mod stage1 {
     }
 
     // ── integer widths (I3, fold): named widths, per-width bounds, annotations, odd widths ────────
-
-    #[test]
-    fn signed_8bit_bounds_project() {
-        // Int8 bounds are the width-8 signed range: max 127, min -128. Int8 crosses the boundary as its
-        // FAITHFUL component primitive `s8` (NOT s32 or s64) — the width flows through to the wire repr.
-        let run_i8 = |body: &str| {
-            let src = format!("(module m (def (main) {body}) (export main))");
-            let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
-            run_returns::<i8>(&bytes, "main")
-        };
-        assert_eq!(run_i8("(. Int8 max)"), 127);
-        assert_eq!(run_i8("(. Int8 min)"), -128);
-    }
-
-    #[test]
-    fn unsigned_8bit_max_is_255() {
-        // UInt8.max = 2^8 - 1 = 255. A UInt8 crosses the boundary as its faithful `u8`.
-        let src = "(module m (def (main) (. UInt8 max)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u8>(&bytes, "main"), 255);
-    }
-
-    #[test]
-    fn unsigned_64bit_max_exceeds_i64_and_renders() {
-        // UInt64.max = 2^64 - 1 = 18446744073709551615 — a value ABOVE i64::MAX, so it exercises the
-        // arbitrary-precision bound + the unsigned bit-pattern emit (-1 as i64) + the u64 boundary lift.
-        let src = "(module m (def (main) (. UInt64 max)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u64>(&bytes, "main"), u64::MAX);
-    }
-
-    #[test]
-    fn an_annotation_takes_a_narrower_width() {
-        // 06-numeric-model `(: 200 UInt8)` = 200 : UInt8 — the annotation grounds the literal to the
-        // narrower width; 200 fits UInt8 (0..=255). Crosses the boundary as its faithful `u8`.
-        let src = "(module m (def (main) (: 200 UInt8)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<u8>(&bytes, "main"), 200);
-    }
 
     #[test]
     fn a_literal_outside_the_annotated_width_is_rejected() {

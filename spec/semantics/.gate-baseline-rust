@@ -7623,3 +7623,8 @@ pass	df3 the SAME generic sum at a scalar payload deforests completely
 pass	df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)
 pass	mpf1 a MONOMORPHIC two-payload ctor's list field destructured by a nested pattern works
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	a fold composes through a nested arithmetic tree
+pass	arithmetic is generic over the integer type, sharing a built-in bound with itself
+pass	the maximum signed 64-bit value is a folding constant
+pass	the minimum signed 64-bit value is a folding constant
+pass	the maximum signed 8-bit value is its per-width bound
