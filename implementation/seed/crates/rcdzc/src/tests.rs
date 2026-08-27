@@ -7716,14 +7716,8 @@ mod runtime_ops {
 // recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
 // parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
 mod recursion {
-    use super::run_returns;
     use crate::compile::compile_component;
     use crate::testkit::parse;
-
-    /// Compile a whole `(module …)` program and return its component bytes.
-    fn component(src: &str) -> Vec<u8> {
-        compile_component(&crate::codec::encode(&parse(src))).expect("compile")
-    }
 
     #[test]
     fn a_row_op_over_a_record_with_a_unit_field_does_not_spuriously_dup_the_unit_projection() {
@@ -8078,17 +8072,10 @@ mod recursion {
                 "must NOT send the author to annotate an already-fine parameter: {m}"
             );
         }
-        // A def WITH a base case that stops the recursion types + runs — the base case fixes the result.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (loop (: n Int64)) (if (< n 0) 0 (loop (+ n 1)))) \
-                       (def (main) (loop -1)) (export main))"
-                ),
-                "main"
-            ),
-            0
-        );
+        // (A def WITH a base case that stops the recursion types + runs to its result — the positive
+        // base-case control — is corpus-covered by the recursion cases in 09-functions; the wasmtime run
+        // is dropped here, this test keeps only the diagnostic-QUALITY assertion the corpus cannot express:
+        // the fault names the missing BASE CASE, NOT "add an explicit annotation".)
         // A GENUINE undetermined-PARAMETER decline (a pure pass-through with NO base case is dominated by
         // the missing base case, so construct the param case that survives a base case: a param never
         // width-fixed AND never seeded concretely). The recursive-param / monomorphization-tie guidance
@@ -37005,17 +36992,10 @@ mod stage1 {
             db.ast.as_form(target, "def").is_some(),
             "the delete target is the `(def …)` form, not the bare signature"
         );
-        // Two DISTINCT named defs are fine — not a false duplicate.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (a) 1) (def (b) 2) (def (main) (+ (a) (b))) (export main))"
-                )))
-                .expect("compile"),
-                "main"
-            ),
-            3
-        );
+        // (The no-false-positive control — two DISTINCT named defs compile+run — is corpus-covered by the
+        // ubiquitous multi-def programs; the wasmtime run is dropped, this test keeps only the
+        // diagnostic-QUALITY assertions the corpus cannot express: the coded duplicate message AND the
+        // Delete-fix targeting the whole redundant `(def …)` form.)
     }
 
     #[test]
