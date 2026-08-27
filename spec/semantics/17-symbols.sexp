@@ -949,3 +949,19 @@
 (case "a Symbol literal pattern over a String scrutinee is rejected at the nominal boundary"
   (input (do (def (f (: s String)) (match s (#"add" 1) (_ 0))) (export f)))
   (error CDZ0201))
+
+; -- a Symbol tuple element compares by content in a direct tuple = (migrated from rcdzc
+; a_symbol_tuple_element_compares_by_content_on_the_value_heap; the map-key CHAMP-eq face is @459): a
+; Symbol IS a String byte-leaf handle at run time, so a Symbol tuple element boxes/reads-back/compares by
+; CONTENT exactly like a String element in a runtime tuple `=`.
+(case "sqte1 a Symbol tuple element compares by content in a runtime tuple equality"
+  (doc    "For runtime n: `(tuple (Symbol.of \"a\") n)` equals itself (→1 flag), differs from a tuple with a
+           different scalar sibling `(+ n 1)` (→0), and differs from one with a different Symbol `(Symbol.of
+           \"b\")` (→0, content comparison). Weighted so the checksum is 1 iff all three hold; n=7.")
+  (input (do (def (main (: n Int64))
+    (+ (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "a") n)) 1 0)
+       (+ (* 10 (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "a") (+ n 1))) 1 0))
+          (* 100 (if (= (tuple (Symbol.of "a") n) (tuple (Symbol.of "b") n)) 1 0)))))
+    (export main)))
+  (call main (: 7 Int64))
+  (output (: 1 Int64)))
