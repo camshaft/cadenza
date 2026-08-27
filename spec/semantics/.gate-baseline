@@ -8127,6 +8127,10 @@ pass	tl1 THREE live handlers, each drawn in one expression — every draw dispat
 pass	tl2 a THREE-frame value pipeline — innermost pick feeds middle dbl feeds outermost send, then an outer draw stamps the hundreds
 pass	tl3 the MIDDLE frame's arm resumes with an OUTERMOST draw — rv-face at depth, dispatched from under a third live frame
 pass	tl4 SAME effect handled at two depths — the inner handle shadows for its extent, the outer thread resumes after it closes
+pass	tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair
+pass	tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero
+pass	tle3 fifty frames alternating exact-fit-32 and 33-element constant lists reclaim to zero (no half-marked node pins structure)
+pass	tle4 fifty frames of persistent update against an exact-fit 32-element hoisted constant never corrupt it (both nodes marked — the header+arr trap)
 pass	tlf1 Set.to-list of TUPLE elements orders identically const and runtime
 pass	tlf2 Set.to-list of SUM elements orders identically const and runtime (discriminant then payload)
 pass	tlf3 Map.to-list with SUM keys orders identically const and runtime
