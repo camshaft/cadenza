@@ -2226,6 +2226,48 @@
               (handle Fresh 0 ((next () s (resume (+ s 1) s))) (ev 2))) (export main)))
   (output (: 1 Int64)))
 
+(case "a THREE-way mutually-recursive effectful cycle specializes and runs"
+  (doc    "The mutual-recursion specialization generalizes to any cycle length: `ev`/`od`/`tw` form a
+           three-def cycle where the effect `Ctr.tick` is reached only through `tw`. The visited-set-bounded
+           `body_reaches_discharged` follows the cycle and ties all three specializations' knot. Seeded 9,
+           `tick` hands back `s` and threads `s-1`.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (ev (: n Int64)) (if (= n 0) 0 (od (- n 1))))
+            (def (od (: n Int64)) (tw (- n 1)))
+            (def (tw (: n Int64)) (+ (Ctr.tick) (ev (- n 1))))
+            (def (main) (handle Ctr 9 ((tick (u) s (resume s (- s 1)))) (ev 6)))
+            (export main)))
+  (call   main) (output (: 17 Int64)))
+
+(case "an abortive handler over a non-tail MUTUAL recursion declines cleanly"
+  (doc    "GUARD (miscompile regression): an ABORTIVE handler over a MUTUALLY-recursive callee with a
+           non-tail cross-call must decline — `recursive_self_calls_all_tail` checks only one def's own
+           self-calls, so the partner's pending `+ 1` frames (which an abort must abandon) would otherwise
+           flow the abort value back through them (`(+ 1 (od …))` with `od = (+ 1 (ev …))` → 103, not 99).
+           `callee_calls_other_recursive_def` extends the abortive guard to the mutual case → clean decline.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Bail.bail 99) (+ 1 (od (- n 1)))))
+            (def (od (: n Int64)) (+ 1 (ev (- n 1))))
+            (def (main) (handle Bail 0 ((bail (n) s n)) (ev 4)))
+            (export main)))
+  (declines))
+
+(case "a mutual group performing in an IF base-case branch and recursing in the other threads and runs"
+  (doc    "The if-branch companion of the match-dispatched separate-branch case: `ev` performs `Fresh.next`
+           in its base-case branch and calls the partner `od` in its recursive branch, over a state-threading
+           handler seeded 42. `ev 2 -> od 1 -> ev 0` fires `Fresh.next`; the `next` arm resumes `s+1` threading
+           `s`, so the single base draw at seed 42 answers 43. The per-branch state-ref copy makes the
+           branch-distributed state thread correctly and the memo knot tie.")
+  (input  (do
+            (effect Fresh (op next (-> Int64)))
+            (def (ev (: n Int64)) (if (= n 0) (Fresh.next) (od (- n 1))))
+            (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+            (def (main) (handle Fresh 42 ((next () s (resume (+ s 1) s))) (ev 2)))
+            (export main)))
+  (call   main) (output (: 43 Int64)))
+
 (case "a mutually-recursive group performs through a shared non-recursive helper"
   (doc    "Composes the two cross-function triggers: a mutually-recursive group (`ev`/`od`) where the
            effect is performed inside a NON-recursive helper `h` that `od` calls, rather than syntactically
