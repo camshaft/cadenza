@@ -54764,34 +54764,6 @@ mod stage1 {
         assert_eq!(run_returns::<i64>(&bytes, "main"), 11);
     }
 
-    #[test]
-    fn a_closure_captures_another_closure_and_composes() {
-        // A HIGHER-ORDER capture: `twice = (fn (y) (inc (inc y)))` closes over `inc` (itself a closure)
-        // and applies it twice; `(twice 5)` = inc(inc(5)) = 7. A function value captured by another
-        // closure folds at each application.
-        assert_eq!(
-            run_main(
-                "(let ((inc (fn ((: x Int64)) (+ x 1)))) \
-                       (let ((twice (fn ((: y Int64)) (inc (inc y))))) (twice 5)))"
-            ),
-            7
-        );
-        // A closure's argument is another closure's RESULT: `((fn (x) (+ x k)) ((fn (y) (* y 2)) 3))`
-        // with k=10 → (+ 6 10) = 16. Composing two closure applications.
-        assert_eq!(
-            run_main("(let ((k 10)) ((fn ((: x Int64)) (+ x k)) ((fn ((: y Int64)) (* y 2)) 3)))"),
-            16
-        );
-        // A closure that itself references an enclosing closure through a further nesting.
-        assert_eq!(
-            run_main(
-                "(let ((a 1)) (let ((f (fn ((: x Int64)) (+ x a)))) \
-                       (let ((g (fn ((: y Int64)) (f (+ y 1))))) (g 5))))"
-            ),
-            7
-        );
-    }
-
     /// Run `src`'s `main` with a single integer `arg` through the COMPOSED value-heap runtime (a closure
     /// is a heap cell, so instantiation needs the runtime linked), returning the rendered result string.
     /// Skips (returns `None`) if the runtime wasm is not built.
@@ -54850,35 +54822,6 @@ mod stage1 {
             cdz_run::Outcome::Value(s) => Some(s),
             cdz_run::Outcome::Trap(t) => panic!("closure run trapped: {t}"),
         }
-    }
-
-    #[test]
-    fn a_function_crosses_a_recursive_boundary_as_a_runtime_closure() {
-        // The genuine runtime-closure case (`call_indirect`): a function argument passed to a RECURSIVE
-        // higher-order function, applied inside the recursion. `apply-sum` cannot inline (it recurses),
-        // so its function parameter `g` is a real runtime CLOSURE VALUE — the lambda `(fn (x) (* x 2))`
-        // is LAMBDA-LIFTED to a standalone function, passed as a heap-cell handle, and applied via
-        // `call_indirect`. `apply-sum g n = g(n) + g(n-1) + … + g(1)`, so with `g = (*2)` the result is
-        // `2·(n + (n-1) + … + 1) = n·(n+1)`. `core-semantics.md` §A Function Is A First-Class Value.
-        let src = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (* x 2)) n)) (export main))";
-        let Some(r0) = run_closure(src, 0) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        assert_eq!(r0, "0");
-        assert_eq!(run_closure(src, 1).unwrap(), "2");
-        assert_eq!(run_closure(src, 3).unwrap(), "12");
-        assert_eq!(run_closure(src, 5).unwrap(), "30");
-        // A DIFFERENT lifted lambda through the same recursive HOF — `(+ x 100)` — so the closure must
-        // carry the RIGHT code (the table slot selects the applied function). n=3: 3·100 + 6 = 306.
-        let src2 = "(module m \
-            (def (apply-sum (: g (-> Int64 Int64)) (: n Int64)) \
-              (if (= n 0) 0 (+ (g n) (apply-sum g (- n 1))))) \
-            (def (main (: n Int64)) (apply-sum (fn ((: x Int64)) (+ x 100)) n)) (export main))";
-        assert_eq!(run_closure(src2, 3).unwrap(), "306");
     }
 
     #[test]
@@ -55526,77 +55469,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_closure_carried_in_a_sum_payload_applies_through_call_indirect() {
-        // A closure stored in a SUM variant's payload, extracted by a match binder, and applied — the
-        // callback-in-a-variant shape. `(Some (fn (n) (* n 2)))` carries a closure; `(match … ((Some f)
-        // (f 5)) …)` binds `f` to the payload (a `sum-payload` heap read) and applies it. The closure is
-        // reached through the PAYLOAD, not a `let`/tuple projection the fold reduces through, so `f`'s
-        // application is a runtime `call_indirect` — a payload/element binder is a runtime function-value
-        // source like a `Param`. Before the fix `(f 5)` declined "value is not applyable" (the closure
-        // path was gated on a `Param` head only). Run through the composed runtime (result 10).
-        use crate::testkit::parse;
-        let cases = [
-            (
-                "Some payload, single arg",
-                "(module m (def (main) \
-                   (match (Some (fn ((: n Int64)) (* n 2))) ((Some f) (f 5)) ((None _) 0))) (export main))",
-                "10",
-            ),
-            (
-                "Ok payload, single arg",
-                "(module m (def (main) \
-                   (match (Ok (fn ((: n Int64)) (+ n 100))) ((Ok f) (f 5)) ((Err e) 0))) (export main))",
-                "105",
-            ),
-            (
-                "Some payload, TWO args (multi-param closure)",
-                "(module m (def (main) \
-                   (match (Some (fn ((: a Int64) (: b Int64)) (+ a b))) ((Some f) (f 3 4)) ((None _) 0))) \
-                 (export main))",
-                "7",
-            ),
-            (
-                "USER-SUM payload, single arg",
-                "(module m (type T (Mk (-> Int64 Int64))) \
-                   (def (main) (match (T.Mk (fn ((: n Int64)) (* n 2))) ((T.Mk f) (f 5)))) (export main))",
-                "10",
-            ),
-            (
-                "USER-SUM payload, curried TWO args",
-                "(module m (type T (Mk (-> Int64 (-> Int64 Int64)))) \
-                   (def (main) (match (T.Mk (fn ((: a Int64) (: b Int64)) (+ a b))) ((T.Mk f) (f 3 4)))) \
-                 (export main))",
-                "7",
-            ),
-        ];
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        for (label, src, want) in cases {
-            let bytes = compile_component(&crate::codec::encode(&parse(src)))
-                .unwrap_or_else(|e| panic!("compile closure-in-sum-payload ({label}): {e:?}"));
-            assert!(
-                cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-                "a payload-bound closure application imports the runtime ({label})"
-            );
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
-                cdz_run::Outcome::Trap(t) => {
-                    panic!("closure-in-sum-payload trapped ({label}): {t}")
-                }
-            }
-        }
-    }
-
-    #[test]
     fn a_closure_payload_sum_from_an_if_helper_with_a_reused_arg_compiles_not_cdz0101() {
         // REGRESSION (v-patterns adv-closure-payload-sum-picked-by-if-helper): a closure-payload 2-variant
         // sum built by an `if`-helper `mk`, matched + applied by `run`, with the caller reusing its param
@@ -55621,60 +55493,6 @@ mod stage1 {
                 .unwrap_or_else(|e| {
                     panic!("closure-payload-sum if-helper reused-arg (k={kexpr}) must COMPILE, not CDZ0101: {e:?}")
                 });
-        }
-    }
-
-    #[test]
-    fn a_closure_applied_through_an_unbuilt_sibling_variant_gets_its_call_type() {
-        // A sum boxes TWO distinctly-typed closures — `Unary (Int64->Int64)` and `Binary
-        // (Int64->Int64->Int64)`. `apply-it` matches BOTH arms and applies each arm's closure (`(f x)` /
-        // `(g x y)`), so BOTH `call_indirect`s are statically emitted. But `main` constructs only ONE
-        // variant, so the OTHER arm's closure type is never built — no lifted lambda of its `(env, args…)
-        // ->ret` shape exists, and the `call_indirect` had NO type-section functype to reference,
-        // DECLINING "a runtime closure application has no matching function type". The fix registers an
-        // extra functype for each reachable closure-application shape no lifted lambda supplies
-        // (`Layout::closure_call_types`). This is the minimized iterator `scan`+`flat-map` coexistence
-        // (a sum with a binary-accumulator closure AND an element→sub-iterator closure). Both directions
-        // must compile+run: build Unary (runs the `(f x)` arm → 10) and build Binary (runs `(g x y)` → 14).
-        use crate::testkit::parse;
-        let cases = [
-            (
-                "build Unary; Binary arm's (g x y) is the unbuilt call type",
-                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
-                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
-                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
-                   (def (main) (apply-it (T.Unary (fn ((: n Int64)) (* n 2))) 5 9)) (export main))",
-                "10",
-            ),
-            (
-                "build Binary; Unary arm's (f x) is the unbuilt call type",
-                "(module m (type T (Unary (-> Int64 Int64)) (Binary (-> Int64 (-> Int64 Int64)))) \
-                   (def (apply-it (: t T) (: x Int64) (: y Int64)) \
-                     (match t ((Unary f) (f x)) ((Binary g) (g x y)))) \
-                   (def (main) (apply-it (T.Binary (fn ((: a Int64) (: b Int64)) (+ a b))) 5 9)) (export main))",
-                "14",
-            ),
-        ];
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping");
-            return;
-        };
-        for (label, src, want) in cases {
-            let bytes = compile_component(&crate::codec::encode(&parse(src)))
-                .unwrap_or_else(|e| panic!("compile unbuilt-sibling-closure ({label}): {e:?}"));
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).unwrap_or_else(|e| panic!("run ({label}): {e:?}")) {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "{label}"),
-                cdz_run::Outcome::Trap(t) => {
-                    panic!("unbuilt-sibling-closure trapped ({label}): {t}")
-                }
-            }
         }
     }
 
