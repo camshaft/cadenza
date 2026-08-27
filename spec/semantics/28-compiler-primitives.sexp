@@ -2322,6 +2322,15 @@
   (input  (do (def (main) (/ 1 0)) (export main)))
   (error  CDZ0304 (message "divide by zero")))
 
+(case "dzb5 a const REMAINDER-by-zero in a conditional branch demotes to the SAME div-by-zero kind (the % twin)"
+  (doc    "`%`-by-zero shares the div-by-zero cause with `/`-by-zero (`const_trap_cause`'s `Div | Rem if y==0`), so a
+           conditionally-reached `(% 1 0)` demotes to `Core::TrapDivZero` exactly like dzb2's `(/ 1 0)` — pins the Rem
+           arm of the kind-preserving demote, not just Div. At n=0 the else is taken → traps 'divide by zero'.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (% 1 0))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "div-by-zero")
+  (warns  CDZ0309 (message "potentially reachable trap")))
+
 ; -- overflow-demote family (operator 2026-08-27: "add a dedicated overflow core op as well … we should
 ; really be better about tagging traps that we've inserted so it's clear what happened"). The overflow
 ; twin of dzb: a const arithmetic OVERFLOW in a conditionally-reached branch demotes to a KIND-PRESERVING
@@ -2358,6 +2367,16 @@
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (<< 1 100))) (export main)))
   (call   main (: 0 Int64))
   (trap   "unreachable")
+  (warns  CDZ0309 (message "potentially reachable trap")))
+
+(case "ovb4 the OTHER Div overflow — Int64.min / -1 — demotes to the overflow kind (not divide-by-zero)"
+  (doc    "`(/ Int64.min -1)` has no Int64 quotient (2^63 overflows) — the sole non-zero-divisor Div trap, cause 'the
+           quotient overflows Int64'. In a conditional branch it demotes to `Core::TrapOverflow`, NOT `TrapDivZero`
+           (the divisor is -1, not 0) — pins that `is_overflow_trap` catches the division-overflow message AND that the
+           two Div traps are discriminated by kind at the demote. At n=0 the else is taken → traps 'integer overflow'.")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ -9223372036854775808 -1))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "overflow")
   (warns  CDZ0309 (message "potentially reachable trap")))
 
 ; -- breaker batch 431 (2026-08-26): #3799 complement pins — a const Map with CHAR keys to-lists

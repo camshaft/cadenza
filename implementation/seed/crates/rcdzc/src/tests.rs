@@ -34127,6 +34127,40 @@ mod stage1 {
             "a shift-count-out-of-range conditional const trap stays the kind-less Core::Trap, got {:?}",
             core_of(&mut db3, else_)
         );
+
+        // The `%` (REMAINDER) by zero shares the div-by-zero cause (`const_trap_cause`'s `Div | Rem if y==0`),
+        // so it demotes to `Core::TrapDivZero` exactly like `/` — pin the Rem arm of the fix, not just Div.
+        let mut db4 = Db::load(crate::testkit::parse(
+            "(module m (def (main (: n Int64)) (if (> n 0) 7 (% 1 0))) (export main))",
+        ));
+        let d4 = db4.def_by_name("main").expect("def main");
+        let body4 = db4.defs[d4].body.expect("main has a body");
+        let Core::If { else_, .. } = core_of(&mut db4, body4) else {
+            panic!("main lowers to a runtime `if`");
+        };
+        assert!(
+            matches!(core_of(&mut db4, else_), Core::TrapDivZero),
+            "a conditional const `%`-by-zero preserves the div-by-zero kind, got {:?}",
+            core_of(&mut db4, else_)
+        );
+
+        // The OTHER Div overflow — `Int64.min / -1` (the quotient 2^63 has no Int64 value) — is an OVERFLOW
+        // (cause "the quotient overflows Int64"), NOT a divide-by-zero (the divisor is -1), so it demotes to
+        // `Core::TrapOverflow`. Pins that `is_overflow_trap` catches the division-overflow message too, and
+        // that the two Div traps are discriminated by kind (div-by-zero vs overflow) at the demote.
+        let mut db5 = Db::load(crate::testkit::parse(
+            "(module m (def (main (: n Int64)) (if (> n 0) 7 (/ -9223372036854775808 -1))) (export main))",
+        ));
+        let d5 = db5.def_by_name("main").expect("def main");
+        let body5 = db5.defs[d5].body.expect("main has a body");
+        let Core::If { else_, .. } = core_of(&mut db5, body5) else {
+            panic!("main lowers to a runtime `if`");
+        };
+        assert!(
+            matches!(core_of(&mut db5, else_), Core::TrapOverflow),
+            "a conditional const Int64.min/-1 division overflow preserves the overflow kind, got {:?}",
+            core_of(&mut db5, else_)
+        );
     }
 
     #[test]
