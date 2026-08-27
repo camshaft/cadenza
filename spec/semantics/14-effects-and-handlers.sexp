@@ -8876,3 +8876,23 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 162 Int64)))
+
+; -- breaker batch 494 (2026-08-27): the closure-param face of the specialize_recursive family
+; (sibling to xar5's arm-capture). A capture-once closure passed into a RECURSIVE HOF under the
+; fold errors "parameter reference has no local slot" — an INTERNAL message (no CDZ code, no
+; position; below the honest-decline bar; filed to v-effects). Both halves work alone: the same
+; recursive HOF with a plain closure (no effects) answers 6375, and the same capture-once closure
+; through a NON-recursive HOF answers 50. Oracle 6375 = capture-once a=seed, 50 frames of k*5.
+
+(case "chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (drive (: f (-> Int64 Int64)) (: k Int64))
+      (if (= k 0) 0 (+ (f k) (drive f (- k 1)))))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((g (let ((a (St.next))) (fn ((: x Int64)) (* a x)))))
+          (drive g 50))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 6375 Int64)))
