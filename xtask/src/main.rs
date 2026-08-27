@@ -4449,6 +4449,15 @@ fn gate_one_case(
                         format!("value {v} [host-calls: {}]", calls.join(", "))
                     }
                     Ran::Declined { code: Some(c), .. } => format!("rejected [{c}]"),
+                    // A code-less decline whose message is an ICE signature is graded FAIL — the `actual:`
+                    // label must FOLLOW that classification (not the generic "compiler can't compile it yet",
+                    // which reads as an honest capability gap). breaker's cosmetic catch on #4523.
+                    Ran::Declined {
+                        code: None,
+                        message,
+                    } if is_ice_signature(message) => {
+                        format!("ICE — compiler bug, declined with no diagnostic code: {message}")
+                    }
                     Ran::Declined { code: None, .. } => {
                         "declined (compiler can't compile it yet)".to_string()
                     }
@@ -5808,18 +5817,36 @@ fn check_baseline(
         }
     }
 
-    // A `fail` verdict is a MISCOMPILE (ran to an outcome disagreeing with the record — the actionable
-    // frontier), never an accepted baseline state (baselines carry only pass/todo). The `regressed`
-    // check above catches a baseline pass→fail, but a case ABSENT from the baseline (a recent
-    // test→corpus migration, a live-objects case) or a baselined todo→fail would FAIL yet slip past
-    // `--check` as "not a regression" — making the fleet landing bar (`gate --check` 0-regressed)
-    // strictly WEAKER than plain `gate` (which exits non-zero on any fail). That hole let ~12 reds
-    // accrue on green `--check` (v-nix report 2026-08-27). Close it: fail on ANY current `fail` that is
-    // not already reported as a pass→fail regression (so no double-count), regardless of baseline
-    // membership. Correct under `--shard` too (a fail in a shard is still a fail).
+    // A `fail` verdict is normally a MISCOMPILE (ran to an outcome disagreeing with the record — the
+    // actionable frontier). The `regressed` check above catches a baseline pass→fail, but a case ABSENT
+    // from the baseline (a recent test→corpus migration) or a baselined todo→fail would FAIL yet slip past
+    // `--check` as "not a regression" — making the fleet landing bar (`gate --check` 0-regressed) strictly
+    // WEAKER than plain `gate`. That hole let ~12 reds accrue on green `--check` (v-nix report 2026-08-27).
+    // Close it: fail on ANY current `fail` whose baseline is NOT `fail` and NOT `pass` — i.e. a `todo`/absent
+    // case that now fails (v-nix's hole stays closed), regardless of shard.
+    //
+    // EXCEPTION — a TRACKED KNOWN-FAIL: a baseline row explicitly recording `fail` is a DELIBERATE,
+    // git-committed pin of a known-wrong behavior (a compiler bug whose real fix is deferred — the operator's
+    // no-silent-miscompiles directive: track the repro, don't leave it silent, and don't rush a risky fix).
+    // A `fail` baseline + a `fail` verdict is the EXPECTED, tracked state → NOT a gate failure (reported
+    // separately as KNOWN-FAIL so it stays visible). This does NOT reopen v-nix's hole: only an EXPLICIT
+    // `fail` baseline is exempt; a `todo`/absent case that fails still reds. A pinned known-fail that later
+    // PASSES surfaces as `gained` (prompting a baseline update — the bug got fixed).
     let failing: Vec<&str> = verdicts
         .iter()
-        .filter(|(d, v)| *v == Verdict::Fail && base.get(d.as_str()) != Some(&Verdict::Pass))
+        .filter(|(d, v)| {
+            *v == Verdict::Fail
+                && !matches!(
+                    base.get(d.as_str()),
+                    Some(Verdict::Pass) | Some(Verdict::Fail)
+                )
+        })
+        .map(|(d, _)| d.as_str())
+        .collect();
+    // Tracked known-fails: a `fail` verdict against an explicit `fail` baseline row — expected + visible.
+    let tracked_fail: Vec<&str> = verdicts
+        .iter()
+        .filter(|(d, v)| *v == Verdict::Fail && base.get(d.as_str()) == Some(&Verdict::Fail))
         .map(|(d, _)| d.as_str())
         .collect();
 
@@ -5848,6 +5875,16 @@ fn check_baseline(
         );
         for f in &failing {
             println!("  x  {f}");
+        }
+    }
+    if !tracked_fail.is_empty() {
+        // Visible but NOT gate-redding: git-committed known-wrong pins (a deferred-fix compiler bug).
+        println!(
+            "\nKNOWN-FAIL — tracked known-wrong (baseline `fail`), not a gate failure ({}):",
+            tracked_fail.len()
+        );
+        for f in &tracked_fail {
+            println!("  ⊗  {f}");
         }
     }
 

@@ -8289,7 +8289,7 @@ todo	bo1 bare order over two runtime encode results compares content-lexicograph
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
-todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
+fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	cj03 Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
