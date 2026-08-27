@@ -54468,6 +54468,71 @@ mod stage1 {
         assert!(msg.contains("branches differ"), "got: {msg}");
     }
 
+    /// [cp4 interim safety-decline] A MULTI-USE let-local bound to a NULLARY performing-factory `(mk)`
+    /// whose body is a creation-wrapper capture closure `(let ((a (St.next))) (fn (x) (* a x)))` must
+    /// DECLINE, not silently miscompile: reducing `(f X)` per use re-inlines `(mk)`, whose `lambda_of`
+    /// `Let`-capture arm substitutes the performing `(St.next)` INTO the returned lambda body, turning a
+    /// creation-time draw into a per-application one (`(+ (f 10) (f 20))` at seed 5 folds to 170 instead
+    /// of the capture-once 150). Until v-effects' capture-once fold gets 150, the shape is a clean
+    /// bind-once-or-reject decline (no silent wrong value). The boundary is NARROW: a SINGLE application
+    /// (cpf1) draws once and folds 50; a DIRECT capture-closure (ca1m) folds 150 via the #3894 hoist; a
+    /// closure whose perform is INSIDE the returned lambda (cx8) is per-application-by-design and folds.
+    #[test]
+    fn cp4_multiuse_performing_nullary_factory_declines_not_miscompiles() {
+        let run5 = |prog: &str| -> Result<i64, String> {
+            match compile_component(&crate::codec::encode(&parse(prog))) {
+                Ok(c) => Ok(run_returns_with::<i64>(
+                    &c,
+                    "main",
+                    &[wasmtime::component::Val::S64(5)],
+                )),
+                Err(e) => Err(e.message),
+            }
+        };
+        let mkst = "(effect St (op next (-> Int64))) \
+                    (def (mk) (let ((a (St.next))) (fn ((: x Int64)) (* a x)))) ";
+        let arm = "((next () s (resume s (+ s 1))))";
+        // cp4: multi-use factory → DECLINE (was a silent 170)
+        assert!(
+            run5(&format!(
+                "(do {mkst}(def (main (: n Int64)) (handle St n {arm} (let ((f (mk))) (+ (f 10) (f 20))))) (export main))"
+            ))
+            .is_err(),
+            "cp4 multi-use performing factory must decline, not silently miscompile (170)"
+        );
+        // cpf1: single application folds 50 (draws once)
+        assert_eq!(
+            run5(&format!(
+                "(do {mkst}(def (main (: n Int64)) (handle St n {arm} (let ((f (mk))) (f 10)))) (export main))"
+            )),
+            Ok(50),
+            "single application of a performing factory must fold (draws once)"
+        );
+        // ca1m: a DIRECT capture-closure applied twice folds 150 (the #3894 hoist path — unaffected)
+        assert_eq!(
+            run5(&format!(
+                "(do (effect St (op next (-> Int64))) (def (main (: n Int64)) (handle St n {arm} (let ((f (let ((a (St.next))) (fn ((: x Int64)) (* a x))))) (+ (f 10) (f 20))))) (export main))"
+            )),
+            Ok(150),
+            "a direct capture-closure applied twice must fold via the capture-once hoist"
+        );
+        // cx8: perform INSIDE the returned lambda is per-application-by-design and folds (n=3 → 24)
+        assert_eq!(
+            match compile_component(&crate::codec::encode(&parse(
+                "(do (effect E (op tick (-> Int64))) (def (mk (: k Int64)) (fn (x) (+ (* x k) (E.tick)))) (def (main (: n Int64)) (handle E (% n 3) ((tick () s (resume (* s 10) (+ s 1)))) (let ((g (mk 2))) (+ (g 3) (g 4))))) (export main))"
+            ))) {
+                Ok(c) => Ok(run_returns_with::<i64>(
+                    &c,
+                    "main",
+                    &[wasmtime::component::Val::S64(3)]
+                )),
+                Err(e) => Err(e.message),
+            },
+            Ok(24),
+            "a closure whose perform is inside the returned lambda folds per-application (not bind-onced)"
+        );
+    }
+
     // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
 
     #[test]
