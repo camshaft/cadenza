@@ -7142,57 +7142,6 @@ impl ComposedRuntime {
     }
 }
 
-/// MUST-NOT-REGRESS boundary witness for the owned-heap-param drop epilogue's EXCLUSION side (`3a638625f`
-/// `param_only_borrowed_or_backedge`). The drop is gated NARROWLY — it fires ONLY for a heap param whose
-/// every occurrence is a borrow or the tail-identity back-edge. The sibling witnesses above pin that it
-/// FIRES (leak→0). This pins that it correctly DOES NOT fire when the param is CONSUMED — the exact shape
-/// class (`subtree-calls-name`'s non-tail-consumed `tree`) that DOUBLE-FREED across 3 over-fire rounds
-/// before the gate was narrowed. `walk` is a self-recursive loop that passes its heap `List` param `xs`
-/// BOTH to a non-member consuming call `sink(xs)` (a non-tail position — `xs` transferred out, dup'd by the
-/// Perceus retain for the later use) AND identity-passed on the back-edge. If a future change broadened the
-/// gate to drop `xs` here, the back-edge reuse would read a freed handle → a wasm `unreachable`/garbage
-/// value. Asserts VALUE-CORRECT (the UAF guard) — a double-free would trap or corrupt before returning.
-/// This runs in the FAST lib path (a plain rcdzc test), guarding the gate's exclusion boundary WITHOUT the
-/// slow compiler-ml self-host sweep that originally caught the over-fires.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
-#[test]
-#[ignore = "needs the debug-counters store (cargo xtask build)"]
-fn a_consumed_heap_param_in_a_self_recursive_loop_is_not_dropped_no_double_free() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!(
-            "debug-counters runtime not in the store (run `cargo xtask build`); skipping consumed-param no-double-free boundary witness"
-        );
-        return;
-    };
-    // `sink` CONSUMES its list param (`List.len` borrows, but passing `xs` INTO the `sink` call is a
-    // consuming call arg under callee-owns-args). `walk` recurses on scalar `n`, and in the NON-tail
-    // position `(+ (sink xs) (walk (- n 1) xs))` it (a) consumes `xs` via `sink xs` AND (b) identity-passes
-    // `xs` on the recursive back-edge — so `xs` is NOT borrow-only, and the narrow gate must NOT drop it at
-    // the loop exit (dropping it would free a handle the back-edge / the caller still holds → double-free).
-    // The Perceus retain dups `xs` for the `sink` consume so the recursion's `xs` survives. `main` threads
-    // its harness input `n` into `walk` (so the passed arg actually drives the result — an inert hard-coded
-    // arg would mask a call-site regression). VALUE: for n=2, sink(xs)=len=3 is added 3 times (n=2,1,0) then
-    // 0 at n=-1 → 3+3+3 = 9. A double-free would trap/garble.
-    let src = "(module m \
-                 (def (sink (: ys (List Int64))) ((. List len) ys)) \
-                 (def (walk (: n Int64) (: xs (List Int64))) \
-                    (if (>= n 0) (+ (sink xs) (walk (- n 1) xs)) 0)) \
-                 (def (main (: n Int64)) (walk n ((. List push) ((. List push) ((. List push) (list) 1) 2) 3))) \
-                 (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // VALUE-CORRECT is the UAF/double-free GUARD: a wrongly-dropped `xs` would free the list the back-edge
-    // reuses → the next `sink xs` reads a freed handle → trap or wrong length. len=3 summed over n=2,1,0 = 9.
-    assert_eq!(
-        rt.call("main", &[Val::S64(2)]),
-        Val::S64(9),
-        "a CONSUMED heap param in a self-recursive loop must NOT be dropped by the narrow gate — value 9 \
-         (3+3+3) proves no double-free/UAF; a trap or wrong value = the gate over-fired onto a consumed param"
-    );
-}
-
 /// COMPOUND EQUALITY over a runtime FLOAT LEAF follows the canonical byte form — the compound analogue of
 /// the scalar `Core::FloatCompare` fix, with NO extra machinery: `box-float` canonicalizes every NaN to
 /// the one quiet-NaN on construct (and keeps ±0.0 distinct), so a float in a compound already has the

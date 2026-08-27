@@ -8150,3 +8150,22 @@
             (export main)))
   (output (: 3 Int64))
   (live-objects known-leak 7))
+
+; ── Reclaim (no-double-free): a CONSUMED heap param on a self-recursive non-tail spine is not dropped (migrated from rcdzc) ──
+(case "a consumed heap param on a self-recursive loop's non-tail spine is not double-freed"
+  (doc    "`sink` CONSUMES its list param (passing xs INTO the call is a consuming call-arg under
+           callee-owns-args). `walk` recurses on scalar n; in the NON-tail `(+ (sink xs) (walk (- n 1) xs))`
+           it BOTH consumes xs (via `sink xs`) AND identity-passes it on the recursive back-edge — so xs is
+           not borrow-only, and the narrow owned-heap-param drop gate must NOT drop it at the loop exit
+           (dropping it would free a handle the back-edge/caller still holds -> double-free). The Perceus
+           retain dups xs for the sink consume so the recursion's xs survives. VALUE is the double-free/UAF
+           guard: len=3 summed over n=2,1,0 = 9; a wrongly-dropped xs would trap or read a freed handle
+           (garbled length). Value-correct + no double-free, with a residual known-leak of 2 cells (the
+           dup/shell reclaim gap, flips to 0 when the general Perceus drop pass lands).")
+  (input  (do
+            (def (sink (: ys (List Int64))) ((. List len) ys))
+            (def (walk (: n Int64) (: xs (List Int64)))
+              (if (>= n 0) (+ (sink xs) (walk (- n 1) xs)) 0))
+            (def (main (: n Int64)) (walk n ((. List push) ((. List push) ((. List push) (list) 1) 2) 3)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 9 Int64)) (live-objects known-leak 2))
