@@ -8988,3 +8988,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a compound built from two distinct peers escapes the entrypoint as a resource
+pass	a string result chained through two peers escapes the entrypoint via the methods envelope

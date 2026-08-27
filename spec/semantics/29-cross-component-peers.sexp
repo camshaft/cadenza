@@ -694,3 +694,17 @@
               (def (main (: x Int64)) (host (A B) (tuple (A.pa x) (B.pb x)))) (export main)))
   (call   main (: 5 Int64))
   (output (: (tuple 10 15) (Tuple Int64 Int64))))
+
+(case "a string result chained through two peers escapes the entrypoint via the methods envelope"
+  (doc    "Two peers with a chained String result: A (cadenza:a/api) `ga(_x) = String.concat \"h\" \"i\"` = \"hi\";
+           B (cadenza:b/api) `gb(s) = String.concat s s` (doubles). main chains A.ga into B.gb and RETURNS the
+           result: gb(ga(x)) = gb(\"hi\") = \"hihi\" → escapes the entrypoint as a String resource. Exercises
+           the WITH-METHODS multi-interface (g>1) fused resource-escape assembler (a String result lifts
+           make+encode+len methods, with the component-type indices shifted by g for two interfaces).")
+  (peer   "cadenza:a/api" (do (def (ga (: _x Int64)) (String.concat "h" "i")) (export ga)))
+  (peer   "cadenza:b/api" (do (def (gb (: s String)) (String.concat s s)) (export gb)))
+  (input  (do (effect A (op ga (-> Int64 String))) (bind A "cadenza:a/api")
+              (effect B (op gb (-> String String))) (bind B "cadenza:b/api")
+              (def (main (: x Int64)) (host (A B) (B.gb (A.ga x)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: "hihi" String)))
