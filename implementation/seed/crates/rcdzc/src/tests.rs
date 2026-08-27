@@ -13443,69 +13443,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_wide_operand_shift_or_bitwise_folds_over_the_solved_width_or_traps() {
-        // REGRESSION (fold, shift/bitwise follow-up): `>>`/`&`/`|`/`^`/`<<` over a UInt64 operand ≥ 2^63
-        // must fold over the solved width's u128 bit pattern — NOT decline via the i64-only `fold_arith`
-        // (which has no i64 for a ≥2^63 operand → spurious CDZ0304). A wide operand is always non-negative
-        // unsigned (a signed value ≥ 2^63 can't type — CDZ0302 at its literal), so `>>` is a logical shift
-        // and the bitwise ops mask to width. FIX (lower_arith wide block): fold BitAnd/BitOr/BitXor/Shl/Shr
-        // over the u128 low-width pattern; shift count out of 0..width or a `<<` result past the width traps.
-        let compiles = |src: &str| {
-            assert_eq!(
-                reject_code(src),
-                None,
-                "a wide-operand shift/bitwise whose result fits the solved width must fold, not decline: {src}"
-            );
-        };
-        compiles(
-            "(module m (def (main) (>> (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
-        );
-        compiles(
-            "(module m (def (main) (& (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
-        );
-        compiles(
-            "(module m (def (main) (| (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
-        );
-        compiles(
-            "(module m (def (main) (^ (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
-        );
-
-        // A `<<` whose result overflows the solved width still traps CDZ0304 (no silent truncation).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (<< (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0304"),
-            "a wide `<<` whose result overflows the width must trap"
-        );
-        // A shift count >= the width traps CDZ0304 (out-of-range count).
-        assert_eq!(
-            reject_code(
-                "(module m (def (main) (>> (: 18446744073709551615 UInt64) (: 200 UInt64))) (export main))"
-            )
-            .as_deref(),
-            Some("CDZ0304"),
-            "a shift count past the bit width must trap"
-        );
-
-        // The folded VALUES are correct over the u128 bit pattern, when a runtime is available.
-        if let Some(v) = run_heap_value_escape(
-            "(module m (def (main) (>> (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
-        ) {
-            assert!(
-                v.contains("9223372036854775807"),
-                "(u64max-1) >> 1 folds to 9223372036854775807: got {v}"
-            );
-        }
-        if let Some(v) = run_heap_value_escape(
-            "(module m (def (main) (& (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
-        ) {
-            assert!(v.contains("255"), "u64max & 255 folds to 255: got {v}");
-        }
-    }
-
-    #[test]
     fn a_small_operand_shift_whose_result_exceeds_i64_folds_at_the_unsigned_width_but_signed_shr_sign_extends()
      {
         // REGRESSION (fold): `(<< (: 1 UInt64) 63)` = 2^63 FITS UInt64 but overflows i64. Both operands fit

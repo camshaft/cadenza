@@ -5414,6 +5414,37 @@
   (call   mul0)
   (output (: 0 UInt64)))
 
+(case "a CONSTANT wide-UInt64 shift/bitwise op folds over the solved width, not the i64-only path"
+  (doc    "The shift/bitwise companion of the wide-UInt64 identity fold above. `>> & | ^` over a UInt64
+           operand >= 2^63 (UInt64.max = 2^64-1 has NO i64) must fold over the SOLVED width's bit pattern, not
+           decline via the i64-only const fold (which had no i64 for the operand -> a spurious CDZ0304). A wide
+           UInt64 is always non-negative, so `>>` is a LOGICAL shift and the bitwise ops mask to width:
+           (u64max-1) >> 1 = 2^63-1 = 9223372036854775807; u64max & 255 = 255; (u64max-1) | 1 = u64max; u64max
+           ^ 255 flips the low byte = 18446744073709551360. Nullary exports -> the both-constant fold path.")
+  (input  (do
+            (def (shr ) (>> (: 18446744073709551614 UInt64) (: 1 UInt64)))
+            (def (band) (& (: 18446744073709551615 UInt64) (: 255 UInt64)))
+            (def (bor ) (| (: 18446744073709551614 UInt64) (: 1 UInt64)))
+            (def (bxor) (^ (: 18446744073709551615 UInt64) (: 255 UInt64)))
+            (export shr) (export band) (export bor) (export bxor)))
+  (call   shr)  (output (: 9223372036854775807 UInt64))
+  (call   band) (output (: 255 UInt64))
+  (call   bor)  (output (: 18446744073709551615 UInt64))
+  (call   bxor) (output (: 18446744073709551360 UInt64)))
+
+(case "a CONSTANT wide-UInt64 left shift whose result overflows the width is rejected"
+  (doc    "The overflow face of the wide shift/bitwise fold: a `<<` whose result exceeds the solved width must
+           REJECT (CDZ0304), never silently truncate. `(<< UInt64.max 1)` overflows the 64-bit width.")
+  (input  (<< (: 18446744073709551615 UInt64) (: 1 UInt64)))
+  (error  CDZ0304))
+
+(case "a CONSTANT shift by a count at or beyond the UInt64 bit width is rejected"
+  (doc    "The out-of-range-count face: a shift whose count is >= the bit width rejects CDZ0304 (an
+           out-of-range shift count), on the wide-operand fold path as on the narrow one. `(>> UInt64.max 200)`
+           shifts by 200 >= 64.")
+  (input  (>> (: 18446744073709551615 UInt64) (: 200 UInt64)))
+  (error  CDZ0304))
+
 (case "a runtime signed division by zero traps as divide-by-zero, not overflow"
   (doc    "The trap-KIND the two-guard emit exists to preserve: a SIGNED `(/ 5 0)` must classify as
            divide-by-zero, NOT overflow — the two conditions carry kind-specific messages (`r == 0` →
