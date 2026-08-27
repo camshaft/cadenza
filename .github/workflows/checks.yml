@@ -322,6 +322,28 @@ jobs:
           rustup target add wasm32-wasip1
           cargo build --target wasm32-wasip1
 
+  cdz-delegate:
+    # The DELEGATED-COMPILE packaging of `cdz` (`implementation/seed/crates/cdz/src/delegate.rs`, gated
+    # `#[cfg(not(feature = "standalone"))]`). The `default` feature set turns `standalone` ON, which bundles
+    # `rcdzc` in-process and COMPILES OUT the delegate module — so every default-feature job above (workspace
+    # build/clippy/test) never sees `delegate.rs`. The NIX build packages `cdz` with `--no-default-features`
+    # (standalone OFF → delegate ON: `flake.nix`'s `seedCompiler` is `-p cdz -p cdz-run --n`), so a break in
+    # the delegate path reds `nix build .#checks.<sys>.harness-runs` — the platform-conformance gate — while
+    # GitHub CI stays green. This job closes that gap: it compiles + lints `cdz`/`cdz-run` in the exact
+    # no-default-features config the flake uses, so a delegate build break fails a GitHub check instead of
+    # only surfacing on the nix path. Pure native (no wasm toolchain / runtime store needed).
+    name: cdz delegate-compile build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: cdz-delegate
+      - name: Build + lint cdz with the delegate feature (standalone OFF, as the nix build packages it)
+        run: |
+          cargo build -p cdz -p cdz-run --no-default-features
+          cargo clippy -p cdz -p cdz-run --no-default-features -- -D warnings
+
   nix-flake:
     name: nix flake check (advisory)
     runs-on: ubuntu-24.04-arm
