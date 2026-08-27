@@ -3612,9 +3612,13 @@ pass	a runtime String ordering compare over a let-bound rope operand leaves no l
 pass	a runtime String rope compares equal to its flat twin and leaves no live heap objects
 pass	a runtime String rope inserted into an empty set boxes by its own type and its compaction is leak-neutral
 pass	a runtime String.at result compares by content in a recursive scan
+pass	a runtime String.concat then byte-len measures the built rope
+pass	a runtime String.from-bytes decodes a recursively built buffer
+pass	a runtime String.from-bytes of ill-formed bytes takes the None arm
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
+pass	a runtime String.to-bytes encodes a recursively built string
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime UInt8 left shift range-checks the count and the result
 pass	a runtime UInt8 subtraction underflowing below zero traps
@@ -4592,6 +4596,8 @@ pass	addition of two records is rejected — a record is not a number
 pass	addition of two sets is rejected — a set is not a number
 pass	addition of two strings is rejected — text is not a number
 pass	addition of two symbols is rejected — a symbol is not a number
+pass	adv54 a let-bound to-bytes of a runtime string slice read twice sees both bytes
+pass	adv54b a let-bound Bytes.concat of slice-view to-bytes read twice sees the concatenated bytes
 pass	advancing the clock past the UInt64 nanosecond range traps rather than silently wrapping
 pass	ae1 SUBTRACTION of two same-op draws as a 2-ary op's args — the antisymmetry pins left-to-right order exactly
 pass	ae10 TUPLE literal of three draws matched immediately as scrutinee — positions survive the construct-then-destructure round trip
@@ -4687,6 +4693,7 @@ pass	an Int8 sum-payload literal-match misses, binds the payload widened to Int6
 pass	an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED masked value is compared
 pass	an N suffix lets a huge literal need no annotation
 pass	an N-suffixed integer literal is a BigInt
+pass	an OBSERVED performing tail loop of 20k iterations keeps constant stack (repackage-tail-call)
 pass	an OPEN-ROW helper projects from the record state INSIDE the arm
 pass	an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm
 pass	an OPTION as op ARGUMENT — the arm matches Some/None it was handed, per dispatch
@@ -8407,4 +8414,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	an OBSERVED performing tail loop of 20k iterations keeps constant stack (repackage-tail-call)
