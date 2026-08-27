@@ -1884,6 +1884,7 @@ pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
 pass	a do-sequenced perform train under its OWN inner handle threads state
+pass	a do-sequenced self-call preceding a perform folds via multi-value return
 pass	a do-spine item abort ABANDONS its enclosing operator, not splicing the value (do-item abort-abandon)
 pass	a dotted nullary arm whose body nests a same-type sum match dispatches correctly
 pass	a double fused match chain through a shared callee computes both calls
@@ -2318,6 +2319,7 @@ pass	a let-bound returned closure applied twice folds each application independe
 pass	a let-bound runtime tuple inside a parameterized function projects element 0
 pass	a let-bound runtime-if list is length-measured with valid wasm
 pass	a let-bound runtime-if map is looked up with valid wasm
+pass	a let-bound self-call preceding an out-state-observing perform folds via multi-value return
 pass	a let-bound set shared across a consuming Set.union and a later read is dup'd and reclaimed once (no live objects)
 pass	a let-bound tuple produced by an if is projected at both indices
 pass	a let-bound tuple produced by an if, projected at two indices, compiles and runs
@@ -2562,6 +2564,7 @@ pass	a match-based self-tail-recursion loops in constant stack
 pass	a match-based tail recursion with an earlier literal arm loops correctly
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
+pass	a match-scrutinee self-call preceding an arm-body perform folds via multi-value return
 pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a matching-width handler state folds across two sequential performs
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
@@ -4836,6 +4839,7 @@ pass	an if with a narrow branch and a bare-literal branch computes at the narrow
 pass	an if with identical branches folds even when the condition is a NaN-false float compare
 pass	an if with identical branches folds to the branch when the condition is trap-free
 pass	an if with identical branches still evaluates a TRAPPING condition
+pass	an if-condition self-call preceding a branch perform folds via multi-value return
 pass	an if-join of two capturing lambdas let-bound and called applies the selected closure
 pass	an if-join of two identical capturing lambdas still reads the capture on the false arm
 pass	an if-operand arithmetic op with deferred-width branches is Int64, and its wide result is correct
@@ -7792,6 +7796,7 @@ pass	two inclusive bounds at the same point collapse to equality
 pass	two inclusive bounds collapse to equality at a negative point
 pass	two inclusive bounds collapse to equality over an unsigned width
 pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
+pass	two let-sequenced sibling self-calls thread out-state via multi-value return
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
