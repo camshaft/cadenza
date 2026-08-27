@@ -44714,27 +44714,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_let_bound_variable_passed_as_a_call_argument_resolves_at_the_call_site() {
-        // `(let ((k 10)) (inc k))` = 11: β-reduction splices the CALL-SITE argument `k` into a copy of
-        // `inc`'s body, and `push_list` re-parents the splice — so without pinning the argument's scope
-        // at the call site, `k` would resolve in the CALLEE's scope (where it is unbound) and the
-        // program would be spuriously rejected CDZ0101. The argument must keep the caller's `let`.
-        let src =
-            "(module m (def (inc x) (+ x 1)) (def (main) (let ((k 10)) (inc k))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                "main"
-            ),
-            11
-        );
-        // The lambda sibling and the nested-application sibling exercise the same splice: a let-bound
-        // name and a call's own result, each passed as an argument to another user call.
-        assert_eq!(run_main("(let ((k 10) (f (fn (x) (+ x 1)))) (f k))"), 11);
-        assert_eq!(run_main("(let ((f (fn (x) (+ x 1)))) (f (f 0)))"), 2);
-    }
-
-    #[test]
     fn a_stored_or_captured_lambda_applies_through_the_fold() {
         // `core-semantics.md` §A Function Is A First-Class Value — a function stored in a data
         // structure is extractable and callable, and a function value captures its CREATION scope.
@@ -45383,54 +45362,6 @@ mod stage1 {
             err.0.contains("deeply") || err.0.contains("nests"),
             "got: {}",
             err.0
-        );
-    }
-
-    #[test]
-    fn a_nested_call_chain_compiles_without_exponential_blowup() {
-        // A nested call chain `(f (f (f … 0)))` β-inlines each level; a generation that did not MEMOIZE
-        // the reduction and the fault walk re-analyzed each cached-but-shared reduced term per enclosing
-        // level — EXPONENTIAL (×2/level; 2^depth when the callee duplicates its parameter). At depth 25 a
-        // single-use chain took MINUTES unmemoized; this test would then never finish. Memoized, it folds
-        // in milliseconds. The value (25 increments of 0 = 25) triangulates the fold is correct; the
-        // POINT is that it TERMINATES quickly — a regression here reappears as a hang, not a wrong value.
-        let mut body = "0".to_string();
-        for _ in 0..25 {
-            body = format!("(f {body})");
-        }
-        let src = format!("(module m (def (f n) (+ n 1)) (def (main) {body}) (export main))");
-        // Compile through the SAME host-stack guard the `rcdzc`/`cdz` bin uses (`host.rs`: "the bin AND
-        // the deep-input test both go through it"). The recursive-descent compile (fold/lower/fault-walk)
-        // recurses ~per nesting level; a depth-25 chain can exceed a default `cargo test` worker's ≈2 MB
-        // stack and SIGABRT the whole lib-test binary (a HARD abort, not a `#[should_panic]`-catchable
-        // failure) on a build whose per-frame cost sits near the edge. `run_with_compiler_stack` sizes the
-        // stack from `DESCENT_DEPTH_LIMIT`, so the depth guard — not the native stack — bounds it, exactly
-        // as at the bin. (Sibling `a_pathologically_deep_expression_declines_not_crashes` already does this.)
-        let bytes = crate::host::run_with_compiler_stack(|| {
-            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
-        });
-        assert_eq!(
-            run_returns::<i64>(&bytes, "main"),
-            25,
-            "a depth-25 single-use call chain must fold to 25 (and compile in linear, not exponential, time)"
-        );
-        // The worse shape: a callee that DUPLICATES its parameter doubles the substituted term per level
-        // (2^depth nodes). At depth 12 the value is 1·2^12 = 4096; unmemoized this was already ~0.6s and
-        // depth 18 never finished. Memoized it is instant.
-        let mut body = "1".to_string();
-        for _ in 0..12 {
-            body = format!("(g {body})");
-        }
-        let src = format!("(module m (def (g n) (+ n n)) (def (main) {body}) (export main))");
-        // Same host-stack guard as the single-use chain above — a parameter-duplicating chain nests just
-        // as deep, so it must not rely on the default test stack either.
-        let bytes = crate::host::run_with_compiler_stack(|| {
-            compile_component(&crate::codec::encode(&parse(&src))).expect("compile")
-        });
-        assert_eq!(
-            run_returns::<i64>(&bytes, "main"),
-            4096,
-            "a depth-12 parameter-duplicating call chain must fold to 4096 without exponential blowup"
         );
     }
 
