@@ -7149,6 +7149,9 @@ pass	pattern matching over AST distinguishes forms
 pass	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
 pass	pbr1 PER-BRANCH resume with different value AND stride — the else branch jumps the state 50, flipping the next dispatch's route
 pass	pbr2 THREE-way match-branch resumes — each residue class answers and strides differently, three dispatches walk the classes
+pass	pca1 a map argument crosses INBOUND to a peer and its length is read there
+pass	pca2 a set argument crosses INBOUND to a peer and its length is read there
+pass	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
 pass	pcc1 a partial ctor in an inline tuple completes when projected and applied
 pass	pcc2 a partial ctor in a let-bound tuple completes when projected and applied
 pass	pcc3 a partial ctor in a record field completes when projected and applied

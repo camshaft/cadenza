@@ -8320,6 +8320,9 @@ todo	nfp2 Ast.print renders a runtime NaN Ast.Float as NaN.0
 todo	nfp3 Ast.print renders a -inf leaf inside a list as -inf.0
 todo	pak1 a peer op returning a (List of a user sum) crosses and its length is read
 todo	pbi1 a peer op returning a BigInt crosses as a handle and value-equality holds
+todo	pca1 a map argument crosses INBOUND to a peer and its length is read there
+todo	pca2 a set argument crosses INBOUND to a peer and its length is read there
+todo	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
 todo	pcl1 a peer op returning a list crosses as a handle and its length is read
 todo	pcl2 a peer op returning a tuple with a variable-length list element crosses, both fields read
 todo	pcl3 an element of a peer-returned list is read and used
