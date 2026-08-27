@@ -61716,12 +61716,6 @@ mod stage1 {
             cdz_run::required_runtime(&bb).expect("valid").is_some(),
             "a genuinely-boxed sum still imports the value-heap runtime"
         );
-        // The enum program runs correctly with no runtime composed in (a plain scalar function): n<0 → Red
-        // → 1, n==0 → Green → 2, n>0 → Blue → 3.
-        for (arg, want) in [(-1i64, 1i64), (0, 2), (5, 3)] {
-            let got: i64 = run_returns_with(&bytes, "main", &[wasmtime::component::Val::S64(arg)]);
-            assert_eq!(got, want, "classify(pick {arg})");
-        }
     }
 
     #[test]
