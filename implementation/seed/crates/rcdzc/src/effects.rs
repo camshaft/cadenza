@@ -9635,7 +9635,12 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
         body: None,
         internal: false,
     });
-    db.effect_specializations.insert(memo_key, spec_index);
+    // CLONE the key at the insert (not move): `handle_lift_escapes` below may find the just-filled body
+    // ESCAPES the spec scope and decline the fold, which must ROLL BACK this registration — else a later
+    // identical call hits the still-present memo, returns `spec_name` WITHOUT re-validating, and emits the
+    // poison def (the bogus CDZ0101 returns). Keeping `memo_key` lets the rollback remove it.
+    db.effect_specializations
+        .insert(memo_key.clone(), spec_index);
     // Register the multi-value calling convention BEFORE threading the body, so the recursive self-call arm
     // (which re-enters here, hits the memo, and reads `db.multivalue_specs`) knows THIS spec returns a
     // `(value, out-states…)` tuple and rewrites its own self-calls to destructure + thread the out-state.
@@ -9728,7 +9733,98 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
     let _def_form = db.push_list(vec![def_head, sig, spec_body]);
 
     db.fill_specialized_def(spec_index, spec_params, spec_body);
+
+    // EMISSION-SITE SAFE FLOOR (specialize_recursive escape, v-effects pairing 2026-08-27). A recursive
+    // performer whose handler arm captures a MAIN-LOCAL `let` binding escapes the lifted top-level def:
+    // `collect_captures` threads enclosing-fn PARAMS as extra spec params but NOT a main-local `let` binder
+    // (it matches `Resolved::Param` only), so the captured name (`ys`/`m`) rides into the lifted def where
+    // it is out of scope and resolves UNBOUND. A-priori detection over-declines (an arm's threaded-state /
+    // resume / do-local refs are indistinguishable pre-lift); the escape is precise ONLY on the actual
+    // threaded body. Validate it; on an escape DECLINE the fold cleanly (an honest "not yet reducible" todo)
+    // instead of emitting a def whose reference dangles as a bogus CDZ0101. The validation walk MEMOIZES
+    // resolution of the fresh spec body against the fill-time context, so FORGET it afterward — `core_of`
+    // must re-resolve against the fully-populated context (a mutual partner spec / multi-value drain filled
+    // AFTER this call).
+    let escape = handle_lift_escapes(db, spec_body);
+    crate::resolve::forget_subtree(db, spec_body);
+    if escape.is_some() {
+        // ROLL BACK every registration this call made (v-effects attempt-4 finding): the memo entry, the
+        // multi-value flag, and the capture list. Without this a later identical call hits the stale memo
+        // and returns `spec_name` un-revalidated, re-emitting the poison def. The reserved (now
+        // filled-but-unreferenced) def is harmless — the fold declined, so nothing names it.
+        db.effect_specializations.remove(&memo_key);
+        db.multivalue_specs.remove(&spec_name);
+        db.effect_spec_captures.remove(&spec_name);
+        return None;
+    }
     Some(spec_name)
+}
+
+/// After `specialize_recursive` fills a lifted spec def, return the first VALUE-POSITION occurrence in its
+/// threaded body that ESCAPES the spec scope: a PLAIN-SOURCE name resolving UNBOUND (`Resolved::Poison`).
+/// The lift splices the handler arm's resume value into the lifted def; a value the arm captured from a
+/// MAIN-LOCAL `let` binding (`(let ((ys …)) (handle … (loop2 n)))`) then rides in out of scope —
+/// `collect_captures` threads enclosing-fn PARAMS but not main-local `let` binders (it matches
+/// `Resolved::Param` only), so the spliced reference resolves `Poison`. The returned occurrence also names
+/// WHICH main-local a later full-fold increment must thread as an extra spec param. `None` = emittable.
+///
+/// Walks the RESOLVED FORM, recursing ONLY value-carrying children, so a NON-value name — a member-access
+/// KEY (`len` in `(List.len ys)`), a `let`/`fn`/`match` BINDER occurrence — is never resolved-as-a-value
+/// and never falsely flagged (the raw-atom walk's 54-case over-decline: those keys/binders resolve `Poison`
+/// too). The PLAIN-NAME gate additionally skips the fold's synthesized machinery (state params `{spec}$s{k}`,
+/// multi-value temps `$t{k}`, growing-state `#st`/`#seed`/`#cv`, partner/self spec names `{base}#eff{n}` —
+/// all bear a `#`/`$`). Globals (helper defs, prelude) resolve via the flat `def_by_name`/prelude and are
+/// not `Poison`. CONSERVATIVE: an exotic variant whose value children are not enumerated here is simply not
+/// recursed — a missed escape leaves that shape a todo (no regression), never an over-decline.
+pub(crate) fn handle_lift_escapes(db: &mut Db, node: StructId) -> Option<StructId> {
+    match resolved_of(db, node) {
+        Resolved::Poison(_) => {
+            if let Some(name) = db.ast.as_name(node)
+                && !name.contains('#')
+                && !name.contains('$')
+            {
+                return Some(node);
+            }
+            None
+        }
+        // Value-child recursion — keys/binders are structurally absent from these child lists.
+        Resolved::Apply { head, args } => handle_lift_escapes(db, head)
+            .or_else(|| args.iter().find_map(|&a| handle_lift_escapes(db, a))),
+        Resolved::Let { bindings, body } => bindings
+            .iter()
+            .find_map(|&(_binder, init)| handle_lift_escapes(db, init))
+            .or_else(|| handle_lift_escapes(db, body)),
+        Resolved::If { cond, then_, else_ } => handle_lift_escapes(db, cond)
+            .or_else(|| handle_lift_escapes(db, then_))
+            .or_else(|| handle_lift_escapes(db, else_)),
+        Resolved::And { lhs, rhs, .. } => {
+            handle_lift_escapes(db, lhs).or_else(|| handle_lift_escapes(db, rhs))
+        }
+        Resolved::Not { operand } | Resolved::Try { operand } => handle_lift_escapes(db, operand),
+        Resolved::Match { scrutinee, arms } => handle_lift_escapes(db, scrutinee).or_else(|| {
+            arms.iter()
+                .find_map(|&(_pat, body)| handle_lift_escapes(db, body))
+        }),
+        Resolved::Member { operand, .. } | Resolved::Proj { operand, .. } => {
+            handle_lift_escapes(db, operand)
+        }
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            elems.iter().find_map(|&e| handle_lift_escapes(db, e))
+        }
+        Resolved::Record { fields } => fields
+            .values()
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .find_map(|v| handle_lift_escapes(db, v)),
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            handle_lift_escapes(db, expr)
+        }
+        // Leaves (literals, resolved Ref/Param, Prim, TypeVal) and any variant whose value children are not
+        // enumerated: do not recurse. A Ref/Param means the name IS bound (not an escape); an unenumerated
+        // exotic variant is conservatively skipped (a missed escape is a todo, never an over-decline).
+        _ => None,
+    }
 }
 
 /// Build a tuple projection `(. <name> index)` — a fresh bare-name reference to `name` projected at
