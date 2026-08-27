@@ -2908,6 +2908,7 @@ pass	a newtype match-arm destructure reads the erased scalar back
 pass	a newtype over a record reads a field through the tag
 pass	a newtype over a record reads a field through the tag at runtime
 pass	a newtype over a sum erases without a second box and matches through both layers
+pass	a newtype over a sum escapes to the host as its erased underlying sum value-form
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
@@ -4019,6 +4020,7 @@ pass	a single-variant newtype literal-payload arm falls through to the binding a
 pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant newtype value escaping a parameterized def emits a valid module and matches back
+pass	a single-variant nominal value escapes to the host as its erased payload tagged with the nominal name
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
@@ -8113,6 +8115,7 @@ todo	a performing closure passed to a helper that applies it never miscompiles (
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
+todo	a recursive newtype escapes to the host tagged with its own name at each recursion point
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a reducer performing a RECORD host import reads a field of the result (via an imposed WIT world)
 todo	a reducer performing a scalar host import threads the u64 result into the step (via an imposed WIT world)

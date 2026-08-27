@@ -3024,6 +3024,7 @@ pass	a newtype match-arm destructure reads the erased scalar back
 pass	a newtype over a record reads a field through the tag
 pass	a newtype over a record reads a field through the tag at runtime
 pass	a newtype over a sum erases without a second box and matches through both layers
+pass	a newtype over a sum escapes to the host as its erased underlying sum value-form
 pass	a newtype wrapping a heap list compares by the inner heap walk
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a newtype-wrapped scalar as a map key looks up through the erasure
@@ -3488,6 +3489,7 @@ pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive match binder used twice over a heap-list sum payload projects a live field
 pass	a recursive multiplication overflow traps across the call chain
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
+pass	a recursive newtype escapes to the host tagged with its own name at each recursion point
 pass	a recursive param used only as a call argument infers its type from the callee
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
@@ -4201,6 +4203,7 @@ pass	a single-variant newtype literal-payload arm falls through to the binding a
 pass	a single-variant newtype literal-payload arm is selected when the payload matches
 pass	a single-variant newtype over a COMPOUND escapes the bare compound under its type header
 pass	a single-variant newtype value escaping a parameterized def emits a valid module and matches back
+pass	a single-variant nominal value escapes to the host as its erased payload tagged with the nominal name
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
@@ -6073,6 +6076,10 @@ pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections)
 pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
 pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
 pass	dqe5 BOTH nested operands dual-used (projections + equality) leak both node trees
+pass	dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)
+pass	dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree
+pass	dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree
+pass	dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
 pass	drb1 a DRAWBRIDGE over a tidal channel — boat LET-BINDS the low-tide boolean ONCE and consumes it in TWO SEPARATE ifs, one selecting the answer's hundreds digit and one selecting the next-state tuple, a low-tide boat slips under advancing the tide by one and counting the crossing while a high-tide boat waits three tide steps crossing nothing, log reads tide and crossings without advancing, and the seed sets the starting tide so the runs disagree on which boats slip under
 pass	drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly
@@ -8627,7 +8634,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	dqe6 a nested operand dual-used by projection + ORDERING walk leaks its tree (order-only is clean)
-pass	dqe7 a nested operand dual-used by projection + CHAMP-key descent (insert one, look up by the equal twin) leaks its tree
-pass	dqe8 a nested operand dual-used by projection + Set membership descent leaks its tree
-pass	dqe9 TWO walkers (equality AND ordering) on the same nested operands with no projection reclaim clean

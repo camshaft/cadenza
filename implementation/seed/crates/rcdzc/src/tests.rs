@@ -9478,24 +9478,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_multi_payload_variant_value_escapes_to_the_host() {
-        // `(type Rec (Mk Int64 Int64 Int64))` is a SINGLE-variant sum — a NOMINAL NEWTYPE (a struct), so
-        // its box is ERASED: the runtime value IS the payload TUPLE (no `sum-new`, no discriminant), and
-        // it crosses the host boundary as that underlying tuple TAGGED with the nominal name — `(Rec.Mk 1
-        // 2 3)` → `(: (tuple 1 2 3) Rec)`. (A nominal value adds nothing to the runtime representation,
-        // `type-system.md §Nominal Is An Orthogonal Modifier`; this is the erased escape, NOT the boxed
-        // `(: (Mk 1 2 3) Rec)` a multi-VARIANT sum's variant would render.) Pins construction + escape of
-        // an erased 3-field struct round-tripping through the resource `encode()`.
-        let Some(v) = run_heap_value_escape(
-            "(module m (type Rec (Mk Int64 Int64 Int64)) (def (main) (Rec.Mk 1 2 3)) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping multi-payload escape run");
-            return;
-        };
-        assert_eq!(v, "(: (tuple 1 2 3) Rec)");
-    }
-
-    #[test]
     fn a_recursive_fn_self_calling_in_a_do_def_rhs_is_detected_as_recursive_not_deep_beta_reduced()
     {
         // A recursive fn whose ONLY self-call sits in a do-local VALUE def's RHS — `(def hh (f …))` inside a
@@ -10201,24 +10183,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_runtime_newtype_over_a_sum_escapes_to_the_host() {
-        // REGRESSION: a newtype-over-sum RETURNED to the host at RUN TIME used to DECLINE ("a `(Option
-        // Int64)` sum crosses the host boundary only as a single nullary export's result") — the escape
-        // routing matched the raw `Ty::Nominal` result and missed the sum-escape arm, so it fell to the
-        // scalar decline. It now routes on the ERASED (stripped) result → the sum escape. The `(if …)`
-        // keeps the payload RUNTIME (a constant folds through a type-agnostic path that masked the bug).
-        // The value renders as its underlying sum (`(: (Some 7) (Option Int64))` — the erased inner).
-        let Some(v) = run_heap_value_escape(
-            "(module m (type Cached (Mk (Option Int64))) \
-               (def (main) (Mk (Some (if true 7 0)))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime newtype-over-sum escape");
-            return;
-        };
-        assert_eq!(v, "(: (Some 7) (Option Int64))");
-    }
-
-    #[test]
     fn a_newtype_over_a_sum_erases_to_the_same_component_as_the_bare_sum() {
         // The proof there is NO double-box: a newtype-over-Option compiles to the BYTE-IDENTICAL component
         // as the bare Option it wraps — the `Mk` tag erased to nothing. (A constant fold makes both a
@@ -10253,22 +10217,6 @@ mod match_engine {
                 "a folded annotation unifies with the unfolded value type"
             );
         }
-    }
-
-    #[test]
-    fn a_recursive_newtype_escapes_to_the_host() {
-        // Phase 3: a RECURSIVE newtype RETURNED to the host escapes via the recursive-sum shape walker,
-        // routed on the un-stripped nominal so its OWN name tags the value (`Lst`, not the inner
-        // `Option`). The recursion point (the nested `Mk None`) is tagged `Lst` too. Was a clean DECLINE
-        // pre-Phase-3.
-        let Some(v) = run_heap_value_escape(
-            "(module m (type Lst (Mk (Option (Tuple Int64 Lst)))) \
-               (def (main) (Mk (Some (tuple 7 (Mk None))))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping recursive newtype escape");
-            return;
-        };
-        assert_eq!(v, "(: (Some (tuple 7 (: (None unit) Lst))) Lst)");
     }
 
     #[test]
