@@ -23203,31 +23203,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_list_escapes_to_the_host() {
-        // A CONSTANT list returned as the program result crosses the host boundary through the SAME
-        // resource-escape path a constant tuple/record takes: its length is statically known, so its
-        // canonical value-form bytes bake into the resource module and `encode()` serves them (no runtime
-        // heap walk). `(list 1 2 3)` renders `(: (list 1 2 3) (List Int64))` — the `(list …)` surface with
-        // its element type in the type node. A list with a folded-through-β-reduction element (`(f 1)` =
-        // `(list n 2 3)`) still bakes as a constant.
-        let Some(out) = escape_render("(module m (def (main) (list 1 2 3)) (export main))") else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "(: (list 1 2 3) (List Int64))", "constant list escape");
-
-        let Some(out) =
-            escape_render("(module m (def (f n) (list n 2 3)) (def (main) (f 1)) (export main))")
-        else {
-            return;
-        };
-        assert_eq!(
-            out, "(: (list 1 2 3) (List Int64))",
-            "folded-arg list escape"
-        );
-    }
-
-    #[test]
     fn a_char_from_int_option_escapes_and_renders() {
         // `Char.from-int` folds to a constant `(Option Char)` sum whose `Some` payload is a `ConstChar`;
         // it crosses the host boundary through the resource-escape path (the sum bakes, its char payload
@@ -23391,40 +23366,6 @@ mod match_engine {
         )
         .expect("runtime present");
         assert_eq!(out, "(: \"ab\" String)", "runtime String concat escape");
-    }
-
-    #[test]
-    fn a_runtime_built_list_escapes_via_value_encode() {
-        // A RUNTIME `(List Int64)` (a `List.push`/recursion-built vector — not a compile-time constant) now
-        // crosses the host boundary, where before it DECLINED "type `(List Int64)` has no component boundary
-        // representation". A list's length is dynamic, so it can't use a fixed value-form template; it
-        // escapes via the runtime `value-encode` op (the recursive-sum walker), guided by a compiler-baked
-        // shape descriptor whose PARAMETRIC frame (`Framed("List", ["Int64"], …)`) renders the element type
-        // — so the value form is `(: (list …) (List Int64))`, matching the constant-List form. `build i n
-        // out` pushes `i` for i in 0..n (List.push APPENDS) → `[0 1 2]`.
-        let Some(out) = escape_render(
-            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                       (def (main) (build 0 3 (list))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime-List escape run");
-            return;
-        };
-        assert_eq!(
-            out, "(: (list 0 1 2) (List Int64))",
-            "runtime List escape renders (list …) under (List Int64)"
-        );
-
-        // A list of Bool — the parametric type node carries the element type `Bool`. Push `(> i 0)` for i
-        // in 0..2 → [false, true].
-        let out = escape_render(
-            "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (> i 0))) out)) \
-                       (def (main) (build 0 2 (list))) (export main))",
-        )
-        .expect("runtime present");
-        assert_eq!(
-            out, "(: (list false true) (List Bool))",
-            "runtime List of Bool renders under (List Bool)"
-        );
     }
 
     #[test]

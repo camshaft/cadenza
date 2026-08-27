@@ -1742,6 +1742,18 @@
   (output (: (list 0 1 2) (List Int64)))
   (live-objects known-leak 2))
 
+(case "a list of Bool built at run time by a push-loop escapes with its Bool element type"
+  (doc    "The Bool-element twin of the push-loop escape above: the value-encode walker's PARAMETRIC frame
+           renders the element TYPE, so a runtime-built `(List Bool)` crosses as `(: (list …) (List Bool))`,
+           not a bare `List` — the element type is the observable, and the Bool leaves render `false`/`true`
+           (not 0/1). `build i n out` pushes `(> i 0)` for i in 0..n → [false, true] (i=0 → false, i=1 →
+           true). Pins that the parametric frame carries a Bool element type, distinct from the Int64 twin.")
+  (input  (do
+            (def (build i n out) (if (< i n) (build (+ i 1) n (List.push out (> i 0))) out))
+            (def (main) (build 0 2 (list))) (export main)))
+  (output (: (list false true) (List Bool)))
+  (live-objects known-leak 2))
+
 ; --- A consuming List op leaves a shared let-bound operand UNCHANGED (persistence) ----------------
 ; `List.push`/`update`/`concat` are PERSISTENT — each produces a new list and MUST leave its operand
 ; unchanged (memory-and-resource-model.md: a value must not be observably mutated through one reference
