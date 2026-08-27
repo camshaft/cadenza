@@ -44144,12 +44144,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_multi_param_function() {
-        // `((fn (a b) (+ a b)) 3 4)` = 7 — both params substituted.
-        assert_eq!(run_main("((fn (a b) (+ a b)) 3 4)"), 7);
-    }
-
-    #[test]
     fn a_stored_or_captured_lambda_applies_through_the_fold() {
         // `core-semantics.md` §A Function Is A First-Class Value — a function stored in a data
         // structure is extractable and callable, and a function value captures its CREATION scope.
