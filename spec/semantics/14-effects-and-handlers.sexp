@@ -886,6 +886,57 @@
                 (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
   (output (: 5000000000 Int64)))
 
+(case "a deferred resume-thunk filed by a non-recursive helper then popped folds"
+  (doc    "The pqueue entry is built by a NON-RECURSIVE helper `mk1` rather than inline: `(sched-step (mk1
+           wake (KBox.KBox (fn (_u) (resume unit wake)))))`. The fold reduces the outer `sched-step` arm to
+           `(match (mk1 wake kb) …)`, then must reduce the nested `(mk1 …)` scrutinee to its `(PQCons (tuple
+           wake kb PQNil))` body so the case-of-known-constructor pop exposes the boxed continuation — a
+           regression pin for the nested-helper-call-in-scrutinee reduction (before it, the pop's binders
+           resolved to Poison and the fold declined). The popped continuation resumes the wake-seeded clock
+           → 5e9.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (mk1 (: t Instant) (: kb KBox)) (PQ.PQCons (tuple t kb (PQ.PQNil ()))))
+            (def (sched-step (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s (sched-step (mk1 wake (KBox.KBox (fn (_u) (resume unit wake)))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
+  (output (: 5000000000 Int64)))
+
+(case "a multi-arg non-recursive helper filing a resume-thunk folds, substituting all its args"
+  (doc    "The multi-argument helper twin of the pqueue-entry-via-helper case: `mk2` takes a pure `base`
+           arg (unused in the built entry) plus the `(t, kb)` pair. `(sched-step (mk2 (Instant 7) wake
+           (KBox …)))` — the arm reduction must substitute ALL of mk2's args (including the unused pure
+           `base`) when reducing the nested scrutinee, so the pop exposes the boxed continuation; the
+           resume seeds the clock to the wake → 5e9. Pins that a multi-arg (some-unused) helper folds
+           through the same nested-scrutinee reduction as the single-arg one.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (type KBox (KBox (-> Unit Unit)))
+            (type PQ PQNil (PQCons (Tuple Instant KBox PQ)))
+            (def (mk2 (: base Instant) (: t Instant) (: kb KBox)) (PQ.PQCons (tuple t kb (PQ.PQNil ()))))
+            (def (sched-step (: q PQ))
+              (match q
+                ((PQ.PQNil _) unit)
+                ((PQ.PQCons (tuple wake kb rest)) (match kb ((KBox.KBox k) (k unit))))))
+            (effect Sim (op sleep (-> Instant Unit)) (op now (-> Unit Instant)))
+            (def (main)
+              (handle Sim (Instant.Instant 0)
+                ( (now (u) s (resume s s))
+                  (sleep (wake) s (sched-step (mk2 (Instant.Instant 7) wake (KBox.KBox (fn (_u) (resume unit wake)))))) )
+                (do (Sim.sleep (Instant.Instant 5000000000)) (inst-ns (Sim.now))))) (export main)))
+  (output (: 5000000000 Int64)))
+
 (case "a performing closure passed to a function that applies it UNDER a handler is homed at the apply site"
   (doc    "The `handler runs a passed-in closure` idiom: `with-seed(body) = handle Rand … (body unit)` runs
            its `body` PARAM under the `Rand` handler, and `main` passes `(fn (u) (Rand.roll))`. The lambda's
