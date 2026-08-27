@@ -22459,3 +22459,38 @@
   (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
              (def (main) (let ((t (build 0 3 (tuple (list) 0)))) ((. List len) ((. List push) (. t 0) 99)))) (export main)))
   (call main) (output (: 4 Int64)))
+
+; ── List.at bounds over a RUNTIME-built list at a RUNTIME-COMPUTED index (the runtime bounds-check
+; path, distinct from the constant-fold None cases which fold at compile time). The list is built by a
+; push-loop so `List.at` genuinely runs on the value heap; the index is a masked/plain runtime value.
+; Relocated (RUN half) from the in-crate rcdzc a_provably_nonnegative_index_elides_the_list_at_lower_bound_check
+; — its Lir lower-bound-elision white-box (a masked index emits NO `index >= 0` sub-check) stays in rcdzc.
+(case "lbe1 List.at over a runtime list at a masked nonnegative index reads in bounds"
+  (doc    "`build 0 3 (list)` = [0 1 2] on the value heap; a MASKED index `(& k 3)` (provably nonneg, ∈ [0,3])
+           lands in bounds: k=1 → (& 1 3)=1 → element 1 → 1. The runtime read over a heap list with a
+           runtime-computed index (NOT the compile-time fold of a constant list + constant index).")
+  (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) (& k 3)) ((Some x) x) (None -1)))
+              (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "lbe2 List.at over a runtime list at a masked index past the end yields None"
+  (doc    "The upper bound still catches OOB after the lower-check elision: a masked index `(& k 15)` can
+           exceed the length. k=7 → (& 7 15)=7 ≥ len 3 → None → the match's -1. Pins that eliding the
+           `index >= 0` half does not weaken the `index < len` half on the runtime path.")
+  (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) (& k 15)) ((Some x) x) (None -1)))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: -1 Int64)))
+
+(case "lbe3 List.at over a runtime list at a plain negative index yields None"
+  (doc    "A PLAIN (possibly-negative) index keeps BOTH bound checks; a negative index over the runtime heap
+           list yields None (NOT a wrap-to-large-unsigned read): k=-1 → None → -1. The runtime-path companion
+           of the constant-list negative-index None case — here the list and index are both runtime values.")
+  (input  (do (def (build (: i Int64) (: n Int64) (: out (List Int64))) (if (< i n) (build (+ i 1) n ((. List push) out i)) out))
+              (def (main (: k Int64)) (match ((. List at) (build 0 3 (list)) k) ((Some x) x) (None -1)))
+              (export main)))
+  (call   main (: -1 Int64))
+  (output (: -1 Int64)))
