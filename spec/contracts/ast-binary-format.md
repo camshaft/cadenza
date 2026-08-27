@@ -101,9 +101,13 @@ are exactly the following, and a decoder MUST refuse any other kind byte.
 - `11` — a BYTES literal (an arbitrary byte sequence, not necessarily UTF-8). The body MUST be a
   `varu64` byte length followed by that many raw bytes.
 - `12` — a BAD-ESCAPE marker (a lexically malformed string escape the reader preserves). The body MUST
-  be a `varu64` byte length followed by that many UTF-8 bytes of the offending escape.
+  be a `varu64` byte length followed by that many UTF-8 bytes encoding exactly one Unicode scalar (the
+  offending escape). A decoder MUST refuse a body that is not valid UTF-8 or that decodes to zero or to
+  more than one scalar, so that the leaf is injective.
 - `13` — a CHARACTER literal (a single Unicode scalar value). The body MUST be a `varu64` byte length
-  followed by that many UTF-8 bytes encoding exactly one scalar.
+  followed by that many UTF-8 bytes encoding exactly one Unicode scalar. A decoder MUST refuse a body
+  that is not valid UTF-8 or that decodes to zero or to more than one scalar, so that the leaf is
+  injective (a one-character `a` and a two-character `ab` cannot collide).
 - `14` — a BAD-CHARACTER marker (a character literal spelling a non-scalar the reader preserves). The
   body MUST be a `varu64` byte length followed by that many UTF-8 bytes of the offending text.
 - `15` — a SYMBOL literal. The body MUST be a `varu64` byte length followed by that many UTF-8 bytes.
@@ -165,6 +169,16 @@ An encoder MUST produce, for a given abstract syntax tree, the one canonical byt
 pool MUST list each distinct leaf exactly once (leaves are deduplicated by value) and the leaf pool and
 the structure pool MUST be ordered by a deterministic function of the tree alone, independent of the
 order in which nodes were constructed, so that two equal trees produce identical bytes.
+
+The deterministic order is fixed as follows, so that a third party can produce the canonical bytes and
+not merely read them. The structure pool MUST be in POST-ORDER: an entry appears after all of its
+children, so the root is the LAST structure entry. The leaf pool MUST be in FIRST-ENCOUNTER order under
+a pre-order (parent-before-children) walk of the tree, each distinct leaf placed at its first
+occurrence and deduplicated by value thereafter. Two leaves are the same for deduplication when they are
+equal by value, and a `Name` leaf's text MUST be Unicode NFC-normalized before that comparison so that
+two canonically-equal spellings intern to one leaf. An integer or float significand magnitude MUST be
+minimal (no leading zero byte), zero MUST be the empty magnitude, and zero MUST NOT take a negative
+kind; these together give each value one magnitude form.
 
 Decoding a canonical binary encoding MUST yield the abstract syntax tree it was encoded from, and
 re-encoding that tree MUST reproduce the same bytes.
