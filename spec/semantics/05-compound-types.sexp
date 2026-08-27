@@ -7788,6 +7788,12 @@
             (export main)))
   (error  CDZ0201))
 
+(case "a single-field variant whose one payload is a Tuple binds the whole payload with one sub-pattern"
+  (doc    "The positive companion of the too-few reject above: the arity check keys on the DECLARED field count (1 for `(Pt (Tuple Int64 Int64))`, a genuinely single-field variant), NOT the payload's tuple shape — so `(R.Pt a)` binds the WHOLE tuple payload as `a` with ONE sub-pattern and does NOT fault as under-binding (a check keyed on the `Ty::Tuple` shape would wrongly reject it). `(R.Pt (tuple 3 4))` matched `((R.Pt a) (. a 0))` reads element 0 → 3.")
+  (input  (do (type R (Pt (Tuple Int64 Int64)))
+              (def (main) (match (R.Pt (tuple 3 4)) ((R.Pt a) (. a 0)))) (export main)))
+  (call   main) (output (: 3 Int64)))
+
 ; --- A multi-payload constructor applied in CURRIED / PARTIAL form ---
 ; A sum constructor is a single-arity function (core-semantics.md §A Sum Type Constructor Is A Single-
 ; Arity Function), and §Functions Are Single-Arity makes `(f a b)` sugar for `((f a) b)`. So a two-payload
