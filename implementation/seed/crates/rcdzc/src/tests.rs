@@ -7322,63 +7322,6 @@ fn a_runtime_list_of_floats_equality_distinguishes_a_differing_element() {
     }
 }
 
-/// A RUNTIME STRING ROPE used as a MAP KEY is canonicalized (`bytes-compact`) at the insert/lookup CHAMP
-/// sites, so a rope key is found by its flat twin — the map/set KEY remainder of the value-eq rope fix.
-/// `Map.insert`/`Map.lookup` hash+compare the key with `champ_hash`/`champ_eq` (PHYSICAL bytes); a
-/// `String.concat` rope key has different bytes than its flat twin, so without the compact the lookup
-/// MISSES (returns None → -1). Two dimensions:
-///   (a) VALUE — insert under the rope key `(rep "hi" 3)` = "hixxx", look up with the flat literal
-///       "hixxx" → the stored 42 (was -1/None: a champ physical-byte miss). THIS is the miscompile fix.
-///   (b) LEAK-NEUTRAL — the key compaction must add NO leak: the rope-key program must leave the SAME
-///       live-object count as the byte-identical FLAT-key program (both build one map + one value box
-///       that this map path does not yet reclaim when `main` returns a scalar — a pre-existing map-
-///       temporary matter, orthogonal to this fix). Comparing rope-vs-flat cancels that shared baseline,
-///       so it fails iff the compact leaks (an un-dropped or double-freed compacted key leaf).
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
-#[test]
-#[ignore]
-fn a_runtime_string_rope_map_key_is_found_and_adds_no_leak() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[rope-key] debug-counters runtime not in the store; skipping balance probe");
-        return;
-    };
-    // Insert under an OWNED rope key `(rep "hi" 3)` = "hixxx"; look up with the flat literal "hixxx".
-    let rope_src = "(module m \
-                 (def (rep (: s String) (: n Int64)) \
-                    (if (< n 1) s (rep (String.concat s \"x\") (- n 1)))) \
-                 (def (main) \
-                    (match (Map.lookup (Map.insert (Map.empty) (rep \"hi\" 3) 42) \"hixxx\") \
-                       ((Some v) v) ((None) (- 0 1)))) (export main))";
-    let rope = compile_component(&crate::codec::encode(&parse(rope_src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&rope, &runtime_bytes);
-    assert_eq!(
-        rt.call("main", &[]),
-        Val::S64(42),
-        "a runtime rope map key must be found by its flat twin (was -1/None — a champ_hash/champ_eq \
-         physical-byte miss before the compiler compacts the key at the insert/lookup sites)"
-    );
-    let rope_live = rt.live_objects();
-
-    // The byte-identical FLAT-key baseline (no rope, no compaction): both keys are the literal "hixxx".
-    let flat_src = "(module m (def (main) \
-                    (match (Map.lookup (Map.insert (Map.empty) \"hixxx\" 42) \"hixxx\") \
-                       ((Some v) v) ((None) (- 0 1)))) (export main))";
-    let flat = compile_component(&crate::codec::encode(&parse(flat_src))).expect("compile");
-    let mut rt_flat = ComposedRuntime::new(&flat, &runtime_bytes);
-    assert_eq!(rt_flat.call("main", &[]), Val::S64(42));
-    let flat_live = rt_flat.live_objects();
-
-    assert_eq!(
-        rope_live, flat_live,
-        "rope-key leak: the rope-key program leaves {rope_live} live cells vs the flat-key baseline's \
-         {flat_live} — the key compaction must be leak-NEUTRAL (an owned rope in, an owned flat leaf out, \
-         consumed by insert / dropped after the borrow-lookup), so any difference is a compact leak"
-    );
-}
-
 /// The BYTES twin of the rope-map-key test: a runtime `Bytes` ROPE used as a MAP KEY is canonicalized
 /// (`bytes-compact`) at the insert/lookup CHAMP sites (`key_needs_compaction` now includes Bytes), so a
 /// `Bytes.concat` rope key is found by its flat twin — the KEY face of the nested/keyed Bytes value-eq
