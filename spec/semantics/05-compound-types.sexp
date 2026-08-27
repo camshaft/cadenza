@@ -21941,3 +21941,30 @@
   (call main (: 50 Int64))
   (output (: 545 Int64))
   (live-objects 0))
+
+; ── breaker batch 533: Set walker-interaction fences (the itf analogs for the #4374 Set hoist,
+; verified same-hour: Set constants emit static globals 0→1, sts1-3 green values-verbatim,
+; deep 40-element HAMT covered). An immortal Set now flows into structural equality and union:
+
+(case "itf4 an immortal 40-element Set compares structurally equal to a runtime-BUILT equal Set, and the runtime side reclaims"
+  (input (do
+(def (bs (: i Int64)) (if (= i 0) (Set.of (list)) (Set.insert (bs (- i 1)) i)))
+(def (main (: n Int64))
+  (if (= (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (bs (+ n 39))) 100000 1))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100000 Int64))
+  (live-objects 0))
+
+(case "itf5 fifty frames of Set.union off an immortal 40-element Set (runtime-keyed probes) reclaim every produced set"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((u (Set.union (Set.of (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40)) (Set.of (list (+ 900 k))))))
+        (+ (+ (if (Set.contains u (+ 900 k)) 10 0) (if (Set.contains u (% k 45)) 1 0))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 545 Int64))
+  (live-objects 0))
