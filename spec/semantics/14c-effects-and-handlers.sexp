@@ -18551,3 +18551,47 @@
   (call main (: 2 Int64))
   (output (: 12 Int64))
   (live-objects known-leak 1))
+
+;; ── breaker batch 534: IMMORTAL constants × the handler seam (post constant-kind completion:
+;; bytes/string/list/tuple/record/map/set all build-once). An immortal 33-trie now crosses the
+;; capture/resume machinery as handler STATE, as an op ARGUMENT, and inside MIXED mortal/immortal
+;; state — drops at the seam must no-op on the immortal while the mortal parts advance and
+;; reclaim. Reads are runtime-indexed ((% n 33)) — constant-indexed variants const-FOLD the whole
+;; handler program (a 98-byte wasm, the no-runtime-import vacuity trap).
+
+(case "ieh1 an immortal 33-element list as handler STATE threads unchanged across three resumes (runtime-indexed reads)"
+  (input (do
+(effect E (op tick (-> Int64)))
+(def (main (: n Int64))
+  (handle E (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)
+    ((tick () s (resume (match (List.at s (% n 33)) ((Some v) v) ((None) (: -1 Int64))) s)))
+    (+ (* 100 (E.tick)) (+ (* 10 (E.tick)) (E.tick)))))
+(export main)))
+  (call main (: 1 Int64)) (output (: 222 Int64))
+  (call main (: 0 Int64)) (output (: 111 Int64))
+  (live-objects 0))
+
+(case "ieh2 an immortal 33-element list as an op ARGUMENT crosses the dispatch seam (runtime-indexed read in the handler; miss cell via the small twin)"
+  (input (do
+(effect F (op put (-> (List Int64) Int64)))
+(def (main (: n Int64))
+  (handle F (: 0 Int64)
+    ((put (xs) s (resume (+ (match (List.at xs (% n 33)) ((Some v) v) ((None) (: -1 Int64))) s) (+ s 1))))
+    (+ (* 100 (F.put (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (+ (* 10 (F.put (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))) (F.put (list 9))))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 231 Int64))
+  (live-objects 0))
+
+(case "ieh3 MIXED handler state (mortal counter + immortal list in a tuple) advances the counter and re-threads the immortal across resumes"
+  (input (do
+(effect G (op step (-> Int64)))
+(def (main (: n Int64))
+  (handle G (tuple (: 0 Int64) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))
+    ((step () s (resume (+ (. s 0) (match (List.at (. s 1) (% n 33)) ((Some v) v) ((None) (: -1 Int64))))
+                        (tuple (+ (. s 0) 1) (. s 1)))))
+    (+ (* 100 (G.step)) (+ (* 10 (G.step)) (G.step)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 234 Int64))
+  (live-objects 0))
