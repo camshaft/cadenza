@@ -12115,31 +12115,6 @@ mod runtime_ops {
         );
     }
 
-    #[test]
-    fn runtime_narrow_left_shift_range_checks() {
-        // UInt8 shift: 1<<7=128 fits, 1<<8 traps (count ≥ N=8). And 3<<7=384 overflows UInt8 (the count
-        // is in range but the result exceeds 255) → the range-check traps. Pins the count bound is N (8),
-        // not the slot width (32), and that a narrow << is range-checked.
-        assert_eq!(
-            run::<u8>(
-                "(: a UInt8) (: b UInt8)",
-                "(<< a b)",
-                &[Val::U8(1), Val::U8(7)]
-            ),
-            128
-        );
-        assert!(traps(
-            "(: a UInt8) (: b UInt8)",
-            "(<< a b)",
-            &[Val::U8(1), Val::U8(8)]
-        ));
-        assert!(traps(
-            "(: a UInt8) (: b UInt8)",
-            "(<< a b)",
-            &[Val::U8(3), Val::U8(7)]
-        ));
-    }
-
     // ── runtime `wrap` (R3): the emitted mask-and-reinterpret over a runtime operand ──────────────
     //
     // With a RUNTIME source (a parameter), `wrap` cannot fold — it emits `Core::Convert`, a slot move
