@@ -277,3 +277,28 @@
               (def (main (: x Int64)) (host (M) (host (S) (+ (M.neg x) (S.inc x))))) (export main)))
   (call   main (: 4 Int64))
   (output (: 1 Int64)))
+
+; ── map/set peer-result INTEROP: a crossed collection is first-class for further local runtime ops ──
+(case "pcs4 a peer-returned set unions with a locally-built set over the shared runtime"
+  (doc    "INTEROP: the crossed set is not read-only — it participates in further runtime ops. PROVIDER
+           `mk(x)` = {x, x+1}; the consumer unions the crossed set with a LOCALLY-built {x+1, x+2} and reads
+           Set.len of the union: mk(7) = {7,8} ∪ {8,9} = {7,8,9} → 3 (the overlapping 8 dedups). Pins that a
+           crossed CHAMP handle is a first-class set the local Set.union merges against.")
+  (peer   "cadenza:su/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:su/api")
+              (def (main (: x Int64))
+                (host (S) (Set.len (Set.union (S.mk x) (Set.insert (Set.insert (Set.of (list)) (+ x 1)) (+ x 2))))))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "pcm7 a peer-returned map accepts a further local insert over the shared runtime"
+  (doc    "INTEROP: the crossed map is a first-class handle further ops build on. PROVIDER `mk(x)` = {1:x,
+           2:x+1}; the consumer inserts a THIRD entry {3:x+2} locally and reads Map.len: mk(7) = {1:7, 2:8},
+           + {3:9} → 3. Pins that a crossed map handle accepts a persistent local Map.insert over the shared
+           runtime (the map analogue of the set-union interop).")
+  (peer   "cadenza:mi/api" (do (def (mk (: x Int64)) (Map.insert (Map.insert (Map.empty) 1 x) 2 (+ x 1))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:mi/api")
+              (def (main (: x Int64)) (host (M) (Map.len (Map.insert (M.mk x) 3 (+ x 2))))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))

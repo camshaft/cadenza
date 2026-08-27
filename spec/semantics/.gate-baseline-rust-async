@@ -8233,6 +8233,7 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a compound-result borrowed closure handle is called twice on the same handle (repeatable)
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
+todo	a consumer bound to two scalar peer interfaces runs with no runtime
 todo	a consumer calls a scalar op across a source peer provider
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
@@ -8320,9 +8321,11 @@ todo	pcm3 a peer-returned map enumerates via Map.to-list and its values fold to 
 todo	pcm4 a peer op returning an EMPTY map crosses and reads length zero
 todo	pcm5 a peer op returning a map of lists crosses and a value list's length is read
 todo	pcm6 a peer-returned map enumerates in canonical key order regardless of insert order
+todo	pcm7 a peer-returned map accepts a further local insert over the shared runtime
 todo	pcs1 a peer op returning a set crosses as a handle and its length is read
 todo	pcs2 membership of a peer-returned set is queried for a present and an absent element
 todo	pcs3 a peer op returning an EMPTY set crosses and reads length zero
+todo	pcs4 a peer-returned set unions with a locally-built set over the shared runtime
 todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
 todo	read of malformed text is a coded reject, not a wrong value
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
@@ -8352,4 +8355,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-todo	a consumer bound to two scalar peer interfaces runs with no runtime
