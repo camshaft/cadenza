@@ -8452,3 +8452,5 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 todo	a peer string result is consumed in-program via equality and byte-len
+todo	a fallible Result peer op result crosses and its Ok arm matches
+todo	a fallible Result peer op result crosses and its Err arm matches

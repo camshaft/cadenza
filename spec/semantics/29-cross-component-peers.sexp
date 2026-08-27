@@ -569,3 +569,24 @@
                                              (String.byte-len (host (M) (M.reply seed))) 0)) (export main)))
   (call   main (: 1 Int64))
   (output (: 2 Int64)))
+
+(case "a fallible Result peer op result crosses and its Ok arm matches"
+  (doc    "PROVIDER `safediv(x) = if (= x 0) (Err 1) (Ok (/ 100 x))` returns a (Result Int64 Int64)
+           @cadenza:d/api; the CONSUMER matches the crossed Result — the Ok payload passes through, the Err
+           payload is negated so the arms are distinguishable in the scalar result. safediv(5) = Ok(100/5) =
+           Ok(20) → the Ok arm yields 20 (a peer op's SUM/Result result crosses as a handle and is matched).")
+  (peer   "cadenza:d/api" (do (def (safediv (: x Int64)) (if (= x 0) (Err 1) (Ok (/ 100 x)))) (export safediv)))
+  (input  (do (effect D (op safediv (-> Int64 (Result Int64 Int64)))) (bind D "cadenza:d/api")
+              (def (main (: x Int64)) (host (D) (match (D.safediv x) ((Ok q) q) ((Err e) (- 0 e))))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 20 Int64)))
+
+(case "a fallible Result peer op result crosses and its Err arm matches"
+  (doc    "The Err path of the fallible peer op: safediv(0) hits the zero guard → Err(1); the consumer's Err
+           arm negates the payload → -1 (distinct from any Ok result), proving BOTH variants of the crossed
+           Result are matched over the shared runtime.")
+  (peer   "cadenza:d/api" (do (def (safediv (: x Int64)) (if (= x 0) (Err 1) (Ok (/ 100 x)))) (export safediv)))
+  (input  (do (effect D (op safediv (-> Int64 (Result Int64 Int64)))) (bind D "cadenza:d/api")
+              (def (main (: x Int64)) (host (D) (match (D.safediv x) ((Ok q) q) ((Err e) (- 0 e))))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
