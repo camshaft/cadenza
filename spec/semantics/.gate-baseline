@@ -1699,6 +1699,8 @@ pass	a conditional with two list branches of different length is well-typed
 pass	a conditional with two tuple branches of different arity is a type error
 pass	a conditional with two tuple branches of different element type is a type error
 pass	a conditional's condition may itself be a conditional
+pass	a conditional-resume (two-site) arm folds across TWO performs via the two-hole refold
+pass	a conditional-resume (two-site) arm folds across a SINGLE perform
 pass	a conditionally-reached trap in a loop body fires exactly when its iteration arrives
 pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
 pass	a conditionally-selected nullary variant is returned as a runtime sum result
@@ -3173,6 +3175,7 @@ pass	a performing closure duplicated through a generic tuple applies twice with 
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
+pass	a performing condition's advance survives an inner abort and is read by a post-handle observer
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a performing guard on a TUPLE-destructuring pattern folds
 pass	a performing guard on a refutable pattern whose guard FAILS falls to the catch-all
@@ -5277,9 +5280,11 @@ pass	an out-of-range literal argument caught transitively through a two-call cha
 pass	an outer Int64 let binder survives an inner String shadow of the same name
 pass	an outer definition references a sibling nested module by bare name
 pass	an outer effect in BOTH the resume value and next-state slot declines cleanly (asb)
+pass	an outer effect in a nested arm's RESUME-VALUE slot is served (as3)
 pass	an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)
 pass	an outer effect performed DIRECTLY in a nested arm's next-state slot declines cleanly (as2)
 pass	an outer op-arg match with an inner state match reading the op-arg payload threads per dispatch
+pass	an outer perform LET-LIFTED out of the next-state slot folds strict (as7 workaround)
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an overflowing literal in a RECORD op argument's narrow field is rejected
 pass	an overwrite-churn runtime map holds one entry with the last value winning
