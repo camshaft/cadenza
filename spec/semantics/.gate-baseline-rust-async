@@ -8309,7 +8309,9 @@ todo	pcl2 a peer op returning a tuple with a variable-length list element crosse
 todo	pcl3 an element of a peer-returned list is read and used
 todo	pcm1 a peer op returning a map crosses as a handle and its length is read
 todo	pcm2 a value of a peer-returned map is read by key and used
+todo	pcm3 a peer-returned map enumerates via Map.to-list and its values fold to a sum
 todo	pcs1 a peer op returning a set crosses as a handle and its length is read
+todo	pcs2 membership of a peer-returned set is queried for a present and an absent element
 todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
 todo	read of malformed text is a coded reject, not a wrong value
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result

@@ -117,6 +117,32 @@
   (call   main (: 7 Int64))
   (output (: 2 Int64)))
 
+(case "pcs2 membership of a peer-returned set is queried for a present and an absent element"
+  (doc    "PROVIDER `mk(x)` = {x, x+1}; the consumer queries Set.contains on the crossed set for a PRESENT
+           element (x) and an ABSENT one (99): mk(7) = {7,8}, contains 7 → yes (+10), contains 99 → no (+0)
+           → 10. Pins that membership reads correctly over the crossed CHAMP on both faces.")
+  (peer   "cadenza:sc/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:sc/api")
+              (def (main (: x Int64))
+                (host (S) (+ (if (Set.contains (S.mk x) x) 10 0) (if (Set.contains (S.mk x) 99) 1 0))))
+              (export main)))
+  (call   main (: 7 Int64))
+  (output (: 10 Int64)))
+
+(case "pcm3 a peer-returned map enumerates via Map.to-list and its values fold to a sum"
+  (doc    "PROVIDER `mk(x)` = {1:x+10, 2:x+20}; the consumer enumerates the crossed map with Map.to-list and
+           folds the entry VALUES to a sum over the shared runtime: mk(5) = {1:15, 2:25}, sum of values = 40.
+           Pins that the crossed map is fully ENUMERABLE (not only point-queried) and its entry values cross
+           intact — the map analogue of the list-fold peer cases.")
+  (peer   "cadenza:mf/api" (do (def (mk (: x Int64)) (Map.insert (Map.insert (Map.empty) 1 (+ x 10)) 2 (+ x 20))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:mf/api")
+              (def (sumv (: es (List (Tuple Int64 Int64))) (: acc Int64))
+                (match es ((list) acc) ((list e .. rest) (sumv rest (+ acc (. e 1))))))
+              (def (main (: x Int64)) (host (M) (sumv (Map.to-list (M.mk x)) 0)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 40 Int64)))
+
 ; -- a LIST argument crosses INBOUND to a peer as a handle (migrated from rcdzc
 ; a_list_argument_crosses_inbound_to_a_peer_as_a_handle): the inbound twin of the list-RESULT crossing —
 ; a List has a distinct runtime rep (RRB vector) but crosses as a handle the peer dereferences.
