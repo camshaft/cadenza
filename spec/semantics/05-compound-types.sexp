@@ -17925,7 +17925,7 @@
            (data (List Int64)) (n Int64))` — the record analogue of the tuple case, same descriptor-routing
            fix for a variable-length nested element.")
   (input  (do (def (build (: n Int64)) (if (= n 0) (: (list) (List Int64)) ((. List push) (build (- n 1)) n)))
-              (def (main) (record (data (build 2)) (n 2)))
+              (def (main) (record (= data (build 2)) (= n 2)))
               (export main)))
   (output (: (record (= data (list 1 2)) (= n 2)) (record (data (List Int64)) (n Int64))))
   (live-objects known-leak 3))
@@ -17953,7 +17953,7 @@
            annotated so the element record type is fully determined. Renders `(list (record (= op \"x\")
            (= seq 0)) (record (= op \"x\") (= seq 1)))` under `(List (record (op String) (seq Int64)))`.")
   (input  (do (def (build i n out)
-                (if (< i n) (build (+ i 1) n (List.push out (record (op "x") (seq i)))) out))
+                (if (< i n) (build (+ i 1) n (List.push out (record (= op "x") (= seq i)))) out))
               (def (main) (build 0 2 (: (list) (List (Record (: op String) (: seq Int64)))))) (export main)))
   (output (: (list (record (= op "x") (= seq 0)) (record (= op "x") (= seq 1)))
              (List (record (op String) (seq Int64)))))
@@ -17971,8 +17971,8 @@
            defeats const-fold so this takes the value-encode WALKER, not the const path.")
   (input  (do (type P (A Bytes) (B (Record (: x String))))
               (def (build i) (if (< i 1) (build (+ i 1))
-                (record (pl (: ((. Option Some) (: ((. P B) (record (x "hi"))) P)) (Option P)))
-                        (corr (: (. Option None) (Option Bytes))))))
+                (record (= pl (: ((. Option Some) (: ((. P B) (record (= x "hi"))) P)) (Option P)))
+                        (= corr (: (. Option None) (Option Bytes))))))
               (def (main) (build 0)) (export main)))
   (output (: (record (= corr (None unit)) (= pl (Some (B (record (= x "hi"))))))
              (record (corr (Option Bytes)) (pl (Option P)))))
@@ -21397,7 +21397,7 @@
   (error CDZ0201))
 
 (case "lhv3 a list of records with different field sets is malformed (CDZ0201)"
-  (input (do (def (main) (list (record (a 1)) (record (b 2)))) (export main)))
+  (input (do (def (main) (list (record (= a 1)) (record (= b 2)))) (export main)))
   (error CDZ0201))
 
 (case "lhv4 a list of tuples of different arity is malformed (CDZ0201)"

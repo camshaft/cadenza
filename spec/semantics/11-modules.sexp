@@ -560,7 +560,7 @@
            binds a record (`(def op (doc \"opcode bytes\") (record …))`), projected by a sibling — the doc
            is stripped so `(. op sub)` reads the real record field, 2.")
   (input  (do
-            (def op (doc "opcode bytes") (record (add 1) (sub 2)))
+            (def op (doc "opcode bytes") (record (= add 1) (= sub 2)))
             (def (main) (. op sub)) (export main)))
   (output (: 2 Int64)))
 
