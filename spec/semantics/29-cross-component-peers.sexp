@@ -449,6 +449,17 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "a runtime-produced String argument crosses to a peer as its handle"
+  (doc    "A String argument that is NOT a literal but a RUNTIME `String.concat` — a value-heap rope handle
+           built in-body — crosses to the peer as its handle: `blen(String.concat \"ab\" \"cde\")` reads the
+           crossed rope's byte-len = 5. The runtime-built companion of the literal string-arg crossing; pins
+           that a DYNAMICALLY-produced rope handle crosses the boundary, not only a compile-time literal.")
+  (peer   "cadenza:strs2/api" (do (def (blen (: s String)) (String.byte-len s)) (export blen)))
+  (input  (do (effect S (op blen (-> String Int64))) (bind S "cadenza:strs2/api")
+              (def (main) (host (S) (S.blen (String.concat "ab" "cde")))) (export main)))
+  (call   main)
+  (output (: 5 Int64)))
+
 ; ── breaker batch 542: the two peer-matrix cells the landed coverage misses — the heap-ARG
 ; direction (consumer→provider lowering; the landed pcl/pcm cases are all RESULT-crossing) and
 ; the cross-boundary CENSUS (peer-returned heap consumed ×50 must reclaim on the consumer side;

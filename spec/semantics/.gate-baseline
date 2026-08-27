@@ -4134,6 +4134,7 @@ pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
+pass	a runtime-produced String argument crosses to a peer as its handle
 pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected Name payload inside a rebuilt Ast compares against a read result
@@ -7001,6 +7002,8 @@ pass	mr4 an ACCUMULATOR threads the mutual pair — ev doubles it plus a draw, o
 pass	mr5 TWENTY alternating mutual levels with the scaling accumulator — depth stress on the cross-function fold
 pass	mrd1 a byte-string literal and a const-folded Bytes.of with identical content compare equal at runtime
 pass	mrd2 a Blake3-baked constant Bytes used twice with drops between — equal hashes, thirty-two bytes each, no live objects
+pass	mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)
+pass	mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors
 pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
 pass	mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
@@ -8019,6 +8022,8 @@ pass	sqte1 a Symbol tuple element compares by content in a runtime tuple equalit
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
 pass	sr2 a Result-typed op whose Err carries a STRING reason — the body matches Ok payload vs the reason by string equality
 pass	sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body
+pass	srf1 fifty runtime-keyed persistent Set.removes against an immortal 40-element HAMT never corrupt it (the remove-side set FBIP fence)
+pass	srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched
 pass	srw1 a GROWING STRING state with a computed slice window per dispatch — each grow appends two chars, the arm answers the byte-len of an interior window built from the drawn offset
 pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
 pass	ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)
@@ -8982,7 +8987,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)
-pass	mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors
-pass	srf1 fifty runtime-keyed persistent Set.removes against an immortal 40-element HAMT never corrupt it (the remove-side set FBIP fence)
-pass	srf2 intersection and difference off the immortal 40-set with a runtime probe: exact results, immortal untouched
