@@ -3088,6 +3088,7 @@ pass	a recursive generic function is instantiated at three distinct machine shap
 pass	a recursive generic function is instantiated at two different types
 pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument
+pass	a recursive linked-list fold leaks every heap node (O(N) reclaim gap)
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
 pass	a recursive list-map reusing a destructured sum payload beside an i64 let is disjoint-slotted
 pass	a recursive list-match called in an IF-branch inside a match arm builds on all backends
