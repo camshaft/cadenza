@@ -1809,6 +1809,20 @@ fn emit_grounded(
     if let Core::ConstInt(v) = core_of(db, id) {
         return emit_const_int_at(&db.name_ctx(), it, &v);
     }
+    // NESTED-ARITH CONSUMING WIDTH (rust twin of the wasm `emit_operand_into` fix, select.rs). A nested
+    // `+`/`-`/`*` whose OWN width is DEFERRED (its operands are bare literals, or `if`/`match` branches of
+    // bare literals) grounds to the i64 DEFAULT, so it computes AND range-checks at i64; the generic emit-
+    // then-cast path below would then truncate that i64 result `as iN`, SILENTLY WRAPPING an inner overflow
+    // (`(+ (+ (if c 100 10) (if d 100 10)) 5) : Int8`, inner 100+100=200 → `200 as i8` = -56) rather than
+    // TRAPPING — an `as` cast is not a range check (v-wasmtime-migration mig-2). Emit the inner op AT the
+    // consuming width `it` so it computes AND range-checks (`checked_*`) there, trapping the inner overflow
+    // exactly as wasm does. Only for a DEFERRED-width op: a fixed inner width is honored inside `emit_arith`.
+    if let Core::Arith { op, lhs, rhs } = core_of(db, id)
+        && matches!(op, Prim::Add | Prim::Sub | Prim::Mul)
+        && !int_ty_of(db, id).width_is_fixed()
+    {
+        return emit_arith(db, id, op, lhs, rhs, env, ctx, Some(it));
+    }
     let rendered = emit(db, id, env, ctx)?;
     // WIDTH NORMALIZATION for a CONTROL-FLOW / non-literal operand. A bare literal is grounded above; but
     // an operand that is an `if`/`match` (or any node) whose BRANCHES are bare deferred-width literals is
@@ -2235,7 +2249,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             }
         }
         // A runtime arithmetic op.
-        Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx),
+        Core::Arith { op, lhs, rhs } => emit_arith(db, id, op, lhs, rhs, env, ctx, None),
         // A float CONSTANT → a Rust float literal at the node's width. Emitted via `f64::from_bits`/
         // `f32::from_bits` of the canonical bit pattern so the EXACT value (incl. `-0.0`, a subnormal)
         // round-trips — a decimal spelling could lose a bit. The width is the node's solved type.
@@ -5607,6 +5621,7 @@ fn arith_operand_diverges(db: &mut Db, id: StructId) -> bool {
 ///  - `&`/`|`/`^` → the total bitwise operator;
 ///  - `<<`/`>>` → a guarded block: count `>= N` traps; `<<` also round-trips to trap on overflow;
 ///    `>>` is arithmetic (signed) / logical (unsigned) via the value type's own `>>`.
+#[allow(clippy::too_many_arguments)]
 fn emit_arith(
     db: &mut Db,
     id: StructId,
@@ -5615,6 +5630,15 @@ fn emit_arith(
     rhs: StructId,
     env: &Env,
     ctx: &Ctx,
+    // The CONSUMING op's width, when this arith is a nested OPERAND of an enclosing narrow op and its OWN
+    // width is DEFERRED (no anchor). The rust twin of the wasm backend's `emit_operand_into` `ot`
+    // (select.rs): a nested `+`/`-`/`*` whose operands are all deferred-width types as `Int(Deferred)`,
+    // which grounds to the i64 DEFAULT — so the inner op computes AND range-checks at i64, then the caller
+    // truncates the i64 result `as iN`, SILENTLY WRAPPING an inner overflow (`(+ (+ (if c 100 10) (if d
+    // 100 10)) 5) : Int8`, inner 100+100=200 → `200 as i8` = -56) instead of TRAPPING. Emitting the inner
+    // op at the consuming width makes it compute AND range-check (`checked_*`) at the narrow width, so the
+    // inner overflow traps — matching wasm. `None` for a top-level / fixed-width op (the common path).
+    width_override: Option<IntTy>,
 ) -> Result<String, Reject> {
     // A DIVERGING OPERAND (a `(trap …)` value, or any provably-diverging sub-expression — reaching here via
     // a `let`-binding `(let ((x (trap))) (+ x 1))` folded to a `Core::Trap` operand, or an inlined call-arg
@@ -5671,7 +5695,15 @@ fn emit_arith(
     // Both operands share the OP's integer type (its result width == operand width). Ground a bare
     // literal operand to it so `(+ a 1)` over a narrow `a` emits `<narrow>::checked_add(1<narrow>)`,
     // not `checked_add((1u64 as i64))` (Rust E0308) — the analogue of the wasm backend's `emit_operand`.
-    let it = int_ty_of(db, id);
+    // A `width_override` (this arith is a nested operand of a narrow op) takes effect ONLY when the op's
+    // OWN width is DEFERRED — a genuine FIXED inner width differing from the context is a CDZ0301 fault
+    // that aborts before emit, so a fixed inner width is kept as-is. Exactly the wasm `emit_operand_into`
+    // decision (`if own.width_is_fixed() { own } else { ot }`, select.rs).
+    let own_it = int_ty_of(db, id);
+    let it = match width_override {
+        Some(ot) if !own_it.width_is_fixed() => ot,
+        _ => own_it,
+    };
     // SAFETY GUARD (unusual-width arithmetic): an UNUSUAL width (`UInt48`, `Int12` — 1..=64 but not an
     // aliased boundary) is STORED in the next-larger machine primitive (`types::int_type`), so a `checked_*`
     // on that primitive would trap at `2^machine`, NOT the type's `2^N` — a WRONG overflow (`(UInt48).max +
