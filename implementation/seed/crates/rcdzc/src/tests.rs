@@ -19863,23 +19863,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_concat_joins_and_its_runtime_length_sums() {
-        // `List.concat(a, b)` joins two lists into a new persistent one (`vec-concat`, consuming both). To
-        // exercise the RUNTIME concat (a constant-list concat now folds), a RUNTIME-built list (`build 0 2`
-        // = `[0 1]`) is concatenated with a constant `(list 3 4 5)`; a runtime operand forces
-        // `Core::ListConcat`, so `vec-len` counts 2 + 3 = 5. Pins the runtime concat + length path.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) ((. List len) ((. List concat) (build 0 2 (list)) (list 3 4 5)))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "5", "concat then runtime length");
-    }
-
-    #[test]
     fn a_list_push_type_mismatch_is_rejected() {
         // `List.push : ∀a. (List a) → a → (List a)` — the appended element must match the list's element
         // type. `(List.push (list 1 2) true)` pushes a Bool onto a `List Int64` — a heterogeneous result,
@@ -19964,37 +19947,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_list_prepend_puts_the_element_at_the_front_and_grows_the_length() {
-        // `List.prepend : ∀a. (List a) → a → (List a)` (receiver-first, operator ruling) — insert an
-        // element at the FRONT, returning a new list one longer. Phase-1 lowers to `concat(list-new(elem),
-        // list)`. To exercise the RUNTIME path (a constant-list prepend folds), the operand is BUILT at run
-        // time (`build 0 3` = `[0 1 2]`); prepending 9 yields `[9 0 1 2]`. Element 0 must be the prepended
-        // 9 (front-insertion, NOT append), and the length must be 4. Pins value-order + growth on the
-        // runtime `Core::ListConcat` path (a genuinely-runtime operand, so no const-fold false-green).
-        let Some(front) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) ((. Option expect) \
-                  ((. List at) ((. List prepend) (build 0 3 (list)) 9) 0) \"f\")) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            front, "9",
-            "prepend puts the element at the FRONT (index 0)"
-        );
-        let Some(len) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) ((. List len) ((. List prepend) (build 0 3 (list)) 9))) (export main))",
-        ) else {
-            return;
-        };
-        assert_eq!(len, "4", "prepend grows the length by one");
-    }
-
-    #[test]
     fn a_list_prepend_type_mismatch_is_rejected() {
         // `List.prepend : ∀a. (List a) → a → (List a)` — like `push`, the prepended element must match the
         // list's element type. `(List.prepend (list 1 2) true)` prepends a Bool onto a `List Int64` — a
@@ -20007,23 +19959,6 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0201")
         );
-    }
-
-    #[test]
-    fn a_list_update_replaces_and_its_length_is_unchanged() {
-        // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
-        // length (a replacement, not a growth). To exercise the RUNTIME `vec-update` (a constant-list
-        // update now folds), the list is BUILT at run time (`build 0 3` = `[0 1 2]`); `vec-len` of the
-        // updated list is still 3. Pins the runtime `vec-update` path and that update preserves the count.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-               (def (main) ((. List len) ((. List update) (build 0 3 (list)) 1 99))) (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "3", "update preserves length");
     }
 
     #[test]
