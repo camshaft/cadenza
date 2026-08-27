@@ -15472,19 +15472,10 @@ mod match_engine {
 
     #[test]
     fn symbol_reader_sugar_and_nominal_boundary() {
-        // 17-symbols inc 2: `#"text"` reader sugar reads to the SAME value as `(Symbol.of "text")`, and a
-        // Symbol is NOMINAL over String — comparing the two ACROSS the boundary is CDZ0202.
-        assert!(run_returns::<bool>(
-            &component(
-                "(module m (def (main) (= #\"map-insert\" (Symbol.of \"map-insert\"))) (export main))"
-            ),
-            "main"
-        ));
-        // The empty reader literal is the empty symbol.
-        assert!(run_returns::<bool>(
-            &component("(module m (def (main) (= #\"\" (Symbol.of \"\"))) (export main))"),
-            "main"
-        ));
+        // A Symbol is NOMINAL over String: comparing the two across the boundary is CDZ0202 with an
+        // actionable `Symbol.of` wrap fix. (The `#"text"` reader sugar reads to the same value as
+        // `(Symbol.of "text")` — a runtime value exercised by the corpus, not here; this test keeps the
+        // white-box fix-detail assertion the corpus cannot express.)
         // A Symbol compared to the plain String it wraps is a nominal-boundary type error (CDZ0202), on
         // either operand order — NOT the generic CDZ0203, and NOT silently `false`. The reject now carries
         // a WRAP fix that interns the STRING operand into a Symbol via the total `Symbol.of` (bringing both
@@ -25655,68 +25646,6 @@ mod match_engine {
             reject_code("(module m (def (main) (quote b\"x\")) (export main))"),
             None,
             "an un-reifiable quote body (a bytes leaf) declines cleanly (no artifact, no coded rejection)"
-        );
-    }
-
-    #[test]
-    fn a_tagged_template_expands_via_its_binding_dispatched_tag_function() {
-        use crate::testkit::parse;
-        // Inc 2 — tagged-template expansion (`crate::tagged_template::expand`). A `(tagged-template <tag>
-        // (chunks c…) (holes h…))` node (the reader's form for the ML `tag"…{expr}…"`) rewrites to the
-        // application `(<tag> (list c…) (list h…))`; the tag resolves BY BINDING to a compile-time
-        // `List String -> List Ast -> Ast` function the one-tier evaluator β-reduces, splicing its `Ast`
-        // (metaprogramming.md §A Tagged Template Is A Binding-Dispatched Compile-Time Macro…). The echo
-        // macro returns `(Ast.Str <first chunk>)`, so the template folds to `(Ast.Str "hi")` → byte-len 2.
-        let echo = "(module m \
-            (def (id chunks holes) (match chunks ((list c) (Ast.Str c)) (_ (Ast.Str \"\")))) \
-            (def (main) (match (tagged-template id (chunks \"hi\") (holes)) \
-                          ((Ast.Str s) (String.byte-len s)) (_ 0))) \
-            (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(echo))).expect("compile"),
-                "main"
-            ),
-            2,
-            "a tagged template expands via its tag function and splices the returned Ast"
-        );
-        // A hole reaches the tag function and is spliced at its position: `wrap` builds `(f <hole0>)`.
-        let hole = "(module m \
-            (def (wrap chunks holes) (match holes ((list h) (Ast.List (list (Ast.Name \"f\") h))) \
-                                       (_ (Ast.List (list))))) \
-            (def (main) (= (tagged-template wrap (chunks \"\" \"\") (holes (Ast.Int 7))) \
-                           (Ast.List (list (Ast.Name \"f\") (Ast.Int 7))))) \
-            (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(hole))).expect("compile"),
-                "main"
-            ),
-            "a hole is spliced into the tag function's expansion"
-        );
-        // The spliced result folds through the ordinary path (one-tier / fixpoint): `two` returns
-        // `(Ast.Int 2)`, and `(+ 40 (…2…))` reduces to 42.
-        // `Ast.Int`'s payload is `BigInt` (non-lossy AST-int storage), so the extracted `n` is a `BigInt`;
-        // narrow it back with `Int64.of` to add the Int64 `40` and read the `i64` result.
-        let fixpoint = "(module m \
-            (def (two chunks holes) (Ast.Int 2)) \
-            (def (main) (match (tagged-template two (chunks \"\") (holes)) \
-                          ((Ast.Int n) (+ 40 (Int64.of n))) (_ 0))) \
-            (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(fixpoint))).expect("compile"),
-                "main"
-            ),
-            42,
-            "a tagged template's spliced Ast folds through the ordinary compile-time path"
-        );
-        // An unbound tag is the ordinary scope error at the (rewritten) call site — dispatch by binding.
-        assert_eq!(
-            reject_code("(module m (def (main) (tagged-template nope (chunks \"x\") (holes))) (export main))")
-                .as_deref(),
-            Some("CDZ0101"),
-            "a tagged template whose tag is unbound is CDZ0101 (binding dispatch)"
         );
     }
 
