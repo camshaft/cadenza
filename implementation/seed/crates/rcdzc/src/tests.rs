@@ -10302,74 +10302,18 @@ mod runtime_ops {
             "(= (% x 3) 0) keeps rem_s; got {three:?}"
         );
 
-        // VALUE PARITY — the mask test must agree with the true `%`-then-`==0`, ESPECIALLY for negatives
-        // (signed `%` is sign-of-dividend, but divisibility is sign-agnostic).
-        for (x, k, div) in [
-            (8i64, 2i64, true),
-            (7, 2, false),
-            (-8, 2, true),
-            (-7, 2, false),
-            (0, 2, true),
-            (-1, 2, false),
-            (16, 8, true),
-            (-16, 8, true),
-            (-12, 8, false),
-            (i64::MIN, 2, true), // MIN is even; the mask test must not choke where signed `%` bias would
-        ] {
-            assert_eq!(
-                run::<bool>("(: x Int64)", &format!("(= (% x {k}) 0)"), &[Val::S64(x)]),
-                div,
-                "({x} % {k} == 0) should be {div}"
-            );
-        }
-        // Unsigned divisibility too.
-        assert!(run::<bool>(
-            "(: u UInt64)",
-            "(= (% u 4) 0)",
-            &[Val::U64(16)]
-        ));
-        assert!(!run::<bool>(
-            "(: u UInt64)",
-            "(= (% u 4) 0)",
-            &[Val::U64(17)]
-        ));
+        // VALUE PARITY (the mask test agrees with the true `%`-then-`==0` across signs, Int64.min, and
+        // unsigned) is migrated to spec/semantics/06-numeric-model.sexp cases "dpt1 divisibility by two
+        // agrees with the true modulo across signs and Int64.min" + "dpt2 unsigned divisibility by a
+        // power of two agrees with the true modulo" (wasmtime-drop); the Lir mask-vs-rem inspection above
+        // is the wasmtime-free coverage and stays here.
     }
 
     // ── shifts: count guarded to [0,N); << checked for overflow; >> arithmetic/logical by sign ─────
 
     // runtime_left_shift_multiplies_and_traps_on_overflow: pure-run value/trap parity (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp case "rls1 left shift multiplies by 2^count; value overflow and out-of-range count trap" (wasmtime-drop).
 
-    /// adv-67 wasm-side ORACLE PIN (v-rust-backend fixed the RUST half in #1681; wasm is the CORRECT oracle,
-    /// pinned here so a future emit change can't silently regress it — the "pin an edge even if it passes"
-    /// discipline). An ODD-width signed type (`(Int 24)`, stored in the i32 slot) `MIN / -1` must TRAP
-    /// overflow: the quotient +2^23 = 8388608 is OUT of the Int24 range [-2^23, 2^23-1]. The rust bug was a
-    /// guard that tested the SLOT min (`i32::MIN`) instead of the DECLARED min (`-2^23`), so it never fired
-    /// and returned the out-of-range +8388608; wasm's checked `div_s` correctly trapped. The operands are
-    /// derived from RUNTIME Int64 params via `(Int 24).wrap` (a non-aliased width cannot cross as a param
-    /// itself — it declines — AND constant operands would const-fold to CDZ0304 before the runtime guard;
-    /// threading params keeps the `/` opaque to the fold so the emitted div-overflow guard actually runs).
-    /// Also pins the non-overflowing companion (MIN / 1 = MIN, in range → no trap) so the guard is not
-    /// over-broad.
-    #[test]
-    fn an_odd_width_signed_min_divided_by_neg1_traps_overflow_on_wasm() {
-        // Int24 MIN (-2^23 = -8388608) / -1 = +2^23, OUT of Int24 range → must TRAP overflow. `a`,`b` are
-        // runtime Int64 params wrapped to Int24 so the `/` is not const-folded (a constant MIN/-1 is CDZ0304).
-        assert!(traps(
-            "(: a Int64) (: b Int64)",
-            "(/ ((. (Int 24) wrap) a) ((. (Int 24) wrap) b))",
-            &[Val::S64(-8388608), Val::S64(-1)]
-        ));
-        // Companion (guard not over-broad): Int24 MIN / 1 = MIN, IN range → must NOT trap, value = MIN.
-        // A produced Int24 result widens to the next aliased signed width (s32), sign-extended.
-        assert_eq!(
-            run::<i32>(
-                "(: a Int64) (: b Int64)",
-                "(/ ((. (Int 24) wrap) a) ((. (Int 24) wrap) b))",
-                &[Val::S64(-8388608), Val::S64(1)]
-            ),
-            -8388608
-        );
-    }
+    // an_odd_width_signed_min_divided_by_neg1_traps_overflow_on_wasm: runtime value/trap parity (no Lir) — covered by spec/semantics/06-numeric-model.sexp case "an odd-width signed division overflow traps at the declared width (Int24 min / -1)" (cite-and-delete).
 
     // a_provably_in_range_shift_computes_the_same_value_without_a_guard: pure-run value parity
     // (no Lir inspection) — migrated to spec/semantics/06-numeric-model.sexp cases "a provably-in-range
@@ -10666,60 +10610,9 @@ mod runtime_ops {
 
     // runtime_narrow_signed_subtraction_range_checks_both_edges: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp case "nss1 a narrow Int8 subtraction range-checks both edges".
 
-    #[test]
-    fn a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width() {
-        // A NON-ALIASED integer width (`(UInt 48)`, `(Int 24)`) has no component primitive of its own, so
-        // it cannot cross as itself — but a RESULT we PRODUCE is in range by construction, so it crosses
-        // WIDENED to the smallest aliased width ≥ N of the SAME signedness, value-preserving (the core slot
-        // is unchanged; the canonical ABI lifts it faithfully). RETURN-ONLY: a non-aliased PARAMETER still
-        // declines (see `a_non_aliased_width_parameter_still_declines`).
-        // `(UInt 48).max` = 2^48-1 crosses as `u64` → the exact value (06-numeric "an unusual in-range
-        // width is a first-class type").
-        assert_eq!(
-            run::<u64>("", "(: 281474976710655 (UInt 48))", &[]),
-            281474976710655
-        );
-        // `(UInt 48).wrap -1` keeps the low 48 bits (48 ones) = 2^48-1, crossing as `u64` (06-numeric "a
-        // truncating conversion to an unusual width keeps that width's low bits").
-        assert_eq!(
-            run::<u64>("", "((. (UInt 48) wrap) (: -1 Int64))", &[]),
-            281474976710655
-        );
-        // SIGNED non-aliased width: `(Int 24).wrap -5` crosses as `s32` SIGN-EXTENDED → -5 (not a
-        // reinterpreted large unsigned). Pins the widening picks the same signedness. (The RETURN-ONLY
-        // half — a non-aliased PARAMETER still declines — is `stage1::a_non_aliased_width_result_crosses_…`.)
-        assert_eq!(run::<i32>("", "((. (Int 24) wrap) (: -5 Int64))", &[]), -5);
-    }
+    // a_non_aliased_width_result_crosses_widened_to_the_next_aliased_width: runtime value/trap parity (no Lir) — the UInt48 halves are covered by cases "an unusual in-range width is a first-class type" + "a truncating conversion to an unusual width keeps that width's low bits"; the signed Int24-wrap widening half is migrated to case "nwc1 a produced non-aliased signed width crosses widened and sign-extended (Int24 wrap)".
 
-    /// A NARROW signed `+`/`-` by a compile-time CONSTANT drops the provably-unreachable range-check
-    /// bound: the exact result moves in ONE direction from an in-range operand, so only that bound can
-    /// be exceeded. `(+ a 1)` Int8 can only exceed `max` (127) — the `r < min` check is dead; `(- a 1)`
-    /// can only fall below `min` (-128) — the `r > max` check is dead. The surviving check must still
-    /// trap at the exact edge, and dropping the dead one must never mask a real overflow or admit a wrap.
-    /// (The general two-runtime-operand case keeps both bounds — see the tests above.)
-    #[test]
-    fn a_narrow_constant_operand_addsub_drops_the_dead_range_bound() {
-        // (+ a 1) Int8: 126→127 fits; 127→128 traps the UPPER edge; MIN(-128)+1=-127 must NOT trap
-        // (the dropped lower check would have been the only risk of a false trap here).
-        assert_eq!(run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(126)]), 127);
-        assert!(traps("(: a Int8)", "(+ a 1)", &[Val::S8(127)]));
-        assert_eq!(
-            run::<i8>("(: a Int8)", "(+ a 1)", &[Val::S8(-128)]),
-            -127,
-            "adding 1 to Int8.min stays in range — the dropped lower-bound check must not trap"
-        );
-        // (- a 1) Int8: -127→-128 fits; -128→-129 traps the LOWER edge; MAX(127)-1=126 must NOT trap.
-        assert_eq!(run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(-127)]), -128);
-        assert!(traps("(: a Int8)", "(- a 1)", &[Val::S8(-128)]));
-        assert_eq!(
-            run::<i8>("(: a Int8)", "(- a 1)", &[Val::S8(127)]),
-            126,
-            "subtracting 1 from Int8.max stays in range — the dropped upper-bound check must not trap"
-        );
-        // A negative constant flips the direction: (+ a -1) moves DOWN → traps only the LOWER edge.
-        assert!(traps("(: a Int8)", "(+ a -1)", &[Val::S8(-128)]));
-        assert_eq!(run::<i8>("(: a Int8)", "(+ a -1)", &[Val::S8(127)]), 126);
-    }
+    // a_narrow_constant_operand_addsub_drops_the_dead_range_bound: runtime value/trap parity (no Lir) — migrated to spec/semantics/06-numeric-model.sexp cases "ncb1 ..." + "ncb2 ..." (narrow signed +/- by a constant drops the dead range bound).
 
     #[test]
     fn a_conditional_operands_range_is_the_union_of_its_branches() {

@@ -5544,6 +5544,8 @@ pass	do1 ONE draw consumed by BOTH branches of an if with different weights — 
 pass	double negation of a comparison is the bare comparison
 pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
+pass	dpt1 divisibility by two agrees with the true modulo across signs and Int64.min
+pass	dpt2 unsigned divisibility by a power of two agrees with the true modulo
 pass	draining the event queue yields entries in time-order with FIFO same-time ties
 pass	drb1 a DRAWBRIDGE over a tidal channel — boat LET-BINDS the low-tide boolean ONCE and consumes it in TWO SEPARATE ifs, one selecting the answer's hundreds digit and one selecting the next-state tuple, a low-tide boat slips under advancing the tide by one and counting the crossing while a high-tide boat waits three tide steps crossing nothing, log reads tide and crossings without advancing, and the seed sets the starting tide so the runs disagree on which boats slip under
 pass	drm1 a DRUM sequencer over sixteenth-note steps — each hit answers the firing drums as a bitmask (kick on quarters, snare on the backbeats, hat on every seed-shaped division), cnt counts non-silent steps, and the halved hat rate turns every other row SILENT while the kick and snare rows coincide exactly
@@ -6204,6 +6206,8 @@ pass	narrow unsigned comparison division and remainder compose unsigned over a h
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
 pass	nb1 a perform under NOT in a condition (the negated dispatch gate)
+pass	ncb1 a narrow signed (+ a 1) by a constant drops the dead lower bound, keeps the upper edge
+pass	ncb2 a narrow signed (- a 1) by a constant drops the dead upper bound, keeps the lower edge
 pass	ne1 an OPTION built from a draw crosses dispatch as an op ARGUMENT — the arm matches it against the live state
 pass	negating a runtime Int64 near the boundary is exact just above the min
 pass	negating a runtime Int64 overflows at Int64.min
@@ -6265,6 +6269,7 @@ pass	nst1 the arm's NEXT-STATE expression divides by a state-derived quantity �
 pass	nt1 a NESTED tuple state (a (b c)) — the arm destructures two levels and rebuilds with three different strides
 pass	nullary constructor patterns are uniform with unary
 pass	nullary variants of a payload-carrying sum order by discriminant
+pass	nwc1 a produced non-aliased signed width crosses widened and sign-extended (Int24 wrap)
 pass	nx1 a SUBTRACTING stride crosses zero — negative states thread and sum correctly
 pass	nx2 a 2^62 seed threads exactly — the difference of consecutive draws recovers the stride
 pass	nx3 the arm branches on the op arg's SIGN — negation on the negative path, n and -n both exercised
