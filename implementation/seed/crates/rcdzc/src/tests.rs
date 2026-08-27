@@ -8648,51 +8648,6 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
     }
 }
 
-/// A handler-arm `(do (def d e) (resume V S))` whose do-local def `d` is referenced by BOTH resume operands
-/// (value AND next-state) must compile — it used to CDZ0101-reject "unbound d" (the do-def-shared-across-
-/// both-resume-slots false-reject, corpus-bugfix/breaker 2026-07-25; the multi-use residue of the #21 do→let
-/// work). Root cause: `peel_resume_from_arm_body`'s `do` peel wrapped only the VALUE in the leading defs,
-/// returning the next-state BARE — so a `d` in the next-state orphaned. Fix: wrap BOTH value and next-state
-/// in the leading defs (each its own copy), mirroring the `let`/`match` peels. Oracle: matches the let-twin.
-#[test]
-fn a_do_def_shared_across_both_resume_slots_in_an_arm_compiles() {
-    use crate::testkit::parse;
-    let run = |src: &str| -> Option<String> {
-        let b = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a do-def shared across both resume slots must compile (no CDZ0101)");
-        run_linked(&b, "main")
-    };
-    // REPRO (heap): arm `(do (def s2 (List.push s v)) (resume (List.len s2) s2))` — s2 in BOTH slots → 12.
-    if let Some(v) = run("(do (effect L (op note (-> Int64 Int64))) \
-         (def (go (: n Int64)) \
-           (handle L (list) \
-             ((note (v) s (do (def s2 (List.push s v)) (resume (List.len s2) s2)))) \
-             (+ (* (L.note n) 10) (L.note 20)))) \
-         (def (main) (go 5)) (export main))")
-    {
-        assert_eq!(v, "12", "note 5→len 1→*10=10; note 20→len 2→+2 = 12");
-    }
-    // SCALAR both-slots: `(do (def d (+ s v)) (resume d d))` → 11.
-    if let Some(v) = run("(do (effect St (op add (-> Int64 Int64))) \
-         (def (go (: n Int64)) \
-           (handle St 0 ((add (v) s (do (def d (+ s v)) (resume d d)))) \
-             (+ (St.add n) (St.add 1)))) \
-         (def (main) (go 5)) (export main))")
-    {
-        assert_eq!(v, "11", "add 5→d=5 (state 5); add 1→d=6; 5+6 = 11");
-    }
-    // LET-twin oracle: same shape with `let` (always compiled) — must match the do-form's 12.
-    if let Some(v) = run("(do (effect L (op note (-> Int64 Int64))) \
-         (def (go (: n Int64)) \
-           (handle L (list) \
-             ((note (v) s (let ((s2 (List.push s v))) (resume (List.len s2) s2)))) \
-             (+ (* (L.note n) 10) (L.note 20)))) \
-         (def (main) (go 5)) (export main))")
-    {
-        assert_eq!(v, "12", "let-twin: same oracle as the do-form");
-    }
-}
-
 #[test]
 fn a_bin_build_operand_referencing_a_do_def_under_a_handle_binds_it_not_unbound() {
     use crate::testkit::parse;

@@ -3831,6 +3831,7 @@ pass	a satisfied @ensures on a performing def passes the effectful result throug
 pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar BETWEEN two Tuple args with a LIST result
 pass	a scalar Int64 match nested as an op operand beside an i32-handle sibling emits valid wasm
+pass	a scalar do-def shared across both resume slots in a state-advancing add handler
 pass	a scalar element is projected DIRECTLY from a named function's runtime tuple result
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result

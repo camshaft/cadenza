@@ -5991,6 +5991,23 @@
   (call   main (: 5 Int64))
   (output (: 12 Int64)))
 
+(case "a scalar do-def shared across both resume slots in a state-advancing add handler"
+  (doc    "The scalar dual-slot fix over a STATE-ADVANCING handler: the arm `(add (v) s (do (def d (+ s v))
+           (resume d d)))` shares the do-def `d` as BOTH the resume value AND the next-state, and the state
+           advances by the accumulated `d` each dispatch. `(+ (St.add n) (St.add 1))` seeded 0, go 5: first
+           `add 5` reads state 0, d = 0+5 = 5, resumes 5 and threads state 5; then `add 1` reads state 5,
+           d = 5+1 = 6, resumes 6; 5 + 6 = 11. Pins the cross-slot peel wraps the do-def into BOTH operands
+           even when the handler threads a non-trivial next-state.")
+  (input  (do
+            (effect St (op add (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle St 0
+                ((add (v) s (do (def d (+ s v)) (resume d d))))
+                (+ (St.add n) (St.add 1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64)))
+
 (case "a SCALAR do-def resumed in both slots stays in scope (scalar twin of the dual-slot fix)"
   (doc    "The scalar twin of the dual-resume-slot fix: a scalar `(def d (+ s v))` resumed as BOTH the
            value and the next-state — `(resume d d)`. Before 500e59d51 this was CDZ0101 (the bare
