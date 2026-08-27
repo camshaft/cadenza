@@ -3183,6 +3183,91 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 10 Int64)))
 
+(case "a recursive performer whose recursion result is fed DIRECTLY to a helper arg folds"
+  (doc    "The DIRECT-WRAP variant of the helper-fed-recursion-result shape: the recursion result is fed to
+           the helper DIRECTLY as an argument inside a match arm — `(match (St.put n) (_ (double (loop (- n
+           1)))))` — with NO intermediate `let` binding the result (the sibling `walk`/`combine` case above
+           let-binds `lt` first). Same slot-fix root (deep-fresh-copy of the threaded spec body keeps the
+           recursion-result arg from sharing a slot-less original param node), but exercises the recursion
+           result as a bare helper ARG rather than a let-init. `loop 0 = St.get`; each level performs `St.put`
+           then doubles the recursion result. main(3): put 3,2,1 threads state 0->6, loop0=get=6, then
+           double x3: 6->12->24->48. main(1): put 1 -> state 1; loop0=get=1; double -> 2.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (loop (: n Int64))
+              (if (= n 0) (St.get) (match (St.put n) (_ (double (loop (- n 1)))))))
+            (def (double (: a Int64)) (+ a a))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (u) s (resume s s))
+                 (put (v) s (resume unit (+ s v))))
+                (loop k)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 48 Int64))
+  (call   main (: 1 Int64)) (output (: 2 Int64)))
+
+(case "a tail mutual-recursive group where both partners perform folds"
+  (doc    "A TAIL mutually-recursive group where BOTH partners perform the discharged state op. `ping`/`pong`
+           alternate, each performing `St.put n` (advancing the state) then TAIL-calling its partner; the base
+           case reads the accumulated state via `St.get`. Every partner call is on the TAIL — nothing observes
+           its out-state — so single-return specialization is sound: the partner's state advance is passed
+           forward as its trailing state argument, and the base case's `get` reads the fully-accumulated
+           state. main(4): ping puts 4, pong puts 3, ping puts 2, pong puts 1, base reads get -> 4+3+2+1 = 10.
+           A dropped mutual-partner advance (a single-return miscompile) would not reach 10.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit)))
+            (def (ping (: n Int64))
+              (if (= n 0) (St.get) (match (St.put n) (_ (pong (- n 1))))))
+            (def (pong (: n Int64))
+              (match (St.put n) (_ (ping (- n 1)))))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (u) s (resume s s))
+                 (put (v) s (resume unit (+ s v))))
+                (ping k)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 10 Int64)))
+
+(case "an op-arg match outer with a state-match inner reading the payload computes per dispatch"
+  (doc    "An op arm whose OUTER match is over the op ARG and whose INNER match is over the STATE, where the
+           inner branches read the outer op-arg payload binder DIRECTLY, computes the RIGHT value across
+           multiple dispatches. The op-arg match must be folded (the arg is consumed at THIS dispatch, not
+           threaded) BEFORE the state-match peel, or dispatch-2's own payload `k` would be conflated with
+           dispatch-1's state-threaded value. main(5): dispatch1 Go 15, state Idle -> resume 15, state Run 15;
+           dispatch2 Go 7, state Run(15) -> resume 15+7=22; sum 15+22 = 37 (a stale-payload freeze gives 45).
+           main(0): Go 10 state Idle -> 10 (state Run 10); Go 7 state Run(10) -> 10+7=17; sum 10+17 = 27.")
+  (input  (do
+            (type Mode (Idle) (Run Int64))
+            (type Cmd (Go Int64))
+            (effect M (op step (-> Cmd Int64)))
+            (def (main (: n Int64))
+              (handle M (Mode.Idle)
+                ((step (c) s
+                  (match c
+                    ((Cmd.Go k) (match s
+                                  ((Mode.Idle) (resume k (Mode.Run k)))
+                                  ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k)))))))))
+                (+ (M.step (Cmd.Go (+ 10 n))) (M.step (Cmd.Go 7)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 37 Int64))
+  (call   main (: 0 Int64)) (output (: 27 Int64)))
+
+(case "a handler arm resuming per if-branch over the op arg folds"
+  (doc    "A handler ARM that RESUMES PER `if`-BRANCH, where the condition is over the OP ARG: `(get (nid) s
+           (if (= nid 0) (resume 100 s) (resume 200 s)))` selects the resume value by a condition over the op
+           arg. The `if`-peel rebuilds two `if`s over the same condition — the value `(if cond v0 v1)` and the
+           next-state `(if cond s0 s1)` — the `if` analogue of the match peel. main(0) -> the nid==0 branch ->
+           resume 100; main(7) -> the else branch -> resume 200.")
+  (input  (do
+            (effect St (op get (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (handle St 0
+                ((get (nid) s (if (= nid 0) (resume 100 s) (resume 200 s))))
+                (St.get k)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 100 Int64))
+  (call   main (: 7 Int64)) (output (: 200 Int64)))
+
 (case "a three-member memo group with a let-var-body recursion arm folds — the group threads the cache state"
   (doc    "REGRESSION PIN for the specialized group-fold let-var-body stack-overflow (fixed on trunk by the
            mutual-group demand-perform-demand + nested-let state-fork landings). A memo-DB shape: `type-of`

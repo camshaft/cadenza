@@ -8027,42 +8027,6 @@ fn a_caller_observed_mutually_recursive_fold_declines_cleanly_no_leak() {
     );
 }
 
-/// A TAIL mutually-recursive group where BOTH partners perform the discharged state op now FOLDS. `ping`/
-/// `pong` alternate, each performing `St.put n` (advancing the state) then TAIL-calling its partner; the
-/// base case reads the accumulated state via `St.get`. Every partner call is on the TAIL — nothing observes
-/// its out-state — so single-return specialization is sound: the partner's state advance is passed forward
-/// as its trailing state argument (the specialized `pong#eff` gets `(+ ping#eff$s0 n)`), and the base case's
-/// `get` reads the fully-accumulated state. Two fixes make this work: (1) the recursive-call thread arm now
-/// `deep_fresh_copy`s each trailing state arg, so the state node embedded in a mutual-partner call is not the
-/// SAME arena node returned as the out-state (a shared node was re-parented by a later perform, orphaning the
-/// call's occurrence and leaking the internal `partner#eff$s0` in a CDZ0101); (2) the `if`-peel in
-/// `peel_resume_from_arm_body`. Driven on a runtime arg so the reducer cannot unfold it before the fold.
-#[test]
-fn a_tail_mutual_recursive_group_where_both_partners_perform_folds() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
-        (def (ping (: n Int64)) \
-          (if (= n 0) (St.get) (match (St.put n) (_ (pong (- n 1)))))) \
-        (def (pong (: n Int64)) \
-          (match (St.put n) (_ (ping (- n 1))))) \
-        (def (main (: k Int64)) \
-          (handle St 0 \
-            ((get (u) s (resume s s)) \
-             (put (v) s (resume unit (+ s v)))) \
-            (ping k))) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("a tail mutual-recursive both-perform group must compile (no `$s0` leak)");
-    // `main(4)`: ping puts 4, pong puts 3, ping puts 2, pong puts 1, base reads get → 4+3+2+1 = 10. A
-    // dropped mutual-partner advance (the pre-fix leak, or a single-return miscompile) would not reach 10.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(4)]),
-        10,
-        "the tail mutual cycle threads each partner's put-advance forward → 4+3+2+1 = 10"
-    );
-}
-
 /// The GROUP-AWARE multi-value fold over a mutual-recursive SCC: a NON-TAIL mutual group where a partner
 /// call PRECEDES an out-state observation now COMPILES (was a clean decline in the soundness-floor slice).
 /// `compute` recurses via a `let`-init `(typeof (- n 1))` (a mutual partner that performs `put`) then reads
@@ -8160,43 +8124,6 @@ fn a_recursive_performer_feeding_its_result_to_a_helper_call_folds() {
     );
 }
 
-/// The DIRECT-WRAP variant of the helper-fed-recursion-result shape (v-compiler-ml hub reproducer): the
-/// recursion result is fed to the helper DIRECTLY as an argument inside a match arm — `(match (St.put n) (_
-/// (double (loop (- n 1)))))` — with NO intermediate `let` binding the result (the pinned `walk`/`combine`
-/// case above let-binds `lt` first). Same slot-fix root (the deep-fresh-copy of the threaded spec body keeps
-/// the recursion-result arg from sharing a slot-less original param node), but exercises the recursion result
-/// as a bare helper ARG rather than a let-init. Runs correct: `loop 0 = St.get`; each level performs `St.put`
-/// then doubles the recursion result. main(3): put 3,2,1 threads state 0->6, loop0=get=6, then double×3:
-/// 6->12->24->48. Reproducer verified fixed + correct on all 3 backends; this pins the wasm run.
-#[test]
-fn a_recursive_performer_result_fed_directly_to_a_helper_in_a_match_arm_folds() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
-        (def (loop (: n Int64)) \
-          (if (= n 0) (St.get) (match (St.put n) (_ (double (loop (- n 1))))))) \
-        (def (double (: a Int64)) (+ a a)) \
-        (def (main (: k Int64)) \
-          (handle St 0 \
-            ((get (u) s (resume s s)) \
-             (put (v) s (resume unit (+ s v)))) \
-            (loop k))) \
-        (export main))";
-    let comp = compile_component(&crate::codec::encode(&parse(src))).expect(
-        "the recursion result fed directly to a helper arg in a match arm must fold (no slot-less spec param)",
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
-        48,
-        "put 3,2,1 threads state 0->6; loop0=get=6; double x3 → 48",
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(1)]),
-        2,
-        "put 1 → state 1; loop0=get=1; double → 2",
-    );
-}
-
 /// A mutual-group DEMAND-PERFORM-DEMAND arm inside a `let`-wrapped dispatch now FOLDS (was a tail-resumptive
 /// decline that blocked compiler-ml's lazy-DB spine). `demand`/`cache`/`compute` are a mutual SCC over a
 /// per-node state effect; `compute`'s arm is `(let ((a (demand child))) (match (St.put …) (_ (demand child))))`
@@ -8255,47 +8182,6 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
             .message
             .contains("not yet reducible by the tail-resumptive fold")),
         "no tail-resumptive-fold decline on the demand-perform-demand mutual group",
-    );
-}
-
-/// A handler arm that destructures its OP ARG with an OUTER match and its STATE with an INNER match, whose
-/// inner branches read the outer op-arg payload binder DIRECTLY, now computes the RIGHT value across
-/// multiple dispatches (breaker #13 stale-sum-payload). `peel_resume_from_arm_body`'s match-peel rebuilt the
-/// next-state by re-wrapping the WHOLE matched expression — sound for a STATE-scrutinee match, but WRONG for
-/// the OUTER OP-ARG match: it threaded the op-arg payload binder `k` through STATE, so dispatch-2's own `k`
-/// (=7) was conflated with dispatch-1's state-threaded k1 (=15) → `(+ (M.step (Cmd.Go 15)) (M.step (Cmd.Go
-/// 7)))` computed 45 (15 + 15+15) instead of 37 (15 + 15+7). Fixed by folding the op-arg match (`fold_ctor_
-/// match`) BEFORE the peel — the op arg is consumed at this dispatch, not threaded. Pins the correct run
-/// value across two dispatches (the freeze would give 45).
-#[test]
-fn an_op_arg_match_outer_with_a_state_match_inner_reading_the_payload_computes_per_dispatch() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (type Mode (Idle) (Run Int64)) \
-        (type Cmd (Go Int64)) \
-        (effect M (op step (-> Cmd Int64))) \
-        (def (main (: n Int64)) \
-          (handle M (Mode.Idle) \
-            ((step (c) s \
-              (match c \
-                ((Cmd.Go k) (match s \
-                              ((Mode.Idle) (resume k (Mode.Run k))) \
-                              ((Mode.Run j) (resume (+ j k) (Mode.Run (+ j k))))))))) \
-            (+ (M.step (Cmd.Go (+ 10 n))) (M.step (Cmd.Go 7))))) \
-        (export main))";
-    let comp = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("an outer op-arg match with an inner state match reading the payload must fold");
-    // main(5): dispatch1 Go 15, state Idle -> resume 15, state Run 15; dispatch2 Go 7, state Run(15) ->
-    // resume 15+7=22. Sum 15+22 = 37. The stale-payload freeze gave 45 (dispatch2's k read dispatch1's 15).
-    assert_eq!(
-        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(5)]),
-        37,
-        "dispatch-2's payload k must be its own arg (7), not dispatch-1's state-threaded k1 (15)",
-    );
-    assert_eq!(
-        run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(0)]),
-        27,
-        "main(0): Go 10 state Idle -> 10 (state Run 10); Go 7 state Run(10) -> 10+7=17; sum 10+17 = 27",
     );
 }
 
@@ -8387,37 +8273,6 @@ fn a_recurring_round_with_a_bare_do_discarded_draw_threads_its_outstate() {
             .iter()
             .any(|d| d.message.contains("$s") || d.message.contains("$t")),
         "no leaked internal specialization state-param / multi-value temp name",
-    );
-}
-
-/// A handler ARM that RESUMES PER `if`-BRANCH now folds. `get-ty(nid) s => (if (= nid 0) (resume (Some t) s)
-/// (resume (None) s))` selects the resume value by a condition over the op arg. `peel_resume_from_arm_body`
-/// handled `do`/`let`/`match` resume-wrappers but NOT `if`, so the whole handler declined before reaching
-/// the fold. The `if`-peel rebuilds two `if`s over the same condition — the value `(if cond v0 v1)` and the
-/// next-state `(if cond s0 s1)` — the `if` analogue of the existing `match` peel. Pins that the arm folds.
-#[test]
-fn a_handler_arm_resuming_per_if_branch_folds() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect St (op get (-> Int64 Int64))) \
-        (def (main (: k Int64)) \
-          (handle St 0 \
-            ((get (nid) s (if (= nid 0) (resume 100 s) (resume 200 s)))) \
-            (St.get k))) \
-        (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src)))
-        .expect("a handler arm resuming per `if` branch must fold (the `if`-peel)");
-    // `main(0)` → the get arm's `nid == 0` branch → resume 100.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(0)]),
-        100,
-        "the nid==0 branch resumes 100"
-    );
-    // `main(7)` → the else branch → resume 200.
-    assert_eq!(
-        run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(7)]),
-        200,
-        "the nid!=0 branch resumes 200"
     );
 }
 
