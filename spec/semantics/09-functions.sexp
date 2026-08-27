@@ -8131,3 +8131,22 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 50 Int64)) (output (: 3 Int64))
   (live-objects 0))
+
+; ── Reclaim (O(N)): a recursive linked-list fold leaks every heap node — the pervasive Perceus gap (migrated from rcdzc) ──
+(case "a recursive linked-list fold leaks every heap node (O(N) reclaim gap)"
+  (doc    "A user recursive sum `L = Cons(Int64, L) | Nil` built to 3 elements and folded by `len` (which
+           matches each Cons but never reclaims the matched shell) leaks EVERY heap node: 3 Cons + 3
+           (Int64, L) tuples + 1 Nil = 7 cells for a 3-element list — the PERVASIVE O(N)-in-data
+           Perceus-in-recursion reclaim gap (the O(1) closure / borrowed-sum-param reclaim cases are its
+           bounded cousins). Value-correct despite the leak: `len (build 3)` = 3 (a freed-early node would
+           trap/garble). Flips to 0 (and the marker retires) when the general Perceus drop-insertion pass
+           lands; a count above 7 is a NEW leak, below 7 partial reclaim.")
+  (input  (do
+            (type L (Cons (Tuple Int64 L)) Nil)
+            (def (len (: xs L) (: acc Int64))
+              (match xs ((L.Cons (tuple h t)) (len t (+ acc 1))) ((L.Nil _) acc)))
+            (def (build (: n Int64)) (if (< n 1) (L.Nil ()) (L.Cons (tuple n (build (- n 1))))))
+            (def (main) (len (build 3) 0))
+            (export main)))
+  (output (: 3 Int64))
+  (live-objects known-leak 7))

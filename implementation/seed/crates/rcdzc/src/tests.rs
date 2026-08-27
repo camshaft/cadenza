@@ -8616,36 +8616,6 @@ fn a_site_a_owned_closure_producers_reclaim_across_shapes() {
     );
 }
 
-#[test]
-#[ignore]
-fn a_recursive_list_fold_leaks_every_node_known_gap() {
-    use crate::testkit::parse;
-    use wasmtime::component::Val;
-
-    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[list-leak] debug-counters runtime not in the store; skipping known-leak probe");
-        return;
-    };
-    let src = "(module m (type L (Cons (Tuple Int64 L)) Nil) \
-        (def (len (: xs L) (: acc Int64)) \
-           (match xs ((L.Cons (tuple h t)) (len t (+ acc 1))) ((L.Nil _) acc))) \
-        (def (build (: n Int64)) (if (< n 1) (L.Nil ()) (L.Cons (tuple n (build (- n 1)))))) \
-        (def (main) (len (build 3) 0)) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
-    // The answer is CORRECT despite the leak (reclamation gap, not a miscompile).
-    assert_eq!(rt.call("main", &[]), Val::S64(3), "len(build 3) computes 3");
-    // A 3-element list = 3 Cons + 3 (Int,list) tuples + 1 Nil = 7 cells, none reclaimed (the recursion
-    // heap-reclamation gap). Flip to 0 when the general Perceus drop-insertion pass lands. This documents
-    // the PERVASIVE, O(N)-in-data scope of the gap (the closure sub-case above is only O(1)).
-    assert_eq!(
-        rt.live_objects(),
-        7,
-        "KNOWN GAP: a recursive list fold leaks every heap node (match does not reclaim the matched \
-         shell); 7 cells for a 3-element list. Flip to 0 when the Perceus drop-insertion pass lands."
-    );
-}
-
 /// DIRECT leak witness for the `Map.to-list`/`Set.to-list` RESULT-list reclaim: the enumeration returns a
 /// FRESH owned `List` (a new vector + boxed entries). When that result is read by a BORROWING op
 /// (`List.len`) and discarded — the enumerate→transform→fold idiom — the fresh list must be reclaimed after
