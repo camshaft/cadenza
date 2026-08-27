@@ -6,5 +6,6 @@ the pieces of the library.
 import Oracle.Leb
 import Oracle.Ast
 import Oracle.Value
+import Oracle.Eval
 import Oracle.Frame
 import Oracle.Handler

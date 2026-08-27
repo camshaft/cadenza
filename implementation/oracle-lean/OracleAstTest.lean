@@ -48,30 +48,41 @@ def firstDiff (a b : ByteArray) : Option Nat :=
   let n := max a.size b.size
   (List.range n).find? (fun i => a[i]? != b[i]?)
 
-def roundtripOne (path : String) : IO Bool := do
+/-- The realized-coverage category of a reduce `Outcome` (for the coverage report). -/
+def outcomeCategory : Oracle.Outcome → String
+  | .value _ => "value" | .trap _ => "trap" | .diverges => "diverges" | .unsupported _ => "unsupported"
+
+/-- Check one corpus module: AST byte round-trip (L0.2), scalar-value round-trip over its leaves
+(L0.3), and reduce SOUNDNESS (L1.1) — reduce is deterministic and stage-parity holds
+(`reduce m == execute m #[]`). Returns the reduce category on success (for the coverage histogram),
+or `none` on any failure. Totality is checked implicitly: a non-terminating/panicking reduce would
+crash the run rather than return here. -/
+def checkModule (path : String) : IO (Option String) := do
   let bytes ← IO.FS.readBinFile path
   match decode bytes with
   | .error e =>
-    IO.eprintln s!"FAIL {path}: decode error: {e}"
-    return false
+    IO.eprintln s!"FAIL {path}: decode error: {e}"; return none
   | .ok m =>
-    -- Value round-trip (L0.3): every scalar leaf in this module, interpreted as a Value, must survive
-    -- Value.encode → Value.decode unchanged (canonical value-AST byte codec; binary AST only).
+    -- L0.3: scalar value round-trip over every leaf.
     if let some bad := m.leaves.toList.find? (fun l => !valueLeafOk l) then
       IO.eprintln s!"FAIL {path}: scalar value round-trip failed for a leaf ({reprLeafKind bad})"
-      return false
+      return none
+    -- L0.2: AST byte-identical round-trip.
     let re := encode m
-    if re == bytes then
-      return true
-    else
+    if re != bytes then
       IO.eprintln s!"FAIL {path}: re-encode not byte-identical (in={bytes.size}B out={re.size}B)"
       match firstDiff bytes re with
-      | some i =>
-        IO.eprintln s!"  first diff at byte {i}"
-        IO.eprintln s!"  in : {hexPrefix (bytes.extract (i - min i 4) (min bytes.size (i + 8))) 12}"
-        IO.eprintln s!"  out: {hexPrefix (re.extract (i - min i 4) (min re.size (i + 8))) 12}"
+      | some i => IO.eprintln s!"  first diff at byte {i}: in {hexPrefix (bytes.extract (i - min i 4) (min bytes.size (i + 8))) 12} / out {hexPrefix (re.extract (i - min i 4) (min re.size (i + 8))) 12}"
       | none => pure ()
-      return false
+      return none
+    -- L1.1: reduce soundness — determinism + stage parity (reduce == execute with no args).
+    let r1 := Oracle.reduce m
+    let r2 := Oracle.reduce m
+    if r1 != r2 then
+      IO.eprintln s!"FAIL {path}: reduce is non-deterministic"; return none
+    if r1 != Oracle.execute m #[] then
+      IO.eprintln s!"FAIL {path}: stage parity broken (reduce ≠ execute with no args)"; return none
+    return some (outcomeCategory r1)
 
 /-- Resolve the fixture paths from argv: either `--manifest FILE` (newline-separated paths, the
 robust form for thousands of blobs) or the paths given directly. -/
@@ -141,7 +152,20 @@ def main (args : List String) : IO UInt32 := do
     return 2
   let mut ok := 0
   let mut fail := 0
+  let mut nValue := 0
+  let mut nTrap := 0
+  let mut nDiverges := 0
+  let mut nUnsupported := 0
   for path in paths do
-    if ← roundtripOne path then ok := ok + 1 else fail := fail + 1
-  IO.println s!"oracle-ast-roundtrip: {ok} byte-identical, {fail} failed (of {paths.length}); scalar value round-trip over every corpus leaf"
+    match ← checkModule path with
+    | none => fail := fail + 1
+    | some cat =>
+      ok := ok + 1
+      match cat with
+      | "value" => nValue := nValue + 1
+      | "trap" => nTrap := nTrap + 1
+      | "diverges" => nDiverges := nDiverges + 1
+      | _ => nUnsupported := nUnsupported + 1
+  IO.println s!"oracle-ast-roundtrip: {ok} ok, {fail} failed (of {paths.length}) — AST + value round-trip + reduce soundness"
+  IO.println s!"oracle reduce coverage: {nValue} value, {nTrap} trap, {nDiverges} diverges, {nUnsupported} unsupported (of {ok})"
   return (if fail == 0 && negOk && valOk then 0 else 1)
