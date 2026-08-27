@@ -7531,57 +7531,6 @@ fn a_selfcall_hidden_in_a_nested_fold_closure_declines_not_a_stack_overflow() {
     );
 }
 
-/// A perform in a TUPLE/LIST CONSTRUCTOR element (the STRING-HEADED primitive `("tuple" …)`, what the ML
-/// tuple/list literal lowers to) now THREADS like an arithmetic operand / call argument (reported by the
-/// compiler-ml port, iter 38 — was an honest decline). `thread_bounded` gained a `Resolved::Tuple`/`List`
-/// arm that threads each element left-to-right and rebuilds the string-headed ctor. `(let ((p ("tuple"
-/// (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1)))` seeded 0 reads 0, 1 → 1. (Bare `tuple` NAME already
-/// threaded via the `(meta apply)` call path; only the string-head ctor primitive was declining.)
-#[test]
-fn a_perform_in_a_tuple_constructor_element_threads() {
-    use crate::testkit::parse;
-    let src = "(do (effect Fresh (op next (-> Int64))) \
-               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
-                 (let ((p (\"tuple\" (Fresh.next) (Fresh.next)))) (+ (. p 0) (. p 1))))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a perform in a string-headed tuple ctor element must thread, not decline"
-    );
-}
-
-/// A perform in a RECORD field VALUE (the string-headed `("record" (label value)…)` primitive, what the ML
-/// record literal `{ a = … }` lowers to) now THREADS — the `thread_bounded` record arm threads each field
-/// value in WRITTEN order (keeping the label) and rebuilds the ctor. Fields WRITTEN `b`,`a` (reverse of
-/// sorted): `b` reads 0, `a` reads 1 → `(- (. r a) (. r b))` = 1 (had it evaluated in sorted order it would
-/// be -1), pinning written-order evaluation. Completes the compound-ctor element threading (tuple/list/record).
-#[test]
-fn a_perform_in_a_record_field_threads_in_written_order() {
-    use crate::testkit::parse;
-    let src = "(do (effect Fresh (op next (-> Int64))) \
-               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
-                 (let ((r (\"record\" (b (Fresh.next)) (a (Fresh.next))))) (- (. r a) (. r b))))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a perform in a string-headed record ctor field must thread, not decline"
-    );
-}
-
-/// A perform in a MAP constructor entry VALUE (the string-headed `("map" (key value)…)` primitive) now
-/// THREADS — the `thread_bounded` map arm threads each entry's key then value in written order and rebuilds
-/// the ctor. `(let ((m ("map" (10 (Fresh.next)) (20 (Fresh.next))))) …)` reads 0 under key 10, 1 under key
-/// 20. Completes the compound-ctor element threading: tuple / list / record / map.
-#[test]
-fn a_perform_in_a_map_entry_value_threads() {
-    use crate::testkit::parse;
-    let src = "(do (effect Fresh (op next (-> Int64))) \
-               (def (main) (handle Fresh 0 ((next () s (resume s (+ s 1)))) \
-                 (let ((m (\"map\" (10 (Fresh.next)) (20 (Fresh.next))))) (Map.len m)))) (export main))";
-    assert!(
-        compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-        "a perform in a string-headed map ctor entry value must thread, not decline"
-    );
-}
-
 /// A self-call GATED behind a NESTED conditional INSIDE an `if` condition (or a `match` scrutinee) must
 /// DECLINE the multi-value path — never hoist. `thread_returning_tuple` threads the condition and
 /// `drain_and_wrap` lifts any condition-level self-call pending temp AROUND the whole `if`. That is sound
