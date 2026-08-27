@@ -7874,3 +7874,21 @@
   (input (do (def (main (: z Int64)) (if (and (< (/ 100 z) 5) (<= (/ 100 z) 4)) 1 0)) (export main)))
   (call main (: 100 Int64)) (output (: 1 Int64))
   (call main (: 0 Int64))   (trap "divide by zero"))
+
+(case "a let binder shadowing a parameter rebinds within its scope (same type)"
+  (doc    "`(let ((x 7)) x)` inside `(def (f (: x Int64)) …)` shadows the Int64 param x with the inner 7 —
+           the trailing x reads the inner binding, not the substituted argument. f(n) = 7 for any n.")
+  (input (do (def (f (: x Int64)) (let ((x 7)) x)) (def (main (: n Int64)) (f n)) (export main)))
+  (call main (: 99 Int64)) (output (: 7 Int64)))
+
+(case "a let binder shadowing a parameter with a DIFFERENT type rebinds correctly"
+  (doc    "The inner `(let ((x true)) …)` shadows the Int64 param x with a Bool — the inner x is Bool.
+           f(n) = (if x 1 0) with x=true = 1 for any n (was an invalid component before the fix).")
+  (input (do (def (f (: x Int64)) (let ((x true)) (if x 1 0))) (def (main (: n Int64)) (f n)) (export main)))
+  (call main (: 99 Int64)) (output (: 1 Int64)))
+
+(case "a do-local def shadowing a parameter rebinds the name (does not unbind it)"
+  (doc    "`(do (def v (* v 2)) v)` inside `(def (f (: v Int64)) …)`: the do-def's RHS reads the outer
+           param v, the trailing v reads the do-def — a rebind, not a spurious CDZ0101 unbound. f(v)=2v.")
+  (input (do (def (f (: v Int64)) (do (def v (* v 2)) v)) (def (main (: v Int64)) (f v)) (export main)))
+  (call main (: 5 Int64)) (output (: 10 Int64)))
