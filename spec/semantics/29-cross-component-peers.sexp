@@ -242,6 +242,20 @@
   (call   main (: 5 Int64))
   (output (: -5 Int64)))
 
+(case "an effect bound to a peer routes a two-argument op to the boundary"
+  (doc    "The effects-unification RUN: a source consumer declares `(effect Math (op add …))`, DEFAULTS it to
+           the peer cadenza:math/api via `(bind Math …)`, and DELEGATES `(host (Math) (Math.add x x))`. The
+           escaping two-argument perform reaches the peer envelope exactly as an `(extern …)` op would — a
+           peer dependency and a host effect are ONE concept. add(5,5)=10 crosses end-to-end: the passing
+           two-arg scalar peer-op RUN witness (the positive complement to the arity/type-mismatch rejects,
+           which trap before observing a value). Relocated from the in-crate rcdzc
+           u2_an_effect_bound_to_a_peer_routes_to_the_boundary (its hand-built add peer rewritten as source).")
+  (peer   "cadenza:math/api" (do (def (add (: a Int64) (: b Int64)) (+ a b)) (export add)))
+  (input  (do (effect Math (op add (-> Int64 Int64 Int64))) (bind Math "cadenza:math/api")
+              (def (main (: x Int64)) (host (Math) (Math.add x x))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 10 Int64)))
+
 (case "a non-kebab (camelCase) peer op name agrees across both sides and runs"
   (doc    "PROVIDER exports camelCase `addTwo` on cadenza:math/api (its interface member kebab-normalizes to
            `add-two`); the CONSUMER binds the same interface and performs `Math.addTwo`. Both sides carry the
