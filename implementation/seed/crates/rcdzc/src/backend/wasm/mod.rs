@@ -559,6 +559,9 @@ pub fn emit(
         used.insert("bytes-alloc");
         used.insert("bytes-set");
         used.insert("mark-immortal");
+        // A hoisted SMALL constant list builds its flat arr then `vec-of-arr` (moves the rc=1 arr in as the
+        // vec root); the init's `vec-of-arr` isn't in any body when the only list use is hoisted, so force it.
+        used.insert("vec-of-arr");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -1493,15 +1496,21 @@ pub fn collect_static_bytes(db: &mut Db, order: &[usize]) -> Vec<Vec<u8>> {
     distinct
 }
 
-/// Collect the constant `Tuple`/`Record` ROOTS in the reachable program that are per-node-immortal-markable
-/// (`lower::is_markable_constant_compound`) — the §2d increment-6 build-once static-compound table. Each
-/// root is built ONCE as an immortal tree in the module `start` init and read with `global.get` at each use
-/// (a later emit slice), instead of the per-evaluation `arr-alloc` + boxed `arr-set` per element the backend
-/// emits today. On finding a markable compound, collect it and do NOT descend — its whole subtree (nested
-/// markable tuples/records, boxed scalars, bytes/string leaves) is built inline as part of THIS root's tree,
-/// not as separate globals. Keyed by node id (`StructId`), so two USES of the same constant compound node
-/// share one global; two structurally-identical DISTINCT literals get one each (structural interning is a
-/// later refinement). Empty for a program with no markable constant compound → no additions, byte-identical.
+/// Collect the constant `Tuple`/`Record` (and SMALL constant `List`, ≤32) ROOTS in the reachable program
+/// that are per-node-immortal-markable (`lower::is_markable_constant_compound` /
+/// `is_markable_constant_small_list`) — the §2d build-once static table. Each root is built ONCE as an
+/// immortal tree in the module `start` init and read with `global.get` at each use, instead of the
+/// per-evaluation `arr-alloc` + boxed `arr-set` (+ `vec-of-arr` for a list) the backend emits today. On
+/// finding a markable root, collect it and do NOT descend — its whole subtree (nested markable
+/// tuples/records/small-lists, boxed scalars, bytes/string leaves) is built inline as part of THIS root's
+/// tree, not as separate globals. A small `List` joins the SAME table as tuples/records (all are "static
+/// roots built once"): the routing (`try_emit_static_compound`) is keyed by node id, type-agnostic, so a
+/// list needs no separate table — only the `start`-init builder (`emit_immortal_static`) distinguishes a
+/// list (arr + `vec-of-arr`) from a tuple/record (arr). A `List > 32` is NOT markable (its `vec-of-arr`
+/// builds RRB-trie internals with no compile-time handle to mark) so it never reaches here. Keyed by node
+/// id (`StructId`), so two USES of one constant node share a global; two structurally-identical DISTINCT
+/// literals get one each (structural interning is a later refinement — moving the build to `start` is the
+/// win either way). Empty for a program with no markable constant root → no additions, byte-identical.
 pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast::StructId> {
     let mut roots: Vec<crate::ast::StructId> = Vec::new();
     let mut visited: std::collections::HashSet<crate::ast::StructId> =
@@ -1515,7 +1524,9 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
             if !visited.insert(id) {
                 continue;
             }
-            if crate::lower::is_markable_constant_compound(db, id) {
+            if crate::lower::is_markable_constant_compound(db, id)
+                || crate::lower::is_markable_constant_small_list(db, id)
+            {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested
             }
