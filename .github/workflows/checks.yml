@@ -35,7 +35,7 @@ jobs:
     # github-liaison #2054 + v-fleet-tooling affirmed — arch-agnostic checks name no platform, so x86 is
     # correct). Only the runtime-touching checks (codegen/gate/bench) need aarch64.
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -56,7 +56,7 @@ jobs:
   # x86 (arch-independent). Union == the former whole-clippy set (flake clippyShardA ∪ clippyShardB, 5+6=11).
   clippy-shard-a:
     name: clippy-shard-a
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -77,7 +77,7 @@ jobs:
     # x86 pool + rebalances to 10 x86 / 8 arm, and clippy runs faster on arm anyway (cf. roundtrip 7.2→5.5m).
     # Same context name `checks / clippy-shard-b` (only the runner moves) → no ruleset change. clippy-shard-a
     # (the light 2.6m half) stays on x86 — keeping ONE clippy shard on each arch balances both pools.
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -99,7 +99,7 @@ jobs:
     # native rust). This was a matrix leg of the old `test` job — split out so ubuntu goes nix while macos
     # stays native cargo (below), since a matrix can't body-swap one leg differently.
     name: test (ubuntu-latest)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -187,7 +187,7 @@ jobs:
     # runtime_abi.rs), keeping the job key `codegen` so the required context `checks / codegen` is
     # UNCHANGED (no ruleset edit). STAYS aarch64: the check builds the runtime whose content hash is
     # arch-specific (the reason for the pin above).
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -262,7 +262,7 @@ jobs:
     # content hash is per-arch (same reason gate/codegen are aarch64) → `.#checks.aarch64-linux.cad-tests`. Frees
     # an arm64 slot (pure runner-cost, same axis as C; lower queue-leverage than the x86 cdz-agent-host but
     # available now + independent). Same pattern as clippy/test/codegen (#2171).
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -346,7 +346,7 @@ jobs:
 
   nix-flake:
     name: nix flake check (advisory)
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     # ADVISORY is enforced HERE, not only in branch protection: `continue-on-error` makes a red
     # `nix flake check` NOT fail the workflow, so a flake hiccup on this deliberately-uncached slow
     # job can't red every candidate (github-liaison #1805). Non-required in branch protection is the
@@ -391,7 +391,7 @@ jobs:
     # -25%) without creating an arm pole (arm 9.3→16.5m, still < x86's 21.7m). Drops the p90 tail for ALL x86 jobs
     # incl. the 2 remaining heavies (clippy-shard-b + test-ubuntu). (Was on x86 to free arm; the imbalance reversed.)
     name: syntax roundtrip
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -412,7 +412,7 @@ jobs:
     # is deterministic across arches (not wall-clock/codegen), so it runs on the DEFAULT x86 runner via
     # `checks.x86_64-linux.bench-check` (frees ARM; matches the GHA x86 baseline, github-liaison #2042).
     name: allocation bench
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
@@ -447,7 +447,7 @@ jobs:
     # would hit, add the equivalent to the NIX guide-examples check (the `guideExamplesCheck` derivation in
     # flake.nix), not here. (pages.yml moving to nix too is a possible future step, not planned yet.)
     name: guide examples
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@v22
