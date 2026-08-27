@@ -3813,6 +3813,7 @@ fn sum_spine_reclaim_in_body(
     if !seen.insert(id) {
         return false;
     }
+    #[allow(clippy::collapsible_if)]
     if let Core::Call { callee, args } = core_of(db, id) {
         if members.contains(&callee) {
             for (i, &arg) in args.iter().enumerate() {
@@ -8216,6 +8217,8 @@ fn emit_loop_iteration(
     // so it can be dropped AFTER the stores (off-stack) without interleaving with the parallel-move arg
     // stack. The save is a slot COPY (no rc change); the old shell stays owned in the scratch until its drop.
     let mut spine_old_scratch: Vec<u32> = Vec::new();
+    // Range-loop indexes `is_sumpayload_consume` AND `tl.param_slots` by `i` — the index is load-bearing.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..args.len() {
         if is_sumpayload_consume[i] {
             let sc = *high;
@@ -8250,6 +8253,8 @@ fn emit_loop_iteration(
     // = rest, which the dup pre-bumped → rest lands at its owned rc. Net per iteration: the old S cell is
     // freed and rest is carried owned — the 10000-deep spine is reclaimed AS WALKED, no leak / no UAF.
     let mut spine_idx = 0usize;
+    // Range-loop indexes `is_sumpayload_consume` AND `tl.param_slots` by `i` — the index is load-bearing.
+    #[allow(clippy::needless_range_loop)]
     for i in 0..args.len() {
         if is_sumpayload_consume[i] {
             let sc = spine_old_scratch[spine_idx];

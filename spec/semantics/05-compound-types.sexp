@@ -18356,7 +18356,9 @@
               (def (main) (build 0)) (export main)))
   (output (: (record (= corr (None unit)) (= pl (Some (B (record (= x "hi"))))))
              (record (corr (Option Bytes)) (pl (Option P)))))
-  (live-objects known-leak 6))
+  ; WIT static encoding: the record-return value-encode assembler now hoists embedded constants build-once
+  ; (census-excluded immortals), so the residual leak drops 6→4.
+  (live-objects known-leak 4))
 
 ; A WIDE MULTI-COLUMN MATCH's value must survive the emit-side shared-continuation reshape (S2). A match
 ; whose arms each test >=2 LITERAL COLUMNS (`(tuple state token payload)` — a transition-table dispatch)
@@ -19874,7 +19876,8 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= correlation (None unit)) (= payload (Some (B (record (= x "hi")))))) (record (correlation (Option Bytes)) (payload (Option P)))))
-  (live-objects known-leak 6))
+  ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
+  (live-objects known-leak 4))
 
 (case "vse7 TWO Option-sum sibling fields at DIFFERENT sum decls each keep their own value-form — the first instantiation's descriptor must not stamp the second"
   (input  (do
@@ -19886,7 +19889,8 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= first (Some (B (record (= x "hi"))))) (= second (Some (D (record (= y 7)))))) (record (first (Option P)) (second (Option Q)))))
-  (live-objects known-leak 8))
+  ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 8→5.
+  (live-objects known-leak 5))
 
 (case "vse9 the Option-sum field sorting FIRST keeps both siblings intact — the sort-order control of the sibling-descriptor pair"
   (input  (do
@@ -19897,7 +19901,8 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= apayload (Some (B (record (= x "hi"))))) (= zcorrelation (None unit))) (record (apayload (Option P)) (zcorrelation (Option Bytes)))))
-  (live-objects known-leak 6))
+  ; WIT static encoding: record-return build-once hoists the embedded constants → residual leak 6→4.
+  (live-objects known-leak 4))
 
 (case "vse10 two RESULT fields at different type args each encode their own Err payload — the same generic decl at two instantiations shares no descriptor"
   (input  (do
@@ -19917,7 +19922,8 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String)))))
-  (live-objects known-leak 7))
+  ; WIT static encoding: record-return build-once hoists the two constant list fields → residual leak 7→1.
+  (live-objects known-leak 1))
 
 ;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
 (case "pd1 a list shared into a RECORD field survives an update through the original binding"

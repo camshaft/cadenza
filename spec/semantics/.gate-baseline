@@ -6662,6 +6662,7 @@ pass	il1 strict O-I-O-I body interleave — two independent threads advance in l
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
+pass	imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal
 pass	imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
@@ -6717,6 +6718,7 @@ pass	io1 a shared pure subexpression reads the same value twice (value parity: s
 pass	io2 a shared min-select reads the same value twice (value parity, both operand orders)
 pass	io3 a shared subexpression keeps its overflow trap (computed once still traps)
 pass	irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)
+pass	irb1 a constant 33-element list in RETURN position now hoists build-once (the collection-return assembler gained build-once); both constant if-branch lists are census-excluded immortals → 0 mortal
 pass	irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
 pass	is2 the ARM's resume-value is a nested SAME-effect handle — a fresh shadow instantiated per dispatch from the live state
@@ -7539,6 +7541,9 @@ pass	pyz3 REPLAYS DIVERGING ONLY IN THE ANSWER — both resumes thread the SAME 
 pass	pyz4 the TOLL ATTACHES TO ONLY THE SECOND REPLAY — the first resume stands bare and discarded while the second carries a thousandfold post-resume toll, the toll fires once on the surviving replay's outcome and never for the bare one, and a lowering sharing one toll shape across both replay sites of the arm double-charges
 pass	q5 a FIVE-argument op — the arm folds all five positions with distinct weights, two calls permute the arguments
 pass	q6 all FIVE arguments are draws — left-to-right evaluation order pinned at width five by distinct weights
+pass	qkm1 a same-unit Float quantity Map key round-trips with value discrimination
+pass	qkm2 a CROSS-scale Map probe is a compile-time type error (the mixed-scale = conversion does not extend to collection ops)
+pass	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key
 pass	qqs1 eval of a quasiquote splicing a module-const unquote reconstructs and folds
 pass	qqs2 an eval-of-splice composes inside a larger expression
 pass	qrm1 WEIGHTED QUORUM voting with a punitive veto — votes accumulate weight answering whether the threshold is met, veto ZEROES the tally and RAISES the threshold by two, tally packs weight and quorum-bit, and the seed sets the initial threshold so the same votes pass on one seed and never on the other
@@ -8943,6 +8948,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	qkm1 a same-unit Float quantity Map key round-trips with value discrimination
-pass	qkm2 a CROSS-scale Map probe is a compile-time type error (the mixed-scale = conversion does not extend to collection ops)
-pass	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key
