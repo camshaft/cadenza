@@ -7742,3 +7742,6 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	a definition named like a variant shadows the bare-variant constructor
+pass	a nested-compound Float32 equality const-folds through the demoting compare
+pass	a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)
+pass	the same literals at Float64 are NOT demoted and const-fold not-equal (adv-61 width control)
