@@ -555,3 +555,17 @@
               (def (main (: x Int64)) (host (P) (. (P.pair x) 0))) (export main)))
   (call   main (: 9 Int64))
   (output (: 9 Int64)))
+
+(case "a peer string result is consumed in-program via equality and byte-len"
+  (doc    "PROVIDER `reply(seed)` returns the String \"ok\" @cadenza:model/api; the CONSUMER performs M.reply,
+           EQUALITY-dispatches on the crossed completion (`= \"ok\"`), and on match returns its byte-len — the
+           coarse tool-call dispatch the native agent loop uses. main(1): reply → \"ok\", `(= … \"ok\")` holds
+           → String.byte-len = 2. Pins that a peer String RESULT is CONSUMED in-program (`=` over a crossed
+           runtime rope + byte-len), distinct from a String result that merely escapes (pse1). Relocated from
+           the in-crate rcdzc u7_a_string_result_crosses_a_peer_and_is_consumed_in_program.")
+  (peer   "cadenza:model/api" (do (def (reply (: seed Int64)) "ok") (export reply)))
+  (input  (do (effect M (op reply (-> Int64 String))) (bind M "cadenza:model/api")
+              (def (main (: seed Int64)) (if (= (host (M) (M.reply seed)) "ok")
+                                             (String.byte-len (host (M) (M.reply seed))) 0)) (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))

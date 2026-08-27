@@ -3235,6 +3235,7 @@ pass	a peer missing a bound op is rejected naming the op
 pass	a peer op arity mismatch is rejected at compose time, not a trap
 pass	a peer op returning a tuple result is projected to a scalar over the shared runtime
 pass	a peer op type mismatch is rejected at compose time (same arity, different type)
+pass	a peer string result is consumed in-program via equality and byte-len
 pass	a peer-bound operation cannot take or return a closure
 pass	a peer-bound operation takes a String argument (it crosses as a runtime handle)
 pass	a per-element perform in a cross-function fold threads to a read-out in the base case
@@ -7160,6 +7161,8 @@ pass	oc3 a DOUBLE-wrapped Option resume value — None vs Some(None) vs Some(Som
 pass	oc4 an Option state with a RESET cycle — put promotes None to Some or accumulates inside Some; reset reports and returns to None; a fresh put re-promotes
 pass	oc5 TWO Option slots in one tuple state — independent put lifecycles, a SWAP op exchanges them, reads confirm the exchange
 pass	oc6 an Option-of-TUPLE state — the Some payload is a (total,count) pair updated element-wise per dispatch, a final read reports both
+pass	od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)
+pass	od2 string order across fifty rope seams discriminates at the final divergent char
 pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
 pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
 pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
@@ -8965,5 +8968,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	od1 lexicographic order through an immortal 33-trie discriminates at the last element (both directions + shorter-prefix)
-pass	od2 string order across fifty rope seams discriminates at the final divergent char
