@@ -1660,7 +1660,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a float-carrying SUM as a Set key dedupes by payload and probes by content"
   (doc    "The custom-Ord landing's key face (a monomorphic float-carrying sum is BTree-keyable on the
@@ -1929,7 +1929,7 @@
                 ((None u) -1)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; The cases above all enumerate a NON-EMPTY set. The empty boundary matters for a real pass that walks a
 ; possibly-empty symbol table / free-var set: `Set.to-list` of an EMPTY (but element-TYPED) set is the
@@ -3073,7 +3073,7 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "one string content hashes identically from flat, rope, and view reps in one program"
   (doc    "The TRIPLE-rep completeness witness the pairwise pins imply but never run together: ONE

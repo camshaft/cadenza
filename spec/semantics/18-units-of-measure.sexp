@@ -2361,7 +2361,7 @@
                   ((None) (Qty.of (Int8.of 0) (Unit.base #"meter"))))))
             (export main)))
   (output (: 100 Int8))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection"
   (doc    "The WORKING-chain face of quantities in collections (the case above round-trips ONE value):
@@ -2384,7 +2384,7 @@
             (export main)))
   (call main (: 2 Int64)) (output (: 351 Int64))
   (call main (: 9 Int64)) (output (: 100 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a tuple with a Qty leaf as a map key hits by magnitude-and-unit content"
   (doc    "The COMPOUND-key face (the bare-Qty-key cluster below pins Int/BigInt/Rational inners
@@ -2418,7 +2418,7 @@
                   ((None u) (Qty.of 0 (Unit.base #"meter")))))))
             (export main)))
   (call   main (: 10 Int64)) (output (: 15 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a Float32 quantity stored as a map value round-trips through Map.lookup"
   (doc    "The Float32 analogue of the narrow-Int map-value case. A `(Qty Float32 meter)` stored as a MAP
@@ -2438,7 +2438,7 @@
                   ((None) (Qty.of (Float32.of 0.0) (Unit.base #"meter"))))))
             (export main)))
   (output (: 2.5 Float32))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a nominal newtype over a Float32 quantity stored as a map value round-trips"
   (doc    "The nominal-newtype layer over the Float32-quantity map case. `(type Len (Q (Qty Float32 meter)))`
@@ -2459,7 +2459,7 @@
                 ((None) 0)))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Quantity as a Map KEY: content-address equality over the erased magnitude + unit --------------
 ; The map cases above store a quantity as a map VALUE (the decode/read-back path). These pin the

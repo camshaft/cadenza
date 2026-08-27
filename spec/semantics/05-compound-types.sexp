@@ -3282,7 +3282,7 @@
                 ((Option.None) -1)))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a user-sum variant value as a Map KEY keys by variant and payload"
   (doc    "The KEY companion of the sum-VALUE case above: a payload-carrying user sum as the map key. Over
@@ -3550,7 +3550,7 @@
                 (match (Map.lookup m "sub") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a map with a String value: the looked-up value's byte length is read in the arm"
   (doc    "The looked-up String value is consumed non-comparatively too: `((Some s) (String.byte-len s))`
@@ -3563,7 +3563,7 @@
                 (match (Map.lookup m "a") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a map KEYED by a user sum looks up by the variant"
   (doc    "A user sum used as a Map KEY — `(Map.insert Map.empty (C.R) 42)` keys the entry by the variant
@@ -4543,7 +4543,7 @@
             (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "a Some carrying an inner-annotated None matches its arm (the control)"
   (doc    "The control pinning the reject above is about the inner nullary variant's UNCONSTRAINED
@@ -8213,7 +8213,7 @@
                   (None -1))) (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit"
   (doc    "The full upsert idiom (the read-modify-write pin below returns the map UNCHANGED on a miss;
@@ -8234,7 +8234,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 6))
 
 (case "SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused"
   (doc    "The 0/1 counting DP — the coin-change below REUSES coins freely (its inner loop reads the
@@ -8603,7 +8603,7 @@
             (export main)))
   (call   main (: 5 Int64) (: 3 Int64) (: 7 Int64))
   (output (: 2111 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 15))
 
 (case "a list of maps: a runtime index then looks a runtime key up in the found map"
   (doc    "`(List.at [{1↦100}, {2↦200}] i)` returns a MAP value (present) or None; the returned map handle is
@@ -8638,7 +8638,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 31 Int64))
   (call   main (: 2 Int64)) (output (: 22 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "a list of sets: a runtime index then tests membership in the found set"
   (doc    "The SET sibling of the list-of-maps case: `(List.at [{1,2}, {3}] i)` returns a SET value (present)
@@ -8671,7 +8671,7 @@
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 1 Int64)) (output (: 20 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a FILTER-COUNT fold over a list of records tallies by a field predicate"
   (doc    "The predicate-count over the record-list (the index-read case above reads ONE record; this walks
@@ -8897,7 +8897,7 @@
                       (match (Map.lookup m 25) ((Some xs) (List.len xs)) ((None _u) -1))))))
             (export main)))
   (call   main (: 40 Int64)) (output (: 122 Int64))
-  (live-objects known-leak 9))
+  (live-objects 0))
 
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
@@ -16089,7 +16089,7 @@
   (call   main (: 33 Int64)) (output (: 33330 Int64))
   (call   main (: 39 Int64)) (output (: 39390 Int64))
   (call   main (: 40 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Projection-chain child retains: the generalization faces beyond depth 2 -----------------------
 ; The single-level (e6e284f9) and doubly-nested (3d416e6c1) child-retain fixes each pinned their own
@@ -16343,7 +16343,7 @@
                      ((None _u) -1)))))
             (export main)))
   (call   main (: 100 Int64)) (output (: 1001 Int64))
-  (live-objects known-leak 406))
+  (live-objects known-leak 404))
 
 (case "a negative-key trie churned back keys and enumerates like the direct build"
   (doc    "The negative-keyspace face of the churn-identity family: churn 60 NEGATIVE keys (-3i) around
@@ -16470,7 +16470,7 @@
                 ((None u) (- 0 1))))
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; The Map.to-list order pins above use INTEGER keys (canonical order = numeric). STRING keys order by
 ; content byte-lexicographics — the SAME unsigned byte order Set.to-list pins for string ELEMENTS
@@ -16493,7 +16493,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "the LAST Map.to-list entry over runtime String keys is the byte-largest"
   (doc    "The far-end companion: index 2 of the same z/a/m rope-keyed map is the byte-LARGEST key
@@ -16510,7 +16510,7 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; The cases above enumerate/index/count a Map.to-list; this closes the ROUND-TRIP that the "map→list-of-
 ; pairs→fold" idiom relies on — rebuilding a map by folding Map.insert over its OWN Map.to-list recovers an
@@ -16684,7 +16684,7 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "Map.to-list over TUPLE keys places the middle key second (a full sort, not a min-pick)"
   (doc    "The same three-entry tuple-keyed map read at index 1: the middle key (2,0) → value 20. Together
@@ -16699,7 +16699,7 @@
                   ((None u) -1))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 20 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; The Map.to-list cases above enumerate a NON-EMPTY map. The empty boundary — a pass dumping a
 ; possibly-empty symbol table — is `Map.to-list` of an EMPTY (but key/value-TYPED) map: the empty entry
@@ -17439,7 +17439,7 @@
                   ((None _u) -1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 (case "a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)"
   (doc    "A record match binds its fields to bare names at the TOP level, and a BARE-binder record
@@ -18521,7 +18521,7 @@
             (export main)))
   (call   main (: 500 Int64))
   (output (: 206 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms"
   (doc    "The nested-Result pins are CONST (fold at compile time); this (Result (Result Int64 String) Int64) flows at RUNTIME through validate∘parse chaining — the inner Result rides as the outer's heap payload, both tags decode at run time, and the mixed error types force distinct payload reps per level.")
@@ -18609,7 +18609,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns"
   (doc    "The api-error idiom: a user sum with MIXED payload kinds (String/Int64/nullary) as Result.Err's payload, dispatched via nested patterns ((Result.Err (IoErr.Denied c))) — Ok, both payload variants, and the nullary Timeout each take their arm; digit-banded results separate every path.")
@@ -18862,7 +18862,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 313 Int64))
   (call   main (: 7 Int64)) (output (: 209 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 17))
 
 (case "a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product"
   (doc    "No matrix arithmetic existed (transpose peels but never multiplies): the dot walks TWO lists in LOCKSTEP (the zip-consume shape), col extracts a column across rows (nested indexed reads), and the r00/r11 corners compose both with the runtime k in one operand.")
@@ -20387,7 +20387,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "lar2 a List.at-extracted SCALAR element reclaims fully (the flat-list control)"
   (input (do
@@ -20420,7 +20420,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "mlr2 a List.at-extracted INNER LIST consumed by a concat still leaks the extraction's retain"
   (input (do
@@ -20535,7 +20535,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 22 Int64))
-  (live-objects known-leak 6))
+  (live-objects 0))
 
 (case "xop2 a bounds-MISS extraction (None path) from a nested list still leaks one cell"
   (input (do
@@ -20547,7 +20547,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "xop3 the extracted Option unwrapped in ANOTHER def leaks the same as the local unwrap"
   (input (do
@@ -20559,7 +20559,7 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 ; -- breaker batch 466 (2026-08-27): the REPEAT-UNWRAP gap, distinct from extraction (site B′).
 ; A FRESH compound-payload Option matched ONCE reclaims (d6 = 0), but matched TWICE leaks its

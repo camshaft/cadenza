@@ -210,7 +210,7 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
 ; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
@@ -789,7 +789,7 @@
   (call   main (: 1 Int64) (: 5 Int64)) (output (: 50 Int64))
   (call   main (: 2 Int64) (: 5 Int64)) (output (: 105 Int64))
   (call   main (: 9 Int64) (: 5 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "two capturing closures stored as runtime tuple elements keep distinct captures"
   (doc    "The tuple-element runtime companion: `(tuple (adder 1) (adder 2))` bound via `let` holds two
@@ -7621,7 +7621,7 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
   (call   main (: 3 Int64)) (output (: 3008 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a pipeline chain threads handler STATE left-to-right through effectful stages"
   (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar

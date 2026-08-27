@@ -1617,7 +1617,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the

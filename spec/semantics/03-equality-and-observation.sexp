@@ -676,7 +676,7 @@
   (output (: 23 Int64))
   (call   main (: 7 Int64))
   (output (: 25 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 10))
 
 (case "String ordering drives an insort over runtime ROPES, verified by content"
   (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort
@@ -2557,7 +2557,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- #43 all-nullary-sum discriminant order + render (v-wasm-opt cf0c05ae8 + v-runtime f9f8717c) ------
 (case "an all-nullary user sum orders by discriminant — Lo below Hi"
@@ -2613,7 +2613,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 31 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "nullary variants of a payload-carrying sum order by discriminant"
   (input  (do

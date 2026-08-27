@@ -8389,23 +8389,6 @@ fn expr_constructs_compound_seen(db: &mut Db, id: StructId, seen: &mut HashSet<S
     }
 }
 
-/// Whether `id` is a FALLIBLE-READ extraction op (`List.at`/`Bytes.at`/`Map.lookup`/`Bytes.slice`/
-/// `String.at`/`String.slice`) — each returns a runtime `Option` and `dup`-RETAINS the extracted element
-/// into the `Some` (see `heap_operand_ownership`), so the `Some` shell carries an EXTRA retained ref that a
-/// plain deep-drop orphans (the +1 extraction-retain leak). inc2a does NOT dup-on-escape, so it must
-/// DECLINE reclaiming such a `Some` shell — releasing the extraction retain is inc2b's unwrap-site move.
-fn scrutinee_is_fallible_extraction(db: &mut Db, id: StructId) -> bool {
-    matches!(
-        core_of(db, id),
-        Core::ListAt { .. }
-            | Core::BytesAt { .. }
-            | Core::StrAt { .. }
-            | Core::StrSlice { .. }
-            | Core::BytesSlice { .. }
-            | Core::MapLookup { .. }
-    )
-}
-
 fn sum_shell_reclaim_ok(
     db: &mut Db,
     scrutinee: StructId,
@@ -8420,10 +8403,18 @@ fn sum_shell_reclaim_ok(
         // The all-scalar floor is always safe (a scalar payload copies out). A COMPOUND payload is
         // reclaimable when the arm is escape-clean (no heap sub-value read out as a live handle) AND
         // reuse-clean (no arm constructs a compound that could FBIP-reuse a payload cell).
+        // inc2b (Stage A): an escape-clean + reuse-clean compound Some reclaims even when its scrutinee is
+        // a fallible EXTRACTION op (List.at/Map.lookup/Bytes.slice). The extraction dup-retains the payload
+        // into the Some, so the payload is at rc>=2 through the arm — any in-place FBIP reuse of its cell is
+        // structurally suppressed (node_rc: rc>1 path-copies, never mutates in place), and the deep-drop's
+        // cascade merely decrements the extra retained ref (the source keeps its own ref). Verified on the
+        // debug runtime: the extraction family reclaims value-correct with zero traps (mts1 6->3 no-trap,
+        // p.rc>=2 held through the rebuild since the shell drop fires AFTER the arm body). The earlier
+        // scrutinee_is_fallible_extraction decline was over-conservative. (A CONSUME escape — escape_clean
+        // false, dup-marked — is the separate Stage B; a threaded-into-resume escape is out of scope.)
         && (sum_has_only_scalar_payloads(db, scrut_ty)
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
-                && !sum_cont_arm_constructs_compound(db, root)
-                && !scrutinee_is_fallible_extraction(db, scrutinee)))
+                && !sum_cont_arm_constructs_compound(db, root)))
         && matches!(stashed_slot, Some((_, ValType::I32)))
         && matches!(
             heap_operand_ownership(db, scrutinee),
