@@ -8703,3 +8703,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	itf4 an immortal 40-element Set compares structurally equal to a runtime-BUILT equal Set, and the runtime side reclaims
+pass	itf5 fifty frames of Set.union off an immortal 40-element Set (runtime-keyed probes) reclaim every produced set
