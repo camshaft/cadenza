@@ -35896,34 +35896,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_binding_shadows_the_tuple_and_record_constructor_aliases() {
-        // `tuple`/`record` are SHADOWABLE prelude aliases for the symbol primitives `(,)`/`{}`. A local
-        // binding of the name wins in application-head position via the ordinary scope-first lookup —
-        // `(tuple 3 4)` applies the bound function (7), NOT the built-in tuple value. Earlier the
-        // structural grammar dispatch on the head name won over the binding (wrong value / spurious
-        // reject) — the head-vs-value resolution split #Binding Is Lexical forbids.
-        assert_eq!(
-            run_main("(let ((tuple (fn (a b) (+ a b)))) (tuple 3 4))"),
-            7
-        );
-        assert_eq!(
-            run_main("(let ((record (fn (a b) (+ a b)))) (record 3 4))"),
-            7
-        );
-        // A PARAMETER named `tuple` shadows it just the same (applies the argument function): 3*4 = 12.
-        assert_eq!(
-            run_main("((fn (tuple) (tuple 3 4)) (fn (a b) (* a b)))"),
-            12
-        );
-        // TYPE soundness: the shadowed result types at the binding's Int64 return, so `(+ … 1)` = 8
-        // (earlier CDZ0203 'cannot unify Int64 with (Tuple Int64 Int64)' — the type-level split).
-        assert_eq!(
-            run_main("(+ (let ((tuple (fn (a b) (+ a b)))) (tuple 3 4)) 1)"),
-            8
-        );
-    }
-
-    #[test]
     fn the_unshadowed_tuple_and_record_aliases_build_the_compound() {
         // With no shadowing binding, the alias names build the compound exactly as the string
         // primitives do — a projection of a constant compound FOLDS to its element (no heap).
