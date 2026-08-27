@@ -18375,3 +18375,55 @@
   (call main (: 5 Int64))
   (output (: 11 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 461 (2026-08-27): the extraction dup-retain leak (lar1 family, reclaim inc2)
+; composed with the effects fold — and a NEW mis-reject found at the edge. xar1: a handler ARM
+; doing its own List.at compound extract leaks PER DISPATCH (2 dispatches = 6, exactly 2x lar1's 3)
+; — inc2's fix must work in handler-arm scope, and this row's flip is the amplified acceptance.
+; xar3: the same arm-extract with the dispatch crossing a NON-recursive helper def works (leak 3,
+; single dispatch). The RECURSIVE-performer sibling (arm capturing any main-local heap binding,
+; extract not needed) is REJECTED with a bogus CDZ0101 "unbound name" for a lexically-bound name —
+; pinned as the todo fence xar5, filed to v-effects as a wrong-diagnostic (honest-decline bar).
+
+(case "xar1 a handler arm List.at-extracts from a captured nested list per dispatch — the retain leaks once per performance"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (handle St 0
+          ((get (u) s
+            (resume (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1)) s)))
+          (+ (St.get) (St.get)))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 4 Int64))
+  (live-objects known-leak 6))
+
+(case "xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (once) (St.get))
+    (def (main (: n Int64))
+      (let ((xs (if (> n 0) (list (list n) (list n (+ n 1))) (list (list 9)))))
+        (handle St 0
+          ((get (u) s
+            (resume (match (List.at xs 1) ((Option.Some inner) (List.len inner)) ((Option.None) -1)) s)))
+          (once))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 2 Int64))
+  (live-objects known-leak 3))
+
+(case "xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers"
+  (input (do
+    (effect St (op get (-> Unit Int64)))
+    (def (loop2 (: k Int64))
+      (if (= k 0) 0 (+ (St.get) (loop2 (- k 1)))))
+    (def (main (: n Int64))
+      (let ((ys (if (> n 0) (list n (+ n 1) 9) (list 1))))
+        (handle St 0
+          ((get (u) s (resume (List.len ys) s)))
+          (loop2 n))))
+    (export main)))
+  (call main (: 2 Int64))
+  (output (: 6 Int64)))
