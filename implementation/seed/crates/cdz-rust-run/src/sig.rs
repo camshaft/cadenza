@@ -6,7 +6,7 @@
 /// The parsed shape of an emitted `pub fn <name>(…) -> <ret>` signature.
 pub struct EmittedSig<'a> {
     /// Each top-level parameter's verbatim `<name>: <type>` text, in source order. Empty for a nullary fn.
-    /// The env param (`__cdz_env: &mut __CdzE`) is INCLUDED here (callers that care filter it).
+    /// The env param (`__cdz_env: &mut dyn DynCdzEnv`) is INCLUDED here (callers that care filter it).
     pub params: Vec<&'a str>,
     /// The return-type text (up to the fn body `{`).
     pub ret_head: String,
@@ -95,10 +95,12 @@ pub fn parse_emitted_sig<'a>(
 }
 
 /// Whether a parameter slice (`<name>: <type>`) is the async gas/yield env param — backend plumbing, not
-/// a source param. Its emitted names mirror the rcdzc rust backend's `ENV_PARAM`/`ENV_TYPE_PARAM`
-/// (`backend/rust/mod.rs`): value `__cdz_env`, type `__CdzE`.
+/// a source param. The uniform-env change retired the generic env TYPE-PARAM (`__CdzE`); the current
+/// rcdzc rust backend (`backend/rust/mod.rs` `ENV_PARAM`) emits `__cdz_env: &mut dyn DynCdzEnv` — an
+/// object-safe env (its RPITIT `consume` reached via the `DynCdzEnv::consume_boxed` facet). Matched by
+/// the `__cdz_env` NAME, which is stable across the type change.
 pub fn is_env_param(param: &str) -> bool {
-    param.trim_start().starts_with("__cdz_env") || param.contains("&mut __CdzE")
+    param.trim_start().starts_with("__cdz_env")
 }
 
 /// Whether a type string names a runtime closure VALUE — either the SYNC `Rc<dyn Fn(…)>` or the ASYNC
@@ -281,9 +283,10 @@ pub fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
 
 /// The SOLE export's source name — the fn to call for a corpus case with no `(call …)` (the common
 /// nullary-entry shape). Recovered from the emitted signature: sync mode emits `pub fn <name>(`, async
-/// mode `pub async fn <name><E: CdzEnv>(`, so split on whichever marker is present and stop the name at
-/// `(` OR `<` (the async generic-parameter list). `None` if no exported fn header is present. MUST match
-/// `parse_emitted_sig`'s marker so the recovered name parses back.
+/// mode `pub async fn <name>(__cdz_env: &mut dyn DynCdzEnv, …)` (uniform-env: no generic type-param), so
+/// split on whichever marker is present and stop the name at `(` — OR `<`, retained defensively for a
+/// would-be generic list. `None` if no exported fn header is present. MUST match `parse_emitted_sig`'s
+/// marker so the recovered name parses back.
 pub fn sole_export_name(module: &str, async_mode: bool) -> Option<String> {
     let marker = if async_mode {
         "pub async fn "
@@ -338,12 +341,23 @@ mod tests {
     }
 
     #[test]
-    fn async_header_skips_the_generic_list_to_the_params() {
-        let m = "pub async fn f<E: CdzEnv>(__cdz_env: &mut E, n: i64) -> i64 { n }";
+    fn async_header_parses_the_dyn_env_and_source_params() {
+        // CURRENT shape (uniform-env: no generic env type-param, env is `&mut dyn DynCdzEnv`).
+        let m = "pub async fn f(__cdz_env: &mut dyn DynCdzEnv, n: i64) -> i64 { n }";
         let s = parse_emitted_sig(m, "f", true).expect("found");
         assert_eq!(s.params.len(), 2);
         assert!(is_env_param(s.params[0]), "first param is the env plumbing");
         assert!(!is_env_param(s.params[1]));
+        // DEFENSIVE: the retired generic-env header (`<E: CdzEnv>(__cdz_env: &mut E, …)`) is still
+        // tolerated — the `<…>`-skip is a harmless no-op if the emit ever re-introduced a generic list.
+        let legacy = "pub async fn f<E: CdzEnv>(__cdz_env: &mut E, n: i64) -> i64 { n }";
+        assert_eq!(
+            parse_emitted_sig(legacy, "f", true)
+                .expect("found")
+                .params
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -352,9 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn env_param_recognized_by_name_or_type() {
-        assert!(is_env_param("__cdz_env: &mut E"));
-        assert!(is_env_param("e: &mut __CdzE"));
+    fn env_param_recognized_by_name() {
+        // Matched by the `__cdz_env` NAME (stable across the env-type change to `&mut dyn DynCdzEnv`).
+        assert!(is_env_param("__cdz_env: &mut dyn DynCdzEnv"));
         assert!(!is_env_param("x: i64"));
     }
 
@@ -403,7 +417,7 @@ mod tests {
         let m = "pub fn both(a: i64, b: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { todo!() }";
         assert_eq!(rust_factory_param_count(m, "both", false), Some(2));
         // Async: the env param is not a capture.
-        let am = "pub async fn f<E>(__cdz_env: &mut E, a: i64) -> Rc<dyn cdz_rt::EnvClosure<i64,i64>> { todo!() }";
+        let am = "pub async fn f(__cdz_env: &mut dyn DynCdzEnv, a: i64) -> Rc<dyn cdz_rt::EnvClosure<i64,i64>> { todo!() }";
         assert_eq!(rust_factory_param_count(am, "f", true), Some(1));
         // A non-factory (scalar return) is None.
         assert_eq!(
@@ -466,13 +480,10 @@ mod tests {
             sole_export_name("// note\npub fn main() -> i64 { 42 }", false).as_deref(),
             Some("main")
         );
-        // Async: stop the name at the generic-parameter list `<`, not run into it.
+        // Async: the current header is `pub async fn run(__cdz_env: &mut dyn DynCdzEnv)` — the name
+        // stops at `(`. (The `<`-stop is retained defensively for a would-be generic list.)
         assert_eq!(
-            sole_export_name(
-                "pub async fn run<E: cdz_rt::CdzEnv>(__cdz_env: &mut E) {}",
-                true
-            )
-            .as_deref(),
+            sole_export_name("pub async fn run(__cdz_env: &mut dyn DynCdzEnv) {}", true).as_deref(),
             Some("run")
         );
         // No exported fn → None.
