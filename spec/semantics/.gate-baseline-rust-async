@@ -7627,6 +7627,7 @@ todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
 todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
 todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
 todo	cq02c host IMPORT: NULLARY + LIST result, called once

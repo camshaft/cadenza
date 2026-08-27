@@ -8046,6 +8046,7 @@ todo	cc3 a factory returning a closure over a performing-arg param declines pend
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	cp1 a capture-once closure CAPTURED by a nested closure declines pending the nested-capture increment
+todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	eab3 a lifted Bytes param sliced through Option.expect is admitted and reclaims
 todo	eb1 a BigInt entry param in beyond-i64 arithmetic
 todo	el1 a List entry param summed by an indexed walk
