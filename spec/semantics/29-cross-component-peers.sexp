@@ -407,6 +407,18 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "pca4 a tuple of a string and a scalar crosses INBOUND to a peer, both fields read there"
+  (doc    "The TUPLE analogue of the record-of-(String,scalar) inbound-arg case above: the consumer builds
+           `(tuple \"hi\" 4)` — a heap (String) field beside a scalar — and passes it as ONE handle to the
+           peer op, which projects BOTH positional fields: String.byte-len of field 0 (2) plus field 1 (4)
+           = 6. Pins that a TUPLE with a heap field (not only a record) crosses as a handle and its fields
+           are read by the provider.")
+  (peer   "cadenza:req/api" (do (def (req (: t (Tuple String Int64))) (+ (String.byte-len (. t 0)) (. t 1))) (export req)))
+  (input  (do (effect S (op req (-> (Tuple String Int64) Int64))) (bind S "cadenza:req/api")
+              (def (main) (host (S) (S.req (tuple "hi" 4)))) (export main)))
+  (call   main)
+  (output (: 6 Int64)))
+
 (case "a string argument crosses to a peer and the doubled result byte-len is read"
   (doc    "The converse shape (string ARG + string RESULT both cross as rope handles over the shared runtime):
            PROVIDER `converse(prompt)` = String.concat prompt prompt BUILDS a new rope from the crossed arg;

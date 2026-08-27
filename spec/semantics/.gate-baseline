@@ -7275,6 +7275,7 @@ pass	pby1 a peer BYTES result escapes the entrypoint via the with-methods fused 
 pass	pca1 a map argument crosses INBOUND to a peer and its length is read there
 pass	pca2 a set argument crosses INBOUND to a peer and its length is read there
 pass	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
+pass	pca4 a tuple of a string and a scalar crosses INBOUND to a peer, both fields read there
 pass	pcc1 a partial ctor in an inline tuple completes when projected and applied
 pass	pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)
 pass	pcc2 a partial ctor in a let-bound tuple completes when projected and applied
