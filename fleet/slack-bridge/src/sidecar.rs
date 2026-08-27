@@ -126,6 +126,19 @@ impl ThreadMap {
         self.by_key.retain(|_, ts| !evict.contains(ts));
     }
 
+    /// Mark a concierge message as UN-MIRRORABLE — the outbound mirror gave up posting it to Slack after
+    /// exhausting retries (a deterministically un-postable `ask`, the mirror-side analogue of the relay's
+    /// dead-letter). Recording it stops [`select_to_mirror`] from re-selecting it every tick (which would
+    /// otherwise let one poison ask head-of-line-block mirroring of every later ask). We reuse [`record`]
+    /// with a NON-NUMERIC sentinel `thread_ts` (`unpostable.<key>`): a real operator thread reply always
+    /// carries a numeric Slack `<epoch>.<frac>` ts, so it can never match this sentinel in
+    /// [`asker_for_thread`] — the operator still sees the ask in the concierge's tmux (dual-channel) and the
+    /// concierge can answer it there. Bounded by the same [`prune`](Self::prune) as any recorded thread.
+    pub fn mark_unmirrorable(&mut self, key: impl Into<String>, ask: MirroredAsk) {
+        let key = key.into();
+        self.record(format!("unpostable.{key}"), key, ask);
+    }
+
     /// The asker to route an `answer` to, given a Slack thread the operator replied in.
     pub fn asker_for_thread(&self, thread_ts: &str) -> Option<&MirroredAsk> {
         self.by_thread.get(thread_ts)
@@ -262,6 +275,39 @@ mod tests {
         assert!(
             sel2.is_empty(),
             "an already-mirrored ask is not posted again"
+        );
+    }
+
+    #[test]
+    fn mark_unmirrorable_stops_reselection_without_bogus_reply_routing() {
+        // A deterministically un-postable ask must (a) stop being re-selected for mirroring every tick (else
+        // one poison ask head-of-line-blocks mirroring of every later ask), and (b) NOT create a thread a
+        // real operator reply could route to (the sentinel ts is non-numeric; real Slack ts is numeric).
+        let mut map = ThreadMap::default();
+        let a = drained("000000000009-1-ask.json", "v-poison", "ask", "un-postable");
+        assert_eq!(
+            select_to_mirror(std::slice::from_ref(&a), &map).len(),
+            1,
+            "new ask selected"
+        );
+        map.mark_unmirrorable(
+            "000000000009-1-ask.json",
+            MirroredAsk {
+                asker: "v-poison".into(),
+                kind: "ask".into(),
+                subject: "un-postable".into(),
+            },
+        );
+        assert!(
+            select_to_mirror(std::slice::from_ref(&a), &map).is_empty(),
+            "an un-mirrorable ask is not re-selected"
+        );
+        // A real numeric Slack thread reply never matches the sentinel ts.
+        assert!(map.asker_for_thread("1700000000.0009").is_none());
+        assert!(
+            map.asker_for_thread("unpostable.000000000009-1-ask.json")
+                .is_some(),
+            "the sentinel itself is recorded (bounds via prune like any thread)"
         );
     }
 
