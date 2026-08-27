@@ -8933,3 +8933,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	ecb1 an empty-LIST if-branch joins with a built list (tri-target)
+pass	ecb2 an empty-MAP if-branch joins with a built map (tri-target)
+pass	ecb3 an empty-SET if-branch joins with a built set (tri-target)
+pass	ecb4 an empty-list MATCH arm joins with the bound rest (the map-rest sibling on lists)
