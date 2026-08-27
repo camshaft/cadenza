@@ -1123,6 +1123,86 @@
   (call   run 2)
   (output (: true Bool)))
 
+; --- Primitive 2: const three-way (Ordering.of) folds a constant COMPOUND pair to an Ordering -----------------
+; `Ordering.of a b` (the namespaced `compare`) is the three-way comparison yielding `Ordering` (Less/Equal/Greater).
+; Its scalar fold (Int/Bool/String/Char/Float) already lands; a constant COMPOUND pair (tuple/record/sum of constant
+; leaves) now folds too, through the SAME `const_key_order` canonical value order `Set.to-list`/equality use — which
+; mirrors the runtime `value_cmp_shaped` the compound `value-cmp` walk uses, so the fold and the runtime walk report
+; the SAME Ordering (core-semantics §331). Pinned under a `(const ...)` demand: without the compound fold the compare
+; lowers to a runtime `value-cmp` (NOT a constant) and the general evaluator has no `compare` arm, so the const demand
+; would reject — these cases PROVE the fold. Float/bytes-less/set/map leaf still declines (no total order), as it must.
+
+(case "a const (Ordering.of) of two constant TUPLES folds to an Ordering under the const demand"
+  (doc    "`Ordering.of (tuple 1 2) (tuple 1 3)`: tuples order element-wise lexicographically — position 0 is equal
+           (1=1), so position 1 decides 2 < 3 → Less. The `(const ...)` demand forces a compile-time Ordering (a nullary
+           Less/Equal/Greater sum) via `const_key_order`, else it rejects — so this pins the compound compare fold.
+           Matches the folded Ordering to an Int (Less → 1).")
+  (input  (do (def (main)
+                (const (match (Ordering.of (tuple 1 2) (tuple 1 3))
+                         ((Ordering.Less _)    1)
+                         ((Ordering.Equal _)   2)
+                         ((Ordering.Greater _) 3))))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "a const (Ordering.of) of two constant RECORDS folds in canonical (name-lexicographic) field order"
+  (doc    "Discriminated against source/decl order: both records are written `lo`-FIRST, but records order FIELD-WISE
+           in the canonical name-lexicographic field order (`hi` before `lo`). `Ordering.of {lo 9, hi 1} {lo 0, hi 2}`
+           reads `hi` first: `hi 1` < `hi 2` → Less, IGNORING that `lo 9` > `lo 0` (which a source/decl order would let
+           decide → Greater). The const demand forces the fold via `const_key_order`'s Record arm; Less → 1 (a wrong
+           field order would yield Greater → 3).")
+  (input  (do (def (main)
+                (const (match (Ordering.of (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))
+                         ((Ordering.Less _)    1)
+                         ((Ordering.Equal _)   2)
+                         ((Ordering.Greater _) 3))))
+              (export main)))
+  (output (: 1 Int64)))
+
+(case "a const (Ordering.of) of two same-discriminant SUMS folds by payload"
+  (doc    "Sums order by DISCRIMINANT first, then payload. `Ordering.of (Option.Some 5) (Option.Some 3)`: same
+           discriminant (Some), so the payload decides 5 > 3 → Greater. The const demand forces the compound sum fold
+           via `const_key_order`; Greater → 3.")
+  (input  (do (def (main)
+                (const (match (Ordering.of (Option.Some 5) (Option.Some 3))
+                         ((Ordering.Less _)    1)
+                         ((Ordering.Equal _)   2)
+                         ((Ordering.Greater _) 3))))
+              (export main)))
+  (output (: 3 Int64)))
+
+(case "a const (Ordering.of) of two constant tuples byte-matches the RUNTIME value-cmp (cross-check)"
+  (doc    "Soundness cross-check: a RUNTIME three-way `Ordering.of` over a tuple with a runtime element `n` equals the
+           COMPILE-TIME fold of the same constant tuple pair — both order the tuples element-wise lexicographically and
+           map the result to the same Ordering (core-semantics §331). Pins that `const_key_order`'s compound arm agrees
+           with the runtime `value_cmp_shaped` the `value-cmp` walk emits.")
+  (input  (do (def (rank (: o Ordering))
+                (match o ((Ordering.Less _) 1) ((Ordering.Equal _) 2) ((Ordering.Greater _) 3)))
+              (def (run (: n Int64))
+                (= (rank (Ordering.of (tuple 1 n) (tuple 1 3)))
+                   (const (rank (Ordering.of (tuple 1 2) (tuple 1 3))))))
+              (export run)))
+  (call   run 2)
+  (output (: true Bool)))
+
+(case "coc1 a compound (Ordering.of) does NOT elide a runtime operand's construction effect (fold effect-safety guard)"
+  (doc    "The compound compare fold DISCARDS its operands (it returns a bare Ordering variant), so it fires ONLY when
+           BOTH are fully-constant values — never when an operand carries a runtime subterm whose construction can trap or
+           perform. Here the order of `(Option.Some <payload>)` vs `(Option.None)` is decided by the differing
+           DISCRIMINANT alone, so a fold reading only the discriminant would drop the payload and SKIP its effect. The
+           fully-const `is_const_value` guard keeps this runtime (the payload depends on `k`): `go 0` constructs the Some
+           payload, whose trapping `(/ 1 k)` fires BEFORE the compare — proving the operand's effect is preserved,
+           not elided (a division by zero at `k = 0`).")
+  (input  (do (def (go (: k Int64))
+                (match (Ordering.of (Option.Some (/ 1 k))
+                                    (: (Option.None unit) (Option Int64)))
+                  ((Ordering.Less _)    1)
+                  ((Ordering.Equal _)   2)
+                  ((Ordering.Greater _) 3)))
+              (export go)))
+  (call   go 0)
+  (trap   "division by zero"))
+
 ; --- Primitive 2: const Set/Map.to-list folds BYTES elements/keys by unsigned byte-lexicographic order -------
 ; A `Bytes` element/key has a runtime canonical order pinned in 19-sets: UNSIGNED byte-lexicographic (0x80 sorts
 ; as 128, not signed −128). `const_key_order`/`cval_key_order` now rank `Bytes` by that same order (Rust
