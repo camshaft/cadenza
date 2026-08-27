@@ -17014,6 +17014,13 @@ fn resolve_leaf_offsets(
             // (resolving it rejects CDZ0001/CDZ0002 before any escape emission), so a runtime template
             // over it is meaningless.
             crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
+            // A native-compound-data CTOR-HEAD leaf (`Leaf::Ctor`/`FieldPair`/`Member`) is payloadless —
+            // one kind byte, no body and no runtime hole (it is a fixed structural head, never a patched
+            // value leaf; the runtime holes are the Int/Bool value leaves elsewhere in the template). Skip
+            // its single byte, mirroring how the old Str/Name head was skipped (just one byte now).
+            crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+                off += 1;
+            }
         }
     }
     let _ = bytes;

@@ -89,6 +89,22 @@ pub enum Leaf {
     /// defect riding the binary AST as a MARKER. Resolving it is a `CDZ0002` rejection
     /// (`collections-and-text.md` §A Char Is A Single Unicode Scalar Value). Holds the literal's text.
     BadChar(alloc::rc::Rc<str>),
+    /// A native-compound-data CTOR-HEAD leaf — the HEAD child of a compound literal, one payloadless leaf
+    /// per collection constructor (a `("list" …)` node's head becomes `Atom(Leaf::Ctor(CompoundCtor::List))`).
+    /// The compound KIND is recognized by this leaf's IDENTITY (a distinct codec byte, `KIND_*_CTOR`), not
+    /// by comparing head text against `"list"`/`"record"`/… — the native-compound-data migration
+    /// (`DESIGN-native-ast-compound-data.md` D1). A distinct kind cannot collide with a user `#"record"`
+    /// symbol value or a rebindable `record` name. Payloadless: the constructor is the whole value. The
+    /// twin of `cadenza_ast::Leaf::Ctor`; codec byte-identical.
+    Ctor(CompoundCtor),
+    /// A record/map ENTRY head — the `=` of a `(= key value)` field pair. A dedicated payloadless leaf so
+    /// the structural field-pair head is recognized by kind identity, distinct from the equality operator
+    /// name `=` (which stays a `Name`), per `DESIGN-native-ast-compound-data.md` (the FIELD_PAIR tag).
+    FieldPair,
+    /// A member-access head — the `.` of a `(. obj key)` projection. A dedicated payloadless leaf so the
+    /// structural member head is recognized by kind identity rather than head text
+    /// (`DESIGN-native-ast-compound-data.md`, the MEMBER tag).
+    Member,
 }
 
 /// An arbitrary-precision integer value: a sign plus a big-endian magnitude. This is the whole of
@@ -833,7 +849,7 @@ pub enum Struct {
 /// this typed tag rather than by re-comparing head text at each consumer is the native-compound-data
 /// migration (see `implementation/design/DESIGN-native-ast-compound-data.md`). (`set` is not yet a
 /// primitive constructor — held for operator decision D2 in that design.)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum CompoundCtor {
     /// `("record" (= k v)…)` — a record: `(= key value)` field-pair children.
     Record,

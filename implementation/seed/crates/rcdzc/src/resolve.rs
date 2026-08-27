@@ -428,6 +428,14 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     "`#\\{s}` does not name a Unicode scalar value (a code point in U+0000..=U+10FFFF, excluding the surrogates U+D800..=U+DFFF)"
                 ),
             )),
+            // A native-compound-data CTOR-HEAD leaf (`Leaf::Ctor`/`FieldPair`/`Member`) is STRUCTURAL — it
+            // only ever occupies the HEAD position of a compound `List` node, where the List-level dispatch
+            // (`compound_ctor` etc.) reads it. In a bare ATOM (non-head) position it is not a value, so —
+            // like a non-finite float leaf above — a stray occurrence is a malformed node.
+            Leaf::Ctor(_) | Leaf::FieldPair | Leaf::Member => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a compound-constructor head leaf is not a value on its own".to_string(),
+            )),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.
