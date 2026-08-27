@@ -451,6 +451,16 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
             }
             Ty::List(Box::new(elem_ty))
         }
+        // A set literal's type is `Set <elem>` where `<elem>` is the JOIN of the element types (homogeneous
+        // — a mixed set is CDZ0203, checked in `type_errors`). An empty `("set")` is `Set Any` (deferred).
+        // Mirrors the `List` arm; the elem type flows to `Core::SetOf` at lowering.
+        Resolved::Set { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                elem_ty = elem_ty.join(&type_of(db, e));
+            }
+            Ty::Set(Box::new(elem_ty))
+        }
         // A map literal's type is `Map <key> <value>` where `<key>` is the JOIN of the entry key types
         // and `<value>` the JOIN of the entry value types (each homogeneous — a mixed-key or mixed-value
         // map is CDZ0201, the CHECK is `type_errors`' job; this fills the value column). An empty `(map)`
@@ -3060,6 +3070,14 @@ pub fn reflected_ty(db: &mut Db, id: StructId) -> Ty {
                 elem_ty = elem_ty.join(&et);
             }
             Ty::List(Box::new(elem_ty))
+        }
+        Resolved::Set { elems } => {
+            let mut elem_ty = Ty::Any;
+            for &e in elems.iter() {
+                let et = reflected_ty(db, e);
+                elem_ty = elem_ty.join(&et);
+            }
+            Ty::Set(Box::new(elem_ty))
         }
         Resolved::Record { fields } => {
             if crate::eval::typeval_of(db, id).is_some() {
@@ -13116,7 +13134,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         // name-alias path, the map/set homogeneity checks, and `List.push`/`update`/`concat` use — NOT
         // the generic unify's CDZ0203 (reserved for a two-types-must-agree conflict). Then descend into
         // each element for its own faults.
-        Resolved::List { elems } => {
+        // A set shares the list's element homogeneity + range-check + element-descent (both are homogeneous
+        // element sequences), so the fault-walk is identical; only the message says "list" (cosmetic).
+        Resolved::List { elems } | Resolved::Set { elems } => {
             let mut subst = Subst::new();
             if let Some(&first) = elems.first() {
                 let first_ty = type_of(db, first);

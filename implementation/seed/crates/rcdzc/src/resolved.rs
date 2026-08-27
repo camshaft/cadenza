@@ -1224,6 +1224,13 @@ pub enum Resolved {
     /// fixed-arity product with per-position types): a list's length is a runtime property and all
     /// elements share a type. Built on the persistent `vec-*` heap at run time.
     List { elems: std::rc::Rc<[StructId]> },
+    /// A SET literal `(set e0 e1 …)` — a first-class tagged homogeneous set construction (operator ruling
+    /// 2026-08-27: data structures are pulled all the way through the compiler, NOT desugared to
+    /// `Set.of`-over-list in the reader). Elements are AST occurrences in order; DUPLICATES collapse at
+    /// build (set semantics), and every element unifies to ONE element type, so its type is `Ty::Set(elem)`.
+    /// It lowers to `Core::SetOf` — the SAME node `Set.of (list …)` produces — so the set VALUE still
+    /// renders `(Set.of (list …sorted))`. The set analogue of `List`.
+    Set { elems: std::rc::Rc<[StructId]> },
     /// A MAP literal `(map (k v) …)` — a persistent association of keys to values. Each entry is a
     /// `(key-occ, value-occ)` PAIR of ORDINARY VALUE occurrences — the key is NOT a compile-time label
     /// (unlike a `Record` field, read by `read_key` into a `Symbol`): it is an expression resolved in

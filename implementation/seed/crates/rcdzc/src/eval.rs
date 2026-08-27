@@ -1630,7 +1630,7 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
         Resolved::Member { operand, .. } => collect_callees(db, operand, out),
         // A tuple's elements and a projection's operand run when this body runs — a call inside them is
         // a real edge, so descend.
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             for &e in elems.iter() {
                 collect_callees(db, e, out);
             }

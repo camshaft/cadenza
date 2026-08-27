@@ -214,6 +214,8 @@ pub enum CompoundCtor {
     List,
     /// `("map" (k v)…)` — a map.
     Map,
+    /// `("set" e…)` — a set (a first-class tagged construction; see rcdzc `CompoundCtor::Set`).
+    Set,
 }
 
 impl CompoundCtor {
@@ -225,6 +227,7 @@ impl CompoundCtor {
             "tuple" => Some(CompoundCtor::Tuple),
             "list" => Some(CompoundCtor::List),
             "map" => Some(CompoundCtor::Map),
+            "set" => Some(CompoundCtor::Set),
             _ => None,
         }
     }

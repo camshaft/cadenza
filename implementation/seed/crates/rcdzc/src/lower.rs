@@ -754,6 +754,25 @@ fn compute(db: &mut Db, id: StructId) -> Core {
             // `Resolved::List.elems` is already `Rc<[StructId]>` — pass the shared slice through.
             Core::ListNew { elems }
         }
+        // A SET literal `("set" e…)` — a first-class tagged construction (operator: pulled through the
+        // compiler) that lowers to the SAME `Core::SetOf` `Set.of (list …)` produces, so the set VALUE
+        // still renders `(Set.of (list …sorted))`. Unlike `Set.of` over a runtime list, the elements are
+        // STATICALLY enumerated here, so a runtime element VALUE is fine (the backend `set-insert`s + dedups
+        // it); constant elements dedup at compile via `build_const_set`.
+        Resolved::Set { elems } => {
+            for &e in elems.iter() {
+                if let Core::Poison(r) = core_of(db, e) {
+                    return Core::Poison(r);
+                }
+            }
+            let Some(elem_ty) = (match crate::infer::type_of(db, id) {
+                crate::ty::Ty::Set(e) => Some(*e),
+                _ => None,
+            }) else {
+                return Core::Poison(Reject::decline("set literal is not a solved set type"));
+            };
+            build_const_set(db, id, &elems, elem_ty)
+        }
         // A map literal `(map (k v) …)` — a `Core::MapNew` the backend builds on the persistent CHAMP
         // `map-*` heap (`map-empty` + a `map-insert` per entry, in source order). The key/value types come
         // from the node's own solved `Ty::Map` (fully determined by unification — key/value homogeneity is
@@ -14182,7 +14201,7 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
                 collect_binding_uses(db, v, false, out);
             }
         }
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             for &e in elems.iter() {
                 collect_binding_uses(db, e, false, out);
             }
@@ -24477,41 +24496,45 @@ fn lower_set_of(db: &mut Db, id: StructId, list: StructId) -> Core {
         // O(elements²) `set_has_const_elem` scan over ALL kept elements (each comparison re-cloning a
         // `Core`) — a `(Set.of (list 0 1 … N))` of N distinct ints was quadratic (N=3200 spent ~82% of
         // the compile in `const_compound_eq`); the scalar fast path makes it linear.
-        Core::ListNew { elems } => {
-            let elems = elems.to_vec();
-            let mut deduped: Vec<StructId> = Vec::with_capacity(elems.len());
-            let mut seen_scalars: crate::fxhash::FxHashSet<ScalarKey> =
-                crate::fxhash::FxHashSet::default();
-            let mut compounds: Vec<StructId> = Vec::new();
-            for &e in &elems {
-                match scalar_const_key(db, e) {
-                    Some(key) => {
-                        if seen_scalars.insert(key) {
-                            deduped.push(e);
-                        }
-                    }
-                    // A compound element: dedup against the other kept compounds only (a scalar can never
-                    // equal a compound, so cross-checking is unnecessary — `const_compound_eq` of two
-                    // different kinds is `None`/`Some(false)`).
-                    None => {
-                        if !set_has_const_elem(db, &compounds, e) {
-                            compounds.push(e);
-                            deduped.push(e);
-                        }
-                    }
-                }
-            }
-            trace!(target: "rcdzc::fold", node = id.0, elems = deduped.len(), "Set.of folds a constant list to a canonical set");
-            Core::SetOf {
-                elems: deduped.into(),
-                elem_ty,
-            }
-        }
+        Core::ListNew { elems } => build_const_set(db, id, &elems, elem_ty),
         // A runtime list source — building a set from a runtime list needs a runtime dedup loop (a later
         // increment); decline cleanly (a constant list is the corpus shape).
         _ => Core::Poison(Reject::decline(
             "Set.of over a runtime list is not yet built (a constant list literal only)",
         )),
+    }
+}
+
+/// Build a `Core::SetOf` from statically-enumerated element occurrences, dedup'ing CONSTANT elements at
+/// compile (keeping the FIRST occurrence of each value — order-independent set equality makes which copy
+/// is kept unobservable; the render sorts). Shared by `Set.of` over a constant list ([`lower_set_of`]) and
+/// the first-class `("set" …)` construction (`Resolved::Set`). Linear for scalar elements (canonical
+/// `ScalarKey` hash-set); a compound element falls back to pairwise `const_compound_eq` against the other
+/// kept compounds. A RUNTIME element value has no const key, so it is kept (the backend's `set-insert`
+/// dedups it at run time).
+fn build_const_set(db: &mut Db, id: StructId, elems: &[StructId], elem_ty: crate::ty::Ty) -> Core {
+    let mut deduped: Vec<StructId> = Vec::with_capacity(elems.len());
+    let mut seen_scalars: crate::fxhash::FxHashSet<ScalarKey> = crate::fxhash::FxHashSet::default();
+    let mut compounds: Vec<StructId> = Vec::new();
+    for &e in elems {
+        match scalar_const_key(db, e) {
+            Some(key) => {
+                if seen_scalars.insert(key) {
+                    deduped.push(e);
+                }
+            }
+            None => {
+                if !set_has_const_elem(db, &compounds, e) {
+                    compounds.push(e);
+                    deduped.push(e);
+                }
+            }
+        }
+    }
+    trace!(target: "rcdzc::fold", node = id.0, elems = deduped.len(), "folds elements to a canonical set");
+    Core::SetOf {
+        elems: deduped.into(),
+        elem_ty,
     }
 }
 

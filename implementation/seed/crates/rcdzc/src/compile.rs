@@ -5386,7 +5386,7 @@ fn walk_for_dead_traps(
     };
     match crate::resolve::resolved_of(db, id) {
         // Value-discarding positions: each constituent whose value may be dropped.
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             for e in elems.iter() {
                 discarded(db, *e, out, seen);
             }
@@ -5580,7 +5580,7 @@ fn walk_for_reachable_const_traps(
             }
             walk_for_reachable_const_traps(db, scrutinee, out, seen);
         }
-        Resolved::Tuple { elems } | Resolved::List { elems } => {
+        Resolved::Tuple { elems } | Resolved::List { elems } | Resolved::Set { elems } => {
             for e in elems.iter() {
                 walk_for_reachable_const_traps(db, *e, out, seen);
             }
