@@ -4175,3 +4175,16 @@
   (call main (: 1.0 Float64))
   (output (: "(f -inf.0)" String))
   (live-objects known-leak 1))
+
+; -- a quasiquote PATTERN dispatches on the head symbol of a RUNTIME Ast (built via Ast.List/Ast.Name so it
+; is not a constant); migration from rcdzc a_runtime_string_pattern_dispatches_by_content, 2026-08-27. The
+; head-symbol match is a runtime String content compare, so it exercises the runtime string-pattern path.
+
+(case "a quasiquote pattern dispatches on the head symbol of a runtime Ast"
+  (input (do (def (op (: a Ast)) (match a
+               ((quasiquote (+ (unquote x) (unquote y))) 100)
+               ((quasiquote (* (unquote x) (unquote y))) 200)
+               (_ 0)))
+             (def (main) (op (Ast.List (list (Ast.Name (String.concat "+" "")) (Ast.Int 1) (Ast.Int 2)))))
+             (export main)))
+  (call main) (output (: 100 Int64)))

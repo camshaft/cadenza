@@ -3113,6 +3113,7 @@ pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a quantity whose reference-scaled magnitude overflows its inner Int is rejected
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quasiquote pattern dispatches on the head symbol of a runtime Ast
 pass	a quote carrying a symbol literal reifies to an Ast.Symbol value
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
 pass	a quote of a char literal reifies to an Ast.Char value
