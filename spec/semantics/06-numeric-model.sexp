@@ -11178,3 +11178,23 @@
            BigInt payload and renders in its self-describing value form.")
   (input (do (def (main) (match (W 99999999999999999999999) ((W x) x))) (type W (W BigInt)) (export main)))
   (output (: 99999999999999999999999 BigInt)))
+
+; -- breaker batch 508 (2026-08-27): the #4086 demote's BREADTH across trap sources (the owner's
+; dzb pins cover the division faces; these add shift-OOB, the Int64.min/-1 overflow, and
+; Rem-by-zero — each conditionally reached, each demoting to a runtime trap that never fires on
+; the untaken path).
+
+(case "dzc1 a conditionally-reached out-of-range shift demotes to a runtime trap (untaken path answers)"
+  (input (do (def (main (: n Int64)) (if (> n 0) 7 (<< 1 64))) (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64)))
+
+(case "dzc2 a conditionally-reached Int64.min/-1 overflow demotes likewise"
+  (input (do (def (main (: n Int64)) (if (> n 0) 7 (/ -9223372036854775808 -1))) (export main)))
+  (call main (: 5 Int64))
+  (output (: 7 Int64)))
+
+(case "dzc3 a Rem-by-zero in an untaken MATCH arm demotes likewise"
+  (input (do (def (main (: n Int64)) (match n (0 99) (_ (% 5 0)))) (export main)))
+  (call main (: 0 Int64))
+  (output (: 99 Int64)))
