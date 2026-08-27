@@ -721,6 +721,7 @@ pass	a DEPTH-3 nested-op chain WITHOUT a post-observer folds (the no-observer co
 pass	a DEPTH-3 op-arg chain threads across two handler layers
 pass	a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
+pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
@@ -2703,6 +2704,7 @@ pass	a multi-level RRB list persistently updates deep interior-level indices lea
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb BigInt-keyed trie churned back equals the direct build with the seed resolving
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
+pass	a multi-param lambda mixes a tuple-destructuring param with a bare param
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
 pass	a multi-payload destructure binds the head and recurses on the tail
@@ -2917,6 +2919,7 @@ pass	a nested symbol-literal payload falls through on a non-matching symbol
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
+pass	a nested tuple-destructuring lambda binds both levels
 pass	a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf
 pass	a nested tuple-in-tuple float key is a Map key found by a separately-built equal key
 pass	a nested tuple-pattern parameter destructures a runtime tuple
@@ -3469,6 +3472,7 @@ pass	a result<Bytes, enum> param field is read and rebuilt by the wrapper on Ok 
 pass	a resume outside any handler arm is rejected
 pass	a resume value that MATCHES a COMPOUND scrutinee over the growing state binds it once — finding-24 match-scrutinee face
 pass	a resuming arm whose resume VALUE is a transform of state and next-state is a distinct advance, observed twice
+pass	a resuming observer of a recursive same-effect advance reads the advanced state (sr4)
 pass	a resuming perform in an if-condition threads its state advance to the taken branch
 pass	a retired collection-op name is rejected with a rename fix-it (CDZ0603)
 pass	a returned capturing closure bound with let and applied folds like the inline form
@@ -3879,6 +3883,7 @@ pass	a same-dimension annotation preserves the value's own scale through a conve
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-direction and of two upper-bound comparisons subsumes to the tighter bound
 pass	a same-direction or of two upper-bound comparisons subsumes to the looser bound
+pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
 pass	a same-name GENERIC constructor via a called helper resolves to the constructor (adv-63)
@@ -8330,6 +8335,7 @@ todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
 todo	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
+todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
@@ -8376,7 +8382,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a resuming observer of a recursive same-effect advance reads the advanced state (sr4)
-pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
-pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
-todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
