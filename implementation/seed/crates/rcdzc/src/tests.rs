@@ -19466,37 +19466,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_guarded_map_arm_over_a_partial_const_map_resolves_its_value_binder_in_guard_and_body() {
-        // WARNING: INVALID-ARTIFACT regression (v-patterns self-probe, both backends): a GUARDED map arm whose
-        // LOOKED-UP key's value is a compile-time CONSTANT while the map as a whole is RUNTIME (another key
-        // holds a dynamic value) — `(Map.insert (Map.insert Map.empty 1 5) 2 n)` — with the guard cond AND
-        // the body BOTH reading the value binder `v` emitted `CDZ0101 unbound v` + an invalid module.
-        // MECHANISM: the partial-const shape makes the guard-fold speculatively RE-MATERIALIZE the arm (an
-        // eval-minted clone); the clone's reused guard/body `v` — a `MapField` whose resolution ASCENDS to
-        // the enclosing `(map …)` pattern — re-resolved UNBOUND once `desugar_runtime_map_match` wrapped
-        // them in its presence-test `(if …)` chain (whose ancestry no longer reaches the arm). FIX: resolve
-        // the reused body + guard against the still-intact `(guard (map …) cond)` arm BEFORE the desugar
-        // re-parents them (populates the memo; the map twin of the list desugar's orig_match_parent
-        // re-resolve). n=9 → map {1:5, 2:9}; v=5 at key 1, guard `(> 5 3)` holds → body v = 5.
-        let src = "(module m (def (main (: n Int64)) \
-            (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n) \
-              ((guard (map (1 v) .. r) (> v 3)) v) \
-              (_ (- 0 1)))) (export main))";
-        // COMPILE must produce a VALID artifact (the pre-fix fault was accept + garbage-emit).
-        compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a partial-const guarded map arm must compile to a valid artifact, not CDZ0101 unbound v");
-        // And RUN to the correct value where the runtime heap is present.
-        if let Some(v) = run_heap_value(src, vec!["9".into()]) {
-            assert_eq!(
-                v, "5",
-                "the guarded arm binds v=5 at key 1 (const), guard (> 5 3) holds, body returns v"
-            );
-        } else {
-            eprintln!("runtime wasm not found; skipping partial-const map-guard run");
-        }
-    }
-
-    #[test]
     fn a_map_pattern_key_of_the_wrong_type_is_a_type_error() {
         // A `(map ("x" v))` pattern on a `(Map Int64 Int64)` writes a String key where an Int64 is
         // required. Before, `const_compound_eq` of a String vs an Int returned `None` (not equal), so the

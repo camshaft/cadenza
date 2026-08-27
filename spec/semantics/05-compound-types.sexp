@@ -23098,3 +23098,18 @@
              (def (main (: n Int64)) (List.len (match (bld n) ((list) (list)) ((list h .. t) t)))) (export main)))
   (call main (: 3 Int64))
   (output (: 2 Int64)))
+
+(case "a guarded map arm over a partial-const map resolves its value binder in guard and body"
+  (doc    "INVALID-ARTIFACT regression: a GUARDED map arm whose looked-up key's value is a compile-time
+           CONSTANT while the map as a whole is RUNTIME (`{1:5, 2:n}`), with the guard cond AND the body both
+           reading the value binder `v`. The partial-const shape speculatively re-materializes the arm; the
+           reused `v` (a MapField ascending to the `(map …)` pattern) must be resolved against the intact
+           `(guard (map …) cond)` arm BEFORE desugar_runtime_map_match re-parents it into its presence-test
+           if-chain — else CDZ0101 'unbound v' + an invalid module. main(9) → `{1:5, 2:9}`; v=5 at key 1, the
+           guard `(> 5 3)` holds → body returns v = 5. The run re-verifies a VALID artifact.")
+  (input  (do (def (main (: n Int64))
+                (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
+                  ((guard (map (1 v) .. r) (> v 3)) v)
+                  (_ (- 0 1)))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 5 Int64)))
