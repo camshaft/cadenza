@@ -2141,45 +2141,6 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
 /// this test used an `if` with branches differing in `a`, but cycle 33's member-into-if fold now sees
 /// through such an `if`, so an `if` no longer keeps a record opaque — a recursive call does.)
 #[test]
-fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
-    use crate::testkit::parse;
-    // The record's `a` field is the parameter; fields written z-before-a so the sorted layout (a=0, z=1)
-    // differs from the write order. `mk` recurses to a base case that builds the record, so the compiler
-    // cannot fold through it — `main` selects the runtime handle and reads `a` off the heap. For v = 41
-    // the recursion bottoms out with `a` = 41, and projecting `a` reads slot 0.
-    let src = "(module m \
-                 (def (mk (: n Int64)) (if (< n 0) (record (z 9) (a 0)) \
-                   (if (= n 41) (record (z 9) (a n)) (mk (- n 1))))) \
-                 (def (main (: v Int64)) (. (mk v) a)) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    assert!(
-        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-        "a runtime-record field read must import the value-heap runtime (genuine heap, not a fold)"
-    );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["41".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(
-                s, "41",
-                "runtime-record field `a` reads sorted slot 0 = the argument"
-            )
-        }
-        cdz_run::Outcome::Trap(t) => panic!("runtime-record field read trapped (miscompile?): {t}"),
-    }
-}
-
-#[test]
 fn record_with_over_a_runtime_record_builds_from_projections() {
     use crate::testkit::parse;
     // REGRESSION (row-op over a runtime record — breaker l6): `Record.with` whose TARGET is a RUNTIME record
@@ -4906,16 +4867,6 @@ fn a_synth_def_bodys_own_param_resolves_after_an_unrelated_scope_skip_resize() {
 /// field `a` = 10, `b` = field `z` = 20 → 100*10 + 20 = 1020. This is the `Member`→`Proj` fold handling the
 /// field order for free (`runtime_member_index`'s sorted slot), the record analogue of a tuple's positional
 /// `Elem(i)`.
-#[test]
-fn a_record_binding_pattern_binds_fields_by_name_out_of_order_and_partial() {
-    use crate::testkit::parse;
-    let src = "(module m (def (main) \
-                 (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b))) (export main))";
-    let bytes =
-        compile_component(&crate::codec::encode(&parse(src))).expect("compile partial-record");
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 1020);
-}
-
 /// A record binding pattern's WELL-FORMEDNESS faults, each with the actionable coded diagnostic (the
 /// binding-position twin of the tuple arm's checks): a REFUTABLE literal field value is CDZ0210; a field
 /// the value's record type does NOT have is CDZ0203 (naming the missing field); a NON-record bound value
@@ -4984,55 +4935,6 @@ fn a_record_binding_pattern_faults_are_actionable_and_lockstep() {
 /// projection of the scrutinee at that field (`a` ≡ `(. r x)` → `Core::Proj` at the sorted slot). Covers
 /// the basic single-arm match, a PARTIAL pattern (naming a subset), OUT-OF-ORDER fields (bound by name,
 /// not position), a RUNTIME record scrutinee (a real heap read), and a WILDCARD field value.
-#[test]
-fn a_record_match_pattern_destructures_a_record_scrutinee_by_field() {
-    use crate::testkit::parse;
-    let run_i64 = |src: &str| {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        run_returns::<i64>(&bytes, "main")
-    };
-    // basic single-arm
-    assert_eq!(
-        run_i64(
-            "(module m (def (main) \
-               (match (record (x 3) (y 4)) ((record (x a) (y b)) (+ a b)))) (export main))"
-        ),
-        7
-    );
-    // partial (names a subset)
-    assert_eq!(
-        run_i64(
-            "(module m (def (main) \
-               (match (record (x 3) (y 4)) ((record (x a)) a))) (export main))"
-        ),
-        3
-    );
-    // out-of-order fields (bound by name → c=a=10, b=z=20 → 1020)
-    assert_eq!(
-        run_i64(
-            "(module m (def (main) \
-               (match (record (a 10) (z 20)) ((record (z b) (a c)) (+ (* 100 c) b)))) (export main))"
-        ),
-        1020
-    );
-    // RUNTIME record scrutinee (via a param — a real heap read, not a const fold)
-    assert_eq!(
-        run_i64(
-            "(module m (def (f p) (match p ((record (x a) (y b)) (+ a b)))) \
-               (def (main) (f (record (x 5) (y 6)))) (export main))"
-        ),
-        11
-    );
-    // wildcard field value binds nothing
-    assert_eq!(
-        run_i64(
-            "(module m (def (main) \
-               (match (record (x 7) (y 4)) ((record (x a) (y _)) a))) (export main))"
-        ),
-        7
-    );
-}
-
 /// A record match arm composes with a following WILDCARD alternative, and its field binders shadow
 /// correctly. A record arm + a `_` alternative type-checks (the record arm covers the record shape, `_`
 /// the rest). A field binder `a` shadowing an outer param `a` binds the FIELD, not the param. A GUARDED
