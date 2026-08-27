@@ -23143,3 +23143,39 @@
                   (_ (- 0 1)))) (export main)))
   (call   main (: 9 Int64))
   (output (: 5 Int64)))
+
+; ── breaker batch 555: the spine-payload POSITION matrix, pre-armed for v-core-opt's two-shell
+; tuple-payload reclaim (their root cause: is_self_payload matches path.last()==Payload only; the
+; canonical tuple shape is [Payload, Elem(1)]). All three positions read the SAME full-spine leak
+; today (11) — position-independent — so the fix's landing measures its coverage across payload
+; positions: flipped Elem(0), a RECORD payload, and a 3-tuple Elem(2). All flip with ss1.
+
+(case "sp1 a FLIPPED tuple-payload spine (rec-ref at Elem 0) leaks the full spine (position-matrix cell)"
+  (input (do (type IL (Cons (Tuple IL Int64)) Nil)
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (tuple (count (- n 1)) n))))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple t h)) (smt t (+ acc h))) ((IL.Nil u) acc)))
+(def (main (: n Int64)) (smt (count n) 0))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
+
+(case "sp2 a RECORD-payload spine leaks the full spine (position-matrix cell)"
+  (input (do (type IL (Cons (Record (: h Int64) (: t IL))) Nil)
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (record (= h n) (= t (count (- n 1)))))))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons r) (smt (. r t) (+ acc (. r h)))) ((IL.Nil u) acc)))
+(def (main (: n Int64)) (smt (count n) 0))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64))
+  (live-objects known-leak 11))
+
+(case "sp3 a THREE-tuple payload spine (rec-ref at Elem 2) leaks the full spine (position-matrix cell)"
+  (input (do (type IL (Cons (Tuple Int64 Int64 IL)) Nil)
+(def (count (: n Int64)) (if (< n 1) (IL.Nil ()) (IL.Cons (tuple n (* n 10) (count (- n 1))))))
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple a b t)) (smt t (+ acc (+ a b)))) ((IL.Nil u) acc)))
+(def (main (: n Int64)) (smt (count n) 0))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 165 Int64))
+  (live-objects known-leak 11))
