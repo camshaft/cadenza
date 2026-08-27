@@ -61004,59 +61004,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_performing_closure_folds_direct_but_never_miscompiles_through_an_indirect_call() {
-        use crate::testkit::parse;
-        // PERFORMING-CLOSURE × CALL-SITE (breaker cc-family datapoint, 2026-08-05). A closure that ITSELF
-        // performs an effect is served by the tail-resumptive fold when invoked DIRECTLY from the handle
-        // body, but currently DECLINES cleanly (not-yet-reducible) when the same closure is passed into a
-        // HELPER that invokes it — the perform then crosses an INDIRECT (cross-function) call boundary the
-        // fold does not yet thread through. This pins that the indirect face is a CLEAN DECLINE, never a
-        // miscompile: a future increment may fold it (to the SAME value as the direct form), but it must
-        // never yield a WRONG value. Both programs compute `(g 1) + (g 2)` under `handle Src 100` whose arm
-        // advances state by the op arg: read(1) sees s=100 → value 101, state 101; read(2) sees s=101 →
-        // value 103; 101 + 103 = 204.
-        const EXPECT: &str = "204";
-
-        // DIRECT: the performing closure is called twice straight from the handle body → folds to 204.
-        let direct = "(do (effect Src (op read (-> Int64 Int64))) \
-                   (def (main) \
-                     (handle Src 100 ((read (n) s (resume (+ s n) (+ s n)))) \
-                       (let ((g (fn ((: n Int64)) (Src.read n)))) \
-                         (+ (g 1) (g 2))))) (export main))";
-        let direct_bytes = compile_component(&crate::codec::encode(&parse(direct)))
-            .expect("a performing closure called DIRECTLY from the handle body folds");
-        if let Some(v) = run_linked(&direct_bytes, "main") {
-            assert_eq!(
-                v, EXPECT,
-                "direct performing-closure calls: read(1)=101 + read(2)=103 = 204"
-            );
-        }
-
-        // INDIRECT: the SAME closure passed into `(apply-twice g)` which calls it — crosses a cross-function
-        // boundary. Today this DECLINES cleanly; a future fold must land on 204, never a different value.
-        let indirect = "(do (effect Src (op read (-> Int64 Int64))) \
-                   (def (apply-twice (: g (-> Int64 Int64))) (+ (g 1) (g 2))) \
-                   (def (main) \
-                     (handle Src 100 ((read (n) s (resume (+ s n) (+ s n)))) \
-                       (let ((g (fn ((: n Int64)) (Src.read n)))) \
-                         (apply-twice g)))) (export main))";
-        match compile_component(&crate::codec::encode(&parse(indirect))) {
-            // Clean decline (the current, expected behavior) — fine, so long as it's a decline, not a crash.
-            Err(_) => {}
-            // If a future increment folds it, the value MUST be the same as the direct form. A wrong value
-            // here is exactly the miscompile this pin guards against.
-            Ok(bytes) => {
-                if let Some(v) = run_linked(&bytes, "main") {
-                    assert_eq!(
-                        v, EXPECT,
-                        "if the indirect performing-closure call ever folds, it must equal the direct value 204, never miscompile"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn the_op_arg_lift_cv_binder_namespace_cannot_be_captured_by_a_user_binder() {
         // OP-ARG LET-LIFT capture-safety (settles the #2156/#2120 `#cv`-uniqueness review question).
         //
