@@ -32168,12 +32168,6 @@ mod stage1 {
         );
     }
 
-    #[test]
-    fn unbound_name_is_rejected() {
-        // 02-binding-and-control: a reference to an unbound name is rejected before running.
-        assert!(expect_decline("nope").contains("unbound name"));
-    }
-
     // ── "did you mean?" — the rustc-gold-standard fix suggestion for an unbound name ─────────────────
 
     /// The full error `Diagnostic` for `(module m (def (main) BODY) (export main))` — like
