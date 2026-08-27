@@ -10047,20 +10047,25 @@ fn emit_ast_op_with_discs(
     Ok(())
 }
 
-/// §2d STATIC BYTES (`DESIGN-static-data.md`): if `id` is a fully-constant `Bytes` value present in the
-/// build-once table (`layout.static_bytes`), emit a BARE `global.get` of its module global and return
-/// `true`. The value was built ONCE at instantiation (the `CORE_SEC_START` init) and marked IMMORTAL
-/// (`mark-immortal`), so a plain read is all a use needs: `op_dup`/`op_drop` are NO-OPs on an immortal
-/// node, so the consumer treating the handle as owned and dropping it is harmless (never frees the shared
-/// static → no UAF), and `node_rc == IMMORTAL` makes FBIP path-copy so the static is never mutated in
-/// place. No dup, no drop, no per-eval `bytes-alloc`+`bytes-set`. Covers BOTH representations of a constant
-/// `Bytes` — a `Core::BytesOf` of constants AND a baked `Core::ConstBytes` — via `constant_bytes_value`,
-/// so both emit arms route through here; the table is interned by content, so `position` returns the ONE
-/// shared global for identical literals. Returns `false` (build inline) for a runtime literal or a program
-/// with no static-bytes table, keeping every non-hoisted program byte-identical.
+/// §2d STATIC BYTES/STRINGS (`DESIGN-static-data.md`): if `id` is a fully-constant flat-byte-payload value
+/// present in the build-once table (`layout.static_bytes`), emit a BARE `global.get` of its module global
+/// and return `true`. The value was built ONCE at instantiation (the `CORE_SEC_START` init) and marked
+/// IMMORTAL (`mark-immortal`), so a plain read is all a use needs: `op_dup`/`op_drop` are NO-OPs on an
+/// immortal node, so the consumer treating the handle as owned and dropping it is harmless (never frees the
+/// shared static → no UAF), and `node_rc == IMMORTAL` makes FBIP path-copy so the static is never mutated
+/// in place. No dup, no drop, no per-eval `bytes-alloc`+`bytes-set`.
+///
+/// Covers a constant `Bytes` (a `Core::BytesOf` of constants OR a baked `Core::ConstBytes`, via
+/// `constant_bytes_value`) AND a constant `String` (a `Core::ConstStr`, via `constant_string_value`) — a
+/// Cadenza `String` value IS the identical flat UTF-8 byte-leaf a `Bytes` is (`str-new`'s rep), built by
+/// the same `bytes-alloc`+`bytes-set`, so both hoist through this one path. The table is interned BY
+/// CONTENT, so a `String` and a `Bytes` with equal bytes share the ONE immortal global (sound: both are
+/// i32 handles to the same leaf rep). Returns `false` (build inline) for a runtime literal or a program
+/// with no static table, keeping every non-hoisted program byte-identical.
 fn try_emit_static_bytes(db: &mut Db, id: StructId, layout: &Layout, out: &mut Emit) -> bool {
-    if let Some(bytes) = crate::lower::constant_bytes_value(db, id)
-        && let Some(pos) = layout.static_bytes.iter().position(|b| *b == bytes)
+    if let Some(payload) = crate::lower::constant_bytes_value(db, id)
+        .or_else(|| crate::lower::constant_string_value(db, id))
+        && let Some(pos) = layout.static_bytes.iter().position(|b| *b == payload)
     {
         out.push(Lir::GlobalGet(pos as u32)); // [handle] — the once-built immortal static, owned-by-value
         return true;
@@ -10180,6 +10185,12 @@ fn emit(
         // are canonical. (A CONSTANT string still folds in `lower` — a `= "a" "a"` never reaches here; this
         // is the path for a string that must become a runtime handle, e.g. `(map ("a" 1))`'s key.)
         Core::ConstStr(s) => {
+            // §2d STATIC STRINGS: a constant String is a flat UTF-8 byte-leaf — an equal hoist target to a
+            // constant Bytes (`try_emit_static_bytes` covers it via `constant_string_value`). Route it to
+            // its build-once immortal global; else build the leaf inline below.
+            if try_emit_static_bytes(db, id, layout, out) {
+                return Ok(());
+            }
             let bytes = s.as_bytes();
             out.push(Lir::ConstI32(bytes.len() as i32)); // [len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [buf]
