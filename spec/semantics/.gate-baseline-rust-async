@@ -585,6 +585,7 @@ pass	a @test-tier @ensures on a performing def runs and checks
 pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
 pass	a BARE-param escaping closure capturing a handled value FOLDS to 17 (matches the annotated-param twin)
+pass	a BARE-param recursive state-threading walk compiles without leaking the specialization name
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
@@ -3138,6 +3139,7 @@ pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
+pass	a recursive fn under a two-arm single-effect handler specializes with one state param
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
@@ -7697,6 +7699,7 @@ todo	bo1 bare order over two runtime encode results compares content-lexicograph
 todo	bo2 tuple-walk equality over two identical runtime encodes agrees
 todo	ce93s Ast.encode ALONE over a runtime AST yields canonical bytes
 todo	ce93s2 runtime encode length EQUALS the const-folded length (consistency witness)
+todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	cj03 Ast.print of a RUNTIME AST value renders
 todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
@@ -7762,4 +7765,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization

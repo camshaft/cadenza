@@ -610,6 +610,7 @@ pass	a BARE (unqualified) constructor pattern over an abstract proof type outsid
 pass	a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
 pass	a BARE-param escaping closure capturing a handled value FOLDS to 17 (matches the annotated-param twin)
+pass	a BARE-param recursive state-threading walk compiles without leaking the specialization name
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
@@ -3279,6 +3280,7 @@ pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
+pass	a recursive fn under a two-arm single-effect handler specializes with one state param
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
@@ -8127,6 +8129,7 @@ todo	an Ast.Float node cannot carry Float64.Infinity (declines, like nan)
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	byp2 a Bytes entry param destructured by a runtime bin match declines
 todo	byp3 a Bytes entry param sliced declines (extraction past the length borrow)
+todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 todo	ckr1 Set.to-list of Chars sorts on the RUST targets (wasm declines — the emit gap)
 todo	ckr2 a String ENTRY param crosses on the RUST targets (wasm declines — the boundary gap)
 todo	cp4 a performing nullary factory applied twice shares its single draw (declines pending the factory-body capture-once fold)
@@ -8162,4 +8165,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-todo	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization

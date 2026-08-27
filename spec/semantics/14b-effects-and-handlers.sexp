@@ -1648,6 +1648,32 @@
   (call   main)
   (output (: 0 Int64)))
 
+(case "a BARE-param recursive state-threading walk compiles without leaking the specialization name"
+  (doc    "The bare-name-parameter companion of the annotated case above: `(def (walk n) …)` (no `(: n T)`)
+           exercises the SAME specialization path — the synthesized trailing `$s{k}` state param must
+           resolve against the specialized copy, not dangle as an unbound `walk#eff{n}$s{k}`. `walk 3`
+           ticks the state 0→1→2→3 but returns the base 0.")
+  (input  (do
+            (effect Tick (op tick (-> Unit Int64)))
+            (def (walk n) (if (< n 1) 0 (do (Tick.tick) (walk (- n 1)))))
+            (def (main)
+              (handle Tick 0 ((tick (u) s (resume s (+ s 1)))) (walk 3))) (export main)))
+  (output (: 0 Int64)))
+
+(case "a recursive fn under a two-arm single-effect handler specializes with one state param"
+  (doc    "A handler with SEVERAL arms of ONE effect threads ONE logical state, so a recursive fn under it
+           specializes with a single trailing state param — each perform substitutes its OWN arm's state
+           binder. `St` has two ops: `get` (reads the counter, resumes it unchanged) and `tick` (returns 1,
+           threads `s-1`). `loop` recurses summing a `tick` per non-zero `get`; seeded 3, `get` reads
+           3,2,1,0 and `tick` returns 1 three times → 1+1+1+0 = 3. Pins that the arm-count does not gate
+           specialization — only the single-EFFECT property does.")
+  (input  (do
+            (effect St (op get (-> Unit Int64)) (op tick (-> Unit Int64)))
+            (def (loop) (if (= (St.get) 0) 0 (+ (St.tick) (loop))))
+            (def (main)
+              (handle St 3 ((get (u) s (resume s s)) (tick (u) s (resume 1 (- s 1)))) (loop))) (export main)))
+  (output (: 3 Int64)))
+
 (case "two effects each declaring a same-named operation do not collide"
   (doc    "Witnesses capabilities-and-effects.md #An Effect Declaration Names The Effect And Types Its
            Operations (2nd sentence): `Unify` and `Scope` each declare a `resolve` operation, reached as
