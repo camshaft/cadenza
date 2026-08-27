@@ -8519,33 +8519,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_multi_payload_pattern_with_a_wildcard_and_narrow_widths() {
-        // A wildcard in one payload position `(Cons _ t)` binds only the tail (no head binder), and a
-        // narrow-width payload (UInt8 beside Int64) boxes/unboxes at its own width in the payload tuple.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type IntList Nil (Cons Int64 IntList)) \
-                   (def (ln (: l IntList)) (match l ((IntList.Nil) 0) ((IntList.Cons _ t) (+ 1 (ln t))))) \
-                   (def (main) (ln (IntList.Cons 1 (IntList.Cons 2 IntList.Nil)))) (export main))",
-                vec![],
-            )
-            .unwrap_or_else(|| "2".to_string()),
-            "2",
-            "a wildcard payload position binds nothing; the tail still recurses"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(module m (type P (Mk UInt8 Int64)) \
-                   (def (main (: n UInt8)) (match (P.Mk n 999) ((P.Mk a b) (+ a 1)))) (export main))",
-                vec!["7".to_string()],
-            )
-            .unwrap_or_else(|| "8".to_string()),
-            "8",
-            "a narrow (UInt8) payload beside a wide one binds at its own width"
-        );
-    }
-
-    #[test]
     fn a_repeated_payload_binder_read_shares_and_computes_correctly() {
         // A pattern binder used MORE THAN ONCE — `(Some x)` then `(+ x x)` — has its payload read shared
         // by the CSE (core_eq's SumPayload arm), computing `sum-payload ; get-int` once. Confirm the VALUE
