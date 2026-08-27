@@ -18980,29 +18980,6 @@ mod match_engine {
                 .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
             "no residual self-`call`/`return_call` — the recursion became a loop br, got: {code:?}"
         );
-
-        // VALUE PARITY + CONSTANT STACK: sum [0, N) via a build-then-fold. `N = 100000` would overflow a
-        // recursive stack; the loop folds it fine. Sum [0,100) = 4950.
-        let prog = |n: i64| {
-            format!(
-                "(module m \
-                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
-                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (sa (: xs (List Int64)) (: acc Int64)) \
-                     (match xs ((list) acc) ((list x .. rest) (sa rest (+ acc x))))) \
-                   (def (main) (sa (build 0 {n} (list)) 0)) (export main))"
-            )
-        };
-        let Some(small) = run_heap_value(&prog(100), vec![]) else {
-            eprintln!("runtime wasm not found; skipping tail list-fold loop run");
-            return;
-        };
-        assert_eq!(small, "4950", "sum [0,100) via a looping tail fold");
-        assert_eq!(
-            run_heap_value(&prog(100000), vec![]).unwrap(),
-            "4999950000",
-            "sum [0,100000) folds in constant stack (would overflow if recursive)"
-        );
     }
 
     #[test]
@@ -19014,27 +18991,6 @@ mod match_engine {
         // LEADING-element rest `(list a .. rest)` is REFUTABLE (it misses the empty list) → CDZ0210 in a
         // binding position, the same rule the fixed-arity form gets. (Earlier this bound unsoundly and would
         // TRAP on the empty list — the operator/spec ruled it CDZ0210.)
-
-        // A def PARAM `(list .. rest)` binds the WHOLE runtime list; a recursive `sum` folds it. build pushes
-        // 10,20,30 → 60.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (* i 10))) out)) \
-               (def (total (: ys (List Int64))) (let (((list .. rest) ys)) (sum rest))) \
-               (def (main) (total (build 1 4 (list)))) (export main))",
-            vec![],
-        ) else {
-            eprintln!(
-                "runtime wasm not found; skipping zero-leading list-rest binding-pattern run"
-            );
-            return;
-        };
-        assert_eq!(
-            v, "60",
-            "zero-leading list-rest param binds the whole runtime list (10+20+30)"
-        );
-
         // A LEADING-element rest in a def PARAM is now CDZ0210 (refutable — misses the empty list).
         let head_err = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (head (list x .. rest)) x) (def (main) (head (list 7 8 9))) (export main))",
@@ -19144,31 +19100,6 @@ mod match_engine {
                 .iter()
                 .any(|i| matches!(i, Lir::Call(_) | Lir::ReturnCall(_))),
             "no residual self-`call`/`return_call` in the accumulator — it became a loop br, got: {code:?}"
-        );
-
-        // VALUE PARITY + CONSTANT STACK: build [0, N) then fold it with the NON-TAIL `sum`. N = 100000
-        // would overflow a recursive stack; the accumulator-introduced loop folds it fine. [0,100) = 4950.
-        let prog = |n: i64| {
-            format!(
-                "(module m \
-                   (def (build (: i Int64) (: n Int64) (: out (List Int64))) \
-                     (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
-                   (def (sum xs) (match xs ((list) 0) ((list x .. rest) (+ x (sum rest))))) \
-                   (def (main) (sum (build 0 {n} (list)))) (export main))"
-            )
-        };
-        let Some(small) = run_heap_value(&prog(100), vec![]) else {
-            eprintln!("runtime wasm not found; skipping non-tail list-fold loop run");
-            return;
-        };
-        assert_eq!(
-            small, "4950",
-            "sum [0,100) via the accumulator-introduced loop"
-        );
-        assert_eq!(
-            run_heap_value(&prog(100000), vec![]).unwrap(),
-            "4999950000",
-            "the user's non-tail sum folds [0,100000) in constant stack (would overflow if recursive)"
         );
     }
 

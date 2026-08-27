@@ -259,6 +259,7 @@ pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	MUTUALLY recursive helpers BOTH perform against the same handler
 pass	MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler
+pass	Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
 pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove by a slice-view key drops the flat-keyed entry
@@ -3129,6 +3130,7 @@ pass	a non-tail conditional abort hoists out of a strict operand and folds per b
 pass	a non-tail conditional abort in the untaken branch folds to the pure sibling sum
 pass	a non-tail cross-function conditional abort declines cleanly
 pass	a non-tail inner handle with a foreign perform sibling stays declined (needs frames)
+pass	a non-tail list fold over a large runtime list is accumulator-transformed to constant stack
 pass	a non-tail mutual-recursive group observing a partner's out-state folds via the group multi-value fold
 pass	a non-tail recursion with a fallible read in its base arm composes
 pass	a non-tail recursive abort declines rather than miscompiles
@@ -3955,6 +3957,7 @@ pass	a runtime map drained by remove equals the EMPTY map literal
 pass	a runtime map match binds a present key's value
 pass	a runtime map match falls through when the named key is absent
 pass	a runtime map match fires a two-key arm only when both keys are present
+pass	a runtime map match's rest binder reads the map minus the named key
 pass	a runtime map match's two-key arm falls through when one key is missing
 pass	a runtime map reached VIA insert-then-remove equals the directly-built map
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
@@ -4456,6 +4459,7 @@ pass	a tail-recursive accumulator loop runs to a large runtime N in constant sta
 pass	a tail-recursive accumulator over a large runtime count iterates in constant stack
 pass	a tail-recursive countdown loop runs to a very large runtime N
 pass	a tail-recursive function returning a tuple is tuple-valued
+pass	a tail-recursive list fold over a large runtime list runs in constant stack
 pass	a tail-recursive string accumulator builds a runtime string and its length is measured
 pass	a tail-resumptive arm is not hijacked by the pure one-hole fold when its body performs non-tail
 pass	a tail-resumptive perform BEFORE an abort on the same spine abandons the pending continuation
@@ -7968,8 +7972,11 @@ pass	sr2 a Result-typed op whose Err carries a STRING reason — the body matche
 pass	sr3 the Err reason is BUILT in the arm — String.concat of a prefix and a sign-picked tag, matched against literals in the body
 pass	srw1 a GROWING STRING state with a computed slice window per dispatch — each grow appends two chars, the arm answers the byte-len of an interior window built from the drawn offset
 pass	ss1 a STRING handler state grows per dispatch — each arm returns the pre-growth length, growth is op-arg-branchy
+pass	ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)
 pass	ss2 a STRING state GROWS by a parity-picked suffix per dispatch — byte-len pins the concatenation history
 pass	ss2 string state grows across a DO sequence — discarded draws still advance the rope
+pass	ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)
+pass	ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)
 pass	ss3 nested SAME-effect handlers with independent STRING states — inner self-doubles, outer appends
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
@@ -8925,8 +8932,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	Map.lookup of a map literal with a runtime key finds the value by value, not a const-fold
-pass	ss1 a TAIL self-loop walk over a tuple-payload sum spine still leaks the full spine (the #4597 fix's boundary)
-pass	ss2 the NON-tail walk over the same tuple-payload spine leaks identically (the tail/non-tail readings agree at this boundary)
-pass	ss3 fifty framed tail walks over fresh tuple-payload spines leak LINEARLY (per-frame full-spine; flips with the tuple-payload increment)
-pass	a runtime map match's rest binder reads the map minus the named key
