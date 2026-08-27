@@ -287,6 +287,16 @@
   (input  -0.0)
   (output (: -0.0 Float64)))
 
+(case "the canonical NaN crosses the boundary as a not-a-number float"
+  (doc    "`Float64.nan` is the canonical not-a-number value (core-semantics.md #Floating-Point Equality
+           Follows The Canonical Byte Form). Returned as the program result it crosses the component
+           boundary as an IEEE f64 NaN — it is NOT saturated, mangled, or dropped — and renders as the
+           canonical `NaN`. Pins that a returned NaN survives the export marshalling as a genuine NaN
+           value, the not-a-number companion of the -0.0 and large-float crossing cases above.")
+  (input  (do (def (main) Float64.nan) (export main)))
+  (call   main)
+  (output (: NaN Float64)))
+
 ; A float literal whose magnitude exceeds the largest FINITE Float64 (~1.8e308) denotes no
 ; representable value: rounding it to the nearest binary64 gives an infinity, and the language provides
 ; no `inf` spelling, so the value would have no written form that reads back. numeric-model.md §"A
