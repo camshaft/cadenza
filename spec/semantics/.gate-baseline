@@ -1709,6 +1709,7 @@ pass	a constant shift-left that overflows a high UInt64 width still rejects
 pass	a constant subtraction over a high UInt64 operand folds to the difference
 pass	a constant success `?` folds INLINE in a subexpression with no let-binding
 pass	a constant tuple is returned as a program result
+pass	a constant variant carrying a tuple payload destructures by a nested tuple pattern and folds
 pass	a constant-failure `?` in a NESTED let elides a trapping OUTER-let init it discards
 pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init whose value it discards
 pass	a constant-folded u64 bin binding with the top bit set compares unsigned
@@ -3300,6 +3301,7 @@ pass	a recursive loop whose CONDITION performs — each iteration RE-dispatches 
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive match binder used twice over a heap-list sum payload projects a live field
+pass	a recursive multiplication overflow traps across the call chain
 pass	a recursive nested-op performer whose per-iteration outer advance is read by a POST-loop observer threads it
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
 pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
@@ -8132,4 +8134,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a constant variant carrying a tuple payload destructures by a nested tuple pattern and folds
