@@ -5905,6 +5905,28 @@
             (def (main) (f (list (Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
 
+(case "two literal-payload arms of the same ctor variant each fire on their own literal"
+  (doc    "Extends the same-variant literal-fall-through case above to TWO literal-payload arms of the SAME
+           variant: `((list (Op.Add 0) .. r) 100) ((list (Op.Add 5) .. r) 200)`. Each arm's literal payload
+           gates it independently — a head `(Op.Add 0)` fires the first (→ 100); `(Op.Add 5)` misses the first
+           literal and fires the SECOND (→ 200); any other Add payload misses both and falls to the catch-all
+           (→ -1). Pins that stacked literal-payload refinements of one variant each dispatch by their own
+           literal (never a discriminant-only match that would wrongly fire the first arm for every Add).")
+  (input  (do
+            (type Op (Add Int64) (Neg Int64))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((list (Op.Add 0) .. r) 100)
+                ((list (Op.Add 5) .. r) 200)
+                (_                      -1)))
+            (def (main (: k Int64)) (f (list (Op.Add k)))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: 100 Int64))
+  (call   main (: 5 Int64))
+  (output (: 200 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
 (case "a guard on a ctor list element reads the constructor's payload binder"
   (doc    "A user `(guard …)` on a list arm whose leading element is a refutable CTOR, whose guard cond reads
            the ctor's PAYLOAD binder — `(guard (list (Op.Add n) .. r) (> n 3))`. `n` must be in scope for the
@@ -5921,6 +5943,24 @@
                 (_                                      -1)))
             (def (main) (f (list (Op.Add 5)))) (export main)))
   (output (: 5 Int64)))
+
+(case "a guard on a MULTI-payload ctor list element reads both payload binders"
+  (doc    "The multi-payload face of the ctor-list-element guard above: a `(Op.Bin a b)` element binds BOTH
+           payloads, and the guard cond `(> (+ a b) 10)` reads both — both must be in scope. `[Op.Bin 7 8]`:
+           7+8=15 > 10 holds → 15; `[Op.Bin 2 3]`: 2+3=5, guard fails → the guarded arm falls through to the
+           catch-all → -1. Pins that the ctor-element guard support binds a MULTI-field payload (not only the
+           single-field Add above) and still gates + falls through on the guard.")
+  (input  (do
+            (type Op (Bin Int64 Int64) (Nil Int64))
+            (def (f (: xs (List Op)))
+              (match xs
+                ((guard (list (Op.Bin a b) .. r) (> (+ a b) 10)) (+ a b))
+                (_                                               -1)))
+            (def (main (: x Int64) (: y Int64)) (f (list (Op.Bin x y)))) (export main)))
+  (call   main (: 7 Int64) (: 8 Int64))
+  (output (: 15 Int64))
+  (call   main (: 2 Int64) (: 3 Int64))
+  (output (: -1 Int64)))
 
 (case "a guard on a tuple arm reads the tuple's element binders"
   (doc    "A user `(guard …)` on a TUPLE-match arm reading the tuple's element binders — `(guard (tuple a b)

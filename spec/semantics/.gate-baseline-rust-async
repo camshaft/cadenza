@@ -2170,6 +2170,7 @@ pass	a guard condition applies a let-bound closure
 pass	a guard condition reads a heap list bound outside the match
 pass	a guard destructures a perform-result TUPLE and its condition reads both binders
 pass	a guard expression calling a recursive helper inside a self-tail-loop match compiles
+pass	a guard on a MULTI-payload ctor list element reads both payload binders
 pass	a guard on a ctor list element reads the constructor's payload binder
 pass	a guard on a literal-element list pattern reads an enclosing let binding through inlining
 pass	a guard on a nested-list-in-list element reads the inner list's binder
@@ -8030,6 +8031,7 @@ pass	two let-sequenced sibling self-calls thread out-state via multi-value retur
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two literal list elements in one arm conjoin — both must match
+pass	two literal-payload arms of the same ctor variant each fire on their own literal
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
 pass	two module exports are selected by a runtime branch and applied as values
