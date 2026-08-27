@@ -2287,3 +2287,26 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+; -- a GENERIC same-name constructor inlined into a caller resolves to the constructor, not the type
+; (behavioral migration from rcdzc a_generic_same_name_ctor_in_an_inlined_callee_resolves_to_the_constructor
+; + its const-arg and annotated-both companions, adv-63, 2026-08-27). A generic same-name sum `(type Box
+; (Box a))` used bare in a helper `(match (Box k) ((Box v) v))` that a caller INLINES: the β-copied head
+; `Box` in VALUE position must fire the CONSTRUCTOR (a regression mis-classified it as the type → spurious
+; CDZ0203). Monomorphic same-name ctor resolution is pinned above (1540/1557); this is the GENERIC face.
+(case "a generic same-name constructor inlined into a caller resolves to the constructor not the type"
+  (doc    "`inner` builds `(Box k)` and pops the payload; `main` INLINES `inner`. Three faces: a runtime arg
+           `(inner n)`, a const arg `(inner 7)` (fully β-reduced at the call site), and an ANNOTATED
+           construct `(: (Box k) (Box Int64))` where `Box` is in BOTH value (ctor) and type positions of one
+           β-copied expression. Each must resolve the value-position head to the constructor and run.")
+  (input  (do
+            (type Box (Box a))
+            (def (inner    (: k Int64)) (match (Box k) ((Box v) v)))
+            (def (innerann (: k Int64)) (match (: (Box k) (Box Int64)) ((Box v) v)))
+            (def (mrt    (: n Int64))  (inner n))
+            (def (mconst (: _n Int64)) (inner 7))
+            (def (mann   (: n Int64))  (innerann n))
+            (export mrt) (export mconst) (export mann)))
+  (call mrt    (: 5 Int64)) (output (: 5 Int64))
+  (call mconst (: 5 Int64)) (output (: 7 Int64))
+  (call mann   (: 5 Int64)) (output (: 5 Int64)))
