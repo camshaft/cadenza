@@ -5547,7 +5547,9 @@
   (output (: (tuple 0 -1) (Tuple Int64 Int64)))
   (call   main (: -9223372036854775808 Int64))
   (output (: (tuple 0 -1) (Tuple Int64 Int64)))
-  (live-objects known-leak 1))
+  ; The complement laws fold both elements to constants → the returned tuple is constant → build-once immortal
+  ; (WIT static encoding), census-excluded, no per-call leak.
+  (live-objects 0))
 
 (case "the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1"
   (doc    "On an UNSIGNED UInt8, `~x` is `(^ x 255)`. `(& x (^ x 255))` → 0 (the `&`-complement law holds at
@@ -5705,7 +5707,9 @@
   (input  (do (def (main (: x UInt8)) (tuple (>> (& x 15) 4) (>> (& x 7) 3))) (export main)))
   (call   main (: 255 UInt8))
   (output (: (tuple 0 0) (Tuple UInt8 UInt8)))
-  (live-objects known-leak 1))
+  ; Both shifts fold to 0 → the returned tuple is constant → build-once immortal (WIT static encoding),
+  ; census-excluded, no per-call leak.
+  (live-objects 0))
 
 (case "the logical-shift-drops-all-bits fold does not discard a trapping runtime operand"
   (doc    "The trap-preservation face: `(>> (& (/ 100 z) 15) 4)` still folds to 0 for the VALUE (the masked

@@ -1271,13 +1271,13 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (output (: (small 5) pick))
   (live-objects known-leak 1))
 
-(case "cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)"
+(case "cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause) — the fully-constant record now hoists build-once (WIT static encoding), so it is a census-excluded immortal, NOT a per-call mortal leak"
   (input (do
     (def (f (: x Int64)) (record (= b1 1) (= b2 2)))
     (export f)))
   (call f (: 1 Int64))
   (output (: (record (= b1 1) (= b2 2)) (Record (: b1 Int64) (: b2 Int64))))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; ── Single-variant newtype escape (adv-63b/adv-64, migrated from rcdzc): a scalar-erased newtype returned
 ; from a PARAM'D export must emit a VALID module (not the recursive-sum-resource path) and render its NOMINAL

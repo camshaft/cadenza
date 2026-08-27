@@ -2022,6 +2022,8 @@ pub fn runtime_resource_core_module_form_ex(
         make_param_vts,
         make_core_slots,
         lifted_table,
+        0,   // no static compounds on this wrapper path (byte-identical to before)
+        &[], // no static-compound init
     )
 }
 
@@ -2056,11 +2058,24 @@ pub fn runtime_resource_core_module_form_ex2(
     // `lifted_table[k]`. WITHOUT this the `call_indirect` referenced a non-existent table 0 → invalid wasm.
     // The caller appends the lifted bodies to `funcs` (so these indices exist) via `append_lifted_bodies`.
     lifted_table: &[u32],
+    // BUILD-ONCE STATIC COMPOUNDS in the resource-escape assembler (WIT static encoding, 2026-08-27): the
+    // markable constant Tuple/Record/List/Map/Set roots the escaping body USES, hoisted to module GLOBALS so
+    // each is built ONCE at instantiation instead of per-`make`. `n_compounds` static-compound globals occupy
+    // indices `0..n_compounds` (this builder has no other globals — its `cabi_realloc` is a stub with no
+    // cursor), and `static_compound_init` is the flat `Lir` (`select::build_static_compound_init`) that builds
+    // each immortal + `global.set`s it, run by a synthesized START init function appended LAST (so it shifts no
+    // existing func index). `n_compounds == 0` → no GLOBAL/START/init additions, byte-identical to before. The
+    // caller (`emit_runtime_resource`) threads the SAME `static_compounds` onto the layout it selects with, so
+    // the body's `Core::Tuple`/… arms emit `global.get idx` (`try_emit_static_compound`) matching these globals.
+    n_compounds: usize,
+    static_compound_init: &[crate::backend::wasm::lir::Lir],
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let e = extern_fns.len();
     let k = imports.len();
     let n = funcs.len();
+    // The START init func exists iff there are static compounds to build once.
+    let n_init = (n_compounds > 0) as usize;
 
     // ── Type section ──
     // EXTERN peer functypes 0..e FIRST (matching the import order → `CallExternImport(i)=call i`), then the
@@ -2115,7 +2130,16 @@ pub fn runtime_resource_core_module_form_ex2(
         method_type_idx.push((realloc_type_idx + 1 + method_type_idx.len()) as u32);
         type_items.extend_from_slice(&i32_to_i32);
     }
-    let total_types = defined_type_base + n + 3 + methods.len();
+    // The STATIC-COMPOUND `start` init functype `() -> ()`, LAST — the init takes no params and returns
+    // nothing (it builds each static compound and stores its handle in the global). Present iff `n_init == 1`.
+    let init_type_idx = defined_type_base + n + 3 + methods.len();
+    if n_init == 1 {
+        let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        ft.extend_from_slice(&wasm_vec(0, &[]));
+        ft.extend_from_slice(&wasm_vec(0, &[]));
+        type_items.extend_from_slice(&ft);
+    }
+    let total_types = defined_type_base + n + 3 + methods.len() + n_init;
     let type_sec = section(wasm_abi::CORE_SEC_TYPE, &wasm_vec(total_types, &type_items));
 
     // ── Import section ── e PEER ops (from "peer", indices `0..e`, so `CallExternImport(i)=call i`), then
@@ -2158,15 +2182,23 @@ pub fn runtime_resource_core_module_form_ex2(
         uleb128(ti as u64, &mut func_items);
     }
     let n_synth = 3 + methods.len();
+    // The STATIC-COMPOUND `start` init func LAST (after the methods), using `init_type_idx`. Appended last so
+    // it shifts no existing func index. Present iff `n_init == 1`.
+    if n_init == 1 {
+        uleb128(init_type_idx as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + n_synth, &func_items),
+        &wasm_vec(n + n_synth + n_init, &func_items),
     );
     let make_abs = (defined_type_base + n) as u32;
     let encode_abs = make_abs + 1;
     let realloc_abs = encode_abs + 1;
     // Method i's core func index (the methods follow realloc, in list order).
     let method_abs = |i: usize| realloc_abs + 1 + i as u32;
+    // The init func's ABSOLUTE index — named by the START section, run once at instantiation. It follows the
+    // methods: import_count (`e+k+2`) + n defined bodies + n_synth (make/encode/realloc + methods).
+    let init_abs = (e + k + 2 + n + n_synth) as u32;
 
     // ── Memory section ── one memory, min 1 page.
     let mem_sec = section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]));
@@ -2406,7 +2438,27 @@ pub fn runtime_resource_core_module_form_ex2(
         e.extend_from_slice(&body);
         code_items.extend_from_slice(&e);
     }
-    let code_sec = section(wasm_abi::CORE_SEC_CODE, &wasm_vec(n + n_synth, &code_items));
+    // The STATIC-COMPOUND `start` init body LAST — built as an ordinary `SelectedFunc` (`() -> ()`, no locals;
+    // the buffers thread on the stack via arr-set/mark-immortal's FBIP return) so `code_entry` resolves its
+    // ops (`arr-alloc`/`arr-set`/`box-*`/`mark-immortal[-deep]`/`vec-of-arr`/`map-*`/`set-*`) through the same
+    // `import_index` the bodies use. `static_compound_init` `global.set`s each once-built immortal to `0..n`.
+    if n_init == 1 {
+        let init = SelectedFunc {
+            params: Vec::new(),
+            ret: crate::ty::Ty::Unit,
+            code: static_compound_init.to_vec(),
+            declared: Vec::new(),
+            src_body: None,
+            locals: Vec::new(),
+            scopes: Vec::new(),
+            stmt_lines: Vec::new(),
+        };
+        code_items.extend_from_slice(&code_entry(&init, &import_index));
+    }
+    let code_sec = section(
+        wasm_abi::CORE_SEC_CODE,
+        &wasm_vec(n + n_synth + n_init, &code_items),
+    );
 
     // ── Table + Element sections ── one funcref table holding the lambda-lifted closures, so a first-class
     // closure's `call_indirect (table 0)` resolves (mirrors `core_module_impl` ~749). Empty for a
@@ -2436,6 +2488,32 @@ pub fn runtime_resource_core_module_form_ex2(
         (table_sec, elem_sec)
     };
 
+    // ── Global section (id 6) ── one mutable i32 per STATIC COMPOUND (indices `0..n_compounds`, init 0), the
+    // START init overwrites each with its once-built immortal handle. This builder has NO other globals (its
+    // `cabi_realloc` is a stub with no cursor), so the static-compound globals ARE globals `0..n_compounds` —
+    // exactly the indices `try_emit_static_compound` emits (`static_bytes.len()==0 + pos`). Empty when there
+    // are no static compounds → no section, byte-identical.
+    let global_sec = if n_compounds > 0 {
+        let mut items = Vec::new();
+        for _ in 0..n_compounds {
+            let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
+            g.push(op::I32_CONST);
+            crate::backend::wasm::encode::sleb128(0, &mut g);
+            g.push(op::END);
+            items.extend_from_slice(&g);
+        }
+        section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(n_compounds, &items))
+    } else {
+        Vec::new()
+    };
+    // ── Start section (id 8) ── names the static-compound init func, run once at instantiation to build every
+    // static compound into its global. Between EXPORT (7) and ELEMENT (9). Present iff `n_init == 1`.
+    let start_sec = if n_init == 1 {
+        section(wasm_abi::CORE_SEC_START, &uleb_bytes(init_abs as u64))
+    } else {
+        Vec::new()
+    };
+
     let mut core = Vec::new();
     core.extend_from_slice(CORE_MAGIC);
     core.extend_from_slice(&type_sec);
@@ -2444,8 +2522,12 @@ pub fn runtime_resource_core_module_form_ex2(
     // Table (id 4) after func (id 3), before memory (id 5) — the canonical core section order.
     core.extend_from_slice(&table_sec);
     core.extend_from_slice(&mem_sec);
+    // Global (id 6) after memory (id 5), before export (id 7).
+    core.extend_from_slice(&global_sec);
     core.extend_from_slice(&export_sec);
-    // Element (id 9) after export (id 7), before code (id 10).
+    // Start (id 8) after export (id 7), before element (id 9).
+    core.extend_from_slice(&start_sec);
+    // Element (id 9) after start (id 8), before code (id 10).
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
     core.extend_from_slice(&data_sec);
