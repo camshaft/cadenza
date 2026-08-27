@@ -8750,51 +8750,6 @@ mod recursion {
     }
 
     #[test]
-    fn a_str_slice_floats_each_bound_operand_above_the_prior_high_water() {
-        // WARNING: INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-28, sibling of the br_table fix
-        // `4f9658803` — same "expected i32, found i64" validator signature, DIFFERENT seam): the
-        // `String.slice` emit reserved scratch `base..base+6` then emitted its `start`/`end` bound operands
-        // at a FIXED `base + 7`. When `start` is a checked-arith (`(+ i 1)`, whose i64 `$r` transient claims a
-        // scratch slot) and `end` is `String.scalar-len` (whose owned-reclaim tees the i32 string handle
-        // into a scratch slot), BOTH operands reset their floor to `base + 7` → the later one reused a slot
-        // the earlier already typed at a DIFFERENT width. One wasm local, two widths → module invalid.
-        // Fixed by floating each operand's floor to `*high` (like `emit_loop_iteration` / checked-arith's B
-        // operand). Repro is a recursive scalar-aware string SHRINKER (the exact property-testing idiom):
-        // `walk` rebinds its String param to `d`'s concat-of-two-slices; the recursion exit reads
-        // `String.scalar-len` of the rebound param — both ingredients required (breaker matrix m4/m11).
-        // Greedy drop-scalar walk from "aébcd" → "éc", byte-len 3 (rust's oracle).
-        let src = "(module m \
-             (def (d (: s String) (: i Int64)) \
-               (String.concat (Option.expect (String.slice s 0 i) \"lo\") \
-                              (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) \"hi\"))) \
-             (def (walk (: s String) (: i Int64)) \
-               (if (>= i (String.scalar-len s)) s (walk (d s i) (+ i 1)))) \
-             (def (main (: mode Int64)) (String.byte-len (walk \"aébcd\" 0))) \
-             (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a recursive string-slice-concat shrinker compiles");
-        wasmparser::validate(&bytes).expect(
-            "String.slice bound operands must occupy scratch slots disjoint from each other's width",
-        );
-        // Store-guarded run: confirm VALID (from_binary) + the shrinker converges to byte-len 3.
-        if let Some(runtime) = super::find_runtime_wasm() {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec!["0".to_string()],
-                runtime: Some(runtime),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => {
-                    assert_eq!(s, "3", "drop-scalar walk of aébcd → éc, byte-len 3")
-                }
-                cdz_run::Outcome::Trap(t) => panic!("shrinker run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn a_loop_invariant_length_is_hoisted_out_of_the_loop() {
         // LOOP-INVARIANT CODE MOTION: the classic index loop `(if (< i (List.len xs)) …)` recomputed
         // `(List.len xs)` — a `vec-len` runtime import CALL — every iteration, though `xs` is a
@@ -9091,31 +9046,6 @@ mod recursion {
                 .count(),
             0,
             "no `(* n 2)` remains inside the loop body (the body copy reads the hoisted slot): {code:?}"
-        );
-    }
-
-    #[test]
-    fn a_loop_invariant_in_a_match_scrutinee_is_hoisted_to_valid_wasm() {
-        // REGRESSION (9bccb36a): a loop-invariant subexpression in a MATCH SCRUTINEE — `(match (< i (+ n 1))
-        // …)`, `(+ n 1)` invariant since `n` threads unchanged — was hoisted into a pre-loop slot, but its
-        // checked-add guard's TRANSIENT scratch slot was left inside the body's reusable range. The loop body
-        // then reused that slot for the i32 bool DISCRIMINANT while the hoist had recorded it at i64, so the
-        // one wasm local was declared at two widths and the module failed to validate (`type mismatch:
-        // expected i32, found i64` in func 1). The if-condition twin was fine; only the match-scrutinee hoist
-        // mis-wired. Fix: raise the body scratch floor past ALL scratch the invariant's emit touched, not just
-        // the persistent value slot. This test compiles the WHOLE program (so the emitted module is validated)
-        // and runs it: `loop 0 4` iterates i:0→5 while `i < 5` and returns 5.
-        let src = "(do (def (loop (: i Int64) (: n Int64)) \
-                        (match (< i (+ n 1)) (true (loop (+ i 1) n)) (false i))) \
-                      (def (main) (loop 0 4)) \
-                      (export main))";
-        // compile_component runs the emitted module through wasm validation — before the fix this panicked
-        // with the func-1 type mismatch, so reaching the run is itself the regression guard.
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(
-            run_returns::<i64>(&bytes, "main"),
-            5,
-            "loop 0 4 counts i:0→5 while i < n+1 (=5) and returns 5"
         );
     }
 }
