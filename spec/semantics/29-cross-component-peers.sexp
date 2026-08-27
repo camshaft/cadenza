@@ -83,3 +83,36 @@
               (def (main (: x Int64)) (host (L) (match (List.at (L.mklist x) 0) ((Some v) v) (None 0)))) (export main)))
   (call   main (: 7 Int64))
   (output (: 8 Int64)))
+
+; ── peer ops returning MAP/SET results cross as handles read over the shared runtime ───────────────
+; (the map/set analogue of the list-result cases above). A peer op building a Map or Set has its perform
+; host-wrapped; the crossed collection is a runtime handle read back (len / lookup / membership).
+(case "pcm1 a peer op returning a map crosses as a handle and its length is read"
+  (doc    "PROVIDER `mk(x)` builds a 2-entry (Map Int64 Int64); the consumer binds it and reads Map.len of the
+           crossed map over the shared runtime: mk(7) = {1:7, 2:8} → 2 (the runtime-built map survived the
+           cross-component boundary as a handle).")
+  (peer   "cadenza:mm/api" (do (def (mk (: x Int64)) (Map.insert (Map.insert (Map.empty) 1 x) 2 (+ x 1))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:mm/api")
+              (def (main (: x Int64)) (host (M) (Map.len (M.mk x)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 2 Int64)))
+
+(case "pcm2 a value of a peer-returned map is read by key and used"
+  (doc    "PROVIDER `mk(x)` = {1:x+10, 2:x+20}; the consumer looks up key 2 in the crossed map and unwraps
+           the Option to the scalar the entrypoint returns: mk(5) = {1:15, 2:25}, Map.lookup 2 → Some 25 → 25
+           (a VALUE read off the crossed map, not just its size).")
+  (peer   "cadenza:mv/api" (do (def (mk (: x Int64)) (Map.insert (Map.insert (Map.empty) 1 (+ x 10)) 2 (+ x 20))) (export mk)))
+  (input  (do (effect M (op mk (-> Int64 (Map Int64 Int64)))) (bind M "cadenza:mv/api")
+              (def (main (: x Int64)) (host (M) (match (Map.lookup (M.mk x) 2) ((Some v) v) (None 0)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 25 Int64)))
+
+(case "pcs1 a peer op returning a set crosses as a handle and its length is read"
+  (doc    "PROVIDER `mk(x)` builds a 2-element (Set Int64) {x, x+1} (distinct); the consumer reads Set.len of
+           the crossed set over the shared runtime: mk(7) = {7,8} → 2 (the runtime-built set crossed as a
+           handle; the CHAMP survived the boundary).")
+  (peer   "cadenza:ss/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:ss/api")
+              (def (main (: x Int64)) (host (S) (Set.len (S.mk x)))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 2 Int64)))
