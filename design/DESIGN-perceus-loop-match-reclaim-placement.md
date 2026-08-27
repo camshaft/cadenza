@@ -153,6 +153,27 @@ co-verify): fold/count/walk → 0 value-correct + no-trap + reused-tail-not-doub
 where a borrow WOULD-be-after-consume stays correctly dup'd (proves the last-use gate). Implement PART 1 +
 PART 2 atomically; trace the reordered WAT (`vec-drop` last, no dup, reuse); circulate the diff.
 
+**OUTCOME (implemented, PR #4139, 2026-08-28 — the SOUND guard + two verification tools the object-census
+lacks).** The two parts landed as: (i) the CONSUME-LAST reorder in `emit_loop_iteration` — detect the
+consuming arg STRUCTURALLY (its value is a `Core::SumPayload` whose path ends in `RestFrom` = the runtime
+`vec-drop` consume; NOT `binding_escapes`, which calls the fresh tail a borrow — that miss no-op'd two
+attempts) and evaluate it LAST (coordinated eval+pop). (ii) an Emit SKIP-SET (by wasm slot) marks a
+loop-carried param whose preservation dups (`emit_binder_ref` retain + the `RestFrom`-step dup at the
+`SumPayload` emit) are skipped — gated NOT at `mark_binder_dups` but at those two emit sites. THE SOUND
+GATE is `count_param_consumes`: skip iff the param's SOLE consuming use is the reordered-last `RestFrom`,
+counting consumes across ALL args + ALL nesting = the CONSUME-BUT-PRODUCE-FRESH op CLASS (`List.concat`/
+push/update, `Bytes.concat`, `Map.insert`/remove, `Set`-ops) ∪ `RestFrom` ∪ escapes (`Call`/`CallClosure`/
+ctor). `binding_escapes` ALONE is UNSOUND — it treats the whole consume-but-fresh class as a borrow, so a
+NESTED consume (the `INVERSION` case: `count-after` Call, or a sibling `RestFrom`/`Map.insert` of the
+param) is missed → the dup wrongly skipped → an rc imbalance. A param with count > 1 KEEPS its dup.
+🔑 TWO VERIFICATION TOOLS the static live-objects census cannot provide (both now standard for reclaim
+work): (a) VALUE-WRONG GREP — a miscompile reports `expected (: X), ran/got Y` with NO `trapped:`, so it
+hides among leak-count mismatches; grep for any FAIL that is NOT a `live-objects mismatch`. (b) FLAP-
+DETECTION — run the whole corpus TWICE; a live-objects count that DIFFERS run-to-run is a census-hidden
+rc-UNSOUNDNESS (an order/allocation-dependent imbalance), even when the value is correct. The first
+(unsound) guard made `INVERSION` flap 1↔2; the sound guard keeps its nested-consume dup → `INVERSION`
+stable at value-3, leak 36→16. RESULT: 143 value-correct leak reductions, 0 value-wrong, no flaps.
+
 ## What actually leaks: generic-sum instantiation × heap payload
 
 Breaker localized the leak family precisely (#3865, `df` quad in `05-compound-types.sexp`). A
