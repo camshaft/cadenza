@@ -5446,3 +5446,49 @@
   (host-calls (call io.get))
   (call   main (: 10 Int64))
   (output (: 13 Int64)))
+
+; Repeatable borrow<t> across MORE closure shapes (the (then) two-call drive): the single-export adder
+; repeatable case above proves the scalar bare-export shape; these extend it to a compound-result export,
+; a same-signature multi-export shared call, a multi-export value-form (compound) shared call, and a
+; distinct-signature per-group call-g. Each makes ONE handle then calls it TWICE via (then), rendering
+; (tuple r1 r2) on wasm; (then) cleanly declines (todo) on rust/rust-async (the two-call drive is wasm-only).
+
+(case "a compound-result borrowed closure handle is called twice on the same handle (repeatable)"
+  (doc    "`pair(100)` captures k=100; the closure `(fn (x) (tuple x (+ x k)))` returns a COMPOUND. make(100)
+           once, then call(5) TWICE on the SAME borrowed handle -> each yields (tuple 5 105); repeatability
+           renders (tuple (tuple 5 105) (tuple 5 105)). An own<t> cell would be consumed on the first call.")
+  (input  (do (def (pair (: k Int64)) (fn ((: x Int64)) (tuple x (+ x k)))) (export pair)))
+  (call   pair (: 100 Int64) (: 5 Int64))
+  (then   (: 5 Int64))
+  (output (: (tuple (tuple 5 105) (tuple 5 105)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (live-objects known-leak 1))
+
+(case "a same-signature multi-export shared call is repeatable on one make-<name> handle"
+  (doc    "Two same-signature closure exports `inc`/`triple` share one `call`. make-inc() once, then the
+           shared call(5)=6 then call(40)=41 on the SAME borrowed handle -> (tuple 6 41). An own<t> shared
+           call would trap on the second.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1))) (def (triple) (fn ((: x Int64)) (* x 3))) (export inc) (export triple)))
+  (call   inc (: 5 Int64))
+  (then   (: 40 Int64))
+  (output (: (tuple 6 41) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
+
+(case "a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle"
+  (doc    "Two same-signature tuple-returning exports `lo`/`hi` share one value-form list-call. make-lo()
+           once, then the shared call(5) TWICE -> each (tuple 5 6); repeatability renders (tuple (tuple 5 6)
+           (tuple 5 6)).")
+  (input  (do (def (lo) (fn ((: x Int64)) (tuple x (+ x 1)))) (def (hi) (fn ((: x Int64)) (tuple x (* x 10)))) (export lo) (export hi)))
+  (call   lo (: 5 Int64))
+  (then   (: 5 Int64))
+  (output (: (tuple (tuple 5 6) (tuple 5 6)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
+  (live-objects known-leak 1))
+
+(case "a distinct-signature per-group call-g is repeatable on one make-<name> handle"
+  (doc    "Two distinct-signature closures `inc : Int64->Int64` and `isz : Int64->Bool` cross as two resource
+           types. make-inc() once, then its per-group call-g(5)=6 then call-g(40)=41 on the SAME borrowed
+           handle -> (tuple 6 41). An own<t_g> would consume it on the first call.")
+  (input  (do (def (inc) (fn ((: x Int64)) (+ x 1))) (def (isz) (fn ((: x Int64)) (= x 0))) (export inc) (export isz)))
+  (call   inc (: 5 Int64))
+  (then   (: 40 Int64))
+  (output (: (tuple 6 41) (Tuple Int64 Int64)))
+  (live-objects known-leak 1))
