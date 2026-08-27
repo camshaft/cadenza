@@ -29,11 +29,9 @@ pub mod ast;
 pub mod codec;
 pub mod leb128;
 
-// The full surface — canonicalization, the dict transport plane, and the FxHash maps they use — is
-// std-only (`HashMap`/`num-bigint`/NFC). Gated behind `std`; compiled out of the no_std minimal core.
+// The full surface — canonicalization and the FxHash maps it uses — is std-only
+// (`HashMap`/`num-bigint`/NFC). Gated behind `std`; compiled out of the no_std minimal core.
 #[cfg(feature = "std")]
 pub mod canon;
-#[cfg(feature = "std")]
-pub mod dict;
 #[cfg(feature = "std")]
 pub mod fxhash;

@@ -24,9 +24,8 @@ edition = "2024"
 # The MINIMAL codec core (ast value model + Builder + `codec::encode`/`decode` + `leb128`) is
 # `no_std` + `alloc`-only and carries NO external dependency, so `cdz-runtime` (which is `#![no_std]`
 # + frozen-hash and cannot take num-bigint — the #459 lesson) can build it with
-# `--no-default-features`. The FULL surface — the dict transport (`encode_with_dict`/`decode_with_dicts`/
-# `DictSet`/content-`Hash`/`DecodeError`), `canon`, `fxhash`, the `IntValue`<->`BigInt` bridge, and NFC —
-# is gated behind the `std` DEFAULT feature. `cadenza-syntax` and `rcdzc` build with the default.
+# `--no-default-features`. The FULL surface — `canon`, `fxhash`, the `IntValue`<->`BigInt` bridge, and
+# NFC — is gated behind the `std` DEFAULT feature. `cadenza-syntax` and `rcdzc` build with the default.
 [features]
 default = ["std"]
 std = ["dep:num-bigint", "dep:unicode-normalization"]
