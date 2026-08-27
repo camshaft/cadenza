@@ -9487,3 +9487,24 @@
   (call main)
   (output (: 4 Int64))
   (live-objects known-leak 32))
+
+; ── breaker batch 532: constant-RETURN calibration extended to the immortal era (the imc family's
+; size classes). Post #4330/#4354 (deep-mark hoisting for internal uses), a constant in RETURN
+; position still routes through the value-encode boundary assembler (verified: 0 static globals)
+; and builds MORTAL cells — plain exact-N reachable-return clauses, NOT leaks. These flip to 0
+; alongside imc1/imc2 when that assembler gains build-once sections. Returning through a helper
+; reads identically (probed, not separately pinned).
+
+(case "irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)"
+  (input (do (def (main (: n Int64)) (if (> n 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (List Int64)))
+  (live-objects 4))
+
+(case "irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)"
+  (input (do (def (main (: n Int64)) (if (> n 0) (tuple 1 (tuple 2 3)) (tuple 9 (tuple 9 9))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: (tuple 1 (tuple 2 3)) (Tuple Int64 (Tuple Int64 Int64))))
+  (live-objects 2))
