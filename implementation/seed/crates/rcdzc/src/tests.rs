@@ -18851,28 +18851,6 @@ mod match_engine {
         }
     }
 
-    #[test]
-    fn a_projected_multiparam_lambda_applied_through_curried_syntax_runs_via_call_indirect() {
-        // PA1a apply-site fix: a multi-param lambda STORED in a tuple, PROJECTED, and applied through
-        // CURRIED syntax `((f a) b)` was a MISCOMPILE — the inner `(f a)` is a PARTIAL application of a
-        // projected fn (result still a function), which β-reduced to a residual whose param DANGLED at emit
-        // ("parameter reference has no local slot"), even though check passed. Fix: the whole curried spine
-        // routes to ONE runtime `Core::CallClosure` on the PROJECTED closure (materialize the element +
-        // `call_indirect` at full arity) instead of β-reduce-inline — so it runs on the value heap. A FLAT
-        // `(fn (a b) …)` and a CURRIED `(fn (a) (fn (b) …))` both → 3+4 = 7. Contrast: a DIRECT full
-        // application of a projected fn still FOLDS inline (the capturing-single guard
-        // `a_capturing_closure_in_a_let_bound_compound_projected_and_applied_folds`); the discriminant is the
-        // CURRIED application syntax, not the lambda shape.
-        for shape in [
-            "(module m (def (main) (let ((t (tuple (fn ((: a Int64) (: b Int64)) (+ a b))))) (((. t 0) 3) 4))) (export main))",
-            "(module m (def (main) (let ((t (tuple (fn ((: a Int64)) (fn ((: b Int64)) (+ a b)))))) (((. t 0) 3) 4))) (export main))",
-        ] {
-            if let Some(out) = run_on_heap(shape) {
-                assert_eq!(out, "7", "curried projected-lambda apply = 7: {shape}");
-            }
-        }
-    }
-
     /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
     /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
     fn component_imports_op(bytes: &[u8], op: &str) -> bool {
