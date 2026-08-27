@@ -1,4 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
+pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
 pass	@ensures holds when the guarded def arrives through a runtime branch
@@ -1345,6 +1347,8 @@ pass	a body that TRAPS keeps its OWN trap kind under an @ensures — the postcon
 pass	a bool match missing the false arm is non-exhaustive
 pass	a bool match missing the true arm is non-exhaustive
 pass	a bool match on a constant scrutinee is non-exhaustive even when the constant hits the sole arm
+pass	a bool-materialized (if c 1 0) compared to 0 or 1 folds to the condition (value parity)
+pass	a boolean compared to a true/false literal folds to the boolean or its negation (both orders)
 pass	a boolean connective with a non-boolean operand is a type error
 pass	a boolean function result bound by let is still a boolean
 pass	a boolean in integer-width position is rejected
@@ -1814,6 +1818,7 @@ pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a depth-3 transitive arm-perform cascade threads the innermost state end to end
+pass	a derived boolean compared to a literal composes into the complementary comparison
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
 pass	a derived-range < 16 tautology keeps a trapping div operand
 pass	a derived-unit type annotation in INPUT position round-trips and the param computes
@@ -6142,6 +6147,7 @@ pass	mx1 mutual recursion with a (List Int64) accumulator (scalar element contro
 pass	mx2 mixed-arg op with BOTH args draw-derived — the int arg is a draw, the string arg branches on a second draw
 pass	mx3 a TUPLE-arg op chained through a tuple RESULT — the second dispatch consumes the first's destructured output
 pass	mx4 a FOUR-param op mixing two Int64s, a NARROW UInt8, and a Bool — the narrow slot rides between wide ones and the flag doubles the first argument
+pass	narrow Int32 (if cmp 1 0) materializes correctly and a non-0/1 branch pair keeps its values
 pass	narrow unsigned comparison division and remainder compose unsigned over a high-bit operand
 pass	narrowing a BigInt-valued if back to Int64 works over both branches
 pass	narrowing a constant BigInt out of the target range is rejected at compile time
@@ -7472,6 +7478,7 @@ pass	two MUTUALLY-recursive sum types fold across their boundary
 pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
+pass	two bool-materialized ints compared fold to a boolean equality (value parity)
 pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two capturing closures stored in a LIST are selected at runtime and the capture reads after
 pass	two chars with different scalar values are unequal

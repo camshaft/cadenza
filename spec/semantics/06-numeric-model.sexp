@@ -10270,3 +10270,85 @@
     (^ (^ x (/ 100 z)) (/ 100 z))) (export main)))
   (call main (: 5 Int64) (: 3 Int64)) (output (: 5 Int64))
   (call main (: 5 Int64) (: 0 Int64)) (trap "divide by zero"))
+
+; -- boolean-materialization comparison folds (behavioral half migrated as a BATCH from rcdzc
+; comparing_a_bool_materialized_if_to_0_or_1_folds_to_the_condition,
+; comparing_two_bool_materialized_ints_folds_to_a_boolean_equality,
+; a_boolean_compared_to_a_literal_folds_to_the_boolean_or_its_negation,
+; if_with_one_zero_branches_materializes_the_boolean, 2026-08-27; the white-box Lir shape assertions
+; stay wasmtime-free rcdzc unit tests / were checked in select.rs): materialize-then-compare collapses
+; to the boolean, and (if c 1 0) materializes a condition to its 0/1 int.
+
+(case "a bool-materialized (if c 1 0) compared to 0 or 1 folds to the condition (value parity)"
+  (doc    "(= (if (< x 0) 1 0) 1) = (< x 0); = 0 is its negation; the flipped (if (< x 0) 0 1) mirrors;
+           a constant other than 0/1 is false. main weights the four: x=-1 → 1, x=5 → 110.")
+  (input (do
+    (def (main (: x Int64))
+      (+ (if (= (if (< x 0) 1 0) 1) 1 0)
+         (+ (if (= (if (< x 0) 1 0) 0) 10 0)
+            (+ (if (= (if (< x 0) 0 1) 1) 100 0)
+               (if (= (if (< x 0) 1 0) 5) 1000 0)))))
+    (export main)))
+  (call main (: -1 Int64)) (output (: 1 Int64))
+  (call main (: 5 Int64))  (output (: 110 Int64)))
+
+(case "two bool-materialized ints compared fold to a boolean equality (value parity)"
+  (doc    "(= (if c 1 0) (if d 1 0)) = (c==d); opposite polarities give (c!=d); both negated cancel.
+           main weights the four polarities: (T,T)→101, (T,F)→1010, (F,T)→1010, (F,F)→101.")
+  (input (do
+    (def (main (: c Bool) (: d Bool))
+      (+ (if (= (if c 1 0) (if d 1 0)) 1 0)
+         (+ (if (= (if c 0 1) (if d 1 0)) 10 0)
+            (+ (if (= (if c 0 1) (if d 0 1)) 100 0)
+               (if (= (if c 1 0) (if d 0 1)) 1000 0)))))
+    (export main)))
+  (call main (: true Bool) (: true Bool))   (output (: 101 Int64))
+  (call main (: true Bool) (: false Bool))  (output (: 1010 Int64))
+  (call main (: false Bool) (: true Bool))  (output (: 1010 Int64))
+  (call main (: false Bool) (: false Bool)) (output (: 101 Int64)))
+
+(case "a boolean compared to a true/false literal folds to the boolean or its negation (both orders)"
+  (doc    "(= c true) and (= true c) → c; (= c false) and (= false c) → !c. main weights all four
+           orders: c=true → 3 (the two =true terms), c=false → 30 (the two =false terms).")
+  (input (do
+    (def (main (: c Bool))
+      (+ (if (= c true) 1 0)
+         (+ (if (= true c) 2 0)
+            (+ (if (= c false) 10 0)
+               (if (= false c) 20 0)))))
+    (export main)))
+  (call main (: true Bool))  (output (: 3 Int64))
+  (call main (: false Bool)) (output (: 30 Int64)))
+
+(case "a derived boolean compared to a literal composes into the complementary comparison"
+  (doc    "(= (< x 0) true) → (< x 0); (= (< x 0) false) → (>= x 0). x=-5 → 1, x=5 → 10.")
+  (input (do
+    (def (main (: x Int64))
+      (+ (if (= (< x 0) true) 1 0)
+         (if (= (< x 0) false) 10 0)))
+    (export main)))
+  (call main (: -5 Int64)) (output (: 1 Int64))
+  (call main (: 5 Int64))  (output (: 10 Int64)))
+
+(case "(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation"
+  (doc    "main = 10*(if (< a b) 1 0) + (if (< a b) 0 1): (3,9) → 10 (true→1,0), (9,3) → 1 (false→0,1).")
+  (input (do
+    (def (main (: a Int64) (: b Int64)) (+ (* 10 (if (< a b) 1 0)) (if (< a b) 0 1)))
+    (export main)))
+  (call main (: 3 Int64) (: 9 Int64)) (output (: 10 Int64))
+  (call main (: 9 Int64) (: 3 Int64)) (output (: 1 Int64)))
+
+(case "(if p 1 0) materializes a bare bool param to its 0/1 int"
+  (doc    "main = 10*(if p 1 0) + (if p 0 1): p=true → 10, p=false → 1.")
+  (input (do (def (main (: p Bool)) (+ (* 10 (if p 1 0)) (if p 0 1))) (export main)))
+  (call main (: true Bool))  (output (: 10 Int64))
+  (call main (: false Bool)) (output (: 1 Int64)))
+
+(case "narrow Int32 (if cmp 1 0) materializes correctly and a non-0/1 branch pair keeps its values"
+  (doc    "main = 100*(if (< a b) 1 0) + (if (< a b) 5 7) over Int32: (1,2) → 105 (true→1 and 5),
+           (2,1) → 7 (false→0 and 7). Pins both the narrow 0/1 materialization and the non-0/1 pair.")
+  (input (do
+    (def (main (: a Int32) (: b Int32)) (+ (* 100 (if (< a b) 1 0)) (if (< a b) 5 7)))
+    (export main)))
+  (call main (: 1 Int32) (: 2 Int32)) (output (: 105 Int64))
+  (call main (: 2 Int32) (: 1 Int32)) (output (: 7 Int64)))
