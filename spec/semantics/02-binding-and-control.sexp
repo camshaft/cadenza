@@ -1284,6 +1284,14 @@
   (input  (let ((x 1) (y (+ x 1))) y))
   (output (: 2 Int64)))
 
+(case "a chain of let bindings each referencing the immediately-preceding one accumulates"
+  (doc    "The transitive form of in-order binding: a `let` whose every binding references the one written
+           just before it — realistic accumulation code. Each `v_i` initializer sees `v_{i-1}` (and only
+           the earlier ones), so `v3` is the running sum 0+1+2+3 = 6. Pins that each binder in a chain
+           resolves to its immediate predecessor, none mis-attributed to a later same-scope binding.")
+  (input  (let ((v0 0) (v1 (+ v0 1)) (v2 (+ v1 2)) (v3 (+ v2 3))) v3))
+  (output (: 6 Int64)))
+
 (case "a repeated let binding shadows the earlier one for what follows"
   (doc    "`(let ((x 1) (x (+ x 10))) x)` = 11: the second binding of `x` shadows the first for the
            initializers and body that follow, and its initializer `(+ x 10)` sees the first `x` = 1
@@ -1717,6 +1725,20 @@
               (def (od n) (if (= n 0) false (ev (- n 1))))
               (if (ev 10) 1 0)))
   (output (: 1 Int64)))
+
+(case "several independent do-local functions each resolve their own call"
+  (doc    "A do block declaring MANY same-shaped do-local functions — `(def (g_i x) (+ x i))` — each called
+           once: every call must resolve to its OWN declaration, never a same-shaped sibling. g0..g4 at 0
+           add their own index, so the sum is 0+1+2+3+4 = 10. Pins that a do-block's function declarations
+           are each independently resolvable (no cross-attribution across the group), the do-local analogue
+           of the module/top-level same-shaped-def resolution.")
+  (input  (do (def (g0 (: x Int64)) (+ x 0))
+              (def (g1 (: x Int64)) (+ x 1))
+              (def (g2 (: x Int64)) (+ x 2))
+              (def (g3 (: x Int64)) (+ x 3))
+              (def (g4 (: x Int64)) (+ x 4))
+              (+ (g0 0) (+ (g1 0) (+ (g2 0) (+ (g3 0) (g4 0)))))))
+  (output (: 10 Int64)))
 
 ; A do-local function that CAPTURES a sibling local from its enclosing scope lowers by lambda-lift: the
 ; captured free variable is threaded into the lifted function. The capture must cover a sibling local
