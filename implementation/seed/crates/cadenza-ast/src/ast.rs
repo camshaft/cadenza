@@ -1196,10 +1196,14 @@ impl Builder {
         self.atom(id)
     }
 
-    /// Convenience: an atom occurrence of a `Name` given its string SLICE. The hot path — interns via
-    /// `leaf_name` (no allocation on a dedup hit) and pushes the occurrence.
-    pub fn name(&mut self, name: &str) -> StructId {
-        let id = self.leaf_name(name);
+    /// Convenience: an atom occurrence of a `Name`. The hot path — interns via `leaf_name` (no
+    /// allocation on a dedup hit) and pushes the occurrence. Takes `impl AsRef<str>` so a caller can pass
+    /// a `&str`, an owned `String`, or an `Arc<str>` without an explicit borrow; it goes through
+    /// `leaf_name` by REFERENCE (`.as_ref()`), so the zero-alloc-on-hit intern is preserved regardless of
+    /// the argument kind — a `String` is NOT eagerly materialized into an `Arc` before the dedup lookup
+    /// (which `impl Into<Arc<str>>` would force, allocating on every occurrence, hit or miss).
+    pub fn name(&mut self, name: impl AsRef<str>) -> StructId {
+        let id = self.leaf_name(name.as_ref());
         self.atom(id)
     }
 

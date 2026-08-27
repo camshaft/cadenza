@@ -3312,7 +3312,7 @@ mod tests {
         );
 
         let mut b2 = Builder::new();
-        let kids: Vec<StructId> = (0..5000).map(|k| b2.name(&format!("n{k}"))).collect();
+        let kids: Vec<StructId> = (0..5000).map(|k| b2.name(format!("n{k}"))).collect();
         let wide_root = b2.list(kids);
         let wbytes = encode(&b2.finish(wide_root));
         assert!(decode(&wbytes).is_some(), "a 5000-wide arena round-trips");
