@@ -5934,17 +5934,28 @@ fn check_baseline(
 /// Passes `crates` through as explicit args; empty lets the app auto-detect touched crates. Inherits
 /// stdio so the agent sees the verdict live. Exits with the app's status. If the app isn't present yet
 /// (its MR not landed), nix errors cleanly and we surface a hint rather than a cryptic failure.
-/// A nix REMOTE-BUILDER transient in the fast-gate output — NOT a real test/clippy/fmt failure of the
-/// touched crate. The remote builder (or its daemon) can hiccup mid-build and report a build-result the
-/// caller can't interpret; verifying directly (`cargo clippy/test -p <crate>`) is then clean and the
-/// change lands fine (v-core-opt saw this 3 ticks running on cadenza-ast's clippy check). Detecting it
-/// lets dev-gate AUTO-RETRY once (a transient clears; a real failure re-fails) + label it so an agent
+/// A nix REMOTE-BUILDER / DAEMON transient in the fast-gate output — NOT a real test/clippy/fmt failure
+/// of the touched crate. In nix protocol the local multi-user DAEMON is the "remote" store, so two
+/// instability shapes are the same false-RED family: (1) the builder/daemon hiccups mid-build and
+/// reports a build-result the caller can't interpret ("Invalid BuildResult status from remote");
+/// (2) the daemon connection itself is reset mid-build ("cannot open connection to remote store
+/// 'daemon': … Connection reset by peer") — the SAME Determinate-daemon instability that causes the CI
+/// resets (v-nix, 2026-08-27), which can strike a local dev-gate build on its one long-running derivation.
+/// Either way verifying directly (`cargo clippy/test -p <crate>`) is clean and the change lands fine
+/// (v-core-opt saw shape (1) 3 ticks running on cadenza-ast's clippy check). Detecting it lets dev-gate
+/// AUTO-RETRY once (a transient clears; a real failure re-fails deterministically) + label it so an agent
 /// isn't misled into thinking its code is broken. Pure so the match rule is unit-testable.
 fn fast_gate_output_is_remote_transient(output: &str) -> bool {
-    // The observed signature; keep the match narrow so a real error mentioning "remote" doesn't trip it.
+    // The observed signatures; keep the match narrow so a real error mentioning "remote" doesn't trip it.
+    // Each is a nix store/daemon-connection failure — never a deterministic clippy/test/compile result —
+    // so if it somehow persists across the retry it still surfaces non-zero after MAX_ATTEMPTS.
     output.contains("Invalid BuildResult status from remote")
         || output.contains("error: build failure on remote")
         || output.contains("cannot build on remote")
+        // Daemon-connection-reset family (same instability as the CI daemon resets). The store-connection
+        // phrase is the stable, unambiguous part — a bare "Connection reset by peer" could appear in a
+        // test's own output, but "cannot open connection to remote store" is specifically the nix daemon.
+        || output.contains("cannot open connection to remote store")
 }
 
 fn dev_gate(paths: &Paths, crates: &[String]) {
@@ -6004,9 +6015,9 @@ fn dev_gate(paths: &Paths, crates: &[String]) {
         );
         if fast_gate_output_is_remote_transient(&combined) && attempt < MAX_ATTEMPTS {
             eprintln!(
-                "dev-gate: fast-gate hit a nix REMOTE-BUILDER transient ('Invalid BuildResult status from \
-                 remote' / remote build failure) — this is NOT your code failing. Retrying once (attempt \
-                 {}/{})…",
+                "dev-gate: fast-gate hit a nix REMOTE-BUILDER/DAEMON transient ('Invalid BuildResult status \
+                 from remote' / remote build failure / daemon connection reset) — this is NOT your code \
+                 failing. Retrying once (attempt {}/{})…",
                 attempt + 1,
                 MAX_ATTEMPTS
             );
@@ -9610,6 +9621,16 @@ mod trap_grading_tests {
         ));
         assert!(fast_gate_output_is_remote_transient(
             "error: build failure on remote 'ssh://builder'"
+        ));
+        // The daemon-connection-reset family (same instability as the CI resets) → transient too, so a
+        // local dev-gate build that hits the daemon hiccup on its long derivation auto-retries.
+        assert!(fast_gate_output_is_remote_transient(
+            "error: cannot open connection to remote store 'daemon': read of 32768 bytes: Connection reset by peer"
+        ));
+        // But a bare "Connection reset by peer" WITHOUT the store-connection phrase (e.g. printed by a
+        // test's own network code) must NOT trip it — we only retry the daemon-connection failure itself.
+        assert!(!fast_gate_output_is_remote_transient(
+            "test tcp_client ... FAILED\n  assertion failed: Connection reset by peer"
         ));
         // A REAL clippy/test failure must NOT be misread as a transient (else we'd retry a genuine bug).
         assert!(!fast_gate_output_is_remote_transient(
