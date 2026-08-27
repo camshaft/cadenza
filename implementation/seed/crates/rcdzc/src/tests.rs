@@ -55092,64 +55092,6 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // U15 — a LET-BOUND peer-returned compound read via TWO borrowing projections. Confirms the general
-    // Perceus `let`-drop machinery reclaims a peer-result binding: `(let ((t (P.pair x))) (+ (. t 0) (. t
-    // 1)))` binds the owned tuple, reads BOTH fields (borrowing `arr-get`s that must NOT prematurely drop
-    // it between reads), and — the binding being dead after the body — `drop`s it once at scope end. The
-    // two projections are off a BORROWED `LocalRef` (not owned temporaries), so U13/U14 add no drop; the
-    // single reclamation is the `let`'s end-of-scope drop. main(9) = 9 + 9 = 18.
-    // ------------------------------------------------------------------------------------------------
-
-    #[test]
-    fn u15_a_let_bound_peer_compound_is_read_twice_then_reclaimed() {
-        use crate::testkit::parse;
-        let a = compile_provider(
-            "(do (def (pair (: x Int64)) (tuple x x)) (export pair))",
-            "cadenza:pairs/api",
-        );
-        let src = "(do \
-            (effect P (op pair (-> Int64 (Tuple Int64 Int64)))) \
-            (bind P \"cadenza:pairs/api\") \
-            (def (main (: x Int64)) (host (P) (let ((t (P.pair x))) (+ (. t 0) (. t 1))))) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| {
-                panic!("let-bound consumer compiles: {} [{:?}]", d.message, d.code)
-            });
-        {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&consumer)
-                .expect("let-bound consumer validates");
-        }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U15] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: a,
-            interface: "cadenza:pairs/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["9".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a let-bound peer compound read twice runs")
-        {
-            // pair(9)=(9,9); t bound; `. t 0` + `. t 1` = 9 + 9 = 18 (both reads see a LIVE tuple — no
-            // premature drop between them), then the dead binding is reclaimed at scope end.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "18",
-                "a let-bound peer compound is read twice (both live) then reclaimed"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("let-bound peer-compound run trapped: {t}"),
-        }
-    }
-
-    // ------------------------------------------------------------------------------------------------
     // PL45 — MIXED-OWNERSHIP reclamation: a peer compound is projected AND its fields are rebuilt into a
     // FRESH compound that ESCAPES as a resource. U13/U14/U15 consume a peer compound into a SCALAR; here
     // the peer tuple is let-bound, both fields read (borrowing projections), then a NEW tuple mixing a

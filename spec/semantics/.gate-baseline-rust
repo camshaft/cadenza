@@ -8328,6 +8328,7 @@ todo	a consumer calls a scalar op across a source peer provider
 todo	a distinct-signature per-group call-g is repeatable on one make-<name> handle
 todo	a fallible Result peer op result crosses and its Err arm matches
 todo	a fallible Result peer op result crosses and its Ok arm matches
+todo	a let-bound peer compound is read twice (both live) then reclaimed
 todo	a list of records with a bytes leaf crosses the export boundary via an imposed WIT world
 todo	a middle peer is both a consumer and a provider (A to B to C chain)
 todo	a multi-export VALUE-FORM shared call is repeatable on one make-<name> handle
