@@ -8968,3 +8968,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a fallible Result peer op result crosses and its Ok arm matches
+pass	a fallible Result peer op result crosses and its Err arm matches

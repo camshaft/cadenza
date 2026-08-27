@@ -56389,68 +56389,6 @@ mod cross_component_oracle {
         }
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // PL15 — a FALLIBLE (Result-returning) peer op crosses + both variants match across the boundary.
-    // The operator's north star is "rich interfaces exposed by other modules"; a `(-> Int64 (Result
-    // Int64 Int64))` op is a rich shape (a user sum) with NO prior cross-component coverage. A `Result`
-    // crosses as its opaque u32 handle (like any compound/sum), and the consumer MATCHES on it — Ok and
-    // Err each reached over the shared runtime. Pins that a peer's fallibility (carried in its own
-    // result type, per ABI v5 — the boundary adds nothing) round-trips: safediv(5)=Ok(20)→20,
-    // safediv(0)=Err(1)→ the Err arm returns -1.
-    // ------------------------------------------------------------------------------------------------
-    #[test]
-    fn a_fallible_result_returning_peer_op_crosses_and_both_variants_match() {
-        use crate::testkit::parse;
-        // PROVIDER: safediv returns (Result Int64 Int64) — Ok(100/x) or Err(1) on zero.
-        let provider = compile_provider(
-            "(do (def (safediv (: x Int64)) (if (= x 0) (Err 1) (Ok (/ 100 x)))) (export safediv))",
-            "cadenza:d/api",
-        );
-        // CONSUMER: binds it, MATCHES the crossed Result — the Ok payload passes through, the Err
-        // payload is negated so the two arms are distinguishable in the scalar result.
-        let src = "(do \
-            (effect D (op safediv (-> Int64 (Result Int64 Int64)))) \
-            (bind D \"cadenza:d/api\") \
-            (def (main (: x Int64)) \
-              (host (D) (match (D.safediv x) ((Ok q) q) ((Err e) (- 0 e))))) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| {
-                panic!(
-                    "fallible-peer consumer compiles: {} [{:?}]",
-                    d.message, d.code
-                )
-            });
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL15] runtime wasm not found; skipping");
-            return;
-        };
-        let run = |arg: &str| {
-            let peers = vec![cdz_run::Peer {
-                bytes: provider.clone(),
-                interface: "cadenza:d/api".to_string(),
-            }];
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            cdz_run::run_with_peers(&consumer, &peers, &opts)
-        };
-        // Ok path: safediv(5) = Ok(100/5) = Ok(20) → the Ok arm yields 20.
-        match run("5").expect("fallible peer op (Ok path) crosses") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "20", "Ok(20) matched → 20"),
-            cdz_run::Outcome::Trap(t) => panic!("fallible-peer Ok run trapped: {t}"),
-        }
-        // Err path: safediv(0) = Err(1) → the Err arm yields -1 (distinct from any Ok result).
-        match run("0").expect("fallible peer op (Err path) crosses") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "-1", "Err(1) matched → -1"),
-            cdz_run::Outcome::Trap(t) => panic!("fallible-peer Err run trapped: {t}"),
-        }
-    }
-
     /// Substring search over bytes (dependency-free) — used to assert a component embeds an import name.
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
