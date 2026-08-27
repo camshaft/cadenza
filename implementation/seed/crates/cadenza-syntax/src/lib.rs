@@ -13,7 +13,7 @@
 // one wire format). Re-exported here so the public paths (`cadenza_syntax::ast`/`::canon`/`::codec`/
 // `::fxhash`/`::leb128`) and the internal `crate::` paths stay byte-stable. `canon`/`codec`'s
 // SURFACE-dependent tests (which build inputs via the readers below) relocated to `tests/`.
-pub use cadenza_ast::{ast, canon, codec, dict, fxhash};
+pub use cadenza_ast::{ast, canon, codec, fxhash};
 /// Shared arena read-helpers (`list_items`/`child_tail`/`str_leaf`/`int_leaf`/`bool_leaf`) the surface
 /// readers project the arena through — one set instead of a byte-identical copy per surface.
 pub(crate) mod arena_read;
