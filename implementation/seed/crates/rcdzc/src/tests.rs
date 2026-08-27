@@ -1698,6 +1698,80 @@ fn a_common_operator_hoists_out_of_both_if_arms_computing_once() {
     // and computes once" in spec/semantics/02-binding-and-control.sexp.
 }
 
+/// A CONST bitwise / shift operation FOLDS at compile time — the emitted module carries the constant
+/// result and NO runtime bitwise/shift opcode. This pins the FOLD half of the const-bitwise/shift support
+/// (#4136): corpus 06-numeric-model carries the value cases (`(& 255 127)` = 127, etc.), but a `run_main`
+/// value assertion CANNOT catch a regression that stops folding and emits a runtime `i32.and`/`i64.shl`
+/// (the runtime op yields the same value) — so the opcode-count pin is what protects the fold. (The
+/// value-only `run_main` tests bitwise_ops_fold/left_shift_.../arithmetic_right_shift_folds that used to
+/// sit here were cite-deleted to corpus 06 by corpus-mig-4; this pins the fold they never asserted.)
+#[test]
+fn const_bitwise_and_shift_fold_emit_no_runtime_op() {
+    use crate::testkit::parse;
+    let no_op = |body: &str, pred: fn(&wasmparser::Operator) -> bool, opname: &str| {
+        let src = format!("(module m (def (main) {body}) (export main))");
+        let bytes = compile_component(&crate::codec::encode(&parse(&src))).expect("compile");
+        let n = count_opcode(&bytes, pred);
+        assert_eq!(
+            n, 0,
+            "`{body}` must CONST-FOLD to its result, emitting no runtime {opname}, got {n}"
+        );
+    };
+    // `&`/`|`/`^` fold — no i32/i64 and/or/xor survives.
+    no_op(
+        "(& 255 127)",
+        |op| {
+            matches!(
+                op,
+                wasmparser::Operator::I32And | wasmparser::Operator::I64And
+            )
+        },
+        "and",
+    );
+    no_op(
+        "(| 12 3)",
+        |op| {
+            matches!(
+                op,
+                wasmparser::Operator::I32Or | wasmparser::Operator::I64Or
+            )
+        },
+        "or",
+    );
+    no_op(
+        "(^ 12 10)",
+        |op| {
+            matches!(
+                op,
+                wasmparser::Operator::I32Xor | wasmparser::Operator::I64Xor
+            )
+        },
+        "xor",
+    );
+    // `<<` folds (exact multiply by 2^count) — no shl survives.
+    no_op(
+        "(<< 1 7)",
+        |op| {
+            matches!(
+                op,
+                wasmparser::Operator::I32Shl | wasmparser::Operator::I64Shl
+            )
+        },
+        "shl",
+    );
+    // `>>` folds (arithmetic, sign-extending) — no shr_s survives.
+    no_op(
+        "(>> 256 7)",
+        |op| {
+            matches!(
+                op,
+                wasmparser::Operator::I32ShrS | wasmparser::Operator::I64ShrS
+            )
+        },
+        "shr_s",
+    );
+}
+
 /// The common-operator hoist also covers a COMPARISON: `(if c (< a k) (< b k))` → `(< (if c a b) k)` —
 /// one compare over the selected operand, not two. A comparison is TOTAL (no trap, no guard), so the
 /// hoist is unconditionally value-safe; the win is a single `i64.lt_s` (the differing operand becomes a
