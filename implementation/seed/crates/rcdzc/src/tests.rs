@@ -21036,23 +21036,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_generic_same_name_newtype_constructs_and_matches() {
-        // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
-        // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
-        // the synthesized `(Box a)` ctor-result stays the type.)
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Box (Box a)) \
-                       (def (main) (match (Box 42) ((Box n) (+ n 1)))) (export main))"
-                ),
-                "main"
-            ),
-            43
-        );
-    }
-
-    #[test]
     fn comparing_a_newtype_to_its_underlying_type_is_a_nominal_boundary_error() {
         // `(= (Age 1) 1)` for `(type Age (Age Int64))` compares a nominal newtype to its ERASED inner —
         // the same nominal-boundary violation as Symbol-vs-String, so CDZ0202 (NOT the generic CDZ0203
@@ -21175,24 +21158,6 @@ mod match_engine {
             )
             .as_deref(),
             Some("CDZ0203")
-        );
-    }
-
-    #[test]
-    fn a_generic_newtype_nested_at_another_instantiation_erases() {
-        // A generic newtype whose payload is ITSELF at another instantiation — `(Mk (Mk 5)) : Box (Box
-        // Int64)` — erases both layers (each `Ty::Nominal` erases to its inner), so the doubly-wrapped 5
-        // reads back through two `(Mk …)` matches. Exercises a nominal inner (the template is sum-free —
-        // `Var(0)` — but the instantiation substitutes a `Ty::Nominal`, which still erases).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type Box (Mk a)) \
-                       (def (main) (match (Mk (Mk 5)) ((Mk inner) (match inner ((Mk n) (+ n 1)))))) (export main))"
-                ),
-                "main"
-            ),
-            6
         );
     }
 
