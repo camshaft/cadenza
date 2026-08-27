@@ -7338,6 +7338,9 @@ pass	slicing with a negative start yields None
 pass	slicing with a start near i64::MAX is out of range, not a trap
 pass	slicing with start+len overflowing i64 is out of range, not a wrong slice
 pass	slmin11 tuple(scalar,string) state, put rebuilds the tuple with a branch-picked String.concat suffix, 2 puts + 2 reads (invalid-wasm slot-clobber: the rope-retain dup and the counter step must not share a scratch slot at two widths)
+pass	smj1 a sum match whose BOTH arms are owned producers reclaims (join = Owned)
+pass	smj2 a borrowed sum payload read twice under its live scrutinee is not freed early
+pass	smj3 5000x a borrowed sum payload read twice does not double-free (leak-drift stress)
 pass	smk1 a STRING-KEYED Map state whose keys are BUILT IN THE ARM — parity routes each value to a concat-computed bucket, accumulate-or-insert answers the bucket total
 pass	smy1 a SYMBOL-KEYED Map state — the op takes a Symbol and routes accumulation by interned identity, the same label from two different dispatches lands in one bucket
 pass	sn1 a snapshot op resumes the WHOLE tuple state as a value — the body destructures the live pair after mixed bumps

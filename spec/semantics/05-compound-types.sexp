@@ -22224,3 +22224,41 @@
              (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot ((. List len) ((. List concat) (build 0 3 (list)) (build 0 2 (list)))))) tot))
              (def (main) (drive 0 20000 0)) (export main)))
   (call main) (output (: 100000 Int64)) (live-objects 0))
+
+; -- sum-match JOIN ownership (migrated from rcdzc list_len_over_a_sum_match_reclaims...): a sum `match` used
+; as a borrowing op's operand is classified by a recursive join over the decision-tree leaves — Owned iff
+; EVERY reachable leaf is a proven owned temporary (then the match result reclaims), else Borrowed (leak-safe,
+; the still-live scrutinee's payload must not be freed early). smj1 pins the Owned join (both arms owned
+; producers → reclaim); smj2/smj3 pin the Borrowed face (a payload read twice under its live scrutinee must
+; not double-free). The value is the witness; live-objects pins the heap balance. (The rcdzc test also carried
+; a component_imports_op(...,'drop') module-shape guard — subsumed here by the live-objects reclaim witness.)
+(case "smj1 a sum match whose BOTH arms are owned producers reclaims (join = Owned)"
+  (doc    "`g o = List.len (match o ((Some v) (List.push (build 0 3) v)) ((None _) (List.concat (build 0 2) (build 0 2))))` — both arms yield a FRESH owned list, so the join is Owned and the match result is reclaimed after the borrowing `List.len`. Some(9) → len [0,1,2,9] = 4; None → len [0,1,0,1] = 4; sum = 8. A join misread as Borrowed would leak a list per call.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: o (Option Int64))) ((. List len) (match o
+                 ((Some v) ((. List push) (build 0 3 (list)) v))
+                 ((None _) ((. List concat) (build 0 2 (list)) (build 0 2 (list)))))))
+             (def (main) (+ (g (Option.Some 9)) (g Option.None))) (export main)))
+  (call main) (output (: 8 Int64))
+  (live-objects 0))
+
+(case "smj2 a borrowed sum payload read twice under its live scrutinee is not freed early"
+  (doc    "The Borrowed face: `g o = match o ((Some xs) (+ (List.len xs) (List.len xs))) ((None _) -1))` reads the borrowed payload `xs` TWICE — dropping it after the first read would free it under its still-live scrutinee (a UAF). Value 3 + 3 = 6; a payload freed early would trap or drift.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: o (Option (List Int64)))) (match o
+                 ((Some xs) (+ ((. List len) xs) ((. List len) xs)))
+                 ((None _) -1)))
+             (def (main) (g (Option.Some (build 0 3 (list))))) (export main)))
+  (call main) (output (: 6 Int64))
+  (live-objects 0))
+
+(case "smj3 5000x a borrowed sum payload read twice does not double-free (leak-drift stress)"
+  (doc    "The loop form of smj2: 5000x build a fresh `(Some [0,1,2])`, read its borrowed payload twice (3+3=6), discard. A double-free of the payload would trap; a leak would drift. Sum = 30000.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc))
+             (def (g (: o (Option (List Int64)))) (match o
+                 ((Some xs) (+ ((. List len) xs) ((. List len) xs)))
+                 ((None _) -1)))
+             (def (drive j m tot) (if (< j m) (drive (+ j 1) m (+ tot (g (Option.Some (build 0 3 (list)))))) tot))
+             (def (main) (drive 0 5000 0)) (export main)))
+  (call main) (output (: 30000 Int64))
+  (live-objects 0))
