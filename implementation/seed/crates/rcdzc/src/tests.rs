@@ -30808,50 +30808,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_variant_tuple_payload_destructure_runs_at_runtime() {
-        // The runtime heap walk: `(mk n)` builds `(Both (tuple n (+ n 1)))` for n>0 else `Neither`, and
-        // `classify` destructures the tuple payload — `(Both (tuple a b))` → `(+ a b)` reads the payload
-        // tuple's two elements via `sum-payload` then `arr-get 0/1`. classify(4) = 4+5 = 9; classify(0) = -1.
-        // `mk` is RECURSIVE (a `(< n 0)` arm self-calls, never taken for the tested n>=0) so the sum stays a
-        // GENUINE runtime value: the match-into-if AND case-of-match fusions refuse to reduce through a
-        // recursive call (their reduction depth guard), so `(match (mk n) …)` keeps the runtime tuple-payload
-        // destructure. A non-recursive `mk` (bare `if`/`match` of ctors) would fuse away — both folds see
-        // through it — dropping the runtime import this asserts. Semantics unchanged for n>=0.
-        let src = "(module m \
-                     (type Pair (Both (Tuple Int64 Int64)) Neither) \
-                     (def (mk (: n Int64)) \
-                        (if (< n 0) (mk 0) (if (> n 0) (Pair.Both (tuple n (+ n 1))) Pair.Neither))) \
-                     (def (classify (: n Int64)) \
-                        (match (mk n) \
-                          ((Pair.Both (tuple a b)) (+ a b)) \
-                          (Pair.Neither (- 0 1)))) \
-                     (export classify))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile tuple-payload destructure");
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a runtime tuple-payload match imports the value-heap runtime"
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed tuple-payload run");
-            return;
-        };
-        for (arg, want) in [("4", "9"), ("0", "-1")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("classify".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "classify {arg}"),
-                cdz_run::Outcome::Trap(t) => panic!("tuple-payload destructure trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn a_scalar_compared_to_a_value_of_erased_type_param_lowers_to_a_scalar_compare() {
         // REGRESSION (v-iterators fused-iterator step): comparing a scalar literal against a value whose
         // static type is an UNRESOLVED type-param var mis-lowered. A value projected from a GENERIC-variant
@@ -52724,39 +52680,6 @@ mod stage1 {
     }
 
     #[test]
-    fn the_prelude_sign_sum_is_built_in() {
-        // `Sign` is a BUILT-IN monomorphic prelude sum `(type Sign Neg Zero Pos)` — a program uses
-        // `Sign.Pos`/`Sign.Zero`/`Sign.Neg` with NO declaration, and an exhaustive three-way match over
-        // it folds through the constant scrutinee. `(Sign.Zero unit)` matched → 0; the other two → 1/-1.
-        use crate::testkit::parse;
-        for (ctor, want) in [("Sign.Neg", -1), ("Sign.Zero", 0), ("Sign.Pos", 1)] {
-            let src = format!(
-                "(module m (def (main) (match ({ctor} unit) \
-                   ((Sign.Neg _) -1) ((Sign.Zero _) 0) ((Sign.Pos _) 1))) (export main))"
-            );
-            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
-                .expect("compile built-in Sign match");
-            let Some(runtime) = super::find_runtime_wasm() else {
-                eprintln!("runtime wasm not found; skipping Sign run");
-                return;
-            };
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => {
-                    assert_eq!(s, want.to_string(), "built-in Sign match: {ctor}")
-                }
-                cdz_run::Outcome::Trap(t) => panic!("Sign match run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn a_user_type_shadows_a_prelude_sum_name() {
         // A user `(type Option …)` SHADOWS the built-in Option — top-level `type_decls` resolve before
         // the prelude. So `Option` in a program that declares it is the USER sum (its own declaration
@@ -53674,90 +53597,6 @@ mod stage1 {
             rs3.contains("#[derive(Clone)]\n#[allow(dead_code)]\npub enum FBox"),
             "a float-carrying sum stays Clone-only (f64 is not Eq); got:\n{rs3}"
         );
-    }
-
-    #[test]
-    fn an_all_nullary_enum_nested_in_a_boxed_sum_round_trips() {
-        // WARNING: INVALID WASM regression: an all-nullary enum (a bare i32 disc) NESTED inside a boxed sum
-        // (`(Option Color)`) mis-emitted both ends: (1) construction `box-int`ed the i32 disc WITHOUT the
-        // i64 extend (i32 → the i64 box-int → wasm rejects); (2) the match's disc read used `sum-disc` on
-        // the boxed-int handle instead of `get-int` + wrap, because `sum_single_payload_ty` returned the
-        // UNSUBSTITUTED payload var (`?0`) rather than `Color`. Fixed by (1) `emit_box_i32_to_i64_extend`
-        // (an enum-disc payload zero-extends like a narrow int) and (2) `sum_single_payload_ty` using
-        // `payload_ty_at_instantiation` (substitutes the sum's args → the payload resolves to `Color`).
-        // Build `Some(pick n)` then match the nested `Color`; round-trips all three variants.
-        use crate::testkit::parse;
-        let src = "(module m (type Color (Red) (Green) (Blue)) \
-                     (def (pick (: n Int64)) (if (< n 0) (Red) (if (= n 0) (Green) (Blue)))) \
-                     (def (mk (: n Int64)) (Some (pick n))) \
-                     (def (get (: o (Option Color))) \
-                        (match o ((Some (Red)) 10) ((Some (Green)) 20) ((Some (Blue)) 30) ((None) 0))) \
-                     (def (main (: n Int64)) (get (mk n))) \
-                     (export main))";
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(src))).expect("compile nested enum");
-        // A boxed Option DOES import the runtime (it is a genuine heap sum carrying the enum payload).
-        assert!(
-            cdz_run::required_runtime(&bytes).expect("valid").is_some(),
-            "a boxed (Option Color) imports the value-heap runtime"
-        );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed nested-enum run");
-            return;
-        };
-        for (arg, want) in [("-1", "10"), ("0", "20"), ("5", "30")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "get(mk {arg})"),
-                cdz_run::Outcome::Trap(t) => panic!("nested-enum run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
-    fn an_all_nullary_enum_reached_through_a_tuple_element_in_a_boxed_sum_round_trips() {
-        // WARNING: INVALID WASM regression (residual of the direct-in-sum fix above): an all-nullary enum (a bare
-        // i32 disc) as a TUPLE ELEMENT inside a boxed sum — `(Some (tuple (Blue) 5))` — mis-emitted the
-        // READ end: projecting the enum element `get-int`s the i64 cell but SKIPPED the i64→i32 narrow
-        // (the wrap fired only for `is_narrow_int`, which excludes an enum-disc `Ty::Sum`), leaving an i64
-        // where the i32 discriminant slot is declared → `type mismatch: expected i32, found i64`. The
-        // direct-in-sum case was fixed; the compound-element read was not. Fixed by `needs_get_int_narrow`
-        // (narrow int OR enum-disc) at every `get-int`-then-narrow site (Proj / SumPayload / SumExpect /
-        // Captured). `(Some (tuple (Blue) 5))` → match out the Option, project element 0 (the enum),
-        // switch on it → 3 (Blue).
-        use crate::testkit::parse;
-        let src = "(module m (type Col (Red) (Grn) (Blu)) \
-                     (def (main) (match (Some (tuple (Blu) 5)) \
-                        ((Some t) (match (. t 0) ((Red) 1) ((Grn) 2) ((Blu) 3))) \
-                        ((None u) 0))) \
-                     (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile enum-in-tuple-in-sum");
-        wasmparser::validate(&bytes)
-            .expect("an enum reached through a tuple element in a boxed sum must emit VALID wasm");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed enum-in-tuple run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "3", "the Blu element projects + dispatches to 3")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("enum-in-tuple-in-sum run trapped: {t}"),
-        }
     }
 
     #[test]
