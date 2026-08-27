@@ -1063,6 +1063,9 @@ pass	a SET state dedup accumulator — the condition PROBES the state, the pass 
 pass	a SET-valued handler state accumulates uniques across resumes (the visited-set idiom)
 pass	a SEVEN-op handler — the widest arm table in the corpus, each op a distinct answer shape and stride, order scrambled
 pass	a SINGLE-variant open sum still requires an open-tail arm
+pass	a SITE-A eta-closure held in a tuple is applied and its owned env cell reclaims (residual = shell gap)
+pass	a SITE-A eta-closure stored in a SUM is applied and its owned env cell reclaims (residual = shell gap)
+pass	a SITE-A two-arg-payload eta-closure is applied and its owned env cell reclaims (wider capture)
 pass	a SIX-deep alternating A-B perform chain threads both nested states through every crossing
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
@@ -1778,6 +1781,7 @@ pass	a default-integer pragma naming a non-integer type is rejected
 pass	a default-integer pragma naming an unbound type is rejected as unbound, like an annotation
 pass	a deferred resume-thunk STORED IN A SUM and match-extracted through a helper before apply folds
 pass	a deferred resume-thunk stored in a MULTI-PAYLOAD pqueue entry and tuple-match-extracted folds
+pass	a definition named like a variant shadows the bare-variant constructor
 pass	a delegated capability is not itself an export field
 pass	a delegated effect performed in a closure passed to a HOF is reached and fires
 pass	a delegated effect performed inside an intra-program handler
@@ -2042,6 +2046,7 @@ pass	a genuinely-runtime shift count that is a multiple of 2^32 traps rather tha
 pass	a genuinely-runtime subtraction underflow at the minimum traps
 pass	a genuinely-runtime symbol orders by content-lexicographic byte order
 pass	a genuinely-runtime symbol three-way compare agrees with the boolean ordering
+pass	a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)
 pass	a grafted template is structurally equal to the directly-quoted tree
 pass	a guard binder resolves over a COMPUTED scrutinee inside a helper fn
 pass	a guard binder resolves over a raw param scrutinee inside a helper fn
@@ -2753,6 +2758,7 @@ pass	a nested unquote pattern matches a Bool sub-AST by shape
 pass	a nested unquote pattern matches a Float sub-AST by shape
 pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
+pass	a nested-compound Float32 equality const-folds through the demoting compare
 pass	a nested-handler ctl arm whose continuation-consuming body ALSO performs an OUTER effect folds
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nested-list DAG — one perform-derived inner list aliased TWICE in the outer
@@ -7194,6 +7200,7 @@ pass	the same function called under two handlers is discharged by each in turn
 pass	the same list is still live after the if when the consuming branch is not taken
 pass	the same list not escaped (the None branch) is still usable after the join
 pass	the same literal-payload refinement on a MULTI-variant sum works (the boxed control)
+pass	the same literals at Float64 are NOT demoted and const-fold not-equal (adv-61 width control)
 pass	the same mixed-scale comparison is EXACT over Rational (keeps the fractional scale)
 pass	the same nullary variant constrained to different concrete types reflects different types
 pass	the same program with a different response gives a different deterministic result
@@ -7638,6 +7645,7 @@ todo	a DEPTH-3 nested-op chain whose deepest resume performs the outer effect de
 todo	a DIRECT branch perform in a NESTED handler-arm resume-value declines cleanly (adv-69 a3-direct sub-face)
 todo	a HEAP-accumulator block-wrapped branch perform in a let-init declines cleanly (adv-69 safe floor)
 todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
+todo	a RECURSIVE runtime tuple escaping as a resource is reclaimed to zero after the host drop
 todo	a block-wrapped OUTER-effect perform in a do-statement TWO nested handlers deep declines cleanly (adv-69 nh7 depth-3)
 todo	a block-wrapped OUTER-effect perform in a nested handle's INIT declines cleanly (adv-69 a4-init sub-face)
 todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a nested handler body declines cleanly (adv-69 c3-nested sub-face)
@@ -7741,7 +7749,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a definition named like a variant shadows the bare-variant constructor
-pass	a nested-compound Float32 equality const-folds through the demoting compare
-pass	a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)
-pass	the same literals at Float64 are NOT demoted and const-fold not-equal (adv-61 width control)
