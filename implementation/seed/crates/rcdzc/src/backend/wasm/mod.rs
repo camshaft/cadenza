@@ -828,7 +828,12 @@ pub fn emit(
         && layout.exports.iter().any(|e| {
             e.params
                 .iter()
-                .any(|(_, t)| matches!(t, crate::ty::Ty::String | crate::ty::Ty::Bytes))
+                .any(|(_, t)| {
+                    matches!(
+                        t,
+                        crate::ty::Ty::String | crate::ty::Ty::Bytes | crate::ty::Ty::List(_)
+                    )
+                })
         })
         && let Some(result) = try_bare_entry_param_component(db, layout, &funcs, &imports)
     {
@@ -9588,27 +9593,33 @@ fn try_bare_entry_param_component(
     let mut wit_params: Vec<(String, crate::wit_world::WitType)> = Vec::new();
     for (i, (binder, gty)) in params.iter().enumerate() {
         let wit = crate::wit_world::ty_natural_wit(gty)?;
-        match gty {
-            Ty::String | Ty::Bytes => {
-                // string/list<u8> flattens to (ptr, len); the wrapper lifts it via mem_leaf_params. The def
-                // OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len, compare, field read)
-                // is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does not escape.
+        // A memory-bearing leaf param (String/Bytes/list<Int64>) all flatten to (ptr, len) and lift via
+        // mem_leaf_params. The def OWNS the arg (callee-owns-args), but a param it only BORROWS (byte-len /
+        // List.len / compare) is reclaimed by the OWNER — here the wrapper — so `drop_after` = the param does
+        // not escape (a consuming/escaping param declines below, a later slice).
+        let mem_kind = match gty {
+            Ty::String => Some(serialize::MemLeafKind::Str),
+            Ty::Bytes => Some(serialize::MemLeafKind::Bytes),
+            // Slice 2a: list<Int64> only (one element load width). Other element types decline (later slice).
+            Ty::List(elem) => match elem.strip_nominal() {
+                Ty::Int(it) if it.ground_width() == 64 => Some(serialize::MemLeafKind::ListS64),
+                _ => return None,
+            },
+            _ => None,
+        };
+        match (mem_kind, gty) {
+            (Some(kind), _) => {
                 let drop_after =
                     !crate::backend::wasm::select::param_escapes_body(db, body, *binder);
                 param_vts.push(ValType::I32.byte());
                 param_vts.push(ValType::I32.byte());
-                let kind = if matches!(gty, Ty::String) {
-                    serialize::MemLeafKind::Str
-                } else {
-                    serialize::MemLeafKind::Bytes
-                };
                 mem_leaf_params.push(Some((kind, drop_after)));
             }
-            Ty::Int(_) | Ty::Bool | Ty::Float(_) => {
+            (None, Ty::Int(_) | Ty::Bool | Ty::Float(_)) => {
                 param_vts.push(valtype_of(gty)?.byte());
                 mem_leaf_params.push(None);
             }
-            _ => return None, // a compound/unit param — a later slice
+            (None, _) => return None, // a compound/unit param — a later slice
         }
         wit_params.push((format!("p{i}"), wit));
     }
@@ -9642,7 +9653,21 @@ fn try_bare_entry_param_component(
     // are preserved). The added count bumps `import_base` so the def's + wrapper's core func indices line up.
     // `drop` is added only when some borrowed param needs the wrapper reclaim (else byte-identical).
     let mut entry_imports: Vec<&runtime_abi::RtOp> = imports.to_vec();
-    let mut lift_ops = vec!["bytes-alloc", "bytes-set"];
+    let mut lift_ops: Vec<&str> = Vec::new();
+    if mem_leaf_params.iter().any(|m| {
+        matches!(
+            m,
+            Some((serialize::MemLeafKind::Str | serialize::MemLeafKind::Bytes, _))
+        )
+    }) {
+        lift_ops.extend(["bytes-alloc", "bytes-set"]);
+    }
+    if mem_leaf_params
+        .iter()
+        .any(|m| matches!(m, Some((serialize::MemLeafKind::ListS64, _))))
+    {
+        lift_ops.extend(["vec-empty", "vec-push", "box-int"]);
+    }
     if any_drop {
         lift_ops.push("drop");
     }

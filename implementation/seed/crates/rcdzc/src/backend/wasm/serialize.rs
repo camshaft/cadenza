@@ -870,8 +870,13 @@ pub struct WrapperDesc {
 pub enum MemLeafKind {
     /// A `Bytes` param: the copied-out `list<u8>` handle IS the def arg.
     Bytes,
-    /// A `String` param: build a `String` from the copied-out bytes via `str-from-bytes`.
+    /// A `String` param: the copied-out UTF-8 byte-leaf IS the String (a Cadenza String is a byte-leaf; no
+    /// decode — a WIT `string` param is valid UTF-8). Same lift as `Bytes`; distinct only for the WIT type.
     Str,
+    /// A `list<Int64>` param: build a value-heap vec (`vec-empty` + per-element `i64.load` + `box-int` +
+    /// `vec-push`) from the canonical `(ptr, len)` layout, rather than a raw byte copy. Slice 2a: Int64
+    /// elements only.
+    ListS64,
 }
 
 /// How a boundary wrapper produces its result from the value the compiled def returns.
@@ -1273,10 +1278,19 @@ fn core_module_impl(
                 // copied buffer is already a canonical String handle — no `str-from-bytes` decode (a WIT
                 // `string` param is guaranteed valid UTF-8, and that op would re-wrap it). Only the boundary
                 // TYPE differs (`string` vs `list<u8>`), fixed at the routing site via `ty_natural_wit`.
-                if let Some((_kind, drop_after)) = wrap.mem_leaf_params.get(pi).copied().flatten() {
+                if let Some((kind, drop_after)) = wrap.mem_leaf_params.get(pi).copied().flatten() {
                     let (buf, ctr) =
                         scratch.expect("a memory-bearing leaf param needs the scratch locals");
-                    emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
+                    match kind {
+                        // String/Bytes: a raw UTF-8/byte copy-in (the copied byte-leaf IS the value).
+                        MemLeafKind::Str | MemLeafKind::Bytes => {
+                            emit_bytes_leaf_copy_in(leaf, buf, ctr, &imp, &mut inner); // → [buf]
+                        }
+                        // list<Int64>: build a value-heap vec by reading + boxing each element.
+                        MemLeafKind::ListS64 => {
+                            emit_list_s64_leaf_lift(leaf, buf, ctr, &imp, &mut inner); // → [vec]
+                        }
+                    }
                     leaf += 2; // the string/list flattened to (ptr, len)
                     if drop_after {
                         // The def borrows this param; save the handle (it stays on the stack as the def arg)
@@ -2880,6 +2894,83 @@ fn emit_bytes_leaf_copy_in(
     out.push(op::END); // end loop
     out.push(op::END); // end block
     // leave buf on the stack for the caller's arr-set
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out);
+}
+
+/// Emit the lift for one top-level `list<Int64>` param: the list crossed the boundary as `(ptr, len)` at
+/// flattened core params `ptr_leaf` / `ptr_leaf + 1` (len = the ELEMENT count). Build a value-heap vec
+/// (`vec-empty`) and loop `j in 0..len` pushing `box-int(i64.load(ptr + j*8))` — each element read at its
+/// natural 8-byte stride in the canonical `list<s64>` layout, boxed, and `vec-push`ed. Leaves the vec handle
+/// on the stack (the caller passes it as the def arg directly). `buf`/`ctr` are the two reusable scratch
+/// locals; stack-balanced (`[]->[handle]`). An empty list (`len == 0`) yields the fresh empty vec. Slice 2a
+/// is Int64 elements only (one load width + `box-int`, no extend); other element widths decline upstream.
+fn emit_list_s64_leaf_lift(
+    ptr_leaf: u32,
+    buf: u32,
+    ctr: u32,
+    imp: &dyn Fn(&str) -> u64,
+    out: &mut Vec<u8>,
+) {
+    use crate::backend::wasm::wasm_abi::op;
+    let len_leaf = ptr_leaf + 1;
+    // buf = vec-empty()
+    out.push(op::CALL);
+    uleb128(imp("vec-empty"), out);
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    // ctr = 0
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(0, out);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    // block { loop { if ctr >= len br 1; buf = vec-push(buf, box-int(i64.load(ptr + ctr*8))); ctr += 1; br 0 } }
+    out.push(op::BLOCK);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    out.push(op::LOOP);
+    out.push(crate::backend::wasm::wasm_abi::BLOCK_EMPTY);
+    // if ctr >= len -> br 1 (exit)
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(len_leaf as u64, out);
+    out.push(op::I32_GE_U);
+    out.push(op::BR_IF);
+    uleb128(1, out);
+    // buf = vec-push(buf, box-int(i64.load(ptr + ctr*8)))
+    out.push(op::LOCAL_GET);
+    uleb128(buf as u64, out); // [buf]
+    // addr = ptr + ctr*8
+    out.push(op::LOCAL_GET);
+    uleb128(ptr_leaf as u64, out);
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(8, out);
+    out.push(op::I32_MUL);
+    out.push(op::I32_ADD); // [buf, addr]
+    out.push(op::I64_LOAD);
+    uleb128(3, out); // align (log2) = 3 (natural i64)
+    uleb128(0, out); // offset 0
+    out.push(op::CALL);
+    uleb128(imp("box-int"), out); // [buf, boxed]
+    out.push(op::CALL);
+    uleb128(imp("vec-push"), out); // [buf']
+    out.push(op::LOCAL_SET);
+    uleb128(buf as u64, out);
+    // ctr += 1
+    out.push(op::LOCAL_GET);
+    uleb128(ctr as u64, out);
+    out.push(op::I32_CONST);
+    crate::backend::wasm::encode::sleb128(1, out);
+    out.push(op::I32_ADD);
+    out.push(op::LOCAL_SET);
+    uleb128(ctr as u64, out);
+    out.push(op::BR);
+    uleb128(0, out);
+    out.push(op::END); // end loop
+    out.push(op::END); // end block
+    // leave the vec handle on the stack for the def call
     out.push(op::LOCAL_GET);
     uleb128(buf as u64, out);
 }
