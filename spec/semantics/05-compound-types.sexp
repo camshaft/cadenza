@@ -20088,3 +20088,55 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 3 Int64)))
+
+; -- breaker batch 455 (2026-08-27): the deforestation DISCRIMINATOR, localized. Batch 454 found
+; d5 (user sum) fuses while Option/Result leak; this quad proves the divide is GENERICITY x HEAP
+; PAYLOAD, not prelude-ness. df1 differs from df2 ONLY in the type parameter; df2 differs from df3
+; ONLY in payload heap-ness. The construct-then-destructure of a GENERIC sum with a HEAP payload
+; is the one cell that does not fuse (and leaks its shells — same 3 as Option's d4); every other
+; cell compiles to pure scalars with no heap at all. This is the minimal repro pair for the
+; #3860/#3833 implementer: make df2 read like df1.
+
+(case "df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely"
+  (input (do
+    (type MyOpt (MySome (List Int64)) (MyNone))
+    (def (main (: n Int64))
+      (match (if (> n 0) (MyOpt.MySome (list n (+ n 1))) MyOpt.MyNone)
+        ((MyOpt.MySome (list a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "df2 a GENERIC user sum at a heap list payload leaks its shells like Option (the one non-fusing cell)"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (match (if (> n 0) (GBox.GFull (list n (+ n 1))) (GBox.GEmpty unit))
+        ((GBox.GFull (list a b)) (+ a b))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 11 Int64))
+  (live-objects known-leak 3))
+
+(case "df3 the SAME generic sum at a scalar payload deforests completely"
+  (input (do
+    (type (GBox a) (GFull a) (GEmpty unit))
+    (def (main (: n Int64))
+      (match (if (> n 0) (GBox.GFull n) (GBox.GEmpty unit))
+        ((GBox.GFull v) (* v 2))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "df4 prelude Option at a scalar payload deforests completely (the leak needs the heap payload)"
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Option.Some n) Option.None)
+        ((Option.Some v) (* v 2))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 10 Int64)))
