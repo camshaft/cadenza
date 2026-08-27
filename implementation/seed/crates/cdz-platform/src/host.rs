@@ -70,13 +70,12 @@ use crate::contract_value::{ascribe, bare_ctor, record, uint_leaf, unit};
 use arg_probe_world::cadenza::test_arg_probe::arg_probe as ap;
 use cadenza_ast::ast::{Builder, Leaf, Radix, StructId};
 use cadenza_ast::codec;
-use num_bigint::BigInt;
 
 /// A signed-integer value leaf. The value model's integer is arbitrary-precision (`Leaf::Int`); the target
 /// type fixes width/signedness. Used for `mixed.big` (s64) and `probe-record.tag` (s64).
 fn int_leaf(b: &mut Builder, value: i64) -> StructId {
     b.atom_leaf(Leaf::Int {
-        value: BigInt::from(value),
+        value: cadenza_ast::ast::IntValue::from_i64(value),
         radix: Radix::Dec,
     })
 }
