@@ -14049,39 +14049,6 @@ mod runtime_ops {
     // byte-neutrality of the single-use case is what keeps the gate unchanged.
 
     #[test]
-    fn a_multi_use_runtime_binding_is_computed_once_and_reused() {
-        // `(let ((s (+ a b))) (+ s s))` over runtime params: `s` is a runtime add used TWICE, so it is
-        // named (computed once) and added to itself. (10+20)=30, 30+30=60 — the value is correct
-        // regardless of sharing; sharing is what makes `(+ a b)` emit once rather than twice.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(let ((s (+ a b))) (+ s s))",
-                &[Val::S64(10), Val::S64(20)]
-            ),
-            60
-        );
-    }
-
-    #[test]
-    fn a_named_binding_computes_its_value_exactly_once() {
-        // Proof the value is computed ONCE, not per use: bind `s = (+ a b)` where `(+ a b)` would TRAP
-        // on overflow, use it twice. If it were inlined (recomputed) the trap would still fire once, so
-        // that can't distinguish sharing — instead pin the OBSERVABLE arithmetic: `s = a - b` used in
-        // `(+ s s)`. With a=big, the single computed `s` doubles exactly; a recompute would give the
-        // same value, so this asserts correctness of the shared path (the byte-count is asserted
-        // separately below). (7-4)=3, 3+3=6.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(let ((s (- a b))) (+ s s))",
-                &[Val::S64(7), Val::S64(4)]
-            ),
-            6
-        );
-    }
-
-    #[test]
     fn a_named_binding_emits_its_value_computation_once_in_the_bytes() {
         // The SHARING is observable in the emitted code size: naming `s = (+ a b)` and using it twice
         // must emit the `i64.add` for `(+ a b)` ONCE (then read the slot twice), not twice. Compare the
@@ -14195,21 +14162,6 @@ mod runtime_ops {
         let named = func("(: a Int64)", "(let ((k (+ 1 2))) (+ k k))");
         let konst = func("(: a Int64)", "6");
         assert_eq!(named, konst, "a constant binding folds; nothing is named");
-    }
-
-    #[test]
-    fn a_let_star_binding_named_for_a_later_initializer() {
-        // `let*` scoping: a binding used by a LATER sibling initializer (not just the body) is still
-        // counted and named. `(let ((s (+ a b)) (t (+ s s))) (+ t 1))` — `s` is used twice inside `t`'s
-        // initializer, so it is named. (3+4)=7, (7+7)=14, 14+1=15.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(let ((s (+ a b)) (t (+ s s))) (+ t 1))",
-                &[Val::S64(3), Val::S64(4)]
-            ),
-            15
-        );
     }
 
     #[test]
@@ -14658,30 +14610,6 @@ mod runtime_ops {
              alloc-free replacement must REVERSE-scan the top meta block and BREAK, not forward-scan the \
              wide meta record — the `203f8588` O(N²)): max per-call scan depth at 40 ops = {d40}, at 320 \
              ops = {d320} (must stay constant/small — a width-proportional scan would grow ~8×)"
-        );
-    }
-
-    #[test]
-    fn a_multi_use_binding_of_a_comparison_names_the_bool() {
-        // The named value need not be an integer — a runtime comparison used twice is named too (its
-        // slot is an i32). `(let ((p (< a b))) (if p (if p 1 2) 3))` — `p` used twice. a<b true → the
-        // inner `(if p 1 2)` → 1.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(let ((p (< a b))) (if p (if p 1 2) 3))",
-                &[Val::S64(1), Val::S64(9)]
-            ),
-            1
-        );
-        // a>=b false → 3.
-        assert_eq!(
-            run::<i64>(
-                "(: a Int64) (: b Int64)",
-                "(let ((p (< a b))) (if p (if p 1 2) 3))",
-                &[Val::S64(9), Val::S64(1)]
-            ),
-            3
         );
     }
 

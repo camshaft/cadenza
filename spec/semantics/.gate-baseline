@@ -2710,6 +2710,8 @@ pass	a multi-site arm's resume value routes through a pure helper call
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
+pass	a multi-use runtime bool binding is reused in a nested condition
+pass	a multi-use runtime let binding is computed once and reused (value-transparent)
 pass	a multi-use runtime list do-def escapes an if-select inside a match arm and stays live
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
@@ -2759,6 +2761,7 @@ pass	a named higher-order function receives a lambda argument
 pass	a named multi-argument function applies in explicit curried form
 pass	a named multi-argument function applies to all its arguments at once
 pass	a named rate unit converts to the reference rate (Float)
+pass	a named runtime binding computes its value exactly once
 pass	a named variant-with-payload field in a record result crosses the export boundary on both arms
 pass	a named width alias and its width-indexed expansion name the same type
 pass	a named-variant result writer name-matches (not positionally) with a reversed guest decl (via an imposed WIT world)
@@ -3917,6 +3920,7 @@ pass	a sequencing block discards a pure compound intermediate
 pass	a sequencing block discards a pure list intermediate
 pass	a sequencing block whose last form is unit yields unit
 pass	a sequencing block yields the value of its last form
+pass	a sequential let binding names an earlier binding in a later initializer
 pass	a set accumulator is queried for membership after building
 pass	a set as a map value: runtime membership tested through the lookup
 pass	a set built at run time escapes to the host as its value form
