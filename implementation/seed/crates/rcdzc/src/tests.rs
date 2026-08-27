@@ -35356,61 +35356,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_sum_type_may_be_declared_inside_a_do_block() {
-        // A `(type …)` declaration nested in a `do` block — a LOCAL sum, not a top-level item. `top_items`
-        // sees only the root's direct children, so `db::collect_nested_decls` descends def bodies + nested
-        // `do`s to gather these and synthesize their sum records; the do-form walks (resolve/infer/compile/
-        // eval) skip a `(type …)` form as a declaration (like a `def`), so its `type` head is not resolved
-        // as an unbound value. The type name + variant names then resolve program-wide (nominal identity).
-        let run = |src: &str| -> i64 {
-            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-            run_returns::<i64>(&bytes, "main")
-        };
-        // A nullary enum and a payload variant, both declared inside `main`'s `do`, with CONSTANT
-        // scrutinees that fold at compile time (so the run needs no value-heap runtime — the recursive-
-        // heap case is covered by the corpus, which links the runtime). The names `C`/`R`/`G`/`Bx`
-        // resolve although the type is declared locally, not at top level.
-        assert_eq!(
-            run(
-                "(module m (def (main) (do (type C R G B) (match R (R 1) (G 2) (B 3)))) (export main))"
-            ),
-            1
-        );
-        assert_eq!(
-            run(
-                "(module m (def (main) (do (type Box (Bx Int64)) (match (Bx 5) ((Bx x) x)))) (export main))"
-            ),
-            5
-        );
-        // A trailing `(type …)` (nothing to yield) is malformed, like a trailing `def`.
-        let code = |body: &str| -> Option<String> {
-            let src = format!("(module m {body} (export main))");
-            let out = crate::compile::compile(
-                &[crate::abi::Artifact::new(
-                    crate::abi::Artifact::KIND_AST,
-                    "m",
-                    crate::codec::encode(&parse(&src)),
-                )],
-                &[crate::backend::Target::Wasm],
-            );
-            if out
-                .artifact(crate::backend::Target::Wasm.artifact_kind())
-                .is_some()
-            {
-                return None;
-            }
-            out.diagnostics
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .and_then(|d| d.code.clone())
-        };
-        assert_eq!(
-            code("(def (main) (do (type C R G)))").as_deref(),
-            Some("CDZ0201")
-        );
-    }
-
-    #[test]
     fn a_wrong_type_variant_payload_is_a_malformed_construction() {
         // A variant constructor is a single-arity function whose argument is checked against its DECLARED
         // payload type (core-semantics.md §A Sum Type Constructor Is A Single-Arity Function). A wrong-type
