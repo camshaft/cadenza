@@ -46442,64 +46442,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_pure_one_hole_fold_passes_a_perform_arg_and_reads_the_seed_state() {
-        // The perform may take a PURE non-trivial ARG the op reads, and the arm may read the SEED state —
-        // both substitute correctly on the pure spine (nothing runs before the perform, so the state seen
-        // is the init seed). (A) `pick(x)` resumes `x*2`; body `(+ 1 (Amb.pick (+ 2 3)))`, arm
-        // `(+ 0 (resume (* x 2) s))`, x=5 → resume 10, `C=(+ 1 □)` → `(+ 0 (+ 1 10))` = 11.
-        let arg_passing = "(do (effect Amb (op pick (-> Int64 Int64))) \
-                   (def (main) (handle Amb 0 ((pick (x) s (+ 0 (resume (* x 2) s)))) (+ 1 (Amb.pick (+ 2 3))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(arg_passing)))
-                    .expect("a perform arg passes through the fold"),
-                "main"
-            ),
-            11
-        );
-        // (B) the arm READS the state `(+ s (resume 10 s))` with a NON-ZERO seed 7. On a pure spine the
-        // state at the perform is the seed, so `s = 7`; `C=(+ 100 □)` → `(+ 7 (+ 100 10))` = 117.
-        let reads_seed = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 7 ((flip (u) s (+ s (resume 10 s)))) (+ 100 (Amb.flip)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(reads_seed)))
-                    .expect("a state-reading arm folds against the seed"),
-                "main"
-            ),
-            117
-        );
-    }
-
-    #[test]
-    fn a_pure_one_hole_locates_the_hole_at_a_non_leading_and_a_nested_position() {
-        // The hole may be at a NON-LEADING operand and NESTED several operators deep — `splice_context`
-        // locates the sole perform occurrence by identity, so pure siblings on either side and enclosing
-        // operators are preserved. `C = (- 200 □)`, arm `(+ 1 (resume 10 s))` → `(+ 1 (- 200 10))` = 191.
-        let non_leading = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- 200 (Amb.flip)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(non_leading)))
-                    .expect("hole at a non-leading operand folds"),
-                "main"
-            ),
-            191
-        );
-        // `C = (+ 1 (* 3 □))`, arm `(+ 1 (resume 10 s))` → `(+ 1 (+ 1 (* 3 10)))` = 32.
-        let nested = "(do (effect Amb (op flip (-> Unit Int64))) \
-                   (def (main) (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (* 3 (Amb.flip))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(nested)))
-                    .expect("hole nested deep folds"),
-                "main"
-            ),
-            32
-        );
-    }
-
-    #[test]
     fn a_pure_one_hole_fold_that_would_be_ill_typed_is_rejected_not_miscompiled() {
         // SOUNDNESS: the fold is a source-to-source rewrite that then TYPE-CHECKS normally, so a fold that
         // produces an ill-typed term REJECTS rather than miscompiles. Here `C = (< □ 5)` : Bool, so the arm
@@ -46510,53 +46452,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a fold that yields an ill-typed term (+ over Bool) must be rejected, not miscompiled"
-        );
-    }
-
-    #[test]
-    fn a_perform_threads_through_strict_one_operand_forms() {
-        // E-fold arms for `not` / projection / member / annotation — STRICT one-operand forms that had no
-        // thread arm (a perform inside declined, though `if`/`match` fold). Each threads its operand:
-        //   `(not (= (Get.next) 0))` seed 0 → Get reads 0, `= 0` true, `not` → false → arm 2.
-        //   `(. (tuple (Get.next) (Get.next)) 1)` seed 10 → second Get reads 11 → projects 11.
-        let neg = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(neg))).expect("not threads"),
-                "main"
-            ),
-            2
-        );
-        let proj = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle Get 10 ((next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(proj)))
-                    .expect("projection threads"),
-                "main"
-            ),
-            11
-        );
-    }
-
-    #[test]
-    fn a_short_circuit_connective_with_a_perform_preserves_short_circuit() {
-        // E-fold `and`/`or` arm: a connective's rhs runs only conditionally, so threading it strictly would
-        // evaluate rhs's perform even when `lhs` short-circuits. The arm DESUGARS to `if` (`(or lhs rhs)` ≡
-        // `(if lhs true rhs)`), so rhs is a branch run only on the taken path. Here `(or true (= (Get.next)
-        // 99))` short-circuits on `true`, so the rhs `Get.next` does NOT advance state — the following
-        // `(Get.next)` then reads 0 (not 1). Pins that the desugar preserves short-circuit evaluation.
-        let src = "(do (effect Get (op next (-> Unit Int64))) \
-                   (def (main) (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a short-circuit connective with a perform folds"),
-                "main"
-            ),
-            0,
-            "the short-circuited rhs did not advance state, so the branch Get reads 0"
         );
     }
 

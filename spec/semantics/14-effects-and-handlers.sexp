@@ -7783,6 +7783,79 @@
             (export main)))
   (output (: 22 Int64)))
 
+(case "a pure one-hole fold passes a PURE perform-arg the op reads"
+  (doc    "The perform may take a PURE non-trivial ARG the op reads, substituting on the pure spine. `pick(x)`
+           resumes `x*2`; body `(+ 1 (Amb.pick (+ 2 3)))`, arm `(+ 0 (resume (* x 2) s))`, x=5 → resume 10,
+           C=(+ 1 □) → `(+ 0 (+ 1 10))` = 11.")
+  (input  (do
+            (effect Amb (op pick (-> Int64 Int64)))
+            (def (main)
+              (handle Amb 0 ((pick (x) s (+ 0 (resume (* x 2) s)))) (+ 1 (Amb.pick (+ 2 3)))))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a pure one-hole arm reading the SEED state folds against a non-zero seed"
+  (doc    "The arm READS the state `(+ s (resume 10 s))` with a NON-ZERO seed 7. On a pure spine the state at
+           the perform is the seed, so s = 7; C=(+ 100 □) → `(+ 7 (+ 100 10))` = 117.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 7 ((flip (u) s (+ s (resume 10 s)))) (+ 100 (Amb.flip))))
+            (export main)))
+  (output (: 117 Int64)))
+
+(case "a pure one-hole locates the hole at a NON-LEADING operand"
+  (doc    "The hole may be at a non-leading operand: `C = (- 200 □)`, arm `(+ 1 (resume 10 s))` →
+           `(+ 1 (- 200 10))` = 191. `splice_context` locates the sole perform by identity, preserving pure
+           siblings.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (- 200 (Amb.flip))))
+            (export main)))
+  (output (: 191 Int64)))
+
+(case "a pure one-hole locates the hole NESTED several operators deep"
+  (doc    "The hole may be nested several operators deep: `C = (+ 1 (* 3 □))`, arm `(+ 1 (resume 10 s))` →
+           `(+ 1 (+ 1 (* 3 10)))` = 32.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main)
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ 1 (* 3 (Amb.flip)))))
+            (export main)))
+  (output (: 32 Int64)))
+
+(case "a perform threads through a NOT / boolean one-operand form"
+  (doc    "Strict one-operand forms (`not`, projection) thread their operand. `(not (= (Get.next) 0))` seed 0
+           → Get reads 0, `= 0` true, `not` → false → the if takes the else arm 2.")
+  (input  (do
+            (effect Get (op next (-> Unit Int64)))
+            (def (main)
+              (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (not (= (Get.next) 0)) 1 2)))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a perform threads through a tuple PROJECTION one-operand form"
+  (doc    "A projection threads its operand: `(. (tuple (Get.next) (Get.next)) 1)` seed 10 → the two Gets read
+           10 then 11 in order, and `. _ 1` projects the second = 11.")
+  (input  (do
+            (effect Get (op next (-> Unit Int64)))
+            (def (main)
+              (handle Get 10 ((next (u) s (resume s (+ s 1)))) (. (tuple (Get.next) (Get.next)) 1)))
+            (export main)))
+  (output (: 11 Int64)))
+
+(case "a short-circuit connective with a perform in the RHS preserves short-circuit (rhs not run)"
+  (doc    "A connective's rhs runs only conditionally; the E-fold desugars `(or lhs rhs)` to `(if lhs true
+           rhs)` so a rhs perform runs only on the taken path. `(or true (= (Get.next) 99))` short-circuits on
+           `true`, so the rhs `Get.next` does NOT advance state — the following `(Get.next)` reads 0 (not 1).")
+  (input  (do
+            (effect Get (op next (-> Unit Int64)))
+            (def (main)
+              (handle Get 0 ((next (u) s (resume s (+ s 1)))) (if (or true (= (Get.next) 99)) (Get.next) 0)))
+            (export main)))
+  (output (: 0 Int64)))
+
 (case "a pure one-hole in a let BODY (pure init) folds"
   (doc    "A hole in the BODY of a let whose init is pure is a strict-spine position with a uniform
            continuation. `C = (let ((x 5)) (+ x □))`, resume 10 → `(+ 5 10)` = 15; arm `(+ 1 (resume 10 s))`
