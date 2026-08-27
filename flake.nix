@@ -3181,16 +3181,14 @@
           #                   nixpkgs pins 0.21.1 — the exact version the recorded REQUIRED_RUNTIME_HASH
           #                   was produced with, so the devShell build reproduces the committed hash.
           # NOT added: anything a specific later derivation needs — those go in that derivation's
-          # own inputs (N1+), not this shared shell, to keep cache invalidation fine-grained.
-          #   lean4         : the Lean 4 toolchain (lean + lake) for the oracle-lean differential
-          #                   oracle (implementation/oracle-lean/). `nix develop` then has `lake` so
-          #                   the oracle can be built/edited in-shell (design L0.1). It is otherwise
-          #                   scoped to its own `.#oracle-lean` derivation for fine-grained caching.
+          # own inputs (N1+), not this shared shell, to keep cache invalidation fine-grained. In
+          # particular the oracle-lean lane's `lean4` (a 2.5GiB-unpacked single-lane toolchain) lives
+          # in `devShells.oracle` below, NOT here — so the ~40 agents that `nix develop` the default
+          # shell don't pull it into their dev closure (v-nix flake-owner closure-hygiene, 2026-08-27).
           packages = [
             rustToolchain
             pkgs.wasm-tools
             pkgs.cargo-component
-            pkgs.lean4
           ];
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
@@ -3204,6 +3202,21 @@
           shellHook = ''
             export CDZ_STORE="${componentStore}"
             echo "cdz: CDZ_STORE → nix component store ($CDZ_STORE)"
+          '';
+        };
+
+        # The oracle-lean lane's dev shell: `nix develop .#oracle` gets the default toolchain PLUS
+        # `lean4` (lean + lake) for building/editing the Lean differential oracle
+        # (implementation/oracle-lean/). Kept OUT of the shared default (v-nix flake-owner
+        # closure-hygiene, 2026-08-27): lean4 is a single-lane 2.5GiB-unpacked toolchain, so only the
+        # oracle lane pulls it. `inputsFrom` inherits the default shell's toolchain (rustToolchain +
+        # wasm-tools + cargo-component); the shellHook re-points CDZ_STORE the same way.
+        devShells.oracle = pkgs.mkShell {
+          inputsFrom = [ self.devShells.${system}.default ];
+          packages = [ pkgs.lean4 ];
+          shellHook = ''
+            export CDZ_STORE="${componentStore}"
+            echo "cdz: oracle dev shell (lean4 + lake); CDZ_STORE → nix component store ($CDZ_STORE)"
           '';
         };
 
