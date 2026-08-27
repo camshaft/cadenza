@@ -4059,12 +4059,41 @@ fn op_map_len(m: Handle) -> u32 {
 // rather than share), so `dup`'s call sites arrive when a construct first shares a handle.
 
 /// `dup` — a new reference to `h` is being retained: increment its refcount. Null is a no-op.
+/// The reserved refcount sentinel of an IMMORTAL heap node (a build-once static held by a module global for
+/// the whole instance). `dup`/`drop` are NO-OPS on it (it is never retained or freed), and it is excluded
+/// from the live-objects census — an immortal is not a leak, exactly like the inline `IMM_UNIT`. `u32::MAX`
+/// is safe as the sentinel: it is unreachable by real refcounting (it would require 4 billion live dups),
+/// and being `!= 1` it makes every FBIP `rc == 1` in-place path conservatively path-copy, so a shared
+/// immortal is never mutated. Set by `op_mark_immortal`; checked by `op_dup`/`op_drop`.
+const IMMORTAL: u32 = u32::MAX;
+
+/// `mark-immortal(handle)` (heap index 95) — convert a freshly-built heap node into an IMMORTAL one (see
+/// [`IMMORTAL`]): its refcount becomes the sentinel so `dup`/`drop` no-op on it and it leaves the census.
+/// The node was already counted at `alloc`, so converting it DECREMENTS the census (debug counter) to net it
+/// to zero. Idempotent (a re-mark does not double-decrement). An immediate has no node and is returned
+/// unchanged (already census-free + rc-noop). GENERAL over any heap node; returns the same handle.
+fn op_mark_immortal(h: Handle) -> Handle {
+    if is_immediate(h) {
+        return h;
+    }
+    if let Some(node) = unsafe { h.0.as_mut() }
+        && node.rc != IMMORTAL
+    {
+        node.rc = IMMORTAL;
+        #[cfg(any(test, feature = "debug-counters"))]
+        LIVE_NODES.with(|n| n.set(n.get() - 1));
+    }
+    h
+}
+
 fn op_dup(h: Handle) {
     if is_immediate(h) {
         return; // an immediate owns no heap — nothing to retain
     }
     if let Some(node) = unsafe { h.0.as_mut() } {
-        node.rc += 1;
+        if node.rc != IMMORTAL {
+            node.rc += 1; // an IMMORTAL node is never retained (dup is a no-op — the global owns it forever)
+        }
     }
 }
 
@@ -4107,6 +4136,10 @@ fn op_drop(root: Handle) {
         Some(n) => n,
         None => return, // null — benign
     };
+    if node.rc == IMMORTAL {
+        return; // an IMMORTAL node is never freed (a module global holds it) — drop is a no-op. MUST come
+                // before the `rc > 1` decrement, else the sentinel would erode toward 1 and free the static.
+    }
     if node.rc > 1 {
         node.rc -= 1; // shared: cheapest path, no reclamation
         return;
@@ -4156,6 +4189,10 @@ fn op_drop(root: Handle) {
             Some(n) => n,
             None => continue, // null child slot — benign
         };
+        if n.rc == IMMORTAL {
+            continue; // an IMMORTAL child (e.g. a shared build-once static nested in a dying compound) is
+                      // never freed and its count is untouched — skip it, do not decrement toward freeing.
+        }
         if n.rc > 1 {
             n.rc -= 1; // shared child survives; freed only when its last owner drops it
             continue;
@@ -6376,6 +6413,11 @@ impl Guest for Component {
     }
     fn ast_decode(bytes_handle: u32, discs: u32) -> u32 {
         op_ast_decode(Handle::from_u32(bytes_handle), Handle::from_u32(discs)).to_u32()
+    }
+    // mark-immortal (index 95) — convert a build-once static heap node to IMMORTAL (dup/drop no-op +
+    // census-excluded). See `op_mark_immortal`.
+    fn mark_immortal(handle: u32) -> u32 {
+        op_mark_immortal(Handle::from_u32(handle)).to_u32()
     }
     // Value-form COMPARE (index 86) — the blessed three-way order over two runtime compound values of the
     // same type, guided by the compiler-baked shape `desc` (read exactly as `value-encode` reads it). BORROWS
@@ -19773,6 +19815,48 @@ mod tests {
         assert_eq!(op_bytes_len(c), 4);
         assert_eq!(bytes_to_vec(c), vec![1, 2, 3, 4]);
         op_drop(c);
+    }
+
+    /// `mark-immortal` (index 95): converting a build-once static heap node makes it CENSUS-EXCLUDED (the
+    /// live-objects count nets to zero — an immortal held by a module global is not a leak) and makes
+    /// `dup`/`drop` NO-OPS on it (the global owns it for the whole instance; a consumer's `global.get` +
+    /// harmless no-op drop reads it intact). Deltas from a captured baseline (`reset` is a no-op here).
+    #[test]
+    fn mark_immortal_census_excluded_and_dup_drop_noop() {
+        let base = LIVE_NODES.with(|n| n.get());
+        let s = bytes_leaf(&[1, 2, 3]);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base + 1,
+            "one live node after building the static"
+        );
+        let s = op_mark_immortal(s);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "an immortal is excluded from the census (nets to zero, like IMM_UNIT)"
+        );
+        assert_eq!(node_rc(s), IMMORTAL, "rc is the IMMORTAL sentinel");
+        op_dup(s);
+        assert_eq!(node_rc(s), IMMORTAL, "dup is a no-op on an immortal (never retained)");
+        op_drop(s);
+        assert_eq!(node_rc(s), IMMORTAL, "drop is a no-op on an immortal (never freed)");
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "census unchanged across dup/drop of an immortal"
+        );
+        assert_eq!(
+            bytes_to_vec(s),
+            vec![1, 2, 3],
+            "the immortal Bytes is readable intact after dup/drop (a consumer's bare global.get)"
+        );
+        let _ = op_mark_immortal(s);
+        assert_eq!(
+            LIVE_NODES.with(|n| n.get()),
+            base,
+            "re-marking an already-immortal node does not double-decrement the census"
+        );
     }
 
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
