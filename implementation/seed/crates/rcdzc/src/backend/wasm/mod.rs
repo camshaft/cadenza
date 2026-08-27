@@ -1026,9 +1026,23 @@ pub fn emit(
         // INPUT is not yet a surface type), so its faithful primitive byte is required.
         let mut params = Vec::new();
         for (_, ty) in &e.params {
-            let vt = serialize::export_result_valtype(ty, &db.name_ctx())
-                .map_err(Reject::decline)?
-                .ok_or_else(|| Reject::decline("a parameter type has no component valtype"))?;
+            // A scalar param crosses as its component primitive. A compound/heap param (record/tuple/sum/
+            // list/string/…) has NO scalar boundary valtype and declines here — but it is a PARAMETER, not a
+            // result, so do NOT surface `export_result_valtype`'s result-phrased message ("returning a … on
+            // the multi-export boundary", doubly wrong for a param). Name the PARAM constraint truthfully.
+            // (A memory-bearing String/Bytes/list or an option param on a SINGLE export is lifted by the
+            // entry-param wrapper above; a record/tuple/other compound entry param is a later slice.)
+            let vt = match serialize::export_result_valtype(ty, &db.name_ctx()) {
+                Ok(Some(vt)) => vt,
+                _ => {
+                    return Err(Reject::decline(format!(
+                        "parameter `{}` of `{}` has no scalar boundary representation — a non-scalar entry \
+                         parameter is not yet emitted on this export path",
+                        ty.render_name(&db.name_ctx()),
+                        e.name
+                    )));
+                }
+            };
             params.push(vt);
         }
         boundary.push(BoundaryExport {
