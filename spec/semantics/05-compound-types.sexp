@@ -19937,3 +19937,27 @@
   (call main (: 5 Int64))
   (output (: 2 Int64))
   (live-objects 0))
+
+; -- breaker batch 443 (2026-08-27): EXACT-N live-objects assertions for compound-RETURNING cases —
+; the pattern that makes the ~690 'un-checkable' result-surviving cases checkable: a returned
+; 2-element list keeps exactly its own 2 cells alive (rlv0), and a discarded sibling temporary
+; reclaims while the count stays exactly the result (rlv1 — residue-beyond-the-result would read >2).
+; Proposed to v-nix as the mechanical pattern (N = the expected output's cell count). wasm-only rows.
+
+(case "rlv0 a returned 2-element list keeps exactly its own 2 cells alive"
+  (input (do
+    (def (main (: n Int64)) (if (> n 0) (list n (+ n 1)) (list 9)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (list 5 6) (List Int64)))
+  (live-objects 2))
+
+(case "rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result"
+  (input (do
+    (def (main (: n Int64))
+      (let ((tmp (if (> n 0) (list n n n) (list 9))))
+        (if (> (List.len tmp) 1) (list n (+ n 1)) (list 0))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: (list 5 6) (List Int64)))
+  (live-objects 2))
