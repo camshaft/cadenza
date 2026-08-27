@@ -4280,6 +4280,21 @@
   (input  (and true 1))
   (error  CDZ0201))
 
+(case "an or connective with a non-boolean operand is a type error"
+  (doc    "The `or` companion of the `and` case above: `(or 5 false)` gives an Int64 where a Bool operand
+           is required. Each operand of a boolean connective is type-checked as a Bool whether or not it is
+           evaluated (core-semantics.md #Boolean Connectives Short-Circuit), so the non-Bool operand is
+           rejected CDZ0201 — the rule holds for `or`, not only `and`.")
+  (input  (or 5 false))
+  (error  CDZ0201))
+
+(case "a not connective with a non-boolean operand is a type error"
+  (doc    "The unary `not` companion: `(not 7)` negates an Int64, but `not` requires a Bool operand, so it
+           is rejected CDZ0201. Pins that the Bool-operand discipline covers the unary connective too, not
+           only the binary `and`/`or`.")
+  (input  (not 7))
+  (error  CDZ0201))
+
 (case "a recursive function that threads a tuple accumulator returns it"
   (doc    "A recursive function whose result is a TUPLE in every branch — a `(value, cursor)` accumulator
            threaded through the recursion — MUST compile and return that tuple. `go` returns `(tuple acc 0)`

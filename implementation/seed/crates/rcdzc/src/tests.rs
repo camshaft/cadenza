@@ -22809,25 +22809,6 @@ mod match_engine {
     // through" gap the increment-2 note records).
 
     #[test]
-    fn a_boolean_connective_operand_must_be_bool() {
-        // A non-Bool operand is a MALFORMED program (CDZ0201) — the operand is not the required Bool, like
-        // a binary operator's operand — NOT the structural-shape mismatch (CDZ0203) a cross-kind branch
-        // disagreement is (02-binding "a boolean connective with a non-boolean operand is a type error").
-        assert_eq!(
-            reject_code("(module m (def (main) (and true 1)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        assert_eq!(
-            reject_code("(module m (def (main) (or 5 false)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-        assert_eq!(
-            reject_code("(module m (def (main) (not 7)) (export main))").as_deref(),
-            Some("CDZ0201")
-        );
-    }
-
-    #[test]
     fn a_nullary_variant_applied_to_a_non_unit_payload_is_rejected() {
         // core-semantics.md §A Sum Type Constructor Is A Single-Arity Function: "A nullary variant MUST be
         // a constructor whose argument type is Unit". Construction via application `(V unit)` must check
