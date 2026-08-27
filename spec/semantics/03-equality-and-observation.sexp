@@ -3443,3 +3443,34 @@
   (call main (: 1 Int64))
   (output (: 102001 Int64))
   (live-objects known-leak 3))
+
+; ── breaker batch 546: Float special values as CHAMP keys/elements — the hash/eq AGREEMENT cells.
+; Cadenza equality is canonical-byte (= -0.0 0.0) is FALSE (pinned above); these pin that the
+; content hash AGREES: a -0.0 key misses a 0.0 probe and hits -0.0; canonical NaN self-contains
+; and round-trips as a key. A hash/eq divergence here = silent lookup misses.
+
+(case "fk1 a -0.0 Map key misses a 0.0 probe and hits a -0.0 probe (lookup agrees with canonical-byte equality)"
+  (input (do (def (main (: n Int64))
+  (let ((m (Map.insert (Map.empty) (if (> n 0) -0.0 1.5) 42)))
+    (+ (* 100 (match (Map.lookup m 0.0) ((Some v) v) ((None u) -1)))
+       (match (Map.lookup m -0.0) ((Some v) v) ((None u) -1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: -58 Int64))
+  (live-objects 0))
+
+(case "fk2 canonical NaN self-contains as a Set element"
+  (input (do (def (main (: n Int64))
+  (if (Set.contains (Set.insert (Set.of (list)) (if (> n 0) Float64.nan 1.5)) Float64.nan) 1000 0))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1000 Int64))
+  (live-objects 0))
+
+(case "fk3 canonical NaN round-trips as a Map key"
+  (input (do (def (main (: n Int64))
+  (match (Map.lookup (Map.insert (Map.empty) (if (> n 0) Float64.nan 2.5) 5) Float64.nan) ((Some v) v) ((None u) -1)))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 5 Int64))
+  (live-objects 0))

@@ -8875,3 +8875,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	fk1 a -0.0 Map key misses a 0.0 probe and hits a -0.0 probe (lookup agrees with canonical-byte equality)
+pass	fk2 canonical NaN self-contains as a Set element
+pass	fk3 canonical NaN round-trips as a Map key
