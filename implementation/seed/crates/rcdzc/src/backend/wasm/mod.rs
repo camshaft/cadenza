@@ -1465,6 +1465,41 @@ pub fn collect_static_bytes(db: &mut Db, order: &[usize]) -> Vec<Vec<u8>> {
     distinct
 }
 
+/// Collect the constant `Tuple`/`Record` ROOTS in the reachable program that are per-node-immortal-markable
+/// (`lower::is_markable_constant_compound`) — the §2d increment-6 build-once static-compound table. Each
+/// root is built ONCE as an immortal tree in the module `start` init and read with `global.get` at each use
+/// (a later emit slice), instead of the per-evaluation `arr-alloc` + boxed `arr-set` per element the backend
+/// emits today. On finding a markable compound, collect it and do NOT descend — its whole subtree (nested
+/// markable tuples/records, boxed scalars, bytes/string leaves) is built inline as part of THIS root's tree,
+/// not as separate globals. Keyed by node id (`StructId`), so two USES of the same constant compound node
+/// share one global; two structurally-identical DISTINCT literals get one each (structural interning is a
+/// later refinement). Empty for a program with no markable constant compound → no additions, byte-identical.
+pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast::StructId> {
+    let mut roots: Vec<crate::ast::StructId> = Vec::new();
+    let mut visited: std::collections::HashSet<crate::ast::StructId> =
+        std::collections::HashSet::new();
+    for &def in order {
+        let Ok(body) = def_body(db, def) else {
+            continue;
+        };
+        let mut stack = vec![body];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if crate::lower::is_markable_constant_compound(db, id) {
+                roots.push(id);
+                continue; // the whole subtree is built inline under this root — don't collect nested
+            }
+            let children = crate::backend::wasm::select::core_child_ids(db, id);
+            for &c in children.iter().rev() {
+                stack.push(c);
+            }
+        }
+    }
+    roots
+}
+
 /// The component functype item (`0x40 <params> <result>`) for a host op — its parameter and result
 /// COMPONENT valtype bytes (the faithful boundary primitives). Params are NAMED (`p0`, `p1`, …) as the
 /// component model requires. A SCALAR param is its `AbiValType::comp_byte`; a STRING param is the
