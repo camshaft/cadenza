@@ -412,3 +412,25 @@
               (def (main) (String.byte-len (host (M) (M.converse "hello")))) (export main)))
   (call   main)
   (output (: 10 Int64)))
+
+; ── breaker batch 542: the two peer-matrix cells the landed coverage misses — the heap-ARG
+; direction (consumer→provider lowering; the landed pcl/pcm cases are all RESULT-crossing) and
+; the cross-boundary CENSUS (peer-returned heap consumed ×50 must reclaim on the consumer side;
+; live-objects clauses verified working on peer cases).
+
+(case "pah1 a heap LIST argument crosses INTO the peer and is consumed by the provider (arg-direction lowering)"
+  (peer "cadenza:a/api" (do (def (sum (: xs (List Int64))) (match xs ((list) 0) ((list h .. t) (+ h (sum t))))) (export sum)))
+  (input (do (effect A (op sum (-> (List Int64) Int64))) (bind A "cadenza:a/api")
+             (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+             (def (main (: n Int64)) (host (A) (A.sum (bld n)))) (export main)))
+  (call main (: 4 Int64))
+  (output (: 10 Int64)))
+
+(case "pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)"
+  (peer "cadenza:a/api" (do (def (dup (: x Int64)) (list x x x)) (export dup)))
+  (input (do (effect A (op dup (-> Int64 (List Int64)))) (bind A "cadenza:a/api")
+             (def (frames (: k Int64)) (if (= k 0) 0 (host (A) (+ (List.len (A.dup k)) (frames (- k 1))))))
+             (def (main (: n Int64)) (frames n)) (export main)))
+  (call main (: 50 Int64))
+  (output (: 150 Int64))
+  (live-objects 0))
