@@ -852,7 +852,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 7 Int64) (: 5 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "generated string keys OVERWRITE by content and the first word's final value is observable"
   (doc    "The value-side companion: word→draw-index inserted per draw (collided keys OVERWRITE by
@@ -886,7 +886,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 31 Int64))
   (call main (: 99 Int64) (: 4 Int64)) (output (: 41 Int64))
   (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64))
-  (live-objects known-leak 18))
+  (live-objects known-leak 16))
 
 (case "symbols interned from GENERATED strings dedup by content in a symbol set"
   (doc    "The symbol-intern analogue: Symbol.of over generator-produced strings dedups by CONTENT
@@ -909,7 +909,7 @@
   (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
   (call main (: 99 Int64) (: 6 Int64)) (output (: 4 Int64))
   (call main (: 5 Int64) (: 2 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 1))
 
 (case "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
   (doc    "COMPOUND shrinking (the scalar shrink pins above search upward over integers): greedy

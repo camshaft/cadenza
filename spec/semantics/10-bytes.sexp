@@ -1023,7 +1023,7 @@
             (export main)))
   (call   main (: 16 UInt8)) (output (: 1001 Int64))
   (call   main (: 60 UInt8)) (output (: 1001 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 16))
 
 (case "a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit"
   (doc    "The encoder's inverse (the pin above reads the alphabet POSITIONALLY; the decoder must
@@ -1061,7 +1061,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 439816 Int64))
   (call   main (: 0 Int64)) (output (: -4 Int64))
-  (live-objects known-leak 207))
+  (live-objects known-leak 195))
 
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every

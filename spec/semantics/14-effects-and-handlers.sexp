@@ -674,7 +674,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 2271 Int64))
   (call main (: 2 Int64)) (output (: 2260 Int64))
-  (live-objects known-leak 3))
+  (live-objects 0))
 
 (case "an abortive handler discards a suspended body holding live rope and map handles"
   (doc    "The ABORT companion of the resume-boundary pin above: the body builds a rope (a do-def —
@@ -708,7 +708,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 621 Int64))
   (call main (: 2 Int64)) (output (: 600 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
@@ -4419,7 +4419,7 @@
                   (+ (* 100 (List.len xs)) (sum-snd xs 0 0)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 235 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "Set.to-list of the state crosses resume ORDERED — the body reads elements positionally"
   (doc    "The total-order contract surviving the marshal: the set {30, 5, 9} enumerates sorted
@@ -5685,7 +5685,7 @@
                     ((None _u) -200)))))
             (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"
   (doc    "The let-twin of the do-def perform-arg repro above — the semantically identical shape with the

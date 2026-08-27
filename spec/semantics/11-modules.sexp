@@ -2107,7 +2107,7 @@
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; --- Import reflection: the reserved `__ast__` name -------------------------------------------------
 ; A module implicitly exports the reserved name `__ast__`, which reflects that module's canonical AST as

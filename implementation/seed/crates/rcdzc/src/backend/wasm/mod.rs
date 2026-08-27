@@ -1381,14 +1381,20 @@ pub fn collect_static_bytes(db: &mut Db, order: &[usize]) -> Vec<Vec<u8>> {
             if !visited.insert(id) {
                 continue;
             }
-            if let Some(bytes) = crate::lower::constant_bytes_value(db, id)
-                && seen_content.insert(bytes.clone())
+            // A constant `Bytes` (`BytesOf`-of-consts / `ConstBytes`) OR a constant `String` (`ConstStr`)
+            // is a flat-byte-payload hoist target: both build the identical UTF-8 leaf via
+            // `bytes-alloc`+`bytes-set`, so both intern BY CONTENT into the one table (a String and a Bytes
+            // with equal bytes share one immortal global). The two extractors are disjoint (a node is one or
+            // the other), so `or_else` picks whichever applies.
+            if let Some(payload) = crate::lower::constant_bytes_value(db, id)
+                .or_else(|| crate::lower::constant_string_value(db, id))
+                && seen_content.insert(payload.clone())
             {
-                distinct.push(bytes);
+                distinct.push(payload);
             }
-            // Descend to children. A constant `BytesOf`'s own children are `ConstInt` leaves (no nested
-            // static bytes), but descending them is harmless — they contribute nothing — so the walk stays
-            // uniform. Push in reverse so children pop in `core_child_ids` order (a stable pre-order DFS).
+            // Descend to children. A constant leaf's own children (a `BytesOf`'s `ConstInt`s) contribute
+            // nothing, but descending them is harmless — so the walk stays uniform. Push in reverse so
+            // children pop in `core_child_ids` order (a stable pre-order DFS).
             let children = crate::backend::wasm::select::core_child_ids(db, id);
             for &c in children.iter().rev() {
                 stack.push(c);

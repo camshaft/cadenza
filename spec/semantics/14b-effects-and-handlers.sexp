@@ -5830,7 +5830,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 14 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 12))
 
 (case "a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk"
   (doc    "The writer idiom: each Add/Mul node logs its op tag BEFORE recursing (pre-order), the handler concats onto a String state, and dump reads the trace back beside the value ((2+3)*4: trace exactly \"*+\" — order-sensitive; the result triple-encodes value/len/content-eq).")
@@ -5874,7 +5874,7 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 301 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 8))
 
 ; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
 ; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member

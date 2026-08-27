@@ -78,7 +78,7 @@
             (def (main) (depth (quote (f (g 1)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 10))
 
 (case "a transformation maps a syntax tree to a syntax tree and preserves meaning"
   (doc    "The core of spec/learnings/2026-07-04-program-transformation-is-a-program.md: a refactoring
@@ -472,7 +472,7 @@
                 (_ -1)))
             (export main)))
   (output (: 40 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 7))
 
 (case "a runtime-built BigInt sum-payload literal probe matches its constructor"
   (doc    "The runtime-scrutinee companion (no quote/Ast): a plain sum `(type W (Mk BigInt))` whose payload
@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 40))
+  (live-objects known-leak 34))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every

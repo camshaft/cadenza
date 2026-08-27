@@ -1092,7 +1092,7 @@
             (def (kind-of c) (match c ((Core.KConst n) 0) (_ 1)))
             (def (main) (kind-of (resolve (Node.NPrim (tuple "+" (Node.NInt 20) (Node.NInt 22)))))) (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 9))
+  (live-objects known-leak 8))
 
 (case "two structural values of the same shape are equal"
   (doc    "Witnesses type-system.md #User Types Are Declarable As Nominal Or Structural (2nd
@@ -2516,7 +2516,7 @@
             (def (main) (h (Map.insert (map) "x" 1) 1))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a map threaded through recursion is read at every depth and once more at the base"
   (doc    "The MULTI-DEPTH borrow face of the recursive seam above (that one pins persistence across
@@ -3121,7 +3121,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 ; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
 ; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
@@ -3162,7 +3162,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -3516,7 +3516,7 @@
             (def (main) (present (get (Map.insert (map) "x" (Ty.Con "Int")) "x")))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ; A STRING used as a Map VALUE — the symbol-table idiom (a name maps to a canonical name / type string /
 ; opcode mnemonic), the string companion of the sum-/list-/set-valued map cases. The looked-up String is
@@ -3538,7 +3538,7 @@
             (def (main (: b Bool)) (canon b)) (export main)))
   (call   main (: true Bool)) (output (: 1 Int64))
   (call   main (: false Bool)) (output (: 2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a map with a String value: a missing key takes the None arm"
   (doc    "The absent companion: looking up a key the String-valued map does not hold takes the `None` arm
@@ -3563,7 +3563,7 @@
                 (match (Map.lookup m "a") ((Some s) (String.byte-len s)) (None -1))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a map KEYED by a user sum looks up by the variant"
   (doc    "A user sum used as a Map KEY — `(Map.insert Map.empty (C.R) 42)` keys the entry by the variant
@@ -6294,7 +6294,7 @@
                                           (Node.NInt 20)
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 14))
 
 (case "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
   (doc    "The ordered-tree discipline over a user sum (the resolver above transforms a FIXED tree;
@@ -8519,7 +8519,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 101 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 41))
+  (live-objects known-leak 37))
 
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
@@ -9686,7 +9686,7 @@
             (export run)))
   (call   run (: 0 Int64)) (output (: 7 Int64))
   (call   run (: 5 Int64)) (output (: -3 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 9))
 
 (case "a runtime Result carrying a String error is matched"
   (doc    "The `Err` payload may be a heap `String` (a diagnostic message), not only a scalar code: `(if
@@ -15617,7 +15617,7 @@
             (def (main) (head-of (idast 3 (Ast.List (list (Ast.Name "a") (Ast.Int 5))))))
             (export main)))
   (output (: 100 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 ; --- Non-variant-0 payload TYPE resolution: the remaining slot/shape faces -------------------------
 ; 134dee198 fixed the wasm discriminant walk resolving a Payload step's type via variant 0 (the
@@ -17354,7 +17354,7 @@
                   ((None _u) -1))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 (case "a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)"
   (doc    "A record match binds its fields to bare names at the TOP level, and a BARE-binder record
@@ -18468,7 +18468,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7223 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 4))
 
 ; --- Scale faces: the 5000-deep recursive-sum spine and the 33-variant wide sum. ---
 
@@ -18524,7 +18524,7 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns"
   (doc    "The api-error idiom: a user sum with MIXED payload kinds (String/Int64/nullary) as Result.Err's payload, dispatched via nested patterns ((Result.Err (IoErr.Denied c))) — Ok, both payload variants, and the nullary Timeout each take their arm; digit-banded results separate every path.")
@@ -18547,7 +18547,7 @@
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; --- A sum leaf inside a tuple CHAMP key. ---
 
@@ -18687,7 +18687,7 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 21 Int64))
-  (live-objects known-leak 21))
+  (live-objects known-leak 16))
 
 (case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
   (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
@@ -18737,7 +18737,7 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 86 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
   (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; `(Set.of (list 1 true))` reaches the SET-construction surface with the SAME code (CDZ0201), via its heterogeneous element-list literal. (The fault attaches at the inner list literal — Set.of takes a homogeneous list; a mismatched Set.insert of a Bool instead takes CDZ0203, the type-mismatch code, not CDZ0201 — so CDZ0201 for a set specifically arrives through the element-list construction, not a post-hoc insert.)")
@@ -18984,7 +18984,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 17 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; breaker probe X — List.update at RRB DEPTH 3: the fresh 1055 pin covers List.at/len over the
 ; 1100-element 3-level trie; UPDATE at that depth is the path-copy face (copy the root + one
