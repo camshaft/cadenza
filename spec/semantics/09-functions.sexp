@@ -8045,6 +8045,45 @@
   (call main (: (list 5 6 7) (List Int64)))
   (output (: 18 Int64)))
 
+; -- breaker batch 453 (2026-08-27): the NESTED-list edge ladder for el8's recursive element lift
+; (the outer element is a (ptr,len) descriptor whose inner vec must itself be lifted). Boundary
+; rows the recursive lift must get right: an EMPTY outer list (no elements to descend into), an
+; EMPTY inner list among non-empty ones (a zero-len descriptor mid-walk), and THREE-level nesting
+; (the recursion must actually recurse, not special-case depth two). wasm-todo / rust-pass rungs.
+
+(case "eln1 an EMPTY nested-list entry param has outer length zero"
+  (input (do
+    (def (main (: xs (List (List Int64))))
+      (List.len xs))
+    (export main)))
+  (call main (: (list) (List (List Int64))))
+  (output (: 0 Int64)))
+
+(case "eln2 a nested-list entry param whose FIRST inner list is empty reads a zero inner length"
+  (input (do
+    (def (main (: xs (List (List Int64))))
+      (+ (* 100 (List.len xs))
+         (match (List.at xs 0) ((Option.Some inner) (List.len inner)) ((Option.None) -1))))
+    (export main)))
+  (call main (: (list (list) (list 5)) (List (List Int64))))
+  (output (: 200 Int64)))
+
+(case "eln3 a THREE-level nested-list entry param reads a leaf through two descents"
+  (input (do
+    (def (main (: xs (List (List (List Int64)))))
+      (+ (* 100 (List.len xs))
+         (match (List.at xs 0)
+           ((Option.Some mid)
+             (+ (* 10 (List.len mid))
+                (match (List.at mid 1)
+                  ((Option.Some inner)
+                    (match (List.at inner 0) ((Option.Some v) v) ((Option.None) -1)))
+                  ((Option.None) -2))))
+           ((Option.None) -3))))
+    (export main)))
+  (call main (: (list (list (list 9) (list 42 8))) (List (List (List Int64)))))
+  (output (: 162 Int64)))
+
 (case "eo1 an Option entry param delivers its Some payload"
   (input (do
     (def (main (: o (Option Int64)))
