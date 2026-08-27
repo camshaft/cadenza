@@ -19852,6 +19852,40 @@
   (call   f (: 3 Int64)) (output (: 4 Int64))
   (live-objects 0))
 
+(case "the FBIP accumulator (List.push as recursion tail) is unaffected by the owned-operand reclaim"
+  (doc    "The owned-temporary List.push reclaim must NOT perturb the FBIP accumulator path, where the push is
+           the RECURSION TAIL (never a borrowing-op operand, so its ownership is never consulted). `build`
+           accumulates via `(List.push acc i)` as its tail; `List.len (build 0 500)` = 500 with no leak.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (main) (List.len (build 0 500 (list))))
+            (export main)))
+  (output (: 500 Int64))
+  (live-objects 0))
+
+(case "a borrowed List.push result read twice is not freed by the first len (no double-free)"
+  (doc    "A let-bound List.push result read TWICE by a borrowing `List.len` must NOT be freed by the first
+           read (the owner reclaims once at the end), else double-free. Value 4 + 4 = 8; net 0 live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (f (: n Int64)) (let ((xs (List.push (build 0 n (list)) 99))) (+ (List.len xs) (List.len xs))))
+            (export f)))
+  (call   f (: 3 Int64)) (output (: 8 Int64))
+  (live-objects 0))
+
+(case "20000 owned-temporary List.push results each reclaim the fresh list (leak-drift stress)"
+  (doc    "Leak stress: 20000x a fresh owned `List.push` result read by `List.len` and discarded. A leaked
+           vector per call would OOM/drift; each must reclaim. sum of 4 over 20000 iterations = 80000; net 0
+           live cells.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64))) (if (< i n) (build (+ i 1) n (List.push acc i)) acc))
+            (def (drive (: j Int64) (: m Int64) (: tot Int64))
+              (if (< j m) (drive (+ j 1) m (+ tot (List.len (List.push (build 0 3 (list)) 99)))) tot))
+            (def (main) (drive 0 20000 0))
+            (export main)))
+  (output (: 80000 Int64))
+  (live-objects 0))
+
 (case "List.len over an owned-temporary List.update result reclaims it (no live objects)"
   (doc    "`List.update` of a fresh runtime list is an owned temporary fed to `List.len` -> n = 5 at n=5;
            the updated result must be reclaimed after the borrowing len -- net 0 live cells.")
