@@ -1067,6 +1067,58 @@ impl Decimal {
             exponent,
         })
     }
+
+    /// The `f64` bits this decimal rounds to — the INVERSE of [`Self::from_f64`], used by both the
+    /// compiler's float-arithmetic fold and the runtime's `Ast.encode` float path (which `#[path]`-shares
+    /// this file), so all three codecs agree bit-for-bit. The base-256 significand is Horner'd into
+    /// base-10 digits (`acc = acc*256 + byte`, carried in a little-endian decimal-digit vector), the
+    /// reconstructed `[-]<digits>e<exponent>` is parsed by the standard library to the nearest double (the
+    /// type-directed rounding `numeric-model.md` pins for `Float64`). An empty significand is zero, so
+    /// `-0.0` keeps its sign through the `-` prefix; overflow rounds to `±inf`, underflow to `±0.0`.
+    pub fn to_f64_bits(&self) -> u64 {
+        let mut digits: Vec<u8> = vec![0]; // little-endian base-10 digits; starts at zero
+        for &byte in &self.significand {
+            let mut carry = byte as u32;
+            for d in digits.iter_mut() {
+                let v = (*d as u32) * 256 + carry;
+                *d = (v % 10) as u8;
+                carry = v / 10;
+            }
+            while carry > 0 {
+                digits.push((carry % 10) as u8);
+                carry /= 10;
+            }
+        }
+        let mut s: String = digits.iter().rev().map(|d| (b'0' + d) as char).collect();
+        // Trim leading zeros the reversed build may have left (e.g. "007").
+        let trimmed = s.trim_start_matches('0');
+        s = if trimmed.is_empty() {
+            "0".to_string()
+        } else {
+            trimmed.to_string()
+        };
+        let sign = if self.negative { "-" } else { "" };
+        let text = format!("{sign}{s}e{}", self.exponent);
+        // A well-formed `Decimal` always parses; a pathological one falls back to a canonical zero.
+        text.parse::<f64>().unwrap_or(0.0).to_bits()
+    }
+
+    /// Whether this decimal's value rounds to a FINITE `Float64` — a magnitude past the largest finite
+    /// double rounds to `±inf` (a value with no written form), so a literal that fails this is malformed
+    /// for the `Float64` default (`numeric-model.md` §A Floating-Point Literal That Denotes No
+    /// Representable Value Is Malformed). A `Decimal` is always finite itself; this asks only whether the
+    /// rounding overflows.
+    pub fn is_finite_f64(&self) -> bool {
+        f64::from_bits(self.to_f64_bits()).is_finite()
+    }
+
+    /// Whether this decimal fits `Float32` — its `f64` value, cast to `f32`, is still FINITE. A magnitude
+    /// past the largest finite `f32` (`~3.4e38`) rounds to `±inf` in `Float32`, so `(: 1e40 Float32)` is
+    /// malformed-for-the-width, the `Float32` analogue of [`Self::is_finite_f64`]. A value that already
+    /// overflows `f64` fails this too.
+    pub fn fits_f32(&self) -> bool {
+        (f64::from_bits(self.to_f64_bits()) as f32).is_finite()
+    }
 }
 
 /// The two arenas plus the root occurrence — the whole AST of one program unit.
@@ -3077,5 +3129,28 @@ mod tests {
             enc_result(None, Some("u8")),
             "result<T> and result<_, E> with the same T are distinct (which arm is absent matters)"
         );
+    }
+
+    #[test]
+    fn decimal_f64_bits_round_trips_from_f64() {
+        // `to_f64_bits` is the inverse of `from_f64` for every finite f64 — the property both the
+        // compiler fold and the runtime op93 float path rely on (they share this file). A whole value,
+        // a fraction, a negative, a negative zero, and a subnormal-ish magnitude all round-trip bit-exact.
+        for f in [0.0f64, -0.0, 1.0, -1.0, 1.5, 0.1, 300.0, -2.5e-1, 1e300, 1e-300, 0.30000000000000004]
+        {
+            let d = Decimal::from_f64(f).expect("finite f64 has a Decimal");
+            assert_eq!(
+                d.to_f64_bits(),
+                f.to_bits(),
+                "from_f64({f}).to_f64_bits() must equal {f}'s bits"
+            );
+            assert!(d.is_finite_f64(), "{f} is finite");
+        }
+        // A non-finite f64 has no Decimal form (the encode declines) — matches the runtime trap.
+        assert!(Decimal::from_f64(f64::INFINITY).is_none());
+        assert!(Decimal::from_f64(f64::NAN).is_none());
+        // fits_f32: a small value fits; a magnitude past the largest finite f32 (~3.4e38) does not.
+        assert!(Decimal::from_f64(1.5).unwrap().fits_f32());
+        assert!(!Decimal::from_f64(1e40).unwrap().fits_f32());
     }
 }
