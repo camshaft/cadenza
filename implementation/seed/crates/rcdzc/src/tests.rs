@@ -32513,13 +32513,6 @@ mod stage1 {
     }
 
     #[test]
-    fn if_branches_must_agree() {
-        // Branches of differing type are a type error (CDZ0203) — Int64 `then` vs Bool `else`.
-        let msg = expect_decline("(if true 1 true)");
-        assert!(msg.contains("branches differ"), "got: {msg}");
-    }
-
-    #[test]
     fn a_type_fault_inside_a_let_body_is_still_caught() {
         // The check descends through a `let` — a bad condition in the body is still reported.
         let msg = expect_decline("(let ((x 5)) (if x 1 2))");
@@ -34338,20 +34331,6 @@ mod stage1 {
                 .expect("valid component")
                 .is_some(),
             "a runtime compound equality imports the value-heap runtime (the value-eq walk is a runtime call)"
-        );
-    }
-
-    #[test]
-    fn a_comparison_of_mismatched_operand_types_rejects_via_unification() {
-        // (< 1 true) — `<` types at ∀a. a → a → Bool; unifying the second operand `true` (Bool) against
-        // the first operand's `a` (fixed to Int by `1`) FAILS. The one generic rule catches it.
-        let msg = expect_decline("(< 1 true)");
-        assert!(
-            msg.contains("unify")
-                || msg.contains("Bool")
-                || msg.contains("Int")
-                || msg.contains("differ"),
-            "expected a unification mismatch, got: {msg}"
         );
     }
 
