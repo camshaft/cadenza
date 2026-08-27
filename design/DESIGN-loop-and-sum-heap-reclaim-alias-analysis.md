@@ -166,24 +166,37 @@ both sites uniformly:
   sufficient proof of balance.
 - Repros: `queue/adv-option-nested-payload-destructure-leak.sexp` (breaker) + the fold baselines.
 
-## Emit-site split (v-core-opt inc2a verify, 2026-08-27) — site B is TWO emit paths, not one
+## Site B, one gate, two bugs (v-core-opt inc2a + B-select, LANDED 2026-08-27)
 
-A material finding: widening the `emit_sum_cont` shell-reclaim gate (v-core-opt's inc2a, escape-clean +
-extraction-retained guard) soundly reclaims **25 distinct COMPLEX/recursive-sum matches** (deep-nested
-variant, runtime-recursive-sum-by-spine-depth, list-pattern-in-variant, literal-mid-spine, sibling-two-sum,
-…) — all leak *reductions*, zero traps, zero value-wrong on both 05 and 14c. **But the named simple-Option
-acceptance (`d4`/`dm1`/`d3`/`drs1`/`drs2`/`df2`) is UNCHANGED — pre-guard and post-guard alike** — because a
-simple 2-arm sum match in tail position is lowered through a `br_table`/`select`-optimized emit path that
-**bypasses `emit_sum_cont` entirely**, so the widened gate never runs on it. `df2` (the generic-sum canonical
-witness) is the same shape.
+Site B is a SINGLE emit site (`emit_sum_cont`, the tail `MatchSum` shell-reclaim gate) that was declining for
+TWO independent reasons. Both are now fixed and landed; the whole §B acceptance (and far more) reclaims.
 
-Consequence for sequencing: site B is really two emit sites with independent reclaim points.
-- **B-cont (`emit_sum_cont`)** — the complex/recursive family. inc2a lands here (25 sound reductions).
-- **B-select (`br_table`/`select`)** — the simple 2-arm tail-position Option/sum family (`d4` … `df2`), the
-  ORIGINAL #3833 pinned acceptance. Needs the same shell reclaim added at THAT site, as a separate increment
-  — its soundness must be re-proven for the select path (the `emit_sum_cont` proof does not transfer), under
-  the same dup-at-escape / drop-at-last-use invariant. This is the higher-priority increment (it is what
-  breaker + v-runtime pinned), so it gets its own focused pass, not a bolt-on to inc2a.
+- **inc2a (`emit_sum_cont` gate widen; #3943 + #3961, landed):** widened the shell-reclaim gate past the
+  all-scalar floor to admit a compound heap payload when escape-clean + reuse-clean + not-extraction-retained.
+  Reclaims **61 corpus cases across 15 files** — the COMPLEX/recursive-sum family (deep-nested variant,
+  runtime-recursive-sum-by-spine-depth, list-pattern-in-variant, literal-mid-spine, sibling-two-sum, and any
+  program that internally builds+matches compound sums: collatz, kernel/proof cases, host-RESULT lifts).
+  All leak *reductions*, zero traps, zero value-wrong (v-runtime-verified on fresh samples + fence).
+- **B-select (`reuse-clean` projection-operand refinement; commit ffa36a37a, verified):** the named
+  simple-Option acceptance (`d4`/`dm1`/`d3`/`drs1`/`drs2`/`df2`) was NOT a separate emit path — it REACHES the
+  same tail `MatchSum` gate but was over-declined by `reuse-clean`. Root: `expr_constructs_compound_seen`
+  walked the arm's payload binders, which are inline `SumPayload{scrutinee}` reads, and descended into the
+  scrutinee's OWN `(Some (list …))` `SumNew`/`ListNew` → a false-positive "the arm constructs a compound".
+  Fix: `expr_constructs_compound_seen` must NOT descend into a borrowing-read's aggregate operand (`SumPayload`
+  /`Proj`/`ListLen` — that operand is the borrowed scrutinee, not an arm construction); only flag constructors
+  GENUINELY in the arm body. Reclaims **87 more cases** (every inline-constructed-scrutinee match), including
+  the six pinned → 0. The `mts1`-style rebuild `(tuple (. t 0)(. t 1))` still declines (the `Tuple` is a
+  top-level arm node, not a projection-operand). Zero traps / zero value-wrong across all 87 empirically
+  settles the FBIP-miss question: `reuse-clean` was purely over-declining, never a soundness gate here.
+- **Division of labor (why B-select is sound):** `escape-clean` guards ESCAPING payload aliases (a heap
+  subvalue extracted and surviving the arm); `reuse-clean` guards REBUILD-into-surviving-result (a top-level
+  arm constructor reusing shell cells). d4's list has scalar elements and the arm returns a scalar → nothing
+  heap escapes → `escape-clean` correctly passes; the `reuse-clean` scrutinee-descent was a pure false
+  positive. (CORRECTION to an earlier draft of this section, which wrongly claimed the simple family takes a
+  `br_table`/`select` path that bypasses `emit_sum_cont` — it does not; it reaches the same gate.)
+
+Remaining §B follow-ups: the extraction-retain release (inc2b, release-at-unwrap) and the handler-op-arg
+owned reclaim (ap1 class — dup/drop the effect op-argument in the arm; see the ABI note below).
 
 ## Non-goals / discipline
 
@@ -194,3 +207,22 @@ Consequence for sequencing: site B is really two emit sites with independent rec
   bugs, not should-not-drop cases. The fix is one place (the shared shell-reclaim/loop-back-edge
   decision) that emits the shell drop unconditionally AND guarantees every escaping bind is dup'd; the
   rc==1 runtime free is the safety net, FBIP reuse the fast path.
+
+## Handler-op-arg owned reclaim (ABI note — the `ap1` class)
+
+`ap1` (`put o st -> resume (match o ((Some (list a b)) (+ a b)) (_ -1))`) leaks its Option shell because the
+`MatchSum` scrutinee `o` is a HANDLER OP-ARGUMENT (a `Core::Param`), which `heap_operand_ownership` classifies
+Borrowed — so no one drops it. ABI ruling (v-runtime): **an effect op argument is owned-transferred to the
+handler arm; the arm must drop it.** Rationale: the performer builds the arg and performs, which SUSPENDS —
+its continuation receives the RESUME VALUE, never the argument back — so, unlike a normal borrowed-param call
+(caller drops after return), there is no performer-side drop; the arm is the sole owner. Reporting `Owned` for
+a handler-op-arg param makes `ap1` reclaimable.
+
+Guards (v-effects, checked across the effect corpus): (1) multi-shot resume — fine (the arm owns the arg once
+per perform; resume reuses the resume VALUE, not the arg). (2) non-resuming/abort arm — fine, and it must
+STILL drop the arg it received. (3a) 🚩 an op-arg that IS or ALIASES the threaded heap STATE would be owned by
+BOTH the state-thread and the arm-drop → DOUBLE-FREE; the `Param→Owned` flip must be NARROW (handler-op-arg
+binder only, and EXCLUDE one that aliases the state slot) — never a blanket `Param→Owned` (that double-frees
+every normal call). (3b) 🚩 a multi-use op-param → use-count-correct drop (retain per extra use, drop after
+last), not a blind single drop. `ap1` itself is the clean shape (`o` and `st` distinct params, `o` matched
+once, no alias) → sound; the general increment carries the 3a/3b guards.
