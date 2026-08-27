@@ -22,11 +22,10 @@ bytes in the reference implementation, so a third party had nothing to implement
 document is that concrete layout: the version header, the varint, the leaf pool, the structure pool,
 and the root, at the byte level, with the validity rules a conformant decoder enforces.
 
-This document pins the base container version `cdzast\x00\x01`. A second container version
-`cdzast\x00\x02` adds a dictionary-import section and a dictionary-reference structure tag for
-content-addressed subtree sharing across a transport boundary; that variant is a superset of this one
-and is pinned separately. A decoder that does not implement `\x00\x02` MUST refuse it (see
-[Versioning](./ast-encoding.md)) rather than misinterpret it.
+This document pins the container version `cdzast\x00\x01`, which is the only version defined. A decoder
+MUST refuse a container whose eight-byte version header it does not implement (see
+[Versioning](./ast-encoding.md)) rather than misinterpret it; defining a new version is the coordinated
+act described in the constitution's Governance Floors.
 
 ## Conventions
 
