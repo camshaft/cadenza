@@ -749,7 +749,7 @@
   (call main (: 1 Int64)) (output (: 18 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "THREE stacked guards on one constructor classify a heap payload into bands in order"
   (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →
@@ -875,7 +875,7 @@
         (export main)))
   (call main (: 0 Int64)) (output (: 63 Int64))
   (call main (: 5 Int64)) (output (: 91 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 1))
 
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
@@ -4282,7 +4282,7 @@
             (def (top b) (match (dn b 0) ((tuple ast pos) ast)))
             (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; The recursive-descent PARSER face of the mutual-recursion cursor thread: the decoder above destructures
 ; the returned (value, cursor) tuple with a tuple PATTERN in a match arm; a hand-written precedence parser

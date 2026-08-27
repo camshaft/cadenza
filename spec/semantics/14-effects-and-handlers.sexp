@@ -3955,7 +3955,7 @@
                        ((None _u) -100))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 48 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a record with a LIST field crosses resume — the body projects and folds the collection field"
   (doc    "Record crossings carry all-scalar pins both ways plus a rope-String field on the argument
@@ -5152,7 +5152,7 @@
                    (St.pair (tuple (list 1 2) (list 1 2 9))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "the arm slices a crossed multibyte String at a scalar boundary — the slice window respects UTF-8"
   (doc    "Char-indexed slicing over a marshaled rope: \\\"aédc\\\" crosses as the op argument and the
@@ -5790,7 +5790,7 @@
                 (go (list 1 2 3) 0 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 38 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "a map-via-effects walk — each element transformed by a dispatch, output order preserved"
   (doc    "The MAP direction of the element×dispatch pairing (il-fold pins the accumulate
@@ -5812,7 +5812,7 @@
                         (match (List.at out 2) ((Some c) c) ((None _u) -1)))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 3120 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 4))
 
 (case "filter-via-effects — a STATEFUL predicate dispatch decides each element's survival"
   (doc    "The FILTER direction: each element crosses to a predicate arm whose threshold ADVANCES
@@ -5833,7 +5833,7 @@
                      (match (List.at out 1) ((Some b) b) ((None _u) -1))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 304 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 (case "a byte-walk lexer performing per byte — Bytes.at pairs with an advancing draw per position"
   (doc    "The iteration-triad discipline extended to BYTES walks (the bin-decode pins parse frames

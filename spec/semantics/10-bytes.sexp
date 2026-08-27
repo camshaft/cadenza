@@ -2234,7 +2234,7 @@
   (input  (do (def (f (: k Int64)) (Bytes.len (Bytes.of (if (> k 0) (list (UInt8.wrap 65) (UInt8.wrap 66)) (list (UInt8.wrap 67)))))) (export f)))
   (call   f 1)
   (output (: 2 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 ; -- breaker batch 445 (2026-08-27): static-data drop-safety for deduplicated constant Bytes
 ; (#3837 extended constant-Bytes detection to Core::ConstBytes; both occurrences of a byte-identical

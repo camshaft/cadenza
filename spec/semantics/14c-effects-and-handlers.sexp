@@ -1078,7 +1078,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 94 Int64))
   (call   main (: 0 Int64)) (output (: 19 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "lf3 the arm pushes TWO elements per dispatch (both lengths read from the PRE-push list) — the third draw reads length 5"
   (input  (do
@@ -1108,7 +1108,7 @@
   (call   main (: 5 Int64)) (output (: 906 Int64))
   (call   main (: 1 Int64)) (output (: 1500 Int64))
   (call   main (: 8 Int64)) (output (: 15 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "lf5 TWO lists walked in LOCKSTEP with a per-pair 2-arg dispatch — length-guarded via projection helpers"
   (input  (do
@@ -1126,7 +1126,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 158 Int64))
   (call   main (: 0 Int64)) (output (: 143 Int64))
-  (live-objects known-leak 4))
+  (live-objects 0))
 
 ;; ── enumeration as OBSERVATION across mutating dispatches (breaker mi) ───────────────────────────
 ;; The static enumeration pins dump once; these observe enumerations ACROSS a mutating sequence:
@@ -6498,7 +6498,7 @@
   (call   main (: 0 Int64)) (output (: 1101 Int64))
   (call   main (: 1 Int64)) (output (: 101 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 93))
+  (live-objects known-leak 91))
 
 (case "lk3 LOCKOUT after two failures — the fail counter flips a dead flag that rejects even the correct key thereafter"
   (input  (do
@@ -9085,7 +9085,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 601919 Int64))
   (call   main (: 5 Int64)) (output (: 1103434 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 24))
 
 (case "neu1 KAHAN COMPENSATED SUMMATION as a handler state — the (sum,comp) pair recovers a small addend that naive summation absorbs at the 2^53 boundary, the naive control confirms the absorption"
   (input  (do
@@ -9948,7 +9948,7 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 150724121 Int64))
   (call   main (: 0 Int64)) (output (: 80010051 Int64))
-  (live-objects known-leak 39))
+  (live-objects known-leak 37))
 
 (case "rsp1 a ROLE-INVERTING parity splitter — feed routes each value to the even or odd accumulator, flip INVERTS the routing so post-flip evens land in the odd bucket, the flip answers the packed snapshot"
   (input  (do
@@ -10046,7 +10046,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 123 Int64))
   (call   main (: 9 Int64)) (output (: 112 Int64))
-  (live-objects known-leak 56))
+  (live-objects known-leak 30))
 
 (case "rhe1 a ROUND-HALF-TO-EVEN halving accumulator — each dispatch adds v/2 rounded half-to-even, the parity of the truncated quotient decides which halves bump"
   (input  (do
@@ -10229,7 +10229,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1245 Int64))
   (call   main (: 6 Int64)) (output (: 1465 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 18))
 
 (case "ckp1 a CHECKPOINT/RESTORE protocol — save copies the live slot into the shadow slot, work mutates only the live one, restore copies the shadow back and later work resumes from the checkpoint"
   (input  (do
@@ -10350,7 +10350,7 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 6312052 Int64))
   (call   main (: 0 Int64)) (output (: 306022 Int64))
-  (live-objects known-leak 68))
+  (live-objects known-leak 58))
 
 ; --- breaker batch 264: base-7 codec round-trip, escrow conservation pair, weighted quorum vote ---
 (case "bas1 a BASE-7 codec state — encode peels a value's digits MSB-first onto the list (recursive prepend-peel), decode folds the WHOLE accumulated digit run back and clears; concatenated encodes decode as positional composition"
@@ -10961,7 +10961,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 20401 Int64))
   (call   main (: 3 Int64)) (output (: 30105 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 26))
 
 (case "tth1 TORTOISE-AND-HARE cycle detection — the handler owns the successor function and counts calls, the body's two-speed recursive driver meets inside the cycle and the call tally rides in the answer"
   (input  (do
@@ -11102,7 +11102,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 11121110 Int64))
   (call   main (: 1 Int64)) (output (: 11120101 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 9))
 
 ;; ── Compensating undo-stack, two-stack FIFO refill, token-bucket limiter (breaker batch 273) ──
 (case "cmt1 a COMPENSATING transaction log — each do applies its delta AND pushes the inverse onto the undo stack, each compensate pops the LAST inverse and applies it, unwinding in strict LIFO order back to the seed"
@@ -11704,7 +11704,7 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 2040108160599 Int64))
   (call   main (: 0 Int64)) (output (: 2040208160399 Int64))
-  (live-objects known-leak 62))
+  (live-objects known-leak 60))
 
 ;; ── Horner base-swap evaluator, round-robin skip mask, stopwatch lap splits (breaker batch 279) ──
 (case "hrn1 a HORNER polynomial evaluator with a MID-STREAM base swap — feed folds acc*x+c answering the running value, swapx replaces the base answering the old one, and the seed shapes the INITIAL base so the pre-swap accumulations diverge while the post-swap coefficients ride on top"

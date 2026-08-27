@@ -14826,7 +14826,18 @@ const LIST_SINGLE_LEAF_CAP: usize = 32;
 pub fn is_markable_constant_small_list(db: &mut Db, id: StructId) -> bool {
     match core_of(db, id) {
         Core::ListNew { elems } => {
-            elems.len() <= LIST_SINGLE_LEAF_CAP
+            // NON-empty and ≤32 (the single-leaf window), every element per-node-markable, AND not ALL-`Bool`.
+            // Two runtime `vec-of-arr` shapes are un-markable per-node and so excluded here (they build a node
+            // with no compile-time handle for the immortal build to mark — a census leak otherwise, the same
+            // reason `> 32` and maps are excluded): an EMPTY list returns the shared `vec-empty` singleton (no
+            // per-list node to mark), and an ALL-`Bool` list of ≤32 is PACKED into a fresh dense bit-leaf while
+            // the source `arr` is dropped — the packed leaf is created inside the op with no handle to mark.
+            // A mixed / non-bool ≤32 list reuses the `arr` node as the leaf (markable), so it is admitted.
+            !elems.is_empty()
+                && elems.len() <= LIST_SINGLE_LEAF_CAP
+                && !elems
+                    .iter()
+                    .all(|&e| matches!(core_of(db, e), Core::ConstBool(_)))
                 && elems.iter().all(|&e| is_markable_constant_elem(db, e))
         }
         _ => false,

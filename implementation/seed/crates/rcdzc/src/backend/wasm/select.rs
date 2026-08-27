@@ -10548,8 +10548,9 @@ fn try_emit_static_bytes(db: &mut Db, id: StructId, layout: &Layout, out: &mut E
 }
 
 /// §2d STATIC COMPOUNDS (`DESIGN-static-data.md` increment 6): if `id` is a markable constant
-/// `Tuple`/`Record` in the build-once table, emit a bare `global.get` of its module global and return
-/// `true`. Compound globals are laid AFTER the static-bytes globals, so compound `pos`'s global index is
+/// `Tuple`/`Record`/small-`List` in the build-once table, emit a bare `global.get` of its module global and
+/// return `true` (the routing is keyed by node id, so it is type-agnostic — a list uses the same table).
+/// Compound globals are laid AFTER the static-bytes globals, so compound `pos`'s global index is
 /// `static_bytes.len() + pos`. The tree was built ONCE (immortal, per-node marked) by the `start` init, so a
 /// use just reads the handle (`op_dup`/`op_drop` no-op on the immortal root; FBIP path-copies). `false`
 /// (build the compound inline per-eval, as before) for a non-tabled or runtime compound.
@@ -10568,7 +10569,8 @@ fn try_emit_static_compound(db: &mut Db, id: StructId, layout: &Layout, out: &mu
 /// element, build its handle + `arr-set`, then `mark-immortal` the root array. Mirrors the runtime
 /// `Core::Tuple`/`Core::Record` emit (a record IS a tuple at run time) but recurses for a nested compound
 /// and marks each node. Self-contained — references no other global — so ordering across the init is
-/// irrelevant. Called ONLY on a `Tuple`/`Record` collected by `collect_static_compounds`.
+/// irrelevant. Called on a `Tuple`/`Record` (arr root) OR a small constant `List` (arr + `vec-of-arr`, both
+/// nodes marked — see the `ListNew` arm) collected by `collect_static_compounds`.
 fn emit_immortal_static(
     db: &mut Db,
     id: StructId,
@@ -10607,8 +10609,39 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal")); // [arr] — the record root, immortal
             Ok(())
         }
+        // A SMALL (≤32, non-empty, not all-`Bool`) constant list — built like a tuple (a flat `arr` of boxed
+        // elements) then `vec-of-arr`. For such a list `vec-of-arr` produces TWO nodes: an 8-byte VEC HEADER
+        // whose root points at the `arr`, REUSED unchanged as the sole strict leaf (`op_vec_of_arr`: "the arr
+        // node IS a valid strict single leaf … move it in as the root" — a plain `vec_alloc_header(count, 0,
+        // arr)`, NO rc check, NO copy). So BOTH nodes must be marked immortal, and mark-immortal is shallow:
+        //   - mark each element as it is built (`emit_immortal_elem`),
+        //   - mark the `arr` BEFORE `vec-of-arr` — safe because the reuse path does not inspect rc (it just
+        //     stores `arr` as the root), so no FBIP path-copy; marking it after is impossible (the arr is then
+        //     buried inside the header with no stack handle),
+        //   - mark the HEADER (the `vec-of-arr` result) after.
+        // The all-`Bool` pack path (drops the arr, mints a fresh un-markable bit-leaf) and the empty-list
+        // `vec-empty` singleton are excluded upstream (`is_markable_constant_small_list`), so neither reaches
+        // here — every admitted list is the arr-reuse shape whose two nodes this covers. `> 32` (a multi-node
+        // trie) is likewise excluded.
+        Core::ListNew { elems } => {
+            let elem_ty = match type_of(db, id).strip_nominal() {
+                Ty::List(t) => Some((**t).clone()),
+                _ => None,
+            };
+            out.push(Lir::ConstI32(elems.len() as i32));
+            out.push(Lir::CallImport(OP_ARR_ALLOC)); // [arr]
+            for (i, &elem) in elems.iter().enumerate() {
+                out.push(Lir::ConstI32(i as i32)); // [arr, i]
+                emit_immortal_elem(db, elem, elem_ty.as_ref(), layout, out)?;
+                out.push(Lir::CallImport(OP_ARR_SET)); // [arr]
+            }
+            out.push(Lir::CallImport("mark-immortal")); // [arr] — the leaf, immortal (reused by `vec-of-arr`)
+            out.push(Lir::CallImport(OP_VEC_OF_ARR)); // [arr] → [list] (moves the immortal arr in as the root)
+            out.push(Lir::CallImport("mark-immortal")); // [list] — the vec header, immortal
+            Ok(())
+        }
         _ => Err(Reject::decline(
-            "emit_immortal_static reached a non-compound (only markable Tuple/Record are collected)"
+            "emit_immortal_static reached a non-markable node (only markable Tuple/Record/small-List are collected)"
                 .to_string(),
         )),
     }
@@ -11038,6 +11071,12 @@ fn emit(
         // first); a nested compound is already a handle. `arr-len 0` yields the empty vector, so `(list)`
         // is `arr-alloc 0` + `vec-of-arr` (no push-chain special case).
         Core::ListNew { elems } => {
+            // §2d STATIC (small constant list): a markable constant list (≤32) in the build-once table is
+            // built ONCE (immortal) by the `start` init; read it here with a bare `global.get` instead of the
+            // per-eval arr-alloc + boxed arr-set + vec-of-arr. Else build inline below.
+            if try_emit_static_compound(db, id, layout, out) {
+                return Ok(());
+            }
             out.push(Lir::ConstI32(elems.len() as i32));
             out.push(Lir::CallImport(OP_ARR_ALLOC)); // → [arr]
             // Per-element scratch above the running high-water (see `Core::Tuple` — sibling elements of

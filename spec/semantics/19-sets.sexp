@@ -573,7 +573,7 @@
   (call   main (: 5 Int64)) (output (: 4 Int64))
   (call   main (: 4 Int64)) (output (: -1 Int64))
   (call   main (: 14 Int64)) (output (: 4 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution"
   (doc    "Cycle detection via a seen-set over a NUMERIC orbit (the two-sum above probes complements;
@@ -642,7 +642,7 @@
   (call   main (: 1 Int64)) (output (: 410 Int64))
   (call   main (: 5 Int64)) (output (: 211 Int64))
   (call   main (: 4 Int64)) (output (: 104 Int64))
-  (live-objects known-leak 31))
+  (live-objects known-leak 21))
 
 (case "BIPARTITE check two-colors components and rejects the odd cycle"
   (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
@@ -703,7 +703,7 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
   (call main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 57))
+  (live-objects known-leak 47))
 
 (case "dropping a set derived by insert must not free members shared with the survivor"
   (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,
@@ -805,7 +805,7 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 123541 Int64))
   (call   main (: 2 Int64)) (output (: 150 Int64))
-  (live-objects known-leak 117))
+  (live-objects known-leak 107))
 
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
@@ -1873,7 +1873,7 @@
                    (lastbyte xs -9))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order"
   (doc    "The Map-key companion of the Set.to-list Bytes-order pin above: a `Map` keyed by single-byte `Bytes`
@@ -1898,7 +1898,7 @@
                      (lastkey ps -9)))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 628 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 1))
 
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte
