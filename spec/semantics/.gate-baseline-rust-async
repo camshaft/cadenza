@@ -1616,6 +1616,7 @@ pass	a const collection recursively folded UNROLLS to its result at compile time
 pass	a const list recursively FILTERED (conditional include) folds to a constant
 pass	a const list whose elements are BYTES LITERALS recursively folds — a BytesOf is a const value
 pass	a const parameter rejects an argument that depends on runtime data
+pass	a const top-bit-set u64 bin binding folds unsigned
 pass	a const-folded RECORD descriptor holds a recursive-transform result, projected at compile time
 pass	a const-key entry is found beside a distinct runtime-keyed entry
 pass	a constant BigInt crosses the host boundary as its value form
@@ -2478,6 +2479,8 @@ pass	a match-scrutinee self-call preceding an arm-body perform folds via multi-v
 pass	a matched arm body performs and reads the state the scrutinee advanced
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a member access with no field operand is rejected, not a crash
+pass	a memoize helper on a pre-populated key takes the hit branch and does not re-put
+pass	a memoize helper's on-miss put threads to a later read of the same key
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a mid-scalar byte window crosses to the arm and String.from-bytes declines it
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
@@ -6809,6 +6812,9 @@ pass	splitting a tuple at zero yields an empty prefix
 pass	splitting a tuple beyond its arity is rejected
 pass	splitting a tuple with a runtime element addresses the prefix and suffix
 pass	spr1 a SPRINKLER scheduler on a depleting tank — water runs a zone for the minimum of its indexed duration and the remaining tank (shortfalls accumulated), refill restores the seed-shaped capacity answering the shortfall so far, and the small tank starves two zones in the first pass and one in the second while the large tank never starves
+pass	spx1 a Bool entry param selects a branch
+pass	spx3 a UInt64 entry param increments in its own width
+pass	spx4 Int8 and Int16 entry params sign-extend and sum
 pass	sq1 two SEQUENTIAL handles of the SAME inner effect, each seeded by a fresh outer draw — independent inner threads, one advancing outer thread
 pass	sqm1 SQUARE-AND-MULTIPLY over the state — (base,acc) squares every dispatch, multiplies on 1-bits mod 1000, the n-bit's effect observed by a final read
 pass	sr1 a performing self-recursive walk's result SEEDS an inner handle, then a trailing outer draw
@@ -7357,6 +7363,7 @@ pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
 pass	two closures from one factory capture distinct values
 pass	two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min
+pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
 pass	two crossed LISTS compare structurally in the arm — same content from different builders
@@ -7437,6 +7444,7 @@ pass	two sequential lookups on the same Map with perform-threaded keys stay inde
 pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
+pass	two sibling memoize demands of one key: the first's put threads to the second
 pass	two sibling modules may each define a private helper of the same name
 pass	two slices of one parent both read after the parent is dead
 pass	two specializations of one driver on different closures do not collide in the spec memo
@@ -7701,6 +7709,7 @@ todo	sp4 SCALAR param + bare option result
 todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
+todo	spx2 a Char entry param declines pending a boundary representation
 todo	two adapter records with different state types drive a take-while fold in one program
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact
 todo	u64h2 T.of over the u64 host response (isolated, in-range 1000)
@@ -7713,9 +7722,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	spx1 a Bool entry param selects a branch
-todo	spx2 a Char entry param declines pending a boundary representation
-pass	spx3 a UInt64 entry param increments in its own width
-pass	spx4 Int8 and Int16 entry params sign-extend and sum
-pass	a const top-bit-set u64 bin binding folds unsigned
-pass	two const top-bit-set u64 bin bindings in one fn both fold unsigned

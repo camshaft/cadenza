@@ -1189,6 +1189,74 @@
                 (do (store 3) (store 5) (Db.tot)))) (export main)))
   (output (: 2 Int64)))
 
+; The memoize COMBINATOR spine `demand`: a cross-function helper whose on-MISS arm performs `Db.put` (a
+; state-advancing write) and whose on-HIT arm returns the cached value — `(match (Db.get k) ((Some v) v)
+; ((None u) (do (Db.put (k, compute)) compute)))` — threaded over a `Map`-state handler. The helper's
+; branch `put` must thread its Map-state advance to the CALLER's continuation (a later `Db.get` of the same
+; key, or a sibling `demand`), or the later read misses and re-computes. These pin the three facets: a
+; let-bound demand then a re-read; the pre-populated HIT branch; and two sibling demands of one key.
+
+(case "a memoize helper's on-miss put threads to a later read of the same key"
+  (doc    "`(let ((a (demand 5 25))) (match (Db.get 5) ((Some v) (+ a v)) ((None u) 99)))` — `demand 5 25`
+           misses, performs `Db.put (5, 25)` and returns 25; the later `(Db.get 5)` must observe that write
+           and HIT (Some 25) → 25 + 25 = 50. A single-return path that dropped the branch `put`'s out-state
+           at the call boundary would leave the later get missing → the 99 arm (a silent wrong value).")
+  (input  (do
+            (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)))
+            (def (demand (: k Int64) (: compute Int64))
+              (match (Db.get k)
+                (((. Option Some) v) v)
+                (((. Option None) u) (do (Db.put (tuple k compute)) compute))))
+            (def (run-then-get)
+              (handle Db (Map.empty)
+                ((get (k) s (resume (Map.lookup s k) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (let ((a (demand 5 25)))
+                  (match (Db.get 5) (((. Option Some) v) (+ a v)) (((. Option None) u) 99)))))
+            (export run-then-get)))
+  (call   run-then-get) (output (: 50 Int64)))
+
+(case "a memoize helper on a pre-populated key takes the hit branch and does not re-put"
+  (doc    "The HIT-branch facet: the body pre-`put`s (5, 25), so `demand 5 99`'s inner `(Db.get 5)` HITS
+           (Some 25, the first-built arm) and returns 25 WITHOUT re-putting 99; the distributed continuation
+           `(match (Db.get 5) ((Some w) (+ a w)) …)` reads a=25, w=25 → 50. Pins the taken-hit branch of the
+           let-init conditional distribution (the miss facet is the case above).")
+  (input  (do
+            (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)))
+            (def (demand (: k Int64) (: compute Int64))
+              (match (Db.get k)
+                (((. Option Some) v) v)
+                (((. Option None) u) (do (Db.put (tuple k compute)) compute))))
+            (def (run-hit)
+              (handle Db (Map.empty)
+                ((get (k) s (resume (Map.lookup s k) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (do
+                  (Db.put (tuple 5 25))
+                  (let ((a (demand 5 99)))
+                    (match (Db.get 5) (((. Option Some) w) (+ a w)) (((. Option None) u) 99))))))
+            (export run-hit)))
+  (call   run-hit) (output (: 50 Int64)))
+
+(case "two sibling memoize demands of one key: the first's put threads to the second"
+  (doc    "The sibling-call facet: `(let ((a (demand 5 25)) (b (demand 5 999))) (+ a b))` — the first demand
+           fills (5, 25) and the SECOND, of the same key, must HIT the first's write (get → Some 25 → 25)
+           rather than re-compute 999 → 25 + 25 = 50. Pins that a helper's branch `put` out-state threads to
+           a LATER SIBLING binding's inlined demand (a single-return drop would give 25 + 999 = 1024).")
+  (input  (do
+            (effect Db (op get (-> Int64 (Option Int64))) (op put (-> (Tuple Int64 Int64) Unit)))
+            (def (demand (: k Int64) (: compute Int64))
+              (match (Db.get k)
+                (((. Option Some) v) v)
+                (((. Option None) u) (do (Db.put (tuple k compute)) compute))))
+            (def (run-twice)
+              (handle Db (Map.empty)
+                ((get (k) s (resume (Map.lookup s k) s))
+                 (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v))))))
+                (let ((a (demand 5 25)) (b (demand 5 999))) (+ a b))))
+            (export run-twice)))
+  (call   run-twice) (output (: 50 Int64)))
+
 (case "a RECURSIVE effectful walk accumulates into a list-state handler"
   (doc    "Witnesses capabilities-and-effects.md #A Handler Threads State Across The Operations It
            Discharges with the state on the VALUE HEAP and the performer RECURSIVE — the compiler's real
