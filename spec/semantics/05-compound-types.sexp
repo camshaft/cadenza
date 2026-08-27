@@ -21173,3 +21173,33 @@
   (call main (: 5 Int64))
   (output (: (tuple (tuple 1 2) (tuple 1 2)) (Tuple (Tuple Int64 Int64) (Tuple Int64 Int64))))
   (live-objects 3))
+
+; -- a RECORD sub-pattern nested under a variant, tuple, or list binds its field BY NAME at the real width
+; (behavioral migration from rcdzc a_variant_nested_record_match_binder_wires_and_grounds_the_field_width +
+; a_nested_record_match_binder_resolves_to_the_field, 2026-08-27): a `(record (= f a))` pattern nested under a
+; Wrap/tuple/list scrutinee walks the payload/elem path to the Ty::Record and reads field `f` by NAME at its
+; sorted slot and REAL machine width (a narrow Int8 field round-trips as i8, proving the type-walk grounds the
+; field width, not a defaulted i64). Completes the {variant, tuple, list} x record nesting matrix.
+(case "a record sub-pattern nested under a variant, tuple, or list binds its field by name at the real width"
+  (input (do
+           (type W64 (Wrap64 (Record (: x Int64))))
+           (type W8  (Wrap8 (Record (: x Int8))))
+           (def (vari   (: w W64)) (match w ((Wrap64 (record (= x a))) a)))
+           (def (vari8  (: w W8))  (match w ((Wrap8 (record (= x a))) a)))
+           (def (tup    (: t (Tuple (Record (: x Int64)) Int64))) (match t ((tuple (record (= x a)) c) (+ a c))))
+           (def (tup8   (: t (Tuple (Record (: x Int8)) Int64)))  (match t ((tuple (record (= x a)) c) a)))
+           (def (lst    (: xs (List (Record (: x Int64))))) (match xs ((list (record (= x a))) a) (_ 0)))
+           (def (byname (: t (Tuple (Record (: x Int64) (: y Int64)) Int64))) (match t ((tuple (record (= y b)) c) (+ b c))))
+           (def (mvari)   (vari (Wrap64 (record (= x 7)))))
+           (def (mvari8)  (vari8 (Wrap8 (record (= x 100)))))
+           (def (mtup)    (tup (tuple (record (= x 5)) 10)))
+           (def (mtup8)   (tup8 (tuple (record (= x 100)) 7)))
+           (def (mlst)    (lst (list (record (= x 42)))))
+           (def (mbyname) (byname (tuple (record (= x 10) (= y 20)) 5)))
+           (export mvari) (export mvari8) (export mtup) (export mtup8) (export mlst) (export mbyname)))
+  (call mvari)   (output (: 7 Int64))
+  (call mvari8)  (output (: 100 Int8))
+  (call mtup)    (output (: 15 Int64))
+  (call mtup8)   (output (: 100 Int8))
+  (call mlst)    (output (: 42 Int64))
+  (call mbyname) (output (: 25 Int64)))
