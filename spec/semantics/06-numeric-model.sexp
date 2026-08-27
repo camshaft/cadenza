@@ -1736,6 +1736,46 @@
   (call   main (: true Bool))  (trap   "overflow")
   (call   main (: false Bool)) (output (: 120 Int8)))
 
+; A NESTED narrow arith whose operands are all deferred-width (`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8`)
+; types as Int(Deferred) and was emitted at the i64 DEFAULT — storing an i64 result into the i32 slot the
+; enclosing narrow op declared, so wasm rejected the module. The leaf-operand wrap above does NOT cover this
+; (the inner op goes through the nested-arith fast path at its own width). The inner op is emitted at the
+; CONSUMING op's width, computing AND range-checking at the narrow width. Sound — a genuine fixed inner width
+; differing from the context is a CDZ0301 fault before emit.
+
+(case "a nested narrow Int8 add with two if operands computes at the consuming width"
+  (doc    "`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int8` — the inner `+` is deferred-width and emits at the Int8
+           consuming width, not the i64 default. (t,t) -> 1+3+5 = 9, (f,f) -> 2+4+5 = 11. Pins the nested
+           deferred-width invalid-wasm regression the leaf-operand wrap did not cover.")
+  (input  (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 1 2) (if d 3 4)) 5) Int8)) (export main)))
+  (call   main (: true Bool) (: true Bool))   (output (: 9 Int8))
+  (call   main (: false Bool) (: false Bool)) (output (: 11 Int8)))
+
+(case "a nested narrow Int8 arith with a multiply inner op computes at the consuming width"
+  (doc    "`(+ (* (if c 1 2) (if d 3 4)) 5) : Int8` — the inner op is a multiply; (t,f) -> 1*4+5 = 9.")
+  (input  (do (def (main (: c Bool) (: d Bool)) (: (+ (* (if c 1 2) (if d 3 4)) 5) Int8)) (export main)))
+  (call   main (: true Bool) (: false Bool)) (output (: 9 Int8)))
+
+(case "a triply-nested narrow Int8 add computes at the consuming width"
+  (doc    "`(+ (+ (+ (if c 1 2) 3) 4) 5) : Int8` — three levels of deferred-width nesting all emit at Int8;
+           c=true -> 1+3+4+5 = 13.")
+  (input  (do (def (main (: c Bool)) (: (+ (+ (+ (if c 1 2) 3) 4) 5) Int8)) (export main)))
+  (call   main (: true Bool)) (output (: 13 Int8)))
+
+(case "a nested narrow Int8 arith range-checks the inner op so an inner overflow traps"
+  (doc    "The inner `+` range-checks at Int8, so a runtime inner 100+100 = 200 overflows and TRAPS (distinct
+           branch values keep it from const-folding), while in-range inputs compute:
+           `(+ (+ (if c 100 10) (if d 100 10)) 5) : Int8`. (t,t) traps; (t,f) -> 100+10+5 = 115.")
+  (input  (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 100 10) (if d 100 10)) 5) Int8)) (export main)))
+  (call   main (: true Bool) (: true Bool))  (trap   "overflow")
+  (call   main (: true Bool) (: false Bool)) (output (: 115 Int8)))
+
+(case "the Int64 control: a nested wide add with if operands needs no normalization"
+  (doc    "`(+ (+ (if c 1 2) (if d 3 4)) 5) : Int64` — already i64 throughout, no wrap inserted; (t,t) -> 9.
+           The wide control for the nested narrow cases above.")
+  (input  (do (def (main (: c Bool) (: d Bool)) (: (+ (+ (if c 1 2) (if d 3 4)) 5) Int64)) (export main)))
+  (call   main (: true Bool) (: true Bool)) (output (: 9 Int64)))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")

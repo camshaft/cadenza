@@ -8397,3 +8397,8 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	a nested narrow Int8 add with two if operands computes at the consuming width
+pass	a nested narrow Int8 arith with a multiply inner op computes at the consuming width
+pass	a triply-nested narrow Int8 add computes at the consuming width
+pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
+pass	the Int64 control: a nested wide add with if operands needs no normalization
