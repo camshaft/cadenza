@@ -681,3 +681,16 @@
               (def (main (: x Int64)) (host (P) (let ((t (P.pair x))) (+ (. t 0) (. t 1))))) (export main)))
   (call   main (: 9 Int64))
   (output (: 18 Int64)))
+
+(case "a compound built from two distinct peers escapes the entrypoint as a resource"
+  (doc    "main RETURNS a tuple built from ops on TWO distinct peer interfaces — A.pa(x)=2x @cadenza:a/api and
+           B.pb(x)=3x @cadenza:b/api — so the fresh `(A.pa x, B.pb x)` tuple ESCAPES the entrypoint as a
+           resource reaching both interfaces. main(5) = (tuple 10 15). Exercises the multi-interface (g>1)
+           fused resource-escape assembler.")
+  (peer   "cadenza:a/api" (do (def (pa (: x Int64)) (+ x x)) (export pa)))
+  (peer   "cadenza:b/api" (do (def (pb (: x Int64)) (+ (+ x x) x)) (export pb)))
+  (input  (do (effect A (op pa (-> Int64 Int64))) (bind A "cadenza:a/api")
+              (effect B (op pb (-> Int64 Int64))) (bind B "cadenza:b/api")
+              (def (main (: x Int64)) (host (A B) (tuple (A.pa x) (B.pb x)))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: (tuple 10 15) (Tuple Int64 Int64))))
