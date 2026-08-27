@@ -8218,3 +8218,7 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 pass	unsigned comparisons against zero simplify and agree with the true comparison
+pass	not over each Int64 comparison folds to the complement (value parity)
+pass	not over an unsigned comparison uses the unsigned op
+pass	not over a narrow Int32 comparison folds to the complement
+pass	double negation of a comparison is the bare comparison

@@ -7815,3 +7815,7 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	unsigned comparisons against zero simplify and agree with the true comparison
+pass	not over each Int64 comparison folds to the complement (value parity)
+pass	not over an unsigned comparison uses the unsigned op
+pass	not over a narrow Int32 comparison folds to the complement
+pass	double negation of a comparison is the bare comparison

@@ -10164,3 +10164,41 @@
   (call main (: 0 UInt64))                    (output (: 1110 Int64))
   (call main (: 5 UInt64))                     (output (: 1010 Int64))
   (call main (: 18446744073709551615 UInt64))  (output (: 1010 Int64)))
+
+; -- not-over-comparison complement parity (fully migrated from rcdzc
+; not_over_a_comparison_folds_to_the_complement, 2026-08-27; pure parity, Lir shape checked in select.rs
+; -> rcdzc test deleted): `(not (CMP a b))` equals the single complement comparison across all six
+; comparisons, both signednesses, narrow widths, and double-negation.
+
+(case "not over each Int64 comparison folds to the complement (value parity)"
+  (doc    "`(not (< a b))`=a>=b, `(not (> a b))`=a<=b, `(not (<= a b))`=a>b, `(not (>= a b))`=a<b,
+           `(not (= a b))`=a!=b. main weights the five so one output pins them: (4,5)→11010, (5,5)→11,
+           (6,5)→10101.")
+  (input (do
+    (def (main (: a Int64) (: b Int64))
+      (+ (if (not (< a b)) 1 0)
+         (+ (if (not (> a b)) 10 0)
+            (+ (if (not (<= a b)) 100 0)
+               (+ (if (not (>= a b)) 1000 0)
+                  (if (not (= a b)) 10000 0))))))
+    (export main)))
+  (call main (: 4 Int64) (: 5 Int64)) (output (: 11010 Int64))
+  (call main (: 5 Int64) (: 5 Int64)) (output (: 11 Int64))
+  (call main (: 6 Int64) (: 5 Int64)) (output (: 10101 Int64)))
+
+(case "not over an unsigned comparison uses the unsigned op"
+  (doc    "`(not (< a b))` over UInt64 with the high bit set: MAX >= 1 is true (a signed ge would read
+           MAX as -1 and be false); 1 >= MAX is false.")
+  (input (do (def (main (: a UInt64) (: b UInt64)) (if (not (< a b)) 1 0)) (export main)))
+  (call main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 1 Int64))
+  (call main (: 1 UInt64) (: 18446744073709551615 UInt64)) (output (: 0 Int64)))
+
+(case "not over a narrow Int32 comparison folds to the complement"
+  (input (do (def (main (: a Int32) (: b Int32)) (if (not (< a b)) 1 0)) (export main)))
+  (call main (: -1 Int32) (: -2 Int32)) (output (: 1 Int64))
+  (call main (: -2 Int32) (: -1 Int32)) (output (: 0 Int64)))
+
+(case "double negation of a comparison is the bare comparison"
+  (input (do (def (main (: a Int64) (: b Int64)) (if (not (not (< a b))) 1 0)) (export main)))
+  (call main (: 4 Int64) (: 5 Int64)) (output (: 1 Int64))
+  (call main (: 5 Int64) (: 4 Int64)) (output (: 0 Int64)))
