@@ -732,6 +732,7 @@ pass	a DEPTH-3 op-arg chain threads across two handler layers
 pass	a DEPTH-3 same-effect shadow ladder — each shadow's seed draws from the ENCLOSING handler, strides 1 2 3 stay separate
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
 pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
+pass	a DIRECT-conditional OUTER-effect perform in a let-init inside a nested handler body folds (adv-69 a4 control)
 pass	a DIRECT-init branch perform in a let-init threads its state advance (adv-69 control, still computes)
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
@@ -1869,6 +1870,7 @@ pass	a deep push chain beside two other live bindings retains each correctly
 pass	a deep rope indexes by scalar at both extremes
 pass	a deep trie built BETWEEN two host calls reads correctly after the second
 pass	a deep uniform arith accumulator chain (CSE-partition shape) computes the same value across opt levels
+pass	a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype
 pass	a deeper nested call chain still folds in linear time near the inliner limit
 pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
@@ -3427,6 +3429,8 @@ pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
 pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive TREE as a transformer op — crosses IN, the arm wraps it, crosses back OUT
+pass	a recursive abortive callee as the handle-body TAIL folds to the arm value
+pass	a recursive abortive callee feeding a PENDING handle-body continuation declines cleanly
 pass	a recursive bool predicate types as Bool with the self-call in either branch order
 pass	a recursive builder PERFORMS per step and a recursive pure fold consumes the built list
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
@@ -6072,6 +6076,9 @@ pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	dpt1 divisibility by two agrees with the true modulo across signs and Int64.min
 pass	dpt2 unsigned divisibility by a power of two agrees with the true modulo
 pass	dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean — the control the nested cells contrast
+pass	dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)
+pass	dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)
+pass	dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean
 pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
 pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
 pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
@@ -8146,6 +8153,7 @@ pass	the wrapping additive and multiplicative identities preserve a boundary ope
 pass	the wrapping identities preserve a runtime narrow UInt8 exactly (add 0, mul 1)
 pass	the wrapping-mul zero annihilator does not drop a trapping operand
 pass	the x times minus-one strength reduction negates a normal operand and still traps at Int64.min
+pass	the zero-recursion abortive-callee shape with a pending continuation declines too (static shape)
 pass	the λ-extended kernel Thm stays unforgeable — Thm.Seq with an Abs term outside is CDZ0214
 pass	the ∀-extended kernel Thm stays unforgeable — Thm.Seq of a bogus universal outside is CDZ0214
 pass	three DISCARDED performs on a do-spine still advance the state
@@ -8635,7 +8643,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	a deep-nested constructor pattern dispatches a nullary variant through an erased multi-field newtype
-pass	dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)
-pass	dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)
-pass	dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean
