@@ -618,3 +618,17 @@
               (def (main (: x Int64)) (host (Mid) (Mid.mid x))) (export main)))
   (call   main (: 5 Int64))
   (trap   "signature mismatch"))
+
+(case "a signature mismatch in ONE of several bound peers is rejected at compose time"
+  (doc    "A consumer binds TWO peers: M.add (cadenza:math/api, correct) + P.neg (cadenza:p/api). P
+           mismatches — it exports neg over Float64 while the consumer binds neg over Int64 — while M is
+           fine. The compose-time signature check ITERATES all bound peers and rejects on the offending one
+           (a type mismatch on P's neg), not an opaque runtime trap. (The both-peers-match positive is
+           covered by the two-scalar-peer-interfaces case; this is the one-of-several-mismatches reject.)")
+  (peer   "cadenza:math/api" (do (def (add (: x Int64) (: y Int64)) (+ x y)) (export add)))
+  (peer   "cadenza:p/api" (do (def (neg (: x Float64)) (+ x x)) (export neg)))
+  (input  (do (effect M (op add (-> Int64 Int64 Int64))) (effect P (op neg (-> Int64 Int64)))
+              (bind M "cadenza:math/api") (bind P "cadenza:p/api")
+              (def (main (: x Int64)) (host (M P) (+ (M.add x x) (P.neg x)))) (export main)))
+  (call   main (: 5 Int64))
+  (trap   "type mismatch"))
