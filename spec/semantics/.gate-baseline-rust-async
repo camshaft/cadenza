@@ -5398,6 +5398,10 @@ pass	cru2 a narrow conditional whose product fits the type sheds its guard
 pass	cru3 a narrow conditional whose branch-union overflows the type keeps its guard and traps
 pass	cru4 an unbounded conditional branch keeps the guard and traps on real overflow
 pass	cs1 a COLLATZ-step arm — even states halve, odd states triple-plus-one, low digits of four reads trace the orbit
+pass	csm1 a mixed-operator and (< with <=) subsumes to the tighter inclusive bound
+pass	csm2 a mixed-operator or (<= with <) subsumes to the looser inclusive bound
+pass	csm3 a mixed-operator lower-bound or (> with >=) subsumes to the looser bound
+pass	csm4 the mixed-operator subsumption keeps a trapping operand's trap
 pass	cst1 a CURSOR-STACK state — the tuple (buf,top) pushes by List.update-or-append at the cursor and pops by decrement, stale slots above the cursor are overwritten, the over-pop answers a sentinel
 pass	ct01 bare runtime Int64.of over a UInt64 param-derived value (isolated T.of face)
 pass	ct1 the LOOP BOUND is itself a draw — a first dispatch sizes the walk, the walk then draws that many times
