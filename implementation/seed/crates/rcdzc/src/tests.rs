@@ -4049,6 +4049,41 @@ fn a_record_entry_param_declines_naming_the_param_not_a_bogus_multi_export_retur
     );
 }
 
+/// A native-rust `Value.encode`/`Value.decode` over a RECURSIVE type (`Ast = … (List (List Ast))`) DECLINES
+/// rather than emitting non-terminating rust that HANGS rustc. The recursion runs through a `List` payload,
+/// which the enum-sizing recursion check (`enums::variant_is_recursive` / `reaches_decl`) deliberately
+/// excludes (a `Vec<Ast>` field is finite-sized), so the value-form WALK's unbounded recursion was NOT
+/// guarded — the codec generated rust rustc could not compile in bounded time. Pins the up-front decline
+/// (fast: compile-only, no rustc), guarding against a regression back to the compile hang.
+#[test]
+fn a_recursive_type_value_codec_declines_on_rust_not_hangs() {
+    use crate::testkit::parse;
+    let src = "(do (def (main (: b Bool)) \
+                 (match (: ((. Value decode) ((. Value encode) ((. Ast Bool) b))) (Option Ast)) \
+                   ((Some m) 1) ((None u) 0))) \
+               (export main))";
+    let out = crate::compile::compile(
+        &[crate::abi::Artifact::new(
+            crate::abi::Artifact::KIND_AST,
+            "main",
+            crate::codec::encode(&parse(src)),
+        )],
+        &[crate::backend::Target::Rust],
+    );
+    assert!(
+        out.artifact(crate::backend::Target::Rust.artifact_kind())
+            .is_none(),
+        "a recursive-type value codec must DECLINE on rust (not emit rustc-hanging rust)"
+    );
+    assert!(
+        out.diagnostics
+            .iter()
+            .any(|d| d.message.contains("recursive-type value codec")),
+        "the decline must name the recursive-type-codec constraint: {:?}",
+        out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// MAX-FLAT-PARAMS boundary: an export whose params flatten to MORE than the canonical-ABI limit (16 core
 /// values) needs the MEMORY-INDIRECT calling convention (params spilled to a linear-memory area, passed by
 /// pointer), which this backend does not yet emit. Emitting the flat form regardless past 16 produced an
