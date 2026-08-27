@@ -1342,10 +1342,14 @@ pass	a bind directive with a malformed peer interface name is rejected
 pass	a binding consumed in the left call arg while read in the right is retained
 pass	a binding consumed in the right call arg while read in the left is retained
 pass	a binding form with bindings but no body is rejected, not a crash
+pass	a bit-field run spanning a byte boundary reads as one big-endian int split by field width
+pass	a bit-field sizes a dependent bytes segment
 pass	a bit-field value that needs more bits than its width does not fit its segment
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
+pass	a bit-field-sized dependent bytes segment that overruns the input falls through
 pass	a bits pattern segment reads sub-byte fields back into integers
+pass	a bits pattern with a 3/5 split reads the high and low fields most-significant-first
 pass	a bits run spanning TWO bytes decodes MSB-first over a runtime scrutinee
 pass	a bitwise AND on an unusual signed width clears the sign bit to a non-negative result
 pass	a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit
@@ -2285,6 +2289,7 @@ pass	a later let binding sees an earlier pattern's binders
 pass	a later let binding sees an earlier record pattern's field binders
 pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
 pass	a le pattern segment reads a fixed-width integer little-endian
+pass	a leading literal bit-field tag that misses falls through to the catch-all
 pass	a leading nested-list element dispatches on the inner list's length
 pass	a leading-element list rest pattern in a def parameter is refutable and rejected
 pass	a leading-element list rest pattern in a let binder is refutable and rejected
@@ -4926,6 +4931,7 @@ pass	an integer literal pattern against a boolean scrutinee is a type error
 pass	an integer literal pattern matches a runtime scrutinee
 pass	an integer literal with digit separators
 pass	an integer min via (if (< a b) a b) returns the smaller in either operand order
+pass	an integer segment after a byte-aligned bit-field run reads at the advanced offset
 pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
 pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
@@ -5707,6 +5713,7 @@ pass	dn2b an abort under FOUR resumptive frames — the unwind abandons all four
 pass	dn3 an ALTERNATING A/B/A/B tower where both effects share the op NAME next — each perform homes to its effect's innermost handler
 pass	dn4 SKIP-LEVEL performs from the innermost region — A's draws cross the B and C frames to the outermost handler twice
 pass	dn5 a tuple built INSIDE the inner region from BOTH effects' draws, destructured OUTSIDE — data crosses the region boundary
+pass	do-discarded outer performs inside a HELPER under an inner handle thread across the level
 pass	do1 ONE draw consumed by BOTH branches of an if with different weights — the binder is read exactly once per run
 pass	double negation of a runtime boolean is the identity
 pass	doubling a subnormal crosses UP into the minimum normal exactly
@@ -8118,9 +8125,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	a bits pattern with a 3/5 split reads the high and low fields most-significant-first
-pass	a bit-field run spanning a byte boundary reads as one big-endian int split by field width
-pass	a leading literal bit-field tag that misses falls through to the catch-all
-pass	an integer segment after a byte-aligned bit-field run reads at the advanced offset
-pass	a bit-field sizes a dependent bytes segment
-pass	a bit-field-sized dependent bytes segment that overruns the input falls through
