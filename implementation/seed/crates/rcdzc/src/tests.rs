@@ -36060,17 +36060,8 @@ mod stage1 {
             compile_component(&crate::codec::encode(&parse(src))).is_err(),
             "a width from runtime data must reject, not fold at a constant call site"
         );
-        // Sanity: a CONSTANT width still works — `(UInt 8)` is fine, crossing as a `u8`.
-        assert_eq!(
-            run_returns::<u8>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(module m (def (main) (: 5 (UInt 8))) (export main))"
-                )))
-                .expect("constant width compiles"),
-                "main"
-            ),
-            5
-        );
+        // (The constant-width control — `(: 5 (UInt 8))` compiles and crosses as a `u8` = 5 — is corpus 06
+        // "a bare constant width UInt8 literal crosses to the host as its value".)
     }
 
     #[test]
