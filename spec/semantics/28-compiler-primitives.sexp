@@ -2254,10 +2254,12 @@
   (doc    "`(if (> n 0) 7 (/ 1 0))` — the `(/ 1 0)` is a compile-provable trap, but it sits in the else-branch under a
            RUNTIME condition. At n>0 the else is never taken, so the program returns 7 (it must NOT hard-error at
            compile, per the operator ruling). Pins the demote: the ConstTrap branch became a runtime trap, so the `if`
-           compiles and the taken branch computes.")
+           compiles and the taken branch computes. Also emits the CDZ0309 WARNING (operator follow-on): the
+           fold-synthesized trap could fire along the reachable else-path — flagged, but not an error.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
   (call   main (: 5 Int64))
-  (output (: 7 Int64)))
+  (output (: 7 Int64))
+  (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb2 the SAME divide-by-zero branch traps at RUNTIME when the condition takes it"
   (doc    "The runtime face of dzb1: at n≤0 the else-branch IS taken, so the demoted trap fires at RUNTIME — a bare
@@ -2265,7 +2267,8 @@
            `(trap \"unreachable\")`). Pins that the demote PRESERVES the trap — deferred to runtime, not dropped.")
   (input  (do (def (main (: n Int64)) (if (> n 0) 7 (/ 1 0))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (warns  CDZ0309 (message "potentially reachable trap")))
 
 (case "dzb3 a const divide-by-zero in a MATCH arm traps at runtime, not at compile (the match twin)"
   (doc    "`(match n (0 (/ 1 0)) (_ 7))` — the `(/ 1 0)` arm is conditionally reached (only at n=0), so it demotes to
@@ -2273,7 +2276,19 @@
            bare `unreachable`). Pins the match-arm demote alongside the `if`-branch one.")
   (input  (do (def (main (: n Int64)) (match n (0 (/ 1 0)) (_ 7))) (export main)))
   (call   main (: 0 Int64))
-  (trap   "unreachable"))
+  (trap   "unreachable")
+  (warns  CDZ0309 (message "potentially reachable trap")))
+
+(case "dzw1 an EXPLICIT user (trap …) in a runtime branch does NOT warn CDZ0309 (only const-fold-origin traps warn)"
+  (doc    "The discrimination the operator asked for: CDZ0309 flags a fold-SYNTHESIZED reachable trap, NOT an
+           intentional user trap. `(if (> n 0) 7 (trap \"chosen\"))` — the else is an explicit `(trap …)` (lowers to a
+           plain `Core::Trap`, not a provable-trap poison), so `demote_conditional_trap` never touches it and NO
+           CDZ0309 is emitted. At n>0 it returns 7; the author's trap fires only if the else is taken (a bare
+           `unreachable`). No `(warns …)` clause — the case pins that this path builds clean (a spurious CDZ0309 here
+           would be the discrimination breaking).")
+  (input  (do (def (main (: n Int64)) (if (> n 0) 7 (trap "chosen"))) (export main)))
+  (call   main (: 5 Int64))
+  (output (: 7 Int64)))
 
 (case "dzb4 a STATICALLY-UNCONDITIONAL const divide-by-zero is STILL fail-loud CDZ0304 (the carve-out holds)"
   (doc    "The other half of the ruling: a provable trap NOT guarded by a runtime branch is statically-unconditional,

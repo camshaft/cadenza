@@ -506,6 +506,10 @@ fn compile_with_opt_inner(
     //= spec/capabilities/core-semantics.md#a-discarded-pure-non-final-value-is-diagnosed
     //# An implementation SHOULD emit a diagnostic of non-error severity — one that leaves the build successful — for such a form, so that a program does not silently discard the value of a pure computation whose result it never observes.
     diagnostics.extend(collect_discarded_value_warnings(&mut db));
+    // Potentially-reachable-trap warnings (a const-folded trap DEMOTED to a runtime trap in a runtime `if`
+    // branch / `match` arm — CDZ0309): the program builds + runs (RULING A), but the fold-synthesized trap
+    // could fire along a reachable path, so flag it (never for an explicit user `trap`).
+    diagnostics.extend(collect_reachable_const_trap_warnings(&mut db));
 
     // A run that emits BOTH a plain component (`Wasm`) AND a detached DWARF sidecar (`Dwarf`) links the
     // two: the component carries an `external_debug_info` custom section naming the sidecar file, so a
@@ -852,6 +856,7 @@ pub fn diagnostics(db: &mut Db) -> Vec<Diagnostic> {
     out.extend(collect_unused_binding_warnings(db));
     out.extend(collect_redundant_arm_warnings(db));
     out.extend(collect_discarded_value_warnings(db));
+    out.extend(collect_reachable_const_trap_warnings(db));
     out
 }
 
@@ -5549,6 +5554,160 @@ fn dropped_trap_anchor(db: &mut Db, id: StructId) -> Option<StructId> {
     match core_of(db, id) {
         Core::Poison(r) => r.at.or(Some(id)),
         _ => Some(id),
+    }
+}
+
+/// Collect POTENTIALLY-REACHABLE-TRAP warnings (CDZ0309) — the conditional-branch companion of the
+/// dropped-value dead-trap warning. Per the operator ruling (cn02), a compile-provable trap (a divide-by-zero
+/// / overflow / out-of-bounds the fold discovered) in an `if` branch or `match` arm guarded by a RUNTIME
+/// condition is NOT a compile error: it demotes to a runtime trap that fires only when the branch is taken
+/// (`lower::demote_conditional_trap`). But the author did not write it — the fold SYNTHESIZED it — so warn
+/// that the operation could trap along a reachable path (a likely defect). Walks every def body; at each
+/// RUNTIME `if`/`match` (its lowered core is a `Core::If`/`Core::Match`/`Core::MatchSum`, so a branch is
+/// genuinely reachable — a const-condition `if` folds to one arm and DROPS the other), a branch/arm whose
+/// core is a `ConstTrap` poison warns. An explicit user `(trap …)` lowers to a plain `Core::Trap` (not a
+/// provable-trap poison), so it never warns — exactly the const-fold-origin discrimination the ruling asks
+/// for. Anchored at the offending operation. Fires at the SAME positions `demote_conditional_trap` demotes.
+fn collect_reachable_const_trap_warnings(db: &mut Db) -> Vec<Diagnostic> {
+    let bodies: Vec<StructId> = db.defs.iter().filter_map(|d| d.body).collect();
+    let mut warnings = Vec::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for body in bodies {
+        walk_for_reachable_const_traps(db, body, &mut warnings, &mut seen);
+    }
+    warnings
+}
+
+/// Warn (CDZ0309) if `branch` — an occurrence in a CONDITIONALLY-reached position — folds to a `ConstTrap`
+/// (a const-fold-origin provable trap; NOT an explicit `Core::Trap`, which never enters here).
+fn warn_reachable_const_trap(db: &mut Db, branch: StructId, out: &mut Vec<Diagnostic>) {
+    if matches!(core_of(db, branch), Core::Poison(r) if r.code == Some(Code::ConstTrap)) {
+        let at = dropped_trap_anchor(db, branch).filter(|&n| db.is_user_node(n));
+        out.push(Diagnostic::warning(
+            Code::ReachableTrap,
+            "this operation resulted in a potentially reachable trap: it always traps when this branch is \
+             taken, and whether the branch is taken depends on a runtime value — guard the operand or remove \
+             the operation",
+            at,
+        ));
+    }
+}
+
+/// Walk the RESOLVED tree from `id`, warning at each RUNTIME `if` branch / `match` arm whose value folds to a
+/// `ConstTrap` (the demoted-to-runtime const-fold trap). Descends EVERY sub-position — including the guarded
+/// branches themselves — so a demoted trap nested at any depth is found (unlike `walk_for_dead_traps`, which
+/// stops at control-flow boundaries because it hunts DROPPED values, not reachable ones). `seen` dedups a
+/// shared occurrence.
+fn walk_for_reachable_const_traps(
+    db: &mut Db,
+    id: StructId,
+    out: &mut Vec<Diagnostic>,
+    seen: &mut std::collections::HashSet<u32>,
+) {
+    use crate::resolved::Resolved;
+    if !seen.insert(id.0) {
+        return;
+    }
+    match crate::resolve::resolved_of(db, id) {
+        Resolved::If { cond, then_, else_ } => {
+            // Only a RUNTIME `if` has genuinely-reachable branches — a const-condition `if` folds to the taken
+            // branch (the untaken one, ConstTrap or not, is DROPPED, unreachable). Its lowered core being
+            // `Core::If` witnesses the runtime condition (and the demote that ran there).
+            if matches!(core_of(db, id), Core::If { .. }) {
+                warn_reachable_const_trap(db, then_, out);
+                warn_reachable_const_trap(db, else_, out);
+            }
+            walk_for_reachable_const_traps(db, cond, out, seen);
+            walk_for_reachable_const_traps(db, then_, out, seen);
+            walk_for_reachable_const_traps(db, else_, out, seen);
+        }
+        Resolved::Match { scrutinee, arms } => {
+            let runtime = matches!(core_of(db, id), Core::Match { .. } | Core::MatchSum { .. });
+            for (_, body) in arms.iter() {
+                if runtime {
+                    warn_reachable_const_trap(db, *body, out);
+                }
+                walk_for_reachable_const_traps(db, *body, out, seen);
+            }
+            walk_for_reachable_const_traps(db, scrutinee, out, seen);
+        }
+        Resolved::Tuple { elems } | Resolved::List { elems } => {
+            for e in elems.iter() {
+                walk_for_reachable_const_traps(db, *e, out, seen);
+            }
+        }
+        Resolved::Map { entries } => {
+            for &(k, v) in entries.iter() {
+                walk_for_reachable_const_traps(db, k, out, seen);
+                walk_for_reachable_const_traps(db, v, out, seen);
+            }
+        }
+        Resolved::Record { fields } => {
+            for &v in fields.values() {
+                walk_for_reachable_const_traps(db, v, out, seen);
+            }
+        }
+        Resolved::Bin { segs } => {
+            for s in segs.iter() {
+                walk_for_reachable_const_traps(db, s.slot, out, seen);
+                match &s.kind {
+                    crate::resolved::SegKind::Bytes { size: Some(n) } => {
+                        walk_for_reachable_const_traps(db, *n, out, seen)
+                    }
+                    crate::resolved::SegKind::Utf8 { size } => {
+                        walk_for_reachable_const_traps(db, *size, out, seen)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Resolved::Let { bindings, body } => {
+            for &(_, init) in bindings.iter() {
+                walk_for_reachable_const_traps(db, init, out, seen);
+            }
+            walk_for_reachable_const_traps(db, body, out, seen);
+        }
+        Resolved::Apply { head, args } => {
+            walk_for_reachable_const_traps(db, head, out, seen);
+            for a in args.iter() {
+                walk_for_reachable_const_traps(db, *a, out, seen);
+            }
+        }
+        Resolved::Proj { operand, .. } | Resolved::Member { operand, .. } => {
+            walk_for_reachable_const_traps(db, operand, out, seen);
+        }
+        Resolved::Annot { expr, .. } | Resolved::ConstBlock { expr } => {
+            walk_for_reachable_const_traps(db, expr, out, seen);
+        }
+        Resolved::Ref { value } => walk_for_reachable_const_traps(db, value, out, seen),
+        // A short-circuit connective's RIGHT operand is guarded, but `demote_conditional_trap` does NOT demote
+        // an `and`/`or` rhs (only `if`/`match`), so a ConstTrap there is still an ERROR, not a demoted runtime
+        // trap — do not warn it here (descend to find nested if/match). The LHS is unconditional.
+        Resolved::And { lhs, rhs, .. } => {
+            walk_for_reachable_const_traps(db, lhs, out, seen);
+            walk_for_reachable_const_traps(db, rhs, out, seen);
+        }
+        Resolved::Not { operand } | Resolved::Try { operand } => {
+            walk_for_reachable_const_traps(db, operand, out, seen);
+        }
+        Resolved::Handle { .. } | Resolved::Host { .. } | Resolved::Resume { .. } => {}
+        Resolved::Int(_)
+        | Resolved::Bool(_)
+        | Resolved::Str(_)
+        | Resolved::SymbolConst(_)
+        | Resolved::Bytes(_)
+        | Resolved::Char(_)
+        | Resolved::Float(_)
+        | Resolved::Unit
+        | Resolved::Prim(_)
+        | Resolved::Param { .. }
+        | Resolved::TypeVal(_)
+        | Resolved::Lambda { .. }
+        | Resolved::SumPayload { .. }
+        | Resolved::BinField { .. }
+        | Resolved::MapField { .. }
+        | Resolved::RecordField { .. }
+        | Resolved::Poison(_) => {}
     }
 }
 
