@@ -11147,3 +11147,9 @@
   (call wann    (: 7 Int64))  (output (: 0 Int64))
   (call proj)                 (output (: 42 Int64))
   (call projann)              (output (: 0 Int64)))
+
+(case "a bare literal grounds to BigInt in a constructor payload and round-trips the exact value"
+  (doc    "`(type W (W BigInt))`: a bare i64-overflowing literal grounds losslessly to the declared
+           BigInt payload and renders in its self-describing value form.")
+  (input (do (def (main) (match (W 99999999999999999999999) ((W x) x))) (type W (W BigInt)) (export main)))
+  (output (: 99999999999999999999999 BigInt)))
