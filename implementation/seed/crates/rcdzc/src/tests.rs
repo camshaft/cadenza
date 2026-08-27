@@ -19435,26 +19435,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_single_use_projected_list_consume_needs_no_extra_child_dup() {
-        // The FBIP fast path for the projection face: a projected list consumed EXACTLY once (no later
-        // re-projection) must NOT get the extra child retain — `build 0 3` = `[0 1 2]`, `(. t 0)` pushed to
-        // `[0 1 2 99]`, length 4. Pins that `mark_binder_dups` marks the consuming projection ONLY with a
-        // later live use (the `live_after` gate), so a single projected consume stays lean.
-        let Some(out) = run_on_heap(
-            "(module m \
-               (def (build i n acc) (if (< i n) \
-                   (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc)) \
-               (def (main) (let ((t (build 0 3 (tuple (list) 0)))) \
-                             ((. List len) ((. List push) (. t 0) 99)))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(out, "4", "single-use projected push then length");
-    }
-
-    #[test]
     fn a_single_consume_threaded_accumulator_stays_dup_free() {
         // FBIP fast-path bench guard (backend-shape witness, NOT corpus-expressible): the
         // simultaneously-live-args RETAIN — a self-recursive call threading `base` UNCHANGED in one arg while a
@@ -22409,36 +22389,6 @@ mod match_engine {
                 "List.at bounds elision parity for {body} @ n={arg}"
             );
         }
-    }
-
-    #[test]
-    fn a_runtime_list_at_result_is_matched_by_a_nested_constructor_pattern() {
-        // The reader idiom: a fallible access yields an `Option` whose `Some` payload is a USER sum, and a
-        // NESTED pattern deconstructs both in one arm. `(List.at (List.push (list) (N.L 7)) 0)` is a
-        // runtime `(Some (N.L 7))`; `(Some (N.L v))` binds v=7. This is the decision-tree matcher over a
-        // NON-REUSABLE (computed) `List.at` scrutinee — which is materialized ONCE into a scratch slot
-        // (else re-emitting the `List.at` per probe both rebuilds the list AND collides the list/index
-        // scratch with the arm bodies' temps at the shared floor, an invalid module). Pins that fix + the
-        // built-in `Option` carrying a user sum through the runtime nested matcher (corpus §'a runtime
-        // Option carrying a user sum is matched by a nested constructor pattern').
-        // The list of `N` is BUILT at run time by a push-loop over a RUNTIME parameter (`build 0 1` pushes
-        // `(N.L i)` for the runtime index `i`), so it is a genuine `vec-push` handle — a constant `(list)`
-        // + a constant `push` now folds, which would defeat the runtime-matcher coverage. `List.at … 0` is
-        // then a runtime `(Some (N.L 0))`, and `(Some (N.L v))` binds v=0.
-        let Some(out) = run_on_heap(
-            "(module m (type N (L Int64) (P Int64)) \
-               (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (N.L i))) out)) \
-               (def (main) (match ((. List at) (build 0 1 (list)) 0) \
-                             ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) \
-               (export main))",
-        ) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "0",
-            "nested match over a runtime List.at Some(user-sum)"
-        );
     }
 
     // NOTE: the self-hosting arg-walk idiom (corpus §'a list built by a recursive push-loop is then

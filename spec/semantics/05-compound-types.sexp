@@ -22398,3 +22398,25 @@
   (call main (: 1 Int64))
   (output (: 106 Int64))
   (live-objects 0))
+; -- a runtime List.at result is matched by a nested constructor pattern (migrated from rcdzc
+; a_runtime_list_at_result_is_matched_by_a_nested_constructor_pattern): a fallible access yields an Option
+; whose Some payload is a USER sum, deconstructed by a nested pattern in one arm; the computed List.at
+; scrutinee is materialized ONCE into a scratch slot (re-emitting it per probe would rebuild the list and
+; collide the list/index scratch with the arm bodies -> invalid module). Runtime-built list, so vec-push.
+(case "rnc1 a runtime Option carrying a user sum is matched by a nested constructor pattern"
+  (doc    "`(List.at (build 0 1 (list)) 0)` is a runtime `(Some (N.L 0))`; the nested pattern `(Some (N.L v))`
+           binds v=0. build pushes (N.L i) for the runtime index so the list is a genuine vec-push handle.")
+  (input (do (type N (L Int64) (P Int64))
+             (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out (N.L i))) out))
+             (def (main) (match ((. List at) (build 0 1 (list)) 0) ((Some (N.L v)) v) ((Some (N.P v)) (+ v 100)) ((None _) -1))) (export main)))
+  (call main) (output (: 0 Int64)))
+
+; -- a single-use projected list consume needs no extra child dup (migrated from rcdzc
+; a_single_use_projected_list_consume_needs_no_extra_child_dup): the FBIP fast path for the projection
+; face — a projected list consumed EXACTLY once (no later re-projection) needs no extra child retain.
+(case "spj1 a single-use projected list consume stays on the FBIP fast path"
+  (doc    "`t = (build …) : (Tuple (List Int64) Int64)` with t.0 = [0,1,2]; the single consuming
+           `(List.len (List.push (. t 0) 99))` = 4 — no later use, so no extra child dup needed.")
+  (input (do (def (build i n acc) (if (< i n) (build (+ i 1) n (tuple ((. List push) (. acc 0) i) (+ (. acc 1) 1))) acc))
+             (def (main) (let ((t (build 0 3 (tuple (list) 0)))) ((. List len) ((. List push) (. t 0) 99)))) (export main)))
+  (call main) (output (: 4 Int64)))
