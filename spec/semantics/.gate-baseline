@@ -2414,6 +2414,7 @@ pass	a let binder shadowing a parameter rebinds within its scope (same type)
 pass	a let binder shadowing a parameter with a DIFFERENT type rebinds correctly
 pass	a let binding is in scope in its body
 pass	a let binding shadows a built-in constructor name in application-head position
+pass	a let binding shadows a built-in type-module name in value position
 pass	a let binding shadows the record constructor in application-head position
 pass	a let binding shadows the tuple constructor in application-head position
 pass	a let binding whose value references a parameter compiles under a call
@@ -6079,6 +6080,9 @@ pass	dqe1 FLAT tuple dual-use (projections + runtime equality) reclaims clean â€
 pass	dqe10 an eq'd nested operand ESCAPING whole through the branch arm leaks both sides today (escapee must survive the coming end-of-scope drop)
 pass	dqe11 an eq'd nested operand whose COMPONENT escapes through the branch arm leaks both sides today (partial escape)
 pass	dqe12 eq-only nested operands confined to a callee scope (nothing escapes) reclaim clean
+pass	dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)
+pass	dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)
+pass	dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean
 pass	dqe2 nested runtime tuples under equality ALONE (two walks, no projections) reclaim clean
 pass	dqe3 nested runtime tuples with an UNEQUAL leaf under equality reclaim clean
 pass	dqe4 ONE nested operand dual-used (deep projection + equality) leaks that side's full node tree
@@ -8643,6 +8647,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	dqe13 the dqe4 shape with MATCH-destructure instead of tuple projection reclaims clean (the leak is projection-specific)
-pass	dqe14 a RECORD with a heap (list) field dual-used by field-read + equality reclaims clean (named-field access releases its dup)
-pass	dqe15 an Option with a heap (list) payload dual-used by match-extract + equality reclaims clean

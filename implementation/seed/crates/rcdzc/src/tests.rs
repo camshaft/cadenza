@@ -35894,13 +35894,6 @@ mod stage1 {
     // ── the prelude: a built-in module is an arena record, reached by the same projection ──────
 
     #[test]
-    fn a_program_binding_shadows_a_builtin() {
-        // The scope-first lookup means a `let`-bound `Int64` HIDES the built-in module — no special
-        // case (`prelude-and-resolution.md` §Name Resolution Is One Ordered Lookup).
-        assert_eq!(run_main("(let ((Int64 5)) Int64)"), 5);
-    }
-
-    #[test]
     fn the_bare_name_unit_is_the_unit_value() {
         // `unit` is a prelude value — an alias for the empty list `()`, the other spelling of the unit
         // value (core-semantics.md #Unit And The Empty Tuple Are The Same Value). It must RESOLVE (not
