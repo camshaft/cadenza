@@ -19645,29 +19645,16 @@ mod match_engine {
     }
 
     #[test]
-    fn a_heap_arg_threaded_unchanged_to_a_self_call_while_a_sibling_consumes_it_is_retained() {
-        // The simultaneously-live-args face: a self-recursive call threads `base` UNCHANGED in one arg AND
-        // consumes it in a sibling (`List.push base 99`). All args are live at once, so the consuming push
-        // must dup — else it FBIP-mutates `base` in place and the threaded copy (next iteration's base)
-        // sees the grown list. `loop` threads base = [0,1] (len 2), summing len(push base 99)=3 each of m
-        // iterations → 3*m. Before the fix the retain folded liveness only right-to-left, missing the LEFT
-        // sibling (`base` threaded) that is also live when the RIGHT sibling consumes it → drift (m=3 → 12
-        // not 9). Fix: seed each arg's live-after with whether the binder occurs in ANY other arg.
-        let src = "(module m \
-               (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
-               (def (loop j lim base tot) \
-                 (if (< j lim) (loop (+ j 1) lim base (+ tot ((. List len) ((. List push) base 99)))) tot)) \
-               (def (main) (loop 0 3 (mb 0 2 (list)) 0)) (export main))";
-        let Some(out) = run_on_heap(src) else {
-            eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-            return;
-        };
-        assert_eq!(
-            out, "9",
-            "a threaded-unchanged heap arg must be retained against a sibling arg that consumes it"
-        );
-        // The single-consume accumulator (`build 0 n (push out i)` — `out` consumed once, in ONE arg, no
-        // sibling use) must stay dup-free: the fix only fires when the binder occurs in ANOTHER arg.
+    fn a_single_consume_threaded_accumulator_stays_dup_free() {
+        // FBIP fast-path bench guard (backend-shape witness, NOT corpus-expressible): the
+        // simultaneously-live-args RETAIN — a self-recursive call threading `base` UNCHANGED in one arg while a
+        // sibling consumes it (`List.push base 99`) — must fire a `dup` (else it FBIP-mutates the shared `base`
+        // and the threaded copy drifts). But a SINGLE-consume threaded accumulator, where `out` is consumed
+        // EXACTLY ONCE in ONE arg with no sibling use (`build 0 n (List.push out i)`), must NOT dup, or the FBIP
+        // fast path + alloc bench regress. A `dup` import here is invisible to a value or live-objects check.
+        // The drift-CORRECTNESS run (the retain witness, value 3*m over m=1..4, plus the drift m=3→12-not-9)
+        // lives in corpus 05 as "a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg
+        // consumes it is retained"; this keeps only the dup-absence guard the corpus cannot express.
         let accum = "(module m (def (build i n out) (if (< i n) (build (+ i 1) n ((. List push) out i)) out)) \
                (def (main) ((. List len) (build 0 5 (list)))) (export main))";
         assert!(
