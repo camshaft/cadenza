@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -8455,6 +8456,7 @@ todo	sp5 SCALAR param + list result
 todo	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 todo	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
 todo	spx2 a Char entry param declines pending a boundary representation
+todo	the agent-return shape: three peers with a Cedar-gated escaping string result
 todo	two adapter records with different state types drive a take-while fold in one program
 todo	two effects bound to the same interface share one peer instance (both ops run)
 todo	u64h1 the u64 host response compared WITHOUT T.of arrives intact

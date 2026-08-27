@@ -745,3 +745,20 @@
               (def (main (: x Int64)) (host (P) (let ((t (P.mk x))) (tuple (. t 0) (+ (. t 1) 100))))) (export main)))
   (call   main (: 5 Int64))
   (output (: (tuple 5 105) (Tuple Int64 Int64))))
+
+(case "the agent-return shape: three peers with a Cedar-gated escaping string result"
+  (doc    "The native agent harness's reported shape — THREE distinct peers: Cedar (cadenza:cedar/api)
+           authorize(_s)=1, Inbox (cadenza:inbox/api) next()=\"hi\" (a nullary Unit-arg op), Model
+           (cadenza:model/api) converse(p)=\"R:\"++p. main gates on Cedar.authorize: if authorized (=1) it
+           returns Model.converse(Inbox.next()) = converse(\"hi\") = \"R:hi\", else \"denied\". The authorized
+           path → \"R:hi\" escapes as a String resource reaching all three peer interfaces in one entrypoint.")
+  (peer   "cadenza:cedar/api" (do (def (authorize (: _s String)) 1) (export authorize)))
+  (peer   "cadenza:inbox/api" (do (def (next) (String.concat "h" "i")) (export next)))
+  (peer   "cadenza:model/api" (do (def (converse (: p String)) (String.concat "R:" p)) (export converse)))
+  (input  (do (effect Inbox (op next (-> Unit String))) (effect Model (op converse (-> String String)))
+              (effect Cedar (op authorize (-> String Int64)))
+              (bind Inbox "cadenza:inbox/api") (bind Model "cadenza:model/api") (bind Cedar "cadenza:cedar/api")
+              (def (main) (if (= (host (Cedar) (Cedar.authorize "tool:chat")) 1)
+                              (host (Model) (Model.converse (host (Inbox) (Inbox.next)))) "denied")) (export main)))
+  (call   main)
+  (output (: "R:hi" String)))

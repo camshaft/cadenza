@@ -1,4 +1,5 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
+fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -8193,6 +8194,7 @@ pass	the accumulator transform declines a non-associative combine with the self-
 pass	the accumulator transform declines when the base is not the operator's identity
 pass	the accumulator transform preserves a product (factorial) shape
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
+pass	the agent-return shape: three peers with a Cedar-gated escaping string result
 pass	the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
 pass	the arithmetic operator rejects a float-first mixed operand pair
