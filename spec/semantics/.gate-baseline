@@ -7982,3 +7982,6 @@ pass	xar1 a handler arm List.at-extracts from a captured nested list per dispatc
 pass	xar3 the arm-extract with the dispatch crossing a NON-recursive helper def answers and leaks once
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 pass	tph1 a generic ctor with TWO list payloads destructures both through nested patterns
+pass	dcw1 a generic ctor's list-of-TUPLE payload destructures to the leaf through the carried type
+pass	dcw2 a generic ctor's list-of-RECORD payload destructures to the field through the carried type
+pass	dcw3 a generic ctor's list-of-LIST payload destructures to the leaf through two vec walks
