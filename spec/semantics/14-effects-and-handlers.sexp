@@ -9014,6 +9014,62 @@
   (call   main (: 5 Int64)) (output (: 2 Int64))
   (live-objects known-leak 3))
 
+(case "a mixed handler's ABORTIVE arm value reads BOTH the op arg and the state binder"
+  (doc    "The mixed resuming+abortive handler where the ABORTIVE arm's value is a function of BOTH the op
+           ARGUMENT and the handler STATE binder — `(stop (code) s (* code s))` — reached after a resuming
+           sibling `get` has run. Body `(+ (E.get) (E.stop 7))`: `E.get` resumes the seed s=n (identity
+           resume), then `E.stop 7` ABANDONS the pending `(+ n …)` and the arm value `(* 7 n)` becomes the
+           handle's value. Exercises the abort-value path reading its op arg AND the live state together.
+           n=5 → 7*5 = 35 (the `+ n` is abandoned); n=3 → 21.")
+  (input  (do
+            (effect E (op get (-> Int64)) (op stop (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle E n ((get () s (resume s s)) (stop (code) s (* code s)))
+                (+ (E.get) (E.stop 7))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 35 Int64))
+  (call   main (: 3 Int64)) (output (: 21 Int64)))
+
+(case "a def-boundary conditional abort with PURE arguments folds and homes to its handler"
+  (doc    "A helper `unwrap` aborts in a match arm (`((None) (Bail.out tag))`), called with PURE arguments
+           `(unwrap (if (> n 0) (Some n) (None)) 11)`. The scrutinee is pure, so the fold captures the
+           conditional abort per-branch soundly and it homes to Bail correctly (the narrow #11-B gate fires
+           only when an ARGUMENT directly performs a foreign op, so a pure-arg shape must keep folding).
+           main(-1): None → Bail.out 11 → 500+11 = 511. main(4): Some 4 → a=4 → 10*4+3 = 43.")
+  (input  (do
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (unwrap (: o (Option Int64)) (: tag Int64))
+              (match o ((Some v) v) ((None) (Bail.out tag))))
+            (def (main (: n Int64))
+              (handle Bail 0 ((out (v) t (+ 500 v)))
+                (let ((a (unwrap (if (> n 0) (Some n) (None)) 11))) (+ (* 10 a) 3))))
+            (export main)))
+  (call   main (: -1 Int64)) (output (: 511 Int64))
+  (call   main (: 4 Int64)) (output (: 43 Int64)))
+
+(case "a pure one-hole continuation body reads an enclosing function parameter and folds"
+  (doc    "The pure one-hole fold synthesizes the folded body with the perform replaced by the resume value;
+           an outer name in the body — the enclosing function PARAMETER `x` — must re-anchor to the handle's
+           site so the type-consistency guard does not read it unbound and over-decline. Body `(+ x
+           (Amb.flip))` with C = `(+ x □)`, arm `(+ 1 (resume 10 s))` → `(+ 1 (+ x 10))`. x=100 → 111.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ x (Amb.flip))))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 111 Int64)))
+
+(case "a distributed if-branch reading an enclosing parameter folds through the one-hole continuation"
+  (doc    "The distribution face of the reparent-before-guard fix: the perform sits in an if-BRANCH that reads
+           the enclosing parameter — `(if (< 3 5) (+ x (Amb.flip)) 0)`. The same re-anchoring lets the taken
+           branch's one-hole continuation fold: x=100 → the true branch `(+ 1 (+ 100 10))` = 111.")
+  (input  (do
+            (effect Amb (op flip (-> Unit Int64)))
+            (def (main (: x Int64))
+              (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (if (< 3 5) (+ x (Amb.flip)) 0)))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 111 Int64)))
+
 (case "a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both"
   (doc    "The chained-compound-result shape: a perform returning a TUPLE has one of its fields projected
            and fed as the ARGUMENT to a SECOND perform, with the handler state threading across BOTH. Two
