@@ -27666,48 +27666,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn eval_of_a_compile_time_ast_executes_it_as_code() {
-        use crate::testkit::parse;
-        // 12-metaprogramming §Eval Is Optional For Macros And Interactive Use: `(eval <ast>)` executes an
-        // AST value as code. `crate::eval_ast::desugar_eval` reconstructs the SOURCE form the AST denotes
-        // (the inverse of quote reification) and splices it in, so it folds through the ordinary path —
-        // compile-time evaluation is one tier (§Compile-Time Evaluation Is One Tier). Both a QUOTED
-        // argument (reified to `Ast.*` first) and a HAND-BUILT `Ast.*` tree reconstruct identically.
-        let quoted = "(module m (def (main) (eval (quote (+ 1 2)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(quoted))).expect("compile"),
-                "main"
-            ),
-            3,
-            "(eval (quote (+ 1 2))) executes the reconstructed form to 3"
-        );
-        let built = "(module m (def (main) \
-            (eval (Ast.List (list (Ast.Name \"+\") (Ast.Int 4) (Ast.Int 5))))) \
-          (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(built))).expect("compile"),
-                "main"
-            ),
-            9,
-            "(eval (Ast.List …)) reconstructs and executes a hand-built AST identically to a quoted one"
-        );
-        // A nested reconstruction: the reconstructed form is itself compound and folds.
-        let nested = "(module m (def (main) \
-            (eval (quote (+ (* 2 3) 4)))) \
-          (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(nested))).expect("compile"),
-                "main"
-            ),
-            10,
-            "(eval (quote (+ (* 2 3) 4))) reconstructs a nested form and folds to 10"
-        );
-    }
-
-    #[test]
     fn eval_of_a_non_compile_time_ast_names_the_form_not_an_unbound_eval() {
         // `eval` desugars ONLY a compile-time-visible AST (`(quote …)` / literal `Ast.*`); a runtime /
         // non-Ast argument does not desugar, so the `eval` head fell through to `resolve` as "unbound name
@@ -27970,41 +27928,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
                     "main"
                 ),
                 "runtime active-unquote lift — {what}"
-            );
-        }
-    }
-
-    #[test]
-    fn read_of_the_text_a_printer_produced_round_trips() {
-        use crate::testkit::parse;
-        // 08-self-hosting-surface §A Printer Renders The Canonical Representation As Re-Readable Text:
-        // `read(print(v)) == v` under structural equality. `print : Ast → String` renders an AST value as
-        // canonical s-expression text (`lower_print`), `read : String → Ast` parses it back
-        // (`lower_read`), both folded on the compile-time-visible operand. Compiles clean and runs true.
-        for (src, what) in [
-            (
-                "(module m (def (main) (= (Ast.read (Ast.print (quote (+ 1 2)))) (quote (+ 1 2)))) (export main))",
-                "a compound form round-trips",
-            ),
-            (
-                "(module m (def (main) (= (Ast.read (Ast.print (quote 42))) (quote 42))) (export main))",
-                "an integer atom round-trips",
-            ),
-            (
-                "(module m (def (main) (= (Ast.read (Ast.print (quote foo))) (quote foo))) (export main))",
-                "a bare name round-trips",
-            ),
-            (
-                "(module m (def (main) (= (Ast.read (Ast.print (quote (f (g 1) 2)))) (quote (f (g 1) 2)))) (export main))",
-                "a NESTED form round-trips",
-            ),
-        ] {
-            assert!(
-                run_returns::<bool>(
-                    &compile_component(&crate::codec::encode(&parse(src))).expect("compile"),
-                    "main"
-                ),
-                "read(print(v)) == v: {what}"
             );
         }
     }

@@ -4188,3 +4188,19 @@
              (def (main) (op (Ast.List (list (Ast.Name (String.concat "+" "")) (Ast.Int 1) (Ast.Int 2)))))
              (export main)))
   (call main) (output (: 100 Int64)))
+
+; -- eval of a hand-built / nested AST (migrated from rcdzc eval_of_a_compile_time_ast_executes_it_as_code;
+; the (eval (quote (+ 1 2)))=3 base is covered above): eval reconstructs the source form an AST denotes and
+; folds it through the ordinary path — a HAND-BUILT Ast.* tree reconstructs identically to a quoted one,
+; and a nested compound reconstructs+folds.
+(case "eva1 eval of a hand-built Ast.List reconstructs and executes it identically to a quoted form"
+  (doc    "`(eval (Ast.List (list (Ast.Name \"+\") (Ast.Int 4) (Ast.Int 5))))` = 9 — a hand-built AST value
+           (not via quote) reconstructs to `(+ 4 5)` and folds, the same path a quoted argument takes.")
+  (input  (eval (Ast.List (list (Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))
+  (output (: 9 Int64)))
+
+(case "eva2 eval of a nested quoted form reconstructs the compound and folds"
+  (doc    "`(eval (quote (+ (* 2 3) 4)))` = 10 — the reconstructed form is itself compound `(+ (* 2 3) 4)`
+           and folds through the ordinary tier.")
+  (input  (eval (quote (+ (* 2 3) 4))))
+  (output (: 10 Int64)))
