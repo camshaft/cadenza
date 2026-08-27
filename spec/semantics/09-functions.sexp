@@ -4626,6 +4626,34 @@
   (call   main (: 36 Int64))
   (output (: 42 Int64)))
 
+(case "a generic pair helper returns a mixed-type tuple projected through a match"
+  (doc    "`(def (pair a b) (tuple a b))` is generic in both element types; `(pair 3 true)` instantiates it
+           at (Int64, Bool), and the match projects the pair, using the Bool `y` to select the Int64 `x` →
+           3. Pins that generic-result inference produces a sound MIXED-type tuple whose elements are read
+           back at their distinct types.")
+  (input  (do (def (pair a b) (tuple a b))
+              (def (main) (match (pair 3 true) ((tuple x y) (if y x 0))))
+              (export main)))
+  (output (: 3 Int64)))
+
+(case "a generic result flows into a second generic call"
+  (doc    "`(id (wrap 7))` composes two generic functions: `wrap` builds `(Some 7)`, and `id` returns it
+           unchanged, its result type inferred as `Option Int64` from the argument; the outer match then
+           unwraps → 7. Pins that a generic function's inferred result flows soundly into another generic
+           call (compose), not just a single instantiation.")
+  (input  (do (def (id x) x) (def (wrap y) (Some y))
+              (def (main) (match (id (wrap 7)) ((Some v) v) ((None _u) 0)))
+              (export main)))
+  (output (: 7 Int64)))
+
+(case "a nested Option is double-matched to its inner value"
+  (doc    "`(Some (Some 9))` has inferred type `Option (Option Int64)` (no annotation); matching the outer
+           `Some` binds `inner = (Some 9)`, and a second match unwraps it → 9. Pins that inference builds
+           the nested Option and both match levels read through to the innermost value.")
+  (input  (do (def (main) (match (Some (Some 9)) ((Some inner) (match inner ((Some v) v) ((None _u) 0))) ((None _u) -1)))
+              (export main)))
+  (output (: 9 Int64)))
+
 (case "a generic pair-swap crosses a scalar and a heap payload between positions"
   (doc    "The MIXED-representation structural generic: `swap (tuple n \"x\")` puts a runtime scalar and a
            heap string in one tuple and swaps them — position 0 (was i64) now holds the rope handle,

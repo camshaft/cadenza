@@ -1985,11 +1985,13 @@ pass	a generic definition takes the type as a type-valued parameter
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic newtype instantiated at a FUNCTION type carries a closure through erasure
 pass	a generic newtype with a structural-record payload mentioning the type parameter constructs
+pass	a generic pair helper returns a mixed-type tuple projected through a match
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic recursive HOF taking a closure is monomorphized at three distinct closure types
 pass	a generic recursive HOF taking a closure is monomorphized at two distinct closure types
 pass	a generic recursive sum references itself bare and carries its own type parameter
 pass	a generic recursive sum with a bare self-reference nested in a list parameter
+pass	a generic result flows into a second generic call
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a generic sum instantiated at a HEAP payload ((Box (List Int64))) crosses resume
 pass	a generic sum type constructor applied to a value is rejected
@@ -2658,6 +2660,7 @@ pass	a nested @!param is a misplaced module directive (CDZ0602), not a module pa
 pass	a nested Ast.List match falls through when the inner leaf variant differs
 pass	a nested Ast.List match over a constant quote reads the deep leaf at the right depth
 pass	a nested OR by the same constant collapses to a single OR
+pass	a nested Option is double-matched to its inner value
 pass	a nested Record.with rewrites an inner record field through the outer, inline
 pass	a nested Result pattern selects the inner Err arm
 pass	a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)

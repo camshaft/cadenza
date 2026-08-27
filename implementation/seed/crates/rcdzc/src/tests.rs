@@ -58441,40 +58441,6 @@ mod stage1 {
     }
 
     #[test]
-    fn generic_result_inference_composes_and_computes_correctly() {
-        // COVERAGE-HARDENING (v-inference 2026-08-02, at-rest sweep): pins that HM generic-result inference
-        // is sound + value-correct across several real-world shapes — a generic fn returning a mixed-type
-        // tuple projected through a match, a generic result flowing into a SECOND generic call (compose),
-        // and an inferred nested Option-of-Option double-matched. All compile clean AND compute the right
-        // value (a clean compile alone could still miscompile). Locks the generic-instantiation surface
-        // these exercise against a future solver regression.
-        use crate::testkit::parse;
-        let run = |src: &str| -> Option<String> {
-            let bytes = compile_component(&crate::codec::encode(&parse(src)))
-                .expect("a generic-result program compiles");
-            run_linked(&bytes, "main")
-        };
-        // A generic fn returning a MIXED-TYPE tuple (Int64, Bool), projected via match → 3.
-        if let Some(v) = run(
-            "(do (def (pair a b) (tuple a b)) (def (main) (match (pair 3 true) ((tuple x y) (if y x 0)))) (export main))",
-        ) {
-            assert_eq!(v, "3");
-        }
-        // A generic result flowing into a SECOND generic call (id ∘ wrap), non-recursive → 7.
-        if let Some(v) = run(
-            "(do (def (id x) x) (def (wrap y) (Some y)) (def (main) (match (id (wrap 7)) ((Some v) v) ((None _u) 0))) (export main))",
-        ) {
-            assert_eq!(v, "7");
-        }
-        // An INFERRED nested Option-of-Option (no annotation), double-matched → 9.
-        if let Some(v) = run(
-            "(do (def (main) (match (Some (Some 9)) ((Some inner) (match inner ((Some v) v) ((None _u) 0))) ((None _u) -1))) (export main))",
-        ) {
-            assert_eq!(v, "9");
-        }
-    }
-
-    #[test]
     fn binding_position_irrefutability_holds_across_all_lambda_positions() {
         // COVERAGE-HARDENING (v-inference 2026-08-02, at-rest sweep): the binding-position irrefutability
         // rule (core-semantics.md:135-139 — a `fn` parameter MUST accept an irrefutable pattern; a refutable
