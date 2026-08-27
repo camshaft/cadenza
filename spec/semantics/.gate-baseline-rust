@@ -8318,8 +8318,12 @@ todo	pcl3 an element of a peer-returned list is read and used
 todo	pcm1 a peer op returning a map crosses as a handle and its length is read
 todo	pcm2 a value of a peer-returned map is read by key and used
 todo	pcm3 a peer-returned map enumerates via Map.to-list and its values fold to a sum
+todo	pcm4 a peer op returning an EMPTY map crosses and reads length zero
+todo	pcm5 a peer op returning a map of lists crosses and a value list's length is read
+todo	pcm6 a peer-returned map enumerates in canonical key order regardless of insert order
 todo	pcs1 a peer op returning a set crosses as a handle and its length is read
 todo	pcs2 membership of a peer-returned set is queried for a present and an absent element
+todo	pcs3 a peer op returning an EMPTY set crosses and reads length zero
 todo	pla1 a list argument crosses inbound to a peer and is read by the peer op
 todo	read of malformed text is a coded reject, not a wrong value
 todo	runtime Blake3.of equals the compile-time fold of the same bytes (section-9 byte-identity)
