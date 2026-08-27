@@ -2373,6 +2373,7 @@ pass	a list match arm may carry a guard on its element binders
 pass	a list match pattern with a malformed rest names the shape, not an unbound surplus binder (CDZ0201)
 pass	a list mixing integer and boolean elements is a type error
 pass	a list mixing integer and float elements is a type error
+pass	a list of Bool built at run time by a push-loop escapes with its Bool element type
 pass	a list of Options orders its elements by the declared Some-below-None
 pass	a list of RATIONALS op result — exact fractions cross resume and fold to a canonical sum
 pass	a list of a nullary sum written in the bare-member form is exhaustive across every variant
