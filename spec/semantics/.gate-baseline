@@ -7927,6 +7927,10 @@ pass	wl1 a List-of-UInt8 entry param's extreme elements read back exactly (255 z
 pass	wl2 a List-of-Int32 entry param's negative element sign-extends on read
 pass	wl3 three list widths (UInt8, Float64, Int64) coexist as params of one entry wrapper
 pass	wl4 a List-of-Float64 entry param's element survives load and return exactly
+todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
+todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
+todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
+todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 pass	elc1 a local closure captures the lifted List entry param and is invoked twice
 pass	elc5 the capturing closure crosses a higher-order call boundary and answers from both invocations
 todo	elc2 a Map keyed by the lifted List entry param answers its value on lookup
