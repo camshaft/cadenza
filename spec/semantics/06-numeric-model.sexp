@@ -1113,6 +1113,28 @@
            0.1f32 → TRUE (1). Pins the `/` fold rounds to f32.")
   (input  (do (def (main) (if (= (/ (: 0.3 Float32) (: 3.0 Float32)) (: 0.1 Float32)) 1 0)) (export main)))
   (call   main) (output (: 1 Int64)))
+(case "a nested-compound Float32 equality const-folds through the demoting compare"
+  (doc    "The compound face of the adv-61 fold: the demoting Float32 compare must recurse THROUGH a tuple at
+           const-fold time. `(= (tuple (: 0.30000001192092896 Float32)) (tuple (: 0.3 Float32)))` folds TRUE
+           because each tuple's Float32 element demotes to 0x3E99999A; a fold comparing the un-demoted f64
+           payloads element-wise would answer 0. Pins that the per-leaf demotion the scalar faces above
+           establish also fires under a compound structural equality.")
+  (input  (do (def (main) (if (= (tuple (: 0.30000001192092896 Float32)) (tuple (: 0.3 Float32))) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)"
+  (doc    "The negative control for the demoting fold: two Float32 literals that demote to DIFFERENT binary32
+           values must still fold not-equal. `(= (: 0.5 Float32) (: 0.3 Float32))` → 0 (0.5f32 and 0.3f32 are
+           distinct binary32). Pins that demoting before the compare does not collapse genuinely-distinct
+           values — the fix rounds, it does not over-equate.")
+  (input  (do (def (main) (if (= (: 0.5 Float32) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 0 Int64)))
+(case "the same literals at Float64 are NOT demoted and const-fold not-equal (adv-61 width control)"
+  (doc    "The WIDTH control: the SAME literal pair that folds equal at Float32 (both demote to 0x3E99999A)
+           must fold NOT-equal at Float64, because a Float64 operand is not demoted — the two distinct f64
+           payloads 0.30000001192092896 and 0.3 stay distinct. `(= (: 0.30000001192092896 Float64) (: 0.3
+           Float64))` → 0. Pins that the demotion is Float32-specific, not applied to Float64 operands.")
+  (input  (do (def (main) (if (= (: 0.30000001192092896 Float64) (: 0.3 Float64)) 1 0)) (export main)))
+  (call   main) (output (: 0 Int64)))
 
 (case "halving the minimum subnormal flushes to zero while a double-min stays subnormal"
   (doc    "The gradual-underflow BOUNDARY at runtime (the Float32 subnormal pin above is a literal FIT

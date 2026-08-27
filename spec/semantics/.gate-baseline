@@ -8135,3 +8135,6 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
 pass	a definition named like a variant shadows the bare-variant constructor
+pass	a nested-compound Float32 equality const-folds through the demoting compare
+pass	a genuinely-unequal Float32 constant equality const-folds false (adv-61 over-fire control)
+pass	the same literals at Float64 are NOT demoted and const-fold not-equal (adv-61 width control)
