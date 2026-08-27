@@ -825,6 +825,26 @@ pub enum Struct {
     List(Vec<StructId>),
 }
 
+/// The primitive compound-value constructor a node denotes — the first-class TAG that says "this node
+/// is a record / tuple / list / map". It is read from the reserved STRING-LITERAL head (`("record" …)`
+/// etc.) via [`Arenas::compound_ctor`], the unshadowable primitive form the resolver dispatches
+/// structurally. The shadowable prelude ALIAS (`(record …)`, a NAME head) is deliberately NOT a tag —
+/// it resolves lexically-first, so a program binding named `record` shadows it. Recognizing the kind by
+/// this typed tag rather than by re-comparing head text at each consumer is the native-compound-data
+/// migration (see `implementation/design/DESIGN-native-ast-compound-data.md`). (`set` is not yet a
+/// primitive constructor — held for operator decision D2 in that design.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CompoundCtor {
+    /// `("record" (= k v)…)` — a record: `(= key value)` field-pair children.
+    Record,
+    /// `("tuple" e…)` — a tuple: positional element children.
+    Tuple,
+    /// `("list" e…)` — a list: element children.
+    List,
+    /// `("map" (k v)…)` — a map: key/value entry-pair children.
+    Map,
+}
+
 /// Index into the leaf pool.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct LeafId(pub u32);
@@ -1359,6 +1379,23 @@ impl Arenas {
         }
     }
 
+    /// The primitive compound constructor [`CompoundCtor`] this node denotes, if any — the typed TAG
+    /// read from the reserved STRING-LITERAL head. This is the single place the reserved compound
+    /// vocabulary is matched for structural dispatch, so a consumer branches on the returned tag rather
+    /// than re-comparing head text. Only the unshadowable STRING primitive is a tag: a NAME head
+    /// (`(record …)`, the shadowable alias) returns `None` here and resolves lexically-first, so a
+    /// program binding named `record`/`tuple`/`list`/`map` still shadows the alias. See
+    /// `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor(&self, id: StructId) -> Option<CompoundCtor> {
+        match self.head_ctor(id)? {
+            "record" => Some(CompoundCtor::Record),
+            "tuple" => Some(CompoundCtor::Tuple),
+            "list" => Some(CompoundCtor::List),
+            "map" => Some(CompoundCtor::Map),
+            _ => None,
+        }
+    }
+
     /// If `id` is a `List` headed by the NAME `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1565,6 +1602,45 @@ mod tests {
         assert_eq!(l1, l2);
         assert_eq!(a.head_name(root), Some("+"));
         assert_eq!(a.as_form(root, "+").map(|t| t.len()), Some(2));
+    }
+
+    #[test]
+    fn compound_ctor_tags_the_string_primitive_not_the_name_alias() {
+        let mut b = Builder::new();
+        // `("record" (= x 1))` — the unshadowable STRING primitive head is the tag.
+        let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+        let one = b.atom_leaf(Leaf::Str("_".into())); // payload shape is irrelevant to the tag
+        let rec = b.list(vec![rec_head, one]);
+        // `(record …)` — the shadowable NAME alias is deliberately NOT a tag (resolves lexically).
+        let alias_head = b.name("record");
+        let alias = b.list(vec![alias_head]);
+        // A non-list atom.
+        let atom = b.name("x");
+        // A string-headed but non-compound word.
+        let other_head = b.atom_leaf(Leaf::Str("if".into()));
+        let other = b.list(vec![other_head]);
+        let a = b.finish(rec);
+
+        assert_eq!(a.compound_ctor(rec), Some(CompoundCtor::Record));
+        // The NAME alias is not a primitive tag — must be None (shadowability invariant).
+        assert_eq!(a.compound_ctor(alias), None);
+        // Non-list and non-compound string heads are not tags.
+        assert_eq!(a.compound_ctor(atom), None);
+        assert_eq!(a.compound_ctor(other), None);
+
+        // All four primitive spellings map to their tag.
+        for (spelling, want) in [
+            ("record", CompoundCtor::Record),
+            ("tuple", CompoundCtor::Tuple),
+            ("list", CompoundCtor::List),
+            ("map", CompoundCtor::Map),
+        ] {
+            let mut b = Builder::new();
+            let h = b.atom_leaf(Leaf::Str(spelling.into()));
+            let node = b.list(vec![h]);
+            let a = b.finish(node);
+            assert_eq!(a.compound_ctor(node), Some(want), "tag for `{spelling}`");
+        }
     }
 
     #[test]
