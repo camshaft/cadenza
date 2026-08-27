@@ -23179,3 +23179,18 @@
   (call main (: 5 Int64))
   (output (: 165 Int64))
   (live-objects known-leak 11))
+
+(case "spc1 a CONSTANT-origin sum spine (branch-selected literal) builds mortal and its walk leaks the full spine (joins the sp position matrix)"
+  (doc    "Post-#4624 (boundary vse hoist): an in-guest constant recursive-sum literal does NOT hoist
+           (0 static globals — recursive sums are outside the in-guest build-once kinds) and the tail
+           walk leaks the whole spine exactly like the runtime-built ss/sp cells (7 = 3 Cons + 3 tuples
+           + Nil). Flips with the two-shell spine reclaim OR a future in-guest recursive-sum hoist,
+           whichever lands first (the comment travels with whichever mechanism flips it).")
+  (input (do (type IL (Cons (Tuple Int64 IL)) Nil)
+(def (smt (: xs IL) (: acc Int64)) (match xs ((IL.Cons (tuple h t)) (smt t (+ acc h))) ((IL.Nil u) acc)))
+(def (main (: n Int64))
+  (smt (if (> n 0) (IL.Cons (tuple 1 (IL.Cons (tuple 2 (IL.Cons (tuple 3 (IL.Nil ()))))))) (IL.Nil ())) n))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 7 Int64))
+  (live-objects known-leak 7))
