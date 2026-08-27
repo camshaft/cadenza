@@ -198,7 +198,11 @@ A "nullary" variant MUST be a constructor whose argument type is Unit, not a pre
 
 Construction MUST be via application in all cases: `(Some 5)`, `(None unit)`, `(Sign.Zero unit)`.
 
+A nullary variant MAY also be constructed by the bare parenthesized form `(Ctor)` — the constructor's name applied to no explicit argument, as the corpus commonly writes `(None)`, `(Idle)`, `(Nil)` — which MUST denote the same value as the explicit `(Ctor unit)`, so that `(None)` and `(None unit)` are the same value; the bare form is surface sugar the reader completes with the unit argument, so construction remains an application in the sense of the preceding sentence. The canonical value form of a nullary variant is `(Ctor unit)` regardless of which surface form constructed it. The bare parenthesized form is distinct from the bare name `Ctor` used in value position, which denotes the constructor value itself (a single-arity function awaiting its argument), not the constructed variant.
+
 A pattern matching a sum type constructor MUST have the form `(Ctor binder)` in all cases: `(Some x)`, `(None _)`, `(Sign.Zero _)`.
+
+A nullary variant's pattern MAY be written bare — the parenthesized `(Ctor)` or the bare name `Ctor` — as the binderless companion of `(Ctor _)`, matching the variant and binding nothing, as the corpus writes `((None) 2)`; per [prelude-and-resolution.md §A Pattern Name Binds Unless It Names A Constructor](../architecture/prelude-and-resolution.md), a bare name in pattern position that resolves to a constructor is that constructor's nullary pattern rather than a fresh binder. The bare pattern is surface sugar for `(Ctor _)`, so a match still handles it as the single-arity application form of the following sentences.
 
 The prelude MUST bind Constructor values only for sum type variants, not pre-applied Sum values.
 
