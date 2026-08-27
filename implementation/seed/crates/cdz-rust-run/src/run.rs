@@ -280,6 +280,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
         );
         match compile_and_run(&driver, &dir, &RlibDirs::default(), false) {
             Outcome::Value(v, _) => assert_eq!(v, "42"),
@@ -294,7 +295,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // A diverging export (`-> !`) — the driver just calls it and it panics.
         let m = "// cdz-return[boom]: !\npub fn boom() -> ! { panic!(\"unreachable\") }";
-        let driver = crate::driver::build_driver_source(m, "boom", &[], &[], &[]);
+        let driver = crate::driver::build_driver_source(m, "boom", &[], &[], &[], false);
         match compile_and_run(&driver, &dir, &RlibDirs::default(), false) {
             Outcome::Trap(reason) => {
                 assert!(reason.contains("unreachable"), "trap reason: {reason}")

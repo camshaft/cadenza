@@ -88,7 +88,14 @@ pub fn grade_to_result(
                 (name, Vec::new())
             }
         };
-        let driver = build_driver_source(module, &export, &args, &host_responses, &host_calls);
+        let driver = build_driver_source(
+            module,
+            &export,
+            &args,
+            &host_responses,
+            &host_calls,
+            async_mode,
+        );
         let dir = workdir.join(format!("trial-{trial_no}"));
         trial_no += 1;
         std::fs::create_dir_all(&dir)?;
@@ -151,6 +158,9 @@ mod tests {
             Some(GCall {
                 export: "main".into(),
                 args: vec![],
+                second_call: None,
+                drop_handle: false,
+                method: None,
             }),
             GExpect::Output("(: 42 Int64)".into()),
         );

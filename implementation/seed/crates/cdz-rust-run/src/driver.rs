@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::sig::{is_env_param, parse_emitted_sig};
+use crate::sig::{
+    env_closure_call_arg, is_env_param, parse_emitted_sig, split_factory_application,
+};
 
 /// Marshal a call's canonical-sexp arg VALUES to the Rust expressions the emitted export expects. A scalar
 /// passes through, a compound (`(tuple …)`/`(record …)`) is rebuilt by `rust_call_arg`. TYPE-AWARE for a
@@ -79,16 +81,25 @@ pub fn call_expr(module: &str, export: &str, args: &[String], async_mode: bool) 
 /// Build the call for a CLOSURE-PARAMETER CONSUMER export — one that takes a `Rc<dyn Fn(…)>` param supplied
 /// by a companion PRODUCER export (rcdzc splits `(fn …)`-consuming defs across sibling exports; a host has
 /// no closure literal, so the harness synthesizes it). Returns `None` when `export` is not a consumer (no
-/// closure param) — the caller falls back to the factory/ordinary call. SYNC only: an async consumer needs
-/// the deferred `block_on` harness, so this returns `None` in async mode.
+/// closure param) — the caller falls back to the factory/ordinary call.
 ///
 /// Each source param is threaded LEFT-TO-RIGHT onto the flat call `args`: a CLOSURE param pairs to a producer
 /// (a sibling whose emitted closure type matches — a FACTORY `fn mk(caps) -> Rc<dyn Fn…>` supplying
 /// `prog::mk(<caps>)`, or a PEELED nullary `fn mk(x)->r` supplying `Rc::new(prog::mk as fn(x)->r)`) and
 /// consumes that producer's capture args; a non-closure param consumes one verbatim arg. When a Tuple-arg vs
 /// Record-arg producer's ERASED `Rc<dyn Fn>` type collides, the pre-erasure Cadenza shapes
-/// (`cdz-param-shapes` / `cdz-produces-closure`) disambiguate. Ported from xtask `build_closure_consumer_call`
-/// (sync path).
+/// (`cdz-param-shapes` / `cdz-produces-closure`) disambiguate.
+///
+/// ASYNC differs in two ways (mirroring the emit's lifted-closure convention): the producer scan also matches
+/// `pub async fn`, and a FACTORY-built closure is driven through `block_on(prog::mk(&mut env, caps…))` — the
+/// producer is an `async fn`, and threading `&mut env` into BOTH the producer AND the consumer call in one
+/// expression would be two overlapping `&mut env` borrows (E0499). So each async-built closure is `let __gN`-
+/// bound FIRST (sequential borrows), then the consumer is called with the bound names, and the whole thing is
+/// returned as a fully-driven `{ let __g0 = …; block_on(prog::<name>(&mut env, <args>)) }` block (already
+/// `prog::`-qualified + `block_on`-wrapped, so the caller uses it VERBATIM). An async PEELED producer's
+/// fn-item is `fn(&mut E, …) -> impl Future`, not the sync `fn(…) -> ret` the coercion needs, so an async
+/// peeled-producer consumer returns `None` (declined — the async factory-producer consumer is the bulk).
+/// Ported from xtask `build_closure_consumer_call`.
 pub fn build_closure_consumer_call(
     module: &str,
     name: &str,
@@ -101,9 +112,6 @@ pub fn build_closure_consumer_call(
     };
     use cdz_rust_render::{cdz_param_shapes, cdz_produces_closure, cdz_return_type};
 
-    if async_mode {
-        return None; // async consumer needs the deferred block_on harness
-    }
     let sig = parse_emitted_sig(module, name, async_mode)?;
     let source_params: Vec<&&str> = sig.params.iter().filter(|p| !is_env_param(p)).collect();
     if !source_params.iter().any(|p| is_closure_param(p)) {
@@ -128,8 +136,19 @@ pub fn build_closure_consumer_call(
     }
     let mut producers: Vec<Producer> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (i, _) in module.match_indices("pub fn ") {
-        let after_kw = module[i..].strip_prefix("pub fn ")?;
+    // Scan BOTH `pub fn` (sync) and `pub async fn` (async) headers — in async mode a FACTORY producer is an
+    // `async fn` returning `Rc<dyn EnvClosure>`, so its header carries the `async` keyword.
+    for (i, _) in module
+        .match_indices("pub fn ")
+        .chain(module.match_indices("pub async fn "))
+    {
+        let rest = &module[i..];
+        let Some(after_kw) = rest
+            .strip_prefix("pub async fn ")
+            .or_else(|| rest.strip_prefix("pub fn "))
+        else {
+            continue;
+        };
         let ident: String = after_kw
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -173,6 +192,11 @@ pub fn build_closure_consumer_call(
     let mut arg_i = 0usize;
     let mut call_args: Vec<String> = Vec::with_capacity(source_params.len());
     let mut closure_param_idx = 0usize;
+    // ASYNC: a FACTORY-built closure is driven through `block_on(prog::mk(&mut env, caps))` (the producer is
+    // an `async fn`), and threading `&mut env` into both the producer AND the consumer call at once is two
+    // overlapping `&mut env` borrows (E0499). So bind each async-built closure to a `let __gN` FIRST and
+    // collect those statements as a prelude the caller splices before the consumer call. Empty in sync mode.
+    let mut async_lets: Vec<String> = Vec::new();
     // A producer matches when its ERASED closure type equals the consumer param's AND (when both shapes are
     // known) the pre-erasure shapes agree — the shape guard only NARROWS, never admits an erased mismatch.
     let ty_matches = |prod: &Producer, cty: &str, want_shape: Option<&str>| {
@@ -213,7 +237,20 @@ pub fn build_closure_consumer_call(
                     }
                     let caps = &args[arg_i..arg_i + cap];
                     arg_i += cap;
-                    call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                    if async_mode {
+                        // `block_on(prog::mk(&mut env, caps))` yields the (sync) closure handle; bind it to a
+                        // fresh `__gN` so the consumer call's `&mut env` borrow doesn't overlap the producer's.
+                        let g = format!("__g{}", async_lets.len());
+                        let envcaps = if caps.is_empty() {
+                            "&mut env".to_string()
+                        } else {
+                            format!("&mut env, {}", caps.join(", "))
+                        };
+                        async_lets.push(format!("let {g} = block_on(prog::{ident}({envcaps}));"));
+                        call_args.push(g);
+                    } else {
+                        call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                    }
                 }
                 Producer::Peeled {
                     ident,
@@ -221,6 +258,12 @@ pub fn build_closure_consumer_call(
                     closure_ty,
                     ..
                 } => {
+                    // An async peeled producer's fn-item is `fn(&mut E, …) -> impl Future`, not the sync
+                    // `fn(…) -> ret` this coercion needs — DECLINE (a follow-up sub-slice; the async factory-
+                    // producer consumer is the bulk that lands here).
+                    if async_mode {
+                        return None;
+                    }
                     call_args.push(format!(
                         "(std::rc::Rc::new(prog::{ident} as {fn_ty}) as {closure_ty})"
                     ));
@@ -234,50 +277,119 @@ pub fn build_closure_consumer_call(
             arg_i += 1;
         }
     }
-    Some(format!("{name}({})", call_args.join(", ")))
+    // SYNC: return the bare `<name>(<args>)` — the caller's `call_or_await`/render prepends `prog::`.
+    // ASYNC: return the FULLY-DRIVEN block itself — already `prog::`-qualified + `block_on`-wrapped, so the
+    // caller uses it verbatim (its `call_or_await` must NOT re-wrap it).
+    if async_mode {
+        let lets = async_lets.join(" ");
+        Some(format!(
+            "{{ {lets} block_on(prog::{name}(&mut env, {})) }}",
+            call_args.join(", ")
+        ))
+    } else {
+        Some(format!("{name}({})", call_args.join(", ")))
+    }
 }
 
-/// Assemble the full RUST driver source for a SYNC, ORDINARY-call corpus case — the common path (the
-/// host-closure factory/consumer application + async `block_on` harness are later increments). It wraps the
-/// emitted `module` in `mod prog { … }` (so its `pub fn main` becomes `prog::main`, not a duplicate crate
-/// `main`), splices the host-response shim fns (`build_rust_host_shims`), and emits a `fn main` that calls
-/// `prog::<call>`, renders the result to cdz-run's canonical text via `cdz_render_expr` (driven by the
-/// backend's `// cdz-*` render notes the module carries), and prints it. A DIVERGING export (`-> !` / `Any`
-/// / `?N`) is just CALLED (it traps) — binding + printing a `!` is a build error, and the panic IS the
-/// recorded `(trap …)` outcome; an export with no parsed `cdz-return` note falls back to `Display` (`{}`),
-/// the scalar shape. Pure string generation; the result rendering + note parsing live in `cdz-rust-render`.
+/// Assemble the full RUST driver source for a corpus case, covering SYNC and ASYNC exports plus the
+/// host-closure factory/consumer application. It wraps the emitted `module` in `mod prog { … }` (so its
+/// `pub fn main` becomes `prog::main`, not a duplicate crate `main`), splices the host-response shim fns
+/// (`build_rust_host_shims`), and emits a `fn main` that calls the export, renders the result to cdz-run's
+/// canonical text via `cdz_render_expr` (driven by the backend's `// cdz-*` render notes the module carries),
+/// and prints it. When `async_mode`, the export is an `async fn` taking the gas/yield env first, so the
+/// driver splices the `ASYNC_GATE_HARNESS` (a no-limit `GateEnv` + a minimal `block_on`) and drives
+/// `block_on(prog::export(&mut env, args))` — a concrete `GateEnv` coerces to the `&mut dyn DynCdzEnv`
+/// boundary via cdz-rt's blanket `impl<E: CdzEnv> DynCdzEnv for E`. A DIVERGING export (`-> !` / `Any` / `?N`)
+/// is just CALLED (it traps) — binding + printing a `!` is a build error, and the panic IS the recorded
+/// `(trap …)` outcome; an export with no parsed `cdz-return` note falls back to `Display` (`{}`), the scalar
+/// shape. Pure string generation; the result rendering + note parsing live in `cdz-rust-render`.
 pub fn build_driver_source(
     module: &str,
     export: &str,
     args: &[String],
     host_responses: &[(String, String)],
     host_calls: &[String],
+    async_mode: bool,
 ) -> String {
     use cdz_rust_render::{
         cdz_newtype_descriptors, cdz_qty_at, cdz_render_expr, cdz_return_type, cdz_scale,
         cdz_sum_descriptors, cdz_sum_params, cdz_sum_qualified_heads, cdz_unit_form,
     };
 
-    // A CLOSURE-PARAMETER CONSUMER export (takes a `Rc<dyn Fn>` param) synthesizes the closure from a sibling
-    // producer — checked FIRST (a consumer's own return is not a closure, so the factory path would miss it).
-    // Else the factory-aware/ordinary call. The consumer-call returns a bare `name(prog::producer(caps), …)`
-    // whose producers are already `prog::`-qualified, so the outer `prog::` applies to the consumer name.
-    let call = build_closure_consumer_call(module, export, args, false)
-        .unwrap_or_else(|| call_expr(module, export, args, false));
-    let call_or_await = format!("prog::{call}");
-
     // Is this a host-closure FACTORY (return type names a closure) or a CONSUMER (takes a closure param)?
     // Both cross a String/Bytes RESULT through the wasm boundary's serialized `list<u8>` form, so their
-    // result is rendered specially (below); a plain export keeps `cdz_render_expr`.
+    // result is rendered specially (below); a plain export keeps `cdz_render_expr`. Computed FIRST because the
+    // async call assembly (below) needs `is_factory` to split the factory/application seam.
     let ident = cdz_rust_render::rust_ident(export);
-    let is_factory = crate::sig::rust_factory_param_count(module, &ident, false).is_some();
+    let is_factory = crate::sig::rust_factory_param_count(module, &ident, async_mode).is_some();
     let is_consumer = !is_factory
-        && crate::sig::parse_emitted_sig(module, &ident, false).is_some_and(|s| {
+        && crate::sig::parse_emitted_sig(module, &ident, async_mode).is_some_and(|s| {
             s.params
                 .iter()
                 .filter(|p| !crate::sig::is_env_param(p))
                 .any(|p| crate::sig::is_closure_param(p))
         });
+
+    // A CLOSURE-PARAMETER CONSUMER export (takes a `Rc<dyn Fn>` param) synthesizes the closure from a sibling
+    // producer — checked FIRST (a consumer's own return is not a closure, so the factory path would miss it).
+    // Else the factory-aware/ordinary call. In SYNC mode the consumer-call returns a bare `name(prog::producer
+    // (caps), …)` whose producers are already `prog::`-qualified; in ASYNC mode it returns a fully-driven
+    // `{ let __g0 = …; block_on(prog::name(&mut env, …)) }` block (used verbatim below).
+    let call = build_closure_consumer_call(module, &ident, args, async_mode)
+        .unwrap_or_else(|| call_expr(module, export, args, async_mode));
+
+    // The call the driver's `fn main` evaluates. SYNC prepends `prog::` to the bare call (`prog::adder(3)(5)`).
+    // ASYNC threads the gas/yield `env` as the export's FIRST arg and drives its future with `block_on` — a
+    // concrete `GateEnv` coerces to the `&mut dyn DynCdzEnv` boundary via cdz-rt's blanket
+    // `impl<E: CdzEnv> DynCdzEnv for E`, so the driver passes `&mut env`, NOT a `__CdzE`. The answer must MATCH
+    // the sync/wasm oracle (gas metering is invisible to the result), so it grades identically. Three async
+    // call shapes (a consumer block is already fully driven, so it is passed through):
+    //  - non-factory nullary `export()`       → `block_on(prog::export(&mut env))`
+    //  - non-factory with args `export(a, b)` → `block_on(prog::export(&mut env, a, b))`
+    //  - FACTORY `export(caps…)(applied…)`    → env threads into the FACTORY call only; the returned async
+    //    `Rc<dyn EnvClosure>` is applied via `handle.call(&mut env, arg).await` (bind the `block_on(factory)`
+    //    handle to `__h` FIRST so its `.call` env borrow doesn't overlap the factory's, E0499).
+    let call_or_await = if async_mode {
+        if call.starts_with('{') {
+            // A consumer call is already `prog::`-qualified + `block_on`-wrapped; pass it VERBATIM (the arg-
+            // threading rewrites below would double-wrap it). Discriminated by the leading `{` (no other call
+            // shape starts with a block).
+            call.clone()
+        } else if let Some((factory_call, application)) = is_factory
+            .then(|| split_factory_application(&call))
+            .flatten()
+        {
+            // `factory_call` = `export(caps…)` (caps may be empty); `application` = `(applied…)`.
+            let caps = factory_call
+                .strip_prefix(&format!("{ident}("))
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("");
+            let factory = if caps.is_empty() {
+                format!("prog::{ident}(&mut env)")
+            } else {
+                format!("prog::{ident}(&mut env, {caps})")
+            };
+            // `EnvClosure::call` takes ONE `A` (a multi-arg closure tuples its args, matching the lifted
+            // convention + the emit's CallClosure) — `env_closure_call_arg` builds it from the flat applied args.
+            let applied = application
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("")
+                .trim();
+            let arg = env_closure_call_arg(applied);
+            format!("{{ let __h = block_on({factory}); block_on(__h.call(&mut env, {arg})) }}")
+        } else if call.ends_with("()") {
+            format!("block_on(prog::{ident}(&mut env))")
+        } else {
+            let arglist = call
+                .strip_prefix(&format!("{ident}("))
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("");
+            format!("block_on(prog::{ident}(&mut env, {arglist}))")
+        }
+    } else {
+        format!("prog::{call}")
+    };
 
     // A host-closure FACTORY export's `cdz-return` note is the returned closure's CURRIED arrow
     // (`(-> Int64 Int64)`); `call_expr` applies the factory to full arity, so the value rendered is the
@@ -352,8 +464,41 @@ pub fn build_driver_source(
     };
 
     let host_shims = build_rust_host_shims(module, host_responses, host_calls);
-    format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+    // In async mode the driver needs a `GateEnv` (a no-limit gas meter — the gate checks ANSWERS, not fuel
+    // bounds) + a tiny `block_on` executor (`ASYNC_GATE_HARNESS`), and `fn main` must bind `let mut env`
+    // before the call — spliced in by rewriting the `fn main() {` header. A sync driver keeps the plain
+    // assembly (no env, no harness).
+    if async_mode {
+        let full = format!("mod prog {{\n{module}\n}}\n{host_shims}{ASYNC_GATE_HARNESS}\n{body}");
+        full.replace("fn main() {", "fn main() { let mut env = GateEnv;")
+    } else {
+        format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
+    }
 }
+
+/// The async gate driver's harness: a no-limit `GateEnv` implementing the emitted `cdz_rt::CdzEnv` (the gate
+/// checks ANSWERS, not fuel bounds, so `consume` never blocks/panics) + a minimal `block_on` executor (a real
+/// Waker is unneeded — the emitted futures never register one; they only `.await` `consume`, which is `Ready`
+/// immediately, so a busy-poll loop drives them to completion). A concrete `GateEnv` coerces to the emitted
+/// exports' `&mut dyn DynCdzEnv` boundary via cdz-rt's blanket `impl<E: CdzEnv> DynCdzEnv for E`. Spliced into
+/// the async driver before `fn main`. Copied verbatim from xtask's `ASYNC_GATE_HARNESS`.
+const ASYNC_GATE_HARNESS: &str = r#"
+struct GateEnv;
+impl cdz_rt::CdzEnv for GateEnv {
+    async fn consume(&mut self, _gas: u64) {}
+}
+fn block_on<F: core::future::Future>(mut f: F) -> F::Output {
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    fn noop(_: *const ()) {}
+    fn clone(_: *const ()) -> RawWaker { raw() }
+    fn raw() -> RawWaker { RawWaker::new(core::ptr::null(), &VT) }
+    static VT: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    let w = unsafe { Waker::from_raw(raw()) };
+    let mut cx = Context::from_waker(&w);
+    let mut f = unsafe { core::pin::Pin::new_unchecked(&mut f) };
+    loop { if let Poll::Ready(v) = f.as_mut().poll(&mut cx) { return v; } }
+}
+"#;
 
 /// Whether a factory's (arrow-peeled) RESULT type is a SUM that crosses the host boundary value-ENCODED —
 /// an `Option`/`Result`, or a USER sum whose head token is a `cdz-sum` descriptor key. Such a result is
@@ -744,10 +889,29 @@ mod tests {
             build_closure_consumer_call("pub fn f(a: i64) -> i64 { a }", "f", &["1".into()], false),
             None
         );
-        // async → None (deferred).
+        // A SYNC-emitted module parsed in async mode → None (no `pub async fn` header matches).
         assert_eq!(
             build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true),
             None
+        );
+    }
+
+    #[test]
+    fn async_consumer_call_drives_the_factory_closure_through_block_on() {
+        // Async consumer apply_it(g: EnvClosure, x) + async FACTORY producer make_adder(env, k) -> Rc<dyn
+        // EnvClosure>. The producer's closure is block_on-bound to __g0 FIRST (so its `&mut env` borrow doesn't
+        // overlap the consumer's), then the consumer is driven with __g0 + the scalar arg. The whole thing is
+        // a fully-driven `{ let __g0 = …; block_on(prog::apply_it(&mut env, __g0, 7)) }` block.
+        let m = "// cdz-return[make_adder]: (-> Int64 Int64)\n\
+                 pub async fn make_adder<E: cdz_rt::CdzEnv>(__cdz_env: &mut E, k: i64) -> std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>> { todo!() }\n\
+                 // cdz-return[apply_it]: Int64\n\
+                 pub async fn apply_it<E: cdz_rt::CdzEnv>(__cdz_env: &mut E, g: std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>>, x: i64) -> i64 { todo!() }";
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true)
+                .as_deref(),
+            Some(
+                "{ let __g0 = block_on(prog::make_adder(&mut env, 100)); block_on(prog::apply_it(&mut env, __g0, 7)) }"
+            )
         );
     }
 
@@ -770,7 +934,7 @@ mod tests {
         // A factory returning (Option (Tuple Int64 Int64)) → the driver wraps the value in (: v type).
         let m = "// cdz-return[mk]: (-> Int64 (Option (Tuple Int64 Int64)))\n\
                  pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> Option<(i64, i64)>> { std::rc::Rc::new(|_| Some((100, 101))) }";
-        let d = build_driver_source(m, "mk", &["0".into()], &[], &[]);
+        let d = build_driver_source(m, "mk", &["0".into()], &[], &[], false);
         assert!(
             d.contains("(: {} (Option (Tuple Int64 Int64)))"),
             "factory sum result wrapped in the typed value form: {d}"
@@ -781,7 +945,7 @@ mod tests {
     fn factory_string_result_renders_as_a_byte_list() {
         let m = "// cdz-return[mk]: (-> Int64 String)\n\
                  pub fn mk() -> std::rc::Rc<dyn Fn(i64) -> String> { std::rc::Rc::new(|_| String::from(\"hi\")) }";
-        let d = build_driver_source(m, "mk", &["0".into()], &[], &[]);
+        let d = build_driver_source(m, "mk", &["0".into()], &[], &[], false);
         assert!(
             d.contains("(__r).bytes()"),
             "String factory result → byte list: {d}"
@@ -811,7 +975,7 @@ mod tests {
     #[test]
     fn driver_factory_export_calls_split_and_renders_the_peeled_result() {
         let m = "// cdz-return[adder]: (-> Int64 Int64)\npub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { std::rc::Rc::new(move |x| x + k) }";
-        let d = build_driver_source(m, "adder", &["3".into(), "5".into()], &[], &[]);
+        let d = build_driver_source(m, "adder", &["3".into(), "5".into()], &[], &[], false);
         assert!(d.contains("prog::adder(3)(5)"), "factory-split call: {d}");
         assert!(d.contains("println!"), "renders the peeled Int64 result");
     }
@@ -827,7 +991,7 @@ mod tests {
     #[test]
     fn driver_wraps_the_module_and_calls_prog_main() {
         let m = "pub fn main() -> i64 { 42 }";
-        let d = build_driver_source(m, "main", &[], &[], &[]);
+        let d = build_driver_source(m, "main", &[], &[], &[], false);
         assert!(d.contains("mod prog {"), "wraps in mod prog: {d}");
         assert!(d.contains(m), "embeds the module");
         assert!(
@@ -840,7 +1004,7 @@ mod tests {
     #[test]
     fn driver_renders_via_cdz_return_note_when_present() {
         let m = "// cdz-return[f]: Int64\npub fn f() -> i64 { 7 }";
-        let d = build_driver_source(m, "f", &[], &[], &[]);
+        let d = build_driver_source(m, "f", &[], &[], &[], false);
         assert!(d.contains("let __r = prog::f()"), "binds the result: {d}");
         assert!(d.contains("println!"), "prints it");
     }
@@ -848,16 +1012,58 @@ mod tests {
     #[test]
     fn a_diverging_export_is_just_called_no_println() {
         let m = "// cdz-return[boom]: !\npub fn boom() -> ! { panic!() }";
-        let d = build_driver_source(m, "boom", &[], &[], &[]);
+        let d = build_driver_source(m, "boom", &[], &[], &[], false);
         assert!(d.contains("prog::boom()"), "calls it: {d}");
         assert!(!d.contains("println!"), "diverging → no print: {d}");
         assert!(!d.contains("let __r"), "diverging → no result binding: {d}");
     }
 
     #[test]
+    fn async_driver_drives_a_nullary_export_via_block_on_and_splices_the_harness() {
+        let m = "// cdz-return[run]: Int64\npub async fn run<E: cdz_rt::CdzEnv>(__cdz_env: &mut E) -> i64 { 7 }";
+        let d = build_driver_source(m, "run", &[], &[], &[], true);
+        assert!(
+            d.contains("struct GateEnv"),
+            "splices the async harness: {d}"
+        );
+        assert!(
+            d.contains("let mut env = GateEnv;"),
+            "binds env in main: {d}"
+        );
+        assert!(
+            d.contains("block_on(prog::run(&mut env))"),
+            "nullary async call threads &mut env: {d}"
+        );
+    }
+
+    #[test]
+    fn async_driver_threads_args_after_env() {
+        let m = "// cdz-return[add]: Int64\npub async fn add<E: cdz_rt::CdzEnv>(__cdz_env: &mut E, a: i64, b: i64) -> i64 { a + b }";
+        let d = build_driver_source(m, "add", &["3".into(), "5".into()], &[], &[], true);
+        assert!(
+            d.contains("block_on(prog::add(&mut env, 3, 5))"),
+            "args follow &mut env: {d}"
+        );
+    }
+
+    #[test]
+    fn async_driver_applies_a_factory_via_env_closure_call() {
+        // An async FACTORY `adder(env, k) -> Rc<dyn EnvClosure<i64,i64>>` with call args [k=3, x=5]: env
+        // threads into the factory (block_on-bound to __h), then the returned handle is applied via
+        // `__h.call(&mut env, 5)`.
+        let m = "// cdz-return[adder]: (-> Int64 Int64)\npub async fn adder<E: cdz_rt::CdzEnv>(__cdz_env: &mut E, k: i64) -> std::rc::Rc<dyn cdz_rt::EnvClosure<i64, i64>> { todo!() }";
+        let d = build_driver_source(m, "adder", &["3".into(), "5".into()], &[], &[], true);
+        assert!(
+            d.contains("let __h = block_on(prog::adder(&mut env, 3));")
+                && d.contains("block_on(__h.call(&mut env, 5))"),
+            "factory applied via EnvClosure::call: {d}"
+        );
+    }
+
+    #[test]
     fn driver_splices_host_shims() {
         let m = "// cdz-return[g]: Int64\npub fn g() -> i64 { crate::__cdz_host_ask_ask() }";
-        let d = build_driver_source(m, "g", &[], &[("ask.ask".into(), "10".into())], &[]);
+        let d = build_driver_source(m, "g", &[], &[("ask.ask".into(), "10".into())], &[], false);
         assert!(d.contains("fn __cdz_host_ask_ask"), "shim spliced: {d}");
     }
 }
