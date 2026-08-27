@@ -1027,6 +1027,19 @@ fn core_module_impl(
     // importing the shared allocator. In `import_realloc` mode the mem module owns the allocator.
     let n_realloc = (wrapper_needs_memory && !import_realloc) as usize;
 
+    // §2d STATIC BYTES (`DESIGN-static-data.md`): the distinct fully-constant `Bytes` payloads built ONCE
+    // into module globals by a `start` init function. Each occupies a mutable-i32 GLOBAL at its table index
+    // (`0..n_static`); a defined `cabi_realloc` cursor, when present, follows at `n_static`. The init is one
+    // extra DEFINED function laid AFTER the wrappers + realloc (so no existing func/type index shifts): its
+    // func index is `import_count + n + n_wrap + n_realloc`, its functype the last defined-function functype.
+    // `n_static == 0` → no GLOBAL/START/init additions and the realloc cursor stays global 0, byte-identical.
+    let n_static = layout.static_bytes.len();
+    let n_init = (n_static > 0) as usize;
+    // The realloc bump cursor's global index: it sits AFTER the static-bytes globals, so its `global.get`/
+    // `global.set` in the defined `cabi_realloc` body address `n_static` (0 when there are no static bytes,
+    // byte-identical to before).
+    let realloc_cursor_global = n_static as u64;
+
     // Type section, then the imports, in ONE fixed order: EXTERN peer functypes FIRST (type indices
     // `0..e`), then HOST (`e..e+h`), then RUNTIME (`e+h..import_count`), then one functype per defined
     // function (`import_count..import_count+n`). Numbering imports' types first keeps a defined func's type
@@ -1085,9 +1098,21 @@ fn core_module_impl(
         ft.extend_from_slice(&wasm_vec(1, &[wasm_abi::CORE_I32]));
         type_items.extend_from_slice(&ft);
     }
+    // The STATIC-BYTES `start` init functype `() -> ()`, LAST (type index `import_count + n + extra +
+    // n_wrap + n_realloc`) — the init takes no params and returns nothing (it builds each static bytes and
+    // stores the handle in its global). Present only when there are static bytes (`n_init == 1`).
+    if n_init == 1 {
+        let mut ft = vec![wasm_abi::CORE_FUNCTYPE_FORM];
+        ft.extend_from_slice(&wasm_vec(0, &[]));
+        ft.extend_from_slice(&wasm_vec(0, &[]));
+        type_items.extend_from_slice(&ft);
+    }
     let type_sec = section(
         wasm_abi::CORE_SEC_TYPE,
-        &wasm_vec(import_count + n + extra + n_wrap + n_realloc, &type_items),
+        &wasm_vec(
+            import_count + n + extra + n_wrap + n_realloc + n_init,
+            &type_items,
+        ),
     );
 
     // Import section (id 2) — HOST func imports first (from module `"host"`, indices `0..h`), then one
@@ -1175,10 +1200,19 @@ fn core_module_impl(
     if n_realloc == 1 {
         uleb128((import_count + n + extra + n_wrap) as u64, &mut func_items);
     }
+    // The STATIC-BYTES `start` init func LAST (function index `import_count + n + n_wrap + n_realloc`), its
+    // functype at `import_count + n + extra + n_wrap + n_realloc` (the last one laid above). `n_init == 0` →
+    // no entry, byte-identical.
+    if n_init == 1 {
+        uleb128((import_count + n + extra + n_wrap + n_realloc) as u64, &mut func_items);
+    }
     let func_sec = section(
         wasm_abi::CORE_SEC_FUNCTION,
-        &wasm_vec(n + n_wrap + n_realloc, &func_items),
+        &wasm_vec(n + n_wrap + n_realloc + n_init, &func_items),
     );
+    // The init function's own absolute wasm function index — named by the START section, run at
+    // instantiation to build every static bytes once.
+    let init_func_index = (import_count + n + n_wrap + n_realloc) as u64;
 
     // Export section: export every boundary function under its verbatim name, by its absolute core
     // function index (`layout.abs`, which already includes the import shift).
@@ -1388,9 +1422,9 @@ fn core_module_impl(
         body.extend_from_slice(&uleb_bytes(1)); // one local-decl group
         body.extend_from_slice(&uleb_bytes(1)); // of one
         body.push(wasm_abi::CORE_I32); // i32 (local 4 = aligned p)
-        // p = (global0 + align - 1) & -align
+        // p = (cursor + align - 1) & -align  (cursor global sits after the static-bytes globals)
         body.push(op::GLOBAL_GET);
-        uleb128(0, &mut body);
+        uleb128(realloc_cursor_global, &mut body);
         body.push(op::LOCAL_GET);
         uleb128(2, &mut body); // align
         body.push(op::I32_ADD);
@@ -1405,12 +1439,12 @@ fn core_module_impl(
         body.push(op::I32_AND);
         body.push(op::LOCAL_TEE);
         uleb128(4, &mut body); // p → local 4, left on stack
-        // global0 = p + new_size
+        // cursor = p + new_size
         body.push(op::LOCAL_GET);
         uleb128(3, &mut body); // new_size
         body.push(op::I32_ADD);
         body.push(op::GLOBAL_SET);
-        uleb128(0, &mut body);
+        uleb128(realloc_cursor_global, &mut body);
         // return p
         body.push(op::LOCAL_GET);
         uleb128(4, &mut body);
@@ -1419,9 +1453,44 @@ fn core_module_impl(
         entry.extend_from_slice(&body);
         code_items.extend_from_slice(&entry);
     }
+    // The STATIC-BYTES `start` init body LAST — for each distinct constant `Bytes`, build it ONCE
+    // (`bytes-alloc(len)` then a `bytes-set` per byte — the same sequence the inline `Core::BytesOf` emit
+    // used, so the once-built value is byte-identical), mark it IMMORTAL, and store the handle in its
+    // global. `mark-immortal(handle)->handle` (heap op #3847) sets `rc == IMMORTAL`: the node is
+    // census-EXCLUDED (so a build-once static is not a false leak) and `op_dup`/`op_drop` are NO-OPs on it
+    // (a consumer over-drop can never free the global's ref → UAF-proof), and `node_rc == IMMORTAL` forces
+    // FBIP to path-copy rather than mutate the shared static. Built as an ordinary `SelectedFunc`
+    // (`() -> ()`, no locals — the buffer threads on the stack via `bytes-set`'s + `mark-immortal`'s FBIP
+    // return) so `code_entry` resolves the ops through the same `import_index`. Present only when there are
+    // static bytes.
+    if n_init == 1 {
+        let mut code: Vec<crate::backend::wasm::lir::Lir> = Vec::new();
+        for (g, bytes) in layout.static_bytes.iter().enumerate() {
+            code.push(Lir::ConstI32(bytes.len() as i32)); // [len]
+            code.push(Lir::CallImport("bytes-alloc")); // → [buf]
+            for (i, &b) in bytes.iter().enumerate() {
+                code.push(Lir::ConstI32(i as i32)); // [buf, index]
+                code.push(Lir::ConstI32(b as i32)); // [buf, index, byte]
+                code.push(Lir::CallImport("bytes-set")); // → [buf] (bytes-set returns the buffer)
+            }
+            code.push(Lir::CallImport("mark-immortal")); // → [buf] (rc=IMMORTAL: census-excluded, dup/drop no-op)
+            code.push(Lir::GlobalSet(g as u32)); // store the once-built immortal handle → []
+        }
+        let init = SelectedFunc {
+            params: Vec::new(),
+            ret: crate::ty::Ty::Unit,
+            code,
+            declared: Vec::new(),
+            src_body: None,
+            locals: Vec::new(),
+            scopes: Vec::new(),
+            stmt_lines: Vec::new(),
+        };
+        code_items.extend_from_slice(&code_entry(&init, &import_index));
+    }
     let code_sec = section(
         wasm_abi::CORE_SEC_CODE,
-        &wasm_vec(n + n_wrap + n_realloc, &code_items),
+        &wasm_vec(n + n_wrap + n_realloc + n_init, &code_items),
     );
 
     // TABLE + ELEMENT sections — present ONLY when the program has lambda-lifted closures (a runtime
@@ -1478,31 +1547,49 @@ fn core_module_impl(
         )
     };
 
-    // MEMORY (sec 5) + GLOBAL (sec 6) — present only when a wrapper needs memory: memory 0 (min 1 page) the
-    // canon lift lowers incoming lists into, and a mutable i32 bump pointer `cabi_realloc` advances (init 16,
-    // leaving low memory clear so a returned pointer is never 0). Both empty otherwise → byte-identical.
-    let (mem_sec, global_sec) = if wrapper_needs_memory {
-        // DEFINE memory 0 ONLY when it is not IMPORTED as the shared `"mem"` (a host op needing memory imports
-        // it instead — `needs_memory`). The `cabi_realloc` bump GLOBAL (cursor) is defined ONLY in DEFINE mode
-        // (`n_realloc == 1`) — the defined bump allocator's cursor; in `import_realloc` mode the shared mem
-        // module owns the cursor, so this program defines neither the allocator nor its global.
-        let mem = if needs_memory {
-            Vec::new()
-        } else {
-            section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
-        };
-        let global = if n_realloc == 1 {
+    // MEMORY (sec 5) — memory 0 (min 1 page) the canon lift lowers incoming lists into. Present only when a
+    // wrapper needs memory AND it is not IMPORTED as the shared `"mem"` (a host op needing memory imports it
+    // instead). STATIC BYTES need NO linear memory — they live on the value-heap rope (`bytes-alloc`), only
+    // the GLOBAL section below. Empty otherwise → byte-identical.
+    let mem_sec = if wrapper_needs_memory && !needs_memory {
+        section(wasm_abi::CORE_SEC_MEMORY, &wasm_vec(1, &[0x00, 0x01]))
+    } else {
+        Vec::new()
+    };
+    // GLOBAL (sec 6) — one mutable i32 per STATIC BYTES payload FIRST (indices `0..n_static`, init 0; the
+    // `start` init overwrites each with its once-built handle), then the `cabi_realloc` bump cursor at index
+    // `n_static` when a DEFINED allocator is present (`n_realloc == 1`, init 16 so a returned pointer is
+    // never 0). `n_realloc == 1` already implies `wrapper_needs_memory`. Empty (byte-identical) when there
+    // are neither static bytes nor a defined cursor.
+    let global_sec = if n_static > 0 || n_realloc == 1 {
+        let global_entry = |init: i64| -> Vec<u8> {
             let mut g = vec![wasm_abi::CORE_I32, 0x01]; // i32, mutable
             g.push(op::I32_CONST);
-            crate::backend::wasm::encode::sleb128(16, &mut g);
+            crate::backend::wasm::encode::sleb128(init, &mut g);
             g.push(op::END);
-            section(wasm_abi::CORE_SEC_GLOBAL, &wasm_vec(1, &g))
-        } else {
-            Vec::new()
+            g
         };
-        (mem, global)
+        let mut items = Vec::new();
+        for _ in 0..n_static {
+            items.extend_from_slice(&global_entry(0));
+        }
+        if n_realloc == 1 {
+            items.extend_from_slice(&global_entry(16));
+        }
+        section(
+            wasm_abi::CORE_SEC_GLOBAL,
+            &wasm_vec(n_static + n_realloc, &items),
+        )
     } else {
-        (Vec::new(), Vec::new())
+        Vec::new()
+    };
+    // START (sec 8) — names the STATIC-BYTES `start` init function (run at instantiation to build every
+    // static bytes once into its global). Present only when there are static bytes; laid between EXPORT (7)
+    // and ELEMENT (9) per the core-module section order.
+    let start_sec = if n_init == 1 {
+        section(wasm_abi::CORE_SEC_START, &uleb_bytes(init_func_index))
+    } else {
+        Vec::new()
     };
 
     let mut core = Vec::new();
@@ -1514,6 +1601,7 @@ fn core_module_impl(
     core.extend_from_slice(&mem_sec);
     core.extend_from_slice(&global_sec);
     core.extend_from_slice(&export_sec);
+    core.extend_from_slice(&start_sec);
     core.extend_from_slice(&elem_sec);
     core.extend_from_slice(&code_sec);
     core.extend_from_slice(&data_sec);

@@ -517,6 +517,12 @@ pub fn emit(
         return emit_mixed_closure_resource(db, layout, spans);
     }
 
+    // The STATIC BYTES table (`DESIGN-static-data.md` §2d): the distinct fully-constant `Bytes` payloads
+    // the program builds once into module globals (a `start` init) and reads with `global.get` + a dup at
+    // each use. Collected BEFORE the import set so the forced ops below (the init's `bytes-alloc`/
+    // `bytes-set` + the read-`dup`) join it, and attached to the layout below so selection's `Core::BytesOf`
+    // arm can route a constant literal to its global. Empty for a program with no constant bytes literal.
+    let static_bytes = collect_static_bytes(db, &layout.order);
     // The per-program runtime IMPORT SET must be fixed BEFORE selection, because it determines both
     // `layout.import_base` (the shift a defined func's index takes) and the index a `CallImport`
     // resolves to. Walk every reachable body's core for the value-heap ops it will emit
@@ -525,6 +531,17 @@ pub fn emit(
     // no runtime op — no import section, no shift → byte-identical to a runtime-free build.
     let mut used: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
     collect_module_used_ops(db, layout, &mut used)?;
+    // STATIC BYTES need their ops in the import set: the `start` init builds each once with `bytes-alloc`
+    // + `bytes-set`, then `mark-immortal`s it (rc=IMMORTAL: census-excluded + dup/drop no-op). A hoisted
+    // use is just a bare `global.get` — no `dup` (the immortal's drop is a no-op, so a use needs no retain).
+    // `collect_used_ops` already reports `bytes-alloc`/`bytes-set` for any `Core::BytesOf`, but the init's
+    // `mark-immortal` (and a program whose only bytes are all hoisted) might otherwise import neither; force
+    // the three the init emits when the table is non-empty. No-op (byte-identical) with no constant bytes.
+    if !static_bytes.is_empty() {
+        used.insert("bytes-alloc");
+        used.insert("bytes-set");
+        used.insert("mark-immortal");
+    }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
     // not the guest body's, so add them to the used set here (before the import set is derived) — otherwise
@@ -716,6 +733,7 @@ pub fn emit(
         .with_import_base((imports.len() + host_imports.len() + extern_imports.len()) as u32)
         .with_host_order(host_order)
         .with_host_strings(host_strings)
+        .with_static_bytes(static_bytes)
         // A String-param host op needs the shared `mem` even with no CONST string arg (the runtime-string
         // `_mem` copy loop writes into it) — so the core module imports `mem` on `set_needs_memory` too.
         .with_host_needs_memory(host::set_needs_memory(&host_imports))

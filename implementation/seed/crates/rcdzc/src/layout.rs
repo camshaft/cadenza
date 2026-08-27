@@ -151,6 +151,15 @@ pub struct Layout {
     /// common case. This is the fix for the revert of the layout-congruence dedup: the redirect must cover
     /// BOTH the wasm func-index path (order_pos) AND the rust by-name path (fn_ident).
     pub spec_merge: std::collections::HashMap<usize, usize>,
+    /// STATIC BYTES (`DESIGN-static-data.md` §2d): the DISTINCT fully-constant `Bytes` payloads the
+    /// program builds ONCE — each materialized into a module GLOBAL by a `start` init function and read
+    /// with `global.get` (+ a dup) at every use, instead of re-`bytes-alloc`+`bytes-set`-ing per
+    /// evaluation. The index of a payload here IS its module global index (globals `0..static_bytes.len()`;
+    /// a defined `cabi_realloc` cursor, when present, follows at `static_bytes.len()`). Filled by the
+    /// backend before selection (`collect_static_bytes`), so selection's `Core::BytesOf` arm can route a
+    /// constant literal to its global and `core_module_impl` can emit the GLOBAL + START sections. Empty
+    /// for a program with no constant bytes literal → no GLOBAL/START additions, byte-identical to before.
+    pub static_bytes: Vec<Vec<u8>>,
 }
 
 impl Layout {
@@ -193,6 +202,7 @@ impl Layout {
             closure_call_types: Vec::new(),
             cross_edge_import: std::collections::HashMap::new(),
             spec_merge: std::collections::HashMap::new(),
+            static_bytes: Vec::new(),
         }
     }
 
@@ -298,6 +308,16 @@ impl Layout {
     pub fn with_host_strings(&self, host_strings: Vec<(String, u32)>) -> Layout {
         Layout {
             host_strings,
+            ..self.clone()
+        }
+    }
+
+    /// A copy of this layout with the STATIC BYTES table set (`DESIGN-static-data.md` §2d) — the distinct
+    /// fully-constant `Bytes` payloads the program builds once (`collect_static_bytes`). Set by the backend
+    /// before selection, so the `Core::BytesOf` arm can route a constant literal to its global.
+    pub fn with_static_bytes(&self, static_bytes: Vec<Vec<u8>>) -> Layout {
+        Layout {
+            static_bytes,
             ..self.clone()
         }
     }
