@@ -432,6 +432,20 @@ def ctorAppName? (m : Module) (children : Array Nat) : Option ByteArray :=
     | none => none
   | none => none
 
+/-- All top-level `(def (fname param…) body)` statements as (name, (param-spec node ids, body node id)).
+Used to resolve a call `(f arg…)` to a user function (a fully-applied call binds each arg to a param). -/
+def defTable (m : Module) : List (ByteArray × (Array Nat × Nat)) :=
+  match m.nodes[m.root]? with
+  | some (Node.list stmts) =>
+    stmts.toList.filterMap (fun sid =>
+      match asDef? m sid with
+      | some dc =>
+        match defName? m dc, dc[1]?, dc[dc.size - 1]? with
+        | some nm, some targetId, some bodyId => some (nm, (paramSpecNodes m targetId, bodyId))
+        | _, _, _ => none
+      | none => none)
+  | _ => []
+
 /-- A qualified application/value head `(. Q M)` → its (qualifier, member) names. Used to recognize a
 prelude MODULE function like `(. Set of)` (a collection builder), distinct from record projection and
 from a sum-ctor `(. T C)` (the ctor is dispatched separately by `variantCtorArity?`). -/
@@ -507,6 +521,10 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         <|> (if qualHead? m children == some ("Set".toUTF8, "of".toUTF8) then some (evalSetOf m env fuel children) else none)
         <|> (if qualHead? m children == some ("Map".toUTF8, "insert".toUTF8) then some (evalMapInsert m env fuel children) else none)
         <|> ((qualHead? m children).bind (fun (q, f) => evalModuleFn m env fuel q f children))
+        <|> ((m.headName? (Node.list children)).bind (fun h =>
+               if (env.lookup? h).isSome then none                     -- a local binding shadows: not a top-level call
+               else (defTable m).find? (fun d => d.1 == h) |>.bind (fun d =>
+                 if d.2.1.size == children.size - 1 then some (evalCall m env fuel d.2.1 d.2.2 children) else none)))
       match ctorConstruct with
       | some o => o
       | none =>
@@ -692,6 +710,18 @@ partial def evalMapInsert (m : Module) (env : Env) (fuel : Nat) (children : Arra
     | .value _ => .unsupported "eval: Map.insert on a non-map"
     | other => other
   | _, _, _ => .unsupported "eval: malformed Map.insert"
+
+/-- A fully-applied call `(f arg…)` of a top-level `def (f param…)`: bind each arg LAZILY (a thunk over
+the CALLER's env, so an unused parameter's arg is never forced — spec) under its parameter name +
+declared integer type, then evaluate the body in that fresh scope (top-level defs/ctors resolve globally,
+not via env; recursion is fuel-bounded). Partial application / first-class `fn` closures are NOT modeled
+here (they never reach this — a partial call has a wrong arg count, a closure head is a bound local). -/
+partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array Nat) (bodyId : Nat) (children : Array Nat) : Outcome :=
+  let args := children.extract 1 children.size
+  let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
+    (paramSpec? m specId).map (fun (nm, ty) => (nm, (fun _ => evalNode m env defaultIntTy fuel argId), ty)))
+  if bindings.size == paramSpecs.size then evalNode m bindings.toList defaultIntTy fuel bodyId
+  else .unsupported "eval: call has a malformed parameter spec"
 
 /-- Function-FREE collection query/update module fns (flat `((. Mod fn) args…)`): `List.len`,
 `List.concat`, `Set.contains`, `Map.len`, `Map.lookup` (→ Option), `Map.remove`. `none` = not one of
