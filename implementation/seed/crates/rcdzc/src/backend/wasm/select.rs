@@ -1673,10 +1673,18 @@ fn binding_escapes_dup_aware(
         Core::SumNew { payloads, .. } => payloads
             .iter()
             .any(|&p| binding_escapes_dup_aware(db, p, binder, false, dup_sites)),
-        // A sum match: the binding escapes if it escapes the scrutinee or the root continuation (a leaf
-        // body, a guarded arm, or a switch's arms — recursed via `cont_binding_escapes`).
+        // A sum match BORROWS its scrutinee — it reads the discriminant + payload (`sum-disc`/`sum-payload`)
+        // WITHOUT consuming the shell, exactly like `SumPayload`/`SumExpect` (which recurse `tail_borrowed =
+        // true`). The ONLY consume is the optional post-match shell reclaim, which fires solely for an OWNED
+        // scrutinee (`sum_shell_reclaim_ok` → `heap_operand_ownership == Owned`); a let-bound binder
+        // scrutinee is `Borrowed` (never reclaimed at the match), so a match of a let-bound sum used only in
+        // borrow arms leaves the scrutinee for the enclosing `let` to drop. Recursing the scrutinee with
+        // `false` (consume) WRONGLY marked such a binder as escaping and SUPPRESSED the `let`-drop — and the
+        // match does not reclaim it either, so the whole sum graph leaked (`xop4`/`ruf*`: a fresh `Some`
+        // matched twice was NEVER dropped). Borrow-classify the scrutinee so the `let`-drop reclaims it; a
+        // payload that genuinely escapes an ARM is still caught by `cont_binding_escapes`.
         Core::MatchSum { scrutinee, root } => {
-            binding_escapes_dup_aware(db, scrutinee, binder, false, dup_sites)
+            binding_escapes_dup_aware(db, scrutinee, binder, true, dup_sites)
                 || cont_binding_escapes(db, &root, binder, dup_sites)
         }
         // A list match: escapes if the binding escapes the scrutinee (CONSUMING — a rest arm's `vec-split`
