@@ -8594,16 +8594,9 @@ mod match_engine {
         // phantom left a stray Var making the sum non-Eq/non-Ord → a Set/Map of it DECLINED on the rust
         // backend). Value side: a match over both variants runs, WITH the lowercase idiom intact (no
         // migration to capital `Unit`).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type (Box a) (Full a) (Nil unit)) \
-                       (def (main) (match (Full 6) ((Full v) (+ v 1)) ((Nil _u) -1))) (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
+        // (The value-side run — matching `(Full 6)` over both variants with the lowercase idiom intact,
+        // exactly one param → 7 — is corpus 05 "a user generic sum whose nullary variant carries a
+        // lowercase-unit payload has exactly one type param"; this test keeps the rust-EMIT witness below.)
         // The rust-decline witness: a Set of the generic lowercase-unit-payload sum must EMIT rust (the
         // spurious stray Var previously left it non-Ord → "Set with a non-Ord element"). Exactly the shape
         // the v-rust-backend ask flagged + the guide/playground idiom the (B) attempt's reject exposed; a
