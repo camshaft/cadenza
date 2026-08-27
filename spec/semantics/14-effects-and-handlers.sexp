@@ -938,6 +938,39 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 34 Int64)))
 
+(case "a performing closure applied twice DIRECTLY in the handle body threads state per call"
+  (doc    "The arg-passing face of the performing closure applied twice: `g = (fn (n) (Src.read n))` is
+           let-bound under `handle Src 100` whose arm resumes `(+ s n)` as BOTH the op value and the next
+           state. Called directly in `(+ (g 1) (g 2))`: `g 1` reads s=100 → 100+1 = 101 (state → 101),
+           `g 2` reads s=101 → 101+2 = 103; 101 + 103 = 204. Each application is a fresh perform against the
+           CURRENT handler state (a closure replaying its first discharge would give a different value).")
+  (input  (do
+            (effect Src (op read (-> Int64 Int64)))
+            (def (main)
+              (handle Src 100 ((read (n) s (resume (+ s n) (+ s n))))
+                (let ((g (fn ((: n Int64)) (Src.read n))))
+                  (+ (g 1) (g 2)))))
+            (export main)))
+  (call   main) (output (: 204 Int64)))
+
+(case "a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)"
+  (doc    "The cross-function face of the direct case above: the SAME performing closure `g` is passed into
+           a helper `(apply-twice g) = (+ (g 1) (g 2))` that applies it — so the perform crosses an INDIRECT
+           (cross-function) call boundary. If it folds it MUST equal the direct form's value (204); it must
+           never yield a WRONG value. A generation that cannot yet thread the perform across the helper
+           boundary DECLINES cleanly (scored todo) rather than miscompiling — reject-don't-miscompile
+           (self-hosting-and-bootstrap.md). Pinning the sound value 204 makes any future fold to a different
+           value a caught miscompile, a stronger guard than omitting the case.")
+  (input  (do
+            (effect Src (op read (-> Int64 Int64)))
+            (def (apply-twice (: g (-> Int64 Int64))) (+ (g 1) (g 2)))
+            (def (main)
+              (handle Src 100 ((read (n) s (resume (+ s n) (+ s n))))
+                (let ((g (fn ((: n Int64)) (Src.read n))))
+                  (apply-twice g))))
+            (export main)))
+  (call   main) (output (: 204 Int64)))
+
 (case "a matching-width handler state folds across two sequential performs"
   (doc    "Two sequential performs against a handler whose state advances by a RUNTIME amount: seed 10,
            the op `next` resumes the current state `s` and threads `(+ s x)` as the next state.

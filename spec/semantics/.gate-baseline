@@ -3045,6 +3045,7 @@ pass	a performed operation is the scrutinee of a match that dispatches on its re
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing closure applied twice DIRECTLY in the handle body threads state per call
 pass	a performing closure called TWICE observes the state advance between its calls
 pass	a performing closure duplicated through a generic tuple applies twice with stepping state
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
@@ -6552,6 +6553,8 @@ pass	olc1 an Option-of-LIST handler state lifecycle — None is uninitialized, p
 pass	olf1 String ordering folds agree with their runtime twins (proper, prefix, and empty edges)
 pass	olf2 Bool ordering folds agree with their runtime twins
 pass	olf3 List ordering agrees const and runtime, inlined and let-bound
+pass	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
+pass	olf5 a NESTED bare empty list orders against its populated sibling (the unify-then-check recursion)
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one RRB list shared as two map VALUES diverges by List.update without cross-talk
@@ -8158,6 +8161,7 @@ todo	a closed literal closure forwarded through const-wrapper hops is not a fals
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
 todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
+todo	a performing closure passed to a helper that applies it never miscompiles (folds to 204 or declines)
 todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
@@ -8191,7 +8195,6 @@ todo	grx1 the entry List param flows through a two-deep non-recursive helper cha
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
-pass	olf4 a BARE empty list orders against a populated sibling once inference unifies before the orderability check
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
@@ -8206,4 +8209,3 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
-pass	olf5 a NESTED bare empty list orders against its populated sibling (the unify-then-check recursion)
