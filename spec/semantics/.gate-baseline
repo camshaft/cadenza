@@ -8943,3 +8943,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	qkm1 a same-unit Float quantity Map key round-trips with value discrimination
+pass	qkm2 a CROSS-scale Map probe is a compile-time type error (the mixed-scale = conversion does not extend to collection ops)
+pass	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key

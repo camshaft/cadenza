@@ -3456,3 +3456,34 @@
     (export main)))
   (call main (: 3 Int64)) (output (: 6500 BigInt))
   (live-objects known-leak 1))
+
+; ── breaker batch 553: quantities as CHAMP KEYS (the hash/eq agreement pattern on a type whose
+; `=` is scale-converting). The design forecloses the divergence: same-unit keys round-trip with
+; value discrimination (qkm1); a CROSS-scale probe is a compile-time type error with the teaching
+; convert-with-in/as diagnostic (qkm2 — the mixed-scale `=` conversion rule deliberately does NOT
+; extend to collection ops); the explicit route (Unit.in + re-wrap) hits correctly (qkm3).
+
+(case "qkm1 a same-unit Float quantity Map key round-trips with value discrimination"
+  (input (do (def (main (: n Int64))
+  (let ((m (Map.insert (Map.empty) (Qty.of (Float64.of-int (* n 5000)) (Unit.base #"meter")) 42)))
+    (+ (* 100 (match (Map.lookup m (Qty.of 5000.0 (Unit.base #"meter"))) ((Some v) v) ((None u) -1)))
+       (match (Map.lookup m (Qty.of 6000.0 (Unit.base #"meter"))) ((Some v) v) ((None u) -1)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 4199 Int64))
+  (live-objects 0))
+
+(case "qkm2 a CROSS-scale Map probe is a compile-time type error (the mixed-scale = conversion does not extend to collection ops)"
+  (input (do (def (main (: n Int64))
+  (match (Map.lookup (Map.insert (Map.empty) (Qty.of 5000.0 (Unit.base #"meter")) 42) (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) ((Some v) v) ((None u) -1)))
+(export main)))
+  (error CDZ0203))
+
+(case "qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key"
+  (input (do (def (main (: n Int64))
+  (let ((m (Map.insert (Map.empty) (Qty.of (Float64.of-int (* n 5000)) (Unit.base #"meter")) 42)))
+    (match (Map.lookup m (Qty.of (Unit.in (Unit.base #"meter") (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))) (Unit.base #"meter"))) ((Some v) v) ((None u) -1))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (live-objects 0))
