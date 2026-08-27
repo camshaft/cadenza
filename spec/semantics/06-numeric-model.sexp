@@ -138,6 +138,11 @@
   (input  ((. UInt8 of) (: 200 Int32)))
   (output (: 200 UInt8)))
 
+(case "a bare constant width UInt8 literal crosses to the host as its value"
+  (doc    "A CONSTANT-width integer literal — `(: 5 (UInt 8))`, the `(UInt N)` type-application spelling of UInt8 — is admissible (a width MUST be a compile-time natural, `numeric-model.md §An Integer Type Is Indexed By A Compile-Time Width`) and crosses the host boundary as a `u8` carrying its value (5). The constant-width control for the runtime-width reject: a width from RUNTIME data (`(: 5 (UInt n))` with `n` a parameter) is CDZ0302, but a constant width like `(UInt 8)` is fine and its value crosses unchanged.")
+  (input  (do (def (main) (: 5 (UInt 8))) (export main)))
+  (call   main) (output (: 5 UInt8)))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")
