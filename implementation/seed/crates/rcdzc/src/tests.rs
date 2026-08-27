@@ -39795,8 +39795,6 @@ mod stage1 {
         }
     }
 
-
-
     #[test]
     fn a_duplicate_effect_operation_is_rejected() {
         // An effect's operations are a closed name-set (like a sum's variants), so declaring `f` twice is
@@ -47573,6 +47571,50 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_generic_transformer_closure_aggregate_result_grounds_its_element_on_rust_not_unit() {
+        // INFERENCE FIX (v-inference, breaker gtx1 family / issue BUG-generic-transformer-closure-
+        // compound-result-grounds-elements-to-unit, routed by v-rust-backend as a rust-visible miscompile).
+        // The wasm-erasing twin above ran to 4 REGARDLESS of the bug; this pins the RUST emit, where the bug
+        // was VISIBLE. `count(gmap(from-list [1,2], fn(x) => (x,x)))` at two distinct domains: `gmap`
+        // specialized CORRECTLY at `GIter<(i64, i64)>`, but `type_of` of the OUTER `gmap`-call node (the
+        // argument `count` specializes off) grounded the closure-result tuple ELEMENTS to `Unit` — so
+        // `count` took `GIter<((), ())>` while `gmap` returned `GIter<(i64, i64)>` → rustc E0308. Root: in
+        // `apply_scheme_to_args`, unifying the bare closure arg's Any-bearing bottom-up type `(-> Any (Tuple
+        // Any Any))` bound the callee's result var to `(Tuple Any Any)`, and `Any`-absorbs then blocked the
+        // recovery's re-unify against the concrete `(Tuple Int64 Int64)`. Fix: when the closure body solves
+        // to a CONCRETE arrow under the pinned domain, unify THAT recovered arrow (not the Any-bearing
+        // bottom-up type), so the result var binds to `(Tuple Int64 Int64)` and the outer call node — and
+        // every consumer specialized off it — sees the tied element. `emit` itself always SUCCEEDED (the
+        // mismatch is a rustc-level type error, not a decline), so assert on the emitted SOURCE.
+        let src = "(module m \
+            (type GIter (Nil) (Cons a (GIter a))) \
+            (def (from-list xs) \
+              (match xs ((list) (GIter.Nil)) ((list h .. t) (GIter.Cons h (from-list t))))) \
+            (def (count it) \
+              (match it ((GIter.Nil) 0) ((GIter.Cons _ rest) (+ 1 (count rest))))) \
+            (def (gmap it f) \
+              (match it ((GIter.Nil) (GIter.Nil)) ((GIter.Cons h rest) (GIter.Cons (f h) (gmap rest f))))) \
+            (def (main) \
+              (+ (count (gmap (from-list (list 1 2)) (fn (x) (tuple x x)))) \
+                 (count (gmap (from-list (list \"a\" \"b\")) (fn (s) (String.concat s s)))))) \
+            (export main))";
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr)
+            .expect("generic-transformer aggregate-result closure lays out (rust)");
+        let rs = crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None)
+            .expect("generic-transformer aggregate-result closure emits rust");
+        let rs = String::from_utf8(rs).expect("utf8");
+        assert!(
+            rs.contains("GIter<(i64, i64)>"),
+            "the closure-result tuple element must ground to (i64, i64) on rust; got:\n{rs}"
+        );
+        assert!(
+            !rs.contains("((), ())"),
+            "the closure-result tuple elements must NOT erase to Unit `((), ())` (the E0308 miscompile); got:\n{rs}"
+        );
     }
 
     #[test]
