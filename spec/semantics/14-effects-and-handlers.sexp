@@ -8807,11 +8807,10 @@
 
 ; -- breaker batch 479 (2026-08-27): the remaining capture-once edge from the cp probe set (cp1/cp3
 ; were pinned by v-effects with #3929; cp4 factory-body is a QUEUED pre-existing silent re-draw —
-; not pinnable until fixed). cpc1 = the CONDITIONAL-selected performing capture: only one branch of
-; the if performs, so the closure identity is branch-dependent — declines cleanly today; folds (50
-; at n=5, capture-once a=seed per the #3929 adjudication) when the conditional-capture increment
-; lands. Declines on ALL targets today (shared-frontend fold, no rust runtime fallback for this
-; shape) — the 50 oracle is derivation-from-adjudicated-semantics, confirmed on flip.
+; not pinnable until fixed). cpc1 = the CONDITIONAL-selected performing capture — FLIPPED
+; by #4038 (Form D branch-aware distribution: the closure-let distributes into the if's branches,
+; each folding via the capture-once hoist; the draw fires only in the taken branch). Folds 50 on
+; all targets, exactly the oracle pinned at the decline.
 
 (case "cpc1 a conditionally-selected performing capture folds via the branch-aware distribution"
   (doc    "A closure bound to an `if` whose branches select between a performing capture-once closure and a
@@ -8946,3 +8945,20 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 6375 Int64)))
+
+; -- breaker batch 500 (2026-08-27): the BOTH-branches-performing edge of #4038's Form D
+; distribution — each if-branch is its own performing creation-wrapper; only the TAKEN branch's
+; draw fires (a=seed=5 → 50; the untaken branch's draw must not advance the state).
+
+(case "cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing"
+  (input (do
+    (effect St (op next (-> Int64)))
+    (def (main (: n Int64))
+      (handle St n ((next () s (resume s (+ s 1))))
+        (let ((f (if (> n 0)
+                     (let ((a (St.next))) (fn ((: x Int64)) (* a x)))
+                     (let ((b (St.next))) (fn ((: x Int64)) (+ b x))))))
+          (f 10))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 50 Int64)))
