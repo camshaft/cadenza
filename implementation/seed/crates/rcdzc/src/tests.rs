@@ -77260,8 +77260,6 @@ mod closure_host_resource {
     /// the proof that a Cadenza closure can cross to the host as a resource the host invokes.
     #[test]
     fn a_closure_crosses_as_a_resource_the_host_calls() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_closure_component(&closure_call_core());
         // Validate structurally first (localize any byte/index error before wasmtime).
         let mut validator =
@@ -77269,58 +77267,10 @@ mod closure_host_resource {
         validator
             .validate_all(&comp)
             .expect("closure-resource component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make export");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call export");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        // make() → the closure resource handle.
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make call");
-        make.post_return(&mut store).expect("make post_return");
-        assert!(
-            matches!(handle[0], Val::Resource(_)),
-            "make must return a resource, got {:?}",
-            handle[0]
-        );
-
-        // call(handle, 5) → 6  (the closure (fn (x) (+ x 1)) dispatched via the guest's call_indirect).
-        // NOTE: `call` takes `own<t>`, so it CONSUMES the handle — the resource is single-use per handle
-        // in C-HOST-1 (own/no-drop). The host `make`s a fresh handle for each invocation. Making `call`
-        // take `borrow<t>` (so one handle serves repeated calls, the natural callback shape) is C-HOST-5,
-        // shared with the value-escape's `encode` borrow migration.
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
-            .expect("call(handle, 5)");
-        call.post_return(&mut store).expect("call post_return");
-        assert_eq!(out[0], Val::S64(6), "closure (+ x 1) applied to 5 = 6");
-
-        // A SECOND handle from a fresh `make`, called with a different arg — proves the resource+dispatch
-        // is reusable across handles (each `own` handle is one-shot). Same closure code, applied to 41.
-        let mut handle2 = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle2).expect("make 2");
-        make.post_return(&mut store).expect("make 2 post_return");
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[handle2[0].clone(), Val::S64(41)], &mut out2)
-            .expect("call(handle2, 41)");
-        call.post_return(&mut store).expect("call post_return 2");
-        assert_eq!(out2[0], Val::S64(42), "same closure applied to 41 = 42");
-        // Both `own` handles were consumed by `call`; a borrow-based repeated-call handle is C-HOST-5.
+        // The compiled-closure RUN behavior (make → a resource handle; call(handle, 5) = 6; a fresh handle
+        // called with 41 = 42) is now covered by spec/semantics/21-host-closures.sexp. Per the wasmtime
+        // dev-dep drop (v-wasmtime-migration), this test keeps only the STRUCTURAL oracle-validity check
+        // (wasmparser, no wasmtime); the behavioral run moved to the corpus.
     }
 
     /// COMPOUND-**ARGUMENT** oracle core (the byte anchor for a closure whose closure-argument is a
@@ -79449,57 +79399,15 @@ mod closure_host_resource {
     /// compiler hand-emits a real compound-result `call`. Byte-shape validated + behavior observed.
     #[test]
     fn a_closure_returning_a_list_crosses_and_the_host_reads_the_bytes() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_closure_list_component(&closure_list_call_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("compound-result closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let make_idx = instance
-            .get_export_index(&mut store, Some(&iface), "make")
-            .expect("make");
-        let call_idx = instance
-            .get_export_index(&mut store, Some(&iface), "call")
-            .expect("call");
-        let make = instance.get_func(&mut store, make_idx).expect("make func");
-        let call = instance.get_func(&mut store, call_idx).expect("call func");
-
-        let mut handle = [Val::Bool(false)];
-        make.call(&mut store, &[], &mut handle).expect("make");
-        make.post_return(&mut store).expect("post_return");
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[handle[0].clone(), Val::S64(5)], &mut out)
-            .expect("call");
-        call.post_return(&mut store).expect("post_return");
-        let bytes: Vec<u8> = match &out[0] {
-            Val::List(items) => items
-                .iter()
-                .map(|v| match v {
-                    Val::U8(b) => *b,
-                    o => panic!("not u8: {o:?}"),
-                })
-                .collect(),
-            o => panic!("expected list<u8>, got {o:?}"),
-        };
-        // lifted(5) = 6, so the payload is [6, 7] — the compound crossed as list<u8> through the call.
-        assert_eq!(
-            bytes,
-            vec![6u8, 7],
-            "closure call returned the byte payload [n, n+1]"
-        );
+        // The compiled-closure list-result RUN behavior (make → handle; call(handle, 5) returns the byte
+        // payload [6, 7]) is now covered by spec/semantics/21-host-closures.sexp. Per the wasmtime dev-dep
+        // drop (v-wasmtime-migration), this keeps only the STRUCTURAL oracle-validity check (wasmparser).
     }
 
     /// MULTI-EXPORT oracle core (the byte anchor for the next real increment): TWO closures of the SAME
@@ -79772,62 +79680,15 @@ mod closure_host_resource {
     /// production path is the next increment).
     #[test]
     fn multi_export_closures_share_one_call_and_the_host_drives_each() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_multi_closure_component(&multi_closure_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("multi-export closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let get = |store: &mut Store<()>, name: &str| {
-            let idx = instance
-                .get_export_index(&mut *store, Some(&iface), name)
-                .unwrap_or_else(|| panic!("export {name}"));
-            instance
-                .get_func(&mut *store, idx)
-                .unwrap_or_else(|| panic!("func {name}"))
-        };
-        let make_inc = get(&mut store, "make-inc");
-        let make_triple = get(&mut store, "make-triple");
-        let call = get(&mut store, "call");
-
-        // make-inc() → a handle; call(_, 5) = 6 through the SHARED call.
-        let mut h = [Val::Bool(false)];
-        make_inc.call(&mut store, &[], &mut h).expect("make-inc");
-        make_inc.post_return(&mut store).expect("post_return");
-        let mut out = [Val::Bool(false)];
-        call.call(&mut store, &[h[0].clone(), Val::S64(5)], &mut out)
-            .expect("call inc");
-        call.post_return(&mut store).expect("post_return");
-        assert_eq!(out[0], Val::S64(6), "make-inc → (+ x 1) applied to 5 = 6");
-
-        // make-triple() → a handle; the SAME shared call dispatches (* x 3), so call(_, 5) = 15.
-        let mut h2 = [Val::Bool(false)];
-        make_triple
-            .call(&mut store, &[], &mut h2)
-            .expect("make-triple");
-        make_triple.post_return(&mut store).expect("post_return");
-        let mut out2 = [Val::Bool(false)];
-        call.call(&mut store, &[h2[0].clone(), Val::S64(5)], &mut out2)
-            .expect("call triple");
-        call.post_return(&mut store).expect("post_return");
-        assert_eq!(
-            out2[0],
-            Val::S64(15),
-            "make-triple → (* x 3) applied to 5 = 15, via the SAME shared call"
-        );
+        // The multi-export shared-call RUN behavior (make-inc → call(_,5)=6; make-triple → the SAME shared
+        // call dispatches (* x 3), call(_,5)=15) is now covered by spec/semantics/21-host-closures.sexp.
+        // Per the wasmtime dev-dep drop, this keeps only the STRUCTURAL oracle-validity check (wasmparser).
     }
 
     /// MIXED-EXPORT oracle core (the byte anchor for "a closure ALONGSIDE a non-closure export"): ONE
@@ -80386,67 +80247,16 @@ mod closure_host_resource {
     /// multi-export envelope (the hand-emitted path is a later increment).
     #[test]
     fn distinct_signature_closures_cross_as_distinct_resource_types() {
-        use wasmtime::component::{Component, Linker, Val};
-        use wasmtime::{Engine, Store};
         let comp = oracle_distinct_sig_component(&distinct_sig_core());
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("distinct-signature closure component validates");
-
-        let engine = Engine::default();
-        let component = Component::from_binary(&engine, &comp).expect("valid component");
-        let linker: Linker<()> = Linker::new(&engine);
-        let mut store = Store::new(&engine, ());
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .expect("instantiate");
-        let iface = instance
-            .get_export_index(&mut store, None, "cadenza:closure/exports")
-            .expect("closure interface");
-        let get = |store: &mut Store<()>, name: &str| {
-            let idx = instance
-                .get_export_index(&mut *store, Some(&iface), name)
-                .unwrap_or_else(|| panic!("export {name}"));
-            instance
-                .get_func(&mut *store, idx)
-                .unwrap_or_else(|| panic!("func {name}"))
-        };
-        let make_inc = get(&mut store, "make-inc");
-        let call_inc = get(&mut store, "call-inc");
-        let make_isz = get(&mut store, "make-isz");
-        let call_isz = get(&mut store, "call-isz");
-
-        // make-inc() → t0 handle; call-inc(_, 5) = 6.
-        let mut h = [Val::Bool(false)];
-        make_inc.call(&mut store, &[], &mut h).expect("make-inc");
-        make_inc.post_return(&mut store).expect("post_return");
-        let mut out = [Val::Bool(false)];
-        call_inc
-            .call(&mut store, &[h[0].clone(), Val::S64(5)], &mut out)
-            .expect("call-inc");
-        call_inc.post_return(&mut store).expect("post_return");
-        assert_eq!(
-            out[0],
-            Val::S64(6),
-            "make-inc → (+ x 1)(5) = 6 (resource t0)"
-        );
-
-        // make-isz() → t1 handle; call-isz(_, 0) = true. A DIFFERENT resource type with a Bool result.
-        let mut h2 = [Val::Bool(false)];
-        make_isz.call(&mut store, &[], &mut h2).expect("make-isz");
-        make_isz.post_return(&mut store).expect("post_return");
-        let mut out2 = [Val::Bool(false)];
-        call_isz
-            .call(&mut store, &[h2[0].clone(), Val::S64(0)], &mut out2)
-            .expect("call-isz");
-        call_isz.post_return(&mut store).expect("post_return");
-        assert_eq!(
-            out2[0],
-            Val::Bool(true),
-            "make-isz → (= x 0)(0) = true (resource t1, a distinct signature)"
-        );
+        // The distinct-signature RUN behavior (make-inc → call-inc(_,5)=6 on resource t0; make-isz →
+        // call-isz(_,0)=true on a DISTINCT resource t1 with a Bool result) is now covered by
+        // spec/semantics/21-host-closures.sexp. Per the wasmtime dev-dep drop, this keeps only the
+        // STRUCTURAL oracle-validity check (wasmparser, no wasmtime).
     }
 
     /// ROUND-TRIP oracle core (the byte anchor for C-HOST-4, Direction 2): a `make` that produces a
