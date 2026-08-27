@@ -8030,3 +8030,8 @@ todo	read of malformed text is a coded reject, not a wrong value
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
+pass	crr1 an export returns a three-element list (reachable return = shell plus node, two cells)
+pass	crr2 an export returns a pair tuple (one reachable cell)
+pass	crr3 an export returns a Some-wrapped scalar (one reachable cell)
+pass	crr4 an export returns a runtime-concatenated String (one reachable cell)
+pass	crr5 an export returns a two-field record (one reachable cell)
