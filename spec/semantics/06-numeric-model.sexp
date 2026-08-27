@@ -3942,6 +3942,18 @@
   (call   main (: 255 UInt8))
   (output (: 255 UInt16)))
 
+(case "a non-aliased-width result crosses the boundary widened to the next aliased width"
+  (doc    "`(UInt 48)` is a first-class INTERNAL type (its bounds fold, its arithmetic is correct), but it is
+           NOT an ABI-aliased width, so a RESULT of a non-aliased width crosses the entrypoint boundary
+           WIDENED to the next-larger aliased width of the same signedness — value-preserving, since a
+           produced value is in range by construction. `(. (UInt 48) max)` = 2^48-1 = 281474976710655
+           exports as UInt64 (the exact value). (A non-aliased-width PARAMETER still declines — accepting one
+           would trust an unverifiable incoming value fits the narrower width; that decline pin stays in
+           rcdzc.)")
+  (input  (do (def (main) (. (UInt 48) max)) (export main)))
+  (call   main)
+  (output (: 281474976710655 UInt64)))
+
 (case "widening a runtime UNSIGNED narrow integer to Int64 zero-extends (total, emits)"
   (doc    "`(Int64.of x)` with `x` a runtime UInt8 widens totally by ZERO-extending — every UInt8 (0..255)
            fits Int64, so no trap, and the top-bit value 200 and the max 255 widen to the same NON-NEGATIVE

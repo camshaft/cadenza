@@ -32000,19 +32000,12 @@ mod stage1 {
     }
 
     #[test]
-    fn a_non_aliased_width_result_crosses_widened_but_a_parameter_declines() {
-        // A `(UInt 48)` is a first-class INTERNAL type — its bounds fold and its arithmetic is correct.
-        // A RESULT of a non-aliased width CROSSES the boundary WIDENED to the next-larger aliased width of
-        // the same signedness (a produced value is in range by construction, so the widening is
-        // value-preserving): `(. (UInt 48) max)` = 2^48-1 exports as `u64` → the exact value. But a
-        // non-aliased PARAMETER still DECLINES (naming the width) — accepting one would trust an incoming
-        // wider value fits the narrower width, which the guest cannot verify. (Return-only; the full
-        // value-and-signedness matrix is in `runtime_ops::a_non_aliased_width_result_crosses_…`.)
-        let ret = "(module m (def (main) (. (UInt 48) max)) (export main))";
-        let bytes =
-            compile_component(&crate::codec::encode(&parse(ret))).expect("a UInt48 result crosses");
-        assert_eq!(run_returns::<u64>(&bytes, "main"), 281474976710655);
-
+    fn a_non_aliased_width_parameter_declines_naming_the_width() {
+        // A non-aliased-width PARAMETER `(: x (UInt 48))` DECLINES (naming the width/boundary) — accepting
+        // one would trust an incoming wider value fits the narrower width, which the guest cannot verify.
+        // (The RESULT-crossing-widened RUN half is corpus-covered by 06-numeric-model "a non-aliased-width
+        // result crosses the boundary widened to the next aliased width"; the full value-and-signedness
+        // matrix is in `runtime_ops::a_non_aliased_width_result_crosses_…`.)
         let param = "(module m (def (f (: x (UInt 48))) x) (export f))";
         let msg = compile_component(&crate::codec::encode(&parse(param)))
             .expect_err("a non-aliased width parameter cannot be accepted")
