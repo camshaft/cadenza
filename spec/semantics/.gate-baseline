@@ -3357,6 +3357,7 @@ pass	a record reached via a with-CHAIN keys like the final direct build, generat
 pass	a record result field is written by NAME when the WIT field order is not name-lexicographic (via an imposed WIT world)
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match binds its field (nested-record match binder)
+pass	a record sub-pattern nested under a variant, tuple, or list binds its field by name at the real width
 pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
 pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary
