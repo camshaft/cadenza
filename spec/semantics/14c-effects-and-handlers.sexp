@@ -18641,14 +18641,14 @@
   (call main (: 2 Int64))
   (output (: 24 Int64)))
 
-(case "frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment"
+(case "frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)"
   (input (do (effect S (op depth (-> Int64)))
 (def (inner2 (: d Int64)) (if (= d 0) 0 (+ (S.depth) (outer2 (- d 1) 0))))
 (def (outer2 (: k Int64) (: acc Int64)) (if (= k 0) acc (let ((d (S.depth))) (outer2 (- k 1) (+ acc (inner2 d))))))
 (def (main (: n Int64)) (handle S (: 0 Int64) ((depth () s (resume s (+ s 1)))) (outer2 n 0)))
 (export main)))
   (call main (: 2 Int64))
-  (output (: 3 Int64)))
+  (output (: 2 Int64)))
 
 ;; ── breaker batch 543: siblings at the #4540 nestop boundary (inner-op arm resume value performs
 ;; an OUTER op reading the inner state binder — the arm.state re-bind). no1 = the landed shape from

@@ -8881,7 +8881,7 @@ todo	erp2 a Result entry param with two scalar payloads declines pending the Res
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
-todo	frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment
+todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
 todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
