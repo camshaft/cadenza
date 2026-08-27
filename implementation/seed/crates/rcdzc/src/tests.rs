@@ -54352,36 +54352,6 @@ mod stage1 {
     }
 
     #[test]
-    fn bare_prelude_option_matches_and_runs() {
-        // The prelude Option built + matched with BARE `Some`/`None` (no declaration), composed + run.
-        // `(pick n)` → `(Some n)` / `None`, matched `(Some x) → x`, `None → -1`. `pick 7`→7, `pick 0`→-1.
-        use crate::testkit::parse;
-        let src = "(module m \
-                     (def (pick (: n Int64)) \
-                        (match (if (> n 0) (Some n) None) ((Some x) x) (None -1))) \
-                     (export pick))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile prelude-option match");
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping composed prelude-option run");
-            return;
-        };
-        for (arg, want) in [("7", "7"), ("0", "-1")] {
-            let opts = cdz_run::RunOpts {
-                export: Some("pick".to_string()),
-                args: vec![arg.to_string()],
-                runtime: Some(runtime.clone()),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => assert_eq!(s, want, "prelude pick {arg}"),
-                cdz_run::Outcome::Trap(t) => panic!("composed prelude-option run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
     fn the_prelude_sign_sum_is_built_in() {
         // `Sign` is a BUILT-IN monomorphic prelude sum `(type Sign Neg Zero Pos)` — a program uses
         // `Sign.Pos`/`Sign.Zero`/`Sign.Neg` with NO declaration, and an exhaustive three-way match over
@@ -54410,45 +54380,6 @@ mod stage1 {
                     assert_eq!(s, want.to_string(), "built-in Sign match: {ctor}")
                 }
                 cdz_run::Outcome::Trap(t) => panic!("Sign match run trapped: {t}"),
-            }
-        }
-    }
-
-    #[test]
-    fn compare_yields_the_three_way_ordering() {
-        // `compare : ∀a. a → a → Ordering` — the three-way comparison (core-semantics.md §A Total Order
-        // Is Observed Through A Three-Way Comparison). A constant scalar/string pair FOLDS to the matching
-        // `Ordering` variant; deconstructed by a three-arm match → -1/0/1. Covers int, string, and the
-        // agreement with `<` (all three relations across two operand types).
-        for (prog, want) in [
-            ("(Ordering.of 1 2)", -1),         // Less
-            ("(Ordering.of 2 2)", 0),          // Equal
-            ("(Ordering.of 3 2)", 1),          // Greater
-            ("(Ordering.of \"a\" \"b\")", -1), // strings order lexicographically
-            ("(Ordering.of \"b\" \"b\")", 0),
-        ] {
-            let src = format!(
-                "(module m (def (main) (match {prog} \
-                   ((Ordering.Less _) -1) ((Ordering.Equal _) 0) ((Ordering.Greater _) 1))) (export main))"
-            );
-            let bytes = compile_component(&crate::codec::encode(&parse(&src)))
-                .expect("compile compare match");
-            let Some(runtime) = super::find_runtime_wasm() else {
-                eprintln!("runtime wasm not found; skipping compare run");
-                return;
-            };
-            let opts = cdz_run::RunOpts {
-                export: Some("main".to_string()),
-                args: vec![],
-                runtime: Some(runtime),
-                runtime_cache_dir: None,
-                host_responses: Vec::new(),
-            };
-            match cdz_run::run(&bytes, &opts).expect("run") {
-                cdz_run::Outcome::Value(s) => {
-                    assert_eq!(s, want.to_string(), "compare fold: {prog}")
-                }
-                cdz_run::Outcome::Trap(t) => panic!("compare run trapped: {t}"),
             }
         }
     }

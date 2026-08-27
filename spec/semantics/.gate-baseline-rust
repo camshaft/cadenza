@@ -292,6 +292,8 @@ pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrut
 pass	Ok carrying a Some keeps both variant tags
 pass	Option.expect over a dead-after-borrowed String.slice leaks the Some shell each iteration
 pass	Ordering values order Less below Equal below Greater
+pass	Ordering.of orders strings lexicographically in the three-way comparison
+pass	Ordering.of yields the three-way ordering of two Int64 operands
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PREFIX-order edges — the state string compares against crossed op-arg strings: equal, longer-prefix, and shorter-prefix faces
@@ -1290,6 +1292,7 @@ pass	a bare literal that FITS its contextually-grounded narrow width through an 
 pass	a bare literal that overflows the annotated width does not fit it
 pass	a bare nullary constructor is the nullary sum value
 pass	a bare number on the left scales the quantity and keeps its dimension
+pass	a bare prelude Option is built via if and matched to its payload or a default
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare primitive operator passed as a first-class function value folds via the annotation see-through
 pass	a bare reference to a nullary function denotes its body value
@@ -2796,6 +2799,9 @@ pass	a nested module's function export is applied through the projection chain
 pass	a nested modulo by a dividing constant collapses to one modulo (across signs)
 pass	a nested modulo by a multiple collapses to a single modulo on a runtime operand
 pass	a nested modulo does NOT collapse when the inner divisor does not divide the outer
+pass	a nested narrow Int8 add with two if operands computes at the consuming width
+pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
+pass	a nested narrow Int8 arith with a multiply inner op computes at the consuming width
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
@@ -4086,6 +4092,7 @@ pass	a trie of 40 TUPLE keys resolves compound-key descent at depth
 pass	a trie of 40 rope-built String keys resolves content descent at depth
 pass	a trie spanning NEGATIVE and positive keys enumerates in signed numeric order
 pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
+pass	a triply-nested narrow Int8 add computes at the consuming width
 pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
@@ -7211,6 +7218,7 @@ pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
+pass	the Int64 control: a nested wide add with if operands needs no normalization
 pass	the Int64 total order holds at its extremes
 pass	the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime
 pass	the Int8 max boundary literal fits in a runtime branch
@@ -7861,6 +7869,7 @@ pass	wx6 wrapping increments CHAINED hop-to-hop — MAX-1 crosses the seam insid
 pass	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers (the threaded heap capture leaks per dispatch through the resume-escape fence)
 pass	xas1 a recursive performer with the arm capturing a main-local SCALAR let folds (threaded as an extra spec param)
 pass	xas2 a recursive performer with the arm capturing main's PARAM directly folds (params thread into the lifted def)
+pass	xat1 TWO scalar main-local lets captured by the arm thread as extra spec params
 pass	xc1 xor by the same value twice cancels to the operand (runtime, constant, commuted, masked w)
 pass	xc2 a trapping discarded xor operand keeps its trap (the cancellation must not drop it)
 pass	xf1 an escaped-closure hop answer indexes a const-folded Set.to-list
@@ -7996,9 +8005,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a nested narrow Int8 add with two if operands computes at the consuming width
-pass	a nested narrow Int8 arith with a multiply inner op computes at the consuming width
-pass	a triply-nested narrow Int8 add computes at the consuming width
-pass	a nested narrow Int8 arith range-checks the inner op so an inner overflow traps
-pass	the Int64 control: a nested wide add with if operands needs no normalization
-pass	xat1 TWO scalar main-local lets captured by the arm thread as extra spec params
