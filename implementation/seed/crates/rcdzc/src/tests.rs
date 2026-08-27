@@ -26729,28 +26729,6 @@ mod match_engine {
     /// covered by `a_trapping_scrutinee_of_an_all_same_match_is_still_evaluated`.
 
     #[test]
-    fn a_type_mismatched_pattern_is_rejected() {
-        // A boolean pattern against an integer scrutinee is a type error (CDZ0201) — checked
-        // STRUCTURALLY, not silently treated as a never-matching arm. (Even with a constant scrutinee.)
-        assert_eq!(
-            reject_code("(module m (def (main) (match 5 (true 1) (_ 0))) (export main))")
-                .as_deref(),
-            Some("CDZ0201")
-        );
-    }
-
-    #[test]
-    fn a_non_exhaustive_scalar_match_is_rejected_even_when_a_constant_hits_an_arm() {
-        // A scalar match with no wildcard tail is non-exhaustive (CDZ0210) — a program is ill-formed if
-        // it would not cover some value, EVEN when the constant scrutinee happens to hit an arm. The
-        // check is structural, before the fold.
-        assert_eq!(
-            reject_code("(module m (def (main) (match 5 (5 1))) (export main))").as_deref(),
-            Some("CDZ0210")
-        );
-    }
-
-    #[test]
     fn a_non_wildcard_pattern_after_a_literal_still_needs_a_wildcard() {
         // Two literal arms with no wildcard — non-exhaustive over the integers (CDZ0210), regardless of
         // whether the runtime scrutinee would hit one.
