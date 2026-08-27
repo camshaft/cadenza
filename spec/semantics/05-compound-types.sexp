@@ -21758,3 +21758,26 @@
 (export main)))
   (call main)
   (output (: 1010 Int64)))
+
+; ── breaker batch 527: the >32-trie FBIP fence, pinned the hour #4330 landed (large-list
+; build-once via mark-immortal-deep). tle4 fences the exact-fit 32 (two-node) case; this is its
+; twin at 33 — a multi-level RRB trie, only pinnable now that >32 hoists. Independent
+; verification of #4330: the 33-list emits 3 static globals (was 1), the MIXED tuple-over-33
+; (mhn1 shape) also hoists (3 globals, was 1) with mhn1-3 green values-verbatim, full static-data
+; battery 23/23. Fifty frames of persistent update against the immortal trie must COPY every
+; frame — an under-marked trie node FBIP-reuses in place and the sibling read corrupts loudly.
+
+(case "tle5 fifty frames of persistent update against a hoisted 33-element (multi-level trie) constant never corrupt it"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
+            (u (List.update (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)) 0 999)))
+        (+ (+ (match (List.at c 0) ((Option.Some v) v) ((Option.None) -1))
+              (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50000 Int64))
+  (live-objects 0))
