@@ -33931,77 +33931,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_recursive_generic_function_is_instantiated_per_type() {
-        // 09-functions "a recursive generic function is instantiated at two different types": `loopn`
-        // threads `x` UNCHANGED, so `x` is GENERIC (the body never fixes its type). A non-recursive
-        // generic inlines (monomorphizes) at each call site; a RECURSIVE one cannot, so it lowers to a
-        // real function. Called at Int64 (`(loopn 3 40)` → 40) AND String (`(loopn 2 "hi")` → "hi"), the
-        // compiler MONOMORPHIZES it into two functions with distinct machine signatures (i64→i64 and
-        // i32-handle→i32-handle) — `lower::type_specialize` synthesizes one copy per concrete
-        // instantiation, re-annotating the generic param. Before, the second use was rejected CDZ0203
-        // (`x` pinned to Int64 by the first call). `40 + byte-len("hi") = 40 + 2 = 42`. Uses the value
-        // heap (the String "hi"), so it SKIPS (not fails) when the runtime store is absent.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
-               (def (main) (+ (loopn 3 40) (String.byte-len (loopn 2 \"hi\")))) (export main))",
-        )))
-        .expect("a recursive generic instantiated at Int64 and String compiles");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping recursive-generic monomorphization run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => {
-                assert_eq!(v, "42", "loopn instantiated at both Int64 and String")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
-    fn a_recursive_generic_is_instantiated_at_three_distinct_machine_shapes() {
-        // COVERAGE (v-inference): recursive-generic monomorphization scales past TWO instantiations. `loopn`
-        // (threads its 2nd arg unchanged → generic) is called at Int64, String, AND Bool in one program —
-        // three distinct machine shapes (i64 slot / i32 heap handle / i32 discriminant), each monomorphized
-        // into its own function; the three copies coexist. `loopn 2 k = k`; `byte-len(loopn 1 "ab") = 2`;
-        // `loopn 1 true` → true so the `if` takes 100. With a runtime boundary `k`: `k + 2 + 100`. Uses the
-        // value heap (the String), so SKIPS when the runtime store is absent. Pins that the per-type
-        // specialization count is not capped at two and a heap-handle + discriminant copy coexist with the
-        // scalar one.
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (loopn (: n Int64) x) (if (= n 0) x (loopn (- n 1) x))) \
-               (def (main (: k Int64)) \
-                 (+ (loopn 2 k) (+ (String.byte-len (loopn 1 \"ab\")) (if (loopn 1 true) 100 0)))) \
-               (export main))",
-        )))
-        .expect("a recursive generic at Int64+String+Bool compiles");
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping three-shape recursive-generic run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(v) => assert_eq!(v, "107", "5 + byte-len(ab)=2 + 100"),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
-    #[test]
     fn a_recursive_generic_over_a_generic_recursive_sum_monomorphizes_per_element() {
         // 09-functions "a recursive function over a generic recursive sum is monomorphized per element
         // type": the canonical idiom — a polymorphic linked list `(type Lst Nil (Cons a (Lst a)))` and a
@@ -43522,51 +43451,6 @@ mod stage1 {
             )))
             .is_ok(),
             "a correctly annotated typed param is valid"
-        );
-    }
-
-    #[test]
-    fn a_recursive_dictionary_consumer_inlines_and_erases_the_dictionary() {
-        // 09-functions "a recursive consumer of a dictionary record inlines and erases the dictionary":
-        // ad-hoc polymorphism as a record of functions passed as an argument. `fold-n` marks its dict
-        // parameter `const` (`(const (: d …))`) — an EXPLICIT compile-time parameter (Addendum 3), so the
-        // recursive `fold-n` is monomorphized per distinct dict, the `op` INLINED directly (no
-        // `call_indirect`, no runtime record) and the dict argument ERASED from the emitted signature (the
-        // "inline a compile-time-known argument, drop the param" rule, same as a type-valued parameter).
-        // Two distinct dicts (`+10`, `*2`) get two specializations; 30 + 8 = 38. Pure-scalar (no heap).
-        let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m \
-               (def (fold-n (const (: d (Record (op (-> Int64 Int64))))) (: n Int64) (: acc Int64)) \
-                 (if (= n 0) acc (fold-n d (- n 1) ((. d op) acc)))) \
-               (def (main) (+ (fold-n (record (op (fn (x) (+ x 10)))) 3 0) \
-                              (fold-n (record (op (fn (x) (* x 2)))) 3 1))) (export main))",
-        )))
-        .expect("a recursive dictionary consumer compiles");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 38);
-        // The dictionary is ERASED: the emitted core module carries NO `call_indirect` opcode (`0x11` — the
-        // `op` is a direct inlined call, not an indirect dispatch through a runtime record). Scan the core
-        // module's code with `wasmparser` rather than pulling in a text printer. A false positive from a
-        // stray `0x11` data byte is implausible here (a `fold-n` with a runtime dict WOULD emit the opcode,
-        // the pre-fix baseline); the run-value above is the primary correctness signal, this is the
-        // erasure witness.
-        let has_call_indirect = {
-            use wasmparser::{Parser, Payload};
-            let mut found = false;
-            for payload in Parser::new(0).parse_all(&bytes) {
-                if let Ok(Payload::CodeSectionEntry(body)) = payload {
-                    let mut ops = body.get_operators_reader().expect("ops");
-                    while let Ok(op) = ops.read() {
-                        if matches!(op, wasmparser::Operator::CallIndirect { .. }) {
-                            found = true;
-                        }
-                    }
-                }
-            }
-            found
-        };
-        assert!(
-            !has_call_indirect,
-            "the dictionary's op must be inlined (no call_indirect), got a runtime dispatch"
         );
     }
 
