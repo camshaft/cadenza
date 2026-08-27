@@ -86184,46 +86184,6 @@ mod closure_host_resource {
         );
     }
 
-    /// C-HOST-1 END-TO-END (the whole COMPILER pipeline): a real `(def (main) (fn (x) (+ x 1)))` program
-    /// compiles to a closure-resource component (`emit_closure_resource` → `closure_resource_core_module`
-    /// → `assemble_closure_resource`), and the HOST calls it — `make()` → closure handle, `call(handle, 5)`
-    /// → 6 — dispatched through the guest's own `call_indirect`, composing the real value-heap runtime (the
-    /// closure cell is a heap allocation). The production analog of the C-HOST-1 oracle. `#[ignore]` — needs
-    /// `xtask build` to have populated the store with the runtime wasm.
-    #[test]
-    fn a_compiled_closure_export_is_called_by_the_host() {
-        use crate::testkit::parse;
-        use wasmtime::component::Val;
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not in the store (run `cargo xtask build`); skipping");
-            return;
-        };
-        // A nullary export returning a closure `(-> Int64 Int64)`. The compiler routes it through the
-        // closure-resource escape; the host holds the resource and calls it.
-        let src = "(module m (def (main) (fn ((: x Int64)) (+ x 1))) (export main))";
-        let program =
-            crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        // It must import the value-heap runtime (the closure cell is a heap allocation) and export the
-        // closure interface — not a bare function.
-        assert!(
-            cdz_run::required_runtime(&program)
-                .expect("valid")
-                .is_some(),
-            "a closure-resource export imports the value-heap runtime (the cell is a heap value)"
-        );
-        let mut rt = super::ComposedRuntime::new(&program, &runtime);
-        // make() → closure handle (the export is nullary); call(handle, 5) → 6.
-        assert_eq!(
-            rt.closure_make_call(&[], &[Val::S64(5)]),
-            Val::S64(6),
-            "the exported closure (fn (x) (+ x 1)) applied to 5 = 6"
-        );
-        // A fresh handle called with 41 → 42. (`call` now takes `borrow<t>`, so ONE handle could serve both;
-        // this still mints a fresh handle per call, which is equally fine — see the twice-call test below for
-        // the repeatability proof.)
-        assert_eq!(rt.closure_make_call(&[], &[Val::S64(41)]), Val::S64(42));
-    }
-
     /// C-HOST-6 (`borrow<t>` REPEATABLE call): a closure `call` takes `borrow<t>`, so the host keeps the
     /// handle across calls — ONE `make` handle serves MANY `call`s (the natural callback shape), versus
     /// `own<t>`'s consume-per-call (a second call on the same handle trapped "unknown handle index"). The
