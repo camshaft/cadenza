@@ -8976,3 +8976,6 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	sd1 the #set literal resolves first-class (D2): membership, len, and order-independent equality with an insert-built set
+pass	sn1 a #set literal with RUNTIME elements dedups at construction
+pass	sn2 a #set of STRING elements content-hashes against a runtime-built equal probe (with literal dedup)
+pass	sn3 the empty #set() literal composes with insert
