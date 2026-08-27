@@ -8571,3 +8571,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair
+pass	tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero
+pass	tle3 fifty frames alternating exact-fit-32 and 33-element constant lists reclaim to zero (no half-marked node pins structure)
+pass	tle4 fifty frames of persistent update against an exact-fit 32-element hoisted constant never corrupt it (both nodes marked — the header+arr trap)

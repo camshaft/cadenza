@@ -21328,3 +21328,58 @@
            and folds, the length unchanged.")
   (input  (List.len (List.update (list 10 20 30) 1 99)))
   (output (: 3 Int64)))
+
+; ── breaker batch 517: the small-list build-once threshold EDGE (#4245 gates hoisting at <=32) ──
+; The exact-fit 32-element literal HOISTS (verified: 3 static globals vs 1 in the 33 twin) and the
+; 33-element literal does NOT (multi-level RRB, builds per-eval). Hazards fenced at the edge:
+; a HALF-MARKED two-node constant (header immortal, arr not — the vec-of-arr trap) corrupts under
+; FBIP update (tle4 reads the sibling); a wrongly-immortal 33-root pins non-immortal leaves
+; per-frame (tle3 amplifies x50). All four read live-objects 0 today; these are drop-safety
+; fences, not calibration rows.
+
+(case "tle1 an exact-fit 32-element constant list hoists build-once — branch-selected use, length reads, and runtime equality across the pair"
+  (input (do (def (main (: n Int64))
+  (let ((a (if (= n 1) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)))
+        (b (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)))
+    (+ (* 1000 (List.len a)) (+ (List.len b) (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 132032 Int64))
+  (live-objects 0))
+
+(case "tle2 a 33-element constant list (one past the build-once gate) builds per-eval and reclaims to zero"
+  (input (do (def (main (: n Int64))
+  (let ((a (if (= n 1) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33) (list 9)))
+        (b (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33)))
+    (+ (* 1000 (List.len a)) (+ (List.len b) (if (= a b) 100000 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 133033 Int64))
+  (live-objects 0))
+
+(case "tle3 fifty frames alternating exact-fit-32 and 33-element constant lists reclaim to zero (no half-marked node pins structure)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((a (if (= (% k 2) 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33))))
+        (+ (List.len a) (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 1625 Int64))
+  (live-objects 0))
+
+(case "tle4 fifty frames of persistent update against an exact-fit 32-element hoisted constant never corrupt it (both nodes marked — the header+arr trap)"
+  (input (do
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (let ((c (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)))
+            (u (List.update (if (> k 0) (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32) (list 9)) 0 999)))
+        (+ (+ (match (List.at c 0) ((Option.Some v) v) ((Option.None) -1))
+              (match (List.at u 0) ((Option.Some w) w) ((Option.None) -1)))
+           (frames (- k 1))))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 50000 Int64))
+  (live-objects 0))
