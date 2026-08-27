@@ -2394,61 +2394,6 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
     }
 }
 
-/// TRAP-PRESERVATION for the `List.len` constant-arity fold: the fold computes the length from the list
-/// SPINE without evaluating element VALUES, so — like the `x * 0`/`x & 0` annihilators — it may fire ONLY
-/// when every element construction is provably trap-free. A `(Rational.of 3 d)` element with a RUNTIME
-/// denominator `d` is NOT trap-free (at d=0 it is a zero-denominator trap), so `List.len (list _ (Rational.of
-/// 3 d))` must NOT fold to the constant 2 and DROP the trap — it must emit the runtime `Core::ListLen`,
-/// which evaluates the construction so the trapping element still traps at d=0. Before the guard this ran
-/// to 2 on all backends/opt-levels (breaker/corpus-bugfix). The trap-free twin `(list 1 2 3)` still folds.
-#[test]
-fn list_len_fold_preserves_a_trapping_element_construction() {
-    use crate::testkit::parse;
-    let src = "(module m \
-                 (def (main (: d Int64)) \
-                   ((. List len) (list ((. Rational of) 1 2) ((. Rational of) 3 d)))) \
-                 (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let run = |d: &str| {
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![d.to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        cdz_run::run(&bytes, &opts).expect("run")
-    };
-    // d = 0: the second element `(Rational.of 3 0)` is a zero-denominator trap — the len fold must NOT
-    // elide the construction. MUST trap, not run to the length 2.
-    match run("0") {
-        cdz_run::Outcome::Trap(_) => {}
-        cdz_run::Outcome::Value(s) => panic!(
-            "List.len dropped a trapping zero-denominator element construction — ran to {s}, must trap"
-        ),
-    }
-    // d = 2: the element `(Rational.of 3 2)` is a valid value — the runtime len computes 2.
-    match run("2") {
-        cdz_run::Outcome::Value(s) => {
-            assert_eq!(s, "2", "a trap-free runtime-rational list has length 2")
-        }
-        cdz_run::Outcome::Trap(t) => panic!("a trap-free list must not trap: {t}"),
-    }
-    // The trap-free literal twin still FOLDS to the constant arity (the guard did not over-decline).
-    let lit = "(module m (def (main) ((. List len) (list 1 2 3))) (export main))";
-    let lit_bytes = compile_component(&crate::codec::encode(&parse(lit))).expect("compile literal");
-    if let Some(v) = run_linked(&lit_bytes, "main") {
-        assert_eq!(
-            v, "3",
-            "a trap-free constant list still folds List.len to its arity 3"
-        );
-    }
-}
-
 /// A repeated keyed lookup `(Option.expect (Map.lookup m k))` is shared by CSE (one `map-lookup` — an
 /// O(log n) CHAMP walk — pinned at the Lir level in `select.rs`); this is the RUNTIME companion proving
 /// the SHARED lookup is refcount-correct. `Map.lookup` BORROWS the map, so sharing must leave `m` fully

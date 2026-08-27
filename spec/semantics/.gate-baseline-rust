@@ -7776,3 +7776,5 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	cbb1 a conditional whose BOTH branches are performing captures folds with only the taken branch drawing
+pass	List.len does NOT fold away a trapping element construction (runtime denominator)
+pass	List.len of a trap-free constant list still folds to its arity
