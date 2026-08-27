@@ -2905,6 +2905,25 @@
   (output (: 9 Int64))
   (live-objects known-leak 1))
 
+; The DIRECT-APPLICATION-HEAD twin of the case above: a RECURSIVE def whose result is a closure, applied
+; directly as the head `((selfp 2) 5)` (not passed to a HOF). `selfp` recurses to its base case returning
+; `(fn (x) (+ x 100))`; the head `(selfp 2)` is a recursive Core::Call returning a closure that cannot
+; beta-reduce (the reduction hits the depth guard), so its result is a runtime closure HANDLE applied via
+; call_indirect. Previously declined "value is not applyable" (an application head that was a non-reducible
+; recursive Call of Ty::Fn result was not recognized as a runtime fn value).
+
+(case "a recursive def returning a closure is applied directly as the call head"
+  (doc    "`(selfp n)` recurses to `(selfp 0)` = `(fn (x) (+ x 100))`, and `((selfp 2) 5)` applies that
+           returned closure directly = 105. The recursive Call head cannot fold, so it is a runtime fn
+           value applied indirectly — the direct-head twin of the returned-then-passed-to-a-HOF case.")
+  (input  (do
+            (def (selfp (: n Int64))
+              (if (= n 0) (fn ((: x Int64)) (+ x 100)) (selfp (- n 1))))
+            (def (main) ((selfp 2) 5))
+            (export main)))
+  (call   main)
+  (output (: 105 Int64)))
+
 ; core-semantics.md §A Function Is A First-Class Value: a function can be "stored in a data structure."
 ; A tuple and a list are data structures exactly as a record is, so a function stored in a tuple
 ; element (or list element) must be extractable and callable, exactly as one stored in a record field
@@ -6751,6 +6770,21 @@
     (def (main) (run ((. Box C) add) 3 4))
     (export main)))
   (output (: 7 Int64)))
+
+(case "a boxed Unit-parameter closure (a lazy thunk) is forced and runs"
+  (doc    "The canonical lazy THUNK `Thunk = Susp(Unit -> Int64)`: a closure with a UNIT parameter boxed in
+           a sum, extracted by a match, and FORCED `(f unit)`. valtype_of(Unit) = None, so the boxed-closure
+           lift elides the Unit param from the closure functype (in lockstep across the lift guard, slot
+           assignment, the Core::Param read of a Unit binder, and the call-sig collection). Unlike a
+           Unit-RESULT face the forced call is NOT dead — its result is observed — so a real call_indirect
+           runs and returns 42.")
+  (input  (do
+            (type Thunk (Susp (-> Unit Int64)))
+            (def (force (: t Thunk)) (match t (((. Thunk Susp) f) (f unit))))
+            (def (mk) ((. Thunk Susp) (fn ((: u Unit)) 42)))
+            (def (main) (force (mk)))
+            (export main)))
+  (output (: 42 Int64)))
 
 ; --- Curried-closure representation unification: the persistence and depth faces -------------------
 ; ed3b7503e flattened a nested-unary curried closure to the same one-lift machine rep the multi-param
