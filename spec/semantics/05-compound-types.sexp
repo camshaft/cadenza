@@ -20316,3 +20316,18 @@
   (call main (: 5 Int64))
   (output (: 102 Int64))
   (live-objects 0))
+
+; -- breaker batch 462 (2026-08-27): the TWO-heap-payload variant of the fixed #3879 trap shape
+; (dmp1 above pins list+scalar; this walks TWO nested-list fields through the type-carrying
+; select fix). Residual known-leak 6 = the generic-sum x heap-payload reclaim family, twice.
+(case "tph1 a generic ctor with TWO list payloads destructures both through nested patterns"
+  (input (do
+    (type (GPair a b) (Both a b) (GNil unit))
+    (def (main (: n Int64))
+      (match (: (if (> n 0) (Both (list n) (list (+ n 1) 9)) (GNil unit)) (GPair (List Int64) (List Int64)))
+        ((Both (list a) (list b c)) (+ (+ a b) c))
+        (_ -1)))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 20 Int64))
+  (live-objects known-leak 6))
