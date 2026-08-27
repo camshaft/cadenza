@@ -14797,6 +14797,42 @@ pub fn is_markable_constant_compound(db: &mut Db, id: StructId) -> bool {
     }
 }
 
+/// The RRB single-leaf capacity: a `(list …)` of at most this many elements is one strict leaf; the first
+/// element beyond it forces a 2-level trie (see [`is_markable_constant_small_list`]). Matches the runtime's
+/// 32-way (2⁵) radix fan-out (`cdz-runtime` lib.rs "Radix branching bits: 32-way").
+const LIST_SINGLE_LEAF_CAP: usize = 32;
+
+/// Whether the node at `id` is a fully-constant `Core::ListNew` SMALL enough to hoist as a build-once
+/// immortal static: at most [`LIST_SINGLE_LEAF_CAP`] (32) elements, each per-node-markable via the same
+/// [`is_markable_constant_elem`] the compound predicate uses.
+///
+/// The `<= 32` bound is LOAD-BEARING, and is why a list needs a SEPARATE predicate from
+/// [`is_markable_constant_compound`] (which excludes EVERY list): a `(list e0…e{n-1})` literal lowers to
+/// `arr-alloc(n)` + n×`arr-set` + ONE `vec-of-arr`. For `n <= 32` the flat `arr` node IS the vector's sole
+/// strict leaf — `vec-of-arr` moves it in as the root (`cdz-runtime` lib.rs: "≤32 = one leaf, 33 = first
+/// 2-level") — so every node the build carries (the arr root + each boxed element) has a compile-time
+/// handle and can be per-node `mark-immortal`ed. For `n > 32` `vec-of-arr` builds a 2-level RRB trie whose
+/// INTERNAL node is created inside the runtime op with NO compile-time handle to mark — that needs a
+/// DEEP-mark op (deferred, the same reason maps and `> 32` lists are excluded from increment 6). So a
+/// `> 32` constant list is NOT markable here and builds inline, per-eval, as before.
+///
+/// Element markability reuses [`is_markable_constant_elem`], which does NOT recurse into a nested
+/// `Core::ListNew` — so a list whose element is itself a list is (conservatively) NOT markable for this
+/// first slice, while a list of markable scalars / `Bytes` / `String` / `Tuple` / `Record` IS.
+///
+/// DETECTION-ONLY for now — the small-list build-once EMIT is a later slice (gated on the corpus-migration
+/// churn settling so its census re-baseline does not thrash). This is the classification that emit will key
+/// on, mirroring the bytes / string / compound detection layers landed ahead of their emit.
+pub fn is_markable_constant_small_list(db: &mut Db, id: StructId) -> bool {
+    match core_of(db, id) {
+        Core::ListNew { elems } => {
+            elems.len() <= LIST_SINGLE_LEAF_CAP
+                && elems.iter().all(|&e| is_markable_constant_elem(db, e))
+        }
+        _ => false,
+    }
+}
+
 /// Whether an ELEMENT of a candidate static compound is per-node-markable (see
 /// [`is_markable_constant_compound`]): a constant MACHINE-int (`Ty::Int`) or `Bool`/`Unit` scalar (boxes to
 /// ONE markable heap node via `box-int`/`box-bool` — `Unit` is the inline `IMM_UNIT` sentinel, already
