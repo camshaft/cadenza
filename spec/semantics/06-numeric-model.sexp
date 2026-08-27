@@ -10373,6 +10373,7 @@
   (input (do (def (main (: x Int64)) (* (& x 15) 2)) (export main)))
   (call main (: 255 Int64)) (output (: 30 Int64))
   (call main (: 7 Int64))   (output (: 14 Int64)))
+
 ; -- runtime integer bitwise + division/remainder value parity (fully migrated as a BATCH from rcdzc
 ; runtime_bitwise_over_int64, runtime_signed_division_truncates_toward_zero,
 ; runtime_unsigned_division_is_magnitude, 2026-08-27; all PURE parity -> rcdzc tests deleted): the
@@ -10403,3 +10404,77 @@
   (input (do (def (main (: a UInt64) (: b UInt64)) (/ a b)) (export main)))
   (call main (: 18446744073709551615 UInt64) (: 2 UInt64)) (output (: 9223372036854775807 UInt64))
   (call main (: 5 UInt64) (: 0 UInt64))                    (trap "divide by zero"))
+
+; -- runtime shift semantics + clear-low-bits guard elision (behavioral half of a coherent SHIFT family
+; migrated from rcdzc, 2026-08-27, run/traps wasmtime hybrid sweep). Full-migrated + rcdzc-deleted:
+; runtime_left_shift_multiplies_and_traps_on_overflow, constant_count_shift_folds_the_count_guard,
+; runtime_shift_with_a_nested_value_operand, runtime_signed_right_shift_is_arithmetic,
+; runtime_unsigned_right_shift_is_logical. Behavioral-strip (Lir I64Ne guard-shape assertions stay a
+; wasmtime-free rcdzc unit test): a_clear_low_bits_shift_pair_elides_the_left_shift_overflow_guard.
+
+(case "rls1 left shift multiplies by 2^count; value overflow and out-of-range count trap"
+  (doc    "`(<< a b)` is exact *2^b. -1<<63 = Int64.min (in range). 2^62<<2 and 1<<63 overflow Int64.
+           A count >= 64 or negative is out of range and traps.")
+  (input (do (def (main (: a Int64) (: b Int64)) (<< a b)) (export main)))
+  (call main (: 1 Int64) (: 7 Int64))                    (output (: 128 Int64))
+  (call main (: -1 Int64) (: 63 Int64))                  (output (: -9223372036854775808 Int64))
+  (call main (: 4611686018427387904 Int64) (: 2 Int64)) (trap "overflow")
+  (call main (: 1 Int64) (: 63 Int64))                   (trap "overflow")
+  (call main (: 1 Int64) (: 64 Int64))                   (trap "unreachable")
+  (call main (: 1 Int64) (: -1 Int64))                   (trap "unreachable"))
+
+(case "ccs1 a constant-count left shift: the Int64.min edge is in range, +2^63 overflows"
+  (input (do (def (main (: a Int64)) (<< a 63)) (export main)))
+  (call main (: -1 Int64)) (output (: -9223372036854775808 Int64))
+  (call main (: 1 Int64))  (trap "overflow"))
+
+(case "ccs2 a valid constant-count right shift computes"
+  (input (do (def (main (: a Int64)) (>> a 2)) (export main)))
+  (call main (: 40 Int64)) (output (: 10 Int64)))
+
+(case "ccs3 a small constant-count left shift computes but still traps on value overflow"
+  (input (do (def (main (: a Int64)) (<< a 2)) (export main)))
+  (call main (: 5 Int64))                     (output (: 20 Int64))
+  (call main (: 4611686018427387904 Int64))   (trap "overflow"))
+
+(case "ccs4 an out-of-range constant shift count traps unconditionally"
+  (input (do (def (main (: a Int64)) (<< a 64)) (export main)))
+  (call main (: 1 Int64)) (trap "unreachable"))
+
+(case "ccs5 a negative constant shift count traps"
+  (input (do (def (main (: a Int64)) (<< a -1)) (export main)))
+  (call main (: 1 Int64)) (trap "unreachable"))
+
+(case "rsn1 a shift with a nested checked-add value operand keeps both guards"
+  (doc    "`(<< (+ a b) c)`: (1+2)<<3 = 24; the inner add overflows first at (MAX,1,0); the shift
+           overflows at (1,0,63).")
+  (input (do (def (main (: a Int64) (: b Int64) (: c Int64)) (<< (+ a b) c)) (export main)))
+  (call main (: 1 Int64) (: 2 Int64) (: 3 Int64))                    (output (: 24 Int64))
+  (call main (: 9223372036854775807 Int64) (: 1 Int64) (: 0 Int64)) (trap "overflow")
+  (call main (: 1 Int64) (: 0 Int64) (: 63 Int64))                   (trap "overflow"))
+
+(case "rsr1 a signed right shift is arithmetic (sign-extending)"
+  (doc    "`(>> a b)` on Int64 sign-extends: 256>>7 = 2, -256>>7 = -2. Out-of-range count traps.")
+  (input (do (def (main (: a Int64) (: b Int64)) (>> a b)) (export main)))
+  (call main (: 256 Int64) (: 7 Int64))  (output (: 2 Int64))
+  (call main (: -256 Int64) (: 7 Int64)) (output (: -2 Int64))
+  (call main (: 256 Int64) (: 64 Int64)) (trap "unreachable"))
+
+(case "rur1 an unsigned right shift is logical (zero-filling)"
+  (doc    "`(>> a b)` on UInt64 zero-fills: UInt64.max>>1 = 2^63-1 (a signed shr would answer -1).")
+  (input (do (def (main (: a UInt64) (: b UInt64)) (>> a b)) (export main)))
+  (call main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 9223372036854775807 UInt64)))
+
+(case "clb1 the clear-low-bits idiom (<< (>> x k) k) computes and never overflows"
+  (doc    "`(<< (>> x 4) 4)` clears x's low 4 bits (floor(x/16)*16) and can never overflow Int64:
+           255→240, -1→-16, MIN→MIN, MAX→MAX-15.")
+  (input (do (def (main (: x Int64)) (<< (>> x 4) 4)) (export main)))
+  (call main (: 255 Int64))                  (output (: 240 Int64))
+  (call main (: -1 Int64))                   (output (: -16 Int64))
+  (call main (: -9223372036854775808 Int64)) (output (: -9223372036854775808 Int64))
+  (call main (: 9223372036854775807 Int64))  (output (: 9223372036854775792 Int64)))
+
+(case "clb2 a bare left shift (not the clear-low-bits idiom) still overflows"
+  (doc    "`(<< x 4)` at x=2^60 shifts to 2^64, overflowing Int64 — the overflow guard is kept.")
+  (input (do (def (main (: x Int64)) (<< x 4)) (export main)))
+  (call main (: 1152921504606846976 Int64)) (trap "overflow"))
