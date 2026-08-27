@@ -623,8 +623,10 @@ pass	a BARE-param recursive state-threading walk compiles without leaking the sp
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
+pass	a BLOCK-wrapped OUTER perform in a do-statement inside a nested handle body declines cleanly (adv-69 c3-nested)
 pass	a BLOCK-wrapped branch perform in a MATCH-SCRUTINEE folds through the block (adv-69 g3)
 pass	a BLOCK-wrapped branch perform in a let-init folds through the block (adv-69 Site-6 commuting conversion)
+pass	a BLOCK-wrapped branch perform in a non-tail DO-STATEMENT declines cleanly (adv-69 c3)
 pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
@@ -6356,6 +6358,9 @@ pass	gs7 the applied generic in the op ARGUMENT position — the arm unwraps (Co
 pass	gs8 the applied generic AS the handler state — (Container Int64) seeds the handle, the arm unwraps and re-wraps per dispatch
 pass	gsc1 a GOLF scorecard with a birdie-streak multiplier — each hole answers its par delta where consecutive under-par holes MULTIPLY the negative contribution by the deepening streak, an over-par hole resets the streak, card totals, and the seed shifts one hole's strokes so the streak bonus doubles differently
 pass	gsx1 ONE arm instantiates the same generic sum at TWO types — a Container Int64 and a Container String built, unwrapped, and combined per dispatch
+pass	gtx2 a generic transformer's tuple-result closure with a consumer that PROJECTS the element (vars pinned by the consumer body)
+pass	gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer
+pass	gtx5 a generic transformer's Option-result closure with a discarding consumer at two domains (the nominal-sum cell is green on every target)
 pass	gws1 GROWING-STATE shared-let — the push arm let-binds a value derived from the argument the CURRENT length and the seed bias, answers the binder packed with the length, and threads the LIST GROWN by the binder; the total draws all three stored values back out, so a binder aliased against the post-push list would corrupt both the rows and the total
 pass	ha1 an INNER op's arguments draw from the OUTER handler — two outer draws cross the inner dispatch boundary in order
 pass	ha2 outer-draw feeds the INNER op, whose result feeds an OUTER op again — a three-hop cross-handler value chain
@@ -8600,6 +8605,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	gtx2 a generic transformer's tuple-result closure with a consumer that PROJECTS the element (vars pinned by the consumer body)
-pass	gtx3 a generic transformer's tuple-result closure at a SINGLE domain with a discarding consumer
-pass	gtx5 a generic transformer's Option-result closure with a discarding consumer at two domains (the nominal-sum cell is green on every target)
