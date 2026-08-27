@@ -9015,3 +9015,30 @@
             (export main)))
   (call   main) (output (: 35 Int64))
   (live-objects known-leak 3))
+
+; -- breaker batch 488 (2026-08-27): BYTES entry params — the list<u8> boundary shape. A
+; borrow-only lift exists: Bytes.len over the param works and reclaims (byp1; the harness arg
+; spelling is the list-of-bytes literal). Deeper uses decline with the generic width message:
+; a runtime bin-match destructure of the param (byp2) and a slice extraction (byp3) — rungs for
+; whichever slice extends the Bytes lift past the length borrow. Both rust-pass.
+
+(case "byp1 a Bytes entry param measured by Bytes.len reclaims"
+  (input (do (def (main (: b Bytes)) (Bytes.len b)) (export main)))
+  (call main (: (list 104 105) Bytes))
+  (output (: 2 Int64)))
+
+(case "byp2 a Bytes entry param destructured by a runtime bin match declines"
+  (input (do (def (main (: b Bytes))
+    (match b
+      ((bin (u8 x) (u8 y)) (+ (* 100 (Int64.of x)) (Int64.of y)))
+      (_ -1))) (export main)))
+  (call main (: (list 7 9) Bytes))
+  (output (: 709 Int64)))
+
+(case "byp3 a Bytes entry param sliced declines (extraction past the length borrow)"
+  (input (do (def (main (: b Bytes))
+    (match (Bytes.slice b 1 2)
+      ((Option.Some s) (Bytes.len s))
+      ((Option.None) -1))) (export main)))
+  (call main (: (list 5 6 7 8) Bytes))
+  (output (: 2 Int64)))
