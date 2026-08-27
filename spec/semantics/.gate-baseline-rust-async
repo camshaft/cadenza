@@ -2013,6 +2013,8 @@ pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a fixed-arity list binding pattern is refutable and rejected
+pass	a fixed-arity nested-list element binds when the inner length matches exactly
+pass	a fixed-arity nested-list element falls through on a longer inner list
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
@@ -2351,7 +2353,9 @@ pass	a later let binding sees an earlier record pattern's field binders
 pass	a later let-binding abort preserves an EARLIER binding's committed advance (multi-binding prefix)
 pass	a le pattern segment reads a fixed-width integer little-endian
 pass	a leading literal bit-field tag that misses falls through to the catch-all
+pass	a leading nested-list element binds the inner head on a non-empty inner list
 pass	a leading nested-list element dispatches on the inner list's length
+pass	a leading nested-list element with an empty inner list falls through the inner-length guard
 pass	a leading-element list rest pattern in a def parameter is refutable and rejected
 pass	a leading-element list rest pattern in a let binder is refutable and rejected
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
@@ -2470,6 +2474,7 @@ pass	a list-driven map build resolves a RUNTIME key collision last-wins, and the
 pass	a list-of-quantities used as a Map key canonicalizes and hits
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
+pass	a list-payload sum arm dispatches a runtime node by EXACT child count and binds a fixed child
 pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
 pass	a list-to-list TRANSFORMER op — heap payloads cross BOTH slots of one dispatch
 pass	a literal MAP KEY that overflows the annotated key width is rejected
@@ -2485,6 +2490,7 @@ pass	a literal inside a constructor pattern matches a runtime payload
 pass	a literal inside a tuple pattern matches a runtime element
 pass	a literal inside an Ok pattern refines a Result match
 pass	a literal just past the Float32 finite max overflows in a runtime branch
+pass	a literal list element and an author guard on the same arm both gate it
 pass	a literal list element dispatches a runtime list by its value
 pass	a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact
 pass	a literal narrow-newtype element in a constructed list grounds its ConstInt to the inner width
@@ -4531,6 +4537,7 @@ pass	a zero-arm match on an inhabited scrutinee is non-exhaustive
 pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
+pass	a zero-leading nested rest-list element binds the empty inner list (len 0)
 pass	a zero-length slice is the empty byte sequence
 pass	a2p1 the abort VALUE is a three-op chain — every hop advances the enclosing thread before the region tears down
 pass	aa1 the resume VALUE is a deep pure expression over the op arg AND state — (v+s)^2 - v*s per dispatch
@@ -8014,6 +8021,7 @@ pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as dist
 pass	two let-sequenced sibling self-calls thread out-state via multi-value return
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
+pass	two literal list elements in one arm conjoin — both must match
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
 pass	two module exports are selected by a runtime branch and applied as values
@@ -8389,8 +8397,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	a zero-leading nested rest-list element binds the empty inner list (len 0)
-pass	a leading nested-list element binds the inner head on a non-empty inner list
-pass	a leading nested-list element with an empty inner list falls through the inner-length guard
-pass	a fixed-arity nested-list element binds when the inner length matches exactly
-pass	a fixed-arity nested-list element falls through on a longer inner list

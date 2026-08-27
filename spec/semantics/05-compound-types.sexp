@@ -5808,6 +5808,34 @@
             (def (main) (classify (list 0 5 9))) (export main)))
   (output (: 5 Int64)))
 
+(case "two literal list elements in one arm conjoin — both must match"
+  (doc    "MULTIPLE refutable literal elements in ONE arm conjoin: `((list 0 1 a .. r) a)` matches only a list
+           whose first two elements are 0 THEN 1, binding the third. Each literal desugars to its own
+           `(= elem <lit>)` test AND-ed into the arm's guard, so BOTH must hold. `[0,1,7]` → both match → 7;
+           `[0,2,7]` → the second literal (1) fails → fall through to the catch-all → -1. Extends the
+           single-literal-head case above to a multi-literal conjunction.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((list 0 1 a .. r) a) (_ -1)))
+              (def (main (: b Int64)) (f (list 0 b 7)))
+              (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64))
+  (call   main (: 2 Int64))
+  (output (: -1 Int64)))
+
+(case "a literal list element and an author guard on the same arm both gate it"
+  (doc    "A refutable literal element AND an author `(guard …)` on the SAME arm conjoin: `((guard (list 0 a
+           .. r) (> a 3)) a)` fires only when the head is 0 (the literal test) AND `a > 3` (the author guard).
+           The literal's synthesized `(= head 0)` test and the author guard are both AND-ed into the arm's
+           condition. `[0,5]` → head 0 ✓ and 5 > 3 ✓ → a=5 → 5; `[0,2]` → head 0 ✓ but 2 > 3 ✗ → fall through
+           → -1. Pins that the refutable-literal desugar composes with an explicit guard on one arm.")
+  (input  (do (def (f (: xs (List Int64))) (match xs ((guard (list 0 a .. r) (> a 3)) a) (_ -1)))
+              (def (main (: v Int64)) (f (list 0 v)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 5 Int64))
+  (call   main (: 2 Int64))
+  (output (: -1 Int64)))
+
 (case "a char literal list element dispatches a runtime list by its value"
   (doc    "The CHAR companion of the scalar literal element above: a `#\\a` element is a refutable literal
            that desugars to a `(= elem #\\a)` value test — char equality is a codepoint compare. `(list #\\a
@@ -6146,6 +6174,27 @@
             (def (main) (top (build 2))) (export main)))
   (output (: 99 Int64))
   (live-objects 0))
+
+(case "a list-payload sum arm dispatches a runtime node by EXACT child count and binds a fixed child"
+  (doc    "The FIXED-ARITY companion of the rest-arm sum-payload case above: over the same `Node = Lit |
+           Call (List Node)`, two arms select by the child list's EXACT length — `(Call (list (Lit w)))`
+           (exactly ONE child, itself a `Lit`, binding its value) vs `(Call (list a b))` (exactly TWO). The
+           `vec-len == n` gate distinguishes them at run time. A 1-child `Call [Lit 5]` → the arity-1 arm
+           binds and reads w=5; a 2-child `Call [Lit 3, Lit 4]` → the arity-2 arm → 2. Extends the `>= n` rest
+           dispatch to `== n` fixed-arity dispatch WITH a nested element pattern binding a fixed child.")
+  (input  (do
+            (type Node (Lit Int64) (Call (List Node)))
+            (def (build (: k Int64)) (if (< k 2) (Call (list (Lit 5))) (Call (list (Lit 3) (Lit 4)))))
+            (def (top (: n Node)) (match n
+                                    ((Call (list (Lit w))) w)
+                                    ((Call (list a b))     2)
+                                    (_                     0)))
+            (def (main (: k Int64)) (top (build k)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 5 Int64))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
 
 (case "an expression tree built at run time is evaluated by matching its node variants"
   (doc    "The compiler's own expression-evaluator shape: a multi-variant recursive sum `Expr` — the
