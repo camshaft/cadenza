@@ -57846,21 +57846,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_annotated_def_parameter_binds_and_folds() {
-        // `(def (w (: a Int64) b) (+ a b))` — the annotated binder `(: a Int64)` binds `a` (the body's
-        // `a` resolves through the annotation, not UNBOUND), and the call folds. 09-functions witness.
-        let src = "(module m (def (w (: a Int64) b) (+ a b)) (def (main) (w 20 22)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-    }
-
-    #[test]
-    fn an_annotated_fn_parameter_binds() {
-        // The same through a `fn` lambda: `((fn ((: x Int64)) (+ x 1)) 5)` = 6.
-        assert_eq!(run_main("((fn ((: x Int64)) (+ x 1)) 5)"), 6);
-    }
-
-    #[test]
     fn a_contradicting_parameter_annotation_rejects() {
         // `(def (bad (: a Bool)) (+ a 1))` — `a` annotated Bool but used as an integer operand of `+`;
         // the annotation contradicts the use → CDZ0203 (type-system.md Annotations Constrain, Never
@@ -58064,69 +58049,7 @@ mod stage1 {
         ));
     }
 
-    // ── first-class types: `(Int W)` builds a width-specialized MODULE via the one Meta.apply path ──
-
-    #[test]
-    fn int_ctor_builds_a_module_projected_for_max() {
-        // `(. (Int 64) max)` — `Int` is a type-constructor record; applying it to 64 REDUCES (via its
-        // `(meta apply)` builder) to a fresh width-64 integer module, off which `max` projects. Folds
-        // to the constant with no runtime trace, exactly like the pre-built `Int64.max`.
-        assert_eq!(run_main("(. (Int 64) max)"), i64::MAX);
-    }
-
-    #[test]
-    fn int_ctor_min_of_a_smaller_width() {
-        // `(. (Int 8) min)` = -128 — the module `Int` builds is SPECIALIZED to the width argument, so a
-        // different width yields that width's bounds. An Int8 value crosses the boundary as s8.
-        let src = "(module m (def (main) (. (Int 8) min)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i8>(&bytes, "main"), -128);
-    }
-
-    #[test]
-    fn int_ctor_max_of_a_smaller_width() {
-        // `(. (Int 8) max)` = 127 (crosses as s8).
-        let src = "(module m (def (main) (. (Int 8) max)) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-        assert_eq!(run_returns::<i8>(&bytes, "main"), 127);
-    }
-
-    // ── functions: a lambda application β-reduces (folds/monomorphizes) ──────────────────────────
-
-    #[test]
-    fn a_lambda_applied_folds() {
-        // `((fn (x) (+ x 1)) 5)` = 6 — the lambda β-reduces (substitute 5 for x → `(+ 5 1)`), then the
-        // arithmetic folds. No function value emitted (monomorphized away).
-        assert_eq!(run_main("((fn (x) (+ x 1)) 5)"), 6);
-    }
-
-    #[test]
-    fn a_let_bound_function_applied() {
-        // `(let ((inc (fn (x) (+ x 1)))) (inc 10))` = 11 — a let-bound function, applied through the
-        // ref to its lambda.
-        assert_eq!(run_main("(let ((inc (fn (x) (+ x 1)))) (inc 10))"), 11);
-    }
-
     // ── binding patterns: a `let` binder may be an irrefutable pattern ───────────────────────────
-
-    #[test]
-    fn a_let_binder_may_be_a_tuple_pattern() {
-        // core-semantics.md §A Binding Position Accepts An Irrefutable Pattern: a `let` binder MAY be a
-        // tuple pattern that destructures the value, binding each element — the ergonomic form of the
-        // bind-then-`match` idiom. A binder reference resolves to a `SumPayload` reading the element out
-        // of the bound value (the same machinery a `(match v ((tuple a b) …))` arm uses), so this is a
-        // pure resolve-side lift with no new IR. Nested to any depth; a later binding sees an earlier
-        // pattern's binders (`let*` scoping).
-        assert_eq!(run_main("(let (((tuple a b) (tuple 3 4))) (+ a b))"), 7);
-        assert_eq!(
-            run_main("(let (((tuple a (tuple b c)) (tuple 1 (tuple 2 3)))) (+ a (+ b c)))"),
-            6
-        );
-        assert_eq!(
-            run_main("(let (((tuple a b) (tuple 3 4)) (c (+ a b))) c)"),
-            7
-        );
-    }
 
     #[test]
     fn an_ill_formed_let_binding_pattern_is_rejected_not_miscompiled() {

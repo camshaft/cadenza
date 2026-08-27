@@ -1737,6 +1737,7 @@ pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (
 pass	a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation
 pass	a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision
 pass	a def parameter may be a record pattern that destructures by field
+pass	a def with a mix of annotated and unannotated parameters binds and folds
 pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-float pragma naming a non-float integer type is rejected
@@ -4400,6 +4401,7 @@ pass	an annotated argument joins a callee-side quantity at its own scale
 pass	an annotated destructuring let binder
 pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
+pass	an annotated lambda parameter binds
 pass	an annotated let binder at a fitting narrow float computes
 pass	an annotated let binder constrains the value's type
 pass	an annotated let binder narrower than its literal value is rejected (float width)
@@ -7175,6 +7177,7 @@ pass	the value-yielding remove reports the dropped value at a runtime key
 pass	the value-yielding remove reports the value it dropped
 pass	the well-typed branch of the mutual check returns the Ok result
 pass	the widening carries a full-width magnitude through BigInt
+pass	the width constructor applied to 64 projects the signed 64-bit maximum
 pass	the width-indexed and aliased annotations of one value do not conflict
 pass	the width-indexed and aliased float annotations of one value do not conflict
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)

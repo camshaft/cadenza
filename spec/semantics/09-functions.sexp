@@ -18,6 +18,21 @@
             (inc 10)))
   (output (: 11 Int64)))
 
+(case "an annotated lambda parameter binds"
+  (doc    "`((fn ((: x Int64)) (+ x 1)) 5)` = 6 — a parameter annotation `(: x Int64)` binds `x` exactly
+           as the unannotated `(fn (x) …)` does: the body's `x` resolves through the annotated binder (not
+           UNBOUND) and the application folds. Pins that the annotation is transparent to binding — it
+           constrains the type without changing that the parameter is bound.")
+  (input  ((fn ((: x Int64)) (+ x 1)) 5))
+  (output (: 6 Int64)))
+
+(case "a def with a mix of annotated and unannotated parameters binds and folds"
+  (doc    "`(def (w (: a Int64) b) (+ a b))` called `(w 20 22)` = 42 — the annotated binder `(: a Int64)`
+           and the bare binder `b` both bind in the same parameter list, the body's `a`/`b` resolve, and
+           the call folds. Pins that annotating SOME parameters does not disturb the binding of the rest.")
+  (input  (do (def (w (: a Int64) b) (+ a b)) (def (main) (w 20 22)) (export main)))
+  (output (: 42 Int64)))
+
 (case "a closure captures the binding in scope where it was created"
   (doc    "Witnesses core-semantics.md §A Function Is A First-Class Value (2nd sentence): the fn
            captures y=3 from its creation scope; applying it later observes the captured y even though
