@@ -10081,3 +10081,14 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 1111 Int64)))
+
+; -- breaker batch 505 (2026-08-27): the #4064 unify-then-check fix's depth edge — a NESTED bare
+; empty list ((list (list)) vs (list (list 1))) orders correctly: the sibling-preference recurses
+; into element types. (Residual reported to v-compiler-primitives, not pinnable as a value case:
+; the BOTH-bare compare (< (list) (list)) still rejects with the float/set/map message — neither
+; sibling resolves; the reject may be right (ambiguous element) but the reason text is not.)
+
+(case "olf5 a NESTED bare empty list orders against its populated sibling (the unify-then-check recursion)"
+  (input (do (def (main (: n Int64)) (if (< (list (list)) (list (list 1))) 1 0)) (export main)))
+  (call main (: 5 Int64))
+  (output (: 1 Int64)))
