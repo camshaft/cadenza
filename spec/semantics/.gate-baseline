@@ -6413,8 +6413,8 @@ pass	ikc2 a handler seeded with a hoisted constant list threads functional updat
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
-pass	imc1 a constant tuple embedded in a runtime tuple return still allocates (hoist scope: let-bound wholes only)
-pass	imc2 a constant tuple as a runtime list element still allocates likewise
+pass	imc1 a constant tuple in a compound RETURN allocates per-eval (the value-encode assembler lacks build-once sections)
+pass	imc2 a constant tuple as a returned list element allocates likewise (same assembler path)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
