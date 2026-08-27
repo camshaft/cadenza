@@ -2017,6 +2017,68 @@
             (export main)))
   (declines))
 
+(case "an outer effect in a nested arm's RESUME-VALUE slot is served (as3)"
+  (doc    "The served control: an outer perform in the RESUME-VALUE slot `(resume (+ t (A.get)) t)` runs at
+           dispatch (unlike the next-STATE slot, which declines). B.step reads t=0; the resume value runs
+           A.get (5, A->6); B.step returns 5; body A.get reads the advanced 6; `(+ (* 10 5) 6)` = 56.")
+  (input  (do
+            (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((get (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (resume (+ t (A.get)) t)))
+                  (+ (* 10 (B.step)) (A.get)))))
+            (export main)))
+  (output (: 56 Int64)))
+
+(case "an outer perform LET-LIFTED out of the next-state slot folds strict (as7 workaround)"
+  (doc    "The user workaround for the next-state-slot decline: lift the outer perform to a let so it runs at
+           dispatch. `(let ((x (A.get))) (resume t (+ t x)))` — A.get runs (5, A->6); body A.get reads 6;
+           B.step returns 0; `(+ (* 10 0) 6)` = 6. Pins the let-lift semantics-preserving equivalence.")
+  (input  (do
+            (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64)))
+            (def (main)
+              (handle A 5 ((get (u) s (resume s (+ s 1))))
+                (handle B 0 ((step (u) t (let ((x (A.get))) (resume t (+ t x)))))
+                  (+ (* 10 (B.step)) (A.get)))))
+            (export main)))
+  (output (: 6 Int64)))
+
+(case "a performing condition's advance survives an inner abort and is read by a post-handle observer"
+  (doc    "A performing CONDITION on outer effect A guards an `if` whose taken branch ABORTS the inner B
+           handle. The cond A.tick reads the seed and advances A; the inner B-abort collapses to 99; then a
+           SECOND A.tick OUTSIDE the B handle must read the ADVANCED A state. n=5: cond A.tick reads 5 (A->6);
+           branch aborts inner=99; outer A.tick reads 6 → 99 + 6 = 105 (dropping the advance would give 104).")
+  (input  (do
+            (effect A (op tick (-> Unit Int64))) (effect B (op bail (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n ((tick (u) s (resume s (+ s 1))))
+                (+ (handle B 0 ((bail (u) t 99)) (if (> (A.tick) 0) (B.bail) -1)) (A.tick))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a conditional-resume (two-site) arm folds across a SINGLE perform"
+  (doc    "A handler arm with a branching (two-site) resume `(if (> s 5) (resume v s) (resume -1 s))` folds
+           over a single perform. Seed 7, `(> 7 5)` true → the arm resumes the op arg v; state passes through
+           unchanged. `(Src.read n)` at n=5 → resumes v = 5.")
+  (input  (do
+            (effect Src (op read (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) (Src.read n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a conditional-resume (two-site) arm folds across TWO performs via the two-hole refold"
+  (doc    "The same branching two-site resume arm folds when the body performs TWICE (the two-hole refold
+           re-serves a both-branch resume across the second perform). Both reads see seed 7 (state passthrough),
+           each resumes its own arg: read(5)=5, read(6)=6 → `5 + 10*6` = 65.")
+  (input  (do
+            (effect Src (op read (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s))))
+                (+ (Src.read n) (* 10 (Src.read (+ n 1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 65 Int64)))
+
 (case "an outer effect in a nested arm's next-state slot across THREE chained performs declines cleanly (as1)"
   (doc    "The multi-step face of the next-state-slot outer-perform decline: three chained `B.step` performs
            re-splice the next-state expression, so the embedded outer `(A.get)` is DROPPED or DUPLICATED

@@ -34141,7 +34141,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns, run_returns_with};
+    use super::{FromVal, count_opcode, find_runtime_wasm, run_returns};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -43456,78 +43456,6 @@ mod stage1 {
     }
 
     #[test]
-    fn an_outer_perform_in_the_resume_value_slot_is_served_and_the_let_lifted_state_slot_folds_strict()
-     {
-        use crate::testkit::parse;
-        // as-family CONTROLS (breaker, 2026-08-05) — two RULING-INDEPENDENT correct-and-served faces, pinned
-        // as regression guards while the DISPUTED as2 (outer perform in the next-STATE slot, eval-order under
-        // a concierge spec ruling) is held. Both fold correctly TODAY regardless of how as2 resolves:
-        //
-        // as3 — an outer perform in the RESUME-VALUE slot (`(resume (+ t (A.get)) t)`): served correctly.
-        // B.step reads t=0; the resume value `(+ t (A.get))` runs A.get (5, A→6); B.step returns 5; body
-        // A.get reads the advanced 6; `(+ (* 10 5) 6)` = 56.
-        let as3 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
-             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
-               (handle B 0 ((step (u) t (resume (+ t (A.get)) t))) \
-                 (+ (* 10 (B.step)) (A.get))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(as3)))
-                    .expect("an outer perform in the resume-VALUE slot is served"),
-                "main"
-            ),
-            56,
-            "resume-value-slot A.get runs at dispatch (A→6), body A.get reads 6 → (10*5)+6 = 56"
-        );
-
-        // as7 — the state-slot perform LET-LIFTED (`(let ((x (A.get))) (resume t (+ t x)))`): folds STRICT
-        // → 6. This is the user workaround AND pins the let-lift SEMANTICS-PRESERVING equivalence that the
-        // op-arg-lift (#2120) rests on: the explicit lift makes the outer perform run at dispatch (A→6), so
-        // body A.get reads 6, B.step returns 0 → (10*0)+6 = 6. A regression here would break the equivalence.
-        let as7 = "(do (effect A (op get (-> Unit Int64))) (effect B (op step (-> Unit Int64))) \
-             (def (main) (handle A 5 ((get (u) s (resume s (+ s 1)))) \
-               (handle B 0 ((step (u) t (let ((x (A.get))) (resume t (+ t x))))) \
-                 (+ (* 10 (B.step)) (A.get))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(as7)))
-                    .expect("the let-lifted state-slot perform folds strict"),
-                "main"
-            ),
-            6,
-            "let-lifted state-slot A.get runs at dispatch (A→6), body A.get reads 6, B.step=0 → (10*0)+6 = 6"
-        );
-    }
-
-    #[test]
-    fn a_performing_condition_advance_survives_an_inner_abort_and_is_read_by_a_post_handle_observer()
-     {
-        use crate::testkit::parse;
-        // ao10 ESCALATION (breaker ae1, 2026-08-05). A performing CONDITION on the outer effect `A`
-        // (`(if (> (A.tick) 0) …)`) sits in the guard of an `if` whose taken branch ABORTS the INNER `B`
-        // handle (`(B.bail)`, arm value 99). The Site-5 `#cv`-lift for the performing cond must COMPOSE with
-        // the outer advance: `A.tick` in the cond reads the seed and advances A by 1; the inner B-abort
-        // collapses the inner handle to 99; then a SECOND `(A.tick)` — OUTSIDE the B handle, as the `+`
-        // sibling — must read the ADVANCED A state (not the seed). Pins that the cond-advance SURVIVES the
-        // inner abort and is observed post-handle: for `n=5`, cond `A.tick` reads 5 (A→6), branch aborts
-        // inner=99, outer `A.tick` reads 6 → 99 + 6 = 105. A regression that dropped the cond-advance (the
-        // outer observer reading the seed 5) would give 104; a re-perform would double-advance. Distinct from
-        // the abort-DISCARDS-the-body-suffix shape (observer INSIDE the aborted handle) — that's the #2026
-        // dead-suffix family.
-        let ae1 = "(do (effect A (op tick (-> Unit Int64))) (effect B (op bail (-> Unit Int64))) \
-             (def (main (: n Int64)) \
-               (handle A n ((tick (u) s (resume s (+ s 1)))) \
-                 (+ (handle B 0 ((bail (u) t 99)) (if (> (A.tick) 0) (B.bail) -1)) (A.tick)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(ae1)))
-            .expect("the performing-cond advance composes with the inner abort + post-handle observer (folds)");
-        assert_eq!(
-            run_returns_with::<i64>(&bytes, "main", &[wasmtime::component::Val::S64(5)]),
-            105,
-            "cond A.tick reads 5 (A→6); branch aborts inner B-handle=99; outer A.tick reads the advanced 6 → 99+6 = 105"
-        );
-    }
-
-    #[test]
     fn a_multishot_arm_folds_flat_but_declines_inside_recursion_never_miscompiles() {
         use crate::testkit::parse;
         // MULTI-SHOT ARM × RECURSION (breaker ms-family datapoint, 2026-08-05). A MULTI-SHOT handler arm
@@ -43558,49 +43486,6 @@ mod stage1 {
             e.code.is_none(),
             "the recursive multi-shot face must decline CLEANLY (uncoded) — a coded rejection is a different regression: {:?}",
             e.code
-        );
-    }
-
-    #[test]
-    fn a_conditional_resume_arm_folds_across_one_and_two_performs() {
-        use crate::testkit::parse;
-        // CONDITIONAL-RESUME ARM × PERFORM-COUNT (breaker ob-family, 2026-08-05; FLIPPED decline→fold by the
-        // pm-family two-hole refold re-anchor #2305). A handler arm with a BRANCHING (two-site) resume —
-        // `(if (> s 5) (resume v s) (resume -1 s))` — folds when the body performs the op ONCE and, since
-        // #2305, ALSO when it performs it TWICE: the two-hole refold now re-serves a multi-site (both-branch)
-        // resume arm across the second perform (the re-anchored continuation resolves its free vars). breaker
-        // verified the widening is clean (post-#2305 sr/rx/rn sweep: no silent-wrong, recursion/abort/spec-lift
-        // boundaries unchanged). This pin was `..._declines_cleanly_with_two`; the "future increment" arrived,
-        // so it now asserts the FOLD VALUE (65) — the previous decline is dead history. Arm: seed s=7,
-        // `(> s 5)` true → resumes the op arg `v`; state passes through unchanged (`s`), so every read sees 7.
-
-        // ONE perform: `(Src.read 5)` under seed 7 → arm resumes `v` = 5.
-        let one = "(do (effect Src (op read (-> Int64 Int64))) \
-                   (def (main (: n Int64)) \
-                     (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) \
-                       (Src.read n))) (export main))";
-        let one_bytes = compile_component(&crate::codec::encode(&parse(one)))
-            .expect("a conditional-resume arm with ONE perform folds");
-        assert_eq!(
-            run_returns_with::<i64>(&one_bytes, "main", &[wasmtime::component::Val::S64(5)]),
-            5,
-            "seed 7 > 5 → the arm resumes the op arg v = read's argument 5"
-        );
-
-        // TWO performs in the body, SAME branching arm — now FOLDS (was a clean decline pre-#2305). Both reads
-        // see seed 7 (state passed through unchanged), each resumes its own arg: read(5)=5, read(6)=6 →
-        // 5 + 10*6 = 65. (Regression guard: if a future change ever RE-declines this, that is a regression of
-        // the #2305 widening; if it folds, it must be exactly 65, never a miscompile.)
-        let two = "(do (effect Src (op read (-> Int64 Int64))) \
-                   (def (main (: n Int64)) \
-                     (handle Src 7 ((read (v) s (if (> s 5) (resume v s) (resume -1 s)))) \
-                       (+ (Src.read n) (* 10 (Src.read (+ n 1)))))) (export main))";
-        let two_bytes = compile_component(&crate::codec::encode(&parse(two)))
-            .expect("the two-perform conditional-resume arm folds since #2305 (multi-site refold re-anchor)");
-        assert_eq!(
-            run_returns_with::<i64>(&two_bytes, "main", &[wasmtime::component::Val::S64(5)]),
-            65,
-            "two-perform two-site arm folds: read(5)=5, read(6)=6, state passthrough → 5 + 10*6 = 65"
         );
     }
 
