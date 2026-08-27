@@ -6296,6 +6296,10 @@ pass	lba1 an op taking a LIST argument — the arm folds the batch into the scal
 pass	lbr1 a List entry param relayed to a helper def that only borrows its length
 pass	lc1 SELF-CONCAT sharing — the same list appears twice in one concat, then the original grows and is re-read unchanged
 pass	lck1 a COMBINATION-LOCK matcher — press advances the cursor against the three-digit secret whose MIDDLE digit is seed-shaped, a wrong press falls back to one if it re-matches the first digit else to zero (answering the negated or zero fallback), and open pays a hundred-plus-count on a full match; the SAME eight presses open the lock in the FIRST half on one seed and the SECOND half on the other
+pass	lcr1 List.len over an owned-temporary List.concat reclaims it (no leak)
+pass	lcr2 List.len over an owned-temporary List.update reclaims it (no leak)
+pass	lcr3 a borrowed List.concat result read twice is not freed early
+pass	lcr4 20000 owned-temporary List.concat each reclaim (no leak drift)
 pass	lcs1 an LCS DP-ROW state — each fed character rebuilds the whole dynamic-programming row against the fixed pattern via a recursive fold reading the OLD row while writing the NEW
 pass	ldd1 an EVENT-LEDGER state — a List of (tag,value) tuples appends per log dispatch, and replay folds only the MATCHING tag's values (absent tag folds to zero)
 pass	ldg1 a LEADING-DIGIT counter — feed strips each value to its leading digit through a recursive divide-down callee, a hit on the seed-wanted digit answers digit*10 plus the running hit count while a miss answers the bare digit, and the two seeds hunt DIFFERENT digits through one shared stream
