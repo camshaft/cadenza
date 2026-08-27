@@ -8103,3 +8103,7 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	spx1 a Bool entry param selects a branch
+todo	spx2 a Char entry param declines pending a boundary representation
+pass	spx3 a UInt64 entry param increments in its own width
+pass	spx4 Int8 and Int16 entry params sign-extend and sum

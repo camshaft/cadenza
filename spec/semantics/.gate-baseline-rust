@@ -7710,3 +7710,7 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	spx1 a Bool entry param selects a branch
+todo	spx2 a Char entry param declines pending a boundary representation
+pass	spx3 a UInt64 entry param increments in its own width
+pass	spx4 Int8 and Int16 entry params sign-extend and sum
