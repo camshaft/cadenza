@@ -365,6 +365,7 @@ pass	Set.of over Rational elements dedupes a normalized-equal literal and to-lis
 pass	Set.of over Set.to-list round-trips a 100-element trie to the identical set
 pass	Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold
 pass	Set.remove does not fold a set whose element is a runtime scalar
+pass	Set.remove drops the owned boxed element temporary it only borrows (large-int elem, no leak)
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list canonical order is SIGNED at the integer extremes
 pass	Set.to-list canonical order is independent of insertion order
@@ -1949,6 +1950,7 @@ pass	a fixed-shape scalar Tuple closure ARG crosses the DIRECT-CALL boundary (ho
 pass	a fixed-width integer segment of a non-byte-aligned width is rejected
 pass	a fixpoint loop that threads a growing list accumulator returns that list
 pass	a fixpoint that re-seeds a fresh list each round via a helper returns a list
+pass	a flat String inserted into an empty set boxes by its own type (not box-int) and adds no leak
 pass	a flat multi-param lambda stored in a tuple is applied through curried syntax
 pass	a flat string map key is found by a runtime rope twin
 pass	a float annotation reaches the 32-bit width
@@ -3456,6 +3458,7 @@ pass	a runtime String match and its (= s literal) if-chain agree on the DEFAULT 
 pass	a runtime String match on a hit arm agrees with its desugared (= s literal) if-chain
 pass	a runtime String ordering compare over a let-bound rope operand leaves no live heap objects
 pass	a runtime String rope compares equal to its flat twin and leaves no live heap objects
+pass	a runtime String rope inserted into an empty set boxes by its own type and its compaction is leak-neutral
 pass	a runtime String.at result compares by content in a recursive scan
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
