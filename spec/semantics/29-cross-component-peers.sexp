@@ -779,3 +779,15 @@
               (def (main (: x Int64)) (host (DB) (host (DC) (+ (DB.bee x) (DC.cee x))))) (export main)))
   (call   main (: 5 Int64))
   (output (: 31 Int64)))
+
+(case "reclaim across a nested-compound projection from a peer result"
+  (doc    "A peer op `nest(x) = (tuple (tuple x (+ x 1)) (+ x 2))` @cadenza:nest/api returns a NESTED tuple
+           ((x, x+1), x+2); the consumer reads the OUTER tuple (an owned peer result), projects element 0 —
+           its INNER tuple, a nested compound, so the inner is dup'd and the outer dropped — then projects
+           the inner element 1: `(. (. (P.nest x) 0) 1)`. main(9) = ((9,10),11).0.1 = (9,10).1 = 10.
+           Exercises reclaim across a nested-compound projection of a crossed peer handle.")
+  (peer   "cadenza:nest/api" (do (def (nest (: x Int64)) (tuple (tuple x (+ x 1)) (+ x 2))) (export nest)))
+  (input  (do (effect P (op nest (-> Int64 (Tuple (Tuple Int64 Int64) Int64)))) (bind P "cadenza:nest/api")
+              (def (main (: x Int64)) (host (P) (. (. (P.nest x) 0) 1))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: 10 Int64)))
