@@ -7883,6 +7883,27 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
 
+(case "do-discarded outer performs inside a HELPER under an inner handle thread across the level"
+  (doc    "The cross-function-inline face of the do-discarded outer perform above: the discarded `A.bump`s
+           live in a HELPER `step` (`(do (A.bump) (A.bump) (A.get))`) called in the inner `B` handle body,
+           rather than written inline. When `step` inlines, its non-final foreign performs must survive the
+           `do` collapse exactly as the inline form does — two bumps advance A's outer state 0->1->2, then
+           `A.get` reads 2. A fold that dropped the non-final foreign performs on the inline path would read
+           the stale seed. Pins the do-discard threading composes with a cross-fn inline.")
+  (input  (do
+            (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op noop (-> Unit Int64)))
+            (def (step (: u Unit)) (do (A.bump unit) (A.bump unit) (A.get unit)))
+            (def (main)
+              (handle A 0
+                ((bump (u) s (resume 0 (+ s 1)))
+                 (get (u) s (resume s s)))
+                (handle B 100
+                  ((noop (u) t (resume t t)))
+                  (step unit))))
+            (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "interleaved do-discarded performs at BOTH nest levels thread their own states independently"
   (doc    "The composition the single-effect fix case above doesn't reach: TWO counters at different nest
            levels, both advanced by DO-DISCARDED performs, interleaved in one `(do …)` — outer, inner,
