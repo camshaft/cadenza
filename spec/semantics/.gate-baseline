@@ -8589,3 +8589,6 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	mhn1 a constant tuple holding a 33-element list child — double occurrence, projections, and runtime equality (mixed hoist declined today; value-fenced either way)
+pass	mhn2 fifty frames persistently updating THROUGH the projection of a constant tuple's 33-element list child never corrupt the constant
+pass	mhn3 a small constant list holding a 33-element list child — the gate applies per NODE, and the mixed outer declines while remaining value-correct
