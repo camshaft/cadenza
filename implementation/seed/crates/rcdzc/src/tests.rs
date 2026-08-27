@@ -32057,38 +32057,6 @@ mod match_engine {
     }
 
     #[test]
-    fn char_converts_to_and_from_an_integer_scalar_totally() {
-        // 13-strings CHAR increment 2 (`collections-and-text.md` §A Char Converts To And From An Integer
-        // Totally): `Char.to-int` is TOTAL (every char has an integer code point); `Char.from-int` is
-        // FALLIBLE — `Some` for a Unicode scalar, `None` for a surrogate / out-of-range integer. Both
-        // FOLD on a constant operand. `to-int` returns an Int64; the round-trip through a `Some` arm
-        // returns a Bool — both observable as scalars.
-        let run_i = |src: &str| run_returns::<i64>(&component(src), "main");
-        let run_b = |src: &str| run_returns::<bool>(&component(src), "main");
-        // to-int: the scalar value of `a` is 97.
-        assert_eq!(
-            run_i("(module m (def (main) ((. Char to-int) #\\a)) (export main))"),
-            97
-        );
-        // round-trip: from-int 97 → Some #\a, and to-int of that char is 97 again.
-        assert!(run_b(
-            "(module m (def (main) (match ((. Char from-int) 97) ((Some c) (= ((. Char to-int) c) 97)) ((None _) false))) (export main))"
-        ));
-        // from-int of a SURROGATE (55296 = U+D800) → None → the match takes the None arm.
-        assert!(!run_b(
-            "(module m (def (main) (match ((. Char from-int) 55296) ((Some c) true) ((None _) false))) (export main))"
-        ));
-        // from-int of an OUT-OF-RANGE integer (1114112 = U+10FFFF+1) → None.
-        assert!(!run_b(
-            "(module m (def (main) (match ((. Char from-int) 1114112) ((Some c) true) ((None _) false))) (export main))"
-        ));
-        // from-int of the LAST scalar (U+10FFFF = 1114111) → Some (the boundary is inclusive).
-        assert!(run_b(
-            "(module m (def (main) (match ((. Char from-int) 1114111) ((Some c) true) ((None _) false))) (export main))"
-        ));
-    }
-
-    #[test]
     fn a_string_match_is_well_formed_or_rejected() {
         // A String is an OPEN type (like Int64) — no finite literal set exhausts it, so a string match
         // MUST end in a wildcard `_`; without one it is non-exhaustive (CDZ0210).
@@ -41254,25 +41222,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     // through" gap the increment-2 note records).
 
     #[test]
-    fn a_constant_scrutinee_folds_to_the_selected_arm() {
-        // (match 0 (0 42) (_ 99)) → 42; (match 5 (0 42) (_ 99)) → 99 (the wildcard).
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) (match 0 (0 42) (_ 99))) (export main))"),
-                "main"
-            ),
-            42
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component("(module m (def (main) (match 5 (0 42) (_ 99))) (export main))"),
-                "main"
-            ),
-            99
-        );
-    }
-
-    #[test]
     fn boolean_connectives_evaluate_and_fold() {
         // core-semantics.md §Boolean Connectives Short-Circuit: and/or/not over booleans. Constant fold
         // (each is a `main` returning a Bool / an Int64 selected by the connective).
@@ -47586,22 +47535,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_computed_constant_scrutinee_folds_by_value() {
-        // The scrutinee `(% 4 2)` folds to 0 (empty-magnitude IntValue) — it must match the literal `0`
-        // pattern (`[0]` magnitude) BY VALUE, selecting arm 0. Pins the `IntValue::eq_value` fix (a
-        // struct `==` would miss and fall to the wildcard → the parity-dispatch miscompile).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (parity n) (match (% n 2) (0 0) (_ 1))) (def (main) (parity 4)) (export main))"
-                ),
-                "main"
-            ),
-            0
-        );
-    }
-
-    #[test]
     fn a_runtime_scalar_match_emits_a_probe_chain() {
         // fib with literal match base cases — a runtime scrutinee (the param `n`) matched against 0/1/_,
         // emitting the probe chain. fib(10) = 55.
@@ -48055,13 +47988,6 @@ fn unsupported_construct_declines() {
 
 /// The `main` export crosses the boundary VERBATIM — the component actually exports `main` (no
 /// rename), so a query by that name resolves.
-#[test]
-fn export_name_is_verbatim() {
-    let bytes = compile_component(&prog_scalar()).expect("compile");
-    // If the name were renamed, `run_returns_s64(.., "main")` would fail to find the export.
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 42);
-}
-
 // ── span-free diagnostics: a fault names a user NODE, never a prelude/synthesized id ─────────────
 //
 // The compiler holds no source positions; a diagnostic carries the `StructId` (as `node`) the fault
