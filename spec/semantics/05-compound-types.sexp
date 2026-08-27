@@ -5001,6 +5001,12 @@
   (output (: 60 Int64))
   (live-objects known-leak 7))
 
+(case "a folded recursive-newtype ANNOTATION unifies with the unfolded value type"
+  (doc    "The annotation-ascription face of the recursive-newtype fold/unfold unify (the traversal at 4983 hits it at the recursive-CALL site; this hits it at an explicit `(: value Lst)` ascription). The annotation `(: (Mk (Some (tuple 42 (Mk None)))) Lst)` gives a FOLDED type where `Lst` at the recursion point collapses to a `Ty::Sum{Lst}` μ back-edge, while the value's own type is `Ty::Nominal{Lst}` there — because `Ty::Nominal` is compared by decl+args (NOT inner), the two unify and the ascription type-checks (was 'annotation type Lst does not match value type Lst' pre-fix). Match out the `Mk`, then the head `(. t 0)` = 42.")
+  (input (do (type Lst (Mk (Option (Tuple Int64 Lst))))
+             (def (main) (match (: (Mk (Some (tuple 42 (Mk None)))) Lst) ((Mk o) (match o ((Some t) (. t 0)) ((None _) 0))))) (export main)))
+  (call main) (output (: 42 Int64)))
+
 (case "passing one newtype where a different newtype is expected names both nominal types"
   (doc    "Two DISTINCT single-variant newtypes over the same underlying Int64 — `A` and `B` — do not
            interchange: a function `(f (: x A))` applied to a `(B.MkB 5)` is rejected CDZ0203, 'this argument
