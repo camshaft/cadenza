@@ -98,6 +98,16 @@ fn a_let_bound_closure_capturing_a_performing_draw_folds_via_the_capture_once_ho
         factory.is_ok(),
         "an arg'd-factory capture-once closure must FOLD (hoist arg + inline factory): {factory:?}"
     );
+    // BRANCH-SELECTED (cpc1): a closure bound to an `if` selecting a performing capture-once closure vs a
+    // pure one — the branch-aware distribution `(let ((f (if C X Y))) BODY)` → `(if C (let ((f X)) BODY)
+    // (let ((f Y)) BODY))` lets FORM A fold each branch (draw fires only in the taken branch). Must FOLD.
+    let branch_selected = try_compile_rust(
+        "(do (effect St (op next (-> Int64))) (def (main (: n Int64)) (handle St n ((next () s (resume s (+ s 1)))) (let ((f (if (> n 0) (let ((a (St.next))) (fn ((: x Int64)) (* a x))) (fn ((: x Int64)) x)))) (f 10)))) (export main))",
+    );
+    assert!(
+        branch_selected.is_ok(),
+        "a branch-selected capture-once closure must FOLD (branch-aware distribution): {branch_selected:?}"
+    );
 }
 
 #[test]

@@ -1832,6 +1832,8 @@ pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
 pass	a do item OBSERVED by the final expression keeps its trap
+pass	a do-def NOT in the perform argument stays in scope for a later reference
+pass	a do-def passed to a performing helper stays in scope
 pass	a do-def referenced twice WITHIN one resume operand compiles (the within-slot control)
 pass	a do-def shadowing a LET binding rebinds and its init evaluates
 pass	a do-def shadowing a function parameter is a well-defined shadow
@@ -4230,6 +4232,7 @@ pass	abm2 the ABORT ARM ITSELF PERFORMS ON AN OUTER HANDLER — the bail arm bui
 pass	abmin10 TWO nested foreign abort-only handles under the conditional abort
 pass	abmin12 BOTH branches abort (to different handlers) — no value path remains
 pass	abmin2 outer-abort under a LET+IF inside the unrelated inner handle
+pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
 pass	abmin4 if WITHOUT let
 pass	abmin9 the RESUMPTIVE flip of abmin4 — A's arm resumes, so 900307 IS the correct answer here
 pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm
@@ -5259,6 +5262,8 @@ pass	converting an out-of-range integer to a char yields None
 pass	converting zero to a char yields Some — U+0000 (NUL) is a valid scalar
 pass	cord1 SYNTHESIZED world: 2-field s64 record result (no wit-world clause)
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
+pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
+pass	cpc1 a conditionally-selected performing capture folds via the branch-aware distribution
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
 pass	cpf1 a performing nullary factory called once and applied once folds capture-once
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
@@ -6218,6 +6223,8 @@ pass	ordering two integers of different sign is rejected, not silently reinterpr
 pass	ordering two integers of different width is rejected, not silently widened
 pass	ordering two rationals a hair apart at the i64 boundary is exact
 pass	org1 an ORGAN with three ranks and a stop selector — chord passes THREE pipe volumes and the state's selector picks WHICH argument sounds through a nested-if ladder folding it into the played total and stepping the selector two ranks around, swell re-aims the selector by the played total leaving the total untouched, and the seed sets the opening stop so the two runs sound different ranks from the same three-volume chords at every dispatch
+pass	orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time
+pass	orp2 an open-row helper projects a field carrying a performing draw through the fold
 pass	orq1 an ORDER-BOOK spread tracker — bid raises the best bid and ask lowers the best ask (both answering the spread or -1 while a side is empty), a CROSSED book resets both sides answering zero, and the seed only shifts the opening bid so the first spread differs while the tightening ladder and the cross land identically
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	ov1 an if CONDITION from LET-bound draws — two draws feed a comparison that routes the branch
@@ -6669,6 +6676,10 @@ pass	rp3 the record payload carries a NESTED record — two-level field projecti
 pass	rpc1 a RIPPLE-CARRY counter — inc answers the number of bits FLIPPED by that increment (the XOR of old and new popcounted, the amortized-analysis witness), pop reads the live bit count, and the seeds start at 10 and 0 so the carry chains fire at different steps
 pass	rpl1 an OP-LOG REPLAY state — apply advances the value and logs its delta, replay re-applies the WHOLE log to the current value keeping the log intact, so a second replay after more logging compounds
 pass	rpn1 an RPN EVALUATOR — pushes stack operands, the operator ops pop two and push the result; the (n+3)*2 program evaluates through five dispatches with stack depths and intermediates exposed
+pass	rpp1 a scalar-fielded Record entry param projects both fields
+pass	rpp2 an open-row helper projects a field of the boundary Record param
+pass	rpp3 a Record entry param with a heap list field measures both
+pass	rpp4 a scalar Tuple entry param projects both positions
 pass	rps2 the RPS judge with the opponent move HOISTED through match binders — the LCG advance and the mod-3 move bind once per dispatch instead of recomputing per branch, same protocol and answers
 pass	rq1 a RATIONAL handler state — three exact fractional adds (1/2 + 1/3 + 1/6) land on a WHOLE value — the canonical n/1 render pinned
 pass	rq2 floor/ceil/numerator/denominator READ a rational state — canonicalization (8/4 to 2/1) and negative rounding both pinned
@@ -7161,6 +7172,7 @@ pass	the length of a runtime byte sequence is its byte count
 pass	the length of a slice is the slice's byte count
 pass	the let-bound-after-helper observation is state-type-general (scalar counter)
 pass	the let-form of the dual-resume-slot arm computes (the always-worked oracle twin)
+pass	the let-twin of the do-def-into-perform-arg body computes the same value
 pass	the logical-shift-drops-all-bits fold does not discard a trapping runtime operand
 pass	the magnitude of a bare-scaled quantity reads back
 pass	the manifest is DERIVED from what entrypoints delegate, not from effect declarations
@@ -7713,8 +7725,6 @@ todo	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
 todo	cj03r Ast.print of a RUNTIME AST value renders
 todo	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 todo	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
-pass	cp4 a performing nullary factory applied twice shares its single draw via the capture-once fold
-todo	cpc1 a conditionally-selected performing capture declines pending the branch-aware hoist
 todo	cq01 host IMPORT: scalar param + RECORD result — guest reads a field
 todo	cq02b host IMPORT: NULLARY + RECORD result, called ONCE
 todo	cq02c host IMPORT: NULLARY + LIST result, called once
@@ -7765,13 +7775,3 @@ todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let d
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	abmin3 a pure-binding LET wrapping the conditional foreign abort homes correctly
-pass	rpp1 a scalar-fielded Record entry param projects both fields
-pass	rpp2 an open-row helper projects a field of the boundary Record param
-pass	rpp3 a Record entry param with a heap list field measures both
-pass	rpp4 a scalar Tuple entry param projects both positions
-pass	orp1 an open-row projection ignoring a heap-list sibling eliminates the dead field at compile time
-pass	orp2 an open-row helper projects a field carrying a performing draw through the fold
-pass	the let-twin of the do-def-into-perform-arg body computes the same value
-pass	a do-def NOT in the perform argument stays in scope for a later reference
-pass	a do-def passed to a performing helper stays in scope
