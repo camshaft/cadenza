@@ -8363,7 +8363,7 @@ mod recursion {
 // non-exhaustive match) is checked STRUCTURALLY, before the fold. These run whole programs under
 // wasmtime + assert the rejections.
 mod match_engine {
-    use super::{run_returns, run_returns_with};
+    use super::run_returns;
     use crate::backend::Target;
     use crate::compile::{compile, compile_component};
     use crate::testkit::parse;
@@ -10256,14 +10256,10 @@ mod match_engine {
             db2.invariant_of(plain_ty).is_none(),
             "a type with no @invariant records no predicate"
         );
-        // BEHAVIOR-NEUTRAL: the @invariant-annotated type still takes effect — `mk`/`unwrap` compile + run,
-        // and `main` returns 42 (the @invariant wrapper is consumed at strip, the type declaration survives).
-        let comp = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
-        assert_eq!(
-            run_returns_with::<i64>(&comp, "main", &[]),
-            42,
-            "the @invariant-annotated Percent type still constructs + unwraps: main = 42"
-        );
+        // BEHAVIOR-NEUTRAL (the @invariant-annotated Percent type still constructs + unwraps + runs — the
+        // wrapper is consumed at strip, the type declaration survives) is corpus 14b "an @invariant newtype
+        // is constructed from PERFORM results" (identical `@invariant Percent` + `mk`/`unwrap`, runs to 85)
+        // and 14 §effects. This keeps only the white-box recording witness (`invariant_of`, no runtime).
     }
 
     /// Verification Inc-b @invariant ESTABLISH Part 1: `invariant_establish::synthesize` emits a typed checker
