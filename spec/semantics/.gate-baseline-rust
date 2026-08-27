@@ -8422,3 +8422,5 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
+pass	a variant named like a prelude DATA constructor is reachable BARE and builds the local variant
+pass	a variant named like a Result DATA constructor (Ok) is reachable bare in its declaring module

@@ -10583,6 +10583,20 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a variant named like a prelude DATA constructor is reachable BARE and builds the local variant"
+  (doc    "Distinct from a prelude TYPE-name collision (`List`/`Bool` above, reachable only QUALIFIED as `T.List`): a variant whose name collides with a prelude DATA CONSTRUCTOR (`Some`/`None`/`Ok`/`Err`) IS reachable BARE in both construct and match position, binding to the LOCAL variant — not the built-in Option/Result ctor. The built-in sums inject their data-ctor names into the prelude AFTER the variant-ctor index snapshot is taken, so a user variant of that name is indexed and resolves before the prelude (whereas a type/module-name collision is skipped from the bare index, hence qualified-only). `(type T (Some Int64) (Other Int64))`, `f` matching `Some`→+100 / `Other`→n: bare `(Some 5)` builds T's OWN Some → 105, bare `(Other 5)` → 5; combined `1000*105 + 5` = 105005. A regression re-shadowing the user variant with the built-in Option would flip one leg.")
+  (input  (do (type T (Some Int64) (Other Int64))
+              (def (f (: t T)) (match t ((Some n) (+ n 100)) ((Other n) n)))
+              (def (main) (+ (* 1000 (f (Some 5))) (f (Other 5)))) (export main)))
+  (call   main) (output (: 105005 Int64)))
+
+(case "a variant named like a Result DATA constructor (Ok) is reachable bare in its declaring module"
+  (doc    "The Result-ctor companion of the Some case above: `(type T (Ok Int64) (Bad))` reuses the prelude `Ok` data-ctor name; bare `(Ok 7)` builds T's OWN Ok → 7 and `(Bad)` → 0 (combined `100*7 + 0` = 700) — the same bare-data-ctor-collision resolution on a different prelude sum, not the built-in Result's Ok.")
+  (input  (do (type T (Ok Int64) (Bad))
+              (def (f (: t T)) (match t ((Ok n) n) ((Bad) 0)))
+              (def (main) (+ (* 100 (f (Ok 7))) (f (Bad)))) (export main)))
+  (call   main) (output (: 700 Int64)))
+
 (case "a variant carrying a record payload escapes to the host"
   (doc    "The escape companion: `(P.Pt (record (x 1) (y 2)))` returned as the program result renders
            its canonical form `(: (Pt (record (x 1) (y 2))) P)` — the variant's BARE name `Pt` applied to
