@@ -80,3 +80,19 @@ Refinements to the root-cause model:
 gtx2/gtx3/gtx5 are pinned in `spec/semantics/09-functions.sexp` (wasm-only rows — the leak
 clauses keep them out of the rust battery). The four E0308 cells are reproducible by dropping
 the corresponding `(fn (x) …)` into the repro above.
+
+## RESOLVED (breaker same-hour verification, tick 301, 2026-08-27)
+
+Fix #4319 (tie the closure AGGREGATE result element to the domain at the OUTER call node) +
+tests #4348 (record/List/nested-tuple ties). Verified against the full 7-cell matrix on rust AND
+rust-async, fresh compiler:
+
+- gtx1 (tuple) / gtx4 (record) / gtx6 (List) / gtx7 (nested tuple): **E0308 → PASS, value 4** ✓
+- gtx2 (projecting consumer): **decline → PASS, value 5** ✓
+- gtx5 (Option): stays green ✓
+- **RESIDUAL: gtx3 (SINGLE domain, discarding consumer) still declines on rust/rust-async** —
+  an over-conservative reject, not a miscompile (wasm proves value 2; the program is well-typed).
+  With only one instantiation the element vars apparently still ground free at the outer node.
+  Low priority; corpus pin gtx3 remains a wasm row, flips whenever the single-domain tie lands.
+
+wasm census unchanged across all 7 (the rsl1-class recursive-sum leaks, separate issue).
