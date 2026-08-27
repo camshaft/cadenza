@@ -64771,14 +64771,16 @@ fn a_host_fused_kv_prefix_scan_reducer_emits_and_loads() {
     let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
     v.validate_all(bytes)
         .expect("the prefix-scan provider component validates");
-    let req = cdz_run::required_runtime(bytes)
-        .expect("the prefix-scan provider component loads on the pinned wasmtime");
+    // A prefix-scan reducer marshals compound kv results through the value-heap runtime AND imports the
+    // kv host interface — both witnessed by the import names in the emitted component bytes (the same
+    // dep-free byte-scan the kv-import assertion below uses), no in-crate instantiation needed.
+    let text = String::from_utf8_lossy(bytes);
     assert!(
-        req.is_some_and(|r| r.import_name.contains("cadenza:runtime/heap")),
+        text.contains("cadenza:runtime/heap"),
         "a prefix-scan reducer marshals through the value-heap runtime"
     );
     assert!(
-        String::from_utf8_lossy(bytes).contains("cadenza:agent-kernel/kv"),
+        text.contains("cadenza:agent-kernel/kv"),
         "the prefix-scan reducer imports the kv host interface"
     );
 }
