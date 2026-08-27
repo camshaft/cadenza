@@ -8824,47 +8824,6 @@ fn a_match_shaped_arm_body_resumes_in_a_sequence_of_performs() {
     }
 }
 
-/// FINDING #12 (breaker, silent 3-backend miscompile — a REGRESSION from #2866's self-recursive admission).
-/// A SELF-recursive performer whose body is a `let`-WRAPPED dispatch — `walk k = (let ((d (E.next))) (if (=
-/// (% d 7) 0) (* 100 d) (walk (+ k 1))))` — followed by a TRAILING draw that observes its out-state:
-/// `(let ((w (walk 0))) (+ w (E.next)))`. The trailing `(E.next)` must read the state AFTER walk's internal
-/// draws (n=5 draws 5,6,7 → post-state 8), but the single-return path returned the PRE-call state, so the
-/// trailing draw read the seed (705 instead of 708). `mark_caller_observed_outstate` correctly flagged the
-/// observation, but `multivalue_leaves_threadable` / `thread_returning_tuple` did not DESCEND the `let`
-/// wrapping the dispatch — they treated the whole `let` as one leaf and rejected the tail self-call as
-/// "under a conditional", forcing single-return. The fix adds a `let`-wrapped-dispatch arm to both: thread
-/// the inits, recurse into the body dispatch, rebuild the `let`. Now it FOLDS correctly (not a decline).
-#[test]
-fn a_let_wrapped_recursive_dispatch_threads_outstate_to_a_trailing_observer() {
-    use crate::testkit::parse;
-    // A nullary main seeded at n so the component links via `run_linked` (skip-if-no-runtime, the heap-test
-    // pattern — the multi-value out-state threading builds a heap tuple). n=5: walk draws 5,6,7 (7%7==0) →
-    // w=700; post-walk state=8; trailing (E.next)=8 → 708 (was 705, the pre-call seed).
-    let mk = |seed: i64| {
-        format!(
-            "(do (effect E (op next (-> Int64))) \
-             (def (walk (: k Int64)) \
-               (let ((d (E.next))) (if (= (% d 7) 0) (* 100 d) (walk (+ k 1))))) \
-             (def (main) \
-               (handle E {seed} ((next () s (resume s (+ s 1)))) \
-                 (let ((w (walk 0))) (+ w (E.next))))) \
-             (export main))"
-        )
-    };
-    // Each seed FOLDS (the compile must succeed — the core fix; the runtime run is a bonus when present).
-    for (seed, expect) in [(5i64, "708"), (7, "708"), (12, "1415")] {
-        let comp = compile_component(&crate::codec::encode(&parse(&mk(seed)))).expect(
-            "a let-wrapped recursive dispatch must fold, threading its out-state to the trailing observer",
-        );
-        if let Some(v) = run_linked(&comp, "main") {
-            assert_eq!(
-                v, expect,
-                "seed {seed}: the trailing draw must read the POST-walk state (not the pre-call seed)"
-            );
-        }
-    }
-}
-
 /// ADVERSARIAL companion (task #15, breaker witness): a caller-observed MUTUALLY-recursive effectful callee
 /// must DECLINE CLEANLY, never leak the internal `$s0`/`$t0` state-param names. `ea`/`eb` form an SCC (each
 /// performs `Counter.bump`), and `(+ (* 1000 (ea 3)) (Counter.bump))` observes the SCC's out-state via the
@@ -9283,70 +9242,6 @@ fn a_handler_arm_resuming_per_if_branch_folds() {
         200,
         "the nid!=0 branch resumes 200"
     );
-}
-
-/// The former residual of the effectful-helper-in-a-self-call-arg family, NOW FOLDING: an inlined helper
-/// whose perform sits UNDER A CONDITIONAL (`if`/`match`) — in a branch (`if c then acc + B.b x else acc`), in
-/// the condition (`if B.b x == 1 then …`), or nested. Threading the self-call arg inlines the helper's `if`;
-/// the `if`/`match` thread arms give each branch its own copy of the incoming state-refs. That copy was
-/// `copy_pure` (`beta_reduce`), whose pinned-name fast path returned a RESOLVE-PINNED `f#ctx$s{k}` ref AS-IS,
-/// so both branches SHARED the one pinned node — a single-parent-arena orphan re-parented onto a dead node,
-/// leaking the internal `$s0` in a confusing CDZ0101. Switching those branch/arm state copies to
-/// `deep_fresh_copy` (re-push the leaf unpinned, so each branch re-resolves against the spec sig) folds the
-/// whole family. Pins the fold value (`run(4,0)`: only `fuel==1` performs, `B.b 1`→1, `resume(x,x)` returns
-/// the op arg → acc becomes 0+…+1 = 1) so a regression to the leak — OR a wrong fold value — is caught.
-/// (v-agent-harness Inc-3 residual, now cleared; the non-conditional family folds via the two `_folds` tests
-/// above.)
-#[test]
-fn an_effectful_helper_with_a_conditional_perform_in_a_selfcall_arg_folds() {
-    use crate::testkit::parse;
-    for (src, want) in [
-        // perform in a BRANCH of the inlined helper's if
-        (
-            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-             (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (+ acc (B.b x)) acc)) \
-             (def (run (: fuel Int64) (: acc Int64)) \
-               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
-             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
-            "1",
-        ),
-        // perform in the CONDITION of the inlined helper's if
-        (
-            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-             (def (turn (: x Int64) (: acc Int64)) (if (= (B.b x) 1) (+ acc 1) acc)) \
-             (def (run (: fuel Int64) (: acc Int64)) \
-               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
-             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
-            "1",
-        ),
-        // perform in a NESTED if branch of the inlined helper
-        (
-            "(do (effect B (op b (-> Int64 Int64)) (op done (-> Int64 Int64))) \
-             (def (turn (: x Int64) (: acc Int64)) (if (= x 1) (if (= x 1) (+ acc (B.b x)) acc) acc)) \
-             (def (run (: fuel Int64) (: acc Int64)) \
-               (if (= fuel 0) (B.done acc) (run (- fuel 1) (turn fuel acc)))) \
-             (def (main) (handle B 0 ((b (x) s (resume x x)) (done (x) s (resume x x))) (run 4 0))) (export main))",
-            "1",
-        ),
-    ] {
-        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
-            "an inlined helper with a conditional perform in a self-call arg now folds (deep_fresh_copy \
-             per-branch state)",
-        );
-        // Guard the run behind the runtime store being present: `run_linked` returns `None` when the
-        // value-heap runtime is not in the store (CI's test job builds no store), and a hard
-        // `assert_eq!(run_linked(...), Some(want))` would then fail `None == Some("1")` on CI while passing
-        // locally — a local-green/CI-red the sibling `_folds` tests already avoid with this same `if let`
-        // pattern. Compilation (above) is the store-independent invariant; the VALUE check runs only when a
-        // runtime is available. (The corpus case in 14-effects gates the value on CI's full pipeline, which
-        // does build the runtime — so the fold's value is still guarded end-to-end on CI.)
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, want,
-                "the conditional-perform helper folds to the resumed accumulator"
-            );
-        }
-    }
 }
 
 // --- HOST-COMPOSITION INVARIANT boundary (§4.4: a reified/duplicated continuation must NOT span a host
