@@ -1,5 +1,4 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
-fail	chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization
 pass	(if cmp 1 0) materializes the comparison to 0/1 and (if cmp 0 1) its negation
 pass	(if p 1 0) materializes a bare bool param to its 0/1 int
 pass	200 recursive dispatches each crossing a heap LIST argument — the marshal at depth
@@ -1990,7 +1989,6 @@ pass	a dividend provably below its divisor folds div to zero and rem to the divi
 pass	a dividend-below-divisor div fold keeps a trapping dividend's trap
 pass	a division whose divisor folds to zero still traps
 pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
-pass	a do block ending in a type declaration is malformed
 pass	a do item OBSERVED by the final expression keeps its trap
 pass	a do-def NOT in the perform argument stays in scope for a later reference
 pass	a do-def passed to a performing helper stays in scope
@@ -6691,7 +6689,6 @@ pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
 pass	imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal
-pass	imc2 a constant tuple as a returned LIST element still allocates per-eval (the collection-return sibling assembler has no build-once yet)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
@@ -6745,7 +6742,6 @@ pass	inv1 MODULAR INVERSE by extended Euclid in the arm — the iteration count 
 pass	io1 a shared pure subexpression reads the same value twice (value parity: shared, self-subtract, commuted)
 pass	io2 a shared min-select reads the same value twice (value parity, both operand orders)
 pass	io3 a shared subexpression keeps its overflow trap (computed once still traps)
-pass	irb1 a constant 33-element list in RETURN position builds mortal trie cells (value-encode assembler; exact reachable count)
 pass	irb1 a constant 33-element list in RETURN position now hoists build-once (the collection-return assembler gained build-once); both constant if-branch lists are census-excluded immortals → 0 mortal
 pass	irb2 a constant nested tuple in RETURN position builds mortal cells (outer+inner; same assembler path as imc1)
 pass	is1 a draw-SELECTED match arm installs a nested same-effect shadow — outer state resumes after the branch-local region
@@ -8947,8 +8943,6 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
-todo	a mutually-recursive performer pair whose out-state a trailing caller draw observes declines cleanly (completeness gap)
-todo	a recursive nested-op performer whose resume-VALUE reads the inner state around the outer perform declines cleanly
 todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
@@ -8977,7 +8971,6 @@ todo	erp2 a Result entry param with two scalar payloads declines pending the Res
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	ey1 a Symbol entry param keys a Map
-todo	frb3 a MUTUAL-SCC performer pair (inner re-enters outer) declines cleanly pending the cross-function increment
 todo	frb3 a MUTUAL-SCC performer pair with a NON-TAIL re-entry declines cleanly pending the non-tail-resume increment (oracle corrected: hand-traced 2, was an untested 3)
 todo	grx1 the entry List param flows through a two-deep non-recursive helper chain into a consuming concat
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
