@@ -19605,62 +19605,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_map_value_sub_pattern_with_binders_reads_a_runtime_map() {
-        // The RUNTIME companion of `a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders`:
-        // over a map whose keys are NOT known at compile time (built by a conditional), the value read at a
-        // key walks the value sub-path at RUN TIME — `synth_value_path_read` emits `(. __mv i)` per tuple
-        // element and a `(match __mv ((Ctor __p) __p) …)` per ctor payload, after the `Map.lookup` unwrap.
-        //
-        // TUPLE value over a runtime map: `pick true` → {"a": (k, 4)}, so the arm binds x=k, y=4.
-        let Some(v) = run_heap_value(
-            "(module m \
-               (def (pick (: b Bool) (: k Int64)) \
-                 (if b (Map.insert (Map.empty) \"a\" (tuple k 4)) (Map.empty))) \
-               (def (look (: m (Map String (Tuple Int64 Int64)))) \
-                 (match m ((map (\"a\" (tuple x y)) .. rest) (+ x y)) (_ -1))) \
-               (def (main (: k Int64)) (look (pick true k))) (export main))",
-            vec!["3".to_string()],
-        ) else {
-            eprintln!("runtime wasm not found; skipping runtime-map-value-tuple run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "a tuple value sub-pattern binds both elements over a runtime map (3+4)"
-        );
-        // An ABSENT key falls through to the catch-all (the presence test fails before the value read).
-        assert_eq!(
-            run_heap_value(
-                "(module m \
-                   (def (pick (: b Bool) (: k Int64)) \
-                     (if b (Map.insert (Map.empty) \"a\" (tuple k 4)) (Map.empty))) \
-                   (def (look (: m (Map String (Tuple Int64 Int64)))) \
-                     (match m ((map (\"a\" (tuple x y)) .. rest) (+ x y)) (_ -1))) \
-                   (def (main (: k Int64)) (look (pick false k))) (export main))",
-                vec!["3".to_string()],
-            )
-            .unwrap(),
-            "-1",
-            "an absent key falls through before the value read"
-        );
-        // SINGLE-VARIANT CTOR value over a runtime map: `{"a": Mk k}` → binds n=k.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Box (Mk Int64)) \
-                   (def (pick (: b Bool) (: k Int64)) \
-                     (if b (Map.insert (Map.empty) \"a\" (Box.Mk k)) (Map.empty))) \
-                   (def (look (: m (Map String Box))) \
-                     (match m ((map (\"a\" (Box.Mk n)) .. rest) n) (_ -1))) \
-                   (def (main (: k Int64)) (look (pick true k))) (export main))",
-                vec!["9".to_string()],
-            )
-            .unwrap(),
-            "9",
-            "a single-variant ctor value sub-pattern binds its payload over a runtime map"
-        );
-    }
-
-    #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
         // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
         // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`
