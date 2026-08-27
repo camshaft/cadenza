@@ -403,6 +403,15 @@ def variantCtorArity? (m : Module) (name : ByteArray) : Option Nat :=
         let isNewtype := ctors.length == 1 && c.2 == 1
         if isNewtype || c.2 ≥ 2 then none else some c.2))
 
+/-- Is `name` a NEWTYPE constructor — the SOLE variant of its user type, carrying EXACTLY ONE field?
+Such a sum SCALAR-ERASES: its value IS the payload, construction is identity, a pattern binds the
+payload directly (spec type-system.md §"A Single-Variant Single-Field Sum Is A Nominal Type Over Its
+Payload", #4516). A multi-variant / nullary / multi-field ctor is NOT a newtype (stays tagged). A
+def-shadowed name is not a ctor. -/
+def newtypeCtor? (m : Module) (name : ByteArray) : Bool :=
+  !((defNames m).contains name) &&
+  (userSumTypes m).any (fun (_, ctors) => match ctors with | [(cn, 1)] => cn == name | _ => false)
+
 /-- The constructor NAME an application/pattern head denotes: a bare name head `C`, or a qualified
 member-access head `(. T C)` → `C`. -/
 def ctorAppName? (m : Module) (children : Array Nat) : Option ByteArray :=
@@ -440,11 +449,17 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         | none => .unsupported "eval: non-scalar leaf (float/bytes/symbol not yet modeled)"
       | none => .unsupported "eval: atom leaf index out of range"
     | some (Node.list children) =>
-      -- variant CONSTRUCTION first: a head (bare `C` or qualified `(. T C)`) resolving to a modeled
-      -- prelude/user sum constructor (not shadowed by a local binding) → construct the tagged variant.
-      match (ctorAppName? m children).bind (fun c =>
-               if (env.lookup? c).isSome then none else (variantCtorArity? m c).map (fun ar => (c, ar))) with
-      | some (cname, arity) => evalVariantCtor m env fuel cname arity children
+      -- CONSTRUCTION first: a head (bare `C` or qualified `(. T C)`) resolving to a modeled sum
+      -- constructor (not shadowed by a local binding). A NEWTYPE ctor ERASES (construction = its
+      -- payload); a multi-variant / nullary ctor builds a tagged `variant`.
+      let ctorConstruct : Option Outcome :=
+        match (ctorAppName? m children).bind (fun c => if (env.lookup? c).isSome then none else some c) with
+        | some cname =>
+          if newtypeCtor? m cname then (children[1]?).map (fun pId => evalNode m env defaultIntTy fuel pId)
+          else (variantCtorArity? m cname).map (fun ar => evalVariantCtor m env fuel cname ar children)
+        | none => none
+      match ctorConstruct with
+      | some o => o
       | none =>
       match m.headName? (Node.list children) with
       | some h =>
@@ -764,15 +779,21 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
       | none => .error (.unsupported "eval: match literal pattern is a non-scalar leaf")
     | none => .error (.unsupported "eval: match pattern leaf out of range")
   | some (Node.list pc) =>
-    -- a generic variant pattern `(C subpat)` / `((. T C) subpat)` / nullary `(C)` — the head (bare or
-    -- qualified) resolves to a modeled prelude/user sum constructor (newtype/multi-field/shadowed skipped).
-    match (ctorAppName? m pc).bind (fun c => (variantCtorArity? m c).map (fun _ => c)) with
-    | some cname =>
-      match subj with
-      | .variant tag payload =>
-        if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some []))
-        else .ok none
-      | _ => .ok none
+    -- a sum constructor pattern. A NEWTYPE pattern `(Mk subpat)` binds the payload DIRECTLY (the
+    -- scrutinee IS the erased payload); a tagged-variant pattern `(C subpat)` / `((. T C) subpat)` /
+    -- nullary `(C)` compares the tag then binds the payload (multi-field/shadowed heads are not modeled).
+    let ctorMatch : Option (Except Outcome (Option Env)) :=
+      match ctorAppName? m pc with
+      | some cname =>
+        if newtypeCtor? m cname then some (match pc[1]? with | some sp => matchPat m sp subj | none => .ok (some []))
+        else if (variantCtorArity? m cname).isSome then
+          some (match subj with
+                | .variant tag payload => if tag == cname then (match pc[1]? with | some sp => matchPat m sp payload | none => .ok (some [])) else .ok none
+                | _ => .ok none)
+        else none
+      | none => none
+    match ctorMatch with
+    | some r => r
     | none =>
     match m.headName? (Node.list pc) with
     | some ph =>
