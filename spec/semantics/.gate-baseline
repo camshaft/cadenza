@@ -1812,6 +1812,7 @@ pass	a consumed heap param on a self-recursive loop's non-tail spine is not doub
 pass	a consumer applies TWO handed-back closures
 pass	a consumer applies the handed-back closure inside a larger expression
 pass	a consumer applies the handed-back closure to an internal constant
+pass	a consumer bound to two distinct peer interfaces combines their results
 pass	a consumer bound to two scalar peer interfaces runs with no runtime
 pass	a consumer calls a scalar op across a source peer provider
 pass	a consumer returns a different type than the closure it applies
@@ -7145,6 +7146,7 @@ pass	pa1 a SAME-effect perform as another op's ARGUMENT — the arg dispatch adv
 pass	pa1 two SIBLING nested handles as the two arguments of one 2-ary op — each region draws the outer thread in arg order
 pass	pa2 TWO same-effect draws as the TWO arguments of one op — left-to-right arg order, the arm reads the post-args state
 pass	pa3 THREE-deep nested same-effect arg-feed — scale(scale(next)) with a state-advancing scale arm
+pass	pah1 a heap LIST argument crosses INTO the peer and is consumed by the provider (arg-direction lowering)
 pass	pak1 a peer op returning a (List of a user sum) crosses and its length is read
 pass	pal1 PARITY-ALTERNATING two-effect draws — one recursive driver picks which effect to draw per hop, both threads advance interleaved
 pass	parsing a length-framed message and rebuilding it yields the original bytes
@@ -7160,6 +7162,7 @@ pass	pca1 a map argument crosses INBOUND to a peer and its length is read there
 pass	pca2 a set argument crosses INBOUND to a peer and its length is read there
 pass	pca3 a record of a string and a scalar crosses INBOUND to a peer, both fields read there
 pass	pcc1 a partial ctor in an inline tuple completes when projected and applied
+pass	pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)
 pass	pcc2 a partial ctor in a let-bound tuple completes when projected and applied
 pass	pcc3 a partial ctor in a record field completes when projected and applied
 pass	pcl1 a peer op returning a list crosses as a handle and its length is read
@@ -8846,5 +8849,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	pah1 a heap LIST argument crosses INTO the peer and is consumed by the provider (arg-direction lowering)
-pass	pcc1 fifty peer-returned lists consumed on the consumer side reclaim to zero (cross-boundary census)

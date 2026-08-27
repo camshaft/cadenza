@@ -21573,7 +21573,6 @@ mod match_engine {
         );
     }
 
-
     #[test]
     fn a_body_that_traps_through_a_seq_emits_a_trapping_function() {
         // The divergence detection peers THROUGH a `Core::Seq` (an effect-statement run then a value) to
@@ -57258,38 +57257,17 @@ mod cross_component_oracle {
                 && contains_bytes(&consumer, b"cadenza:pairs/api"),
             "the consumer must import both bound peer interfaces"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[U9] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![
-            cdz_run::Peer {
-                bytes: math,
-                interface: "cadenza:math/api".to_string(),
-            },
-            cdz_run::Peer {
-                bytes: pairs,
-                interface: "cadenza:pairs/api".to_string(),
-            },
-        ];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["9".to_string()],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a consumer bound to two peer interfaces runs")
-        {
-            // pairs.pair(9) = (9,9) crossing as a handle; `. … 0` = 9; math.neg(9) = -9. A value from EACH
-            // of the two bound peer interfaces, over the multi-interface extern+runtime envelope.
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "-9",
-                "a consumer combines results from two distinct peer interfaces"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("two-interface run trapped: {t}"),
-        }
+        // The RUN half (compose both providers + this consumer; pairs.pair(9)=(9,9) crosses as a handle,
+        // project element 0 → 9, math.neg(9) → -9) is covered by corpus
+        // `spec/semantics/29-cross-component-peers.sexp` — "a consumer bound to two distinct peer interfaces
+        // combines their results". This in-crate test now pins the WHITE-BOX claims only: the consumer imports
+        // BOTH bound interfaces (above) and each source provider publishes its OWN interface name — which the
+        // corpus run confirms behaviorally.
+        assert!(
+            contains_bytes(&math, b"cadenza:math/api")
+                && contains_bytes(&pairs, b"cadenza:pairs/api"),
+            "each source provider publishes its own interface name"
+        );
     }
 
     #[test]
@@ -58488,7 +58466,6 @@ mod cross_component_oracle {
         }
     }
 
-
     // ------------------------------------------------------------------------------------------------
     // PL18 — a peer op returning a LIST (a variable-length collection) crosses + the consumer reads its
     // LENGTH. The rich-interface north star names lists crossing the peer boundary; the List RESULT read
@@ -58619,8 +58596,6 @@ mod cross_component_oracle {
             cdz_run::Outcome::Trap(t) => panic!("map-lookup run trapped: {t}"),
         }
     }
-
-
 
     // ------------------------------------------------------------------------------------------------
     // PL43 — a resource-escaping entrypoint reaching TWO DISTINCT peer interfaces now CROSSES (the multi-`g`
