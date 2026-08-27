@@ -339,6 +339,29 @@ as the cheaper fix for the fusable cases if that pass's owner takes it.
      so the extraction gate correctly excludes it today (that is why it is fenced). A reclaim here needs a
      dup-on-escape on the threaded state with a structural fence that resume-invisibility does not defeat —
      OPEN with v-runtime, likely the hardest of the arc; defer until 2c.1/2c.2 land.
+   - **2c.4 ZIP-SHAPE / DUAL-SPINE TRUNCATION EXIT-DROP (`05-compound` ZIP=3, UNZIP=10, matmul=20 ≈ 33).**
+     A dual-spine walk (`zip-sum`) matches BOTH lists in nested matches and recurses on both tails, exiting
+     at whichever spine empties first. Empirical characterization on `052KQzQP` (2026-08-27c, scratch probes,
+     deterministic — no flap):
+     - Leak is keyed to WHICH exit arm fires, and is a FIXED count per exit — **INDEPENDENT of list length,
+       unwalked-tail length, productive-step count, AND whether the lists are compile-time-constant
+       (#4270-immortal) or runtime-built** (all four confounds varied; count unchanged):
+       - inner `((list) acc)` — ys empties while xs was just decomposed to `xh`/`xt`: **leak 3**
+       - outer `((list) acc)` reached after walking to equal length: **leak 2**
+       - outer `((list) acc)` reached immediately (xs empty on entry): **leak 1**
+     - 🚨 **This DISPROVES the earlier "unwalked tail" hypothesis** — the unwalked tail IS reclaimed (leak
+       does not grow with it). The residual is a FIXED set of dead bindings live at the RETURN arm that the
+       arm fails to drop: the `+2` of the inner-arm case over the immediate case = exactly the `xh`/`xt`
+       decomposition of the enclosing xs-match that the ys-empty arm returns WITHOUT consuming (`acc` alone
+       escapes). So the lever is: **at a match arm that returns a value NOT derived from a heap binder bound
+       by an ENCLOSING match still in scope, DROP that binder** — gated on the binder not escaping the arm.
+       This is the EXIT-DROP arc, now the near-term priority (concierge 2026-08-27: reclaim co-design before
+       deep-mark). It does NOT depend on deep-immortal-marking.
+     - **OPEN for v-runtime (circulated this tick, BEFORE any emit):** confirm the object identity of the 3 /
+       2 / 1 (are these boxed elements + list handles, or per-frame artifacts?), and confirm dropping the
+       enclosing-match binder at the sibling-return arm is sound (the binder is dead there; the returned
+       `acc` is a disjoint scalar). Acceptance = value-wrong-grep + flap-detection; fence = must not touch the
+       recursive arm (where `xt`/`yt` ARE consumed).
 3. Site A, spine-cell reclaim on the back-edge over the fold/count family (pending v-runtime's spine-slot
    + `code.dup_sites` count out of `emit_loop_iteration`).
 
