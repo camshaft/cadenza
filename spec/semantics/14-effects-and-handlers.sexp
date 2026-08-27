@@ -9213,6 +9213,69 @@
   (call   main (: 5 Int64)) (output (: 35 Int64))
   (call   main (: 3 Int64)) (output (: 21 Int64)))
 
+(case "an abortive perform in a conditional let-INIT hoists (aborting branch) and folds"
+  (doc    "E4 let-init hoist: an abort in a conditional `let` INIT is lifted out by distributing the whole let
+           into each branch with the init replaced. The true branch's init is an unconditional abort the fold
+           collapses (discarding the let body) → the Bail arm value 7; sound because the condition and any
+           preceding bindings are pure.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 99 ((bail (n) s n)) (let ((k (if true (Bail.bail 7) 0))) (+ 1 k))))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch"
+  (doc    "The non-aborting direction of the let-init hoist: the false branch keeps the let with init 0, so
+           `(+ 1 0)` = 1.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle Bail 99 ((bail (n) s n)) (let ((k (if false (Bail.bail 7) 0))) (+ 1 k))))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "an abortive let-init after an effectful binding folds via inner-handle pre-reduction"
+  (doc    "The preceding binding `a = (Get.get 0)` is effectful, but `Get` sits under a NESTED inner handle
+           and the outer `Bail` is abortive, so the fold PRE-REDUCES the inner `Get` handle (folding `a` to
+           the constant 5). With `a` pure, the conditional let-init abort hoists and homes to Bail. x<5: the
+           k-init aborts → 7. x>=5: a=5, k=0 → 5.")
+  (input  (do
+            (effect Get (op get (-> Int64 Int64))) (effect Bail (op bail (-> Int64 Int64)))
+            (def (main (: x Int64))
+              (handle Bail 0 ((bail (n) s n))
+                (handle Get 0 ((get (n) s (resume 5 s)))
+                  (let ((a (Get.get 0)) (k (if (< x 5) (Bail.bail 7) 0))) (+ a k)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 7 Int64))
+  (call   main (: 9 Int64)) (output (: 5 Int64)))
+
+(case "two nested intra-program handlers compose inside-out"
+  (doc    "Two nested handles compose: the fold reduces the INNER handle first (discharging `A`), leaving `B`
+           for the outer fold. `(A.a)` resumes 22, `(B.b)` resumes 20, so `(+ (A.a) (B.b))` = 42.")
+  (input  (do
+            (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64)))
+            (def (main)
+              (handle B 0 ((b (u) s (resume 20 s)))
+                (handle A 0 ((a (u) s (resume 22 s))) (+ (A.a) (B.b)))))
+            (export main)))
+  (output (: 42 Int64)))
+
+(case "a recursive fn threads TWO nested stateful handlers' states at once"
+  (doc    "A recursive `loop` runs under two nested stateful handlers: `A` (countdown seeded 3, threads s-1)
+           governs depth, `B` (accumulator seeded 0, threads s+10) folds across steps. `loop` performs BOTH,
+           so neither handler alone can specialize it — the fold merges both contexts into one 2-slot context
+           and threads each effect's state as its own trailing param. Ticks read 3,2,1,0; bumps read 0,10,20;
+           sum 0+10+20+0 = 30.")
+  (input  (do
+            (effect A (op tick (-> Unit Int64))) (effect B (op bump (-> Unit Int64)))
+            (def (loop) (if (= (A.tick) 0) 0 (+ (B.bump) (loop))))
+            (def (main)
+              (handle B 0 ((bump (u) s (resume s (+ s 10))))
+                (handle A 3 ((tick (u) s (resume s (- s 1)))) (loop))))
+            (export main)))
+  (output (: 30 Int64)))
+
 (case "a def-boundary conditional abort with PURE arguments folds and homes to its handler"
   (doc    "A helper `unwrap` aborts in a match arm (`((None) (Bail.out tag))`), called with PURE arguments
            `(unwrap (if (> n 0) (Some n) (None)) 11)`. The scrutinee is pure, so the fold captures the

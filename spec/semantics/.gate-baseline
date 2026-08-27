@@ -8543,3 +8543,8 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	an abortive perform in a conditional let-INIT hoists (aborting branch) and folds
+pass	a conditional let-INIT whose abort branch is NOT taken folds the non-aborting branch
+pass	an abortive let-init after an effectful binding folds via inner-handle pre-reduction
+pass	two nested intra-program handlers compose inside-out
+pass	a recursive fn threads TWO nested stateful handlers' states at once
