@@ -10206,7 +10206,7 @@
 ; recursive HOF with a plain closure (no effects) answers 6375, and the same capture-once closure
 ; through a NON-recursive HOF answers 50. Oracle 6375 = capture-once a=seed, 50 frames of k*5.
 
-(case "chr1 a capture-once closure driven by a RECURSIVE higher-order fn declines pending the closure-param specialization"
+(case "chr1 a capture-once closure driven by a RECURSIVE higher-order fn folds — its enclosing-param capture is threaded into the escaping closure env"
   (input (do
     (effect St (op next (-> Int64)))
     (def (drive (: f (-> Int64 Int64)) (: k Int64))
@@ -10217,7 +10217,12 @@
           (drive g 50))))
     (export main)))
   (call main (: 5 Int64))
-  (output (: 6375 Int64)))
+  (output (: 6375 Int64))
+  ; The escaping capturing closure `g` (its env holds the once-drawn capture) is not reclaimed after
+  ; the recursive `drive` returns — a Perceus reclaim gap for a capturing closure that escapes into a
+  ; recursive HOF (a stable 1-object leak, independent of n; v-core-opt reclaim lane, same class as the
+  ; xar5 resume-escape fence). The FOLD is correct (main(n) = n·1275); only the closure cell leaks.
+  (live-objects known-leak 1))
 
 ; -- breaker batch 500 (2026-08-27): the BOTH-branches-performing edge of #4038's Form D
 ; distribution — each if-branch is its own performing creation-wrapper; only the TAKEN branch's

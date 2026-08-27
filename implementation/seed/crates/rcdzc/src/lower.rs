@@ -12720,8 +12720,30 @@ fn collect_captures(
                 record_capture(binder, node, captures, capture_refs);
                 return true;
             }
-            // A non-param synthesized ref (a prelude name, a reduced constant) is global — not captured.
+            // A non-user SYNTHESIZED ref — usually a prelude name or a reduced constant (global, not
+            // captured), BUT a capture-once fold produces a chain of synthesized alias bindings
+            // (`#a → #seed → n`): the hoisted `#a` capture binding aliases the handle `#seed` binding,
+            // which aliases the enclosing param `n`. The single-level `resolved_of(value)` Param check
+            // above sees only `Ref{#seed}` (not a Param) and would fall through to skip here, leaking the
+            // enclosing param as a slot-less `Core::Param` in the lifted closure. So CHASE the alias
+            // chain to its terminal first: a chain that bottoms out at an enclosing PARAM IS a capture,
+            // keyed by the ORIGINAL body occurrence `node` (the chain is pure resolution aliases, so the
+            // terminal param's value equals this reference's value). A chain that bottoms out anywhere
+            // else (a prelude name / a reduced constant / a self-cycle) is genuinely global — not captured.
             if !db.is_user_node(value) {
+                let mut cursor = value;
+                for _ in 0..64 {
+                    match resolved_of(db, cursor) {
+                        Resolved::Param { binder } => {
+                            if !params.contains(&binder) {
+                                record_capture(binder, node, captures, capture_refs);
+                            }
+                            return true;
+                        }
+                        Resolved::Ref { value: next } if next != cursor => cursor = next,
+                        _ => return true,
+                    }
+                }
                 return true;
             }
             if !db.is_within(value, lam_id) {
