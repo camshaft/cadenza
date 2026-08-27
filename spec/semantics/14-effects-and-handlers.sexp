@@ -6050,6 +6050,34 @@
             (export main)))
   (output (: 7 Int64)))
 
+(case "an abortive perform in a let body tail referencing the let binding stays in scope"
+  (doc    "The tail-position let face of the abortive body-local scope fix: the abort is the let body's
+           TAIL and its argument reads the let binding — `(let ((v (+ u 2))) (Bail.bail v))`. The abort
+           abandons the computation and the handle's value is the arm value; the let binding must stay in
+           scope for the abort perform's argument. `run 5`: v = 7, `(Bail.bail 7)` → 7.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Bail 0
+                ((bail (n) s n))
+                (let ((v (+ u 2))) (Bail.bail v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an abortive perform of a bare parameter argument abandons the surrounding operator"
+  (doc    "The bare-parameter control of the abortive body-local family (no body-local binding — the
+           always-worked baseline): `(+ (Bail.bail u) 100)` performs the abort with `run`'s parameter `u`
+           directly, and the abort abandons the enclosing `+ 100`, so the handle is the arm value `u`.
+           `run 5` → 5. Pins that the body-local scope fix does not perturb the bare-param baseline.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail u) 100)))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 5 Int64)))
+
 (case "a runtime condition selects an abortive branch reading an enclosing parameter"
   (doc    "The branch-tail abort with a RUNTIME condition over an enclosing parameter — the shape a
            validation routine takes: `(handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The

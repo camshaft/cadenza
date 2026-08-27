@@ -8662,61 +8662,6 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
     }
 }
 
-/// A `do`-local VALUE def whose binding flows into a PERFORM ARGUMENT under a handle must compile — it used
-/// to be spuriously CDZ0101-rejected "unbound name" (the do-def-in-perform-argument false-reject, corpus-
-/// bugfix/breaker 2026-07-24), while the semantically identical `let`-twin computed fine. Root cause: the
-/// handle body's downstream folds (pure/tail-resume) drop non-final `do` items and re-splice only a surviving
-/// expression, orphaning the `(def v e)` a later perform arg references. Fix: `reduce_handle` normalizes a
-/// leading do-local value def to a `let` (`lift_do_local_value_defs`) so every fold sees a properly-scoped
-/// body. Oracle: `run 5` → `v = 7`, `(Ask.ask 7)` resumes `14`, `+ 7` = 21.
-/// An ABORTIVE perform whose ARGUMENT references a handle-body-local BINDING must compile — it used to be
-/// spuriously CDZ0101-rejected "unbound" (the abortive twin of the do-def-in-perform-arg fix, corpus-bugfix/
-/// breaker 2026-07-24). The abortive arm `(bail (n) s n)` materializes its arg as the abort value; when that
-/// arg is a `let`/`do`-bound local of the body — `(let ((v (+ u 2))) (Bail.bail v))` — `reduce_handle`
-/// collapses the whole handle to the abort value and DISCARDS the body's binding scope, orphaning `v`. Fix:
-/// the `let` thread arm re-wraps the abort value in its bindings when the body fires an abort (and do-local
-/// defs normalize to `let` up front, so the do form composes). Oracle: `v = u+2 = 7`, `bail 7` → 7.
-#[test]
-fn an_abortive_perform_referencing_a_body_local_binding_compiles() {
-    use crate::testkit::parse;
-    let run = |src: &str| -> Option<String> {
-        let b = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("an abortive perform over a body-local binding must compile (no CDZ0101)");
-        run_linked(&b, "main")
-    };
-    // A) tail abort, let-bound arg → 7.
-    if let Some(v) = run("(do (effect Bail (op bail (-> Int64 Int64))) \
-         (def (run (: u Int64)) (handle Bail 0 ((bail (n) s n)) (let ((v (+ u 2))) (Bail.bail v)))) \
-         (def (main) (run 5)) (export main))")
-    {
-        assert_eq!(v, "7", "v = u+2 = 7; bail 7 abandons, returns 7");
-    }
-    // B) abort in a strict OPERAND of `+`, let-bound arg → 7 (abort abandons the +100).
-    if let Some(v) = run("(do (effect Bail (op bail (-> Int64 Int64))) \
-         (def (run (: u Int64)) (handle Bail 0 ((bail (n) s n)) (let ((v (+ u 2))) (+ (Bail.bail v) 100)))) \
-         (def (main) (run 5)) (export main))")
-    {
-        assert_eq!(v, "7", "the abort abandons the surrounding +100, returns 7");
-    }
-    // C) breaker's DO-DEF abortive twin: do-def flows into an abort perform's arg → 7 (do→let→abort re-scope).
-    if let Some(v) = run("(do (effect Bail (op bail (-> Int64 Int64))) \
-         (def (run (: u Int64)) (handle Bail 0 ((bail (n) s n)) (do (def v (+ u 2)) (Bail.bail v)))) \
-         (def (main) (run 5)) (export main))")
-    {
-        assert_eq!(
-            v, "7",
-            "do-def v=7 composes through the do→let normalization + abort re-scope"
-        );
-    }
-    // CONTROL: bare-param abort arg (no body-local binding) — always worked, must stay → 5.
-    if let Some(v) = run("(do (effect Bail (op bail (-> Int64 Int64))) \
-         (def (run (: u Int64)) (handle Bail 0 ((bail (n) s n)) (+ (Bail.bail u) 100))) \
-         (def (main) (run 5)) (export main))")
-    {
-        assert_eq!(v, "5", "bare param u=5; abort returns 5");
-    }
-}
-
 /// A handler-arm `(do (def d e) (resume V S))` whose do-local def `d` is referenced by BOTH resume operands
 /// (value AND next-state) must compile — it used to CDZ0101-reject "unbound d" (the do-def-shared-across-
 /// both-resume-slots false-reject, corpus-bugfix/breaker 2026-07-25; the multi-use residue of the #21 do→let
