@@ -7736,3 +7736,75 @@
     (export main)))
   (call main (: 1000000 Int64))
   (output (: 1000000 Int64)))
+
+; -- FLOW-SENSITIVE guard / mask elision value+trap parity (behavioral halves migrated from rcdzc
+; 2026-08-27; the white-box Lir guard-count / bit-op-count inspections stay wasmtime-free rcdzc unit
+; tests). A branch/range condition refines a variable's interval in the taken branch, licensing the
+; compiler to shed a provably-dead overflow guard or a redundant mask/or — the VALUE must be unchanged,
+; a genuinely-live guard must still trap, and a fold that DISCARDS an operand must keep that operand's
+; trap. These use flow-refined `(if (and/or …) …)` surfaces distinct from the pure-bitwise identity
+; cases in 06-numeric-model.
+
+(case "a branch condition refines a variable's range so a dead underflow guard is elided (value + trap parity)"
+  (doc    "Under `(if (> n 0) …)` the then knows n>=1, so `(- n 1)` cannot underflow — value unchanged and
+           no FALSE trap (n=MIN takes the else). A `<`-guard refines the else the same way. A `(+ n 1)`
+           under n>=1 CAN overflow at n=MAX and must STILL trap (the live guard is kept). rcdzc:
+           a_branch_condition_refines_a_variables_range_and_elides_a_dead_guard.")
+  (input  (do
+            (def (sub  (: n Int64)) (if (> n 0) (- n 1) 0))
+            (def (add  (: n Int64)) (if (> n 0) (+ n 1) 0))
+            (def (esub (: n Int64)) (if (< n 1) 0 (- n 1)))
+            (export sub) (export add) (export esub)))
+  (call sub  (: 5 Int64)) (output (: 4 Int64))
+  (call sub  (: 0 Int64)) (output (: 0 Int64))
+  (call sub  (: -9223372036854775808 Int64)) (output (: 0 Int64))
+  (call add  (: 5 Int64)) (output (: 6 Int64))
+  (call add  (: 9223372036854775807 Int64)) (trap "overflow")
+  (call esub (: 3 Int64)) (output (: 2 Int64)))
+
+(case "a branch refinement elides a redundant AND-mask covering the refined range (value parity)"
+  (doc    "Under `(if (and (>= x 0) (< x 256)) …)` x is refined to [0,255], so `(& x 255)` == x (the mask
+           covers x's whole range and is a no-op); out of range takes the else. A PARTIAL `(& x 15)` still
+           masks. rcdzc: a_branch_refinement_elides_a_redundant_and_mask.")
+  (input  (do
+            (def (full (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 255) x))
+            (def (part (: x Int64)) (if (and (>= x 0) (< x 256)) (& x 15) x))
+            (export full) (export part)))
+  (call full (: 200 Int64))  (output (: 200 Int64))
+  (call full (: 0 Int64))    (output (: 0 Int64))
+  (call full (: 1000 Int64)) (output (: 1000 Int64))
+  (call part (: 200 Int64))  (output (: 8 Int64)))
+
+(case "a saturating OR-mask over a refined range folds to the constant (value + trap parity)"
+  (doc    "Under x∈[0,255], `(| x 255)` == 255 (every bit x could set is already set, so the OR adds
+           nothing); out of range takes the else. A PARTIAL `(| x 15)` still ORs. The fold DISCARDS x, so
+           a trapping operand keeps its divide-by-zero trap. rcdzc: a_saturating_or_mask_folds_to_the_constant.")
+  (input  (do
+            (def (sat  (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 255) x))
+            (def (part (: x Int64)) (if (and (>= x 0) (< x 256)) (| x 15) x))
+            (def (divz (: z Int64)) (| (: (& (: (/ 100 z) Int64) 7) Int64) 255))
+            (export sat) (export part) (export divz)))
+  (call sat  (: 200 Int64))  (output (: 255 Int64))
+  (call sat  (: 0 Int64))    (output (: 255 Int64))
+  (call sat  (: 1000 Int64)) (output (: 1000 Int64))
+  (call part (: 200 Int64))  (output (: 207 Int64))
+  (call divz (: 0 Int64))    (trap "divide by zero"))
+
+(case "a conjunction/disjunction range condition refines both bounds so guards are elided (value + trap parity)"
+  (doc    "`(and (> n 0) (< n 100))` bounds n∈[1,99] in the then, so `(- n 1)` and `(+ n 1)` shed their
+           guards; `(or (< n 1) (> n 99))`'s ELSE refines the same via De Morgan; an `and` over two vars
+           refines both. The WRONG polarity — an `(or …)` in the then — gives no single-variable bound, so
+           `(- n 1)` keeps its guard and STILL traps at MIN. rcdzc:
+           a_conjunction_or_disjunction_condition_refines_both_variable_bounds.")
+  (input  (do
+            (def (asub  (: n Int64)) (if (and (> n 0) (< n 100)) (- n 1) 0))
+            (def (aadd  (: n Int64)) (if (and (> n 0) (< n 100)) (+ n 1) 0))
+            (def (oelse (: n Int64)) (if (or (< n 1) (> n 99)) 0 (- n 1)))
+            (def (two   (: a Int64) (: b Int64)) (if (and (> a 0) (> b 0)) (+ (- a 1) (- b 1)) 0))
+            (def (othen (: n Int64)) (if (or (> n 0) (< n -100)) (- n 1) 0))
+            (export asub) (export aadd) (export oelse) (export two) (export othen)))
+  (call asub  (: 50 Int64)) (output (: 49 Int64))
+  (call aadd  (: 99 Int64)) (output (: 100 Int64))
+  (call oelse (: 50 Int64)) (output (: 49 Int64))
+  (call two   (: 5 Int64) (: 3 Int64)) (output (: 6 Int64))
+  (call othen (: -9223372036854775808 Int64)) (trap "overflow"))
