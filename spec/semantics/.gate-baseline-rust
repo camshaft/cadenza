@@ -7149,6 +7149,7 @@ pass	record ordering compares in canonical sorted field order, not written order
 pass	record ordering falls to the later canonical field when the earlier ties
 pass	record reshaping is subset comparison as explicit projection
 pass	records reached via MERGE and via WITHOUT dedupe with the direct build as one Set element
+pass	recovering two quantities' magnitudes takes their remainder as bare numbers
 pass	recursion is detected through a nested do around the self-call
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly

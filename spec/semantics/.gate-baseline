@@ -7621,6 +7621,7 @@ pass	record ordering compares in canonical sorted field order, not written order
 pass	record ordering falls to the later canonical field when the earlier ties
 pass	record reshaping is subset comparison as explicit projection
 pass	records reached via MERGE and via WITHOUT dedupe with the direct build as one Set element
+pass	recovering two quantities' magnitudes takes their remainder as bare numbers
 pass	recursion is detected through a nested do around the self-call
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
@@ -7976,6 +7977,7 @@ pass	sp4 SCALAR param + bare option result
 pass	sp5 SCALAR param + list result
 pass	sp6 TWO scalar params + 2-field record result (multi-scalar face)
 pass	sp7 SCALAR param + variant-with-payload result (sum face of the same gate)
+pass	spc1 a CONSTANT-origin sum spine (branch-selected literal) builds mortal and its walk leaks the full spine (joins the sp position matrix)
 pass	spj1 a single-use projected list consume stays on the FBIP fast path
 pass	splice flattens where unquote nests
 pass	splicing a non-list value into a quasiquote is a type error
@@ -8959,4 +8961,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	spc1 a CONSTANT-origin sum spine (branch-selected literal) builds mortal and its walk leaks the full spine (joins the sp position matrix)

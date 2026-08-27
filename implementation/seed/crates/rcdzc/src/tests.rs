@@ -22181,19 +22181,10 @@ mod match_engine {
             "the leaky scheme-unify mismatch must NOT surface for % on a quantity: {}",
             diag.message
         );
-        // The repair the message suggests works: take the remainder of the recovered numeric values.
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(
-                    "(do (def (main) (% ((. Qty value) ((. Qty of) 7 ((. Unit base) #\"meter\"))) \
-                     ((. Qty value) ((. Qty of) 3 ((. Unit base) #\"meter\"))))) (export main))"
-                )))
-                .expect("the Qty.value-first repair compiles"),
-                "main"
-            ),
-            1,
-            "(% (Qty.value 7m) (Qty.value 3m)) = 1 — the suggested repair"
-        );
+        // The repair the message suggests (recover each magnitude with Qty.value, then take the bare
+        // remainder → 7 % 3 = 1) is corpus-covered by 18-units-of-measure "recovering two quantities'
+        // magnitudes takes their remainder as bare numbers"; this rcdzc test keeps only the clean-decline
+        // white-box pin (the % message names the real cause and does not leak the operator's scheme).
     }
 
     #[test]

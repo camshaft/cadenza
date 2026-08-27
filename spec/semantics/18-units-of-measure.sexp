@@ -332,6 +332,15 @@
                (Qty.of 2 (Unit.of #"kilometer")))))
   (output (: 3000 Int64)))
 
+(case "recovering two quantities' magnitudes takes their remainder as bare numbers"
+  (doc    "`%` (remainder) is not defined on quantity operands (the units surface has no `%` rule; it
+           declines — that clean decline is pinned in rcdzc). The suggested repair is to recover each
+           quantity's magnitude with `Qty.value` and take the remainder of the bare numbers:
+           `(% (Qty.value (Qty.of 7 meter)) (Qty.value (Qty.of 3 meter)))` = 7 % 3 = 1. Pins that the
+           documented repair works.")
+  (input  (% (Qty.value (Qty.of 7 (Unit.base #"meter"))) (Qty.value (Qty.of 3 (Unit.base #"meter")))))
+  (output (: 1 Int64)))
+
 ; Unit extraction — `(Qty.unit q)` recovers a quantity's UNIT as a first-class compile-time unit value,
 ; the inverse of `Qty.of`'s unit argument. It lets a program construct another quantity in the SAME unit
 ; as an existing one — `(Qty.of new (Qty.unit y))` — without re-spelling the unit expression. The unit is
