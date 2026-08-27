@@ -8376,3 +8376,7 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
 todo	xas1 a recursive performer with the arm capturing a main-local SCALAR let declines (same lifted-scope gap)
+pass	a resuming observer of a recursive same-effect advance reads the advanced state (sr4)
+pass	a same-effect abortive arm with two INLINE advancing performs reads the advanced state (no recursion)
+pass	a DIFFERENT-effect abort after an inner recursive advance reads its own un-advanced seed (cx1)
+todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
