@@ -6698,6 +6698,9 @@ pass	lpc1 a LAMPORT CLOCK — local events tick the counter, receives jump it to
 pass	lps1 a non-matching literal payload falls through to the same-variant binder
 pass	lps2 a literal-only sum arm with no binder fall-through is non-exhaustive
 pass	lru1 a CAPACITY-2 LRU cache — put inserts as most-recent and answers the evicted key or 0, get answers the value refreshing recency or -1 on miss, and the SEED collides the computed key with a literal so one run UPDATES where the other EVICTS
+pass	lrx1 a runtime List.push extends and its length counts
+pass	lrx2 a shared list binding consumed then re-read is retained, not mutated
+pass	lrx3 a shared list param consumed then passed to a self-call sibling is retained
 pass	ls1 a LIST-state snapshot crosses mid-growth — the held list is immutable while the state keeps growing, sum and final length both pinned
 pass	lsb1 a bounded value shifted by a bounded count computes the masked result
 pass	lsb2 a negative bounded operand shifted by a bounded count stays sound (Int8)
