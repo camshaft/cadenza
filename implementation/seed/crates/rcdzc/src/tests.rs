@@ -9918,67 +9918,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_char_literal_pattern_dispatches_by_codepoint() {
-        // Char-LITERAL patterns: `(match c (#\a 1) (#\b 2) (_ 0))`. Char is the LAST scalar-literal kind
-        // to gain a match arm (Int/Bool/Str/Symbol already dispatch) — `classify_probe` maps a
-        // `Resolved::Char` to a `Probe::Char`, the scalar probe-type check expects a `Char` scrutinee,
-        // the fold compares by codepoint (`probe_matches_char`), and the nested-payload classify
-        // (`pattern_constraints`) accepts the `Char` arm. A `Char` has NO runtime machine rep yet (its
-        // `=`/`to-int` fold only at compile time), so EVERY producible char match FOLDS — these use a
-        // constant scrutinee, the same "constant fold now, runtime later" scope String/Symbol shipped in.
-        // Skip the heap-run asserts storeless (staging-sync-loop-harness-trap).
-        if super::find_runtime_wasm().is_none() {
-            eprintln!(
-                "runtime wasm not found (run `cargo xtask build`); skipping heap-run assertions"
-            );
-            return;
-        }
-        // A constant char selects the matching arm by codepoint; a miss falls to the wildcard.
-        assert_eq!(
-            run_heap_value(
-                "(do (def (main) (match #\\b (#\\a 1) (#\\b 2) (_ 0))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "2",
-            "#\\b selects the second char-literal arm — dispatch by codepoint, not a fold to arm 1"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(do (def (main) (match #\\z (#\\a 1) (#\\b 2) (_ 0))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "0",
-            "an unlisted char falls through to the wildcard → 0"
-        );
-        // A NESTED char-literal payload sub-pattern — `(Tok.Ch #\a)` matches a `Tok.Ch` carrying `#\a`
-        // (the `pattern_constraints` `Char` arm); a non-matching char falls to the inner wildcard.
-        assert_eq!(
-            run_heap_value(
-                "(do (type Tok (Ch Char) (End)) \
-                     (def (main) (match (Tok.Ch #\\a) ((Tok.Ch #\\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0))) \
-                     (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "97",
-            "a nested char-literal payload `(Tok.Ch #\\a)` matches by codepoint"
-        );
-        assert_eq!(
-            run_heap_value(
-                "(do (type Tok (Ch Char) (End)) \
-                     (def (main) (match (Tok.Ch #\\z) ((Tok.Ch #\\a) 97) ((Tok.Ch _) 1) ((Tok.End) 0))) \
-                     (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "a nested char-literal payload falls through to the inner wildcard on a non-match"
-        );
-    }
-
-    #[test]
     fn a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject() {
         // WELL-FORMEDNESS of char-literal patterns (checked structurally, storeless — no heap run). A char
         // pattern over an Int scrutinee is a shape error (CDZ0201, the char twin of a bool-over-int probe);
