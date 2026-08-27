@@ -7038,54 +7038,6 @@ fn a_caller_observed_mutually_recursive_fold_declines_cleanly_no_leak() {
     );
 }
 
-/// The GROUP-AWARE multi-value fold over a mutual-recursive SCC: a NON-TAIL mutual group where a partner
-/// call PRECEDES an out-state observation now COMPILES (was a clean decline in the soundness-floor slice).
-/// `compute` recurses via a `let`-init `(typeof (- n 1))` (a mutual partner that performs `put`) then reads
-/// state AFTER the call returns `(+ child (St.get))`. Single-return would thread the partner call with the
-/// INCOMING state and drop its advance (the post-call `get` reading stale state — a miscompile, `main(2)`→3).
-/// The group fold reserves the whole SCC as multi-value, so each member returns `(value, out-state)` and a
-/// cross-def partner call is let-bound + out-state-projected (`(. t 1)`) like a self-call — `compute`'s
-/// post-recursion `get` reads `typeof`'s ADVANCED out-state. Pins that it COMPILES (no `$s0` leak, no
-/// decline); the RUN value (`main(2)` = 4) is verified by the corpus case `a non-tail mutual-recursive group
-/// observing a partner's out-state folds…` (which runs via cdz-run with the linked runtime).
-#[test]
-fn a_non_tail_mutual_group_observing_a_partners_out_state_folds_via_group_multivalue() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect St (op get (-> Unit Int64)) (op put (-> Int64 Unit))) \
-        (def (typeof (: n Int64)) \
-          (if (= n 0) (St.get) (compute n))) \
-        (def (compute (: n Int64)) \
-          (let ((child (typeof (- n 1)))) \
-            (match (St.put n) (_ (+ child (St.get)))))) \
-        (def (main (: k Int64)) \
-          (handle St 0 \
-            ((get (u) s (resume s s)) \
-             (put (v) s (resume unit (+ s v)))) \
-            (typeof k))) \
-        (export main))";
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "main",
-            crate::codec::encode(&parse(src)),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    // Produces a component (the group fold specializes the SCC), and no internal-name leak (`$s`/`$t`).
-    assert!(
-        out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some(),
-        "the group multi-value fold must compile a non-tail mutual group observing a partner's out-state"
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
-        "no leaked internal specialization state-param / multi-value temp name"
-    );
-}
-
 /// A recursive performer whose recursion RESULT feeds a separate HELPER call now COMPILES (was a
 /// "parameter reference has no local slot" decline at emit). `walk` recurses, then a match arm feeds the
 /// recursion result AND a fresh `St.get` to a pure helper `combine`. The specializer threads `walk`'s body
@@ -7193,97 +7145,6 @@ fn a_mutual_group_demand_perform_demand_in_a_let_wrapped_dispatch_folds() {
             .message
             .contains("not yet reducible by the tail-resumptive fold")),
         "no tail-resumptive-fold decline on the demand-perform-demand mutual group",
-    );
-}
-
-/// A TWO-EFFECT recursion (nested A+B handlers, a shared recursive callee performing BOTH) threads BOTH
-/// slots' post-recursion out-state to a continuation observer now (breaker #14). `race` does `(let a=(A.next)
-/// in (let b=(B.next) in (if (< a b) (race (+ k 1)) k)))` — a NESTED `let` chain ending in an `if` holding the
-/// tail self-call. `multivalue_leaves_threadable` / `thread_returning_tuple` only matched a `(let inits
-/// DISPATCH)` whose body was directly an `if`/`match` (finding #12); a nested `let a in let b in if` fell to
-/// the leaf case, `selfcall_under_conditional` saw the self-call under the `if`, and the callee dropped to
-/// single-return — so the trailing `(A.next)` after `(race 0)` read the PRE-recursion state (10 vs 15, a
-/// silent wrong value on all backends). Fixed by letting both the pre-check and the threader descend a `let`
-/// whose body is itself a `let` (recursing to the dispatch). Pins that it COMPILES + no decline; the run
-/// value (main(5)=15) is checked by the corpus case via cdz-run.
-#[test]
-fn a_two_effect_recursion_threads_both_slots_outstate_to_a_continuation_observer() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect A (op next (-> Int64))) \
-        (effect B (op next (-> Int64))) \
-        (def (race (: k Int64)) \
-          (let ((a (A.next))) \
-            (let ((b (B.next))) \
-              (if (< a b) (race (+ k 1)) k)))) \
-        (def (main (: n Int64)) \
-          (handle A n \
-            ((next () s (resume (+ s 5) (+ s 5)))) \
-            (handle B (+ n 3) \
-              ((next () t (resume (+ t 2) (+ t 2)))) \
-              (let ((steps (race 0))) \
-                (+ (* 100 steps) (A.next)))))) \
-        (export main))";
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "main",
-            crate::codec::encode(&parse(src)),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    assert!(
-        out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some(),
-        "a two-effect recursion observed by a trailing draw must compile (both slots threaded)",
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
-        "no leaked internal specialization state-param / multi-value temp name",
-    );
-}
-
-/// A recurring round with a `let`-draw + a BARE `do`-discarded draw (`(let ((a (E.next))) (do (E.next) (if …
-/// (race …) k)))`) threads its out-state now (breaker #14 ra6, the do-body face). The nested-let descent
-/// covered a `let`-whose-body-is-`let`; a `let`-whose-body-is-`do` (with a performing discarded head) fell to
-/// the same leaf case and single-returned, dropping the advance. Fixed by giving both the pre-check and the
-/// threader a `do` arm (thread the for-effect leading stmts, recurse on the tail). Pins compile + no decline;
-/// the run value (main(5)=130, the discarded head advances the threaded state) is verified by the corpus case.
-#[test]
-fn a_recurring_round_with_a_bare_do_discarded_draw_threads_its_outstate() {
-    use crate::testkit::parse;
-    let src = "(do \
-        (effect E (op next (-> Int64))) \
-        (def (race (: k Int64)) \
-          (let ((a (E.next))) \
-            (do (E.next) \
-                (if (< a 20) (race (+ k 1)) k)))) \
-        (def (main (: n Int64)) \
-          (handle E n \
-            ((next () s (resume (+ s 5) (+ s 5)))) \
-            (let ((steps (race 0))) \
-              (+ (* 100 steps) (E.next))))) \
-        (export main))";
-    let out = crate::compile::compile(
-        &[crate::abi::Artifact::new(
-            crate::abi::Artifact::KIND_AST,
-            "main",
-            crate::codec::encode(&parse(src)),
-        )],
-        &[crate::backend::Target::Wasm],
-    );
-    assert!(
-        out.artifact(crate::backend::Target::Wasm.artifact_kind())
-            .is_some(),
-        "a recurring round with a bare do-discarded draw must compile (out-state threaded)",
-    );
-    assert!(
-        !out.diagnostics
-            .iter()
-            .any(|d| d.message.contains("$s") || d.message.contains("$t")),
-        "no leaked internal specialization state-param / multi-value temp name",
     );
 }
 
@@ -49504,30 +49365,6 @@ mod stage1 {
         assert!(
             compile_component(&crate::codec::encode(&parse(src))).is_ok(),
             "recursive effectful list-state walk must compile"
-        );
-    }
-
-    #[test]
-    fn a_sequenced_memoize_helper_with_a_local_let_threads_its_out_state() {
-        // The SEQUENCED-MEMOIZE fix (compiler-ml #4 critical path). A cross-fn helper with a LOCAL `let`
-        // — `store(k) = (let vv = k*10 in (Db.put((k,vv)); vv))`, the memoize combinator's on-miss arm —
-        // called in a NON-FINAL `do` position leaked `CDZ0101 unbound vv`: the put's out-state (threaded
-        // FORWARD to the later item) + its substituted arg reference `vv`, which the helper's `let` binds
-        // LOCAL to the performing item — spliced past that item, `vv` escaped its scope. FIX = the `do`
-        // thread arm's LET-LIFT: a non-final item that inlines to `(let ((x e)) lbody)` is lifted to
-        // `(let ((x e)) (do lbody rest…))` so `x` scopes over the continuation whose out-state references it.
-        // Two sequenced `store` calls then a `Map.len` read → 2 keys stored. (A FINAL-position such call
-        // always worked — nothing threads its state on.) State lives on the heap (Map), so compile-only here;
-        // the corpus gate verifies the value.
-        let src = "(do (effect Db (op put (-> (Tuple Int64 Int64) Unit)) (op tot (-> Unit Int64))) \
-                   (def (store (: k Int64)) (let ((vv (* k 10))) (do (Db.put (tuple k vv)) vv))) \
-                   (def (main) (handle Db (Map.empty) \
-                     ((tot (u) s (resume (Map.len s) s)) \
-                      (put (kv) s (match kv ((tuple k v) (resume unit (Map.insert s k v)))))) \
-                     (do (store 3) (store 5) (Db.tot)))) (export main))";
-        assert!(
-            compile_component(&crate::codec::encode(&parse(src))).is_ok(),
-            "a sequenced memoize helper with a local let must compile (the out-state let-lift), not leak CDZ0101"
         );
     }
 
