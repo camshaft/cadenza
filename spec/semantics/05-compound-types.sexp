@@ -5627,6 +5627,20 @@
   (call   main (: 200 UInt8))
   (output (: 200 Int64)))
 
+(case "a literal narrow-newtype element in a constructed list grounds its ConstInt to the inner width"
+  (doc    "The LITERAL-CONSTRUCTION (ConstInt) companion of the narrow-newtype box-widen cases above. A narrow newtype LITERAL `(W.Wrap 5)` with `W = (Wrap UInt8)` in an ACTUALLY-CONSTRUCTED list must ground its ConstInt slot to the `strip_nominal`-ed inner width (u8 → i32) so it AGREES with the box-widen's i32→i64 extend. Before, `int_ty_of` matched `Ty::Int` without `strip_nominal` → the literal fell to the i64 default (`ConstI64`) while the widen (correctly) fired (`i64.extend_i32_u` expecting an i32) → the two DISAGREED → an INVALID component (`expected i32, found i64`). The param-payload box cases (`(W.Wrap n)`) read from an i32 slot and never hit `ConstInt`, so this literal-construction gap slipped through. A live-after scrutinee (`List.len xs` in the arm) forces the build (no const-fold). Head is `(W.Wrap 5)` → arm hits → `List.len` = 2.")
+  (input  (do (type W (Wrap UInt8))
+              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
+(case "a literal SIGNED narrow-newtype element in a constructed list grounds its ConstInt to the inner width"
+  (doc    "The signed-width (Int32) companion of the literal-construction case above: the same live-after constructed `(list (W.Wrap 5) (W.Wrap 7))` with `W = (Wrap Int32)`. A signed narrow-newtype LITERAL must also ground its `ConstInt` to the i32 slot (the extend is sign-aware) so the value-literal grounding and the box-widen agree; a literal that fell to `ConstI64` would disagree with the fired widen → invalid component. Head `(W.Wrap 5)` → arm hits → `List.len` = 2.")
+  (input  (do (type W (Wrap Int32))
+              (def (main) (let ((xs (list (W.Wrap 5) (W.Wrap 7)))) (match xs ((list (W.Wrap 5) .. r) (List.len xs)) (_ 0)))) (export main)))
+  (call   main)
+  (output (: 2 Int64)))
+
 (case "a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add"
   (doc    "The domain-typed fold: `total` threads a `Meters` accumulator through `add-m` — each step
            unwraps both operands, adds, and RE-WRAPS — so every iteration crosses the newtype boundary
