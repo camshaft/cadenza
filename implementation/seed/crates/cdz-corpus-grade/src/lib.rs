@@ -753,6 +753,12 @@ pub enum TrapCode {
     /// A bare `unreachable` halt with no more specific kind: an explicit `(trap …)`, an uninhabited match,
     /// a masked shift-count guard, or any trap that classifies to nothing else (wasm "unreachable executed").
     Unreachable,
+    /// A cross-component PEER compose-time signature/arity/type reject (`run_with_peers` refuses a peer
+    /// whose exported op does not match the consumer's binding). Not a runtime arithmetic trap — a compose
+    /// refusal surfaced as a trap by the gate.
+    PeerSignatureMismatch,
+    /// A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface reject).
+    PeerMissingInterface,
 }
 
 impl TrapCode {
@@ -768,6 +774,8 @@ impl TrapCode {
             TrapCode::OutOfBounds => "CDZ0702",
             TrapCode::Overflow => "CDZ0703",
             TrapCode::Unreachable => "CDZ0704",
+            TrapCode::PeerSignatureMismatch => "CDZ0705",
+            TrapCode::PeerMissingInterface => "CDZ0706",
         }
     }
 
@@ -780,6 +788,8 @@ impl TrapCode {
             "CDZ0702" => Some(TrapCode::OutOfBounds),
             "CDZ0703" => Some(TrapCode::Overflow),
             "CDZ0704" => Some(TrapCode::Unreachable),
+            "CDZ0705" => Some(TrapCode::PeerSignatureMismatch),
+            "CDZ0706" => Some(TrapCode::PeerMissingInterface),
             _ => None,
         }
     }
@@ -803,6 +813,18 @@ pub fn classify(reason: &str) -> Option<TrapCode> {
         Some(TrapCode::Overflow)
     } else if r.contains("unreachable") || r.contains("shift count out of range") {
         Some(TrapCode::Unreachable)
+    } else if r.contains("signature mismatch") {
+        // A cross-component PEER compose-time reject: cdz-run's peer signature check refuses to compose a
+        // peer whose exported op arity/signature does not match the consumer's binding (the signature/
+        // arity/type reject family). Both the corpus `(trap "signature mismatch")` legacy reason and
+        // cdz-run's full "peer `<iface>` op `<f>` signature mismatch: …" reason classify here — so a
+        // compose-time reject grades PASS, not an unconfirmed todo. (A compose reject is neither a compile
+        // `(declines)`/`(error)` — both components compile — nor a runtime arithmetic trap; it is its own kind.)
+        Some(TrapCode::PeerSignatureMismatch)
+    } else if r.contains("does not export the interface") {
+        // A peer that does not EXPORT the interface the consumer imports (a missing-op / wrong-interface
+        // compose reject). The corpus `(trap "does not export the interface")` reason classifies here.
+        Some(TrapCode::PeerMissingInterface)
     } else {
         None
     }
@@ -847,6 +869,22 @@ mod tests {
             Some(TrapCode::Unreachable)
         );
         assert_eq!(classify("something else"), None);
+        // Cross-component peer compose-time rejects classify to their own codes (both the legacy corpus
+        // reason and cdz-run's full message), so a peer reject case grades on the nix path, not just direct.
+        assert_eq!(
+            classify(
+                "peer `cadenza:math/api` op `neg` signature mismatch: expected 2 args, found 1"
+            ),
+            Some(TrapCode::PeerSignatureMismatch)
+        );
+        assert_eq!(
+            classify("signature mismatch"),
+            Some(TrapCode::PeerSignatureMismatch)
+        );
+        assert_eq!(
+            classify("peer does not export the interface `cadenza:math/api`"),
+            Some(TrapCode::PeerMissingInterface)
+        );
     }
 
     #[test]
@@ -857,6 +895,8 @@ mod tests {
             TrapCode::OutOfBounds,
             TrapCode::Overflow,
             TrapCode::Unreachable,
+            TrapCode::PeerSignatureMismatch,
+            TrapCode::PeerMissingInterface,
         ] {
             assert_eq!(
                 TrapCode::from_id(tc.code()),
