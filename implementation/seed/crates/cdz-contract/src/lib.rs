@@ -21,6 +21,6 @@ mod hash;
 
 pub use contract::{
     contract_declaration, contract_from_module, contract_id, contract_id_from_module,
-    id_name_from_descriptor,
+    id_name_from_descriptor, identity_from_descriptor,
 };
 pub use hash::{Hash, HashTag, Hasher, base62};

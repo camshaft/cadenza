@@ -162,6 +162,46 @@ pub fn id_name_from_descriptor(value: &Arenas) -> Option<(String, Hash)> {
     Some((name?, id?))
 }
 
+/// The contract NAME plus its INPUT and OUTPUT type names, read from a contract's `descriptor()` RETURN VALUE
+/// — the tuple `xtask codegen` needs to generate the kernel `contract()` (`Contract::new(name, types, input,
+/// output)`) under the Option-B path (operator 2026-08-27: codegen compiles+executes the module, reads the
+/// descriptor, and generates Rust that calls `Contract::new` from it). Unlike [`id_name_from_descriptor`],
+/// which reads the already-computed `id`, this reads the pieces `Contract::new` RE-DERIVES the id from, so the
+/// Rust side stays the runtime `Contract` representation with no precomputed-id type change. The descriptor's
+/// `input`/`output` fields are `Ast.encode(Ast.Name(<type>))` (the encoded AST of the type-name reference, as
+/// `Bytes`), so each is `codec::decode`d back to its `Name` and its symbol taken. `None` unless the value is a
+/// record with a string `name` and `Bytes` `input`/`output` fields that each decode to a `Name`.
+#[must_use]
+pub fn identity_from_descriptor(value: &Arenas) -> Option<(String, String, String)> {
+    let annotated = value.as_form(value.root, ":")?;
+    let record = *annotated.first()?;
+    let fields = value.as_form(record, "record")?;
+    let mut name: Option<String> = None;
+    let mut input: Option<String> = None;
+    let mut output: Option<String> = None;
+    for &field in fields {
+        let Some([field_name, field_value]) = value.as_form(field, "=") else {
+            continue;
+        };
+        match value.as_name(*field_name) {
+            Some("name") => name = value.as_str(*field_value).map(str::to_string),
+            Some("input") => input = decode_type_name(value, *field_value),
+            Some("output") => output = decode_type_name(value, *field_value),
+            _ => {}
+        }
+    }
+    Some((name?, input?, output?))
+}
+
+/// A descriptor's `input`/`output` field — `Ast.encode(Ast.Name(<type>))` as a `Bytes` leaf — decoded back to
+/// the type NAME (`Envelope`). Decodes the leaf's bytes to their `Ast` (`cadenza_ast::codec::decode`) and takes
+/// the root `Name` symbol. `None` if the field is not such a `Bytes` leaf or does not decode to a `Name`.
+fn decode_type_name(value: &Arenas, id: StructId) -> Option<String> {
+    let bytes = bytes_leaf(value, id)?;
+    let inner = codec::decode(bytes)?;
+    inner.as_name(inner.root).map(str::to_string)
+}
+
 /// The raw bytes a `Bytes` leaf (`b"…"`) carries, or `None` for any other node — the reader for the
 /// descriptor record's `id` field (a tagged [`Hash`] rendered as `Bytes`).
 fn bytes_leaf(value: &Arenas, id: StructId) -> Option<&[u8]> {
@@ -221,6 +261,7 @@ fn graft(b: &mut Builder, src: &Arenas, id: StructId) -> StructId {
 mod tests {
     use super::{
         contract_declaration, contract_id, contract_id_from_module, id_name_from_descriptor,
+        identity_from_descriptor,
     };
     use crate::{Hash, HashTag};
     use cadenza_ast::ast::{Arenas, Leaf};
@@ -490,6 +531,45 @@ mod tests {
             want_id.to_string(),
             "renders the SAME base62 id"
         );
+    }
+
+    #[test]
+    fn name_input_output_are_read_from_the_descriptor_value_form() {
+        // Option (b) codegen path: execute descriptor() + read (name, input, output) to generate the kernel
+        // `Contract::new(name, types, input, output)`. The descriptor's input/output fields are
+        // `Ast.encode(Ast.Name(<type>))` (Bytes), so `identity_from_descriptor` decodes them back to the
+        // type-name strings. Build that shape (with real encoded Name references) and assert the read.
+        let encode_name = |sym: &str| -> Vec<u8> {
+            let mut nb = Builder::new();
+            let n = nb.name(sym);
+            let a = nb.finish(n);
+            cadenza_ast::codec::encode(&cadenza_ast::canon::canonicalize(&a))
+        };
+        let mut b = Builder::new();
+        let field = |b: &mut Builder, key: &str, val: StructId| -> StructId {
+            let eq = b.name("=");
+            let k = b.name(key);
+            b.list(vec![eq, k, val])
+        };
+        let name_val = b.atom_leaf(Leaf::Str(Arc::from("cdz-platform.deliver")));
+        let f_name = field(&mut b, "name", name_val);
+        let in_val = b.atom_leaf(Leaf::Bytes(Arc::from(&encode_name("Envelope")[..])));
+        let f_in = field(&mut b, "input", in_val);
+        let out_val = b.atom_leaf(Leaf::Bytes(Arc::from(&encode_name("Outcome")[..])));
+        let f_out = field(&mut b, "output", out_val);
+        let rec_head = b.name("record");
+        let record = b.list(vec![rec_head, f_name, f_in, f_out]);
+        let ty_head = b.name("record");
+        let ty = b.list(vec![ty_head]);
+        let colon = b.name(":");
+        let root = b.list(vec![colon, record, ty]);
+        let arenas = b.finish(root);
+
+        let (name, input, output) =
+            identity_from_descriptor(&arenas).expect("a well-formed descriptor value form");
+        assert_eq!(name, "cdz-platform.deliver");
+        assert_eq!(input, "Envelope");
+        assert_eq!(output, "Outcome");
     }
 
     #[test]
