@@ -7788,16 +7788,8 @@ fn emit_tail(
             // child; the deep drop then frees a still-read value → the sread OOB/unreachable UAF). A scalar
             // payload copies out (no alias), so the drop is safe; a compound shell is left un-dropped (leak,
             // value-correct) pending a sound compound-reclaim increment.
-            let reclaim_shell = !never_diverges
-                && !arms_tail_call
-                && is_heap_type(&scrut_ty)
-                && !ty_is_enum_disc(db, &scrut_ty)
-                && sum_has_only_scalar_payloads(db, &scrut_ty)
-                && matches!(stashed_slot, Some((_, ValType::I32)))
-                && matches!(
-                    heap_operand_ownership(db, scrutinee),
-                    Ok(HandleOwnership::Owned)
-                );
+            let reclaim_shell = !arms_tail_call
+                && sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges);
             emit_sum_cont(
                 db,
                 scrutinee,
@@ -8278,6 +8270,33 @@ pub(crate) fn variant_payload_ty_at(db: &mut Db, sum: &Ty, disc: u32) -> Option<
         td.variants.get(disc as usize)?.ctor?
     };
     crate::infer::payload_ty_at_instantiation(db, ctor, &stripped)
+}
+
+/// The shared soundness floor for deep-dropping an owned boxed-sum SHELL after a `MatchSum` (extracted
+/// from the tail-position and non-tail `MatchSum` reclaim gates so both compute the IDENTICAL predicate).
+/// Reclaim iff the match does not diverge, the scrutinee is a REAL boxed sum (not an erased enum-disc),
+/// EVERY payload is scalar (the sread-UAF sound floor — a scalar copies out, holding no handle that could
+/// alias the shell), the scrutinee was freshly stashed into an i32 slot, and it is a PROVEN-owned
+/// temporary. The tail gate additionally ANDs its own `!arms_tail_call` (a member-tail-call arm `br`s to
+/// the loop top and never reaches the post-match drop) — that stays at the call site because it needs the
+/// `MatchSum` decision tree, and it is NOT the same as a `TailPos::Tail(Some(_))` self-loop test (a
+/// `Tail(Some)` match whose arm is a constructor still has a valid reclaim point).
+fn sum_shell_reclaim_ok(
+    db: &mut Db,
+    scrutinee: StructId,
+    scrut_ty: &Ty,
+    stashed_slot: Option<(u32, ValType)>,
+    never_diverges: bool,
+) -> bool {
+    !never_diverges
+        && is_heap_type(scrut_ty)
+        && !ty_is_enum_disc(db, scrut_ty)
+        && sum_has_only_scalar_payloads(db, scrut_ty)
+        && matches!(stashed_slot, Some((_, ValType::I32)))
+        && matches!(
+            heap_operand_ownership(db, scrutinee),
+            Ok(HandleOwnership::Owned)
+        )
 }
 
 /// Whether EVERY variant of the sum type `sum` carries either NO payload (nullary) or a SCALAR payload
@@ -13537,15 +13556,8 @@ fn emit(
             // shells, value-correct/non-OOB, tracked as the reclaim-the-compound-shell increment) rather than
             // risk the UAF. The `collect_shell_reclaim_child_dups` dup-injection is now a no-op (empty for a
             // scalar sum) — retained but never fires here.
-            let reclaim_shell = !never_diverges
-                && is_heap_type(&scrut_ty)
-                && !ty_is_enum_disc(db, &scrut_ty)
-                && sum_has_only_scalar_payloads(db, &scrut_ty)
-                && matches!(stashed_slot, Some((_, ValType::I32)))
-                && matches!(
-                    heap_operand_ownership(db, scrutinee),
-                    Ok(HandleOwnership::Owned)
-                );
+            let reclaim_shell =
+                sum_shell_reclaim_ok(db, scrutinee, &scrut_ty, stashed_slot, never_diverges);
             emit_sum_cont(
                 db,
                 scrutinee,
