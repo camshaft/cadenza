@@ -217,6 +217,55 @@ struct Node {
     /// bytes/strings. This is storage-transparent: `Raw` derefs to `&[u8]`, so the tagless byte-hash
     /// (`champ_hash`/`champ_eq`/`champ_key_cmp`) and every reader see the identical bytes regardless.
     raw: Raw,
+    /// DEBUG-only liveness GUARD for use-after-free + wild-handle detection (native tests /
+    /// `debug-counters`) — kept SEPARATE from `rc` so the refcount stays a pure count. It holds one of
+    /// three ADDRESS-DERIVED sentinels (see [`live_guard`] / [`freed_guard`]), so the check is 3-way:
+    ///   * `== live_guard(ptr)`  → a live cell (set at `alloc`);
+    ///   * `== freed_guard(ptr)` → a FREED cell (set on free, which RETAINS the cell rather than
+    ///     deallocating, so the address is never recycled and a stale handle always lands here) →
+    ///     use-after-free;
+    ///   * anything else → the handle is NOT a live node (fabricated / uninitialized / wild pointer).
+    /// Deriving the sentinel from the node's own address means a garbage handle would need the memory it
+    /// points at to equal `f(that_address)` to pass — astronomically unlikely — so we catch fabricated
+    /// handles too, not just freed ones. ABSENT from the shipped build — the field does not exist, so the
+    /// release `Node` layout (and `REQUIRED_RUNTIME_HASH`) is byte-unchanged; only `DEBUG_RUNTIME_HASH`
+    /// moves. This is the operator's UAF safety net for the leak-reclaim work ("UAF is much worse than
+    /// leaks" — an unsound reclaim drop fails the corpus/heap run loudly rather than shipping silently).
+    #[cfg(any(test, feature = "debug-counters"))]
+    guard: u32,
+}
+
+/// The ADDRESS-DERIVED "this cell is a LIVE node" sentinel (debug builds only). Mixing the node's own
+/// address into the magic makes each live cell's guard unique, so a fabricated/wild handle whose target
+/// memory holds some arbitrary value is overwhelmingly unlikely to match — that is how we distinguish a
+/// real node from a plausible-looking garbage pointer. See [`Node::guard`].
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn live_guard(ptr: *const Node) -> u32 {
+    (ptr as usize as u32).wrapping_mul(0x9E37_79B1) ^ 0x1122_3344
+}
+
+/// The ADDRESS-DERIVED "this cell was FREED" sentinel (debug builds only) — same address mixing, a
+/// DISTINCT salt, so a freed cell reads neither `live_guard` nor a generic value. See [`Node::guard`].
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn freed_guard(ptr: *const Node) -> u32 {
+    (ptr as usize as u32).wrapping_mul(0x9E37_79B1) ^ 0x5566_7788
+}
+
+/// Assert (debug builds only) that `ptr` is a LIVE node before it is accessed, with a 3-way diagnostic:
+/// a `freed_guard` match is a use-after-free; any other non-live value is a fabricated/wild handle.
+/// `ctx` names the access site. No-op + `cfg`-absent in the shipped build.
+#[cfg(any(test, feature = "debug-counters"))]
+#[inline]
+fn assert_node_live(ptr: *const Node, guard: u32, ctx: &str) {
+    if guard == live_guard(ptr) {
+        return;
+    }
+    if guard == freed_guard(ptr) {
+        panic!("use-after-free: {ctx} touched a freed heap node");
+    }
+    panic!("invalid heap handle: {ctx} touched a pointer that is not a live node (fabricated/uninitialized)");
 }
 
 /// The inline capacity of a `Raw`'s payload. Sized to `CHAMP_HEADER_SIZE` (12) — the largest raw a hot
@@ -788,7 +837,11 @@ fn with_raw_arity<T>(h: Handle, f: impl FnOnce(&[u8], usize) -> T) -> T {
         f(&buf[..len], 0)
     } else {
         match unsafe { h.0.as_ref() } {
-            Some(node) => f(&node.raw, node.handles.len()),
+            Some(node) => {
+                #[cfg(any(test, feature = "debug-counters"))]
+                assert_node_live(h.0, node.guard, "raw/arity read");
+                f(&node.raw, node.handles.len())
+            }
             None => f(&[], 0), // NULL folds as (empty, 0)
         }
     }
@@ -837,11 +890,19 @@ fn alloc(handles: Vec<Handle>, raw: Vec<u8>) -> Handle {
 fn alloc_raw(handles: impl Into<Handles>, raw: Raw) -> Handle {
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() + 1));
-    Handle(Box::into_raw(Box::new(Node {
+    let ptr = Box::into_raw(Box::new(Node {
         rc: 1,
         handles: handles.into(),
         raw,
-    })))
+        #[cfg(any(test, feature = "debug-counters"))]
+        guard: 0, // provisional; stamped with the address-derived live sentinel just below
+    }));
+    // Stamp the LIVE guard (needs the address, so after `into_raw`). Debug builds only.
+    #[cfg(any(test, feature = "debug-counters"))]
+    unsafe {
+        (*ptr).guard = live_guard(ptr);
+    }
+    Handle(ptr)
 }
 
 /// Borrow a node to read from it TOTALLY; a null handle yields `default`. Centralizes the one unsafe
@@ -850,7 +911,13 @@ fn alloc_raw(handles: impl Into<Handles>, raw: Raw) -> Handle {
 /// an out-of-bounds index into a valid node (which traps), so they inline their own check.
 fn with_node<T>(h: Handle, default: T, f: impl FnOnce(&Node) -> T) -> T {
     match unsafe { h.0.as_ref() } {
-        Some(node) => f(node),
+        Some(node) => {
+            // UAF/wild-handle guard (debug only): reading through a freed or fabricated handle is a bug.
+            // `with_node` is the central node reader (`node_rc`, the accessors), so this catches most reads.
+            #[cfg(any(test, feature = "debug-counters"))]
+            assert_node_live(h.0, node.guard, "read");
+            f(node)
+        }
         None => default,
     }
 }
@@ -4128,6 +4195,9 @@ fn op_dup(h: Handle) {
         return; // an immediate owns no heap — nothing to retain
     }
     if let Some(node) = unsafe { h.0.as_mut() } {
+        // UAF/wild-handle guard (debug only): retaining a freed or fabricated cell is a bug.
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_node_live(h.0, node.guard, "dup");
         if node.rc != IMMORTAL {
             node.rc += 1; // an IMMORTAL node is never retained (dup is a no-op — the global owns it forever)
         }
@@ -4173,6 +4243,9 @@ fn op_drop(root: Handle) {
         Some(n) => n,
         None => return, // null — benign
     };
+    // UAF/wild-handle guard (debug only): dropping a freed cell is a double-free.
+    #[cfg(any(test, feature = "debug-counters"))]
+    assert_node_live(root.0, node.guard, "drop (double-free)");
     if node.rc == IMMORTAL {
         return; // an IMMORTAL node is never freed (a module global holds it) — drop is a no-op. MUST come
                 // before the `rc > 1` decrement, else the sentinel would erode toward 1 and free the static.
@@ -4205,7 +4278,20 @@ fn op_drop(root: Handle) {
         }
         Handles::Heap(v) => worklist = core::mem::take(v),
     }
-    unsafe { drop(Box::from_raw(root.0)) };
+    // Release the root. DEBUG: bump the generation ODD (= freed) and RETAIN the cell (release its
+    // raw/handle backings to bound debug memory, but leak the shell so the address stays a detectable
+    // freed cell for the UAF guards above). SHIPPED: deallocate as before — this arm is byte-for-byte the
+    // original free, so the release runtime is unchanged.
+    #[cfg(any(test, feature = "debug-counters"))]
+    {
+        node.guard = freed_guard(root.0);
+        node.raw.clear();
+        node.handles = Handles::default();
+    }
+    #[cfg(not(any(test, feature = "debug-counters")))]
+    unsafe {
+        drop(Box::from_raw(root.0));
+    }
     #[cfg(any(test, feature = "debug-counters"))]
     LIVE_NODES.with(|n| n.set(n.get() - 1));
 
@@ -4226,6 +4312,10 @@ fn op_drop(root: Handle) {
             Some(n) => n,
             None => continue, // null child slot — benign
         };
+        // UAF/wild-handle guard (debug only): a freed child still referenced by a dying compound is a
+        // double-free / dangling child.
+        #[cfg(any(test, feature = "debug-counters"))]
+        assert_node_live(cur.0, n.guard, "drop-cascade (dangling child)");
         if n.rc == IMMORTAL {
             continue; // an IMMORTAL child (e.g. a shared build-once static nested in a dying compound) is
                       // never freed and its count is untouched — skip it, do not decrement toward freeing.
@@ -4259,7 +4349,18 @@ fn op_drop(root: Handle) {
                 n.handles.append_into(&mut worklist);
             }
         }
-        unsafe { drop(Box::from_raw(cur.0)) };
+        // Release the child (see the root free above): DEBUG bumps the generation odd + retains for UAF
+        // detection; SHIPPED deallocates byte-for-byte as before.
+        #[cfg(any(test, feature = "debug-counters"))]
+        {
+            n.guard = freed_guard(cur.0);
+            n.raw.clear();
+            n.handles = Handles::default();
+        }
+        #[cfg(not(any(test, feature = "debug-counters")))]
+        unsafe {
+            drop(Box::from_raw(cur.0));
+        }
         #[cfg(any(test, feature = "debug-counters"))]
         LIVE_NODES.with(|n| n.set(n.get() - 1));
     }
@@ -20077,6 +20178,40 @@ mod tests {
         assert_eq!(node_rc(xs), IMMORTAL, "the immortal list root survived the shell drop");
         assert_eq!(op_vec_len(xs), 40, "the immortal list is still fully readable after the shell drop");
         assert_eq!(node_rc(op_vec_get(xs, 23)), IMMORTAL, "an element leaf survived (not freed under the shell)");
+    }
+
+    /// The DEBUG-build USE-AFTER-FREE detector (operator safety net for the leak-reclaim work: "UAF is
+    /// much worse than leaks"). The free path bumps a dedicated `generation` field ODD (= freed) and
+    /// retains the cell — kept SEPARATE from `rc` so the refcount stays pure — so a DOUBLE-DROP is caught
+    /// as a loud panic instead of corrupting the heap. This is exactly the failure an UNSOUND reclaim drop
+    /// produces (a value dropped while another owner is live → that owner's later drop is a double-free) —
+    /// now a red run, not a shipped silent bug.
+    #[test]
+    #[should_panic(expected = "use-after-free")]
+    fn double_drop_is_caught_as_use_after_free() {
+        let h = bytes_leaf(&[1, 2, 3]);
+        op_drop(h); // last ref → frees, poisoning the retained cell
+        op_drop(h); // the double-free: drop of a freed node → UAF panic
+    }
+
+    /// Dup-after-free (retaining a freed cell — the other half of an unsound reclaim) is caught too; the
+    /// guard precedes the rc bump so the poison is never silently incremented.
+    #[test]
+    #[should_panic(expected = "use-after-free")]
+    fn dup_after_free_is_caught_as_use_after_free() {
+        let h = bytes_leaf(&[4, 5]);
+        op_drop(h);
+        op_dup(h); // dup of a freed node → UAF panic
+    }
+
+    /// Read-after-free through the central reader (`node_rc` → `with_node`) is caught — so a freed value
+    /// consumed by any accessor surfaces the UAF rather than reading poisoned/garbage bytes.
+    #[test]
+    #[should_panic(expected = "use-after-free")]
+    fn read_after_free_is_caught_as_use_after_free() {
+        let h = bytes_leaf(&[6, 7]);
+        op_drop(h);
+        let _ = node_rc(h); // read of a freed node → UAF panic
     }
 
     /// `hash-blake3` (heap index 91) is BYTE-IDENTICAL to `blake3::hash` of the same input — for a flat
