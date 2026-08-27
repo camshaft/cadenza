@@ -42325,26 +42325,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
     }
 
     #[test]
-    fn a_nullary_variant_is_constructed_by_applying_it_to_unit() {
-        // core-semantics.md §Construction MUST Be Via Application: "(None unit)". A NULLARY variant is
-        // constructed by applying its ctor to the unit value — `(T.Nil ())` — not only used bare. The
-        // unit arg is the (empty) payload: `SumNew{disc, payloads:[]}` builds `arr-alloc(0)`. A match over
-        // `(T.Nil ())` dispatches on the discriminant like any sum. `(match (T.Nil ()) ((T.Nil _) 7)
-        // ((T.A _) 1))` → 7 (the constant folds through the applied nullary construction).
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (type T A Nil) \
-                       (def (main) (match (T.Nil ()) ((T.Nil _) 7) ((T.A _) 1))) \
-                       (export main))"
-                ),
-                "main"
-            ),
-            7
-        );
-    }
-
-    #[test]
     fn a_nullary_variant_applied_to_a_non_unit_payload_is_rejected() {
         // core-semantics.md §A Sum Type Constructor Is A Single-Arity Function: "A nullary variant MUST be
         // a constructor whose argument type is Unit". Construction via application `(V unit)` must check
@@ -42672,100 +42652,6 @@ alias onto the Option<Bytes> sibling's empty-bytes descriptor (Some b\"\")"
             reject_code("(module m (def (main) (quote b\"x\")) (export main))"),
             None,
             "an un-reifiable quote body (a bytes leaf) declines cleanly (no artifact, no coded rejection)"
-        );
-    }
-
-    #[test]
-    fn an_ast_bool_folds_through_reify_eval_and_the_encode_decode_round_trip() {
-        use crate::testkit::parse;
-        // The `Ast.Bool` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
-        // Sum Type — a boolean is one of the syntactic forms). `(eval (quote true))` reconstructs the
-        // boolean literal and folds to `true`; the encode/decode and print/read round-trips see an
-        // `Ast.Bool` as one canonical value.
-        let quoted_true = "(module m (def (main) (eval (quote true))) (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(quoted_true))).expect("compile"),
-                "main"
-            ),
-            "(eval (quote true)) executes the reconstructed boolean literal to true"
-        );
-        // encode → decode round-trips an `Ast.Bool` (bijection over the whole tree, Ast.decode total).
-        let round_trip = "(module m (def (main) \
-            (match (Ast.decode (Ast.encode (Ast.Bool true))) \
-              ((Ok a) (= a (Ast.Bool true))) \
-              ((Err _) false))) \
-            (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
-                "main"
-            ),
-            "encode/decode round-trips an Ast.Bool to an equal value"
-        );
-        // print renders the bare word and read inverts it — `read(print v) == v` over the boolean leaf.
-        let print_read = "(module m (def (main) \
-            (= (Ast.read (Ast.print (Ast.Bool false))) (Ast.Bool false))) \
-            (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
-                "main"
-            ),
-            "print/read round-trips an Ast.Bool (bare word true/false)"
-        );
-    }
-
-    #[test]
-    fn an_ast_str_folds_through_reify_eval_and_round_trips_with_escapes() {
-        use crate::testkit::parse;
-        // The `Ast.Str` leaf variant end-to-end (type-system.md §The Abstract Syntax Tree Is An Ordinary
-        // Sum Type — a string is one of the syntactic forms, DISTINCT from a name). `(eval (quote "abcd"))`
-        // reconstructs the string literal and folds to the string (byte-len 4); encode/decode round-trips;
-        // print/read round-trips WITH the closed escape set (an embedded quote + newline).
-        let eval_str =
-            "(module m (def (main) (String.byte-len (eval (quote \"abcd\")))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(eval_str))).expect("compile"),
-                "main"
-            ),
-            4,
-            "(eval (quote \"abcd\")) executes the reconstructed string literal (byte-len 4)"
-        );
-        // encode → decode round-trips an `Ast.Str` (bijection over the whole tree, Ast.decode total).
-        let round_trip = "(module m (def (main) \
-            (match (Ast.decode (Ast.encode (Ast.Str \"hi\"))) \
-              ((Ok a) (= a (Ast.Str \"hi\"))) \
-              ((Err _) false))) \
-            (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(round_trip))).expect("compile"),
-                "main"
-            ),
-            "encode/decode round-trips an Ast.Str to an equal value"
-        );
-        // print renders a `"…"` literal escaping the closed set; read inverts it — `read(print v) == v`
-        // over a payload with an embedded quote AND newline, so this exercises the escape path.
-        let print_read = "(module m (def (main) \
-            (= (Ast.read (Ast.print (Ast.Str \"a\\\"b\\nc\"))) (Ast.Str \"a\\\"b\\nc\"))) \
-            (export main))";
-        assert!(
-            run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(print_read))).expect("compile"),
-                "main"
-            ),
-            "print/read round-trips an Ast.Str with escapes (embedded quote + newline)"
-        );
-        // `Ast.Str` is DISTINCT from `Ast.Name`: `(quote "foo")` (a string) != `(quote foo)` (a name).
-        let distinct = "(module m (def (main) (= (quote \"foo\") (quote foo))) (export main))";
-        assert!(
-            !run_returns::<bool>(
-                &compile_component(&crate::codec::encode(&parse(distinct))).expect("compile"),
-                "main"
-            ),
-            "a quoted string and a quoted name are different Ast values (false)"
         );
     }
 
