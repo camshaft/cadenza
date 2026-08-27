@@ -2284,6 +2284,7 @@ pass	a heap capture persists across two applications of a curried closure
 pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
 pass	a heap list consumed in only one if-branch stays live for a use after the if
 pass	a heap result of effect A pipes directly into effect B's argument — cross-effect heap flow
+todo	a heap-inner (Rational) quantity crosses to and from a peer as a shared runtime handle
 pass	a helper RETURNS a derived-dimension (m squared) quantity and same-dimension results add
 pass	a helper called TWICE threads its first write so the second call HITS the memoized value
 pass	a helper decodes bytes to a string and consumes the fallible result

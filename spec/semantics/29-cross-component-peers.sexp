@@ -461,6 +461,24 @@
   (call   main)
   (output (: 6 Int64)))
 
+(case "a heap-inner (Rational) quantity crosses to and from a peer as a shared runtime handle"
+  (doc    "The COMPLEMENT of the scalar-inner Quantity case above: a HEAP-inner Quantity — `(Qty Rational m)`,
+           whose magnitude is an exact rational (a value-heap bignum pair, NOT a scalar) — crosses the peer
+           boundary as its opaque runtime HANDLE, not by value. This is the OTHER arm of the Qty ABI split:
+           the by-value arm needs an inner scalar boundary form, which a Rational has none of, so it falls
+           through to the heap-handle path (the scalar case pins the by-value arm; BOTH must hold for the
+           Quantity ABI to be sound over a peer). PROVIDER `echo` returns the crossed `(Qty Rational m)`
+           unchanged; the CONSUMER builds `1/2 meter`, passes its handle INTO the peer op (arg crosses as a
+           handle), reads the returned Qty's magnitude back with `Qty.value` (a Rational), and compares it
+           EXACTLY to a fresh `1/2` → 1. The exact-rational magnitude crossed both ways as a shared-runtime
+           handle with no marshaling; main returns a scalar so the compound crosses only at the peer boundary,
+           not as the escaping result. Relocated from rcdzc a_heap_inner_quantity_crosses_to_and_from_a_peer_as_a_runtime_handle.")
+  (peer   "cadenza:qr/api" (do (def (echo (: q (Qty Rational (Unit.base #"meter")))) q) (export echo)))
+  (input  (do (effect Qr (op echo (-> (Qty Rational (Unit.base #"meter")) (Qty Rational (Unit.base #"meter"))))) (bind Qr "cadenza:qr/api")
+              (def (main) (host (Qr) (if (= (Qty.value (Qr.echo (Qty.of (Rational.of 1 2) (Unit.base #"meter")))) (Rational.of 1 2)) 1 0))) (export main)))
+  (call   main)
+  (output (: 1 Int64)))
+
 (case "a runtime-produced String argument crosses to a peer as its handle"
   (doc    "A String argument that is NOT a literal but a RUNTIME `String.concat` — a value-heap rope handle
            built in-body — crosses to the peer as its handle: `blen(String.concat \"ab\" \"cde\")` reads the
