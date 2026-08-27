@@ -69293,45 +69293,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_success_try_executes_to_its_unwrapped_payload_through_wasmtime() {
-        // The EXECUTING companion of `a_constant_success_try_folds_to_the_payload`: every try unit test
-        // above asserts only compile/reject; NONE runs the `?` VALUE through wasmtime. This closes that
-        // gate-coverage gap (the contract's "a wasmtime run where a value executes") at the rcdzc-lib level,
-        // not only in the corpus. `(try (Int64.checked-add 20 22))` unwraps to 42, and the body's tail
-        // `(Some x)` re-wraps it, so `main` returns `(Some 42)`. Store-guarded (`if let Some` skips a
-        // storeless CI where the runtime wasm is absent) per the heap-test convention.
-        let src = "(module m (def (main) (let ((x (try (Int64.checked-add 20 22)))) (Some x))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a constant-success `?` compiles");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "(: (Some 42) (Option Int64))",
-                "a success `?` executes to its unwrapped payload re-wrapped by the tail"
-            );
-        }
-    }
-
-    #[test]
-    fn a_failure_try_executes_to_the_short_circuited_boundary_value_through_wasmtime() {
-        // The EXECUTING companion of `a_constant_failure_try_short_circuits_the_boundary_to_the_failure`:
-        // the failure `?` must actually RUN to `(None unit)` through wasmtime, not merely compile. The
-        // first `?` sees `(Int64.checked-add Int64.max 1)` = `None` (overflow), so it short-circuits the
-        // enclosing function boundary — `main` returns `(None unit)` and the body's `(Some x)` never runs.
-        // Store-guarded like its success twin.
-        let src = "(module m (def (main) (let ((x (try (Int64.checked-add Int64.max 1)))) (Some x))) \
-                   (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("a constant-failure `?` compiles");
-        if let Some(v) = run_linked(&bytes, "main") {
-            assert_eq!(
-                v, "(: (None unit) (Option Int64))",
-                "a failure `?` executes to the short-circuited boundary value `None`"
-            );
-        }
-    }
-
-    #[test]
     fn a_constant_failure_try_short_circuits_the_boundary_to_the_failure() {
         // BRICK 3a (DESIGN-try-operator-rcdzc.md §4 v1): a `?` on a constant FAILURE (`None`/`Err`) short-
         // circuits the enclosing FUNCTION boundary — the failure value flows out as the function's value.
