@@ -114,12 +114,16 @@ needs without proliferating:
 
 - **file** — a source (read) or sink (write) over a path the stage is capabilised for. Its content is
   a stream.
-- **http** — an outgoing HTTP request whose request body and response body are streams (so a body can
-  be piped in or out rather than buffered whole).
+- **http** — either a **client** (an outgoing request, whose request and response bodies are streams so
+  a body pipes in or out rather than buffering whole) or a **server** (a listener bound to a port: a
+  long-lived stage that emits one event per incoming request, §Listeners below, with the request body
+  as a stream and a paired response the graph fills).
+- **websocket** — either a **client** (connect to a URL) or a **server** (a listener): a bidirectional
+  message stream, so a stage reads inbound frames and writes outbound frames as two streams.
 - **shell** — a sandboxed subprocess: `argv` / `env` / `cwd`, with `stdin` / `stdout` / `stderr` as
   streams. This is the subprocess capability the vision names as one of the two genuine non-WASI
   residues (§3 of the vision); it is isolated here as a single stage kind the platform sandboxes.
-- **socket** — a TCP/UDP connection whose read and write halves are streams.
+- **socket** — a TCP/UDP connection (client) or a listener (server); read and write halves are streams.
 - **reducer** — a wasm reducer acting as a stream processor: it consumes an input stream and emits an
   output stream. This is the generality escape hatch — arbitrary logic participates in a graph as a
   reducer stage — so the fixed set of stage *kinds* does not limit what a graph can express. It keeps
@@ -127,8 +131,12 @@ needs without proliferating:
   is reconciled: the executor knows a fixed set of node *kinds*, but the `reducer` kind admits any
   content-addressed program, so behavior stays open).
 
-Adding a stage kind is a deliberate platform change, not a routine extension — the bar is that a new
-kind is both genuinely primitive and generic enough to earn a permanent place in this set.
+Every stage kind spans **client and server** where the distinction applies (`http`, `websocket`,
+`socket`): the platform carries out inbound (listener) stages as readily as outbound ones, which is what
+lets a DAG *be* a server (§Listeners). Each stage also carries a **placement** — which machine or
+environment it runs on (§Placement) — so a single DAG can span machines. Adding a stage *kind* is a
+deliberate platform change, not a routine extension — the bar is that a new kind is both genuinely
+primitive and generic enough to earn a permanent place in this small set.
 
 ### Named pipes — the edges
 
@@ -137,7 +145,60 @@ stream. Pipes carry the graph's topology: a stage names the pipes it reads from 
 platform connects producers to consumers. A pipe may fan out (one producer to several consumers) and a
 consumer may be redirected to any sink — a file, an HTTP body, a socket, or another reducer — which is
 the "redirect that to wherever you want" the operator described. The named pipe is the generalization
-of a shell pipe, now typed by stream and able to connect any stage kind to any other.
+of a shell pipe, now typed by stream and able to connect any stage kind to any other — including across
+machines (§Placement), where the platform streams the pipe between nodes.
+
+### Placement — which machine each stage runs on
+
+The platform is multi-machine (the federation of vision §11), so a stage's *location* is part of its
+specification: each stage carries a **placement** naming where it runs, and the platform routes the
+stage's execution to that machine and streams its pipes between machines as needed. A DAG can therefore
+span nodes — read a file on machine A, pipe it to a shell stage on machine B, send the result over HTTP
+from a third — and the reducer describes that placement declaratively in the spec.
+
+A placement is one of:
+
+- **this node** (the default) — the node running the submitting reducer;
+- **a named connected machine** — resolved against the platform's set of connected machines (a routing
+  concern the platform already owns for federation; the reducer names a machine, the platform places
+  the stage there and is responsible for the cross-machine stream transport);
+- **a provisioned environment** — a persistent execution environment (for example a VM spun up on
+  behalf of a reducer, giving it a durable place to modify files or compile code across many DAGs),
+  referenced by an **opaque environment handle**. The platform does **not** define how such an
+  environment is created — provisioning a VM is out of scope here; the platform only needs a way to
+  *reference* an existing environment and route a stage into it. The handle is obtained out of band
+  (a separate provisioning capability, itself a contract) and simply passed as a stage's placement in
+  the DAG. A stage placed in an environment sees that environment's persistent filesystem and process
+  space, so a `shell` stage there can compile code whose artifacts a later DAG's stage reuses.
+
+Placement is a routing decision, not a new stage kind: `file`/`shell`/`http`/etc. are unchanged; each
+just says *where*. Capability enforcement (§6) applies to placement too — an event reducer may place
+stages only on machines/environments it is capabilised for.
+
+### Listeners and long-lived DAGs (servers)
+
+A DAG is not always a fire-and-complete pipeline. A **listener** stage — an `http` server, a
+`websocket` server, or a `socket` listener — is long-lived: it binds and then, for each incoming
+request or connection, **emits an event back to the reducer** (API #2) carrying that request's streams.
+This makes a DAG a *server*: "spawn an HTTP listener DAG that gets notified of every incoming request"
+is exactly a submitted DAG whose one stage is an `http` server, with the reducer subscribed to the
+per-request event.
+
+The reducer handles each incoming-request event as it arrives (its fold runs per event), and produces
+the response one of two ways:
+
+- **A paired response stream.** The incoming-request event carries a handle to that request's response
+  (its own pipe); the reducer wires a stage — or a follow-on DAG (§below) — to fill it, and the
+  platform sends it back on that connection. The request/response pairing is correlated by an id on the
+  event, the same shape as the DAG token but per-request.
+- **A follow-on DAG.** The reducer reacts to the incoming-request event by submitting a new DAG (its
+  own token) that computes the response and writes it to the request's response pipe — so serving a
+  request composes the same submit/subscribe/respond loop, one level down.
+
+A listener DAG runs until cancelled: `cancel(token)` (§API #1) stops the listener, closes open
+connections cleanly, and yields the cancelled outcome — the natural "shut the server down" control. A
+websocket stage (client or server) is the same shape with a bidirectional frame stream instead of a
+one-shot request/response.
 
 ### Two WIT APIs
 
@@ -180,6 +241,68 @@ it to do this work — with the outcome, closing the loop (§4).
 So the shape is: `submit(dag) -> token`; the DAG runs and emits token-tagged events back; the reducer
 folds its subscribed events and may `cancel(token)`; and eventually the reducer responds to its invoker
 with what happened. The token is the single correlator across all three (cancel, events, response).
+
+### What the DAG spec is — a binary AST value carried by a contract
+
+The `dag-spec` submit takes is program-authored data the platform interprets, so how it is represented
+is a real decision. Two options:
+
+- **A bespoke WIT type** — a WIT `record`/`variant` tree (stages, pipes, placement, subscriptions)
+  passed as a typed argument. The platform reads it structurally with no decode step.
+- **A binary AST value carried by a contract** — the `dag-spec` is a Cadenza `Ast` value (the rich
+  value model of vision §12, with first-class records/variants/lists/maps) identified by a well-known
+  `dag-spec` contract-id, exactly like every other contract payload; `submit`'s argument is those bytes
+  plus the contract-id, and the platform decodes the `Ast` through the one canonical codec and
+  interprets it.
+
+**Recommendation: the binary AST value carried by a contract.** It fits the platform's own conventions
+and avoids a brittle boundary:
+
+- **Consistency.** Vision §12 already makes the `Ast` the marshalling format — every payload, schema,
+  contract declaration, and break reason crosses as an `Ast`; the reducer ABI is "typed where the
+  platform owns the meaning, carried as bytes where the program does" (`world.wit`). The `dag-spec` is
+  program-authored content, so it is the carried part; the *envelope* (`submit`/`cancel`/token/event
+  shapes) stays typed WIT, where the platform owns the meaning.
+- **Stability.** A DAG's vocabulary will grow — new stage configs, new placement forms, new
+  subscription kinds. Encoding it as a WIT type bakes that vocabulary into the component world, so
+  every addition churns the world and re-derives each guest's component envelope. As an `Ast` value it
+  evolves as data against a stable contract — the exact argument for a binary AST across the ABI made
+  in `DESIGN-binary-ast-abi.md` (the operator's own prior direction: "pass a binary AST across the abi
+  ... a lot more stable ... and would actually work with a rust guest").
+- **Fit.** A DAG is a recursive, heterogeneous structure (a list of stages, each a variant by kind with
+  kind-specific config; a map of named pipes; per-stage placement; a subscription set). That is natural
+  in the `Ast` value model and awkward as a fixed WIT type.
+
+So the split is: **envelope typed (WIT), spec carried (`Ast` against a `dag-spec` contract).** A sketch
+of the spec's `Ast` shape (illustrative, not final):
+
+```
+dag-spec = record {
+  stages:        list<stage>,        # the nodes
+  pipes:         list<pipe-name>,    # the named streaming channels (edges are named on stages)
+  subscriptions: list<event-kind>,   # which DAG events the reducer wants delivered (API #2)
+}
+stage = record {
+  id:        stage-id,               # names this stage within the DAG
+  placement: placement,             # this-node | machine(name) | environment(handle)   (§Placement)
+  reads:     list<pipe-name>,        # input pipes
+  writes:    list<pipe-name>,        # output pipes
+  kind:      variant {               # the fixed stage-kind set, each with its own config
+    file(record { path, mode: read|write|append }),
+    http-client(record { method, url, headers }),
+    http-server(record { bind, ... }),           # a listener (§Listeners)
+    websocket-client(record { url, ... }),
+    websocket-server(record { bind, ... }),
+    shell(record { argv, env, cwd }),
+    socket(record { connect|listen, addr }),
+    reducer(record { program-hash, init }),      # the escape hatch
+  },
+}
+placement = variant { this-node, machine(machine-name), environment(env-handle) }
+```
+
+The concrete field set is for the vertical to finalize with the platform; the point settled here is the
+*representation* (a contracted `Ast` value) and the envelope/spec split.
 
 ### The byte path
 
@@ -282,6 +405,10 @@ never re-runs the outside world (vision §9). The two surfaces preserve it diffe
   - A `reducer` **stage** inside a graph that is a pure stream transform is itself deterministic; a
     stage that performs I/O is a boundary whose output is captured like any other stage's. Either way
     the orchestrating reducer only sees recorded outcomes.
+  - A **listener** DAG (an `http`/`socket`/`websocket` server, §Listeners) is no different for replay:
+    each incoming request/connection is delivered to the reducer as a recorded inbound event, so replay
+    reconstructs the exact sequence of requests it saw and never re-accepts live connections. A
+    listener is long-lived but still a stream of recorded events, so determinism holds unchanged.
 
 - **The direct one-shot calls.** `wasi:clocks/wall-clock` / `wasi:random` called directly in the fold
   are nondeterministic, so the host **journals** each call's result into the reducer's log as it is
@@ -317,19 +444,29 @@ ordinary/pure worlds are untouched throughout.
 - **Increment 1 — the graph spine and both APIs, with two stage kinds: `file` and `reducer`.**
   Introduce the two WIT APIs (`submit(dag-spec) -> token` and `cancel(token)`; the event/response loop
   with token-tagged events folded through `on-notification`/`on-message` for the subscribed set), the
-  declarative spec, the named-pipe streaming substrate, node-to-node byte flow, and the eventual
-  response to the invoker. Prove it on the two stage kinds with no external nondeterminism beyond the
-  filesystem: pipe a file through a `reducer` stage into another file, subscribing to done/failed;
-  submit returns a token; a second test cancels an in-flight DAG by token and asserts the cancelled
-  outcome + clean stream teardown. This lands the whole graph machinery — submit, token, cancel,
-  event/response loop — on the simplest stages before the networked ones.
-- **Increment 2 — `http`.** Add the HTTP stage with streaming request/response bodies. Prove piping an
-  HTTP response body into a file and piping a file into an HTTP request body; large terminal bodies land
-  in the CAS and are delivered as hashes (§4).
+  declarative spec (as the contracted `Ast` value of §3, establishing the spec representation), the
+  named-pipe streaming substrate, node-to-node byte flow, and the eventual response to the invoker.
+  Prove it on the two stage kinds with no external nondeterminism beyond the filesystem: pipe a file
+  through a `reducer` stage into another file, subscribing to done/failed; submit returns a token; a
+  second test cancels an in-flight DAG by token and asserts the cancelled outcome + clean stream
+  teardown. This lands the whole graph machinery — submit, token, cancel, event/response loop, spec
+  decoding — on the simplest stages before the networked ones. Placement is `this-node` only here.
+- **Increment 2 — `http` client.** Add the outgoing HTTP stage with streaming request/response bodies.
+  Prove piping an HTTP response body into a file and piping a file into an HTTP request body; large
+  terminal bodies land in the CAS and are delivered as hashes (§4).
 - **Increment 3 — `shell`.** Add the sandboxed subprocess stage (`argv`/`env`/`cwd`, streaming
   `stdin`/`stdout`/`stderr`). Prove the operator's pipeline: a file into a shell command whose output
   goes into an HTTP body. This is where the subprocess sandbox and its capability enforcement land.
-- **Increment 4 — `socket`.** Add TCP/UDP stages, reusing the streaming substrate.
+- **Increment 4 — listeners: `http` server + `socket`.** Add inbound stages (the long-lived listener
+  pattern of §Listeners): an `http` server DAG that emits a per-incoming-request event the reducer
+  handles and responds to, plus TCP/UDP client and listener sockets over the same streaming substrate.
+  This lands the server side and the per-request event/response correlation.
+- **Increment 5 — `websocket` client + server.** Bidirectional frame streams, reusing the listener and
+  streaming machinery.
+- **Increment 6 — multi-machine placement.** Extend placement beyond `this-node` to named connected
+  machines and provisioned-environment handles (§Placement), with the platform transporting pipes
+  across machines. Ties into the federation substrate (vision §11); sequenced last because it rests on
+  the single-node stages being proven first.
 
 The capability policy an event reducer enforces over a graph (which paths, hosts, and whether shell is
 permitted — the §5 authz middleware, e.g. Cedar-backed) is a separate userspace concern layered on
@@ -410,9 +547,26 @@ At `origin/main` `4fac6ce37`, all under `implementation/seed/crates/cdz-platform
   doc §6, which frames `now` as a built-in effect; that framing is superseded here.
 - **Graph construction** — declarative spec per submission, dynamic across notifications (§3). Chosen
   by the operator; not live-mutable.
-- **Stage vocabulary** — a fixed, small, generic set (`file`, `http`, `shell`, `socket`, `reducer`);
-  the platform knows how to operate each; the `reducer` stage keeps behavior open (§3). Chosen by the
-  operator; expanding the set is a deliberate platform change.
+- **Stage vocabulary** — a fixed, small, generic set (`file`, `http`, `websocket`, `shell`, `socket`,
+  `reducer`); the platform knows how to operate each; the `reducer` stage keeps behavior open (§3).
+  Chosen by the operator; expanding the set is a deliberate platform change.
+- **Clients and servers** — `http`, `websocket`, and `socket` each support both outgoing (client) and
+  inbound (listener/server) stages; a listener DAG emits a per-incoming-request/connection event and
+  responds via a paired response stream or a follow-on DAG, and `cancel(token)` shuts it down (§3
+  Listeners). Chosen by the operator (PR #3859: "support both servers and clients ... spawn an http
+  listener dag that gets notified of every incoming request ... a websocket client and server").
+- **Placement (multi-machine)** — each stage carries a placement: `this-node` (default), a named
+  connected machine, or a provisioned-environment handle; the platform routes stages and transports
+  pipes across machines, and does not itself provision environments (§Placement). Chosen by the
+  operator (PR #3859: "define which machine the filesystem is being executed on ... say where each
+  phase is needing to be executed ... spin up a VM ... just as long as there's a way to get at it and
+  pass it as part of the dag"). Open detail for the vertical: how an environment handle is minted (a
+  separate provisioning contract) and the cross-machine pipe transport.
+- **DAG spec representation** — a binary `Ast` value (vision §12) carried by a well-known `dag-spec`
+  contract, not a bespoke WIT type; the submit/cancel/event *envelope* stays typed WIT (§3 "What the
+  DAG spec is"). Chosen default answering the operator's question (PR #3859: "Do we make it a wit? Do we
+  make it a binary AST with a contract?"), on the consistency + stability grounds of
+  `DESIGN-binary-ast-abi.md`. The concrete field set is for the vertical to finalize.
 - **Byte path** — node-to-node inside the platform; the orchestrating reducer is out of the byte path;
   a `reducer` stage taps a pipe when observation/injection is wanted (§3). Chosen default (supersedes
   an earlier "reducer-mediated only" answer given before the graph model existed); open to the operator
