@@ -46,13 +46,26 @@ def roundtripOne (path : String) : IO Bool := do
       | none => pure ()
       return false
 
+/-- Resolve the fixture paths from argv: either `--manifest FILE` (newline-separated paths, the
+robust form for thousands of blobs) or the paths given directly. -/
+def resolvePaths (args : List String) : IO (List String) := do
+  match args with
+  | ["--manifest", file] =>
+    let text ← IO.FS.readFile file
+    return (text.splitOn "\n").map String.trim |>.filter (· ≠ "")
+  | _ => return args
+
 def main (args : List String) : IO UInt32 := do
   if args.isEmpty then
-    IO.eprintln "oracle-ast-roundtrip: usage: oracle-ast-roundtrip <program.ast>..."
+    IO.eprintln "oracle-ast-roundtrip: usage: oracle-ast-roundtrip (--manifest FILE | <program.ast>...)"
+    return 2
+  let paths ← resolvePaths args
+  if paths.isEmpty then
+    IO.eprintln "oracle-ast-roundtrip: no fixture paths given"
     return 2
   let mut ok := 0
   let mut fail := 0
-  for path in args do
+  for path in paths do
     if ← roundtripOne path then ok := ok + 1 else fail := fail + 1
-  IO.println s!"oracle-ast-roundtrip: {ok} byte-identical, {fail} failed (of {args.length})"
+  IO.println s!"oracle-ast-roundtrip: {ok} byte-identical, {fail} failed (of {paths.length})"
   return (if fail == 0 then 0 else 1)

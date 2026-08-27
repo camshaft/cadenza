@@ -2505,9 +2505,6 @@
             ./implementation/oracle-lean/OracleTest.lean
             ./implementation/oracle-lean/OracleAstTest.lean
             ./implementation/oracle-lean/Oracle
-            # L0.2 round-trip fixtures: real corpus-derived `program.ast` blobs. Staged into the build
-            # so the derivation can install them for the oracle-lean-ast-roundtrip check.
-            ./implementation/oracle-lean/tests
           ];
         };
         oracleLean = pkgs.stdenv.mkDerivation {
@@ -2525,11 +2522,10 @@
           '';
           installPhase = ''
             runHook preInstall
-            mkdir -p "$out/bin" "$out/share/oracle-lean-fixtures"
+            mkdir -p "$out/bin"
             install -m755 .lake/build/bin/cdz-oracle "$out/bin/cdz-oracle"
             install -m755 .lake/build/bin/oracle-selftest "$out/bin/oracle-selftest"
             install -m755 .lake/build/bin/oracle-ast-roundtrip "$out/bin/oracle-ast-roundtrip"
-            cp tests/fixtures/*.ast "$out/share/oracle-lean-fixtures/"
             runHook postInstall
           '';
         };
@@ -2541,14 +2537,29 @@
           oracle-selftest
           echo "ok: oracle-lean smoke — cdz-oracle builds + selftest round-trips (Unsupported)" > "$out"
         '';
-        # L0.2 gate witness: the binary-AST codec is byte-identical on real corpus-derived `program.ast`
-        # blobs (decode → re-encode == input). A codec-law check of the oracle's own decoder — every
-        # blob is a canonical `codec::encode` output, so decode∘encode must be the identity. Non-zero
-        # exit (decode error or byte mismatch) fails the derivation.
+        # L0.2 gate witness: the binary-AST codec is byte-identical on EVERY corpus-derived
+        # `program.ast` blob (decode → re-encode == input). Fixtures are NOT committed and NOT
+        # re-shredded (operator 2026-08-27): this REUSES the corpus pipeline's existing per-file
+        # `mkCorpusShred` derivations (identical args → identical store path → cache hit, no extra
+        # shred work) and aggregates their `program.ast` outputs into one round-trip. Each shred is the
+        # canonical `codec::encode` of a `spec/semantics/*.sexp` case (cadenza syntax → binary AST), so
+        # decode∘encode must be the identity — a codec-law check of the oracle's own decoder, not a
+        # re-test of corpus semantics (PRINCIPLES.md §2). Non-zero exit (decode error / byte mismatch)
+        # fails. `oracleLeanShreds` maps the SAME `mkCorpusShred { name = stem; file }` the corpus
+        # aggregates use, so the shred cache is shared fleet-wide.
+        oracleLeanShreds = map
+          (f:
+            let stem = pkgs.lib.removeSuffix ".sexp" f; in
+            mkCorpusShred { name = stem; file = ./spec/semantics + "/${f}"; })
+          corpusFileNames;
         oracleLeanAstRoundtrip = pkgs.runCommand "oracle-lean-ast-roundtrip"
-          { nativeBuildInputs = [ oracleLean ]; } ''
-          oracle-ast-roundtrip ${oracleLean}/share/oracle-lean-fixtures/*.ast
-          echo "ok: oracle-lean ast round-trip — binary-AST decode/encode byte-identical on corpus fixtures" > "$out"
+          { nativeBuildInputs = [ oracleLean ]; shreds = oracleLeanShreds; } ''
+          # A manifest = the list of program.ast paths in the cached shred outputs (referenced in
+          # place, never copied); the exe reads it via --manifest (robust for thousands of blobs).
+          for s in $shreds; do find "$s" -name program.ast; done | sort > manifest
+          echo "oracle-lean ast round-trip: $(wc -l < manifest) program.ast blobs from cached corpus shreds"
+          oracle-ast-roundtrip --manifest manifest
+          echo "ok: oracle-lean ast round-trip — binary-AST decode/encode byte-identical on $(wc -l < manifest) corpus program.ast blobs" > "$out"
         '';
       in
       {
