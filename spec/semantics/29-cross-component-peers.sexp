@@ -434,3 +434,17 @@
   (call main (: 50 Int64))
   (output (: 150 Int64))
   (live-objects 0))
+(case "a consumer bound to two distinct peer interfaces combines their results"
+  (doc    "Two SEPARATELY-compiled providers on DISTINCT interfaces: cadenza:math/api exports a scalar neg,
+           cadenza:pairs/api exports a COMPOUND-returning pair. The consumer binds BOTH and computes a value
+           from EACH in one body: pairs.pair(9) = (9,9) crosses as a runtime handle, project element 0 → 9,
+           then math.neg(9) → -9 — over the multi-interface extern+runtime envelope. Relocated (RUN half) from
+           rcdzc u9_a_consumer_binds_two_distinct_peer_interfaces — its white-box both-interfaces-imported +
+           both-providers-publish pins stay in rcdzc.")
+  (peer   "cadenza:math/api" (do (def (neg (: x Int64)) (- 0 x)) (export neg)))
+  (peer   "cadenza:pairs/api" (do (def (pair (: x Int64)) (tuple x x)) (export pair)))
+  (input  (do (effect M (op neg (-> Int64 Int64))) (effect P (op pair (-> Int64 (Tuple Int64 Int64))))
+              (bind M "cadenza:math/api") (bind P "cadenza:pairs/api")
+              (def (main (: x Int64)) (host (M) (host (P) (M.neg (. (P.pair x) 0))))) (export main)))
+  (call   main (: 9 Int64))
+  (output (: -9 Int64)))
