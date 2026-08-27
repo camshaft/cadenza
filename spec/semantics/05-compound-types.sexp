@@ -20747,3 +20747,32 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 65600 Int64)))
+
+; -- breaker batch 475 (2026-08-27): PRE-DELIVERED acceptance fence for the constant-LIST
+; static-data hoist (the Bytes/String twins are sbd1/2 in 10-bytes and ssd1/2 in 13-strings;
+; static-data's mandate covers all constant literals). Green TODAY on the per-eval allocation —
+; the hoist must keep them green: a drop that freed the deduplicated shared static would trap or
+; misread the second occurrence (csd1's runtime = across the pair), and a per-eval leak reads
+; >=50 in the amplification loop (csd2).
+
+(case "csd1 two occurrences of one constant list literal — branch-selected use, length reads, and runtime equality across the pair"
+  (input (do (def (main (: n Int64))
+    (let ((a (if (= n 1) (list 10 20 30) (list 9)))
+          (b (list 10 20 30)))
+      (+ (* 100 (List.len a)) (+ (List.len b) (if (= a b) 1000 0)))))
+    (export main)))
+  (call main (: 1 Int64))
+  (output (: 1303 Int64))
+  (live-objects 0))
+
+(case "csd2 a fifty-frame recursion re-evaluating a constant list literal each frame reclaims to zero"
+  (input (do
+    (def (frames (: k Int64))
+      (if (= k 0) 0
+          (let ((a (if (= (% k 2) 0) (list 10 20 30) (list 7 8))))
+            (+ (List.len a) (frames (- k 1))))))
+    (def (main (: n Int64)) (frames n))
+    (export main)))
+  (call main (: 50 Int64))
+  (output (: 125 Int64))
+  (live-objects 0))
