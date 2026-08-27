@@ -57720,32 +57720,9 @@ mod cross_component_oracle {
             String::from_utf8_lossy(&consumer).contains(&import_name),
             "a String-arg peer consumer imports the value-heap runtime (it builds the rope handle)"
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL28] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:strs/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a string argument crosses to a peer")
-        {
-            // The consumer built the rope "hello" and passed its handle to the peer; the peer read its
-            // byte length → 5. A STRING ARGUMENT crossed the boundary as a shared handle (inbound).
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "5",
-                "a string argument crosses to a peer as a shared handle and is read there"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("string-argument run trapped: {t}"),
-        }
+        // The RUN half (the crossed String arg is read by the peer → byte-len) is corpus-covered by
+        // 29-cross-component-peers "a string argument crosses to a peer and the doubled result byte-len
+        // is read"; this rcdzc test keeps only the white-box value-heap-runtime-import pin.
     }
 
     #[test]
