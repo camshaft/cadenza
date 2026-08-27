@@ -6521,25 +6521,32 @@ fn content_identical_reset_target<'a>(
     }
 }
 
-/// Decide whether `fleet sync` should base on `origin/main` instead of the local `trunk` ref: TRUE only
-/// when local trunk is STRICTLY AHEAD of origin/main (origin/main is a proper ancestor of trunk) — the
-/// `--publish-origin` publish-lag window where pr-sync advanced local trunk with gated peer commits it
-/// has not pushed yet, so trunk carries not-yet-authoritative history every syncing agent would adopt.
-/// FALSE when: origin/main is unresolved (empty — no origin ref to prefer), trunk is unresolved (empty),
-/// the two are EQUAL (nothing to redirect — the normal in-sync state), or origin/main is NOT an ancestor
-/// of trunk (trunk == origin content under the re-parent model's commit-distinct-but-tree-equal state, or
-/// a genuine fork — keep `trunk` as the integrator's base + let the existing fast-paths handle it). Pure
-/// over its inputs so the strict-ahead decision is unit-tested without git. `origin_is_ancestor_of_trunk`
-/// is the caller's `git merge-base --is-ancestor origin/main trunk` result.
+/// Decide whether `fleet sync` should base on `origin/main` instead of the local `trunk` ref: TRUE when
+/// the two are in a STRICT-ANCESTOR relationship (one is a proper ancestor of the other) and differ —
+/// i.e. either direction of lag, since origin/main is the authoritative PUBLISHED tip in both:
+///   - trunk STRICTLY AHEAD of origin/main (origin is an ancestor of trunk): the `--publish-origin`
+///     publish-lag window where pr-sync advanced local trunk with gated peer commits it has not pushed
+///     yet, so trunk carries not-yet-authoritative history every syncing agent would otherwise adopt.
+///   - origin/main STRICTLY AHEAD of trunk (trunk is an ancestor of origin): the local `trunk` ref is
+///     STALE — its sole writer pr-sync is paused/stopped, so it froze while origin/main advanced via
+///     direct-to-main landings; basing on the frozen trunk leaves the agent silently behind the real tip
+///     (v-wasmtime-migration report 2026-08-27: HEAD an ancestor of a 7-ahead origin/main, sync no-op'd).
+///
+/// FALSE when: origin/main or trunk is unresolved (empty), the two are EQUAL (normal in-sync), or NEITHER
+/// is an ancestor of the other — the re-parent model's commit-distinct-but-tree-equal steady state, or a
+/// genuine fork — where `trunk` stays the integrator's base and the existing fast-paths handle it. Pure
+/// over its inputs so the decision is unit-tested without git; the two `is_ancestor` flags are the
+/// caller's `git merge-base --is-ancestor origin/main trunk` and `--is-ancestor trunk origin/main`.
 fn sync_base_prefers_origin_main(
     origin_main_sha: &str,
     trunk_sha: &str,
     origin_is_ancestor_of_trunk: bool,
+    trunk_is_ancestor_of_origin: bool,
 ) -> bool {
     !origin_main_sha.is_empty()
         && !trunk_sha.is_empty()
         && origin_main_sha != trunk_sha
-        && origin_is_ancestor_of_trunk
+        && (origin_is_ancestor_of_trunk || trunk_is_ancestor_of_origin)
 }
 
 fn sync(fleet: &Fleet, force: bool) {
@@ -6598,21 +6605,34 @@ fn sync(fleet: &Fleet, force: bool) {
     let trunk_sha_full = git_stdout(&["rev-parse", "--verify", "-q", TRUNK]);
     let origin_is_ancestor_of_trunk =
         git_ok(&["merge-base", "--is-ancestor", "origin/main", TRUNK]);
+    let trunk_is_ancestor_of_origin =
+        git_ok(&["merge-base", "--is-ancestor", TRUNK, "origin/main"]);
     let base: &str = if sync_base_prefers_origin_main(
         &origin_main_sha,
         &trunk_sha_full,
         origin_is_ancestor_of_trunk,
+        trunk_is_ancestor_of_origin,
     ) {
         "origin/main"
     } else {
         TRUNK
     };
     if base != TRUNK {
-        println!(
-            "fleet sync: local trunk is AHEAD of origin/main (publish-lag: pr-sync gated peer commits \
-             not-yet-pushed) — basing this sync on origin/main (the authoritative published tip) so you \
-             don't adopt unpushed foreign history."
-        );
+        // Two directions, same fix: origin/main is the authoritative published tip either way.
+        if trunk_is_ancestor_of_origin {
+            println!(
+                "fleet sync: local trunk ({}) is BEHIND origin/main — its writer pr-sync is paused/stopped \
+                 so the trunk ref is STALE while origin/main advanced via direct-to-main landings. Basing \
+                 this sync on origin/main (the real tip) so you don't stay silently behind.",
+                &trunk_sha_full[..trunk_sha_full.len().min(12)]
+            );
+        } else {
+            println!(
+                "fleet sync: local trunk is AHEAD of origin/main (publish-lag: pr-sync gated peer commits \
+                 not-yet-pushed) — basing this sync on origin/main (the authoritative published tip) so you \
+                 don't adopt unpushed foreign history."
+            );
+        }
     }
 
     // NO-OP GUARD (the re-sha churn v-inference hit): if `trunk` is ALREADY an ancestor of HEAD, the
@@ -18721,20 +18741,23 @@ mod tests {
     }
 
     #[test]
-    fn sync_base_prefers_origin_main_only_when_trunk_strictly_ahead() {
-        // The publish-lag case: trunk strictly ahead of origin/main (origin IS ancestor, shas differ) →
-        // base on origin/main (don't adopt pr-sync's unpushed peer commits).
-        assert!(sync_base_prefers_origin_main("aaa", "bbb", true));
-        // EQUAL shas → nothing to redirect (normal in-sync) → keep trunk.
-        assert!(!sync_base_prefers_origin_main("aaa", "aaa", true));
-        // origin/main NOT an ancestor of trunk (re-parent commit-distinct, or a fork) → keep trunk.
-        assert!(!sync_base_prefers_origin_main("aaa", "bbb", false));
+    fn sync_base_prefers_origin_main_on_either_strict_ancestor_lag() {
+        // args: (origin_main_sha, trunk_sha, origin_is_ancestor_of_trunk, trunk_is_ancestor_of_origin)
+        // Publish-lag: trunk strictly AHEAD of origin/main (origin IS ancestor) → base on origin/main.
+        assert!(sync_base_prefers_origin_main("aaa", "bbb", true, false));
+        // Stale trunk (pause/pr-sync-stopped): origin/main strictly AHEAD of trunk (trunk IS ancestor of
+        // origin) → base on origin/main (the v-wasmtime-migration bug this closes).
+        assert!(sync_base_prefers_origin_main("aaa", "bbb", false, true));
+        // EQUAL shas → nothing to redirect (normal in-sync) → keep trunk, even if a flag is spuriously set.
+        assert!(!sync_base_prefers_origin_main("aaa", "aaa", true, true));
+        // NEITHER an ancestor (re-parent commit-distinct/tree-equal, or a genuine fork) → keep trunk.
+        assert!(!sync_base_prefers_origin_main("aaa", "bbb", false, false));
         // Unresolved origin/main (empty — no origin ref) → keep trunk (nothing to prefer).
-        assert!(!sync_base_prefers_origin_main("", "bbb", true));
+        assert!(!sync_base_prefers_origin_main("", "bbb", true, true));
         // Unresolved trunk (empty) → keep trunk (can't reason).
-        assert!(!sync_base_prefers_origin_main("aaa", "", true));
+        assert!(!sync_base_prefers_origin_main("aaa", "", true, true));
         // Degenerate all-empty → false (the emptiness guards stop a vacuous equal-empty pass).
-        assert!(!sync_base_prefers_origin_main("", "", true));
+        assert!(!sync_base_prefers_origin_main("", "", true, true));
     }
 
     #[test]
