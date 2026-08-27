@@ -262,13 +262,31 @@ where
             GExpect::Output(_) | GExpect::Trap(_) => {}
         }
 
-        // RUN outcome. If the compiler DECLINED a value/trap case, the gate grades it Todo (a
-        // not-yet-implemented feature), never Fail — and there is nothing to run.
+        // RUN outcome. A value/trap case whose compiler did NOT emit is graded from the DIAGNOSTIC, never run.
+        // Most non-emit outcomes are HONEST not-yet-implemented declines → Todo (a coded `CDZxxxx` decline, OR a
+        // code-less "type has no machine representation"-family decline — the canonical type-without-boundary
+        // decline). But a CODE-LESS compile error whose message matches a curated INTERNAL-COMPILER-ERROR
+        // signature (`is_ice_signature`: "no local slot", a self-labeled "compiler bug", a panic) is a compiler
+        // BUG, not a capability gap, and must FAIL — never hide in the todo pool the all-declines scoreboard
+        // audits (operator ruling 2026-08-27; discriminator refined WITH breaker — code-less ALONE false-flags
+        // ~60 honest declines, so ONLY the ICE-signature set FAILs). An unrecognized code-less message stays
+        // Todo (zero false positives; a novel ICE signature is added to the set as it is found).
         if !compiled {
-            worst = worst.worse(Grade::Todo(
-                "output/trap case the compiler declined (not-yet-implemented; todo like the gate)"
-                    .into(),
-            ));
+            let (code, message) = first_error_diag(compile_diag);
+            worst = worst.worse(if code.is_none() && is_ice_signature(&message) {
+                Grade::Fail(format!(
+                    "output/trap case failed to compile with an INTERNAL COMPILER ERROR (a bug, not a \
+                     capability gap): {message}"
+                ))
+            } else {
+                Grade::Todo(
+                    "output/trap case the compiler declined (not-yet-implemented; todo like the gate)"
+                        .into(),
+                )
+            });
+            if matches!(worst, Grade::Fail(_)) {
+                break;
+            }
             continue;
         }
         ran_a_trial = true;
@@ -466,6 +484,28 @@ pub fn first_error_diag(diag: &str) -> (Option<String>, String) {
         }
     }
     (None, String::new())
+}
+
+/// Whether a CODE-LESS compile-failure message is an INTERNAL COMPILER ERROR (a bug) rather than an honest
+/// not-yet-implemented decline. A curated signature set (operator ruling 2026-08-27, refined WITH breaker):
+/// code-less-ness ALONE does NOT mark an ICE — the ~60 honest capability declines ("… has no machine
+/// representation / valtype / unbox op / native Rust representation") are also code-less — so only these
+/// internal-invariant shapes FAIL, everything else code-less stays Todo (zero false positives). Ported into
+/// `xtask gate` — keep in sync. New ICE signatures are ADDED here as they surface (until then they stay Todo).
+///  - "no local slot": `parameter/let-binding reference has no local slot` — an emit-stage internal invariant
+///    (a resolved binder lost its slot; `rcdzc::opt` confirms it is a compiler bug from wrong resolution/timing).
+///  - "is a compiler bug": a self-labeled internal error (`a wildcard literal test is a compiler bug`).
+///  - "no bound rust identifier" / "sum match sub-value has no declaration": a resolved reference / match
+///    sub-value that lost its binding — a broken internal invariant (breaker-adjudicated true-ICE).
+///  - "panicked" / "internal error": a compiler panic/assertion surfaced in stderr.
+pub fn is_ice_signature(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("no local slot")
+        || m.contains("is a compiler bug")
+        || m.contains("no bound rust identifier")
+        || m.contains("sum match sub-value has no declaration")
+        || m.contains("panicked")
+        || m.contains("internal error")
 }
 
 /// EVERY `warning [CODE] (node N): message` in a compiler stderr — a clean compile can emit a SET.
@@ -1062,6 +1102,57 @@ mod tests {
         // A wrong value → Fail.
         let res = grade_run(&tr, 0, "", |_| Ok(Outcome::Value("41".into(), vec![]))).unwrap();
         assert!(matches!(res.grade, Grade::Fail(_)));
+
+        // COMPILE-FAILURE grading of an output case (compile_status != 0, nothing runs):
+        let never = |_: &GTrial| -> Result<Outcome> { panic!("must not run a declined case") };
+        // An ICE-signature code-less error (a compiler BUG) → FAIL, never a hidden todo.
+        let res = grade_run(
+            &tr,
+            1,
+            "cdz: error: parameter reference has no local slot",
+            never,
+        )
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Fail(_)),
+            "ICE signature → fail: {:?}",
+            res.grade
+        );
+        assert!(!res.ran_a_trial);
+        // A code-less HONEST decline (no ICE signature) stays Todo — the false-positive guard: the ~60
+        // capability-gap declines ("type has no machine representation") must NOT flip to fail.
+        let res = grade_run(
+            &tr,
+            1,
+            "cdz: error: a function parameter's type has no machine representation",
+            never,
+        )
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Todo(_)),
+            "honest code-less decline → todo: {:?}",
+            res.grade
+        );
+        // A CODED decline (CDZxxxx) is a genuine capability gap → Todo.
+        let res = grade_run(
+            &tr,
+            1,
+            "error [CDZ0210] (node 3): match is non-exhaustive",
+            never,
+        )
+        .unwrap();
+        assert!(
+            matches!(res.grade, Grade::Todo(_)),
+            "coded decline → todo: {:?}",
+            res.grade
+        );
+        // A silent decline (no error line at all) stays Todo.
+        let res = grade_run(&tr, 1, "", never).unwrap();
+        assert!(
+            matches!(res.grade, Grade::Todo(_)),
+            "silent decline → todo: {:?}",
+            res.grade
+        );
     }
 
     #[test]

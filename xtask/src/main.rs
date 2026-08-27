@@ -3772,6 +3772,22 @@ fn first_error_diag(stderr: &[u8]) -> (Option<String>, String) {
     (None, String::new())
 }
 
+/// Whether a CODE-LESS compile-failure message is an INTERNAL COMPILER ERROR (a bug) rather than an honest
+/// not-yet-implemented decline (operator ruling 2026-08-27, refined WITH breaker). Code-less-ness ALONE does
+/// NOT mark an ICE — the ~60 honest capability declines ("… has no machine representation / valtype / unbox
+/// op / native Rust representation") are also code-less — so only these curated internal-invariant shapes
+/// FAIL; everything else code-less stays Todo (zero false positives). MIRROR of
+/// `cdz_corpus_grade::is_ice_signature` — keep in sync. New ICE signatures are added here as they surface.
+fn is_ice_signature(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("no local slot")
+        || m.contains("is a compiler bug")
+        || m.contains("no bound rust identifier")
+        || m.contains("sum match sub-value has no declaration")
+        || m.contains("panicked")
+        || m.contains("internal error")
+}
+
 /// EVERY warning diagnostic on a SUCCESSFUL compile, recovered from `cdz compile` stderr — the
 /// `(warns CODE (message "…"))` clause of the portable-diagnostic-test capability (operator seq353,
 /// inc2). Unlike an error (first-wins), a clean compile can emit a SET of warnings (e.g. two unused
@@ -4850,7 +4866,17 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
             match ran {
                 Ran::Value(v, _, _) if *v == expected_val || *v == expected_full => Grade::Pass,
                 Ran::Value(v, _, _) => Grade::Fail(format!("expected {expected_full}, ran → {v}")),
-                Ran::Declined { .. } => Grade::Todo, // compiler can't compile it yet
+                // A CODE-LESS decline whose message is an ICE signature (`is_ice_signature`) on a case that
+                // should produce a VALUE is a compiler BUG → FAIL, never a hidden todo (operator ruling
+                // 2026-08-27, refined with breaker). A coded decline, or a code-less HONEST capability decline
+                // ("no machine representation"…), stays Todo — the ~60-false-positive guard.
+                Ran::Declined {
+                    code: None,
+                    message,
+                } if is_ice_signature(message) => Grade::Fail(format!(
+                    "ICE (compiler bug) on a case expecting {expected_full}: {message}"
+                )),
+                Ran::Declined { .. } => Grade::Todo, // coded/honest decline — compiler can't compile it yet
                 Ran::Trap(t) => Grade::Fail(format!("expected {expected_full}, trapped: {t}")),
                 // A broken artifact for a case the corpus says yields a VALUE is the miscompile the
                 // Rust-backend gate exists to catch — the backend emitted un-compilable source.
@@ -4935,6 +4961,14 @@ fn grade_trial(expect: &str, ran: &Ran) -> Grade {
                     _ => Grade::Todo,
                 }
             }
+            // An ICE-signature code-less decline on a case that should TRAP is a compiler bug → FAIL; a
+            // coded/honest decline stays Todo (mirror of the output arm + cdz_corpus_grade).
+            Ran::Declined {
+                code: None,
+                message,
+            } if is_ice_signature(message) => Grade::Fail(format!(
+                "ICE (compiler bug) on a case expecting a trap: {message}"
+            )),
             Ran::Declined { .. } => Grade::Todo,
         },
         // `declines`: the corpus says the compiler DECLINES to emit a component for this well-formed
