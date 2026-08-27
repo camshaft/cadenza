@@ -30584,6 +30584,28 @@ mod tests {
     }
 
     #[test]
+    fn a_mixed_arm_abort_reading_growing_list_state_declines_honestly_not_cdz0101() {
+        // breaker abx3: a handler with mixed resume(step)+abortive(bail) arms over a GROWING list state,
+        // whose ABORT arm READS the state — `(handle E … ((step () s (resume (List.len s) (List.prepend s 0)))
+        // (bail (k) s (+ k (List.len s)))) (+ (E.step) (E.bail 100)))`. The step dispatch threads the growing
+        // state as a FINDING-24 `#st{node}_{slot}` name (bound only in the resume continuation's drain scope);
+        // the strict-op (`+`) abort collapse does NOT drain those binds (do-form only), so the abort arm's
+        // `(List.len #st…)` reference LEAKED unbound → a spurious CDZ0101 on a well-formed program. It must
+        // decline HONESTLY (HANDLER_NOT_REDUCIBLE) — the full fold is a separate strict-op-abort increment.
+        let src = "(module m (effect E (op step (-> Int64)) (op bail (-> Int64 Int64))) (def (main (: n Int64)) (handle E (if (> n 0) (list n) (list 9 9)) ((step () s (resume (List.len s) (List.prepend s 0))) (bail (k) s (+ k (List.len s)))) (+ (E.step) (E.bail 100)))) (export main))";
+        match crate::compile::compile_component(&crate::codec::encode(&crate::testkit::parse(src)))
+        {
+            Err(d) => assert_ne!(
+                d.code.as_deref(),
+                Some("CDZ0101"),
+                "abx3 must decline honestly (HANDLER_NOT_REDUCIBLE), not mis-reject CDZ0101 unbound on a well-formed program"
+            ),
+            Ok(_) => { /* a future strict-op-abort fold increment may make it compile — also fine */
+            }
+        }
+    }
+
+    #[test]
     fn an_if_with_identical_branches_folds_to_the_branch() {
         // `(if p x x)` — both branches are the same value, so the `if` collapses to `x` (the condition
         // `p` is a param, trap-free, so evaluating it has no effect to preserve). Result: `Core::Param`

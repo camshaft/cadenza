@@ -8149,6 +8149,28 @@
   (call main (: 5 Int64))
   (output (: 101 Int64)))
 
+; -- abx3 (breaker): mixed resume(step)+abortive(bail) arms over a GROWING LIST state whose ABORT arm READS
+; the state. The step dispatch threads the growing state as a FINDING-24 `#st{node}_{slot}` name (bound only
+; in the resume continuation's drain scope); the strict-op (`+`) abort collapse does NOT drain those binds
+; (do-form only), so the abort arm's `(List.len #st…)` reference previously LEAKED unbound → a spurious
+; CDZ0101 on a well-formed program. Now DECLINES CLEANLY (HANDLER_NOT_REDUCIBLE) — the abortive-arm-reads-a-
+; #st-threaded-state guard in reduce_handle turns the wrong-diagnostic into an honest decline. Pinned as a
+; decline-witness (verdict todo) with the CORRECT value 102 (n=5: step resumes List.len(list 5)=1; bail
+; adds 100 + List.len of the grown [0,5]=2 → 100+2=102; 1 (dead, abandoned) is dropped) — flips to 102 PASS
+; when the strict-op-abort fold increment lands (drain the `#st` binds around the abort value + the outer-
+; observation soundness). Controls that FOLD: abx4 (abort ignores state), abx5 (abort-only, state ungrown).
+(case "abx3 mixed resume+abortive arms over a growing LIST state whose ABORT arm reads the state declines cleanly (HANDLER_NOT_REDUCIBLE, not a CDZ0101 mis-reject)"
+  (input (do
+    (effect E (op step (-> Int64)) (op bail (-> Int64 Int64)))
+    (def (main (: n Int64))
+      (handle E (if (> n 0) (list n) (list 9 9))
+        ((step () s (resume (List.len s) (List.prepend s 0)))
+         (bail (k) s (+ k (List.len s))))
+        (+ (E.step) (E.bail 100))))
+    (export main)))
+  (call main (: 5 Int64))
+  (output (: 102 Int64)))
+
 ; -- breaker batch 428 (2026-08-26): RESUME-with-heap-ANSWER reclaim — arms resuming with LIST and
 ; arm-built STRING answers, across single and DOUBLE dispatches, and with heap STATE + heap ANSWER
 ; simultaneously: every consumed answer reclaims (live-objects 0). The complement of the batch-427

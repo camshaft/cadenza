@@ -6119,6 +6119,26 @@ fn thread_bounded(
                 // Any other arity mismatch — decline.
                 return None;
             }
+            // A FINDING-24 `#st{node}_{slot}` growing-state bind (set at the resume path below) is in scope
+            // ONLY inside the RESUME continuation's `drain_and_wrap`. An ABORTIVE arm that READS the state
+            // gets `cur[slot]` = that `#st` NAME substituted for its state binder, but the strict-op abort
+            // collapse emits the abort value OUTSIDE that scope and drains the `#st` binds for `do`-form
+            // bodies only — so a `+`-form abort's `#st` reference LEAKS unbound → a spurious CDZ0101 on a
+            // well-formed program (breaker abx3/ab4). Decline HONESTLY (`reduce_handle` → None →
+            // HANDLER_NOT_REDUCIBLE todo) rather than emit the leaked `#st`. NARROW: fires only when the
+            // state IS a `#st` name (a prior resume grew it), this arm is abortive, AND its body references
+            // the state — an abort-only handle (abx5: state is the seed, not `#st`) or a state-ignoring abort
+            // arm (abx4) is untouched. The FULL fold (drain the `#st` into the strict-op abort value + the
+            // outer-observation soundness) is a separate increment.
+            if ctx.abortive.contains(&(decl, idx))
+                && db
+                    .ast
+                    .as_name(cur[slot])
+                    .is_some_and(|n| n.starts_with("#st"))
+                && count_param_refs(db, arm.body, arm.state) > 0
+            {
+                return None;
+            }
             subst.insert(arm.state, cur[slot]);
             let arm_body = crate::eval::beta_reduce(db, arm.body, &subst);
             // ABORTIVE arm (E4): the arm never resumes, so performing it ABANDONS the surrounding
