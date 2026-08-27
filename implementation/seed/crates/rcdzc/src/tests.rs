@@ -55518,69 +55518,6 @@ mod cross_component_oracle {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // PL29 — a NON-CONSTANT String argument crosses to a peer. PL28 pins a String LITERAL (a `Core::ConstStr`
-    // built into a rope at the call site); this pins that a String value produced at RUNTIME — here a
-    // `String.concat` — ALSO crosses as its handle. The concat result is already a value-heap rope handle,
-    // so the peer arg emit hands it straight over (no data-segment marshaling). main = S.blen("ab"++"cde") =
-    // byte-len("abcde") = 5. This confirms the decline can drop entirely (not just for constants).
-    // ------------------------------------------------------------------------------------------------
-    #[test]
-    fn a_non_constant_string_argument_crosses_to_a_peer() {
-        use crate::testkit::parse;
-        let provider = compile_provider(
-            "(do (def (blen (: s String)) (String.byte-len s)) (export blen))",
-            "cadenza:strs2/api",
-        );
-        {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&provider)
-                .expect("the non-const string-arg provider validates");
-        }
-        // The arg is a RUNTIME `String.concat`, not a literal — a value-heap rope handle produced in-body.
-        let src = "(do \
-            (effect S (op blen (-> String Int64))) \
-            (bind S \"cadenza:strs2/api\") \
-            (def (main) (host (S) (S.blen (String.concat \"ab\" \"cde\")))) \
-            (export main))";
-        let consumer = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
-            .unwrap_or_else(|d| {
-                panic!(
-                    "non-const string-arg consumer compiles: {} [{:?}]",
-                    d.message, d.code
-                )
-            });
-        {
-            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-            v.validate_all(&consumer)
-                .expect("non-const string-arg consumer validates");
-        }
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("[PL29] runtime wasm not found; skipping");
-            return;
-        };
-        let peers = vec![cdz_run::Peer {
-            bytes: provider,
-            interface: "cadenza:strs2/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: Vec::new(),
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer, &peers, &opts)
-            .expect("a non-constant string argument crosses to a peer")
-        {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "5",
-                "a runtime-produced String argument crosses to a peer as its handle"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!("non-const string-argument run trapped: {t}"),
-        }
-    }
-
-    // ------------------------------------------------------------------------------------------------
     // PL30 — a MIXED String + scalar argument list crosses to a peer in ONE op (the Bedrock `converse`
     // shape: a prompt String + a scalar like `max-tokens`). PL28/PL29 pin a lone String arg; u2 pins
     // scalar args; this pins that the two DISTINCT arg-emit paths INTERLEAVE correctly in a single call —

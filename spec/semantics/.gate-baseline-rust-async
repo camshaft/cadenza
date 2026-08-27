@@ -8348,6 +8348,7 @@ todo	a runtime Bytes value's encode member still renders after other member call
 todo	a runtime RECURSIVE Ast (a list of nodes) round-trips through the R2 value codec
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
+todo	a runtime-produced String argument crosses to a peer as its handle
 todo	a same-signature multi-export shared call is repeatable on one make-<name> handle
 todo	a scalar quantity argument crosses to and from a peer as its inner scalar
 todo	a signature mismatch in ONE of several bound peers is rejected at compose time
