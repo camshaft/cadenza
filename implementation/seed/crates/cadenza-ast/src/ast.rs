@@ -196,6 +196,40 @@ pub enum Struct {
     List(Vec<StructId>),
 }
 
+/// The primitive compound-value constructor a node denotes — the first-class TAG that says "this node
+/// is a record / tuple / list / map". Recognized from the reserved head via [`Arenas::compound_ctor`]
+/// (the unshadowable STRING primitive) or, collapsing the shadowable NAME alias too, via
+/// [`Arenas::ctor_head_key`] (head-kind normalization for [`Arenas::node_eq`]). Recognizing the kind by
+/// this typed tag rather than by re-comparing head text at each consumer is the native-compound-data
+/// migration; the seed compiler's `rcdzc::ast::CompoundCtor` is the twin. (`set` is not yet a primitive
+/// constructor on this plane — held for operator decision D2 in
+/// `implementation/design/DESIGN-native-ast-compound-data.md`.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CompoundCtor {
+    /// `("record" (= k v)…)` — a record.
+    Record,
+    /// `("tuple" e…)` — a tuple.
+    Tuple,
+    /// `("list" e…)` — a list.
+    List,
+    /// `("map" (k v)…)` — a map.
+    Map,
+}
+
+impl CompoundCtor {
+    /// Map a reserved compound-ctor head spelling to its typed tag — the single place this crate matches
+    /// the reserved compound vocabulary. `None` for any other spelling.
+    fn from_spelling(s: &str) -> Option<CompoundCtor> {
+        match s {
+            "record" => Some(CompoundCtor::Record),
+            "tuple" => Some(CompoundCtor::Tuple),
+            "list" => Some(CompoundCtor::List),
+            "map" => Some(CompoundCtor::Map),
+            _ => None,
+        }
+    }
+}
+
 /// Index into the leaf pool.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct LeafId(pub u32);
@@ -1668,6 +1702,15 @@ impl Arenas {
         }
     }
 
+    /// The primitive compound constructor [`CompoundCtor`] this `List` node denotes, if any — the typed
+    /// TAG read from the reserved STRING head ([`head_ctor`]). Only the unshadowable STRING primitive is
+    /// a tag; a NAME head (`(record …)`, the shadowable alias) returns `None` here and resolves as an
+    /// ordinary reference. The twin of `rcdzc::ast::Arenas::compound_ctor`; see
+    /// `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor(&self, id: StructId) -> Option<CompoundCtor> {
+        CompoundCtor::from_spelling(self.head_ctor(id)?)
+    }
+
     /// If `id` is a `List` headed by the name `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1764,11 +1807,11 @@ impl Arenas {
         true
     }
 
-    /// The compound-ctor spelling an occurrence denotes as a LIST HEAD, collapsing the shadowable
-    /// NAME alias and the unshadowable STRING primitive to one key — so head-kind normalization in
+    /// The compound-ctor TAG an occurrence denotes as a LIST HEAD, collapsing the shadowable NAME alias
+    /// and the unshadowable STRING primitive to one [`CompoundCtor`] — so head-kind normalization in
     /// [`node_eq`] can treat `Name("record")` and `Str("record")` as the same head. Only the four
     /// compound ctors qualify; every other name/string is left to exact leaf comparison.
-    fn ctor_head_key(&self, id: StructId) -> Option<&str> {
+    fn ctor_head_key(&self, id: StructId) -> Option<CompoundCtor> {
         let spelling: &str = match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
                 Leaf::Name(n) => n,
@@ -1777,7 +1820,7 @@ impl Arenas {
             },
             _ => return None,
         };
-        matches!(spelling, "list" | "tuple" | "record" | "map").then_some(spelling)
+        CompoundCtor::from_spelling(spelling)
     }
 }
 
@@ -1786,6 +1829,67 @@ mod tests {
     use super::*;
     use num_bigint::BigInt;
     use std::str::FromStr;
+
+    #[test]
+    fn compound_ctor_and_ctor_head_key_recognize_the_reserved_vocabulary() {
+        let mut b = Builder::new();
+        // `("record" _)` — the STRING primitive head is a compound-ctor tag.
+        let rec_head = b.atom_leaf(Leaf::Str("record".into()));
+        let payload = b.atom_leaf(Leaf::Str("_".into()));
+        let rec = b.list(vec![rec_head, payload]);
+        // `(record)` — the NAME alias head: NOT the primitive tag (compound_ctor), but ctor_head_key
+        // (the node_eq head-normalizer) DOES collapse it to the same tag.
+        let alias_head = b.name("record");
+        let alias = b.list(vec![alias_head]);
+        // One root keeps both subtrees reachable from `finish`.
+        let root = b.list(vec![rec, alias]);
+        let a = b.finish(root);
+
+        // compound_ctor: only the STRING primitive on a List node.
+        assert_eq!(a.compound_ctor(rec), Some(CompoundCtor::Record));
+        assert_eq!(a.compound_ctor(alias), None);
+        // ctor_head_key operates on the HEAD occurrence and collapses NAME + STRING to one tag.
+        assert_eq!(a.ctor_head_key(rec_head), Some(CompoundCtor::Record));
+        assert_eq!(a.ctor_head_key(alias_head), Some(CompoundCtor::Record));
+        // A non-ctor name/string head is not a tag.
+        let other = b2_head_tag("if");
+        assert_eq!(other, None);
+
+        // All four spellings map to their tag, via either head kind.
+        for (spelling, want) in [
+            ("record", CompoundCtor::Record),
+            ("tuple", CompoundCtor::Tuple),
+            ("list", CompoundCtor::List),
+            ("map", CompoundCtor::Map),
+        ] {
+            let mut b = Builder::new();
+            let s = b.atom_leaf(Leaf::Str(spelling.into()));
+            let n = b.name(spelling);
+            // Keep both head atoms reachable from the root so neither is pruned by `finish`.
+            let node = b.list(vec![s, n]);
+            let a = b.finish(node);
+            assert_eq!(a.compound_ctor(node), Some(want), "str head `{spelling}`");
+            assert_eq!(
+                a.ctor_head_key(s),
+                Some(want),
+                "ctor_head_key str `{spelling}`"
+            );
+            assert_eq!(
+                a.ctor_head_key(n),
+                Some(want),
+                "ctor_head_key name `{spelling}`"
+            );
+        }
+    }
+
+    /// Helper: the ctor_head_key of a lone NAME atom spelled `s` (for the negative case).
+    fn b2_head_tag(s: &str) -> Option<CompoundCtor> {
+        let mut b = Builder::new();
+        let h = b.name(s);
+        let root = b.list(vec![h]);
+        let a = b.finish(root);
+        a.ctor_head_key(h)
+    }
 
     fn dec(neg: bool, sig: &str, exp: i64) -> Decimal {
         Decimal {
