@@ -915,6 +915,33 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 25 Int64)))
 
+(case "a stateful handler threads its state across three sequential performs, the do yielding the last"
+  (doc    "A handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and threads `s+1`
+           forward — over THREE sequential performs in a `do`. Seed 0: the three `Fresh.next` reads see
+           0, 1, 2, and the `do` yields its last statement's value → 2. Pins that the threaded state
+           advances once per perform and the do-block's value is the final perform's result (the earlier
+           two are sequenced for their state effect and discarded).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (def (main)
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (do ((. Fresh next)) ((. Fresh next)) ((. Fresh next)))))
+            (export main)))
+  (output (: 2 Int64)))
+
+(case "a cross-function perform is discharged by the caller's handler"
+  (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent: a perform in a
+           CALLEE `gen` is discharged by the handler enclosing `gen`'s CALL, `(handle … (gen))` — the fold
+           inlines `gen` into the handled region so its perform `(Bump.by 41)` resolves to the arm, which
+           resumes `(+ 41 1)` = 42. A function performing an operation its caller discharges is well-formed
+           (its home is the caller's handler, not itself), so `gen` is not independently faulted.")
+  (input  (do
+            (effect Bump (op by (-> Int64 Int64)))
+            (def (gen) ((. Bump by) 41))
+            (def (main) (handle Bump unit ((by (n) s (resume (+ n 1) s))) (gen)))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a PURE closure iterated by a recursive combinator composes with a perform in the same body"
   (doc    "The effects-adjacent face of the iterate combinator (09-functions pins it pure): under a
            handler, the body BOTH performs (`Ctr.next` reads the seed 0 and threads 1) AND runs a

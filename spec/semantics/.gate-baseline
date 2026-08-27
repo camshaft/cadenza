@@ -1742,6 +1742,7 @@ pass	a contradictory arrow annotation on a function in a runtime Map value is re
 pass	a contradictory arrow annotation on a function stored as a Map KEY is rejected
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-arm perform with the handler nesting FLIPPED has no home — arm bodies resolve under the handlers enclosing their handle
+pass	a cross-function perform is discharged by the caller's handler
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-handler foreign-perform op-arg into a MATCH-shaped-resume arm folds under nested handlers (nv1f)
 pass	a cross-handler op-arg performing an outer effect runs EXACTLY ONCE though the arm uses it thrice
@@ -3952,6 +3953,7 @@ pass	a state-advancing helper called before a later read threads its write throu
 pass	a stateful counter is observed left-to-right by sibling performs in one expression
 pass	a stateful counter threads through a RECURSIVE callee performing inside the handled region
 pass	a stateful handler threads its counter across a function boundary
+pass	a stateful handler threads its state across three sequential performs, the do yielding the last
 pass	a stateful perform inside the arm of a fused match on a call result threads state once
 pass	a stored continuation is popped from a time-ordered pqueue (tuple-payload match) and resumed
 pass	a straight-line tuple built from callee params is projected in the caller
@@ -5458,6 +5460,7 @@ pass	cord4 IMPOSED world: RECORD param + 2-field scalar record result
 pass	cord5 IMPOSED world: RECORD param + 20-field record result (the co02 shape, record param)
 pass	cp3 two performing draws in one capture-once closure init fold once each, in order
 pass	cpd1 a COMPOUND-INTEREST ladder — grow applies the seed rate percent truncating answering the new principal, skim withdraws answering the remainder, and the two-point rate difference compounds so the gap between the runs WIDENS every grow row while the skims subtract identically
+pass	cpf1 a performing nullary factory called once and applied once folds capture-once
 pass	cpp1 a PARTIAL operator passed directly to a recursive HOF
 pass	cpp2 a partial built from a RUNTIME operand, stored in a record, projected, applied
 pass	cpp3 partials of a COMPARISON operator select via a HOF
@@ -6044,6 +6047,8 @@ pass	icp1 lifted String AND Bytes params feed an effect arm's answer
 pass	icp2 the original ch05 face RESURRECTED — literal string MATCH on a lifted param
 pass	icp3 a lifted String compared and measured through an if-chain (the viachain shape on a param)
 pass	id1 handling an ALREADY-DISCHARGED effect: outer handle of an effect the inner fully consumed
+pass	idc1 a unary def-call's allocated list bound once and referenced twice stays one shared object
+pass	idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object
 pass	identical PURE reads of a perform-built list — safe to share, values agree
 pass	identical PURE subterms around distinct performs — pure sharing must not merge dispatches
 pass	identical negative zeros nested in a tuple compare equal
@@ -8076,6 +8081,3 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 todo	xar5 a RECURSIVE performer with the arm capturing a main-local heap list folds and answers
-pass	cpf1 a performing nullary factory called once and applied once folds capture-once
-pass	idc1 a unary def-call's allocated list bound once and referenced twice stays one shared object
-pass	idc2 a NULLARY def-call's allocated list bound once and referenced twice stays one shared object

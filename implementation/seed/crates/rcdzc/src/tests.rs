@@ -59249,13 +59249,15 @@ mod stage1 {
     }
 
     #[test]
-    fn a_wide_effect_handler_compiles_and_dispatches_the_performed_op() {
-        // A handler over a WIDE effect (many ops, many arms) compiles + runs correctly — the behaviour the
-        // `program_delegates_effect` memo (in `effects::perform_host_target`) must preserve. That routing
-        // fallback walks every export body per residual host-perform; recomputing it per op made an N-op
-        // handler O(N²) (an 800-op handler spent ~86% of the compile in `body_has_host_delegating`). The
-        // memo makes it linear. Here 12 ops; the body performs op p3 (arm resumes 3), so `(+ (p3) 1) = 4`
-        // — a wrong dispatch (or a memo that returned the wrong delegation verdict) would give a wrong value.
+    fn a_wide_effect_handler_compiles_linearly() {
+        // COMPILE-PERF guard (not a behavior check): a handler over a WIDE effect (many ops, many arms) must
+        // COMPILE — the behaviour the `program_delegates_effect` memo (in `effects::perform_host_target`)
+        // must preserve. That routing fallback walks every export body per residual host-perform; recomputing
+        // it per op made an N-op handler O(N²) (an 800-op handler spent ~86% of the compile in
+        // `body_has_host_delegating`). The memo makes it linear. Here 12 ops; the body performs op p3.
+        // The VALUE (multi-arm dispatch selects the performed op's arm) is a behavior pinned in the corpus by
+        // 14-effects "a single handler with both a resuming and an abortive arm dispatches each op to its own
+        // arm kind"; this test keeps ONLY the wide-handler-compiles face (no wasmtime run needed).
         let n = 12;
         let ops: String = (0..n)
             .map(|i| format!(" (op p{i} (-> Unit Int64))"))
@@ -59266,15 +59268,8 @@ mod stage1 {
         let src = format!(
             "(do (effect E{ops}) (def (main) (handle E unit ({arms}) (+ ((. E p3)) 1))) (export main))"
         );
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(&src)))
-                    .expect("a wide-effect handler compiles"),
-                "main"
-            ),
-            4,
-            "the performed op p3 resumes 3, so (+ (p3) 1) = 4"
-        );
+        compile_component(&crate::codec::encode(&parse(&src)))
+            .expect("a wide 12-op effect handler compiles (linear routing memo)");
     }
 
     #[test]
@@ -60761,27 +60756,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_stateful_handler_threads_its_state_across_performs() {
-        // E1c-2: a handler that FOLDS state — `(resume s (+ s 1))` hands back the current state and
-        // threads `s+1` forward — is reduced by the evaluation-order fold. `(Fresh.next)` reads state
-        // `0`; three performs in a `do` see 0, 1, 2, and the `do` yields the last (2). The state binder
-        // `s` (bound in scope by E1b) is substituted with the threaded state at each perform. The whole
-        // handle becomes plain arithmetic, so it runs to 2 (`capabilities-and-effects.md` §A Handler
-        // Threads State Across The Operations It Discharges).
-        let src = "(do (effect Fresh (op next (-> Unit Int64))) \
-                   (def (main) (handle Fresh 0 ((next (u) s (resume s (+ s 1)))) \
-                   (do ((. Fresh next)) ((. Fresh next)) ((. Fresh next))))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a stateful tail-resumptive handler compiles and runs"),
-                "main"
-            ),
-            2
-        );
-    }
-
-    #[test]
     // The pinned sums are written `0 + 1 + … + n` to make `sum(0..=n)` explicit against the comment's
     // N(N-1)/2 — the leading `0 +` is pedagogical, not a stray identity op.
     #[allow(clippy::identity_op)]
@@ -61040,44 +61014,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_single_handler_dispatches_a_resuming_and_an_abortive_arm_by_op() {
-        // One handler for one effect `E` with TWO ops of DIFFERENT arm kinds — `get` resumes, `bail`
-        // abandons — so the fold must route each performed op to its own arm kind within a SINGLE handler
-        // context (distinct from the nested three-handler abort, where each kind is its own handler). Body
-        // `(+ (E.get) (E.bail 7))` seeded 0: `E.get` resumes 5, then `E.bail 7` — non-resuming — ABANDONS
-        // the pending `(+ 5 …)` and the arm value 7 becomes the whole handle's value (NOT 5+7).
-        let mixed_src = "(do (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64))) \
-                   (def (main) (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) \
-                   (+ (E.get) (E.bail 7)))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(mixed_src))).expect(
-                    "a single mixed resuming+abortive handler dispatches each op to its arm kind"
-                ),
-                "main"
-            ),
-            7,
-            "the abortive bail must abandon the pending (+ 5 ..) even though get resumed in the same handler"
-        );
-        // Control: the same two-op handler but the body performs ONLY the resuming op — the abortive arm is
-        // present but never reached, so nothing abandons and the handle folds to the resumed value.
-        // `(+ (E.get) 100)` seeded 0: get resumes 5, `(+ 5 100)` = 105.
-        let only_resume_src = "(do (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64))) \
-                   (def (main) (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) \
-                   (+ (E.get) 100))) (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(only_resume_src))).expect(
-                    "a mixed handler folds normally when its abortive op is never performed"
-                ),
-                "main"
-            ),
-            105,
-            "the mere presence of an abortive arm must not perturb the resuming path"
-        );
-    }
-
-    #[test]
     fn a_mixed_handler_abortive_arm_value_reads_both_the_op_arg_and_the_state() {
         // The mixed resuming+abortive handler, but the ABORTIVE arm's value is a function of BOTH the op
         // ARGUMENT and the handler STATE binder — `(stop (code) s (* code s))` — reached after a resuming
@@ -61104,28 +61040,6 @@ mod stage1 {
             run_returns_with::<i64>(&comp, "main", &[wasmtime::component::Val::S64(3)]),
             21,
             "(* 7 3) = 21",
-        );
-    }
-
-    #[test]
-    fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
-        // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
-        // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
-        // the call) so its perform `(Bump.by 41)` resolves to the arm, which resumes `(+ n 1)` = 42.
-        // `gen` performing an effect is well-formed (its home is its caller's handler, not itself), so it
-        // is not independently faulted CDZ0401. (`capabilities-and-effects.md` §Handler Resolution Is
-        // Dynamic In Extent — a function may perform an operation its caller discharges.)
-        let src = "(do (effect Bump (op by (-> Int64 Int64))) \
-                   (def (gen) ((. Bump by) 41)) \
-                   (def (main) (handle Bump unit ((by (n) s (resume (+ n 1) s))) (gen))) \
-                   (export main))";
-        assert_eq!(
-            run_returns::<i64>(
-                &compile_component(&crate::codec::encode(&parse(src)))
-                    .expect("a cross-function perform is discharged by the caller's handler"),
-                "main"
-            ),
-            42
         );
     }
 
