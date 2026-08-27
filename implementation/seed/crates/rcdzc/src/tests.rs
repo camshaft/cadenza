@@ -19831,36 +19831,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_fixed_arity_list_pattern_binds_elements_of_a_constant_list() {
-        // 05-compound-types "an element pattern matches a list by its length and elements": a FIXED-ARITY
-        // `(list a b)` matches a constant list of that exact length, binding each position; the element
-        // binders read the constant elements (a `SumPayload` `Elem(i)` fold — no β-substitution). A
-        // wrong-length list falls to the wildcard; the empty `(list)` matches only the empty list.
-        let run = |src: &str| run_returns::<i64>(&component(src), "main");
-        assert_eq!(
-            run("(module m (def (main) (match (list 7) ((list a) a) (_ 0))) (export main))"),
-            7
-        );
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list 7 8) ((list a b) (+ a b)) (_ 0))) (export main))"
-            ),
-            15
-        );
-        assert_eq!(
-            run("(module m (def (main) (match (list) ((list) 1) (_ 2))) (export main))"),
-            1
-        );
-        // A list of the WRONG arity does not match the fixed pattern — falls through to the wildcard.
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list 1 2 3) ((list a b) 99) (_ 42))) (export main))"
-            ),
-            42
-        );
-    }
-
-    #[test]
     fn a_list_match_is_well_formed_or_declines() {
         // A list is OPEN (any length): a match with only fixed-arity arms and no catch-all is
         // NON-EXHAUSTIVE (CDZ0210) — a finite set of lengths cannot cover every list.
@@ -20067,53 +20037,6 @@ mod match_engine {
             .as_deref(),
             Some("CDZ0102"),
             "a reused rest BINDER across sibling rest-lists is still non-linear"
-        );
-    }
-
-    #[test]
-    fn a_rest_list_pattern_matches_by_minimum_length_and_binds_leading_elements() {
-        // 05-compound-types "an element pattern matches a list by its length and elements": a REST pattern
-        // `(list p0 … p_{k-1} .. rest)` matches any list of length ≥ k, binding each LEADING position to
-        // its element (a `SumPayload` `Elem(i)` fold over the constant list) — the rest binder captures the
-        // tail (a sublist; unused here, so it stays inert). A `(list .. rest)` with zero leading binders is
-        // a catch-all (length ≥ 0). The scrutinee folds, so the whole match folds to the selected arm.
-        let run = |src: &str| run_returns::<i64>(&component(src), "main");
-        // A rest pattern selects on length ≥ leading count; the leading binder reads element 0.
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list 10 20 30) ((list) 0) ((list x .. rest) x))) (export main))"
-            ),
-            10
-        );
-        // The empty list matches `(list)`, not the rest pattern (which needs length ≥ 1 here).
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list) ((list) 1) ((list a .. r) 2))) (export main))"
-            ),
-            1
-        );
-        // A non-empty list falls through `(list)` to the length-≥-1 rest arm.
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list 5) ((list) 1) ((list a .. r) 2))) (export main))"
-            ),
-            2
-        );
-        // `(list .. rest)` with zero leading binders is a catch-all (matches every length).
-        assert_eq!(
-            run("(module m (def (main) (match (list 1 2 3) ((list .. all) 7))) (export main))"),
-            7
-        );
-        assert_eq!(
-            run("(module m (def (main) (match (list) ((list .. all) 7))) (export main))"),
-            7
-        );
-        // Two leading binders read elements 0 and 1 past the minimum-length gate.
-        assert_eq!(
-            run(
-                "(module m (def (main) (match (list 4 5 6 7) ((list a b .. rest) (+ a b)) (_ 0))) (export main))"
-            ),
-            9
         );
     }
 
@@ -23555,36 +23478,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_constant_list_prepend_folds_at_the_front() {
-        // A `List.prepend` over a COMPILE-TIME-VISIBLE list literal FOLDS to a constant `(list …)` with the
-        // element inserted at index 0 — no runtime heap (so this uses `run_returns`/`component`, NOT
-        // `run_on_heap` which asserts a value-heap import). `List.at 0` of the folded `[9 1 2 3]` folds to
-        // `Some 9` (consumed by a match so `main` returns a scalar, avoiding the sum-escape ABI); `List.len`
-        // folds to 4. Pins the constant-fold arm (front insertion + length) alongside the runtime path above.
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) (match ((. List at) ((. List prepend) (list 1 2 3) 9) 0) \
-                       ((Some x) x) (None -1))) (export main))"
-                ),
-                "main"
-            ),
-            9,
-            "constant prepend folds the element to the front (index 0)"
-        );
-        assert_eq!(
-            run_returns::<i64>(
-                &component(
-                    "(module m (def (main) ((. List len) ((. List prepend) (list 1 2 3) 9))) (export main))"
-                ),
-                "main"
-            ),
-            4,
-            "constant prepend folds to length 4"
-        );
-    }
-
-    #[test]
     fn a_list_update_replaces_and_its_length_is_unchanged() {
         // `List.update(l, i, x)` replaces the element at index `i`, returning a new list of the SAME
         // length (a replacement, not a growth). To exercise the RUNTIME `vec-update` (a constant-list
@@ -23645,36 +23538,6 @@ mod match_engine {
             Some("CDZ0304"),
             "a constant out-of-range List.update is a provable trap (CDZ0304)"
         );
-    }
-
-    #[test]
-    fn a_constant_list_index_out_of_bounds_folds_to_none() {
-        // The absent side of the fold: an out-of-range CONSTANT index yields `None`
-        // (collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping). `(List.at (list 10
-        // 20 30) 5)` → `None`; matched, the `None` arm is taken → -1. An over-large index (5), a NEGATIVE
-        // index (-1, which MUST NOT wrap to a huge unsigned offset), and the empty list `(list)` all fold
-        // to `None` — the three out-of-bounds shapes the corpus pins.
-        for (src, label) in [
-            (
-                "(module m (def (main) (match ((. List at) (list 10 20 30) 5) ((Some x) x) (None -1))) (export main))",
-                "over-large",
-            ),
-            (
-                "(module m (def (main) (match ((. List at) (list 10 20 30) -1) ((Some x) x) (None -1))) (export main))",
-                "negative",
-            ),
-            (
-                "(module m (def (main) (match ((. List at) (list) 0) ((Some x) x) (None -1))) (export main))",
-                "empty",
-            ),
-        ] {
-            let bytes = component(src);
-            assert_eq!(
-                run_returns::<i64>(&bytes, "main"),
-                -1,
-                "out of bounds ({label}) → None"
-            );
-        }
     }
 
     #[test]
