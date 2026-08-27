@@ -14012,29 +14012,6 @@ mod runtime_ops {
     }
 
     #[test]
-    fn runtime_narrow_unsigned_addition_and_subtraction() {
-        // UInt8: 200+55=255 fits, 200+56=256 traps (range-check to [0,255]); 0-1 traps below zero.
-        assert_eq!(
-            run::<u8>(
-                "(: a UInt8) (: b UInt8)",
-                "(+ a b)",
-                &[Val::U8(200), Val::U8(55)]
-            ),
-            255
-        );
-        assert!(traps(
-            "(: a UInt8) (: b UInt8)",
-            "(+ a b)",
-            &[Val::U8(200), Val::U8(56)]
-        ));
-        assert!(traps(
-            "(: a UInt8) (: b UInt8)",
-            "(- a b)",
-            &[Val::U8(0), Val::U8(1)]
-        ));
-    }
-
-    #[test]
     fn unsigned_narrow_arith_uses_a_single_unsigned_range_check() {
         // The narrow-width range-check for an UNSIGNED result is a SINGLE unsigned upper-bound guard
         // (`r >=ᵤ 2^N → trap`), not the two signed guards (`r <ₛ 0`, `r >ₛ max`) a signed width uses:

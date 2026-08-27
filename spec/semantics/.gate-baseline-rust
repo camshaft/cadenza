@@ -3396,6 +3396,7 @@ pass	a runtime String.from-bytes result is read twice and both reads see the dec
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
+pass	a runtime UInt8 subtraction underflowing below zero traps
 pass	a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-masked to width)
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
@@ -3590,6 +3591,7 @@ pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple orders lexicographically by field
 pass	a runtime tuple whose component is a list compares the list element-wise in order
 pass	a runtime tuple with a boolean element is returned as a result
+pass	a runtime two-operand UInt8 addition range-checks at the width boundary
 pass	a runtime unsigned division at the maximum by 1 does not trap
 pass	a runtime unsigned division by zero traps as divide-by-zero
 pass	a runtime unsigned-byte addition traps exactly past its width maximum

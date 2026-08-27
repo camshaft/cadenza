@@ -4060,6 +4060,23 @@
   (call   main (: 100 UInt8))
   (output (: 101 UInt8)))
 
+(case "a runtime two-operand UInt8 addition range-checks at the width boundary"
+  (doc    "Two runtime UInt8 operands added: 200 + 55 = 255 sits exactly at the UInt8 top and fits (no
+           trap), but 200 + 56 = 256 leaves [0,255] and traps. Pins the narrow-width range-check on a
+           genuine two-operand `(+ a b)` at its boundary, distinct from the single-operand + constant
+           control above.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ a b)) (export main)))
+  (call   main (: 200 UInt8) (: 55 UInt8)) (output (: 255 UInt8))
+  (call   main (: 200 UInt8) (: 56 UInt8)) (trap   "overflow"))
+
+(case "a runtime UInt8 subtraction underflowing below zero traps"
+  (doc    "An unsigned narrow subtraction is range-checked at the LOWER bound: `(- a b)` over UInt8 with
+           a=5, b=3 is 2 (in range), but a=0, b=1 would be -1 which has no UInt8 value, so it traps rather
+           than wrapping to 255. The unsigned-underflow companion of the addition-overflow case above.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (- a b)) (export main)))
+  (call   main (: 5 UInt8) (: 3 UInt8)) (output (: 2 UInt8))
+  (call   main (: 0 UInt8) (: 1 UInt8)) (trap   "overflow"))
+
 ; The WRAPPING counterpart of the checked narrow-width overflow above: where the checked `+` TRAPS at
 ; its width, the named `wrapping-*` op instead has A Defined Modular Outcome (numeric-model.md #A
 ; Wrapping Operation Has A Defined Modular Outcome) — the result is the low `width` bits, re-normalized
