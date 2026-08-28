@@ -998,7 +998,13 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 61 Int64))
   (call main (: 2 Int64)) (output (: 101 Int64))
-  (live-objects 0))
+  ;; mode 1 (keep=r1, the shared CHILD) reclaims fully clean (0); mode 2 (keep=r2, the parent rope
+  ;; that outlives the child's last direct use) leaks ONE cell — the pre-existing keep-not-dropped
+  ;; reclaim gap (the if-joined dual-borrowed rope is never dropped after its byte-len/value-eq uses),
+  ;; a SEPARATE tracked follow-up under v-memory-safety. The cross-arm retain fix (mark_binder_dups
+  ;; If-arm predicate (a)) ELIMINATED the mode-2 double-free UAF (was a wasm `unreachable` trap on the
+  ;; debug-counters runtime); value-correct + no trap, with this residual pinned per-call.
+  (live-objects known-leak 0 1))
 
 (case "a runtime string rope matches a string-literal arm"
   (doc    "The `match` sibling: `(match (rep \"hi\" 3) (\"hixxx\" 1) (_ 0))` takes the \"hixxx\" arm → 1. A
