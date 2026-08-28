@@ -5777,6 +5777,7 @@ pass	cbm3 a nested same-scrutinee match on a TUPLE plus a re-consume after is cl
 pass	cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)
 pass	cbw2 the nested re-match with no tail consume computes and reclaims
 pass	cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)
+pass	two distinct mixed sums sharing a byte-identical immortal nullary terminal keep per-type identity
 pass	cc1 a closure over the fn PARAM built before the handle, applied twice inside with draws — capture stable, draws advance
 pass	cc10 a draw bound in a PLAIN let OUTSIDE the closure init-let is captured once and folds
 pass	cc11 a closure over a nested-let-init with a PURE init folds

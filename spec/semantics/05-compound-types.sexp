@@ -23449,3 +23449,29 @@
   (call main (: 1 Int64))
   (output (: 102 Int64))
   (live-objects 0))
+
+(case "two distinct mixed sums sharing a byte-identical immortal nullary terminal keep per-type identity"
+  (doc    "The build-once-immortal terminal (#4785) marks a NULLARY variant of a MIXED sum — e.g. `SNil` of
+           `(type S (SNil) (SCons Int64 S))` — as an immortal `(disc, IMM_UNIT)` cell built once and never
+           reclaimed. Two DIFFERENT mixed sums whose nullary terminals both encode as disc-0 + the shared
+           `IMM_UNIT` sentinel (`SNil` and `TNil` here) therefore produce BYTE-IDENTICAL immortal cells. This
+           pins that build-once does NOT let that shared cell corrupt per-type matching: each recursively-built
+           list is consumed by its own length fold and recovers the RIGHT terminal — `slen (sbuild 2)` = 2 and
+           `tlen (tbuild 1)` = 1, so `10*2 + 1` = 21. The census is the second half of the fence: the immortal
+           terminals are correctly EXCLUDED from the leak count (intentional permanent data), leaving ONLY the
+           tracked spine-reclaim residue — 2 per un-reclaimed Cons cell (2 `SCons` + 1 `TCons` = 3 → 6), the
+           same 2-per-element rate the `bump`/`ICons` family above records. A regression that counted the
+           immortal terminals as leaks, conflated the two types' terminal cells, or dropped an immortal cell
+           into reclaim would move the value off 21 or the census off 6. Both cross a runtime recursive build
+           (fold cannot collapse the nullary terminal to a scalar — cf. the vacuity trap).")
+  (input  (do
+            (type S (SNil) (SCons Int64 S))
+            (type T (TNil) (TCons Bool T))
+            (def (slen s) (match s ((SNil) 0) ((SCons h t) (+ 1 (slen t)))))
+            (def (tlen t) (match t ((TNil) 0) ((TCons h r) (+ 1 (tlen r)))))
+            (def (sbuild n) (if (> n 0) (SCons n (sbuild (- n 1))) (SNil)))
+            (def (tbuild n) (if (> n 0) (TCons true (tbuild (- n 1))) (TNil)))
+            (def (main) (+ (* 10 (slen (sbuild 2))) (tlen (tbuild 1))))
+            (export main)))
+  (output (: 21 Int64))
+  (live-objects known-leak 6))
