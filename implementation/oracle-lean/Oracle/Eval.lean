@@ -620,6 +620,42 @@ partial def reifyInto (m : Module) (v : Value) : Except String (Module × Nat) :
   | _ => .error "eval: value is not an Ast node (cannot reify)"
 
 mutual
+/-- SHORT-CIRCUIT structural equality (spec core-semantics.md §Equality Is Structural: equality is
+component-wise + §A Trap Occurs Only Where Its Computation Is Observed: an unobserved subcomputation's
+trap MAY be elided). Compare component-wise, forcing each component only until the result is DECIDED —
+the FIRST differing component stops the walk, so a LATER compound element (a `poison` deferring a trap)
+is never observed and its trap never surfaces. This matches rcdzc's short-circuit; the previous
+`observeDeep`-both-then-`==` OVER-FORCED — it surfaced a trapping later element even when an earlier
+component already decided inequality (a systematic value-vs-trap divergence the L2 differential found).
+A `poison` reached while the result is still undecided (its component IS observed) surfaces its outcome.
+Scalars / sets / maps (canonical, no deferred element) compare via `Value.valueEqSpec` (f64-aware). -/
+partial def eqSC (a b : Value) : Outcome :=
+  match a, b with
+  | .poison d, _ => deferredToOutcome d
+  | _, .poison d => deferredToOutcome d
+  | .some x, .some y => eqSC x y
+  | .ok x, .ok y => eqSC x y
+  | .err x, .err y => eqSC x y
+  | .variant t1 p1, .variant t2 p2 => if t1 == t2 then eqSC p1 p2 else .value (.bool false)
+  | .tuple xs, .tuple ys => if xs.size == ys.size then eqSeqSC xs ys 0 else .value (.bool false)
+  | .list xs, .list ys => if xs.size == ys.size then eqSeqSC xs ys 0 else .value (.bool false)
+  | .record f1, .record f2 =>
+    -- fields are canonical (sorted by key); equal iff same key set AND field-wise value-equal (short-circuit)
+    if f1.size == f2.size && (f1.zip f2).all (fun p => p.1.1 == p.2.1)
+    then eqSeqSC (f1.map (·.2)) (f2.map (·.2)) 0 else .value (.bool false)
+  | _, _ => .value (.bool (Value.valueEqSpec a b))
+
+/-- Component-wise short-circuit for `eqSC`: the first FALSE stops the walk (later elements unobserved);
+a trap/unsupported/diverges from an observed component propagates. -/
+partial def eqSeqSC (xs ys : Array Value) (i : Nat) : Outcome :=
+  if i < xs.size then
+    match eqSC (xs[i]!) (ys[i]!) with
+    | .value (.bool true) => eqSeqSC xs ys (i + 1)
+    | other => other
+  else .value (.bool true)
+end
+
+mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
 (`+ - * / %`, trapping on overflow / divide-by-zero per the width). Anything else → `unsupported`.
@@ -1280,7 +1316,15 @@ partial def evalEq (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) 
   match children[1]?, children[2]? with
   | some aId, some bId =>
     if children.size != 3 then .unsupported "eval: = expects 2 operands"
-    else evalBinValues m env fuel aId bId (fun va vb => .value (.bool (va == vb)))
+    else
+      -- evaluate each operand (its own trap/unsupported/diverges propagates — a comparison operand IS
+      -- observed, spec §Trap…Observed), then SHORT-CIRCUIT compare (do NOT deep-force both up front).
+      match evalNode m env defaultIntTy fuel aId with
+      | .value va =>
+        (match evalNode m env defaultIntTy fuel bId with
+         | .value vb => eqSC va vb
+         | other => other)
+      | other => other
   | _, _ => .unsupported "eval: malformed ="
 
 /-- `(< a b)` / `(> …)` / `(<= …)` / `(>= …)` — a relational operator via the type's three-way total
