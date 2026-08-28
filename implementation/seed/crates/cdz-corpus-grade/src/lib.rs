@@ -167,6 +167,12 @@ pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>
 pub struct GTrial {
     pub call: Option<GCall>,
     pub expect: GExpect,
+    /// Optional DIAGNOSTIC-QUALITY assertions for an `(error …)` / `(warning …)` compile outcome — a
+    /// structural `(fix …)` / `(no-fix)` / exact `(count N)`/`(once)` beyond the code + message. `None`
+    /// when the case asserts only code + message (the common form). Graded by [`grade_diag_quality`]
+    /// against the structured diagnostics once the exec captures them (the `(error …)` diagnostic-quality
+    /// capability — lets the corpus "express fixes", migrating the `rcdzc/tests.rs` fix-it tests).
+    pub diag: Option<DiagExpect>,
 }
 
 pub struct GCall {
@@ -191,6 +197,11 @@ pub enum GExpect {
     Trap(String),
     /// `(expect-error CODE msg?)` — the compiler must REFUSE with exactly `CODE` (+ optional message substring).
     Error(String, Option<String>),
+    /// `(expect-warning CODE msg?)` — the compiler must COMPILE (produce an artifact) AND emit a WARNING with
+    /// exactly `CODE` (+ optional message substring). Severity-distinct from `Error` (which DENIES the
+    /// artifact): a warning ACCOMPANIES a produced component. Pairs with a `(count N)` for the exact-count
+    /// warning cases (e.g. "exactly one CDZ0305 dead-trap warning") a presence-only `(warns …)` can't express.
+    Warning(String, Option<String>),
     /// `(expect-declines msg?)` — the compiler must refuse (any code, or codeless); optional message substring.
     Declines(Option<String>),
 }
@@ -339,6 +350,18 @@ where
                 worst = worst.worse(grade_compile_declines(
                     compiled,
                     compile_diag,
+                    msg.as_deref(),
+                ));
+                if matches!(worst, Grade::Fail(_)) {
+                    break;
+                }
+                continue;
+            }
+            GExpect::Warning(code, msg) => {
+                worst = worst.worse(grade_compile_warning(
+                    compiled,
+                    compile_diag,
+                    code,
                     msg.as_deref(),
                 ));
                 if matches!(worst, Grade::Fail(_)) {
@@ -519,7 +542,7 @@ pub fn grade_trial(expect: &GExpect, outcome: &Outcome) -> Grade {
             )),
         },
         // Not reached (compile-outcome expectations are graded before the run), but total for safety.
-        GExpect::Error(..) | GExpect::Declines(..) => Grade::Todo(
+        GExpect::Error(..) | GExpect::Declines(..) | GExpect::Warning(..) => Grade::Todo(
             "compile-outcome expectation is graded from the diagnostic, not the run".into(),
         ),
     }
@@ -560,6 +583,32 @@ pub fn grade_compile_declines(compiled: bool, diag: &str, msg: Option<&str>) -> 
                 Grade::Fail(format!("declined, but message {message:?} lacks {p:?}"))
             }
         }
+    }
+}
+
+/// Grade an `(expect-warning CODE msg?)` against the compile outcome — the SEVERITY-warning companion of
+/// `grade_compile_error`. The program must COMPILE (a warning accompanies a produced artifact; a refusal is
+/// a Fail — the expected warning never got the chance to fire), AND the diagnostic must carry a `warning
+/// [CODE]` with that exact code (+ optional message substring). Distinct from the presence-only `(warns …)`
+/// clause: this is a first-class outcome kind, so it composes with a `(count N)` for the exact-count warning
+/// cases. A DIFFERENT/absent warning code is `Todo` (refused-to-confirm), never a false pass.
+pub fn grade_compile_warning(compiled: bool, diag: &str, want: &str, msg: Option<&str>) -> Grade {
+    if !compiled {
+        return Grade::Fail(format!(
+            "expected the program to COMPILE with warning {want} but the compiler REFUSED it"
+        ));
+    }
+    let emitted = collect_warnings(diag);
+    let hit = emitted
+        .iter()
+        .any(|(c, m)| c == want && msg.is_none_or(|p| m.contains(p)));
+    if hit {
+        Grade::Pass
+    } else {
+        Grade::Todo(format!(
+            "compiled, but warning {want}{} not among {emitted:?}",
+            msg.map(|p| format!(" (~ {p:?})")).unwrap_or_default()
+        ))
     }
 }
 
@@ -1053,6 +1102,15 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     }
                 }
             }
+            Some("expect-warning") => {
+                if let Some(t) = a.as_form(child, "expect-warning") {
+                    let code = t.first().copied().and_then(|id| str_leaf(a, id));
+                    let msg = t.get(1).copied().and_then(|id| str_leaf(a, id));
+                    if let Some(code) = code {
+                        expect = Some(GExpect::Warning(code, msg));
+                    }
+                }
+            }
             Some("expect-declines") => {
                 let msg = a
                     .as_form(child, "expect-declines")
@@ -1079,6 +1137,9 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     Some(GTrial {
         call,
         expect: expect?,
+        // The `(fix …)`/`(no-fix)`/`(count …)` diagnostic-quality clauses decode into `diag` in a
+        // follow-up slice (they need the structured-diagnostics wire fed to the grader); `None` here.
+        diag: None,
     })
 }
 
@@ -1465,6 +1526,51 @@ mod tests {
         assert!(matches!(
             grade_compile_error(true, "", "CDZ0201", None),
             Grade::Fail(_)
+        ));
+    }
+
+    /// `grade_compile_warning` = the severity-warning companion: COMPILE + warning-code-present is Pass; a
+    /// REFUSAL (didn't compile) is Fail; a different/absent warning code is Todo (never a false pass).
+    #[test]
+    fn compile_warning_grade() {
+        // Compiled + the warning present (+ message substring) → Pass.
+        assert_eq!(
+            grade_compile_warning(
+                true,
+                "cdz: warning [CDZ0305] (node 3): this trap is unreachable (dead code)",
+                "CDZ0305",
+                Some("unreachable")
+            ),
+            Grade::Pass
+        );
+        assert_eq!(
+            grade_compile_warning(
+                true,
+                "warning [CDZ0306] (node 1): unused binding",
+                "CDZ0306",
+                None
+            ),
+            Grade::Pass
+        );
+        // Refused (didn't compile) → Fail (the warning never fired).
+        assert!(matches!(
+            grade_compile_warning(false, "", "CDZ0305", None),
+            Grade::Fail(_)
+        ));
+        // Compiled but a DIFFERENT/absent warning code → Todo (refused-to-confirm, not a false pass).
+        assert!(matches!(
+            grade_compile_warning(true, "warning [CDZ0999] (node 2): other", "CDZ0305", None),
+            Grade::Todo(_)
+        ));
+        // Right code, message substring MISSING → Todo (the code matched but the phrase check failed).
+        assert!(matches!(
+            grade_compile_warning(
+                true,
+                "warning [CDZ0305] (node 3): dead trap",
+                "CDZ0305",
+                Some("nope")
+            ),
+            Grade::Todo(_)
         ));
     }
 

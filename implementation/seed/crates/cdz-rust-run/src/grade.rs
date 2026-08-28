@@ -116,7 +116,11 @@ mod tests {
     fn one_trial(call: Option<GCall>, expect: GExpect) -> TestRun {
         TestRun {
             description: "test".into(),
-            trials: vec![GTrial { call, expect }],
+            trials: vec![GTrial {
+                call,
+                expect,
+                diag: None,
+            }],
             host_responses: vec![],
             host_calls: vec![],
             warns: vec![],
