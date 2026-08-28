@@ -2435,6 +2435,22 @@
   (call   main (: false Bool))
   (output (: 15 Int64)))
 
+(case "a partial constructor stored in a runtime tuple is projected and completed by application"
+  (doc    "The runtime-tuple-stored companion of the if-selected eta-closure cases above: `mk` returns
+           `(tuple (T.Mk 10) n)` — a partially-applied 2-arg ctor `(T.Mk 10)` held in a runtime tuple — and
+           `main` PROJECTS element 0 and applies it to 5, completing `(T.Mk 10 5)` → a+b = 15. The
+           CallClosure operand reaches emit via a TUPLE PROJECTION (not inline, nor a let LocalRef), a path a
+           newtype-erasing partial lowering once collapsed to the bare 10 → invalid wasm. Relocated from rcdzc
+           a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (mk (: n Int64)) (if (< n 0) (tuple (T.Mk 0) 0) (tuple (T.Mk 10) n)))
+            (def (main) (let ((p (mk 1))) (match ((. p 0) 5) ((T.Mk a b) (+ a b)))))
+            (export main)))
+  (call   main)
+  (output (: 15 Int64))
+  (live-objects known-leak 2))
+
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
 ; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a
