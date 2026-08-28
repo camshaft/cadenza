@@ -8812,7 +8812,26 @@ fn emit_loop_iteration(
             for &a in args.iter() {
                 count_param_consumes(db, a, binder, &mut seen, &mut total);
             }
-            if total == 1 {
+            // FLAGSHIP-UAF fence (breaker K1 / #4139 loop-specific over-optimization; v-rb-diagnosed SITE A):
+            // `count_param_consumes` counts consumes of the loop-param `binder` itself, blind to a HEAD ELEMENT
+            // destructured from it by a `(list e .. rest)` match, whose heap-child projection `(. e val)` is
+            // CONSUMED (`String.concat acc (. e val)`) in a NON-RestFrom sibling arg. Skipping `binder`'s
+            // preservation dup for FBIP-reuse frees the old list (rc1->0 via the RestFrom) — and with it the
+            // element `e` and its heap grandchild — while that grandchild is still live -> use-after-free. The
+            // general (non-loop) reclaim already retains such an element (v-rb-verified); only this loop skip
+            // over-frees it. DETECT: a non-RestFrom sibling arg that BOTH reads `binder` (binder_occurs) AND
+            // materializes a heap sub-value handle in a CONSUME position (arm_borrows_heap_subvalue) — i.e. a
+            // heap child of the list is read out and consumed. Then do NOT skip: keep the preservation dup so
+            // the old list survives until that consume. A PURE borrow (scalar-field projection, `List.len`, a
+            // compare) is NOT a heap-subvalue-consume -> arm_borrows_heap_subvalue is false -> the skip STILL
+            // fires, preserving #4139's leak reductions (only a consumed-heap-child projection blocks it).
+            let element_heapchild_consumed = args.iter().enumerate().any(|(j, &a)| {
+                j != i && {
+                    let mut c = HashMap::new();
+                    binder_occurs(db, a, binder, &mut c) && arm_borrows_heap_subvalue(db, a)
+                }
+            });
+            if total == 1 && !element_heapchild_consumed {
                 out.loop_reassign_no_dup.insert(sl);
             }
         }
