@@ -1635,6 +1635,16 @@ mod doc {
     pub const KIND_BOOL_TRUE: u8 = 9;
     pub const KIND_NAME: u8 = 10;
     pub const KIND_BYTES: u8 = 11;
+    // M2 native-compound-data CTOR-HEAD kinds — payloadless single kind-bytes (like KIND_BOOL_*), matching
+    // cadenza-ast codec's KIND_*_CTOR / KIND_FIELD_PAIR / KIND_MEMBER. The head-first ctor leaf is the LIST
+    // HEAD atom (children follow); the codec has NO canon pass, so build-order IS the content-address form.
+    pub const KIND_LIST_CTOR: u8 = 20;
+    pub const KIND_TUPLE_CTOR: u8 = 21;
+    pub const KIND_RECORD_CTOR: u8 = 22;
+    pub const KIND_MAP_CTOR: u8 = 23;
+    pub const KIND_SET_CTOR: u8 = 24;
+    pub const KIND_FIELD_PAIR: u8 = 25;
+    pub const KIND_MEMBER: u8 = 26;
     pub const TAG_ATOM: u8 = 0;
     pub const TAG_LIST: u8 = 1;
 }
@@ -1965,6 +1975,10 @@ enum DocLeaf {
     Str(Raw),   // UTF-8 body verbatim (the runtime String's raw bytes)
     Bytes(Raw), // raw byte payload verbatim (the runtime Bytes value, rope flattened)
     Float { negative: bool, exponent: i64, significand: Vec<u8> }, // exact decimal (from f64), big-endian mag
+    /// A payloadless M2 ctor-head leaf — stores its `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER` byte
+    /// (20-26). Wire form is that single kind byte (no body), like `Bool`. The head-first list-head atom for
+    /// a native compound value; DEDUPED by `ctor_leaf` (matching cadenza-ast `Builder::leaf`'s general dedup).
+    Ctor(u8),
 }
 enum DocStruct {
     Atom(u32),
@@ -2080,6 +2094,22 @@ impl DocBuilder {
     }
     fn bool_leaf(&mut self, b: bool) -> u32 {
         self.leaves.push(DocLeaf::Bool(b));
+        (self.leaves.len() - 1) as u32
+    }
+    /// An M2 ctor-head leaf (`doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER`, 20-26) — the payloadless
+    /// head atom of a native compound value. DEDUPED to its FIRST-inserted id (matching cadenza-ast
+    /// `Builder::leaf`'s general `leaf_index` dedup, which `const_value_ast` uses via `atom_leaf`), so a
+    /// value with repeated ctors (a list-of-tuples) byte-matches `const_value_ast`. Only ≤7 distinct ctor
+    /// kinds exist, so the linear scan is effectively O(1).
+    fn ctor_leaf(&mut self, kind: u8) -> u32 {
+        for (i, l) in self.leaves.iter().enumerate() {
+            if let DocLeaf::Ctor(k) = l
+                && *k == kind
+            {
+                return i as u32;
+            }
+        }
+        self.leaves.push(DocLeaf::Ctor(kind));
         (self.leaves.len() - 1) as u32
     }
     /// A string leaf — the UTF-8 body verbatim (the codec's `KIND_STR`, `write_bytes` = LEB len + bytes,
@@ -2223,6 +2253,7 @@ impl DocBuilder {
                 DocLeaf::IntScalar(_) => 11 + 8, // kind + ≤10-byte len LEB + ≤8 magnitude bytes
                 DocLeaf::Int(_, mag) => 11 + mag.len(),
                 DocLeaf::Bool(_) => 1,
+                DocLeaf::Ctor(_) => 1, // payloadless single kind byte
                 DocLeaf::Name(n) => 11 + n.len(),
                 DocLeaf::Str(b) | DocLeaf::Bytes(b) => 11 + b.len(),
                 DocLeaf::Float { significand, .. } => 20 + significand.len(),
@@ -2269,6 +2300,7 @@ impl DocBuilder {
                 } else {
                     doc::KIND_BOOL_FALSE
                 }),
+                DocLeaf::Ctor(k) => out.push(*k), // payloadless M2 ctor-head kind byte (20-26)
                 DocLeaf::Name(n) => {
                     out.push(doc::KIND_NAME);
                     doc_leb(&mut out, n.len() as u64);
@@ -2532,19 +2564,19 @@ enum EncodeWork {
     /// NESTED) type node, re-derived at process time from `desc.table[framed_ix]` (the `Shape::Framed`).
     /// Pop the inner value, `render_type_node` the type, then `list([colon_s, value, type_node])`.
     Framed { colon_s: u32, framed_ix: u32 },
-    /// Assemble one record field: pop the field value, `list([eq, katom, fval])`. The `=` and key atoms
-    /// are built PRE-order (before the value visit) so the leaf/struct pool matches canon's pre-order
-    /// first-encounter — see `VisitField`.
+    /// Assemble one record field: pop the field value, `list([eq, katom, fval])` where `eq` is the M2
+    /// FieldPair ctor-head atom (pre-M2 it was the `=` name atom). `eq` and the key atom are built PRE-order
+    /// (before the value visit) so the leaf/struct pool matches canon's pre-order first-encounter — see
+    /// `VisitField`. Structure `(FieldPair name value)`.
     Pair { eq: u32, katom: u32 },
-    /// Assemble `((. Set of) (list e1 … en))` — the canonical Set value form. Pops the top `nelems`
-    /// results (the elements, already in canonical order from the Set arm's sort), wraps them in an inner
-    /// `(list …)` under the pre-emitted `list_head_s`, and applies the pre-built `set_of` = `(. Set of)`
-    /// member-access head. Both `set_of` and `list_head_s` are built PRE-order in the `Set` arm (before the
-    /// elements are visited) so the leaf/struct pool matches canon first-encounter — see the `Set` arm.
-    SetOf { set_of: u32, list_head_s: u32, nelems: usize },
-    /// Assemble one MAP entry: the key result is directly below the value result on `out` (key Visited
-    /// before value). Pop value then key, build `list([key, value])` — the `(key value)` pair.
-    MapPair,
+    /// A MAP entry (M2): build the FieldPair ctor-head atom PRE-order (before the k/v subtrees, for canon
+    /// first-encounter — the FieldPair leaf dedups), then queue the value + key visits and a `MapPair`
+    /// assembler. Mirrors `VisitField` (a map key is a VALUE, so it is Visited, not a pre-built name atom).
+    VisitMapEntry { k: Handle, v: Handle, key_shape: u32, val_shape: u32 },
+    /// Assemble one MAP entry `(FieldPair key value)`: the key result is directly below the value result on
+    /// `out` (key Visited before value). Pop value then key, build `list([fp_s, key, value])`. `fp_s` is the
+    /// FieldPair ctor-head atom built PRE-order in `VisitMapEntry`.
+    MapPair { fp_s: u32 },
     /// Assemble `(map (k1 v1) … (kn vn))` — the canonical Map value form. Pops the top `nentries` pair
     /// results (already in canonical KEY order), under the pre-emitted `map` `head_s`.
     MapOf { head_s: u32, nentries: usize },
@@ -2680,7 +2712,7 @@ fn encode_value(
                             // `tuple` head as the non-empty arm with ZERO children (`list_head_tail` over an
                             // empty slice yields the bare `(tuple)`). Paired with v-wasm-opt's shape_of change
                             // to emit `ShapeNode::Tuple([])` (not Unit) for an empty `Ty::Tuple` — BOTH needed.
-                            let head = b.name_leaf("tuple");
+                            let head = b.ctor_leaf(doc::KIND_TUPLE_CTOR);
                             let head_s = b.atom(head);
                             work.push(EncodeWork::List { head_s, nkids: 0 });
                         } else {
@@ -2691,7 +2723,7 @@ fn encode_value(
                             if (op_arr_len(h) as usize) < elems.len() {
                                 return None;
                             }
-                            let head = b.name_leaf("tuple");
+                            let head = b.ctor_leaf(doc::KIND_TUPLE_CTOR);
                             let head_s = b.atom(head);
                             work.push(EncodeWork::List {
                                 head_s,
@@ -2715,7 +2747,7 @@ fn encode_value(
                         // handle read the root node's arity, not the logical element count — the bug that
                         // rendered only the first element.)
                         let (elem, n) = (*elem, op_vec_len(h));
-                        let head = b.name_leaf("list");
+                        let head = b.ctor_leaf(doc::KIND_LIST_CTOR);
                         let head_s = b.atom(head);
                         work.push(EncodeWork::List {
                             head_s,
@@ -2735,7 +2767,7 @@ fn encode_value(
                         if (op_arr_len(h) as usize) < fields.len() {
                             return None;
                         }
-                        let head = b.name_leaf("record");
+                        let head = b.ctor_leaf(doc::KIND_RECORD_CTOR);
                         let head_s = b.atom(head);
                         work.push(EncodeWork::List {
                             head_s,
@@ -2832,24 +2864,15 @@ fn encode_value(
                         // order. The CHAMP iterates hash order, so collect + SORT by the element's canonical
                         // scalar value (matching the compiler's `const_key_order`). Only a SCALAR element is
                         // orderable/encodable; a non-scalar element shape declines (as `const_key_order` does).
-                        // CANON CONVERGENCE: build the `(. Set of)` head FIRST (pre-order `.`,`Set`,`of` +
-                        // the member-access list struct), THEN the `list` head atom, THEN visit the elements
-                        // — matching canon's pre-order first-encounter over `((. Set of) (list e…))` (child0
-                        // `(. Set of)` is visited before child1 `(list …)`). The pre-Phase-B code emitted the
-                        // `(. Set of)` atoms in the `SetOf` assembler AFTER the elements, interning them late
-                        // and making a Set value non-canonical vs `codec::encode(canon(tree))`.
+                        // M2 head-first: a Set is a FLAT `(Ctor(Set) e1 … en)` — the Set ctor-leaf head atom +
+                        // the sorted elements as direct children (NOT the pre-M2 `((. Set of) (list e…))`
+                        // member-access-over-list form). Head interned PRE-order (canon first-encounter), then
+                        // the elements visited in canonical order — reuse the plain `List` assembler.
                         let elem = *elem;
                         let sorted = set_elements_canonical(desc, h, elem)?;
-                        let dot_l = b.name_leaf(".");
-                        let dot = b.atom(dot_l);
-                        let set_l = b.name_leaf("Set");
-                        let set_mod = b.atom(set_l);
-                        let of_l = b.name_leaf("of");
-                        let of_key = b.atom(of_l);
-                        let set_of = b.list(&[dot, set_mod, of_key]);
-                        let list_head = b.name_leaf("list");
-                        let list_head_s = b.atom(list_head);
-                        work.push(EncodeWork::SetOf { set_of, list_head_s, nelems: sorted.len() });
+                        let head = b.ctor_leaf(doc::KIND_SET_CTOR);
+                        let head_s = b.atom(head);
+                        work.push(EncodeWork::List { head_s, nkids: sorted.len() });
                         // Push in REVERSE so the LIFO stack encodes them in canonical order onto `out`. Each
                         // element is a DISTINCT heap node (a set member) → progress → reset `refs`.
                         for &e in sorted.iter().rev() {
@@ -2857,24 +2880,21 @@ fn encode_value(
                         }
                     }
                     Shape::Map(key, val) => {
-                        // A Map renders `(map (k1 v1) … (kn vn))` with entries in CANONICAL KEY order. The
-                        // CHAMP iterates hash order, so collect + SORT by the key's canonical scalar value.
-                        // Only a SCALAR KEY is orderable/encodable; the VALUE may be any encodable shape.
-                        // Emit the `map` head EAGERLY (pre-order, like `list`/`tuple`); each entry becomes a
-                        // `(key value)` pair via `MapPair`, all gathered by `MapOf` (matching the oracle).
+                        // M2 head-first: a Map is `(Ctor(Map) (FieldPair k1 v1) … (FieldPair kn vn))` with
+                        // entries in CANONICAL KEY order (CHAMP iterates hash order → collect + SORT by the
+                        // key's canonical scalar value; only a SCALAR key is orderable/encodable, the value is
+                        // any encodable shape). Map ctor head EAGER (pre-order); each entry is a FieldPair
+                        // triple built by `VisitMapEntry` (which interns the FieldPair head PRE-order, before
+                        // the k/v subtrees, for canon first-encounter — mirroring the record `VisitField`).
                         let (key, val) = (*key, *val);
                         let entries = map_entries_canonical(desc, h, key)?;
-                        let map_head = b.name_leaf("map");
+                        let map_head = b.ctor_leaf(doc::KIND_MAP_CTOR);
                         let head_s = b.atom(map_head);
                         work.push(EncodeWork::MapOf { head_s, nentries: entries.len() });
-                        // Push entries in REVERSE (so canonical order on `out`); within an entry push the
-                        // pair assembler first, then value, then KEY — so the LIFO stack encodes key BEFORE
-                        // value (key directly below value on `out`, which `MapPair` relies on). Each key and
-                        // value is a DISTINCT heap node → progress → reset `refs`.
+                        // Push entries in REVERSE (so `VisitMapEntry` pops in canonical order); each entry's
+                        // handler builds its FieldPair head + visits key then value.
                         for &(k, v) in entries.iter().rev() {
-                            work.push(EncodeWork::MapPair);
-                            work.push(EncodeWork::Visit { h: v, shape_ix: val, refs: 0 });
-                            work.push(EncodeWork::Visit { h: k, shape_ix: key, refs: 0 });
+                            work.push(EncodeWork::VisitMapEntry { k, v, key_shape: key, val_shape: val });
                         }
                     }
                     Shape::Spread(elems) => {
@@ -2924,7 +2944,9 @@ fn encode_value(
                 // `[=, name, value]`, so canon interns `=` first, then name, then the value subtree). The
                 // pre-Phase-B code built `=` in the `Pair` assembler AFTER the value, which interned `=` LATE
                 // and made value-encode non-canonical vs `codec::encode(canon(tree))`. See canon.rs `visit`.
-                let eq_leaf = b.name_leaf("=");
+                // M2: a record field is `(FieldPair name value)` — the FieldPair ctor-leaf head + the key
+                // name atom + the value (was the `=` name head pre-M2). Structure unchanged (head + 2 kids).
+                let eq_leaf = b.ctor_leaf(doc::KIND_FIELD_PAIR);
                 let eq = b.atom(eq_leaf);
                 let kname = b.name_leaf(key);
                 let katom = b.atom(kname);
@@ -2973,24 +2995,25 @@ fn encode_value(
                 let fval = out.pop()?;
                 out.push(b.list(&[eq, katom, fval]));
             }
-            EncodeWork::SetOf { set_of, list_head_s, nelems } => {
-                // The top `nelems` results are the elements in canonical order, under the pre-emitted
-                // `list_head_s`. Build the inner `(list …)`, then apply the pre-built `set_of` = `(. Set of)`
-                // head: `((. Set of) (list …))`. Both `set_of` and `list_head_s` were built PRE-order in the
-                // `Set` arm (canon first-encounter), so this assembler only wires the completed structs.
-                let base = out.len().checked_sub(nelems)?;
-                let inner_list = b.list_head_tail(list_head_s, &out[base..]);
-                out.truncate(base);
-                out.push(b.list(&[set_of, inner_list]));
+            EncodeWork::VisitMapEntry { k, v, key_shape, val_shape } => {
+                // M2 map entry `(FieldPair key value)`: intern the FieldPair ctor-head atom PRE-order (before
+                // the k/v subtrees, so the leaf/struct pool matches canon first-encounter — the FieldPair leaf
+                // dedups across entries), then visit key BEFORE value (key below value on `out`, as `MapPair`
+                // relies on). Mirrors the record `VisitField`.
+                let fp = b.ctor_leaf(doc::KIND_FIELD_PAIR);
+                let fp_s = b.atom(fp);
+                work.push(EncodeWork::MapPair { fp_s });
+                work.push(EncodeWork::Visit { h: v, shape_ix: val_shape, refs: 0 });
+                work.push(EncodeWork::Visit { h: k, shape_ix: key_shape, refs: 0 });
             }
-            EncodeWork::MapPair => {
+            EncodeWork::MapPair { fp_s } => {
                 // Key was Visited before value, so on `out` the value is on top, key directly below.
                 let val = out.pop()?;
                 let key = out.pop()?;
-                out.push(b.list(&[key, val]));
+                out.push(b.list(&[fp_s, key, val]));
             }
             EncodeWork::MapOf { head_s, nentries } => {
-                // The top `nentries` results are the `(key value)` pairs in canonical KEY order.
+                // The top `nentries` results are the `(FieldPair key value)` entries in canonical KEY order.
                 let base = out.len().checked_sub(nentries)?;
                 let s = b.list_head_tail(head_s, &out[base..]);
                 out.truncate(base);
@@ -3062,6 +3085,9 @@ enum ParsedLeaf {
     Bytes(Vec<u8>),
     /// (negative, exponent, big-endian base-256 significand) — the `KIND_FLOAT` exact-decimal parts.
     Float(bool, i64, Vec<u8>),
+    /// An M2 payloadless ctor-head leaf — its `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER` byte (20-26).
+    /// The head atom of a native compound value's list; `doc_atom_ctor` reads its kind for the decode arms.
+    Ctor(u8),
 }
 
 /// A parsed document struct — the read-side mirror of `DocStruct`. A `List`'s children are struct indices
@@ -3154,6 +3180,14 @@ fn parse_doc(d: &[u8]) -> Option<ParsedDoc> {
                 let len = doc_read_leb(d, &mut pos)? as usize;
                 ParsedLeaf::Bytes(doc_read_bytes(d, &mut pos, len)?.to_vec())
             }
+            // M2 native-compound ctor-head kinds (20-26) — payloadless single kind byte (no body to read).
+            doc::KIND_LIST_CTOR
+            | doc::KIND_TUPLE_CTOR
+            | doc::KIND_RECORD_CTOR
+            | doc::KIND_MAP_CTOR
+            | doc::KIND_SET_CTOR
+            | doc::KIND_FIELD_PAIR
+            | doc::KIND_MEMBER => ParsedLeaf::Ctor(kind),
             _ => return None, // unknown kind — malformed
         };
         leaves.push(leaf);
@@ -3213,6 +3247,16 @@ fn doc_list_kids<'a>(doc: &'a ParsedDoc, struct_ix: u32) -> Option<&'a [u32]> {
 fn doc_atom_name<'a>(doc: &'a ParsedDoc, struct_ix: u32) -> Option<&'a str> {
     match doc_atom_leaf(doc, struct_ix)? {
         ParsedLeaf::Name(bytes) => core::str::from_utf8(bytes).ok(),
+        _ => None,
+    }
+}
+
+/// The M2 ctor-head KIND byte of an atom struct (a `doc::KIND_*_CTOR`/`KIND_FIELD_PAIR`/`KIND_MEMBER`
+/// head position), or `None` if the atom is not a `Ctor` leaf. The decode counterpart of `doc_atom_name`
+/// for native-compound heads.
+fn doc_atom_ctor(doc: &ParsedDoc, struct_ix: u32) -> Option<u8> {
+    match doc_atom_leaf(doc, struct_ix)? {
+        ParsedLeaf::Ctor(k) => Some(*k),
         _ => None,
     }
 }
@@ -3402,8 +3446,10 @@ fn decode_value_opt(
         Shape::Tuple(elems) => {
             let elems = elems.clone();
             let kids = doc_list_kids(doc, struct_ix)?;
-            // `(tuple e0 e1 …)` — head atom + one child per element.
-            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "tuple" || kids.len() - 1 != elems.len()
+            // M2 `(Ctor(Tuple) e0 e1 …)` — the Tuple ctor-head atom + one child per element.
+            if kids.is_empty()
+                || doc_atom_ctor(doc, kids[0])? != doc::KIND_TUPLE_CTOR
+                || kids.len() - 1 != elems.len()
             {
                 return None;
             }
@@ -3423,22 +3469,25 @@ fn decode_value_opt(
         Shape::Record(fields) => {
             let fields = fields.clone();
             let kids = doc_list_kids(doc, struct_ix)?;
-            // `(record (= name value) …)` — head atom + one `(= name value)` triple per field (post
-            // record-type Phase B migration). Fields are in descriptor (sorted) order.
-            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "record" || kids.len() - 1 != fields.len()
+            // M2 `(Ctor(Record) (FieldPair name value) …)` — Record ctor-head atom + one FieldPair triple
+            // per field. Fields are in descriptor (sorted) order.
+            if kids.is_empty()
+                || doc_atom_ctor(doc, kids[0])? != doc::KIND_RECORD_CTOR
+                || kids.len() - 1 != fields.len()
             {
                 return None;
             }
             let arr = op_arr_alloc(fields.len() as u32);
             for (i, (fname, fshape)) in fields.iter().enumerate() {
                 let field = doc_list_kids(doc, kids[1 + i])?;
-                // Accept BOTH record field forms so value-decode round-trips regardless of whether the
-                // record-type Phase B render migration has landed on this build: the NEW `(= name value)`
-                // ascription triple (head `=`, name, value) OR the legacy `(name value)` pair (name, value).
-                // The value child is the last element; the name is matched against the descriptor's field.
+                // M2 field form `(FieldPair name value)` — a 3-element list with the FieldPair ctor head.
+                // (The legacy `(name value)` 2-element pair is still accepted for back-compat.) The value
+                // child is the last element; the name is matched against the descriptor's field.
                 let (name_ix, value_ix) = match field.len() {
-                    3 if doc_atom_name(doc, field[0])? == "=" => (field[1], field[2]), // (= name value)
-                    2 => (field[0], field[1]),                                          // (name value)
+                    3 if doc_atom_ctor(doc, field[0]) == Some(doc::KIND_FIELD_PAIR) => {
+                        (field[1], field[2]) // (FieldPair name value)
+                    }
+                    2 => (field[0], field[1]), // (name value) — legacy
                     _ => {
                         op_drop(arr);
                         return None;
@@ -3464,7 +3513,8 @@ fn decode_value_opt(
         Shape::List(elem) => {
             let elem = *elem;
             let kids = doc_list_kids(doc, struct_ix)?;
-            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "list" {
+            // M2 `(Ctor(List) e…)` — the List ctor-head atom + the elements.
+            if kids.is_empty() || doc_atom_ctor(doc, kids[0])? != doc::KIND_LIST_CTOR {
                 return None;
             }
             let mut v = op_vec_empty();
@@ -3517,16 +3567,13 @@ fn decode_value_opt(
         Shape::Set(elem) => {
             let elem = *elem;
             let kids = doc_list_kids(doc, struct_ix)?;
-            // `((. Set of) (list e…))` — 2 elements: the `(. Set of)` head application + the inner list.
-            if kids.len() != 2 {
-                return None;
-            }
-            let inner = doc_list_kids(doc, kids[1])?;
-            if inner.is_empty() || doc_atom_name(doc, inner[0])? != "list" {
+            // M2 `(Ctor(Set) e…)` — the Set ctor-head atom + the elements directly (was the nested
+            // `((. Set of) (list e…))` member-access-over-list form).
+            if kids.is_empty() || doc_atom_ctor(doc, kids[0])? != doc::KIND_SET_CTOR {
                 return None;
             }
             let mut s = op_set_empty();
-            for &ck in &inner[1..] {
+            for &ck in &kids[1..] {
                 match decode_value_opt(desc, doc, ck, elem, depth + 1) {
                     Some(h) => {
                         s = op_set_insert(s, h);
@@ -3542,25 +3589,26 @@ fn decode_value_opt(
         Shape::Map(key, val) => {
             let (key, val) = (*key, *val);
             let kids = doc_list_kids(doc, struct_ix)?;
-            // `(map (k v) …)` — head atom + one `(key value)` pair per entry.
-            if kids.is_empty() || doc_atom_name(doc, kids[0])? != "map" {
+            // M2 `(Ctor(Map) (FieldPair k v) …)` — Map ctor-head atom + one FieldPair triple per entry.
+            if kids.is_empty() || doc_atom_ctor(doc, kids[0])? != doc::KIND_MAP_CTOR {
                 return None;
             }
             let mut m = op_map_empty();
             for &pair_ix in &kids[1..] {
                 let pair = doc_list_kids(doc, pair_ix)?;
-                if pair.len() != 2 {
+                // `(FieldPair key value)` — 3 elems: the FieldPair ctor head + key + value.
+                if pair.len() != 3 || doc_atom_ctor(doc, pair[0]) != Some(doc::KIND_FIELD_PAIR) {
                     op_drop(m);
                     return None;
                 }
-                let kh = match decode_value_opt(desc, doc, pair[0], key, depth + 1) {
+                let kh = match decode_value_opt(desc, doc, pair[1], key, depth + 1) {
                     Some(h) => h,
                     None => {
                         op_drop(m);
                         return None;
                     }
                 };
-                let vh = match decode_value_opt(desc, doc, pair[1], val, depth + 1) {
+                let vh = match decode_value_opt(desc, doc, pair[2], val, depth + 1) {
                     Some(h) => h,
                     None => {
                         op_drop(kh);
@@ -6218,10 +6266,24 @@ struct AstEncDiscs {
     bytes: u32,
     chr: u32,
     symbol: u32,
+    // M2 (OPTION B) — the 7 native-collection reflected-Ast ctors, appended after `symbol`. The reflected
+    // `Ast` sum gained `ListCtor`/`TupleCtor`/`RecordCtor`/`MapCtor`/`SetCtor` (each `(List Ast)`) and
+    // `FieldPair`/`Member` (each `(Tuple Ast Ast)`); a compound decoded from a ctor-leaf head reflects to
+    // the DISTINCT ctor, not a name-headed list. Baked positionally in this order by the descriptor synth.
+    list_ctor: u32,
+    tuple_ctor: u32,
+    record_ctor: u32,
+    map_ctor: u32,
+    set_ctor: u32,
+    field_pair: u32,
+    member: u32,
 }
 
-/// Decode the baked 9-disc descriptor: 9 LEB128 varints in `[int,float,bool,str,name,list,bytes,char,symbol]`
-/// order. `None` on a truncated descriptor (the compiler always bakes a well-formed one).
+/// Decode the baked 16-disc descriptor: 16 LEB128 varints in
+/// `[int,float,bool,str,name,list,bytes,char,symbol, list_ctor,tuple_ctor,record_ctor,map_ctor,set_ctor,field_pair,member]`
+/// order (the 7 M2 native-collection ctors appended last). `None` on a truncated descriptor (the compiler
+/// always bakes a well-formed one; a pre-M2 9-disc descriptor truncates → `None`, which is correct: a B
+/// runtime requires a B descriptor).
 fn read_ast_enc_discs(discs: Handle) -> Option<AstEncDiscs> {
     let n = op_bytes_len(discs);
     let mut buf = Vec::with_capacity(n as usize);
@@ -6253,6 +6315,13 @@ fn read_ast_enc_discs(discs: Handle) -> Option<AstEncDiscs> {
         bytes: next()?,
         chr: next()?,
         symbol: next()?,
+        list_ctor: next()?,
+        tuple_ctor: next()?,
+        record_ctor: next()?,
+        map_ctor: next()?,
+        set_ctor: next()?,
+        field_pair: next()?,
+        member: next()?,
     })
 }
 
@@ -6412,11 +6481,62 @@ fn decode_arenas_to_ast(
                     }
                     op_sum_new(d.bytes, buf)
                 }
+                // M2 (OPTION B): a compound-ctor head leaf (`Leaf::Ctor`/`FieldPair`/`Member`, codec kinds
+                // 20-26) is NEVER a bare atom — it only ever appears as the HEAD of a `Struct::List` (handled
+                // in the List arm below, dispatched to the DISTINCT reflected ctor). Reached as a standalone
+                // atom it is a malformed document; decode is TOTAL (op94 → NULL on bad bytes, never a trap),
+                // so fail cleanly.
+                crate::ast::Leaf::Ctor(_)
+                | crate::ast::Leaf::FieldPair
+                | crate::ast::Leaf::Member => return None,
                 crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
             };
             Some(h)
         }
         crate::ast::Struct::List(children) => {
+            // M2 (OPTION B): if the list HEAD is a compound-ctor leaf, reflect to the DISTINCT first-class
+            // reflected Ast ctor (native collections — no string head), built from the REMAINING children; a
+            // generic name-headed (or empty) list stays `Ast.List`.
+            if let Some(&head_sid) = children.first()
+                && let Some(crate::ast::Struct::Atom(lid)) = arenas.structure.get(head_sid.0 as usize)
+                && let Some(head_leaf) = arenas.leaves.get(lid.0 as usize)
+            {
+                match head_leaf {
+                    // The 5 collections carry a `(List Ast)` of their reflected tail elements.
+                    crate::ast::Leaf::Ctor(c) => {
+                        let disc = match c {
+                            crate::ast::CompoundCtor::List => d.list_ctor,
+                            crate::ast::CompoundCtor::Tuple => d.tuple_ctor,
+                            crate::ast::CompoundCtor::Record => d.record_ctor,
+                            crate::ast::CompoundCtor::Map => d.map_ctor,
+                            crate::ast::CompoundCtor::Set => d.set_ctor,
+                        };
+                        let mut v = op_vec_empty();
+                        for &ch in &children[1..] {
+                            v = op_vec_push(v, decode_arenas_to_ast(arenas, ch, d)?);
+                        }
+                        return Some(op_sum_new(disc, v));
+                    }
+                    // FieldPair/Member carry a `(Tuple Ast Ast)` = (key,value) / (obj,key): exactly 2 elems.
+                    crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+                        if children.len() != 3 {
+                            return None; // malformed: a pair head needs exactly two elements
+                        }
+                        let a = decode_arenas_to_ast(arenas, children[1], d)?;
+                        let b = decode_arenas_to_ast(arenas, children[2], d)?;
+                        let tup = op_arr_alloc(2);
+                        op_arr_set(tup, 0, a);
+                        op_arr_set(tup, 1, b);
+                        let disc = if matches!(head_leaf, crate::ast::Leaf::FieldPair) {
+                            d.field_pair
+                        } else {
+                            d.member
+                        };
+                        return Some(op_sum_new(disc, tup));
+                    }
+                    _ => {} // a name/other head → the generic `Ast.List` below
+                }
+            }
             let mut v = op_vec_empty();
             for &c in children.iter() {
                 v = op_vec_push(v, decode_arenas_to_ast(arenas, c, d)?);
@@ -10330,7 +10450,7 @@ mod tests {
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x06, // 6 leaves
             0x0a, 0x01, 0x3a, // NAME ':'
-            0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, // NAME 'tuple'
+            0x15, // M2 Ctor(Tuple) value head (kind 21, payloadless) — was NAME 'tuple'
             0x00, 0x01, 0x05, // INT 5
             0x00, 0x01, 0x69, // INT 105
             0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // NAME 'Tuple'
@@ -10434,26 +10554,22 @@ mod tests {
         // field-name atoms `a`/`b` are shared between the value's `(= a …)` and the type's `(a Int64)`, and
         // `Int64` interns once across both fields. So the pool is 8, not 9 (a bare record would omit ':' and
         // 'Int64' entirely — this leaf-count is the framed-vs-bare divergence guard).
+        // M2 head-first golden: the value head is Ctor(Record)=0x16 + fields are (FieldPair name value) with
+        // FieldPair head=0x19; the value+type 'record' head is NO LONGER shared (value is a ctor leaf, the
+        // type node keeps NAME 'record'), so the pool is 9 leaves (was 8 deduped) and the spine refs shift.
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-            0x08, // 8 deduped leaves
-            0x0a, 0x01, 0x3a, // NAME ':'
-            0x0a, 0x06, 0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, // NAME 'record' (shared value+type head)
-            0x0a, 0x01, 0x3d, // NAME '='
-            0x0a, 0x01, 0x61, // NAME 'a'
-            0x00, 0x01, 0x05, // INT 5
-            0x0a, 0x01, 0x62, // NAME 'b'
-            0x00, 0x01, 0x69, // INT 105
-            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // NAME 'Int64' (shared across both fields)
-            // struct spine (full document — reviewer full-byte refinement):
-            0x14, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03,
-            0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01,
-            0x05, 0x09, 0x00, 0x01, 0x00, 0x03, 0x00, 0x07, 0x01, 0x02, 0x0c, 0x0d, 0x00, 0x05, 0x00,
-            0x07, 0x01, 0x02, 0x0f, 0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11, 0x01, 0x03, 0x00, 0x0a, 0x12,
-            0x13,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a,
+            0x16, 0x19, 0x0a, 0x01, 0x61, 0x00, 0x01, 0x05, 0x0a, 0x01, 0x62, 0x00,
+            0x01, 0x69, 0x0a, 0x06, 0x72, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x0a, 0x05,
+            0x49, 0x6e, 0x74, 0x36, 0x34, 0x14, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02,
+            0x00, 0x03, 0x00, 0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00,
+            0x05, 0x00, 0x06, 0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05,
+            0x09, 0x00, 0x07, 0x00, 0x03, 0x00, 0x08, 0x01, 0x02, 0x0c, 0x0d, 0x00,
+            0x05, 0x00, 0x08, 0x01, 0x02, 0x0f, 0x10, 0x01, 0x03, 0x0b, 0x0e, 0x11,
+            0x01, 0x03, 0x00, 0x0a, 0x12, 0x13,
         ];
         assert_eq!(got, expect, "framed int-record must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x08, "leaf count 8 (framed record), not the bare count");
+        assert_eq!(got[8], 0x09, "leaf count 9 (M2 framed record — value head un-shared from the type head)");
 
         op_drop(rec);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10725,7 +10841,7 @@ mod tests {
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
             0x07, // 7 leaves
             0x0a, 0x01, 0x3a, // ':'
-            0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, // 'tuple'
+            0x15, // M2 Ctor(Tuple) value head (kind 21) — was NAME 'tuple'
             0x00, 0x01, 0x05, // INT 5
             0x06, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0x19, // FLOAT 2.5 (exp -1, sig 25)
             0x0a, 0x05, 0x54, 0x75, 0x70, 0x6c, 0x65, // 'Tuple'
@@ -10822,24 +10938,20 @@ mod tests {
 
         // FULL document: ':' , 'map', 7, 70, 8, 99, 'Map', 'Int64' (8 leaves) + spine. Entries in
         // canonical key order (7 before 8).
+        // M2 head-first golden: value head Ctor(Map)=0x17; each entry is (FieldPair k v) with FieldPair
+        // head=0x19 (was a bare `(k v)` pair). 9 leaves (was 8 — the FieldPair ctor leaf is added).
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-            0x08, // 8 leaves
-            0x0a, 0x01, 0x3a, // ':'
-            0x0a, 0x03, 0x6d, 0x61, 0x70, // 'map'
-            0x00, 0x01, 0x07, // INT 7 (key)
-            0x00, 0x01, 0x46, // INT 70 (val)
-            0x00, 0x01, 0x08, // INT 8 (key)
-            0x00, 0x01, 0x63, // INT 99 (val)
-            0x0a, 0x03, 0x4d, 0x61, 0x70, // 'Map'
-            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
-            // struct spine:
-            0x0e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x02, 0x02, 0x03, 0x00, 0x04,
-            0x00, 0x05, 0x01, 0x02, 0x05, 0x06, 0x01, 0x03, 0x01, 0x04, 0x07, 0x00, 0x06, 0x00, 0x07,
-            0x00, 0x07, 0x01, 0x03, 0x09, 0x0a, 0x0b, 0x01, 0x03, 0x00, 0x08, 0x0c, 0x0d,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x09, 0x0a, 0x01, 0x3a,
+            0x17, 0x19, 0x00, 0x01, 0x07, 0x00, 0x01, 0x46, 0x00, 0x01, 0x08, 0x00,
+            0x01, 0x63, 0x0a, 0x03, 0x4d, 0x61, 0x70, 0x0a, 0x05, 0x49, 0x6e, 0x74,
+            0x36, 0x34, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
+            0x04, 0x01, 0x03, 0x02, 0x03, 0x04, 0x00, 0x02, 0x00, 0x05, 0x00, 0x06,
+            0x01, 0x03, 0x06, 0x07, 0x08, 0x01, 0x03, 0x01, 0x05, 0x09, 0x00, 0x07,
+            0x00, 0x08, 0x00, 0x08, 0x01, 0x03, 0x0b, 0x0c, 0x0d, 0x01, 0x03, 0x00,
+            0x0a, 0x0e, 0x0f,
         ];
         assert_eq!(got, expect, "framed int map must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x08, "map leaf count = 8");
+        assert_eq!(got[8], 0x09, "map leaf count = 9 (M2: + the FieldPair ctor leaf)");
 
         op_drop(m);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -10877,26 +10989,19 @@ mod tests {
 
         // FULL document: ':' , '.', 'Set', 'of', 'list', 7, 12, 17, 'Int64' (9 leaves) + spine. The
         // ((. Set of) (list …)) member-access form, elements in canonical order 7 < 12 < 17.
+        // M2 head-first golden: a Set is flat `(Ctor(Set) e…)` — the Set ctor head=0x18 + the sorted
+        // elements directly (was `((. Set of) (list e…))`). 7 leaves (was 9 — dropped `.`/`of`/`list`
+        // names, added the Set ctor leaf).
         let expect: &[u8] = &[
-            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, // cdzast\x00\x01
-            0x09, // 9 leaves
-            0x0a, 0x01, 0x3a, // ':'
-            0x0a, 0x01, 0x2e, // '.'
-            0x0a, 0x03, 0x53, 0x65, 0x74, // 'Set'
-            0x0a, 0x02, 0x6f, 0x66, // 'of'
-            0x0a, 0x04, 0x6c, 0x69, 0x73, 0x74, // 'list'
-            0x00, 0x01, 0x07, // INT 7
-            0x00, 0x01, 0x0c, // INT 12
-            0x00, 0x01, 0x11, // INT 17
-            0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, // 'Int64'
-            // struct spine:
-            0x0f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x00,
-            0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x01, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0x02,
-            0x04, 0x09, 0x00, 0x02, 0x00, 0x08, 0x01, 0x02, 0x0b, 0x0c, 0x01, 0x03, 0x00, 0x0a, 0x0d,
-            0x0e,
+            0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a,
+            0x18, 0x00, 0x01, 0x07, 0x00, 0x01, 0x0c, 0x00, 0x01, 0x11, 0x0a, 0x03,
+            0x53, 0x65, 0x74, 0x0a, 0x05, 0x49, 0x6e, 0x74, 0x36, 0x34, 0x0a, 0x00,
+            0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01, 0x04, 0x01,
+            0x02, 0x03, 0x04, 0x00, 0x05, 0x00, 0x06, 0x01, 0x02, 0x06, 0x07, 0x01,
+            0x03, 0x00, 0x05, 0x08, 0x09,
         ];
         assert_eq!(got, expect, "framed int set must be the full colon-framed golden document");
-        assert_eq!(got[8], 0x09, "set leaf count = 9");
+        assert_eq!(got[8], 0x07, "set leaf count = 7 (M2 flat Ctor(Set) — dropped the (.Set of)/list wrapper)");
 
         op_drop(s);
         assert_eq!(live_nodes(), 0, "no leak");
@@ -11052,7 +11157,7 @@ mod tests {
         let got = op_value_encode_form(cons, &desc).expect("encode Cons");
         let expect_cons: &[u8] = &[
             0x63, 0x64, 0x7a, 0x61, 0x73, 0x74, 0x00, 0x01, 0x07, 0x0a, 0x01, 0x3a, 0x0a, 0x04,
-            0x43, 0x6f, 0x6e, 0x73, 0x0a, 0x05, 0x74, 0x75, 0x70, 0x6c, 0x65, 0x00, 0x01, 0x01,
+            0x43, 0x6f, 0x6e, 0x73, 0x15, 0x00, 0x01, 0x01, // Cons, M2 Ctor(Tuple)=0x15, INT 1
             0x0a, 0x03, 0x4e, 0x69, 0x6c, 0x0a, 0x04, 0x75, 0x6e, 0x69, 0x74, 0x0a, 0x02, 0x49,
             0x4c, 0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05,
             0x01, 0x02, 0x04, 0x05, 0x01, 0x03, 0x02, 0x03, 0x06, 0x01, 0x02, 0x01, 0x07, 0x00,
@@ -11138,7 +11243,7 @@ mod tests {
                     let l = b.name_leaf("unit");
                     return Some(b.atom(l));
                 }
-                let head = b.name_leaf("tuple");
+                let head = b.ctor_leaf(doc::KIND_TUPLE_CTOR);
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for (i, &es) in elems.iter().enumerate() {
@@ -11159,7 +11264,7 @@ mod tests {
                 // SUMS (arr-based), so this arm was previously unexercised — the Framed(list) test reaches
                 // it on a real `vec`.
                 let (elem, n) = (*elem, op_vec_len(h));
-                let head = b.name_leaf("list");
+                let head = b.ctor_leaf(doc::KIND_LIST_CTOR);
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for i in 0..n {
@@ -11168,19 +11273,19 @@ mod tests {
                 b.list(&children)
             }
             S::Record(fields) => {
-                let head = b.name_leaf("record");
+                let head = b.ctor_leaf(doc::KIND_RECORD_CTOR);
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for (i, (k, fs)) in fields.iter().enumerate() {
-                    // CANON CONVERGENCE (mirrors the iterative `VisitField`): build `=` then the key atom
-                    // BEFORE recursing into the value, so leaves intern in canon pre-order first-encounter.
-                    let eq_leaf = b.name_leaf("=");
+                    // CANON CONVERGENCE (mirrors the iterative `VisitField`): build the FieldPair ctor head
+                    // then the key atom BEFORE recursing into the value, so leaves intern in canon pre-order
+                    // first-encounter. M2 field form `(FieldPair name value)` (was `(= name value)`).
+                    let eq_leaf = b.ctor_leaf(doc::KIND_FIELD_PAIR);
                     let eq = b.atom(eq_leaf);
                     let kname = b.name_leaf(k);
                     let katom = b.atom(kname);
                     let fval =
                         encode_value_recursive(desc, b, op_arr_get(h, i as u32), *fs, depth + 1)?;
-                    // `(= name value)` ascription form (record Phase B full-symmetry migration).
                     children.push(b.list(&[eq, katom, fval]));
                 }
                 b.list(&children)
@@ -11237,35 +11342,31 @@ mod tests {
             S::Set(elem) => {
                 let elem = *elem;
                 let sorted = set_elements_canonical(desc, h, elem)?;
-                // CANON CONVERGENCE (mirrors the iterative `Set` arm): build the `(. Set of)` head FIRST,
-                // then the `list` head, then the elements — canon pre-order first-encounter over
-                // `((. Set of) (list e…))`.
-                let dot = b.name_leaf(".");
-                let dot_s = b.atom(dot);
-                let set_l = b.name_leaf("Set");
-                let set_s = b.atom(set_l);
-                let of_l = b.name_leaf("of");
-                let of_s = b.atom(of_l);
-                let set_of = b.list(&[dot_s, set_s, of_s]);
-                let list_head = b.name_leaf("list");
-                let list_head_s = b.atom(list_head);
-                let mut list_children = vec![list_head_s];
+                // M2 head-first (mirrors the iterative `Set` arm): flat `(Ctor(Set) e1 … en)` — the Set
+                // ctor head atom + sorted elements as direct children (was `((. Set of) (list e…))`).
+                let head = b.ctor_leaf(doc::KIND_SET_CTOR);
+                let head_s = b.atom(head);
+                let mut children = vec![head_s];
                 for e in sorted {
-                    list_children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
+                    children.push(encode_value_recursive(desc, b, e, elem, depth + 1)?);
                 }
-                let inner_list = b.list(&list_children);
-                b.list(&[set_of, inner_list])
+                b.list(&children)
             }
             S::Map(key, val) => {
                 let (key, val) = (*key, *val);
                 let entries = map_entries_canonical(desc, h, key)?;
-                let head = b.name_leaf("map");
+                // M2 head-first (mirrors the iterative `Map` arm): `(Ctor(Map) (FieldPair k v)…)`. Each entry
+                // interns its FieldPair ctor head PRE-order (before the k/v subtrees, canon first-encounter;
+                // the FieldPair leaf dedups) — was `(map (k v)…)`.
+                let head = b.ctor_leaf(doc::KIND_MAP_CTOR);
                 let head_s = b.atom(head);
                 let mut children = vec![head_s];
                 for (k, v) in entries {
+                    let fp = b.ctor_leaf(doc::KIND_FIELD_PAIR);
+                    let fp_s = b.atom(fp);
                     let ks = encode_value_recursive(desc, b, k, key, depth + 1)?;
                     let vs = encode_value_recursive(desc, b, v, val, depth + 1)?;
-                    children.push(b.list(&[ks, vs]));
+                    children.push(b.list(&[fp_s, ks, vs]));
                 }
                 b.list(&children)
             }
@@ -11373,8 +11474,9 @@ mod tests {
         let has_str = |want: &str| {
             doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Str(b) if b == want.as_bytes()))
         };
+        let has_ctor = |k: u8| doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k));
         assert!(has_name("B"), "the B variant head must be rendered");
-        assert!(has_name("record"), "the record head must be rendered (bug: record dropped)");
+        assert!(has_ctor(doc::KIND_RECORD_CTOR), "the M2 Record ctor head must be rendered (bug: record dropped)");
         assert!(has_name("x"), "the record field name x must be rendered (bug: record dropped)");
         assert!(has_str("hi"), "the record field value \"hi\" must be rendered (bug: empty leaf)");
         op_drop(v);
@@ -11438,13 +11540,11 @@ mod tests {
             expected_next,
             "every distinct leaf must be first-encountered exactly once in pre-order"
         );
-        // Sanity: the fixture actually exercised both convergence sites (it has an `=` leaf and a `Set`
-        // leaf), so a future refactor can't accidentally make this gate vacuous.
-        let has_leaf = |want: &str| {
-            doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Name(n) if n == want.as_bytes()))
-        };
-        assert!(has_leaf("="), "fixture must contain a record-field `=` leaf");
-        assert!(has_leaf("Set"), "fixture must contain a Set `(. Set of)` head leaf");
+        // Sanity: the fixture actually exercised both convergence sites (M2: a FieldPair ctor head for the
+        // record field + a Set ctor head), so a future refactor can't accidentally make this gate vacuous.
+        let has_ctor = |k: u8| doc.leaves.iter().any(|l| matches!(l, ParsedLeaf::Ctor(c) if *c == k));
+        assert!(has_ctor(doc::KIND_FIELD_PAIR), "fixture must contain a record-field FieldPair ctor leaf");
+        assert!(has_ctor(doc::KIND_SET_CTOR), "fixture must contain a Set ctor head leaf");
 
         op_drop(rec);
         assert_eq!(live_nodes(), 0, "no leak: the record (and its set) dropped");
@@ -12650,6 +12750,8 @@ mod tests {
                 // KIND_NAME: LEB len + bytes
                 let len = doc[i] as usize;
                 i += 1 + len;
+            } else if (20..=26).contains(&kind) {
+                // M2 ctor-head leaf (LIST/TUPLE/RECORD/MAP/SET_CTOR, FIELD_PAIR, MEMBER) — payloadless.
             } else {
                 panic!("unexpected leaf kind {kind} in a Set-of-Int document");
             }
@@ -12714,6 +12816,7 @@ mod tests {
                     let len = doc[i] as usize;
                     i += 1 + len;
                 }
+                20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
                 other => panic!("unexpected leaf kind {other} in a Set-of-String document"),
             }
         }
@@ -12776,6 +12879,8 @@ mod tests {
             } else if kind == 10 {
                 let len = doc[i] as usize;
                 i += 1 + len;
+            } else if (20..=26).contains(&kind) {
+                // M2 payloadless ctor-head leaf (20-26)
             } else {
                 panic!("unexpected leaf kind {kind} in a Map-of-Int document");
             }
@@ -12837,7 +12942,8 @@ mod tests {
                         let len = doc[i] as usize;
                         i += 1 + len;
                     }
-                    other => panic!("unexpected leaf kind {other} in an int document"),
+                    20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
+                other => panic!("unexpected leaf kind {other} in an int document"),
                 }
             }
             vals
@@ -12961,6 +13067,8 @@ mod tests {
             } else if kind == 10 {
                 let len = doc[i] as usize;
                 i += 1 + len;
+            } else if (20..=26).contains(&kind) {
+                // M2 payloadless ctor-head leaf (20-26)
             } else {
                 panic!("unexpected leaf kind {kind} in a Map-of-Lists document");
             }
@@ -12994,30 +13102,29 @@ mod tests {
             doc
         };
 
-        // Empty SET → `((. Set of) (list))`. desc: [0]=Int, [1]=Set(→0), root=1.
+        // Empty SET → M2 `(Ctor(Set))`. desc: [0]=Int, [1]=Set(→0), root=1.
         let es = op_set_empty();
         let sd: &[u8] = &[0x02, 0x00, 0x0c, 0x00, 0x01];
         let sdoc = check(es, sd);
-        // Names in order: `list` (inner, emitted eagerly), then `.`,`Set`,`of` (the head, post-order). No ints.
-        assert!(sdoc.windows(4).any(|w| w == b"list"), "empty set has a `list` head");
-        assert!(sdoc.windows(3).any(|w| w == b"Set"), "empty set has the `Set` head");
+        // ONE leaf — the payloadless Set ctor head (kind 24); no `list`/`Set` name leaves anymore.
+        assert_eq!(sdoc[8], 1, "empty set document has ONE leaf (the Set ctor head)");
+        assert_eq!(sdoc[9], doc::KIND_SET_CTOR, "empty set renders the bare Ctor(Set) head");
         op_drop(es);
 
-        // Empty MAP → `(map)`. desc: [0]=Int, [1]=Int, [2]=Map(→0,→1), root=2.
+        // Empty MAP → M2 `(Ctor(Map))`. desc: [0]=Int, [1]=Int, [2]=Map(→0,→1), root=2.
         let em = op_map_empty();
         let md: &[u8] = &[0x03, 0x00, 0x00, 0x0d, 0x00, 0x01, 0x02];
         let mdoc = check(em, md);
-        // A `(map)` with no entries: exactly one leaf (the `map` name), one atom, one list-of-1 struct.
-        assert_eq!(mdoc[8], 1, "empty map document has ONE leaf (the `map` name)");
-        assert!(mdoc.windows(3).any(|w| w == b"map"), "empty map renders the bare `map` head");
+        assert_eq!(mdoc[8], 1, "empty map document has ONE leaf (the Map ctor head)");
+        assert_eq!(mdoc[9], doc::KIND_MAP_CTOR, "empty map renders the bare Ctor(Map) head");
         op_drop(em);
 
-        // Empty LIST → `(list)`. desc: [0]=Int, [1]=List(→0), root=1.
+        // Empty LIST → M2 `(Ctor(List))`. desc: [0]=Int, [1]=List(→0), root=1.
         let el = op_vec_empty();
         let ld: &[u8] = &[0x02, 0x00, 0x07, 0x00, 0x01];
         let ldoc = check(el, ld);
-        assert_eq!(ldoc[8], 1, "empty list document has ONE leaf (the `list` name)");
-        assert!(ldoc.windows(4).any(|w| w == b"list"), "empty list renders the bare `list` head");
+        assert_eq!(ldoc[8], 1, "empty list document has ONE leaf (the List ctor head)");
+        assert_eq!(ldoc[9], doc::KIND_LIST_CTOR, "empty list renders the bare Ctor(List) head");
         op_drop(el);
 
         assert_eq!(live_nodes(), before, "no leak: every empty collection dropped");
@@ -13118,6 +13225,7 @@ mod tests {
                     names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
                     i += len;
                 }
+                20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
                 k => panic!("unexpected leaf kind {k} in a Spread document"),
             }
         }
@@ -13223,14 +13331,16 @@ mod tests {
                     names.push(String::from_utf8(doc[i..i + len].to_vec()).unwrap());
                     i += len;
                 }
+                20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
                 k => panic!("unexpected leaf kind {k} in a Framed(list) document"),
             }
         }
-        // The frame's names, in walk order: `:` (the outer frame head, emitted first), `list` (the value's
-        // list head), then `List` + `Int64` (the type node, emitted AFTER the value — the Framed assembler).
+        // The frame's NAME leaves, in walk order: `:` (the outer frame head), then `List` + `Int64` (the
+        // type node, emitted AFTER the value). The value's list head is now the M2 Ctor(List) LEAF (not the
+        // `list` name), so it no longer appears among the name leaves.
         let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        assert_eq!(names_ref, alloc::vec![":", "list", "List", "Int64"],
-            "Framed frame emits `:`, `list`, then the type head `List` + arg `Int64` in order");
+        assert_eq!(names_ref, alloc::vec![":", "List", "Int64"],
+            "Framed frame emits `:`, then the type head `List` + arg `Int64` (value list head is a ctor leaf)");
         op_drop(v);
         assert_eq!(live_nodes(), before, "no leak");
     }
@@ -13320,7 +13430,8 @@ mod tests {
                         let len = doc[i] as usize;
                         i += 1 + len;
                     }
-                    k => panic!("n={n}: unexpected leaf kind {k} in a (List Int) document"),
+                    20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
+                k => panic!("n={n}: unexpected leaf kind {k} in a (List Int) document"),
                 }
             }
             let want: Vec<u8> = (1..=n as u8).collect();
@@ -17458,6 +17569,7 @@ mod tests {
                     let len = doc[i] as usize;
                     i += 1 + len;
                 }
+                20..=26 => {} // M2 payloadless ctor-head leaf (20-26)
                 k => panic!("unexpected leaf kind {k} in the record document"),
             }
         }
@@ -17475,12 +17587,12 @@ mod tests {
             field_key_positions.windows(2).all(|w| w[0] < w[1]),
             "record field keys appear in FIELD order (xs<tag<raw<name) in {names:?}"
         );
-        // The record/list heads + the Sum variant head are all present (structural heads).
+        // The Sum variant head (a NAME) is present. The record/list heads are now M2 ctor LEAVES (kinds
+        // 22/20), not names — their presence + structure is verified by part-1's byte-differential
+        // (production == recursive oracle) above, so this name check only pins the surviving variant head.
         assert!(
-            names.iter().any(|n| n == "record")
-                && names.iter().any(|n| n == "list")
-                && names.iter().any(|n| n == "Some"),
-            "the record head, the list head, and the Sum variant head are all present in {names:?}"
+            names.iter().any(|n| n == "Some"),
+            "the Sum variant head `Some` is present in {names:?}"
         );
         // The String field VALUE "hi" is emitted as a KIND_STR leaf (distinct from the NAME leaves).
         assert!(
@@ -20848,7 +20960,7 @@ mod tests {
     fn ast_encode_matches_builder_codec_bytes() {
         reset();
         // 9-disc descriptor [int,float,bool,str,name,list,bytes,char,symbol] = discs 0..=8.
-        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
 
         // Heap Ast: (List [Name "f", Int 300, Int -3, Bool true, Str "hi", Bytes b"\x00\xff", Char 'λ',
         // Sym "m", Float 1.5, List [Int 7]]) — covers every variant incl. multi-byte + negative Int + nesting.
@@ -20908,7 +21020,7 @@ mod tests {
     #[test]
     fn ast_decode_round_trips_encode() {
         reset();
-        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
 
         // Same all-variant Ast as the encode test.
         let mut v = op_vec_empty();
@@ -20963,7 +21075,7 @@ mod tests {
     #[test]
     fn ast_encode_decode_non_finite_floats_round_trip() {
         reset();
-        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        let discs = bytes_leaf(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]); // M2: 16 discs (+ ctor discs list_ctor..member)
         let check = |f: f64, leaf: crate::ast::Leaf| {
             // heap Ast.Float(f) → op93 encode
             let node = op_sum_new(1, op_box_float(f)); // disc 1 = float, per the descriptor above
