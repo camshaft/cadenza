@@ -12099,3 +12099,18 @@
   (call main (: 0 Int64))
   (output (: (Err 0) (Result Int64 Int64)))
   (live-objects 1))
+
+(case "cdzw24 the cadenza backend round-trips a MONOMORPHIC single-variant newtype — construct sites and a pass-through in one program"
+  (doc "The #4978 fence (breaker BUG2 fixed): a single-variant `(type W (Mk Int64))` is ERASED in Core (the
+        value shares its node with the inner), so the backend's `nominal_disposition` must re-emit `(Mk …)`
+        at each CONSTRUCT site (the if branches, whose payloads peel to the inner) while NOT re-wrapping the
+        PASS-THROUGH (the let binder already holding the nominal — the double-wrap `(Mk (if … (Mk …)))`
+        trap this classifier exists for). Both arms exercised; renders `(: 14 W)` / `(: 0 W)` with the
+        nominal preserved (the pre-fix erasure rendered a bare scalar through the hop — the original
+        dual-path divergence). The GENERIC `(Box a)` twin still declines (the generic-decl increment).")
+  (input (do (type W (Mk Int64)) (def (main (: n Int64)) (let ((w (if (> n 0) (Mk (* n 2)) (Mk 0)))) w)) (export main)))
+  (call main (: 7 Int64))
+  (output (: 14 W))
+  (call main (: 0 Int64))
+  (output (: 0 W))
+  (live-objects 0))
