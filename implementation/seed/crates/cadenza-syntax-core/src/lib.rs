@@ -12,5 +12,11 @@
 pub use cadenza_ast::ast;
 
 pub mod arena_read;
+/// The Wadler-style pretty-printer engine (`Doc`/`ibox`/`word`/breaks) every surface PRINTER lays its
+/// output out through — surface-agnostic, depends on nothing but std.
+pub mod doc;
+/// Generally-useful iterator helpers shared across surface readers: a span-carrying char iterator
+/// ([`iter::Chars`]/[`iter::Char`]) and a two-token lookahead adapter ([`iter::Peek2`]).
+pub mod iter;
 pub mod span;
 pub mod spans;

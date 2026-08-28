@@ -30,12 +30,16 @@ pub(crate) use cadenza_syntax_core::arena_read;
 pub mod cli;
 pub mod convert;
 pub mod debug;
-pub mod doc;
+/// The Wadler-style pretty-printer engine — moved to `cadenza-syntax-core`, re-exported so
+/// `cadenza_syntax::doc` + internal `crate::doc` (every printer) are unchanged.
+pub use cadenza_syntax_core::doc;
 /// The doc-item projection: fold a program's public surface into a derived `doc-module` doc-AST
 /// (`cadenza doc`, design/DESIGN-cadenza-docs.md I1). Structural/syntactic — no typecheck dependency.
 pub mod doc_item;
 pub mod extern_name;
-pub mod iter;
+/// Generally-useful iterator helpers (span-carrying `Chars`, `Peek2` lookahead) — moved to
+/// `cadenza-syntax-core`, re-exported so `cadenza_syntax::iter` + internal `crate::iter` are unchanged.
+pub use cadenza_syntax_core::iter;
 /// The JSON surface: a faithful data document (`(json-object …)`/`(json-array …)`/`(json-null)` plus
 /// bare scalar leaves) is a projection of the same arena the code surfaces use. Unlike a native
 /// `record`/`list`, it preserves everything real JSON has that the typed value universe would reject
