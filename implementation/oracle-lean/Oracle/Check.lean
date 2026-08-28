@@ -245,7 +245,7 @@ def checkTrial (prog : Module) (ot : Module) (t : OTrial) : Verdict :=
     match outcome with
     | .value v =>
       match expectedValue? ot node with
-      | some ev => if v == ev then .holds else .mismatch "value mismatch"
+      | some ev => if Value.valueEqSpec v ev then .holds else .mismatch "value mismatch"
       | none => .skip "expected value is not a modeled scalar (compound/typed value)"
     | .trap k => .mismatch s!"expected a value, got trap {k}"
     | .unsupported r => .skip r
