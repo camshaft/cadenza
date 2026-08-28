@@ -38,6 +38,7 @@ fn main() -> ExitCode {
             );
             ExitCode::from(2)
         }
+        "seed-corpus" => cmd_seed_corpus(&args[1..]),
         "once" => cmd_once(&args[1..]),
         "gen" => cmd_gen(&args[1..]),
         "verify" => cmd_verify(&args[1..]),
@@ -61,6 +62,7 @@ fn usage() {
          USAGE:\n\
          \x20 cdz-smith fuzz             [--iterations N] [--seed S] [--timeout SECS] [--findings DIR]\n\
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
+         \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -299,6 +301,70 @@ fn cmd_fuzz(args: &[String]) -> ExitCode {
         }
         Err(e) => {
             eprintln!("cdz-smith: run failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Seed the fuzz corpus with the semantics-corpus ASTs (S2). Extracts every `(input <program>)` from
+/// `spec/semantics/*.sexp`, encodes each to canonical binary-AST bytes, and writes a deduped,
+/// content-hashed seed corpus for the binary-AST entropy target (`cdz_smith_ast_never_panics`).
+/// `--semantics` overrides the corpus dir (default: discover `spec/semantics` from cwd); `--out`
+/// overrides the seed dir (default: `<semantics>/../../implementation/seed/crates/cdz-smith/corpus/
+/// ast-seeds`, i.e. this crate's `corpus/ast-seeds`).
+fn cmd_seed_corpus(args: &[String]) -> ExitCode {
+    let mut semantics: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--semantics" => semantics = it.next().map(PathBuf::from),
+            "--out" => out = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith seed-corpus: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let semantics_dir = match semantics {
+        Some(d) => d,
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            match cdz_smith::seeds::discover_semantics_dir(&cwd) {
+                Some(d) => d,
+                None => {
+                    eprintln!(
+                        "cdz-smith seed-corpus: could not find spec/semantics from {} — pass --semantics DIR",
+                        cwd.display()
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    };
+    // Default seed dir = this crate's corpus/ast-seeds, resolved from the crate root at build time.
+    let out_dir = out.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("corpus")
+            .join("ast-seeds")
+    });
+
+    match cdz_smith::seeds::write_seed_corpus(&semantics_dir, &out_dir) {
+        Ok(stats) => {
+            eprintln!(
+                "[cdz-smith] seed-corpus: scanned {} file(s) in {} → wrote {} seed(s) ({} dup collapsed) to {}",
+                stats.files,
+                semantics_dir.display(),
+                stats.written,
+                stats.duplicates,
+                out_dir.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("cdz-smith seed-corpus: failed: {e}");
             ExitCode::FAILURE
         }
     }

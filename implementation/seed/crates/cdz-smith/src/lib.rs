@@ -41,6 +41,7 @@ pub mod driver;
 pub mod finding;
 pub mod generator;
 pub mod oracle;
+pub mod seeds;
 pub mod triage;
 
 pub use finding::{Category, Finding, FindingStore};
