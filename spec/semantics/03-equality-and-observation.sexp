@@ -3520,3 +3520,30 @@
   (call main (: 0 Int64))
   (output (: -10 Int64))
   (live-objects known-leak 1))
+
+; ── breaker batch 591: the NaN self-equal-but-UNORDERED invariant across =/<=/>= (03-equality's
+; "self-equal and unordered downstream" pinned for the RELATIONAL ops specifically), plus the
+; ±inf ORDERED contrast. fno1: a runtime NaN is `= ` itself (canonical-byte, TRUE) yet `<=` and
+; `>=` itself are FALSE (IEEE partial order) — the intentional split a "make <= consistent with ="
+; refactor would silently break. fno2: ±infinity is FULLY ORDERED (inf > finite, -inf < finite,
+; -inf < inf, inf <= inf) — the contrast proving only NaN is unordered, not all non-finite.
+
+(case "fno1 a runtime NaN is self-EQUAL (canonical-byte) but self-UNORDERED under <= and >= (the intentional =/order split)"
+  (input (do (def (main (: n Int64))
+  (let ((nan (/ (Float64.of-int (- n 1)) 0.0)))
+    (+ (if (<= nan nan) 1 0)
+       (+ (if (>= nan nan) 10 0)
+          (if (= nan nan) 100 0)))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 100 Int64)))
+
+(case "fno2 runtime +/-infinity is FULLY ORDERED (only NaN is unordered, not all non-finite)"
+  (input (do (def (main (: n Int64))
+  (let ((inf (/ (Float64.of-int n) 0.0)) (ninf (/ (Float64.of-int (- 0 n)) 0.0)))
+    (+ (if (< 1000000.0 inf) 1 0)
+       (+ (if (< ninf -1000000.0) 10 0)
+          (+ (if (< ninf inf) 100 0) (if (<= inf inf) 1000 0))))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 1111 Int64)))
