@@ -45,7 +45,7 @@ pub mod triage;
 
 pub use finding::{Category, Finding, FindingStore};
 pub use generator::{Program, generate};
-pub use oracle::{Verdict, compile_catching};
+pub use oracle::{Verdict, compile_catching, compile_catching_ast};
 pub use triage::{TriageStats, triage_artifacts};
 
 // ── the bolero property target ──────────────────────────────────────────────────────────────────
@@ -98,6 +98,43 @@ fn cdz_smith_never_panics() {
                 program.source
             ),
             // Everything else is expected output — not a finding.
+            Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_) => {}
+        }
+    });
+}
+
+// ── the binary-AST-entropy bolero target ──────────────────────────────────────────────────────────
+// The NEXT-GEN engine's property target: entropy IS the binary AST. Instead of mapping bytes → s-expr
+// text → parse, this feeds the fuzzer's `&[u8]` straight through the strict+total codec DECODE-GATE
+// (see `oracle::compile_catching_ast`) — a blob that decodes to a well-formed AST is compiled; one that
+// does not is a clean ParseError, never a panic. Seeded from a corpus of REAL semantics-corpus AST
+// encodings (see the `seed-corpus` tooling) + libFuzzer's structure-aware mutation, this reaches the
+// compiler with dense, well-formed programs far more often than text mutation does. Same crash /
+// invalid-wasm oracle + both emit backends as the text target — only the entropy source differs.
+//
+// Kept at the crate ROOT (no `mod` wrapper), like `cdz_smith_never_panics`, so `cargo bolero` names the
+// target bare (`cargo bolero test cdz_smith_ast_never_panics`). Run it the same way:
+//   cargo bolero test cdz_smith_ast_never_panics --engine libfuzzer -T 10m --timeout 10s \
+//       -E-fork=1 -E-ignore_timeouts=1 -E-ignore_crashes=1   (nightly; see fuzz-cycle.sh)
+//   cargo test cdz_smith_ast_never_panics                    (bounded random, no coverage)
+#[cfg(test)]
+#[test]
+fn cdz_smith_ast_never_panics() {
+    use bolero::check;
+    check!().with_type::<Vec<u8>>().for_each(|seed: &Vec<u8>| {
+        match compile_catching_ast(seed) {
+            // A panic escaping the compile path is a bug — fail so bolero shrinks + reports the seed.
+            Verdict::Crash(info) => panic!(
+                "compiler panicked at {} on binary-AST entropy: {}",
+                info.site.as_deref().unwrap_or("<unknown>"),
+                info.message.lines().next().unwrap_or(""),
+            ),
+            // Reported success but emitted non-validating wasm — a backend miscompile.
+            Verdict::InvalidWasm { detail, .. } => panic!(
+                "compiler emitted INVALID wasm on binary-AST entropy: {}",
+                detail.lines().next().unwrap_or(""),
+            ),
+            // A decode-gate rejection (ParseError), a clean decline, or a clean compile — all expected.
             Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_) => {}
         }
     });
