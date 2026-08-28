@@ -1203,21 +1203,23 @@
   (call   go 0)
   (trap   "division by zero"))
 
-(case "coc2 an (Ordering.of) of a Char-leaf compound DECLINES — Char is not a blessed compound-ordering leaf"
-  (doc    "The three-way companion of 03-equality's `<` Char-leaf decline (one total order, two ways — §331): a Char
-           leaf makes a compound un-orderable for BOTH the boolean `<` and the three-way `Ordering.of`.
-           `Ordering.of (tuple 1 #\\a) (tuple 1 #\\b)` DECLINES — even though a SCALAR `Ordering.of #\\a #\\b` is
-           blessed and a const Set of chars to-lists sorted (that bakes an enumeration order, never a compound walk).
-           Pins that the const compound-ordering fold gates on the RUNTIME blessed-leaf vocabulary
-           (`is_orderable_compound`: Int/Bool/String/Bytes + nested, NOT Char/Float), not `const_key_order`'s broader
-           to-list order — so it never answers where the runtime compound walk refuses.")
+(case "coc2 an (Ordering.of) of a Char-leaf compound orders by codepoint (Char is a blessed leaf)"
+  (doc    "The three-way companion of 03-equality's `<` Char-leaf order (one total order, two ways — §331): a Char
+           leaf is orderable in a compound for BOTH the boolean `<` and the three-way `Ordering.of`, because a
+           Char has a total order by codepoint (scalar `Ordering.of #\\a #\\b` is blessed and folds).
+           `Ordering.of (tuple 1 #\\a) (tuple 1 #\\b)` → the first components tie (1 = 1), the Char leaf decides:
+           #\\a (U+0061) < #\\b (U+0062) → `Ordering.Less` → the arm yields 1. Pins that the compound-ordering
+           fold + the runtime walk share ONE blessed-leaf vocabulary (`is_orderable_compound`:
+           Int/Bool/String/Symbol/Bytes/Char + nested, NOT Float/Set/Map), so const and runtime agree (§331) —
+           Char was blessed into the walk like Bytes/PR#1120 (compiler-only: the runtime `value_cmp_shaped`
+           already orders a Char-in-compound as its codepoint `Shape::Int`).")
   (input  (do (def (main)
                 (match (Ordering.of (tuple 1 #\a) (tuple 1 #\b))
                   ((Ordering.Less _)    1)
                   ((Ordering.Equal _)   2)
                   ((Ordering.Greater _) 3)))
               (export main)))
-  (declines))
+  (call   main) (output (: 1 Int64)))
 
 ; --- Primitive 2: const boolean ORDERING (`<`/`<=`/`>`/`>=`) folds a constant COMPOUND pair --------------------
 ; The boolean ordering operators are the §331 companion of the three-way `Ordering.of`: a type surfaces ONE total

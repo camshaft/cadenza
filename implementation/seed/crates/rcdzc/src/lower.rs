@@ -30623,12 +30623,13 @@ fn orderable_leaf_or_compound(
         | Ty::Symbol
         | Ty::BigInt
         | Ty::Rational
+        | Ty::Char
         | Ty::Bytes => true,
         // A float is orderable ONLY by canonical bytes as a BARE ROOT (to-list), never by numeric `<` and
         // never INSIDE a compound — see `float_ok` + the doc above.
         Ty::Float(_) => float_ok,
-        // Non-orderable leaves in EITHER mode — Char/Set/Map (no blessed order at all).
-        Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        // Non-orderable leaves in EITHER mode — Set/Map (no blessed order at all).
+        Ty::Set(_) | Ty::Map(..) => false,
         // COMPOUND arms recurse with `float_ok = false`: a float component makes the compound un-orderable
         // (03:626 / §319), regardless of the caller's bare-root float mode.
         Ty::Tuple(elems) => elems
