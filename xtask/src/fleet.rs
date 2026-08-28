@@ -6768,6 +6768,17 @@ fn content_identical_reset_target<'a>(
 /// genuine fork — where `trunk` stays the integrator's base and the existing fast-paths handle it. Pure
 /// over its inputs so the decision is unit-tested without git; the two `is_ancestor` flags are the
 /// caller's `git merge-base --is-ancestor origin/main trunk` and `--is-ancestor trunk origin/main`.
+/// Pure: should `fleet sync` fast-forward HEAD to origin/main? TRUE iff HEAD is a STRICT ANCESTOR of
+/// origin/main (HEAD is-ancestor-of origin/main AND origin/main is NOT is-ancestor-of HEAD) — i.e. purely
+/// behind with zero own commits. Then a hard reset to origin/main loses nothing. FALSE when HEAD == origin
+/// (both ancestor → nothing to do), HEAD ahead (has own commits → replay path), or forked (neither).
+fn sync_head_should_fast_forward_to_origin_main(
+    head_ancestor_of_om: bool,
+    om_ancestor_of_head: bool,
+) -> bool {
+    head_ancestor_of_om && !om_ancestor_of_head
+}
+
 fn sync_base_prefers_origin_main(
     origin_main_sha: &str,
     trunk_sha: &str,
@@ -6815,6 +6826,33 @@ fn sync(fleet: &Fleet, force: bool) {
     // Bring trunk current (the hub shares the object store, but `fetch` refreshes origin for the
     // ahead/behind reporting and is harmless if there's nothing new).
     let _ = git_ok(&["fetch", "-q", "origin"]);
+
+    // BELT-AND-BRACES (concierge 2026-08-28, confirmed gap): a worktree whose HEAD is a STRICT ANCESTOR
+    // of origin/main — purely behind with ZERO own commits (e.g. HEAD == the frozen stale-trunk commit
+    // during the pr-sync pause) — must advance to origin/main. But the base-selection + no-op guard below
+    // can leave it STUCK: base resolves to `trunk`, HEAD == trunk == an ancestor of itself, so the no-op
+    // guard fires first ("already current, nothing to replay") and it stays 1840 behind (concierge tested,
+    // even after a fresh fetch). Catch it up-front: if HEAD is a strict ancestor of origin/main, hard-reset
+    // to origin/main. Safe BY CONSTRUCTION — a strict ancestor has NO own commits to preserve and nothing
+    // to replay, so this loses nothing; it just fast-forwards. (Correct in general, not only during the
+    // pause: a purely-behind worktree should sit on the authoritative tip.)
+    if !old_head.is_empty() {
+        let head_ancestor_of_om =
+            git_ok(&["merge-base", "--is-ancestor", &old_head, "origin/main"]);
+        let om_ancestor_of_head =
+            git_ok(&["merge-base", "--is-ancestor", "origin/main", &old_head]);
+        if sync_head_should_fast_forward_to_origin_main(head_ancestor_of_om, om_ancestor_of_head)
+            && git_ok(&["reset", "--hard", "origin/main"])
+        {
+            let om_short = git_stdout(&["rev-parse", "--short", "origin/main"]);
+            println!(
+                "fleet sync: HEAD was a strict ancestor of origin/main (purely behind, no own commits) \
+                 — fast-forwarded to origin/main ({om_short}). Common during the pr-sync pause when a \
+                 worktree sits on the frozen trunk commit; nothing of yours was lost (no own commits)."
+            );
+            return;
+        }
+    }
 
     // SYNC BASE = origin/main when local `trunk` is merely AHEAD of it by unpushed commits (the
     // --publish-origin publish-lag, 2026-08-09). Under the GHA-off direct-push model pr-sync FF-pushes
@@ -19134,6 +19172,20 @@ mod tests {
 
         // Empty queue → empty batch (caller falls back to single-MR dispatch).
         assert!(select_batch(&[], &none, 6).is_empty());
+    }
+
+    #[test]
+    fn sync_head_fast_forwards_only_when_strictly_behind_origin_main() {
+        // args: (head_ancestor_of_origin_main, origin_main_ancestor_of_head)
+        // Strictly behind (HEAD is an ancestor of origin/main, not vice-versa) → fast-forward. THE FIX:
+        // a HEAD == stale-trunk commit with zero own commits (the concierge's stuck worktree).
+        assert!(sync_head_should_fast_forward_to_origin_main(true, false));
+        // HEAD == origin/main (both ancestors of each other) → nothing to do, do NOT reset.
+        assert!(!sync_head_should_fast_forward_to_origin_main(true, true));
+        // HEAD AHEAD of origin/main (has own commits: origin is ancestor of HEAD) → replay path, not FF.
+        assert!(!sync_head_should_fast_forward_to_origin_main(false, true));
+        // Forked (neither is an ancestor) → not a pure fast-forward; leave to the normal path.
+        assert!(!sync_head_should_fast_forward_to_origin_main(false, false));
     }
 
     #[test]
