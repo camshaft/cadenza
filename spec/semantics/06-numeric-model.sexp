@@ -11714,3 +11714,18 @@
   (input (do (def (main (: n Int64)) (<< 1 n)) (export main)))
   (call main (: 62 Int64)) (output (: 4611686018427387904 Int64))
   (call main (: 63 Int64)) (trap "integer overflow"))
+
+(case "rmn1 MIN %/-1 is 0 (not a trap) on both fold and runtime — the remainder path avoids the divide-overflow trap"
+  (doc    "The classic signed-arithmetic miscompile trap: `x / -1` overflows at x = Int64.MIN (no positive
+           representation), but `x % -1` is ALWAYS 0 and must NOT trap — a naive backend that routes rem
+           through the same MIN/-1 overflow guard as div would wrongly trap here. Verified BOTH ways: the
+           runtime `(% n -1)` returns 0 at n = Int64.MIN (and -7%… wait no, 7 % -1 = 0 too), and the const
+           `(% -9223372036854775808 -1)` FOLDS to 0 (added to the arg, so main 5 = 5). Contrast dvf/the
+           `(/ n -1)` cases which DO trap at MIN. Pins that rem-by-(-1) is total where div-by-(-1) is not.")
+  (input (do (def (main (: n Int64)) (+ n (% -9223372036854775808 -1))) (export main)))
+  (call main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "rmn2 a RUNTIME MIN %/-1 returns 0 while the same operand under / -1 would trap (rem is total, div is not)"
+  (input (do (def (main (: n Int64)) (% n -1)) (export main)))
+  (call main (: 7 Int64))                    (output (: 0 Int64))
+  (call main (: -9223372036854775808 Int64)) (output (: 0 Int64)))
