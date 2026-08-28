@@ -3708,14 +3708,21 @@
             cdz-compile() { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-compile" -- "$@"; }
             gate()        { nix run --option warn-dirty false "$(__cdz_flakeroot)#gate"        -- "$@"; }
             fast-gate()   { nix run --option warn-dirty false "$(__cdz_flakeroot)#fast-gate"   -- "$@"; }
-            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run cdz-compile gate fast-gate 2>/dev/null || true
-            echo "cdz all-nix shell (LAZY boot) — tools compile on FIRST use, reusing the warm cache:"
-            echo "  cdz …               compile / run / test / doctor  (builds the component store on 1st run)"
-            echo "  cdz-run FILE.wasm   run a component"
-            echo "  cdz-compile …       the standalone compiler (what cdz delegates to)"
-            echo "  fast-gate [crates]  fast touched-crate gate (inner loop)"
-            echo "  gate                full local-gate battery (convenience)"
-            echo "  → authoritative MERGE gate stays: cargo xtask fleet gate-local"
+            # cdz-help — print every custom shell command available here, on demand (also shown at boot).
+            # Namespaced `cdz-help` (NOT `help`, which is a bash builtin) so agents can re-inspect anytime.
+            cdz-help() {
+              echo "cdz all-nix shell — custom commands (nix compiles on demand from your worktree,"
+              echo "reusing the warm cache; run 'cdz-help' anytime to reprint this):"
+              echo "  cdz …               compile / run / test / doctor  (builds the component store on 1st run)"
+              echo "  cdz-run FILE.wasm   run a component"
+              echo "  cdz-compile …       the standalone compiler (what cdz delegates to)"
+              echo "  fast-gate [crates]  fast touched-crate gate (inner loop)"
+              echo "  gate                full local-gate battery (convenience)"
+              echo "  cdz-help            print this list"
+              echo "  → authoritative MERGE gate stays: cargo xtask fleet gate-local"
+            }
+            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run cdz-compile gate fast-gate cdz-help 2>/dev/null || true
+            cdz-help
           '';
         };
 
