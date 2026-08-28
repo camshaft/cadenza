@@ -66,7 +66,10 @@
 //!   round-trip is VALUE-equivalence, order-independent; the keys are runtime, no canonical sort applies);
 //!   and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
-//!   e.g. a bare `(None unit)`; `type_ast` declines a free-type-arg sum). All mirror lower's value surface.
+//!   e.g. a bare `(None unit)`). When the value's OWN solved type is under-determined (a bare `(None)` at a
+//!   join, whose own type is `Option<?>`), the `<sum-type>` is recovered from the `expected` type its
+//!   container passed down (see `emit_expr`'s `expected` / [`body_ctx`]); a still-free type declines.
+//!   All mirror lower's value surface.
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
 //!   MONOMORPHIC, CLOSED, MULTI-variant sum — recursive payloads OK) and its values then round-trip; a
 //!   GENERIC / OPEN / SINGLE-variant (optimizer-erased) user sum, and a user `Nominal` newtype, still
@@ -250,7 +253,7 @@ fn emit_def(
     let sig = b.list(sig_children);
     // A fresh binding environment per definition — a `let` / match arm in the body populates it.
     let mut env = BinderEnv::default();
-    let body_node = emit_expr(db, b, body, &mut env, emitted)?;
+    let body_node = emit_expr(db, b, body, None, &mut env, emitted)?;
     Ok(b.list(vec![def_head, sig, body_node]))
 }
 
@@ -279,10 +282,19 @@ fn emit_export(
 /// Reconstruct a Cadenza surface expression from the optimized `Core` at `id`. B0 covers the constant
 /// leaves only; every other node declines (attributed to this target), to be filled in by later
 /// increments (ops/control B1, binding B2, calls B3, data B4, …).
+/// `expected` is the type this expression is REQUIRED to have by its surrounding context (the branch/body
+/// position it occupies) — `Some` when a container passed one down (an `if` gives its branches the join
+/// type; a `let`/match body inherits the whole form's type), else `None`. It is a FALLBACK, used only where
+/// the node's own solved type is under-determined: a nullary/partially-applied `Core::SumNew` whose solved
+/// type has a FREE type argument (`(None)` in `(if c (Some 1) (None))`, whose own type is `Option<?>`) reads
+/// the CONCRETE join type from `expected` to ascribe `(: (None unit) (Option Int64))` — otherwise it would
+/// decline. Threaded only to value/tail positions (branches, bodies); operand/scrutinee/guard positions
+/// pass `None` (they impose no outer type). Passing `None` everywhere reproduces the pre-thread behavior.
 fn emit_expr(
     db: &mut Db,
     b: &mut Builder,
     id: StructId,
+    expected: Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
@@ -419,29 +431,33 @@ fn emit_expr(
             let head = b.name(sym);
             // Operands FIRST would reverse head-first order — build the head atom, then each operand
             // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
-            let l = emit_expr(db, b, lhs, env, emitted)?;
-            let r = emit_expr(db, b, rhs, env, emitted)?;
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
         }
         // Boolean negation `(not x)`.
         Core::Not { operand } => {
             let head = b.name("not");
-            let x = emit_expr(db, b, operand, env, emitted)?;
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
         // Short-circuiting conjunction / disjunction — `is_and` picks `and` vs `or`.
         Core::And { lhs, rhs, is_and } => {
             let head = b.name(if is_and { "and" } else { "or" });
-            let l = emit_expr(db, b, lhs, env, emitted)?;
-            let r = emit_expr(db, b, rhs, env, emitted)?;
+            let l = emit_expr(db, b, lhs, None, env, emitted)?;
+            let r = emit_expr(db, b, rhs, None, env, emitted)?;
             Ok(b.list(vec![head, l, r]))
         }
-        // A two-way conditional `(if cond then else)`.
+        // A two-way conditional `(if cond then else)`. Both BRANCHES are value/tail positions of the same
+        // solved type — the `if`'s own type (the join of the branches). Pass it down as `expected` so a
+        // branch that is an under-determined `Core::SumNew` (a bare `(None)` whose own type is `Option<?>`)
+        // recovers the concrete join type to ascribe against. The condition is a Bool operand — no expected.
         Core::If { cond, then_, else_ } => {
             let head = b.name("if");
-            let c = emit_expr(db, b, cond, env, emitted)?;
-            let t = emit_expr(db, b, then_, env, emitted)?;
-            let e = emit_expr(db, b, else_, env, emitted)?;
+            let ctx = body_ctx(db, id, expected);
+            let c = emit_expr(db, b, cond, None, env, emitted)?;
+            let t = emit_expr(db, b, then_, ctx.clone(), env, emitted)?;
+            let e = emit_expr(db, b, else_, ctx, env, emitted)?;
             Ok(b.list(vec![head, c, t, e]))
         }
         // A kept multi-use binding sequence `(let ((<n0> <v0>) …) <body>)`. Each binding is `(init, init)`
@@ -459,12 +475,14 @@ fn emit_expr(
                 let name_atom = b.name(name.clone());
                 // The value is emitted with only the PRIOR bindings in scope (a binding's initializer
                 // cannot reference itself), then this binding is registered for the rest of the sequence.
-                let value_node = emit_expr(db, b, value, env, emitted)?;
+                let value_node = emit_expr(db, b, value, None, env, emitted)?;
                 env.lets.insert(binder, name);
                 binding_nodes.push(b.list(vec![name_atom, value_node]));
             }
             let bindings_list = b.list(binding_nodes);
-            let body_node = emit_expr(db, b, body, env, emitted)?;
+            // The body is the `let`'s value/tail position — it has the whole `let`'s type, so it inherits
+            // this `let`'s `expected`; the bindings' initializers are operands (no expected).
+            let body_node = emit_expr(db, b, body, expected, env, emitted)?;
             Ok(b.list(vec![let_head, bindings_list, body_node]))
         }
         // A runtime CALL to a top-level function — `(<callee-name> <arg>…)`. `Core::Call` is present only
@@ -478,7 +496,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + args.len());
             children.push(head);
             for arg in args {
-                children.push(emit_expr(db, b, arg, env, emitted)?);
+                children.push(emit_expr(db, b, arg, None, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -508,7 +526,8 @@ fn emit_expr(
                     ));
                 }
             }
-            emit_match_chain(db, b, scrutinee, &arms, 0, env, emitted)
+            let ctx = body_ctx(db, id, expected);
+            emit_match_chain(db, b, scrutinee, &arms, 0, ctx, env, emitted)
         }
         // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
         // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
@@ -518,7 +537,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
             for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, env, emitted)?);
+                children.push(emit_expr(db, b, e, None, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -530,7 +549,7 @@ fn emit_expr(
             children.push(head);
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
-                let fval = emit_expr(db, b, v, env, emitted)?;
+                let fval = emit_expr(db, b, v, None, env, emitted)?;
                 children.push(b.field_pair(fname, fval));
             }
             Ok(b.list(children))
@@ -542,7 +561,7 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + elems.len());
             children.push(head);
             for e in elems.iter().copied() {
-                children.push(emit_expr(db, b, e, env, emitted)?);
+                children.push(emit_expr(db, b, e, None, env, emitted)?);
             }
             Ok(b.list(children))
         }
@@ -558,8 +577,8 @@ fn emit_expr(
             let mut children = Vec::with_capacity(1 + entries.len());
             children.push(head);
             for &(k, v) in entries.iter() {
-                let kv = emit_expr(db, b, k, env, emitted)?;
-                let vv = emit_expr(db, b, v, env, emitted)?;
+                let kv = emit_expr(db, b, k, None, env, emitted)?;
+                let vv = emit_expr(db, b, v, None, env, emitted)?;
                 children.push(b.list(vec![kv, vv]));
             }
             Ok(b.list(children))
@@ -573,7 +592,7 @@ fn emit_expr(
             let mut list_children = Vec::with_capacity(1 + elems.len());
             list_children.push(list_head);
             for e in elems.iter().copied() {
-                list_children.push(emit_expr(db, b, e, env, emitted)?);
+                list_children.push(emit_expr(db, b, e, None, env, emitted)?);
             }
             let inner_list = b.list(list_children);
             let dot = b.name(".");
@@ -589,7 +608,21 @@ fn emit_expr(
         // variant its payload; a multi-argument variant surface is not canonical and declines. Mirrors
         // lower's constant value surface.
         Core::SumNew { disc, payloads } => {
-            let ty = crate::infer::type_of(db, id);
+            // The value's own solved type. When it is UNDER-DETERMINED (a free type argument — a bare
+            // nullary `(None)` at a join whose element type only the sibling branch fixes, so this node's
+            // own type is `Option<?>`), fall back to the `expected` type the surrounding context supplied
+            // (the `if`/`let`/match position this value fills). Both are the SAME sum declaration; `expected`
+            // just carries the RESOLVED type arguments, which is what the `(: … <sum-type>)` ascription needs.
+            let own_ty = crate::infer::type_of(db, id);
+            let ty = match (&own_ty, &expected) {
+                // Under-determined own type + a concrete expected of the same sum decl → use expected.
+                (Ty::Sum { decl: od, .. }, Some(ex @ Ty::Sum { decl: ed, .. }))
+                    if od == ed && ty_has_free_arg(&own_ty) && !ty_has_free_arg(ex) =>
+                {
+                    ex.clone()
+                }
+                _ => own_ty,
+            };
             let decl = match &ty {
                 Ty::Sum { decl, .. } => *decl,
                 _ => {
@@ -614,7 +647,7 @@ fn emit_expr(
             })?;
             let payload = match payloads.len() {
                 0 => b.name("unit"),
-                1 => emit_expr(db, b, payloads[0], env, emitted)?,
+                1 => emit_expr(db, b, payloads[0], None, env, emitted)?,
                 _ => {
                     return Err(Reject::decline(
                         "the Cadenza backend does not yet lower a multi-argument variant"
@@ -636,12 +669,16 @@ fn emit_expr(
         // M4a handles the SIMPLE decision-tree shape (delegated to [`emit_match_sum`]): a root switch on the
         // scrutinee's OWN discriminant, every arm an explicit variant with a bare LEAF body; a disc-folded /
         // nested / guarded / literal-test tree, or a default (wildcard) arm, declines (a later slice).
-        Core::MatchSum { scrutinee, root } => emit_match_sum(db, b, scrutinee, &root, env, emitted),
+        Core::MatchSum { scrutinee, root } => {
+            let ctx = body_ctx(db, id, expected);
+            emit_match_sum(db, b, scrutinee, &root, ctx, env, emitted)
+        }
         // A match over a runtime LIST scrutinee — re-emit `(match <scrutinee> (<list-pattern> <body>)…)`
         // ([`emit_match_list`]): a length-`LenEq`/`LenGe`/`Any` arm with PLAIN leading-element + rest binders.
         // A guarded arm, or a nested/variant element sub-pattern (a deeper `SumPayload` path), declines.
         Core::MatchList { scrutinee, arms } => {
-            emit_match_list(db, b, scrutinee, &arms, env, emitted)
+            let ctx = body_ctx(db, id, expected);
+            emit_match_list(db, b, scrutinee, &arms, ctx, env, emitted)
         }
         // A match PAYLOAD read — its surface is the binder name the enclosing `MatchSum`/`MatchList` arm
         // minted for this `(scrutinee, path)` and recorded in `env.payloads` (a sum variant payload at
@@ -685,6 +722,7 @@ fn emit_match_sum(
     b: &mut Builder,
     scrutinee: StructId,
     root: &crate::core::SumCont,
+    expected: Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
@@ -717,7 +755,7 @@ fn emit_match_sum(
         ));
     }
     let match_head = b.name("match");
-    let scrut_node = emit_expr(db, b, scrutinee, env, emitted)?;
+    let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
         let disc = arm.disc.ok_or_else(|| {
@@ -769,8 +807,9 @@ fn emit_match_sum(
             pat_children.push(b.name(name));
         }
         let pattern = b.list(pat_children);
-        // The body is emitted with this arm's payload binders in scope.
-        let body_node = emit_expr(db, b, body, env, emitted)?;
+        // The body is emitted with this arm's payload binders in scope; it is the match's value/tail
+        // position, so it inherits the match's `expected` type (for an under-determined `(None)` etc.).
+        let body_node = emit_expr(db, b, body, expected.clone(), env, emitted)?;
         children.push(b.list(vec![pattern, body_node]));
     }
     Ok(b.list(children))
@@ -793,12 +832,13 @@ fn emit_match_list(
     b: &mut Builder,
     scrutinee: StructId,
     arms: &[crate::core::ListArm],
+    expected: Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
     use crate::core::{ListArmCond, PathStep};
     let match_head = b.name("match");
-    let scrut_node = emit_expr(db, b, scrutinee, env, emitted)?;
+    let scrut_node = emit_expr(db, b, scrutinee, None, env, emitted)?;
     let mut children = vec![match_head, scrut_node];
     for arm in arms {
         // Build the arm's surface pattern, registering each binder's `SumPayload` path for the body.
@@ -847,12 +887,12 @@ fn emit_match_list(
         let pattern = match arm.guard {
             Some(g) => {
                 let guard_head = b.name("guard");
-                let cond = emit_expr(db, b, g, env, emitted)?;
+                let cond = emit_expr(db, b, g, None, env, emitted)?;
                 b.list(vec![guard_head, pattern, cond])
             }
             None => pattern,
         };
-        let body_node = emit_expr(db, b, arm.body, env, emitted)?;
+        let body_node = emit_expr(db, b, arm.body, expected.clone(), env, emitted)?;
         children.push(b.list(vec![pattern, body_node]));
     }
     Ok(b.list(children))
@@ -870,12 +910,16 @@ fn emit_match_list(
 /// The scrutinee is a pure scalar, re-emitted per probe. Precondition (caller): every probe is
 /// `Int`/`Bool`/`Wild`. (A guarded arm does not count toward exhaustiveness, so the final covering arm is
 /// always unguarded — a guarded LAST arm would be a non-exhaustive shape and declines defensively.)
+// The recursion threads the shared emit state (db/builder/scrutinee/arms/index) plus the `expected` type
+// and the binder env — each is load-bearing, so the arg count is intrinsic, not a bundling opportunity.
+#[allow(clippy::too_many_arguments)]
 fn emit_match_chain(
     db: &mut Db,
     b: &mut Builder,
     scrutinee: StructId,
     arms: &[crate::core::MatchArm],
     i: usize,
+    expected: Option<Ty>,
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
@@ -884,9 +928,10 @@ fn emit_match_chain(
     // An UNGUARDED last arm, or an UNGUARDED wildcard (always matches → any later arm is dead): the
     // unconditional else. A wildcard arm may BIND the scrutinee; its body reads that binder, which lowering
     // resolves to the scrutinee's own core, so emitting the body re-emits the scrutinee reference in scope.
+    // The body is the match's value/tail position, so it inherits the match's `expected` type.
     let unguarded_wild = matches!(arm.probe, crate::core::Probe::Wild) && arm.guard.is_none();
     if (is_last && arm.guard.is_none()) || unguarded_wild {
-        return emit_expr(db, b, arm.body, env, emitted);
+        return emit_expr(db, b, arm.body, expected, env, emitted);
     }
     if is_last {
         // A guarded final arm cannot cover the residual case (its guard may fail) — a non-exhaustive shape
@@ -901,7 +946,7 @@ fn emit_match_chain(
     let probe_cond = match &arm.probe {
         crate::core::Probe::Int(v) => {
             let eq = b.name("=");
-            let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
+            let scrut = emit_expr(db, b, scrutinee, None, env, emitted)?;
             let lit = b.atom_leaf(Leaf::Int {
                 value: v.clone(),
                 radix: Radix::Dec,
@@ -910,7 +955,7 @@ fn emit_match_chain(
         }
         crate::core::Probe::Bool(x) => {
             let eq = b.name("=");
-            let scrut = emit_expr(db, b, scrutinee, env, emitted)?;
+            let scrut = emit_expr(db, b, scrutinee, None, env, emitted)?;
             let lit = b.atom_leaf(Leaf::Bool(*x));
             Some(b.list(vec![eq, scrut, lit]))
         }
@@ -924,7 +969,7 @@ fn emit_match_chain(
     };
     // The arm's guard (a boolean the scrutinee-binder is in scope for), if present.
     let guard_cond = match arm.guard {
-        Some(g) => Some(emit_expr(db, b, g, env, emitted)?),
+        Some(g) => Some(emit_expr(db, b, g, None, env, emitted)?),
         None => None,
     };
     // The full condition: probe alone, guard alone, or `(and probe guard)`. At least one is present here
@@ -941,9 +986,44 @@ fn emit_match_chain(
         }
     };
     let if_head = b.name("if");
-    let body = emit_expr(db, b, arm.body, env, emitted)?;
-    let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, env, emitted)?;
+    let body = emit_expr(db, b, arm.body, expected.clone(), env, emitted)?;
+    let rest = emit_match_chain(db, b, scrutinee, arms, i + 1, expected, env, emitted)?;
     Ok(b.list(vec![if_head, cond, body, rest]))
+}
+
+/// The `expected` type to pass down to the value/tail children (branches, arm bodies) of a container node
+/// `id` (an `if` / `match`): PREFER the container's OWN solved type (the join of its branches — usually
+/// concrete, e.g. an `if` returning `Option<Int64>`), falling back to the `incoming` expected only when the
+/// container's own type is itself under-determined (e.g. a match whose arms are all `(None)`, whose join is
+/// `Option<?>` — then the concrete type comes from further out). This is what lets a bare `(None)` in a
+/// branch/arm body recover its element type. Cheap `Ty` clone; called once per container.
+fn body_ctx(db: &mut Db, id: StructId, incoming: Option<Ty>) -> Option<Ty> {
+    let own = crate::infer::type_of(db, id);
+    if ty_has_free_arg(&own) {
+        incoming
+    } else {
+        Some(own)
+    }
+}
+
+/// Whether a solved type is UNDER-DETERMINED — it contains a free type variable (`Ty::Var`) or the
+/// unconstrained `Ty::Any`, so `lower::type_ast` cannot render it (it returns `None` for those). Used by the
+/// `Core::SumNew` emit to decide whether the node's OWN solved type is usable, or whether it must fall back
+/// to the `expected` type its context supplied (e.g. a bare `(None)` whose own type is `Option<?>`). Walks
+/// the type's structure so a free arg NESTED inside a compound (`Option<List<?>>`) is caught too.
+fn ty_has_free_arg(ty: &Ty) -> bool {
+    match ty {
+        Ty::Var(_) | Ty::Any => true,
+        Ty::List(t) | Ty::Set(t) => ty_has_free_arg(t),
+        Ty::Map(k, v) => ty_has_free_arg(k) || ty_has_free_arg(v),
+        Ty::Tuple(ts) => ts.iter().any(ty_has_free_arg),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args.iter().any(ty_has_free_arg),
+        Ty::Record(fs) => fs.values().any(ty_has_free_arg),
+        Ty::Qty { inner, .. } => ty_has_free_arg(inner),
+        Ty::Fn(a, r) => ty_has_free_arg(a) || ty_has_free_arg(r),
+        Ty::Cont { resume, answer } => ty_has_free_arg(resume) || ty_has_free_arg(answer),
+        _ => false,
+    }
 }
 
 /// `(. <operand> <key>)` — the member-access form the reader normalizes a dotted `X.key` to. Used to
