@@ -8047,6 +8047,40 @@ fn collect_tail_resume_next_states(db: &mut Db, node: StructId, out: &mut Vec<St
     }
 }
 
+/// Whether a handler-arm match SCRUTINEE `scrutinee_binder` ESCAPES via a resume — i.e. it is referenced in
+/// any arm's tail resume VALUE or NEXT-STATE (recursing if/match-joins + do/let tails, per the #4966
+/// collectors). This is the PRE-REDUCTION signal a shell-reclaim fence (v-core-opt's FIND3 MatchTuple
+/// scrutinee-dead-after-destructure fence) needs but CANNOT compute at select.rs: by the backend the resume
+/// is threaded away, so a scrutinee re-referenced inside the (reduced) resume-continuation — `(match st …
+/// (resume -1 st))` — is invisible there and the reclaim would deep-drop a shell the continuation still
+/// holds (a UAF). Computed here at infer (where the resume is intact) over the ORIGINAL arm bodies, it lets
+/// the reclaim fire only when `!scrutinee_resume_escapes`. `arm_bodies` are the handler arm bodies whose
+/// resume threads that match's scrutinee; `scrutinee_binder` is the binding being reclaimed. (The rarer
+/// CAPTURED-continuation subcase — the scrutinee captured into a reified resume-thunk — is caught by
+/// `capture_escapes_via_body` on the closure side; this covers the direct resume value/next-state ref.)
+// STAGED for v-core-opt's FIND3 (B) scrutinee-dead-after-destructure fence (v-memory-safety-directed): dead
+// until the reclaim gate consults it (mirrors how `capture_escapes_via_body` was staged for the hcz gate).
+// The `allow` retires when v-core-opt threads it (compute at infer → db map → consult at select.rs).
+#[allow(dead_code)]
+pub(crate) fn scrutinee_resume_escapes(
+    db: &mut Db,
+    scrutinee_binder: StructId,
+    arm_bodies: &[StructId],
+) -> bool {
+    for &body in arm_bodies {
+        let mut escaping = Vec::new();
+        collect_tail_resume_values(db, body, &mut escaping);
+        collect_tail_resume_next_states(db, body, &mut escaping);
+        if escaping
+            .into_iter()
+            .any(|n| crate::effects::subtree_references_binder(db, n, scrutinee_binder))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check an application for type faults — the ONE rule's fault side. Instantiate the head's scheme and
 /// unify each argument into its curried parameter; a unify failure is the conflicting-use type error.
 /// A head with no `(meta t)` scheme (a type constructor, or a not-yet-typed value) is not checked here.
