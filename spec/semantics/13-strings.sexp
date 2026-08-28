@@ -1424,7 +1424,7 @@
   (output (: 42 Int64))
   (call   main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime String.slice STORED as a map key is found by a flat probe"
   (doc    "The stored-key direction: the slice view goes INTO the map as the key and the flat literal
