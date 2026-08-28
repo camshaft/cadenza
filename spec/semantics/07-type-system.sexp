@@ -2617,3 +2617,12 @@
   (input (do (def (main) (let (((: x Int64) 5)) x)) (export main)))
   (call main)
   (output (: 5 Int64)))
+
+; (migrated from rcdzc a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects — a soundness guard:
+;  direct-arg reflection freshening must stop the shared-unsolved-var false reject WITHOUT masking a genuine
+;  field-type mismatch. The reject is backend-agnostic; the freshening internals stay in rcdzc.)
+(case "a wrong-typed Option field in a direct record arg still rejects"
+  (input (do (type Outcome (Ok Int64) (Err Int64))
+             (def (apply (: evt (Record (: b (Option Outcome)) (: c Int64)))) (. evt c))
+             (def (main) (apply (record (= b (Some 5)) (= c 9)))) (export main)))
+  (error CDZ0203))

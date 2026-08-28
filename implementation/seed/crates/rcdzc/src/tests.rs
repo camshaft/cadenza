@@ -24589,29 +24589,9 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn an_observed_provable_trap_is_an_error_not_a_warning() {
-        // The dual: a provable trap whose value IS observed (element 0 projected) is a build ERROR
-        // (CDZ0304), not a warning — it denies the component.
-        let src = "(module m (def (main) (. (tuple (/ 1 0) 42) 0)) (export main))";
-        let bytes = crate::codec::encode(&parse(src));
-        let out = compile(
-            &[Artifact::new(Artifact::KIND_AST, "m", bytes)],
-            &[Target::Wasm],
-        );
-        assert!(
-            out.artifact(Target::Wasm.artifact_kind()).is_none(),
-            "an observed provable trap must deny the component"
-        );
-        assert_eq!(
-            out.diagnostics
-                .iter()
-                .find(|d| d.severity == crate::abi::Severity::Error)
-                .and_then(|d| d.code.clone())
-                .as_deref(),
-            Some("CDZ0304")
-        );
-    }
+    // (an_observed_provable_trap_is_an_error_not_a_warning migrated to corpus: the provable-trap →
+    //  CDZ0304 compile-deny rule is covered by 28-compiler-primitives "(error CDZ0304 (message
+    //  \"division by zero\"))"; the observed-tuple-element instance exercised no distinct path.)
 
     #[test]
     fn a_clean_program_and_an_unprovable_trap_do_not_warn() {
@@ -24733,23 +24713,8 @@ mod diagnostics {
         );
     }
 
-    #[test]
-    fn a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects() {
-        // SOUNDNESS guard for the direct-arg reflection freshening above: freshening must only stop the
-        // shared-unsolved-var FALSE reject, never mask a GENUINE field-type mismatch. A record arg whose
-        // `b` field is `(Some 5)` (`Option Int64`) where the param wants `(Option Outcome)` must STILL
-        // reject CDZ0203 — the disjoint vars solve independently, and this one solves to the wrong type.
-        let src = "(module m \
-           (type Outcome (Ok Int64) (Err Int64)) \
-           (def (apply (: evt (Record (: b (Option Outcome)) (: c Int64)))) (. evt c)) \
-           (def (main) (apply (record (= b (Some 5)) (= c 9)))) \
-           (export main))";
-        let all = diags_of(src);
-        assert!(
-            all.iter().any(|d| d.code.as_deref() == Some("CDZ0203")),
-            "a wrong-typed Option field in a direct record arg must still reject CDZ0203: {all:?}"
-        );
-    }
+    // (a_wrong_typed_option_field_in_a_direct_record_arg_still_rejects migrated to corpus
+    //  07-type-system "a wrong-typed Option field in a direct record arg still rejects" — CDZ0203, backend-agnostic.)
 
     #[test]
     fn nested_and_sibling_bare_none_compounds_in_a_direct_arg_do_not_cross_contaminate() {
@@ -25988,53 +25953,10 @@ mod diagnostics {
         }
     }
 
-    #[test]
-    fn an_open_sum_match_requires_an_open_tail_wildcard_arm() {
-        // OS1 — an OPEN sum `(type T … .. r)` is exhaustive ONLY WITH an open-tail `_` arm
-        // (`type-system.md §A Sum Type May Be Open, With A Mandatory Open-Tail Arm`, §206). Its row
-        // variable `r` stands for variants the module does not name, so a match covering EVERY NAMED
-        // variant but omitting `_` still cannot be exhaustive → CDZ0210. The CONTRAST: the SAME arm set
-        // over a CLOSED sum (no `.. r`) IS exhaustive (every variant covered, no `_` needed).
-
-        // (a) Open sum, both named variants covered, NO `_` → non-exhaustive (CDZ0210), even though a
-        // closed sum with the same arms would be complete.
-        let open_missing_tail = all_errors(
-            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
-             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
-             (def (main) (f (Known 1))) (export main))",
-        );
-        assert!(
-            open_missing_tail
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0210")),
-            "an open sum match without a `_` arm is non-exhaustive: {open_missing_tail:?}"
-        );
-
-        // (b) The SAME sum declared CLOSED (no `.. r`) with the same two arms is exhaustive — no `_`
-        // required. This isolates the open-tail marker as the sole cause of (a)'s rejection.
-        let closed_ok = all_errors(
-            "(module m (type V (Known Int64) (Unknown Int64)) \
-             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n))) \
-             (def (main) (f (Known 1))) (export main))",
-        );
-        assert!(
-            !closed_ok
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0210")),
-            "a CLOSED sum covering every variant needs no `_` arm: {closed_ok:?}"
-        );
-
-        // (c) Open sum WITH the `_` arm compiles clean — the open-tail arm satisfies exhaustiveness.
-        let open_with_tail = all_errors(
-            "(module m (type V (Known Int64) (Unknown Int64) .. r) \
-             (def (f (: v V)) (match v ((Known n) n) (_ 0))) \
-             (def (main) (f (Known 1))) (export main))",
-        );
-        assert!(
-            open_with_tail.is_empty(),
-            "an open sum match WITH a `_` arm is exhaustive and compiles clean: {open_with_tail:?}"
-        );
-    }
+    // (an_open_sum_match_requires_an_open_tail_wildcard_arm migrated to corpus 15-rows-and-open-sums:
+    //  "an open sum match without an open-tail wildcard arm is non-exhaustive" (CDZ0210), "a closed sum
+    //  match covering every named variant is exhaustive without a wildcard", and "an open sum match WITH
+    //  an open-tail wildcard arm is exhaustive and compiles" — all three arms, backend-agnostic.)
 
     #[test]
     fn a_wildcard_arm_over_an_open_sum_is_never_redundant() {
