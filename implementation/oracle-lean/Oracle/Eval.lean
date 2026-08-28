@@ -560,6 +560,47 @@ def valueToAst : Value → Outcome
     then .value (Value.variant tag p) else .unsupported "quasiquote: cannot splice a non-Ast variant value"
   | _ => .unsupported "quasiquote: cannot splice a compound/unmodeled value into an AST"
 
+/-- REIFY an `Ast` VALUE (a reflected syntax tree — the `variant "Int"/"Name"/"List"/…` shape `quote`/
+`quasiquote` produce) back into concrete AST nodes, APPENDED to module `m`, returning the extended module
+and the reified subtree's ROOT node id. This is the inverse of `quoteReflect`: `Ast.Name` → a `name` atom
+(NOT `str` — an identifier, so it resolves as a reference), `Ast.Str` → a `str` atom, `Ast.Int/Bool/…` →
+their scalar leaf, `Ast.List` → a `list` node over the reified children. Appending (rather than building a
+standalone module) PRESERVES `m`'s scope — the reified expression's ctor/def resolution still scans `m`'s
+top-level `(do …)`, so `(eval (quote (S (S (Z)))))` resolves `S`/`Z` against the program's `type` decls.
+A non-`Ast` / unmodeled value (a `Symbol`, a compound, a non-Ast variant) → `error` (a sound eval skip). -/
+partial def reifyInto (m : Module) (v : Value) : Except String (Module × Nat) :=
+  match v with
+  | .variant tag payload =>
+    let tagS := (String.fromUTF8? tag).getD ""
+    if tagS == "List" then
+      match payload with
+      | .list elems =>
+        (Array.foldlM (fun (st : Module × Array Nat) e => do
+            let (mod, cid) ← reifyInto st.1 e
+            pure (mod, st.2.push cid)) ((m, (#[] : Array Nat))) elems).bind
+          (fun (mod, kids) =>
+            let nid := mod.nodes.size
+            .ok ({ mod with nodes := mod.nodes.push (Node.list kids) }, nid))
+      | _ => .error "eval: Ast.List payload is not a list"
+    else if tagS == "Name" then
+      match payload with
+      | .str b =>
+        let lid := m.leaves.size
+        let m := { m with leaves := m.leaves.push (Leaf.name b) }
+        let nid := m.nodes.size
+        .ok ({ m with nodes := m.nodes.push (Node.atom lid) }, nid)
+      | _ => .error "eval: Ast.Name payload is not a string"
+    else
+      -- a scalar variant (Int/Float/Bool/Str/Char/Bytes): rebuild its leaf from the payload value.
+      match payload.toLeaf? with
+      | some leaf =>
+        let lid := m.leaves.size
+        let m := { m with leaves := m.leaves.push leaf }
+        let nid := m.nodes.size
+        .ok ({ m with nodes := m.nodes.push (Node.atom lid) }, nid)
+      | none => .error s!"eval: cannot reify Ast.{tagS} payload"
+  | _ => .error "eval: value is not an Ast node (cannot reify)"
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -630,6 +671,18 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
           match children[1]? with
           | some c => evalQuasi m env 1 c
           | none => .unsupported "quasiquote: missing body"
+        else if h == "eval".toUTF8 then
+          -- `(eval <ast-expr>)`: evaluate the argument to an Ast VALUE, REIFY it back into concrete nodes
+          -- (appended to `m`, so the program's scope/ctors/defs are preserved), then evaluate that node.
+          match children[1]? with
+          | some c =>
+            match evalNode m env ty fuel c with
+            | .value astv =>
+              match reifyInto m astv with
+              | .ok (m', rootId) => evalNode m' env defaultIntTy fuel rootId
+              | .error e => .unsupported e
+            | other => other
+          | none => .unsupported "eval: missing argument"
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
         else if h == "fn".toUTF8 then evalFn m env fuel children
