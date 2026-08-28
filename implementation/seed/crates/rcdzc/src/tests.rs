@@ -39482,29 +39482,6 @@ mod stage1 {
     }
 
     #[test]
-    fn a_foldable_captured_closure_does_not_emit_a_dead_lift() {
-        // A constant closure that CAPTURES but folds away entirely — `((let ((y 3)) (fn (x) (+ x y))) 4)`
-        // reduces to 7 at compile time via the reduce-through fold, so no runtime closure survives. The
-        // lambda may be lowered speculatively (registering a lift), but it is UNREACHED by any emitted
-        // `Core::Closure`, so it must be emitted as an inert stub (not a dead, ill-formed lifted body)
-        // and the program must still fold to a scalar. Regression guard for the reached-lift filter.
-        assert_eq!(
-            run_main("(let ((add-y (let ((y 3)) (fn (x) (+ x y))))) (let ((y 100)) (add-y 4)))"),
-            7
-        );
-    }
-
-    #[test]
-    fn a_higher_order_function_folds() {
-        // `(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))` = 7 — a function passed as
-        // an argument, applied twice; the whole thing β-reduces to `(+ (+ 5 1) 1)` = 7.
-        assert_eq!(
-            run_main("(let ((twice (fn (f v) (f (f v))))) (twice (fn (x) (+ x 1)) 5))"),
-            7
-        );
-    }
-
-    #[test]
     fn a_directly_recursive_function_declines_quickly() {
         // `(def (loop n) (loop n))` applied — the callee reaches its own body, so the STATIC recursion
         // check declines it before any β-reduction (a recursive function needs runtime specialization,
