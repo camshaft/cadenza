@@ -19456,59 +19456,6 @@ mod match_engine {
     }
 
     #[test]
-    fn a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders() {
-        // A map-pattern VALUE sub-pattern may be an IRREFUTABLE compound that INTRODUCES BINDERS — a
-        // `(tuple x y)` / a single-variant `(Mk n)` — not just a bare binder or a literal. The nested
-        // binders resolve via a RESOLVE-STAGE descent (`match_arm_map_binds` → `value_subpattern_binds`
-        // gives `MapField` a `value_steps` sub-path), and `lower_map_field` folds the value down that
-        // sub-path. This is the map analogue of Inc-1's list-element compose. A REFUTABLE value (a
-        // multi-variant ctor) still declines (value-discriminant dispatch is a later increment).
-        //
-        // A TUPLE value `(map ("a" (tuple x y)))` binds both elements: `{"a": (3,4)}` → x=3,y=4 → 7.
-        let Some(v) = run_heap_value(
-            "(module m (def (main) \
-               (match (Map.insert (Map.empty) \"a\" (tuple 3 4)) \
-                 ((map (\"a\" (tuple x y)) .. rest) (+ x y)) \
-                 (_ -1))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping map-value-tuple run");
-            return;
-        };
-        assert_eq!(
-            v, "7",
-            "a tuple value sub-pattern binds both elements (3+4)"
-        );
-        // A single-variant CTOR value `(map ("a" (Box.Mk n)))` binds the payload: `{"a": Mk 5}` → 5.
-        assert_eq!(
-            run_heap_value(
-                "(module m (type Box (Mk Int64)) (def (main) \
-                   (match (Map.insert (Map.empty) \"a\" (Box.Mk 5)) \
-                     ((map (\"a\" (Box.Mk n)) .. rest) n) \
-                     (_ -1))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "5",
-            "a single-variant ctor value sub-pattern binds its payload"
-        );
-        // A nested-DEEP value `(map ("a" (tuple (tuple x y) z)))` binds through two tuple levels:
-        // `{"a": ((1,2),3)}` → x=1 → returned.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (main) \
-                   (match (Map.insert (Map.empty) \"a\" (tuple (tuple 1 2) 3)) \
-                     ((map (\"a\" (tuple (tuple x y) z)) .. rest) x) \
-                     (_ -1))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "1",
-            "a deeply-nested tuple value sub-pattern binds the inner element"
-        );
-    }
-
-    #[test]
     fn a_tail_recursive_sum_consumer_compiles_to_a_constant_stack_loop() {
         // A tail-recursive consumer of a SUM type — `(count n acc) = (match n ((Zero) acc) ((Succ m) (count
         // m (+ acc 1))))` over `(type Nat (Zero) (Succ Nat))` — is a self-tail-call inside a `Core::MatchSum`

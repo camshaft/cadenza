@@ -15809,6 +15809,34 @@
             (def (main) (look (Map.insert (Map.empty) "a" (Some 5)))) (export main)))
   (output (: 5 Int64)))
 
+(case "an irrefutable single-variant ctor map value sub-pattern binds its payload"
+  (doc    "The single-variant-CONSTRUCTOR companion of the tuple value sub-pattern above: a map value
+           sub-pattern may be an irrefutable single-variant USER ctor `(map (\"a\" (Box.Mk n)))`, binding the
+           payload `n` with NO discriminant dispatch (one variant is irrefutable — unlike the multi-variant
+           `(Some n)` refutable case above, which needs the catch-all). `{\"a\": (Box.Mk 5)}` → n=5. Relocated
+           from rcdzc a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders.")
+  (input  (do
+            (type Box (Mk Int64))
+            (def (main)
+              (match (Map.insert (Map.empty) "a" (Box.Mk 5))
+                ((map ("a" (Box.Mk n)) .. rest) n)
+                (_                             -1)))
+            (export main)))
+  (output (: 5 Int64)))
+
+(case "a deeply-nested tuple map value sub-pattern binds through two tuple levels"
+  (doc    "The value sub-pattern descends more than one level: `(map (\"a\" (tuple (tuple x y) z)))` walks INTO
+           the value's INNER tuple, binding `x` two levels deep. `{\"a\": ((1,2),3)}` → x=1. The nested-compose
+           depth companion of the single-level tuple value case above. Relocated from rcdzc
+           a_map_value_sub_pattern_may_be_an_irrefutable_compound_with_binders.")
+  (input  (do
+            (def (main)
+              (match (Map.insert (Map.empty) "a" (tuple (tuple 1 2) 3))
+                ((map ("a" (tuple (tuple x y) z)) .. rest) x)
+                (_                                        -1)))
+            (export main)))
+  (output (: 1 Int64)))
+
 (case "a guarded map-match arm reads its value binder in the guard and falls through when it fails"
   (doc    "A `(map …)` pattern under a GUARD, over a RUNTIME map — the composition of key-directed map
            matching and match-arm guards (the map analogue of the guarded list/bin arm). The arm `(guard

@@ -1909,6 +1909,7 @@ pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (fuse_match_into_if clone cap)
+pass	a deeply-nested tuple map value sub-pattern binds through two tuple levels
 pass	a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation
 pass	a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision
 pass	a def parameter may be a record pattern that destructures by field
@@ -2568,6 +2569,7 @@ pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
 pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a list-arm constructor element over a runtime-built list
+pass	a list-arm map element binds both of two named keys
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
@@ -5419,6 +5421,7 @@ pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an internally ill-typed unselected match arm body is a type error
 pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+pass	an irrefutable single-variant ctor map value sub-pattern binds its payload
 pass	an iterative fibonacci swaps two accumulators through the tail call
 pass	an observed tail-recursive performer keeps constant stack on all three backends
 pass	an octal-prefixed token is a malformed literal, not an unbound name
@@ -6630,6 +6633,7 @@ pass	hc4 a performing helper COMPOSED with itself — probe(probe(draw)), three 
 pass	hc5 a helper RETURNS a tuple of two draws — the caller destructures it and re-performs
 pass	hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim
 pass	hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal
+pass	hce1 tuple-index projection of a captured tuple in a closure body folds and runs (dqe leg-1 through closure conversion)
 pass	hcn1 a closure CAPTURING another closure crosses and dispatches through it
 pass	hcn2 a closure capturing a runtime-built MAP looks up by the call argument
 pass	hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero
@@ -7882,6 +7886,8 @@ pass	rw1 a nested handle at a performing RECURSION's exit leaf, then a trailing 
 pass	rw1 two sequential Record.with updates each take a DRAW — the second write sees the advanced state, projections read both back
 pass	rw2 draw PARITY picks WHICH field Record.with updates — projections of both fields show exactly one write landed
 pass	rw3 each Record.with value PROJECTS from the record it updates plus a draw — self-referential functional updates chain through the thread
+pass	rwc1 an open-row accessor over runtime records of two widths, fifty frames, reclaims completely
+pass	rwc2 an open-row accessor reads a HEAP (list) field through the row, fifty frames, reclaims
 pass	s2a Char const-param equality in const recursion trap surfaces CDZ0304
 pass	s2b INLINE record projection in the recursive argument trap surfaces CDZ0304
 pass	s2c INLINE tuple destructure in the recursive body trap surfaces CDZ0304
@@ -9014,6 +9020,7 @@ todo	grx1 the entry List param flows through a two-deep non-recursive helper cha
 todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use of the entry List param
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
+todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
@@ -9028,8 +9035,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	rwc1 an open-row accessor over runtime records of two widths, fifty frames, reclaims completely
-pass	rwc2 an open-row accessor reads a HEAP (list) field through the row, fifty frames, reclaims
-pass	a list-arm map element binds both of two named keys
-pass	hce1 tuple-index projection of a captured tuple in a closure body folds and runs (dqe leg-1 through closure conversion)
-todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
