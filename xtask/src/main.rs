@@ -3922,13 +3922,16 @@ fn nix_current_system() -> String {
 }
 
 /// The cached-corpus check attr for a corpus `.sexp` file at `target`, or `None` if the file is not a
-/// recognized `NN-feature` corpus file (only those have a `corpus[-rust]-<stem>` nix check). Whole-corpus
-/// (no file) uses the top-level `corpus`/`corpus-rust` aggregate.
+/// recognized `NN-feature` corpus file (only those have a `corpus[-rust][-async]-<stem>` nix check).
+/// Whole-corpus (no file) uses the top-level `corpus`/`corpus-rust`/`corpus-rust-async` aggregate.
 fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
     let prefix = match target {
         GateTarget::Wasm => "corpus",
         GateTarget::Rust => "corpus-rust",
-        _ => return None, // rust-async / cadenza-ml have no cached nix corpus check
+        // rust-async gained a cached per-case nix check (#4728: `corpus-rust-async[-<stem>]`, graded vs
+        // `.gate-baseline-rust-async`), so it delegates like wasm/rust instead of running in-process.
+        GateTarget::RustAsync => "corpus-rust-async",
+        _ => return None, // CadenzaMl grades DIFFERENTIALLY vs the wasm oracle — no cached corpus check
     };
     match stem {
         None => Some(prefix.to_string()),
@@ -3946,8 +3949,8 @@ fn corpus_check_attr(target: GateTarget, stem: Option<&str>) -> Option<String> {
 fn gate_inprocess_reason(has_case: bool, target: GateTarget, inprocess_env: bool) -> &'static str {
     if has_case {
         "--case runs in-process (single-case debug)"
-    } else if matches!(target, GateTarget::RustAsync) {
-        "--target rust-async has no cached nix check"
+    } else if matches!(target, GateTarget::CadenzaMl) {
+        "--target cadenza-ml grades differentially vs the wasm oracle (no cached corpus check)"
     } else if inprocess_env {
         "CDZ_GATE_INPROCESS=1 forces the in-process gate"
     } else {
@@ -3961,8 +3964,8 @@ fn gate_inprocess_reason(has_case: bool, target: GateTarget, inprocess_env: bool
 /// the changed case (content-addressed build); a compiler edit re-runs builds but the exec cache-hits on
 /// identical emit. The nix exec reproduces `xtask gate --check` (baseline regression + the exec_exit rule),
 /// so this is regression-GATED by construction. Returns `Some(exit_code)` when it delegated, or `None` to
-/// fall through to the in-process path (an unrecognized `--files` entry, or nix unavailable). Only
-/// wasm/rust targets have a cached check; `--save`/`--shard`/`--case`/rust-async stay in-process (caller).
+/// fall through to the in-process path (an unrecognized `--files` entry, or nix unavailable). wasm/rust/
+/// rust-async all have a cached check now; `--save`/`--shard`/`--case`/CadenzaMl stay in-process (caller).
 fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> Option<i32> {
     let sys = nix_current_system();
     // Map the requested files → check attrs. Empty ⇒ the whole-corpus aggregate.
@@ -4040,7 +4043,7 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
     // OPERATOR (2026-08-26 "cut over to the faster/cached wasm builds"): the whole-corpus + `--files`
     // verify path runs through the CACHED per-case nix corpus so it does NOT recompile every case each run
     // (#3363). `--case` (single-case debug), `--save` (baseline regen — needs in-process verdicts),
-    // `--shard` (case-sharded nightly), and rust-async/cadenza-ml (no cached check) stay in-process below.
+    // `--shard` (case-sharded nightly), and CadenzaMl (differential, no cached check) stay in-process below.
     // Escape hatch: `CDZ_GATE_INPROCESS=1`. Regression-gated by construction (the nix exec runs `--baseline`).
     // `--check` stays IN-PROCESS: it also does VANISHED detection (a baseline case with no run), which the
     // per-case `corpus` build doesn't — so pr-sync's authoritative `gate --check` keeps its full
@@ -4051,7 +4054,10 @@ fn gate(paths: &Paths, profile: &str, opts: GateOpts) {
         && !opts.save
         && !opts.check
         && opts.shard.is_none()
-        && matches!(opts.target, GateTarget::Wasm | GateTarget::Rust)
+        && matches!(
+            opts.target,
+            GateTarget::Wasm | GateTarget::Rust | GateTarget::RustAsync
+        )
         && std::env::var_os("CDZ_GATE_INPROCESS").is_none()
         && let Some(code) = gate_via_nix_cache(paths, &opts.files, opts.target)
     {
@@ -9765,7 +9771,7 @@ mod trap_grading_tests {
     fn gate_inprocess_advisory_reason_and_cached_attr_mapping() {
         // Reason arms, in precedence order (caller has already excluded --save/--check/--shard).
         assert!(gate_inprocess_reason(true, GateTarget::Wasm, false).contains("--case"));
-        assert!(gate_inprocess_reason(false, GateTarget::RustAsync, false).contains("rust-async"));
+        assert!(gate_inprocess_reason(false, GateTarget::CadenzaMl, false).contains("cadenza-ml"));
         assert!(
             gate_inprocess_reason(false, GateTarget::Wasm, true).contains("CDZ_GATE_INPROCESS")
         );
@@ -9773,7 +9779,8 @@ mod trap_grading_tests {
         // --case wins even when the env is also set (structural reason first).
         assert!(gate_inprocess_reason(true, GateTarget::Wasm, true).contains("--case"));
 
-        // The cached-attr hint: NN-feature files map to a per-file check; rust-async / non-NN do not.
+        // The cached-attr hint: NN-feature files map to a per-file check for all 3 corpus targets;
+        // CadenzaMl (differential) / non-NN files do not.
         assert_eq!(
             corpus_check_attr(GateTarget::Wasm, Some("13-strings")).as_deref(),
             Some("corpus-13-strings")
@@ -9783,7 +9790,11 @@ mod trap_grading_tests {
             Some("corpus-rust-05-compound-types")
         );
         assert_eq!(
-            corpus_check_attr(GateTarget::RustAsync, Some("13-strings")),
+            corpus_check_attr(GateTarget::RustAsync, Some("14c-effects-and-handlers")).as_deref(),
+            Some("corpus-rust-async-14c-effects-and-handlers")
+        );
+        assert_eq!(
+            corpus_check_attr(GateTarget::CadenzaMl, Some("13-strings")),
             None
         );
         // A non-`NN-feature` stem (e.g. a scratch file) has no cached check → in-process is the only path.
