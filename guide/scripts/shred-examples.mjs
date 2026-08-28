@@ -55,8 +55,12 @@ const renderToMl = (snippet) => stripModule(render_syntax(wrapModule(snippet, "s
 
 // ---- gather every example (chapters + HomePage + playground); notebook + mode=test deferred in v1 ----
 const chaptersDir = join(guideRoot, "src/content/chapters");
+// SORT the chapter glob so the per-example `<NNNN>-` index (hence every case dir name) is DETERMINISTIC
+// run-to-run AND machine-to-machine — `readdirSync` order is filesystem-dependent, and the nix per-example
+// content-addressed cache keys on stable dir names (a reordered index would remap idx→example and thrash
+// the cache). Playground order (below) is already fixed by the EXAMPLES array; HomePage is appended last.
 const contentFiles = [
-  ...readdirSync(chaptersDir).filter((f) => f.endsWith(".tsx")).map((f) => join(chaptersDir, f)),
+  ...readdirSync(chaptersDir).filter((f) => f.endsWith(".tsx")).sort().map((f) => join(chaptersDir, f)),
   join(guideRoot, "src/components/HomePage.tsx"),
 ];
 const examples = contentFiles.flatMap((f) => extractExamples(readFileSync(f, "utf8"), f.replace(guideRoot + "/", "")));
