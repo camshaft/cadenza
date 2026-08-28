@@ -742,12 +742,13 @@ fn gen_compound_ty<C: Choice>(c: &mut C) -> (String, String) {
 }
 
 /// A body that BUILDS a compound and immediately CONSUMES it — tuple/record projection (`(. c i/field)`),
-/// `(List.len …)`, an Option `match`, or a `Result` `match`. The generator builds compounds elsewhere but
-/// rarely CONSUMES them; this exercises the distinct extract / project / list-len / sum-match consumption
-/// emit (where the S52 closure buckets lived). Self-contained + type-correct (payload types drive the
-/// leaves; every match arm is the same type). Reaches consumption lowering the construction arms never hit.
+/// `(List.len …)`, an Option `match`, a `Result` `match`, or a sum-match over a COMPOUND payload consumed
+/// in-arm. The generator builds compounds elsewhere but rarely CONSUMES them; this exercises the distinct
+/// extract / project / list-len / sum-match consumption emit (where the S52 closure buckets lived).
+/// Self-contained + type-correct (payload types drive the leaves; every match arm is the same type).
+/// Reaches consumption lowering the construction arms never hit.
 fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
-    match c.variant(5) {
+    match c.variant(6) {
         // Tuple projection: (. (tuple <a> <b>) <0|1>).
         0 => {
             let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
@@ -791,7 +792,7 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
         // Result match: (match (: (Ok/Err <t>) (Result t t)) ((Ok x) x) ((Err e) e)) — a two-variant sum
         // (a sum value needs the type annotation), each arm returns its payload of the SAME type `t`, so the
         // join is type-correct. The scrutinee constructor is Ok OR Err, exercising both sum-match arms.
-        _ => {
+        4 => {
             let t = pick_scalar_ty(c);
             let ctor = if c.variant(2) == 0 { "Ok" } else { "Err" };
             write!(out, "(match (: ({ctor} ").ok();
@@ -803,6 +804,50 @@ fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
             )
             .ok();
         }
+        // Option match over a COMPOUND payload, CONSUMED to a scalar in the Some arm (project a tuple/record
+        // element, or `List.len`); None returns a same-typed scalar default so the arms join. Exercises
+        // binding a native compound FROM a sum-match arm + in-arm consumption (tuple-in-Some, record-in-Some,
+        // list-in-Some) — the fresh M2 native ctor-leaf codegen the scalar-payload matches never reach.
+        _ => match c.variant(3) {
+            // (match (Some (tuple <a> <b>)) ((Some x) (. x i)) ((None) <default : elt-ty>))
+            0 => {
+                let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+                let idx = c.variant(2);
+                out.push_str("(match (Some (tuple ");
+                gen_scalar_leaf(c, a, out);
+                out.push(' ');
+                gen_scalar_leaf(c, b, out);
+                write!(out, ")) ((Some x) (. x {idx})) ((None) ").ok();
+                gen_scalar_leaf(c, if idx == 0 { a } else { b }, out);
+                out.push_str("))");
+            }
+            // (match (Some (record (= a <>) (= b <>))) ((Some x) (. x f)) ((None) <default : field-ty>))
+            1 => {
+                let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+                let pick_a = c.variant(2) == 0;
+                out.push_str("(match (Some (record (= a ");
+                gen_scalar_leaf(c, a, out);
+                out.push_str(") (= b ");
+                gen_scalar_leaf(c, b, out);
+                let field = if pick_a { "a" } else { "b" };
+                write!(out, "))) ((Some x) (. x {field})) ((None) ").ok();
+                gen_scalar_leaf(c, if pick_a { a } else { b }, out);
+                out.push_str("))");
+            }
+            // (match (Some (list <t> <t> <t>)) ((Some x) (List.len x)) ((None) <Int64>)) — List.len : Int64
+            _ => {
+                let t = pick_scalar_ty(c);
+                out.push_str("(match (Some (list ");
+                gen_scalar_leaf(c, t, out);
+                out.push(' ');
+                gen_scalar_leaf(c, t, out);
+                out.push(' ');
+                gen_scalar_leaf(c, t, out);
+                out.push_str(")) ((Some x) (List.len x)) ((None) ");
+                gen_scalar_leaf(c, ScalarTy::Int64, out);
+                out.push_str("))");
+            }
+        },
     }
 }
 
@@ -1469,6 +1514,53 @@ mod tests {
         }
         assert!(saw_ok, "Result-match should reach the Ok scrutinee ctor");
         assert!(saw_err, "Result-match should reach the Err scrutinee ctor");
+    }
+
+    /// `gen_compound_consume` REACHES a sum-match over a COMPOUND payload (S102: `(Some (tuple/record/list …))`
+    /// consumed in-arm) covering all three payload shapes, and every such body COMPILES — guards the
+    /// compound-payload consumption arm (binds a native compound from a match arm + projects/List.len in-arm),
+    /// the fresh M2 native ctor-leaf codegen the scalar-payload matches never reach.
+    #[test]
+    fn compound_payload_match_reaches_all_shapes_and_compiles() {
+        let (mut saw_tuple, mut saw_record, mut saw_list) = (false, false, false);
+        for seed in 0u64..1024 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(131);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut body = String::new();
+            gen_compound_consume(&mut ByteCursorChoice::new(&bytes), &mut body);
+            // The compound-payload arm is the only one that pairs `(Some (` with a native compound head.
+            if !(body.contains("(Some (tuple ")
+                || body.contains("(Some (record ")
+                || body.contains("(Some (list "))
+            {
+                continue;
+            }
+            saw_tuple |= body.contains("(Some (tuple ");
+            saw_record |= body.contains("(Some (record ");
+            saw_list |= body.contains("(Some (list ");
+            let src = format!("(do (def (main) {body}) (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "compound-payload match body must COMPILE: {src}"
+            );
+        }
+        assert!(
+            saw_tuple,
+            "compound-payload match should reach a tuple payload"
+        );
+        assert!(
+            saw_record,
+            "compound-payload match should reach a record payload"
+        );
+        assert!(
+            saw_list,
+            "compound-payload match should reach a list payload"
+        );
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
