@@ -6052,6 +6052,32 @@
   (input  (do (def (main (: x Int64)) (<< x 64)) (export main)))
   (call   main (: 5 Int64)) (trap "unreachable"))
 
+(case "shv1 the RIGHT-shift twin: a trapping lhs surfaces before the const out-of-range count trap"
+  (doc    "The `>>` face of the eval-order pin above (which pins `<<` only): `emit_shift` serves both
+           shift directions, so a trapping lhs must surface first under `>>` too. `(/ 8 (- n 5))` at n=5
+           divides by a runtime zero the folder cannot prove (`(- n 5)` is opaque; a provable zero is
+           rejected CDZ0304 at compile instead), and the count `1000000` is an out-of-range constant.
+           Expected kind = `divide by zero`, NOT `unreachable`.")
+  (input  (do (def (main (: n Int64)) (>> (/ 8 (- n 5)) 1000000)) (export main)))
+  (call   main (: 5 Int64)) (trap "divide by zero"))
+
+(case "shv2 a trapping lhs surfaces before a RUNTIME out-of-range shift count"
+  (doc    "The runtime-count face: the fast-path fix above gates the CONSTANT-count path, and the general
+           (runtime-count) shift path must order identically — lhs first. `(+ n 999995)` at n=5 is an
+           out-of-range count (1000000) the compiler cannot see; the lhs still divides by a runtime zero.
+           A count-first evaluation (or a count-range pre-check hoisted above the lhs) would trap
+           `unreachable` instead. Expected kind = `divide by zero`.")
+  (input  (do (def (main (: n Int64)) (<< (/ 8 (- n 5)) (+ n 999995))) (export main)))
+  (call   main (: 5 Int64)) (trap "divide by zero"))
+
+(case "shv3 an OVERFLOW-trapping lhs surfaces its own kind before the shift count trap"
+  (doc    "The other-trap-kind face: the lhs trap that must surface first is an integer OVERFLOW
+           (`(* n Int64.max)` at n=3), not a division — pinning that the eval-order fix surfaces the
+           lhs's ACTUAL kind rather than special-casing division. Expected kind = `overflow`, NOT
+           `unreachable`.")
+  (input  (do (def (main (: n Int64)) (<< (* n 9223372036854775807) 1000000)) (export main)))
+  (call   main (: 3 Int64)) (trap "overflow"))
+
 ; The count = 63 boundary — the largest in-range shift count — is where a left shift's exact-2^count
 ; multiplication meets Int64's edge, and where a folder that builds the `2^count` factor with a signed
 ; `1 << 63` (= i64::MIN, a NEGATIVE 2^63) miscomputes in BOTH directions: `(<< 1 63)` folds to a
