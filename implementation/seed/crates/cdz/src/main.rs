@@ -187,13 +187,14 @@ enum Cmd {
     Corpus(cdz_corpus::cli::CorpusArgs),
 
     // ── calc (cdz-calc) ─────────────────────────────────────────────────────────────────────────
-    /// The calculator REPL over the real language, exact by construction. `cdz calc` starts the
-    /// interactive loop; `cdz calc --once "<expr>"` computes one line and exits (the launcher/script
-    /// hook). Variables accumulate and `ans` recalls the last result; `--plain` prints the bare value,
-    /// `--sexpr` reads the s-expression surface, `--no-exact` turns off forced rationals. Folded in from
-    /// the `cdz-calc` bin so a single `cdz` on the PATH also gives the calculator.
+    /// The calculator REPL over the real language, exact by construction (`cdz calc`, alias `cdz repl`) — a
+    /// PASSTHROUGH to the standalone `cdz-calc` binary (`cdz calc <args…>` == `cdz-calc <args…>`), so a single
+    /// `cdz` on the PATH reaches the calculator. It is exec-not-link (like `cdz run`/`smith`/`cad`) so `cdz`
+    /// sheds the `cdz-calc` library — and with it the transitive `cdz-run`→wasmtime the REPL pulls in to run
+    /// compiled exprs (thin-`cdz` seam, `design/DESIGN-cdz-plugin-dispatch.md`). Run `cdz calc --help` for the
+    /// full flag set (`--once`, `--plain`, `--sexpr`, `--no-exact`, …) — the standalone bin's own.
     #[command(alias = "repl")]
-    Calc(cdz_calc::cli::CalcArgs),
+    Calc(CalcArgs),
 
     // ── project build ───────────────────────────────────────────────────────────────────────────
     /// Build a PROJECT from its `Project.cdz` manifest (the `cargo build` analogue): compile the
@@ -581,7 +582,7 @@ fn main() -> ExitCode {
         #[cfg(feature = "corpus")]
         Cmd::Corpus(a) => cdz_corpus::cli::run(&a, PROG),
         // `cdz calc` — mounted from the `cdz-calc` lib; the same code the standalone `cdz-calc` bin runs.
-        Cmd::Calc(a) => cdz_calc::cli::run(&a, PROG),
+        Cmd::Calc(a) => run_calc(&a),
         Cmd::Build(a) => run_build(&a),
         Cmd::Metadata(a) => run_metadata(&a),
         Cmd::Tree(a) => run_tree(&a),
@@ -4353,6 +4354,25 @@ fn run_cad(args: &CadArgs) -> ExitCode {
     // then the bare `cdz-cad` name so `passthrough_status`'s not-found hint still fires.
     let program = locate_plugin("cad").unwrap_or_else(|| PathBuf::from(bin_name("cdz-cad")));
     passthrough_status(&program, &args.args, "cdz-cad")
+}
+
+#[derive(clap::Args)]
+struct CalcArgs {
+    /// Every argument after `cdz calc` is forwarded VERBATIM to the standalone `cdz-calc` binary
+    /// (`trailing_var_arg` + `allow_hyphen_values` so `cdz calc --once "1/2 + 1/3"` passes through untouched
+    /// rather than being parsed as `cdz`'s own). `cdz calc --help` prints the standalone bin's usage.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+/// `cdz calc <args…>` (alias `cdz repl`) — a PASSTHROUGH to the standalone `cdz-calc` calculator REPL: exec
+/// the sibling binary and forward argv + exit code, so a single `cdz` on the PATH reaches the calculator. It
+/// is exec-not-link so `cdz` no longer links `cdz-calc` — which pulls `cdz-run` (→ wasmtime) in-process to run
+/// compiled exprs — shedding that transitive runner weight from `cdz`'s graph. Resolves via the standard
+/// `$CDZ_CALC_BIN` → sibling → `$PATH` ([`locate_plugin`]); the calc engine itself is v-guide-infra's.
+fn run_calc(args: &CalcArgs) -> ExitCode {
+    let program = locate_plugin("calc").unwrap_or_else(|| PathBuf::from(bin_name("cdz-calc")));
+    passthrough_status(&program, &args.args, "cdz-calc")
 }
 
 /// The platform executable NAME for a bare tool stem — appends `.exe` on Windows so a `$PATH` lookup of
