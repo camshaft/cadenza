@@ -1575,7 +1575,7 @@
               (def (wval (: s W)) (match s (((. W Atom) li) li) (((. W Zero) _) 0)))
               (def (main (: pos Int64)) (wval (loop b"\x05\x07" 1 pos ((. W Atom) 0)))) (export main)))
   (call   main (: 0 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- A Bytes ROPE nested in a compound MAP KEY is canonicalized (the Bytes face of nested-rope compaction) --
 ; A `Bytes.concat` builds a ROPE (a concat node whose raw is a header, not the content) — the same

@@ -1561,6 +1561,7 @@ pub fn collect_static_compounds(db: &mut Db, order: &[usize]) -> Vec<crate::ast:
                 || crate::lower::is_markable_constant_map(db, id)
                 || crate::lower::is_markable_constant_set(db, id)
                 || crate::lower::is_markable_constant_sum_nullary(db, id)
+                || crate::lower::is_markable_constant_sum_payloaded(db, id)
             {
                 roots.push(id);
                 continue; // the whole subtree is built inline under this root — don't collect nested

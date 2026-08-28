@@ -148,7 +148,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 70))
+  (live-objects known-leak 52))
 
 (case "an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)"
   (doc    "The dual — the soundness-critical negative. For an UNCONSTRAINED `x + 1 : Int64` (no precondition
@@ -196,7 +196,7 @@
                     (not (term-eq (concl unrelated) obligation))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 21))
+  (live-objects known-leak 15))
 
 ; ── b2: the MATCH PREDICATE (the compiler's trusted surface, written IN CADENZA) ────────────────────
 ; The oracle's core (design §3): a discharged `Thm` LICENSES the elision of `overflow-check@Id` iff
@@ -308,7 +308,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 80))
+  (live-objects known-leak 60))
 
 (case "the b2 match predicate REJECTS a proof discharged under a FOREIGN hypothesis not in the node precondition (soundness — no elision under wrong assumptions)"
   (doc    "The soundness-critical b2 negative — the breaker vector the design flags. A proof can have the
@@ -413,7 +413,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 80))
+  (live-objects known-leak 60))
 
 ; ── SOUNDNESS PIN: the arithmetic axiom base cannot forge (breaker 2026-07-17) ──────────────────────
 (case "the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent"
@@ -470,7 +470,7 @@
                        (match nonground  ((Option.None) true) ((Option.Some _) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 9))
+  (live-objects known-leak 5))
 
 ; ── SOUNDNESS PIN: a ground add that OVERFLOWS during discharge TRAPS, it does not wrap-and-forge ────
 ; (breaker overflow-axis vectors, 2026-07-17 — folded here rather than promoted separately.)
@@ -595,7 +595,7 @@
                   (term-eq (denote pred) expected))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 ; ── b4c(proven): a full @requires/@ensures obligation — denote both, discharge P ⇒ Q[ret:=body] ─────────
 ; b4b denotes ONE predicate Ast → Term. b4c(proven) composes the elaboration (§2.1): for
@@ -700,7 +700,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 70))
+  (live-objects known-leak 52))
 
 ; ── b4c(unprovable): an @ensures whose obligation is NOT dischargeable → the PROVEN tier fails (CDZ-VERIFY) ─
 ; The dual of b4c(proven). For `@ensures(<= ret MAXINT) (def (f x) (+ x 1))` with NO (or too-weak)
@@ -779,7 +779,7 @@
                     ((Option.None) true)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 7))
+  (live-objects known-leak 5))
 
 ; ── b4c(conjunctive): a TWO-hypothesis precondition — both @requires flow to the discharge + hyps-subset ─
 ; b4a records STACKED @requires as a Vec (a conjunction). This pins the multi-hypothesis path the earlier
@@ -894,7 +894,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 98))
+  (live-objects known-leak 74))
 
 ; ── b4c(conjunctive) NEGATIVES: partial precondition coverage → NOT licensed (breaker, all-covered sentinel) ─
 ; The soundness sentinels for the conjunctive hyps-subset: a 2-hyp proof {le x 100, ge x 0} must NOT be
@@ -997,7 +997,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 89))
+  (live-objects known-leak 67))
 
 (case "b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missing le x 100) — NOT licensed though discharged via le"
   (doc    "The subtle reverse sentinel (breaker vector). The obligation was DISCHARGED using the `le x 100`
@@ -1093,7 +1093,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 87))
+  (live-objects known-leak 65))
 
 ; ── b(sub): a no-UNDERFLOW discharge — for x >= 0, (x - 1) >= MININT (the lower-bound / `-` direction) ──
 ; The b1 discharge pinned `+`/overflow (upper bound vs MAXINT). Overflow elision (b3) also covers `-`/`*`;
@@ -1201,7 +1201,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 70))
+  (live-objects known-leak 52))
 
 ; ── b(mul): a no-overflow discharge for MULTIPLICATION — for x <= 100, (x * 2) <= MAXINT ──────────────
 ; Completes the arithmetic-op discharge coverage (+, -, now *) that b3's guard elision handles. For a
@@ -1309,7 +1309,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 70))
+  (live-objects known-leak 52))
 
 ; ── t1(div0): the DIVIDE-BY-ZERO trap-source obligation — for b > 0, (b != 0) so `a / b` cannot trap ──
 ; The @trap_free capstone (design §8) proves EVERY trap source unreachable. This pins the DIVIDE-BY-ZERO
@@ -1373,7 +1373,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 (case "t1(div0) NEGATIVE: an UNBOUNDED divisor is NOT provably non-zero — the divide-by-zero trap STAYS"
   (doc    "The div0 soundness dual. With no `> b 0` (or `b != 0`) precondition, the divisor `b` is unbounded
@@ -1489,7 +1489,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 38))
+  (live-objects known-leak 30))
 
 (case "t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obligation is NOT complete — the trap STAYS"
   (doc    "The OOB soundness dual. The obligation is the CONJUNCTION `(ge i 0) AND (lt i len)`; a precondition
@@ -1537,7 +1537,7 @@
                     (not (term-eq (concl lower) goal))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 26))
+  (live-objects known-leak 20))
 
 ; ── t1(match): the PARTIAL-MATCH / exhaustiveness trap source — a match with total arm coverage cannot trap ─
 ; The @trap_free capstone (§8): a `match` traps at an `Unreachable` node iff a scrutinee value hits no arm.
@@ -1600,7 +1600,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 14))
+  (live-objects known-leak 8))
 
 (case "t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap"
   (doc    "The exhaustiveness soundness dual. A Bool scrutinee (2 variants) with only ONE arm covered (tags
@@ -1709,7 +1709,7 @@
                         ((Option.None) false)))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 33))
+  (live-objects known-leak 25))
 
 (case "t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS"
   (doc    "The explicit-trap soundness dual. If the trap guard is NOT contradicted by the precondition — here
@@ -2713,7 +2713,7 @@
                     (licenses proof obligation precondition)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 75))
+  (live-objects known-leak 59))
 
 ; ── @ensures-over-@requires × EFFECTFUL body: order-insensitive enforcement (cross-vertical, v-effects fix) ─
 ; Annotation stacking order is presentation, not semantics — `@ensures(Q) @requires(P)` (reversed) must
@@ -2828,7 +2828,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 45))
+  (live-objects known-leak 35))
 
 ; ── @invariant NAME-RESOLUTION: a predicate name outside {it, prelude} is unbound (b4c pattern, data-level) ─
 ; An `@invariant(pred)` predicate references only the value binder `self` (the value of the type) and prelude/
@@ -4003,7 +4003,7 @@
                       ((Option.None) false))))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 70))
+  (live-objects known-leak 52))
 
 ; --- Contract enforcement × ABORTIVE effects: the conditions surface pins effectful PREDICATES
 ; (:2134) and perform-produced ARGUMENTS (:3554), but not the composition with an ABORTIVE

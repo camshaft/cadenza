@@ -10894,6 +10894,35 @@ fn emit_immortal_static(
             out.push(Lir::CallImport("mark-immortal")); // [sum-handle] — the nullary sum root, immortal
             Ok(())
         }
+        // A PAYLOADED variant of a MIXED sum with ALL-CONSTANT payloads (`(Some 5)`, `(Cons 1 (list …))`) —
+        // built ONCE immortal, mirroring the runtime `Core::SumNew` payload marshaling (`select.rs` emit) for
+        // constants: 1 payload → the boxed handle IS the sum's payload; n → a tuple `arr` of boxed payloads.
+        // Then `mark-immortal-DEEP` (op 96) — unlike the nullary SHALLOW mark, the payload(s) are HEAP CHILDREN
+        // (the boxed scalar / built compound / arr), so a deep mark is needed to census-exclude the whole tree
+        // (exactly like the const-list/map/set roots). `emit_immortal_elem` builds + shallow-marks each payload
+        // (idempotent under the final deep mark). Collected by `is_markable_constant_sum_payloaded`.
+        Core::SumNew { disc, payloads } => {
+            out.push(Lir::ConstI32(disc as i32)); // [disc]
+            match payloads.len() {
+                1 => {
+                    // The single payload's boxed handle is passed to `sum-new` directly (no wrapping `arr`).
+                    emit_immortal_elem(db, payloads[0], None, layout, out)?; // [disc, payload-handle]
+                }
+                n => {
+                    // Multiple payloads: box each into a positional tuple `arr` (the runtime multi-payload shape).
+                    out.push(Lir::ConstI32(n as i32)); // [disc, n]
+                    out.push(Lir::CallImport(OP_ARR_ALLOC)); // [disc, arr]
+                    for (i, &p) in payloads.iter().enumerate() {
+                        out.push(Lir::ConstI32(i as i32)); // [disc, arr, i]
+                        emit_immortal_elem(db, p, None, layout, out)?; // [disc, arr, i, handle]
+                        out.push(Lir::CallImport(OP_ARR_SET)); // [disc, arr]
+                    }
+                }
+            }
+            out.push(Lir::CallImport(OP_SUM_NEW)); // [sum-handle]
+            out.push(Lir::CallImport("mark-immortal-deep")); // deep — payload(s) are heap children
+            Ok(())
+        }
         // A constant list of ANY size (non-empty, not all-`Bool`) — built like a tuple (a flat `arr` of boxed
         // elements) then `vec-of-arr`. The build is UNIFORM across sizes: `arr-alloc(n)` + per-element build +
         // `arr-set`, then `vec-of-arr`. What differs is the node topology `vec-of-arr` produces — ≤32 reuses the

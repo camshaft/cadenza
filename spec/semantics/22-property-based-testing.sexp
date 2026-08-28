@@ -1093,7 +1093,7 @@
             (export main)))
   (call   main (: true Bool)) (output (: 50 Int64))
   (call   main (: false Bool)) (output (: 51 Int64))
-  (live-objects known-leak 35))
+  (live-objects known-leak 34))
 
 ; --- In-domain shrinking: the shrink search stays within a refinement's window (Refinements × Shrinking). ---
 

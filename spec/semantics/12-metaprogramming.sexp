@@ -3153,7 +3153,7 @@
             (def (main) (eval-expr (quote (* (+ 1 2) 4))))
             (export main)))
   (output (: 12 BigInt))
-  (live-objects known-leak 14))
+  (live-objects known-leak 10))
 
 (case "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
   (doc    "The n-ary / variadic-macro idiom, using the FINAL `,@rest` splice binder: `` `(f ,@rest) `` binds
@@ -3782,7 +3782,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 72))
+  (live-objects known-leak 68))
 
 (case "an eval splice consumes a value extracted from a CHAMP map at run time"
   (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`
@@ -4287,4 +4287,4 @@
 (export main)))
   (call main (: 50 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 500))
+  (live-objects known-leak 400))

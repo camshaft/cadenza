@@ -1057,7 +1057,7 @@
             (def (main) (Bytes.len (emit (Core.CBin 43 (Core.CNum 1) (Core.CBin 45 (Core.CNum 2) (Core.CNum 3))))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 ; The multi-dispatch companion: the SAME recursive emitter, but the `CBin` arm dispatches through BOTH a
 ; Bool-returning `(match op (43 true) …)` (an i32 result) and, in the `if`'s else branch, a multi-arm
@@ -1092,7 +1092,7 @@
             (def (main) (Bytes.len (emit (Core.CBin 60 (Core.CNum 1) (Core.CBin 43 (Core.CNum 2) (Core.CNum 3))))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 (case "a self-tail-recursive fn with a MIXED Option-returning innermost match emits valid wasm"
   (doc    "A self-tail-recursive `drive` whose INNERMOST match is MIXED — one arm RECURSES (the tail call
@@ -1415,7 +1415,7 @@
             (def (main) (fold-t (fn ((: x Int64)) (* x 10)) (T.Node (tuple (T.Leaf 1) (T.Leaf 2)))))
             (export main)))
   (output (: 30 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT"
   (doc    "The callback is applied not to a payload but to the RESULT OF THE RECURSIVE CALL — `(f (foldn f
@@ -2083,7 +2083,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 26 Int64))
   (call main (: 2 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 11))
 
 (case "a THREE-deep transitive closure-capture chain applies with each level's own capture live"
   (doc    "The 2-deep capture pin extended: h→g→f where EACH level adds its OWN scalar capture —
@@ -2521,7 +2521,7 @@
                 (apply-sum (fn ((: x Int64)) (match o ((Some v) (+ x v)) (None x))) 3)))
             (export main)))
   (output (: 306 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; PERCEUS RETAIN ACROSS A CAPTURE: a heap list `xs` is CAPTURED by a closure whose body CONSUMES it
 ; (`List.push xs k` — a persistent op that FBIP-mutates its operand in place when it holds the sole
@@ -3894,7 +3894,7 @@
             (def (main) (match (check (Exp.If (Exp.Num 1) (Exp.Num 2))) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
   (output (: 0 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "the well-typed branch of the mutual check returns the Ok result"
   (doc    "The companion outcome of the check/check-if pair on a well-typed input. `check(Num 5)` =
@@ -3922,7 +3922,7 @@
             (def (main) (match (check (Exp.Num 5)) ((Result.Ok _) 1) ((Result.Err _) 0)))
             (export main)))
   (output (: 1 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- A rest-pattern head binder read inside an INLINED match-arg callee's scrutinee ------------
 ; The monomorphization pair above pins one face of the "re-parent / orphaned-binder" class: a match-arm
@@ -3966,7 +3966,7 @@
             (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
             (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
@@ -9442,7 +9442,7 @@
     (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
     (export main)))
   (output (: -1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a runtime value-eq in a tail-loop condition does not clash the arithmetic scratch slot"
   (doc    "`find` compares `(N.I n)` against `(N.I 3)` (an i32 heap-handle compare) in the condition of a

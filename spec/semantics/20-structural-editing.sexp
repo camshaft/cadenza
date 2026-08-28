@@ -55,7 +55,7 @@
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: 17 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 4))
 
 ; The BUILT-IN-Ast companion of the user-`Exp` recursive walk above: a recursive function descends the
 ; built-in `Ast` sum by matching `(Ast.List es)` and recursing into its `(List Ast)` payload via a
@@ -78,7 +78,7 @@
             (def (main) (depth (quote (f (g 1)))))
             (export main)))
   (output (: 2 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 8))
 
 (case "a transformation maps a syntax tree to a syntax tree and preserves meaning"
   (doc    "The core of spec/learnings/2026-07-04-program-transformation-is-a-program.md: a refactoring
@@ -113,7 +113,7 @@
                 ((Exp.Add (tuple a b)) (+ (eval a) (eval b)))
                 ((Exp.Mul (tuple a b)) (* (eval a) (eval b))))) (export main)))
   (output (: true Bool))
-  (live-objects known-leak 17))
+  (live-objects known-leak 11))
 
 ; The simp case above WORKS AROUND a limitation, worth pinning directly: it simplifies children with
 ; `let`-bound `x`/`y` and probes them with the single-scrutinee `is-lit` helper (its doc notes "a
@@ -163,7 +163,7 @@
             (def (main)
               (ev (fold (E.Add (tuple (E.Lit 3) (E.Add (tuple (E.Lit 4) (E.Lit 5)))))))) (export main)))
   (output (: 12 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 11))
 
 ; The tuple-of-recursive-results constructor match (above) is realized for SELF-recursive calls; the
 ; SIBLING shape — the tuple elements are calls to a DIFFERENT function whose argument is a value of the
@@ -243,7 +243,7 @@
                 ((Exp.Add (tuple a b)) (+ 1 (+ (size a) (size b))))
                 ((Exp.Mul (tuple a b)) (+ 1 (+ (size a) (size b)))))) (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 17))
+  (live-objects known-leak 11))
 
 (case "the built-in Ast is transformed as an ordinary value"
   (doc    "metaprogramming.md §Quote Produces An AST Value + type-system.md §The Abstract Syntax Tree
@@ -413,7 +413,7 @@
   (output (: 15 Int64))
   (call   main (: -7 Int64))
   (output (: -7 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 (case "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite"
   (doc    "The full pipeline at run time: `build` assembles `(Add (Lit 0) (Add (Lit a) (Lit 2)))` around
@@ -439,7 +439,7 @@
             (export main)))
   (call   main (: 40 Int64))
   (output (: 42 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 9))
 
 ; --- The NONZERO recursive-BigInt-literal-probe row (breaker FINDING #22), now closed ---------------
 ; The peephole cases above use only literal-0 patterns; the doc at "OVERLAPPING quote patterns" notes the
@@ -472,7 +472,7 @@
                 (_ -1)))
             (export main)))
   (output (: 40 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "a runtime-built BigInt sum-payload literal probe matches its constructor"
   (doc    "The runtime-scrutinee companion (no quote/Ast): a plain sum `(type W (Mk BigInt))` whose payload
@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 34))
+  (live-objects known-leak 28))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
@@ -707,7 +707,7 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 701 Int64))
-  (live-objects known-leak 33))
+  (live-objects known-leak 30))
 
 (case "a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep"
   (doc    "The :572 rename swaps in a FIXED name; this DERIVES the new name from the OLD payload ((Ast.Name (String.concat n \"_v2\")) — the suffix-refactor idiom: the Name payload String is read AND a fresh derived String re-wrapped at every depth). Deep face quote-verified; non-Name leaf control.")
@@ -726,7 +726,7 @@
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
   (output (: 11 Int64))
-  (live-objects known-leak 8))
+  (live-objects known-leak 4))
 
 ; --- Guards over quote patterns (subtree-equality rewrites). ---
 
@@ -787,7 +787,7 @@
                      (if (= once (Lit k)) 1 0)))))
             (export main)))
   (call   main (: 6 Int64)) (output (: 11 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 8))
 
 ; ── breaker batch 570: the TREE face of the sum-spine leak family (the ss/sp cells are LINEAR
 ; chains; these are BRANCHING walks — the structural-editing substrate shape). A depth-4 binary
@@ -805,7 +805,7 @@
     (export main)))
   (call main (: 4 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak 46))
+  (live-objects known-leak 30))
 
 (case "stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)"
   (input (do
@@ -817,7 +817,7 @@
     (export main)))
   (call main (: 3 Int64))
   (output (: 16 Int64))
-  (live-objects known-leak 44))
+  (live-objects known-leak 36))
 
 ; ── breaker batch 571: constant QUOTES join the build-once family (verified: 3 static globals —
 ; previously undocumented in the constant-kind matrix) but the WALK over a hoisted immortal Ast
@@ -837,7 +837,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 202 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 16))
 
 (case "aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)"
   (input (do
@@ -850,7 +850,7 @@
 (export main)))
   (call main (: 50 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 500))
+  (live-objects known-leak 400))
 
 ; ── breaker batch 573: runtime Ast CONSTRUCTION cells (the constructor face; quotes covered by
 ; aq1/2). ac1 = the identity contract: a runtime-built Ast (constructors, BigInt payload from the
