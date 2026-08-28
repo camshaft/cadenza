@@ -4872,6 +4872,8 @@ pass	abx2 two-op effect, one resuming one ABORTIVE (scalar state)
 pass	abx4 mixed arms, list state, abort arm IGNORES the state
 pass	abx5 single-op ABORTIVE with list state read by the arm (ab1 twin, resume absent entirely)
 pass	ac1 a pipeline chain alternating a 1-ary and a 2-ary op — each result feeds the next call's argument while the thread advances
+pass	ac1 a runtime-BUILT Ast equals the quoted constant structurally and reclaims clean (the construction/quote identity contract)
+pass	ac2 ten build+walk frames over runtime-constructed Ast chains leak linearly (the construction face of the walk-leak)
 pass	ac2 the chain's MIDDLE result routes the branch that picks WHICH op finishes the pipeline
 pass	ac3 the pipeline BOUNCES between two effects — inner B's result feeds outer E's op, whose result feeds B again
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
@@ -5413,6 +5415,7 @@ pass	an integer segment after a byte-aligned bit-field run reads at the advanced
 pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
 pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
+pass	an integer width reached through a let-bound constant folds and is honored
 pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an internally ill-typed unselected match arm body is a type error
 pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
@@ -5697,6 +5700,8 @@ pass	bk4 a Map keyed by a runtime digest is findable by a fresh recompute
 pass	bk5 Blake3-of-encode runtime composition compares equal across recomputation
 pass	bkf1 EXPONENTIAL BACKOFF with a seed-shaped cap — fail accrues the current delay into the total then doubles it clamped at the cap, ok resets the delay to one answering the accumulated wait, and the higher cap lets one seed keep doubling where the other saturates two steps earlier
 pass	blc1 a BALANCE SCALE weighing TWO op arguments against each other — weigh's three-way arg-vs-arg comparison answers side and margin counting only LEFT wins, every weigh folds the signed difference into the running tilt, level reports the tilt's magnitude by sign-splitting WITHOUT abs tagging lean direction in the hundreds digit, and the seed loads the left pan of three weighings so one run balances twice level-right while the other tips left twice and reads a levelled beam last
+pass	bmr1 bin segments read exactly across the seams of a 50-concat rope and reclaim
+pass	bmr2 fifty bin matches over a deep rope leak zero per-match (the rest binding reclaims where slicing leaks)
 pass	bms1 a BITMASK SET in one Int64 — set ORs a shifted bit, clear ANDs with the XOR-complement answering whether the bit was live, popcount peels the mask; the clear of an absent high bit is a no-op zero
 pass	bmv1 BOYER-MOORE majority vote — the (leader,votes) state deposes on exhausted votes, the challenger seed flips the winner
 pass	bnfE 2-tuple FIFO control — (front, back) only, no counter
@@ -9016,7 +9021,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	ac1 a runtime-BUILT Ast equals the quoted constant structurally and reclaims clean (the construction/quote identity contract)
-pass	ac2 ten build+walk frames over runtime-constructed Ast chains leak linearly (the construction face of the walk-leak)
-pass	bmr1 bin segments read exactly across the seams of a 50-concat rope and reclaim
-pass	bmr2 fifty bin matches over a deep rope leak zero per-match (the rest binding reclaims where slicing leaks)

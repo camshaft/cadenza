@@ -143,6 +143,15 @@
   (input  (do (def (main) (: 5 (UInt 8))) (export main)))
   (call   main) (output (: 5 UInt8)))
 
+(case "an integer width reached through a let-bound constant folds and is honored"
+  (doc    "The width in `(UInt W)` MUST be a compile-time natural but need not be a LITERAL at the annotation
+           site — a width reached through a `let` binding folds to its constant and is honored: `(let ((w 8))
+           (: 5 (UInt w)))` builds UInt8 (not dropped to the default i64) and 5 crosses as a u8. The let-bound
+           companion of the bare-literal `(: 5 (UInt 8))` case above; contrast the runtime-valued-width reject
+           (a parameter `n` in `(UInt n)` is CDZ0302). Relocated from rcdzc.")
+  (input  (do (def (main) (let ((w 8)) (: 5 (UInt w)))) (export main)))
+  (call   main) (output (: 5 UInt8)))
+
 (case "a checked integer conversion at the signed boundary fits and converts unchanged"
   (doc    "`(Int8.of (: 127 Int32))` = 127 — the largest value that fits Int8 (Int8.max) converts unchanged.
            Pins the inclusive upper boundary of the checked conversion.")
