@@ -34123,6 +34123,62 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_effecting_entrypoint_returning_a_constant_compound_hoists_build_once() {
+        // BUILD-ONCE through the HOST-FUSED resource-escape arm (the abb9390fed thread-through): a
+        // host-effecting entrypoint that ALSO returns a markable CONSTANT compound
+        // (`main = host H in (do (H.ping k) (tuple 1 2))`) reaches the host-fused arm of
+        // `emit_runtime_resource`. Before the fix that arm built `host_layout` WITHOUT
+        // `.with_static_compounds` (passed `0, &[]`), so the constant rebuilt MORTAL per `make`; the fix
+        // threads the collected statics + init onto the host layout, mirroring the plain path — so the
+        // constant hoists to a module GLOBAL (built once + immortal in START, `global.get` in `make`).
+        //
+        // WHITE-BOX EMIT PIN (corpus-inexpressible — this is a wasm-STRUCTURE property, not a value: a
+        // single reduction escapes+releases the value either way, so a live-objects corpus assertion can't
+        // distinguish build-once from mortal-rebuild; and a reducer-RUN test would need the dropped cdz-run
+        // dep). ESSENTIAL check: the host-fused hoist emits VALID wasm (guards against an ikc1/itf2-style
+        // invalid-module on this arm). DISCRIMINATOR: `global.set`/`global.get` count — the START-init
+        // emits one `global.set` per hoisted static compound (no static bytes here), and the `make` body
+        // reads it via `global.get`. The CONTRAST (a RUNTIME compound `(tuple k 2)` — nothing hoistable →
+        // 0 globals) proves the const case's globals are specifically the constant hoist, not incidental.
+        use crate::testkit::parse;
+        let const_src = "(do (effect H (op ping (-> Int64 Int64))) \
+                   (def (main (: k Int64)) (host (H) (do (H.ping k) (tuple 1 2)))) (export main))";
+        let runtime_src = "(do (effect H (op ping (-> Int64 Int64))) \
+                   (def (main (: k Int64)) (host (H) (do (H.ping k) (tuple k 2)))) (export main))";
+
+        let const_wasm = compile_component(&crate::codec::encode(&parse(const_src)))
+            .expect("a host-effecting entrypoint returning a constant compound must compile (host-fused arm)");
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+            .validate_all(&const_wasm)
+            .expect("the host-fused build-once hoist must emit a VALID module (no invalid-wasm on this arm)");
+        let const_gset = count_opcode(&const_wasm, |op| {
+            matches!(op, wasmparser::Operator::GlobalSet { .. })
+        });
+        let const_gget = count_opcode(&const_wasm, |op| {
+            matches!(op, wasmparser::Operator::GlobalGet { .. })
+        });
+        assert!(
+            const_gset >= 1 && const_gget >= 1,
+            "the constant `(tuple 1 2)` must hoist build-once through the host-fused arm — expected a \
+             START-init `global.set` + a `make`-body `global.get`, got global.set={const_gset} \
+             global.get={const_gget} (pre-fix: 0/0, rebuilt mortal per make)"
+        );
+
+        // CONTRAST: a RUNTIME compound has nothing to hoist → zero build-once globals (the const globals
+        // above are the constant hoist, not incidental host-fused machinery).
+        let runtime_wasm = compile_component(&crate::codec::encode(&parse(runtime_src)))
+            .expect("the runtime-compound control must compile");
+        let runtime_gset = count_opcode(&runtime_wasm, |op| {
+            matches!(op, wasmparser::Operator::GlobalSet { .. })
+        });
+        assert_eq!(
+            runtime_gset, 0,
+            "a RUNTIME compound `(tuple k 2)` has no hoistable constant → no build-once `global.set`, \
+             got {runtime_gset} (would mean the const-case globals were incidental, not the hoist)"
+        );
+    }
+
+    #[test]
     fn a_multishot_arm_folds_flat_but_declines_inside_recursion_never_miscompiles() {
         use crate::testkit::parse;
         // MULTI-SHOT ARM × RECURSION (breaker ms-family datapoint, 2026-08-05). A MULTI-SHOT handler arm
