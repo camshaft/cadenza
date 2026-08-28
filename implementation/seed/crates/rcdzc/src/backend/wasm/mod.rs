@@ -10175,8 +10175,38 @@ fn try_bare_entry_param_component(
         params: wit_params,
         result: wit_result,
     };
+    // The def bodies were SELECTED with the ORIGINAL `import_base`; APPENDING `added` lift-op imports shifts
+    // every DEFINED func index up by `added`, so each baked def-to-def call (`Lir::Call`/`ReturnCall` whose
+    // target is a DEF — index >= the original `import_base`) must be re-shifted by `added`. Otherwise a
+    // reachable def call (e.g. a RECURSIVE fn's self-call, which cannot be inlined away) resolves to an
+    // APPENDED import op — emitting INVALID wasm ("requires [i64] but callee returns [i32]": the fuzzer's
+    // bucket-1 miscompile from a heap-typed entry param whose body calls a recursive Int64 fn). Import-op /
+    // host / extern calls resolve by NAME/POSITION (`CallImport`/`CallHostImport`/`CallExternImport`, not
+    // `Lir::Call`) and existing indices are preserved by appending, so they are untouched. Byte-identical
+    // when `added == 0` (a scalar entry adds no lift ops).
+    use crate::backend::wasm::lir::Lir;
+    let base = layout.import_base;
+    let shifted_funcs: Vec<SelectedFunc>;
+    let funcs_ref: &[SelectedFunc] = if added > 0 {
+        shifted_funcs = funcs
+            .iter()
+            .map(|f| {
+                let mut f = f.clone();
+                for insn in &mut f.code {
+                    match insn {
+                        Lir::Call(i) | Lir::ReturnCall(i) if *i >= base => *i += added,
+                        _ => {}
+                    }
+                }
+                f
+            })
+            .collect();
+        &shifted_funcs
+    } else {
+        funcs
+    };
     let wrapped_core = match serialize::core_module_with_wrappers(
-        funcs,
+        funcs_ref,
         &entry_imports,
         &[],
         std::slice::from_ref(&wrapper),
