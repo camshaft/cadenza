@@ -297,7 +297,14 @@ fn compile_with_opt_inner(
     // is a verified no-op and every level emits a byte-identical artifact); it establishes the seam the
     // migration fills — each pass added here declares its `min_level`, and the `PassManager` runs only
     // those the requested level reaches. The correctness bar is that every level is observably identical.
-    crate::opt::PassManager::for_level(opt_level).run(&mut db);
+    // The BACKEND-INDEPENDENT Core-opt PassManager runs POST-LAYOUT — see the call after
+    // `layout::compute` below. It MUST run after layout because layout is what establishes each
+    // node's EMIT-TIME lowering context (lambda-lift -> db.captured_ref, db.lifted, handler-lift
+    // scoping, layout.order): a pass-time core_of on a context-dependent node (an Apply/call, a
+    // closure, a lifted-param ref, a match-binder) run PRE-layout memoizes the wrong context-free
+    // form into db.core and poisons emit. Running the passes here (pre-layout) forced
+    // GlobalCsePass's scalar-only/reject-Apply guard; the post-layout seam lets a pass return the
+    // emit-identical node, the timing foundation for Core-DCE / CSE-on-calls over calls/closures.
 
     // Decode the optional `sidecar` request list — the program that DRIVES this compilation
     // (`DESIGN-sidecar-api.md`). Absent (the common case) means "no requests": behavior is exactly
@@ -465,6 +472,16 @@ fn compile_with_opt_inner(
     // `Core::Let` slot so the emit-analysis walks stop re-descending it (the durable cmb1/pom5 fix).
     // Layout is provably stable across this intra-body rewrite (v-rb, layout owner: zero per-node state).
     // STEP 1: detection-only, a verified byte-neutral no-op (opt-sweep 0-divergence).
+    // POST-LAYOUT backend-independent Core-opt passes (moved from pre-layout). Layout has lowered
+    // every reachable body top-down (finish_layout reachability worklist -> core_of), so
+    // db.captured_ref/db.lifted/handler-lift/layout.order are established and a pass-time core_of
+    // returns the emit-identical node (no context-free poison). Runs at the same post-layout point as
+    // run_sharing_aware_emit below and BEFORE it (general Core opt precedes the wasm-emit-prep sharing
+    // rewrite; the two no-op on each other's residue). A post-layout pass MUST be LAYOUT-PRESERVING
+    // (intra-body; does not change the reachable-def/lifted set) — the same invariant
+    // run_sharing_aware_emit holds; a future reachability-changing pass needs a layout recompute here.
+    crate::opt::PassManager::for_level(opt_level).run(&mut db);
+
     crate::opt::run_sharing_aware_emit(&mut db, &layout, opt_level);
 
     // Collect every reached fault across the reachable definitions, module-wide (report ALL, not just
