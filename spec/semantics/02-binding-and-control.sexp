@@ -749,7 +749,7 @@
   (call main (: 1 Int64)) (output (: 18 Int64))
   (call main (: 2 Int64)) (output (: -1 Int64))
   (call main (: 3 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "THREE stacked guards on one constructor classify a heap payload into bands in order"
   (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →

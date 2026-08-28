@@ -618,7 +618,7 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 22))
+  (live-objects known-leak 19))
 
 ;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
 ;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
@@ -726,7 +726,7 @@
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
   (output (: 11 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Guards over quote patterns (subtree-equality rewrites). ---
 

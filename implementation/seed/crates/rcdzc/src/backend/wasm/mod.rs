@@ -594,6 +594,14 @@ pub fn emit(
         // init (`is_markable_constant_sum_nullary`); force it too (not in any body when the only such
         // construction is hoisted → its `CallImport` would otherwise resolve to u32::MAX).
         used.insert("sum-new");
+        // A hoisted MAP/SET whose KEY/ELEMENT is (or contains) a LIST canonicalizes that key for CHAMP-slot
+        // exactness (`key_needs_canonicalize` = `ty_contains_list` → `emit_key_canonicalize`), which emits
+        // `value-canonicalize`; a rope String/Bytes key compacts (`key_needs_compaction` → `bytes-compact`).
+        // When the ONLY use of such a map/set is hoisted, neither op is in any body → its init `CallImport`
+        // would resolve out-of-range (invalid `function[N]`, the exact regressor the prior nested-list attempt
+        // hit). Force both — same discipline as `vec-of-arr`/`sum-new` above.
+        used.insert("value-canonicalize");
+        used.insert("bytes-compact");
     }
     // A typed interface-export member with a RECORD param emits a boundary WRAPPER that BUILDS the record
     // from the flattened fields (`arr-alloc`/`arr-set` + per-field `box-*`). Those ops are the wrapper's,
@@ -3256,6 +3264,11 @@ fn emit_runtime_resource(
         used.insert("set-insert");
         // A hoisted NULLARY mixed-sum terminal builds via `sum-new(disc, IMM_UNIT)` in the init — force it.
         used.insert("sum-new");
+        // A hoisted MAP/SET with a LIST key/element canonicalizes it (`value-canonicalize`) for CHAMP-slot
+        // exactness; a rope String/Bytes key compacts (`bytes-compact`). Force both — else the init's
+        // `CallImport` resolves out-of-range (invalid `function[N]`, the ikc1/itf2 regressor). Mirrors 585.
+        used.insert("value-canonicalize");
+        used.insert("bytes-compact");
     }
     let imports: Vec<&runtime_abi::RtOp> = used
         .iter()
@@ -9004,6 +9017,8 @@ fn emit_recursive_sum_resource(
             "set-empty",
             "set-insert",
             "sum-new", // hoisted nullary mixed-sum terminal builds via sum-new(disc, IMM_UNIT) in the init
+            "value-canonicalize", // hoisted map/set with a LIST key canonicalizes it for CHAMP-slot exactness
+            "bytes-compact", // hoisted map/set with a rope String/Bytes key compacts it (ikc1/itf2 fix)
         ] {
             used.insert(op);
         }
@@ -10611,6 +10626,8 @@ fn emit_bytes_provider_member(
             "set-empty",
             "set-insert",
             "sum-new", // hoisted nullary mixed-sum terminal builds via sum-new(disc, IMM_UNIT) in the init
+            "value-canonicalize", // hoisted map/set with a LIST key canonicalizes it for CHAMP-slot exactness
+            "bytes-compact", // hoisted map/set with a rope String/Bytes key compacts it (ikc1/itf2 fix)
         ] {
             used.insert(op);
         }

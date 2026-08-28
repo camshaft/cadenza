@@ -703,7 +703,7 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 2 Int64)) (output (: 0 Int64))
   (call main (: 3 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 36))
+  (live-objects known-leak 35))
 
 (case "dropping a set derived by insert must not free members shared with the survivor"
   (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,

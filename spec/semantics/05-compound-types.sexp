@@ -3313,7 +3313,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; The DISTINCT sibling of the case above, now FIXED: reading the head by RE-EXTRACTING the node's payload
 ; (`head-of node`) in a sibling operand WHILE `fl(elems)` consumes the shared payload alias. `elems` is the
@@ -3354,7 +3354,7 @@
             (def (main) (fc ((. Ast List) ("list" ((. Ast Name) "a") ((. Ast Int) 5)))))
             (export main)))
   (output (: 101 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "a self-recursive AST walker consumes a node's child list while the node is threaded unchanged"
   (doc    "The CONSUMING-payload face of the AST-walker family (the loop-carried twin of the mutual-recursion
@@ -9607,7 +9607,7 @@
                           ((Core.KCall (tuple fi xs)) (sum-args xs 0 (List.len xs)))))
             (def (main) (ev (Core.KCall (tuple 9 (list (Core.KConst 10) (Core.KConst 20) (Core.KConst 12)))))) (export main)))
   (output (: 42 Int64))
-  (live-objects known-leak 5))
+  (live-objects known-leak 3))
 
 (case "map equality is independent of insertion order"
   (doc    "Witnesses collections-and-text.md #A Map Associates Keys With Values.")
@@ -19701,7 +19701,7 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1950 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 18))
 
 ; --- Remove-path canonicalization under runtime whole-map equality: the existing runtime map
 ; equality pins build both sides by INSERT only; these pin that a map reached VIA a remove
@@ -20136,7 +20136,7 @@
   (call   main (: 1 Int64))
   (output (: (record (= nums (list 1 2)) (= tags (list "a" "b"))) (record (nums (List Int64)) (tags (List String)))))
   ; WIT static encoding: record-return build-once hoists the two constant list fields → residual leak 7→1.
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "vse12 a RUNTIME-BUILT record with String + Bytes fields escapes via the runtime value-encode walker (the reducer-Event shape)"
   (doc    "The reducer Event shape {content-type, payload} — a record carrying a String field AND a Bytes field —
@@ -20371,7 +20371,7 @@
             (def (main (: n Int64)) (match (f n) ((Mk x _) (List.len x))))
             (export main)))
   (call   main (: -4 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 3))
 
 ;; -- leak-freedom over the DEEPEST effect compositions: five-level delegation with a growing heap-list state, sibling handles with Map states (breaker batch 390) --
 (case "lk5 a FIVE-level delegation chain with a heap LIST state at the outermost level leaves no live objects"
@@ -21517,7 +21517,7 @@
             (def (main) (f (mk 3)))
             (export main)))
   (output (: 7 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs"
   (input (do
@@ -22793,7 +22793,7 @@
                (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) s "v") 9))))))
              (def (main) (go (Option.Some ((. List push) ((. List push) (list) 7) 8)) 4 0)) (export main)))
   (call main) (output (: 12 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 (case "ope2 a chained Option.expect(Option.expect s) payload consumed per-iteration is retained"
   (doc    "The chained face: `s = (Some (Some [7,8]))`, consumed via `(List.push (Option.expect (Option.expect s)) 9)` per iteration → 12. The retain root-walk must follow the OUTER expect's scrutinee (the INNER expect) back through SumExpect links to the threaded root `s`, else the inner list gets no retain and drifts (18 not 12).")
@@ -22801,7 +22801,7 @@
                (if (= n 0) acc (go s (- n 1) (+ acc ((. List len) ((. List push) ((. Option expect) ((. Option expect) s "v") "w") 9))))))
              (def (main) (go (Option.Some (Option.Some ((. List push) ((. List push) (list) 7) 8))) 4 0)) (export main)))
   (call main) (output (: 12 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "ope3 a Unit-payload Option.expect beside a sum-match runs (IMM_UNIT sentinel dropped, valid module)"
   (doc    "The Unit-payload guard: extracting a `Unit` via `Option.expect` (and matching the same Option) has NO heap cell to alias, so no dup — but the extraction must still route through the sentinel-drop path, else the `IMM_UNIT` sentinel is left un-dropped on the stack → INVALID wasm. Running the module (not just compiling) validates it: `u2 x y = y`; each of 4 iters adds `(match s ((Some _) 1) ((None) 0))` = 1 → 4.")

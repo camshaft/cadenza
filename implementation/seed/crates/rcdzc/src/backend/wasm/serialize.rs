@@ -1576,7 +1576,11 @@ fn core_module_impl(
             params: Vec::new(),
             ret: crate::ty::Ty::Unit,
             code,
-            declared: Vec::new(),
+            // The static-compound init is stack-threaded EXCEPT a hoisted Map/Set with a LIST key, whose
+            // `emit_key_canonicalize` stashes the raw key + descriptor in two i32 scratch locals. Declare
+            // exactly the scratch the init uses (`static_compound_init_locals`, all i32 handles) — else the
+            // init's `local.get`/`local.set` reference undeclared locals = invalid wasm (the ikc1/itf2 bug).
+            declared: vec![ValType::I32; layout.static_compound_init_locals as usize],
             src_body: None,
             locals: Vec::new(),
             scopes: Vec::new(),
@@ -9150,7 +9154,11 @@ pub fn bytes_roundtrip_core_module(
             params: Vec::new(),
             ret: crate::ty::Ty::Unit,
             code,
-            declared: Vec::new(),
+            // The static-compound init is stack-threaded EXCEPT a hoisted Map/Set with a LIST key, whose
+            // `emit_key_canonicalize` stashes the raw key + descriptor in two i32 scratch locals. Declare
+            // exactly the scratch the init uses (`static_compound_init_locals`, all i32 handles) — else the
+            // init's `local.get`/`local.set` reference undeclared locals = invalid wasm (the ikc1/itf2 bug).
+            declared: vec![ValType::I32; layout.static_compound_init_locals as usize],
             src_body: None,
             locals: Vec::new(),
             scopes: Vec::new(),
@@ -9383,7 +9391,11 @@ pub fn bytes_roundtrip_host_core_module(
             params: Vec::new(),
             ret: crate::ty::Ty::Unit,
             code,
-            declared: Vec::new(),
+            // The static-compound init is stack-threaded EXCEPT a hoisted Map/Set with a LIST key, whose
+            // `emit_key_canonicalize` stashes the raw key + descriptor in two i32 scratch locals. Declare
+            // exactly the scratch the init uses (`static_compound_init_locals`, all i32 handles) — else the
+            // init's `local.get`/`local.set` reference undeclared locals = invalid wasm (the ikc1/itf2 bug).
+            declared: vec![ValType::I32; layout.static_compound_init_locals as usize],
             src_body: None,
             locals: Vec::new(),
             scopes: Vec::new(),

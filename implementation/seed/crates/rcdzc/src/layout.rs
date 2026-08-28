@@ -173,6 +173,13 @@ pub struct Layout {
     /// `type_of`/box selection), then handed to `core_module_impl` (which has no `Db`) to APPEND to the
     /// static-bytes init in the START function. Parallel to `static_compounds`; empty when there are none.
     pub static_compound_init: Vec<crate::backend::wasm::lir::Lir>,
+    /// The number of i32 SCRATCH LOCALS the `static_compound_init` body uses — the START function that runs
+    /// it must DECLARE this many locals (else a `local.get`/`local.set` in the init is out-of-bounds =
+    /// invalid wasm). Zero unless a hoisted Map/Set has a LIST key/element: `emit_key_canonicalize` stashes
+    /// the raw key + descriptor in two i32 scratch locals (the only immortal-build op that uses locals — the
+    /// tuple/record/list/sum/scalar builds are all stack-threaded). Derived in `with_static_compounds` by
+    /// scanning the init for the max `Local{Get,Set,Tee}` index (+1); all such scratch is i32 (handles).
+    pub static_compound_init_locals: u32,
 }
 
 impl Layout {
@@ -218,6 +225,7 @@ impl Layout {
             static_bytes: Vec::new(),
             static_compounds: Vec::new(),
             static_compound_init: Vec::new(),
+            static_compound_init_locals: 0,
         }
     }
 
@@ -347,9 +355,22 @@ impl Layout {
         static_compounds: Vec<StructId>,
         static_compound_init: Vec<crate::backend::wasm::lir::Lir>,
     ) -> Layout {
+        use crate::backend::wasm::lir::Lir;
+        // The START function that runs this init must declare enough scratch locals to cover every
+        // `local.get`/`local.set`/`local.tee` the init references — 1 + the max index used (0 if none). A
+        // hoisted Map/Set with a LIST key is the only shape that emits any (two i32 canonicalize slots).
+        let static_compound_init_locals = static_compound_init
+            .iter()
+            .filter_map(|op| match op {
+                Lir::LocalGet(i) | Lir::LocalSet(i) | Lir::LocalTee(i) => Some(*i),
+                _ => None,
+            })
+            .max()
+            .map_or(0, |m| m + 1);
         Layout {
             static_compounds,
             static_compound_init,
+            static_compound_init_locals,
             ..self.clone()
         }
     }
