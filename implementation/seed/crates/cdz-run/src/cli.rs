@@ -172,6 +172,22 @@ pub struct RunArgs {
     /// --check` (gap #7). Absent → no regression check (a plain pass/todo/fail grade).
     #[arg(long, value_name = "PATH")]
     pub baseline: Option<PathBuf>,
+
+    /// CORE-MODULE mode (the thin-`cdz` seam, `design/DESIGN-cdz-plugin-dispatch.md`): instead of running a
+    /// value-heap COMPONENT, run a bare CORE wasm module at `<PATH>` — instantiate it with no imports, call
+    /// its `() -> i64` export (`--core-export`, default `main`), and print one verdict line: `value <n>` (it
+    /// returned that i64), `trap` (it trapped — div0/mod0/`MIN/-1`/overflow), or `error <msg>` (invalid/
+    /// uninstantiable module = a real bug). Exit 0 for any run outcome (a verdict is not a shell failure).
+    /// This is the seam `cdz run-ml`/`run-emitted`/`chor` reach for the compiler-ml emit backend's core
+    /// modules (which import nothing + have no value-heap runtime), so `cdz` forwards to it rather than
+    /// linking `cdz_run::run_core_module` in-process. Mutually exclusive with the component-run + `--grade`
+    /// paths (takes precedence).
+    #[arg(long = "core-module", value_name = "PATH")]
+    pub core_module: Option<PathBuf>,
+
+    /// CORE-MODULE mode: the `() -> i64` export to invoke on the core module. Default `main`.
+    #[arg(long = "core-export", value_name = "NAME")]
+    pub core_export: Option<String>,
 }
 
 /// Run a component per `args`, printing the value to stdout (host calls to stderr) and returning the
@@ -194,7 +210,30 @@ pub fn run(args: &RunArgs, prog: &str) -> ExitCode {
     }
 }
 
+/// The one-line verdict for CORE-MODULE mode: run `bytes`'s `export` (`() -> i64`) and render the outcome —
+/// `value <n>` (returned that i64), `trap` (trapped), or `error <msg>` (invalid/uninstantiable). `error` is a
+/// VERDICT (not a propagated `Err`) so `cdz`'s `emit_and_run_module` can distinguish it from a trap (which it
+/// maps to `declined`). Kept a pure fn so the mapping is unit-testable.
+fn core_module_verdict(bytes: &[u8], export: &str) -> String {
+    match crate::run_core_module(bytes, export) {
+        Ok(Outcome::Value(v)) => format!("value {v}"),
+        Ok(Outcome::Trap(_)) => "trap".to_string(),
+        Err(e) => format!("error {e}"),
+    }
+}
+
 fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
+    // CORE-MODULE mode (thin-`cdz` seam): run a bare core wasm module + print a one-line verdict. Takes
+    // precedence over the component-run / grade paths. The verdict strings are the contract `cdz`'s
+    // `emit_and_run_module` maps (`value <n>`→"value <n>", `trap`→"declined", `error …` verbatim) for the
+    // run-ml/run-emitted/chor conformance seams — keep them stable.
+    if let Some(core_path) = &cli.core_module {
+        let bytes = std::fs::read(core_path)
+            .map_err(|e| anyhow::anyhow!("read core module {}: {e}", core_path.display()))?;
+        let export = cli.core_export.as_deref().unwrap_or("main");
+        println!("{}", core_module_verdict(&bytes, export));
+        return Ok(ExitCode::SUCCESS);
+    }
     // GRADE mode: grade a case against a shredded `test-run.ast` (the corpus nix pipeline's exec phase).
     // The component is OPTIONAL here — a case whose compile was REFUSED (error/declines) has no wasm; it is
     // graded purely from `--compile-status`/`--compile-diag`. When present, the wasm is read + its runtime
@@ -789,5 +828,21 @@ mod store_tests {
         // still override, and an empty path fails loudly at store-open rather than masking a misconfig.
         let picked = store_from_env_or(Some("".into()), || PathBuf::from("/fallback"));
         assert_eq!(picked, PathBuf::from(""));
+    }
+
+    // Pins CORE-MODULE mode's verdict mapping (the seam `cdz`'s emit_and_run_module forwards to). A minimal
+    // `(module (func (export "main") (result i64) i64.const 42))` → `value 42`; non-wasm → `error …`.
+    #[test]
+    fn core_module_verdict_maps_value_and_error() {
+        #[rustfmt::skip]
+        const VALUE_42: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7e,       // type: () -> i64
+            0x03, 0x02, 0x01, 0x00,                         // func: type 0
+            0x07, 0x08, 0x01, 0x04, 0x6d, 0x61, 0x69, 0x6e, 0x00, 0x00, // export "main" -> func 0
+            0x0a, 0x06, 0x01, 0x04, 0x00, 0x42, 0x2a, 0x0b, // code: i64.const 42; end
+        ];
+        assert_eq!(core_module_verdict(VALUE_42, "main"), "value 42");
+        assert!(core_module_verdict(b"not a wasm module", "main").starts_with("error "));
     }
 }
