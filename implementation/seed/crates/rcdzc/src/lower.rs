@@ -14993,6 +14993,14 @@ fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
             crate::ty::Ty::Int(_)
         ),
         Core::Tuple { .. } | Core::Record { .. } => is_markable_constant_compound(db, id),
+        // A NESTED constant mixed-sum variant — a recursive-sum literal (`(Cons 1 (Cons 2 Nil))`) or a sum
+        // nested in a tuple/record/list (`(list (Some 1) (Some 2))`). Recurse into the sum predicates (nullary
+        // OR payloaded); the build-once-immortal `mark-immortal-DEEP` on the ROOT covers the whole nested tree
+        // (nested-collection immortals — the payloaded-sum #4814 extended one level; this closes the recursion).
+        // Terminates: a finite constant literal bottoms out at a nullary terminal / scalar leaf.
+        Core::SumNew { .. } => {
+            is_markable_constant_sum_nullary(db, id) || is_markable_constant_sum_payloaded(db, id)
+        }
         _ => is_constant_bytes(db, id) || constant_string_value(db, id).is_some(),
     }
 }

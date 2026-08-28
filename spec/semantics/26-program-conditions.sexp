@@ -1600,7 +1600,7 @@
                     ((Option.None) false)))))
             (export main)))
   (output (: true Bool))
-  (live-objects known-leak 8))
+  (live-objects 0))
 
 (case "t1(match) NEGATIVE: a NON-total arm set (one Bool arm missing) does NOT discharge COVERS — the match can still trap"
   (doc    "The exhaustiveness soundness dual. A Bool scrutinee (2 variants) with only ONE arm covered (tags

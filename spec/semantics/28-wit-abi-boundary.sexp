@@ -165,7 +165,7 @@
   (input (do (def (f (: m (Record (: x Int64)))) (record (= d Option.None))) (export f)))
   (call f (: (record (= x 0)) (Record (: x Int64))))
   (output (: (record (= d (None unit))) (record (d (Option Int64)))))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a list of records with a bytes leaf crosses the export boundary via an imposed WIT world"
   (doc    "SHAPE 9 — the reducer-echo Step shape (list of records each carrying a Bytes/list<u8> leaf,
@@ -541,7 +541,7 @@
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a record-with-an-option-bytes-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 36 — record{d: option<bytes>, n: s64} host-op ARG; the option field flattens to (disc, ptr, len), Some copies the payload rope. Runtime coverage for v-rust-backend increment 6 (#3354).")
@@ -573,7 +573,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a list<record-with-option-field> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 39 — a list<record{d: option<s64>, n: s64}> host-op ARG (sink.push): each record element written in place, its option field via emit_option_to_mem - Some(5) and None across two elements. Runtime coverage for v-rust-backend increment 8 (#3360).")
@@ -583,7 +583,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 10))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a record-with-a-tuple-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 40 — a record host-op ARG with a tuple<s64, bytes> field (sink.push(record{t: tuple<s64, bytes>, n: s64})): the tuple field flattens inline (s64 slot + bytes element rope-copied as (ptr,len)). Runtime coverage for v-rust-backend increment 9 (#3362).")
@@ -613,7 +613,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a list<variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 43 — a list<variant{a, b(s64), c(s64)}> host-op ARG (sink.push): each variant element written in place at its canonical variant layout (disc + uniform scalar payload) via emit_variant_to_mem; the guest sum-disc IS the component discriminant (decl order). Pushing (V.B 5), V.A, (V.C 9) exercises a payload case, a nullary case, and a second payload case. Runtime coverage for v-rust-backend increment 11 (PR #3379).")
@@ -623,7 +623,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a list<record-with-a-variant-field> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 44 — variant<scalar> as a record field inside a list element (emit_product_to_mem variant arm). Runtime coverage for v-rust-backend increment 12 (PR #3394).")
@@ -633,7 +633,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 10))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a list<tuple-with-a-variant-element> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 45 — variant<scalar> as a tuple element inside a list element (emit_product_to_mem variant arm, positional). Runtime coverage for v-rust-backend increment 12 (PR #3394).")
@@ -643,7 +643,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 10))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a nested-record host arg with a variant<scalar> leaf emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 46 — composition: record{a: s64, sub: record{v: variant{x, y(s64), z(s64)}, n: s64}} host arg; the nested-record arm recurses into the variant field arm. No new v-rust-backend emit (variant field #3368 + nested-record pre-existing); compositional coverage.")
@@ -653,7 +653,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a record-with-a-variant-u32-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 47 — variant<u32> record-field host arg: pins the i32-width payload store branch of the variant marshal (prior variant SHAPEs use s64/i64). Runtime coverage for v-rust-backend uniform-scalar variant, non-i64 width.")
@@ -663,7 +663,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a typed reducer performing a record-with-a-variant-f64-field host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 48 — variant<f64> record-field host arg: pins the f64-width payload store branch of the variant marshal.")
@@ -771,7 +771,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "a list<MIXED-WIDTH-variant<scalar>> host arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 52 - a list<variant{a(u8), b(u16), c}> host-op ARG (sink.push): each element written in place at the canonical variant layout, whose payload area is the MAX-NATURAL width of the mixed u8/u16 cases (the memory face of the flatten join, distinct from SHAPE 51's register face). Pushing (V.A 200), (V.B 60000), V.C exercises a u8 payload, a u16 payload, and a nullary case - the u8 reads from the right bits and the u16 stays intact per element. Runtime coverage for the mixed-width variant marshal's memory path (v-platform-itest's arg-probe value-gate verified the list items byte-correct); pins EMIT + INSTANTIATE + RUN.")
@@ -781,7 +781,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call on-message (: (record (= contract (list 1)) (= payload (list 2)) (= token (list 3))) (Record (: contract Bytes) (: payload Bytes) (: token Bytes))))
   (host-calls (call cadenza:platform/sink.push))
   (output (: (record (= requests ()) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
-  (live-objects known-leak 8))
+  (live-objects known-leak 6))
 
 (case "a BARE mixed-width variant as the direct host-op arg emits, loads, and runs (via an imposed WIT world)"
   (doc "SHAPE 53 - a scalar-payload variant{tiny(u8), big(s64), mark} passed BARE as the TOP-LEVEL host-op param (hosti.put(v: variant), NOT nested in a record/list). The param crosses as a component `variant` DEFINED type; the guest decomposes the value-heap variant handle into the canonical `(disc, payload)` register-flatten (join = i64 for the mixed u8/s64 cases) via emit_variant_reg_flatten - the SAME helper a record-field/list-element variant uses, now at the param position (HostParam::Variant). Three calls exercise a u8 payload case, an s64 payload case, and the nullary `mark` (payload-width zero). Runtime coverage for v-rust-backend's bare-variant host-arg param (breaker mwv1); a wrong join/flatten fails wasm-tools validate / instantiation.")
@@ -827,7 +827,7 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (call f (: (record (= x 42)) (Record (: x Int64))))
   (host-calls (call cadenza:demo/hosti.put))
   (output (: 42 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a variant-WITH-PAYLOAD host RESULT is lifted into a guest Sum and matched (via an imposed WIT world)"
   (doc "SHAPE 54 - a host op returning a scalar-payload variant{a(u8), b(s64), mark} (hosti.get). The result is SPILLED (flattens to disc+payload > 1 core value → retptr); the guest LIFTS the (disc, payload) from the retptr'd region into a value-heap Sum via emit_variant_sum_lift - the N-case generalization of the option-result lift, the RESULT-side twin of the bare-variant ARG marshal. Stubbing get -> (b 900000000000) and matching selects the B arm (k). Runtime coverage for v-rust-backend's variant-payload host-result lift (breaker w10c); a wrong disc/payload-offset read would mis-select the arm. (The cdz-run driver's coerce_one gained a Type::Variant arm to encode the variant response.)")
