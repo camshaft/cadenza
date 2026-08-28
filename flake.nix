@@ -3661,11 +3661,19 @@
           #                   2026-08-27 closure-hygiene split; operator wants ONE shell). `.#oracle` is
           #                   kept below as a deprecated ALIAS to this shell so no caller breaks.
           # LOCAL builds are NOT eager here — the shellHook defers them (see the lazy-boot note below).
+          #   git / gh      : ESSENTIAL for agents booting directly into this shell (all-nix cutover) —
+          #                   git for every worktree op (pull/commit/branch, + the `__cdz_flakeroot`
+          #                   alias helper) and gh for the open-own-PR + self-merge land model. Both are
+          #                   external/substitutable, so eager. Don't rely on the host PATH leaking into
+          #                   `nix develop` — make the one shell self-sufficient (operator hit `git pull:
+          #                   tool git not found`, 2026-08-28).
           packages = [
             rustToolchain
             pkgs.wasm-tools
             pkgs.cargo-component
             pkgs.lean4
+            pkgs.git
+            pkgs.gh
           ];
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
