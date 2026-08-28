@@ -54623,13 +54623,15 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
         ),
         "a tuple with a runtime element must NOT be markable"
     );
-    // A tuple containing a LIST → NOT markable (lists excluded: RRB-trie internals unmarkable per-node).
+    // A tuple containing a NESTED constant LIST → markable (PR #4989: the root `mark-immortal-DEEP`
+    // reaches the nested list's arr/trie + element boxes transitively; a non-bool, non-empty nested list
+    // never orphans, so it is an admissible compound element).
     assert!(
-        !markable(
+        markable(
             &format!("{m}(def (main) (tuple (list 1 2) 3)) (export main))"),
             "main"
         ),
-        "a tuple containing a list must NOT be markable (list excluded from per-node marking)"
+        "a tuple containing a non-bool constant list must be markable (deep-mark reaches the nested list)"
     );
     // A bare scalar root → NOT a compound.
     assert!(
@@ -54639,9 +54641,10 @@ fn is_markable_constant_compound_flags_scalar_bytes_and_nested_only() {
 }
 
 /// Pins [`crate::lower::is_markable_constant_list`]: a fully-constant `(list …)` of markable elements is a
-/// build-once hoist candidate at ANY size (the emit deep-marks the root, reaching `> 32` trie internals); a
-/// list with a runtime element, an ALL-`Bool` list (packed leaf orphans the marked boxes), an EMPTY list
-/// (shared singleton), a list whose element is itself a list, or a non-list root are NOT.
+/// build-once hoist candidate at ANY size (the emit deep-marks the root, reaching `> 32` trie internals) —
+/// INCLUDING a nested constant list element (PR #4989, recursed via `is_markable_constant_elem`); a list
+/// with a runtime element, an ALL-`Bool` list (packed leaf orphans the marked boxes), an EMPTY list
+/// (shared singleton), or a non-list root are NOT.
 #[test]
 fn is_markable_constant_list_flags_const_non_bool_lists_only() {
     use crate::db::Db;
@@ -54710,13 +54713,14 @@ fn is_markable_constant_list_flags_const_non_bool_lists_only() {
         ),
         "a list with a runtime element must NOT be markable"
     );
-    // A list whose element is itself a LIST → NOT markable (nested list not recursed for this slice).
+    // A list whose element is itself a non-bool LIST → markable (PR #4989: `is_markable_constant_elem`
+    // recurses `ListNew`; the root deep-mark reaches every nested list's structure — no orphan).
     assert!(
-        !markable(
+        markable(
             &format!("{m}(def (main) (list (list 1 2) (list 3 4))) (export main))"),
             "main"
         ),
-        "a list of lists must NOT be markable (nested list excluded)"
+        "a list of non-bool lists must be markable (nested list recursed, deep-marked)"
     );
     // A bare scalar root → NOT a list.
     assert!(
