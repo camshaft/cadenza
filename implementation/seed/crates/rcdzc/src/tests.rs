@@ -30234,19 +30234,12 @@ mod stage1 {
     }
 
     #[test]
-    fn two_unit_values_compare_equal() {
-        // There is exactly ONE unit value, so any two units compare EQUAL — `(= unit ())` is true,
-        // regardless of which spelling (`unit` / `()`) each operand uses. Folded at compile time: unit
-        // carries no data and has no machine slot, so this is a trivial constant, NOT a "compound needs
-        // a heap walk" decline. `<`/`>` are false (Equal, not Less/Greater); `<=`/`>=` are true.
-        assert!(run_main_as::<bool>("(= unit ())"));
-        assert!(run_main_as::<bool>("(= unit unit)"));
-        assert!(run_main_as::<bool>("(= () ())"));
-        assert!(!run_main_as::<bool>("(< unit ())"));
-        assert!(run_main_as::<bool>("(<= unit ())"));
-        assert!(run_main_as::<bool>("(>= () unit)"));
+    fn comparing_unit_against_a_non_unit_is_a_type_error() {
         // A unit compared against a non-unit is a TYPE error — the operator is `∀a. a → a → Bool`, so
         // both operands must be the SAME type; `(= unit 5)` cannot unify Unit with Int64 (CDZ0203).
+        // (The unit-value comparisons themselves — `(= unit ())` equality and the trivial unit ordering
+        // `<`/`<=`/`>=` — are corpus cases in 01-literals: "unit and the empty tuple are the same value"
+        // and "the unit value observes its total order — equal to itself, never less".)
         let e = compile_component(&crate::codec::encode(&crate::testkit::parse(
             "(module m (def (main) (= unit 5)) (export main))",
         )))
