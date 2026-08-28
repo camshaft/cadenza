@@ -16917,7 +16917,11 @@ fn leb_len(mut n: u64) -> usize {
 /// name shared across sums (sum identity is by declaration occurrence, carried by the annotation). `None`
 /// if the disc is out of range (a compiler bug). Shared by the constant-escape bake and the
 /// runtime-escape template so both write the identical head.
-fn variant_head_ast(
+// `pub(crate)` so the Cadenza backend (`backend::cadenza`) re-emits a runtime `Core::SumNew`'s variant
+// head with the SAME bare-vs-qualified spelling lower's value surface uses — sharing this keeps the
+// re-emitted variant head re-readable (a bare name that collides with a non-ctor prelude binding must be
+// qualified, exactly as here).
+pub(crate) fn variant_head_ast(
     db: &mut Db,
     b: &mut crate::ast::Builder,
     decl: StructId,

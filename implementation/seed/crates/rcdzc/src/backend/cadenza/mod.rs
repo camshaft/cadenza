@@ -43,10 +43,14 @@
 //! - **M1**: scalar `Core::Match` (Int/Bool probes + wildcard/binder) → an `if`-chain of `(= scrut lit)`
 //!   probes (value-equivalent; the scrutinee is a pure scalar). Guards desugar to `if` at lowering (so
 //!   they never reach here); a non-scalar probe (Str/Char/Bytes/list/map) declines.
+//! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
+//!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
+//!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
+//!   e.g. a bare `(None unit)`; `type_ast` declines a free-type-arg sum). All mirror lower's value surface.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), data (Record/Tuple/sums/collections — B4), and sum/list matches
-//! (MatchSum/MatchList) + non-scalar match probes.
+//! (Seq/Block/Break), map/set values, sum/list MATCHES (MatchSum/MatchList) + non-scalar match probes,
+//! and a multi-argument variant.
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -391,6 +395,92 @@ fn emit_expr(
                 }
             }
             emit_match_chain(db, b, scrutinee, &arms, 0, env)
+        }
+        // A runtime TUPLE value `(tuple <e>…)` — a fixed-arity positional product built from runtime
+        // operands (a projection of a compile-time-visible tuple folds away in `lower`, so a surviving
+        // `Core::Tuple` is a runtime value). Mirrors lower's constant value surface.
+        Core::Tuple { elems } => {
+            let head = b.name("tuple");
+            let mut children = Vec::with_capacity(1 + elems.len());
+            children.push(head);
+            for e in elems.iter().copied() {
+                children.push(emit_expr(db, b, e, env)?);
+            }
+            Ok(b.list(children))
+        }
+        // A runtime RECORD value `(record (= <k> <v>)…)` — fields in canonical (name-sorted `BTreeMap`)
+        // order, each an `(= name value)` ascription pair (matching lower's `const_value_ast` surface).
+        Core::Record { fields } => {
+            let head = b.name("record");
+            let mut children = Vec::with_capacity(1 + fields.len());
+            children.push(head);
+            for (name, &v) in fields.iter() {
+                let fname = b.name(&*name.name);
+                let fval = emit_expr(db, b, v, env)?;
+                children.push(b.field_pair(fname, fval));
+            }
+            Ok(b.list(children))
+        }
+        // A runtime LIST value `(list <e>…)` — an ordered homogeneous sequence built from runtime
+        // operands; the walk preserves element order.
+        Core::ListNew { elems } => {
+            let head = b.name("list");
+            let mut children = Vec::with_capacity(1 + elems.len());
+            children.push(head);
+            for e in elems.iter().copied() {
+                children.push(emit_expr(db, b, e, env)?);
+            }
+            Ok(b.list(children))
+        }
+        // A runtime SUM (variant) value `(<Variant> <payload>)` — a constructed variant built from a
+        // runtime payload. The variant NAME is recovered from the discriminant against the node's solved
+        // sum type (`variant_head_ast` — bare, or `(. Type Variant)` when the name would collide with a
+        // non-ctor prelude binding). A nullary variant carries `unit` (`(None unit)`), a single-payload
+        // variant its payload; a multi-argument variant surface is not canonical and declines. Mirrors
+        // lower's constant value surface.
+        Core::SumNew { disc, payloads } => {
+            let ty = crate::infer::type_of(db, id);
+            let decl = match &ty {
+                Ty::Sum { decl, .. } => *decl,
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend cannot recover a variant head for a non-sum SumNew"
+                            .to_string(),
+                    ));
+                }
+            };
+            // `(: <variant> <sum-type>)` — the ASCRIPTION is required: the optimizer often folds a sum
+            // value to a bare variant with no surrounding type context (e.g. `main` = `(None unit)`), and
+            // a nullary or partially-parameterized variant under-determines the sum's type parameters
+            // (`(Option _)` / `(Result Int64 _)`) → CDZ0203 on recompile. Annotating with the full solved
+            // sum type (via lower's `type_ast`) pins it. `type_ast` returns `None` for an under-determined
+            // sum (a free type-arg), so a genuinely-ambiguous value DECLINES rather than emit a bad surface.
+            let colon = b.name(":");
+            let head = crate::lower::variant_head_ast(db, b, decl, disc).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend could not recover the variant name for a SumNew"
+                        .to_string(),
+                )
+            })?;
+            let payload = match payloads.len() {
+                0 => b.name("unit"),
+                1 => emit_expr(db, b, payloads[0], env)?,
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a multi-argument variant"
+                            .to_string(),
+                    ));
+                }
+            };
+            let variant = b.list(vec![head, payload]);
+            let ncx = db.name_ctx();
+            let ty_node = crate::lower::type_ast(b, &ty, &ncx).ok_or_else(|| {
+                Reject::decline(
+                    "the Cadenza backend does not yet lower a variant of an under-determined sum type"
+                        .to_string(),
+                )
+            })?;
+            Ok(b.list(vec![colon, variant, ty_node]))
         }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",

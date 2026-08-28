@@ -11891,3 +11891,16 @@
     (def (main (: n Int64)) (+ (* 1000 (classify 1)) (classify n)))
     (export main)))
   (call main (: 7 Int64)) (output (: 200075 Int64)))
+
+(case "cdzw11 the cadenza backend round-trips a runtime NESTED compound — a record with a tuple field and a list field"
+  (doc "Fresh cadenza slice #4907 (emit runtime Core::Tuple/Record/ListNew back to their constructor surface):
+        a runtime-built `(record (= pair (tuple n (+ n 1))) (= xs (list n (* n 2))))` — a record whose fields
+        are themselves a tuple and a list — must re-emit + round-trip preserving structure, field values, AND
+        field order. At n=3 → `(record (= pair (tuple 3 4)) (= xs (list 3 6)))` (dual-path verified byte-equal
+        sexp→cadenza→wasm vs direct). Additive over cdzw1-10 (scalars/params/ops/control/let/calls/Match — no
+        compounds). `(live-objects 4)` = the reachable return compound (record + tuple + list nodes). A
+        regression mis-nesting, mis-ordering the record fields, or dropping a field would change the value.")
+  (input (do (def (main (: n Int64)) (record (= pair (tuple n (+ n 1))) (= xs (list n (* n 2))))) (export main)))
+  (call main (: 3 Int64))
+  (output (: (record (= pair (tuple 3 4)) (= xs (list 3 6))) (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
+  (live-objects 4))

@@ -3735,20 +3735,47 @@
                 #    died → stale build-locks → the fleet-wide daemon WEDGE, ~15 clients stuck 9-12h, 2026-08-28).
                 #    Rooting the aggregates keeps every per-case CA output hot so a corpus check cache-HITS
                 #    instead of rebuilding from source. This is the durable fix for the recurring wedge.
+                # SHARDED PER-TARGET (v-nix 2026-08-28): each target gets its OWN --out-link and builds
+                # SEQUENTIALLY, so its GC-root is registered the MOMENT that target finishes. The prior
+                # monolithic `nix build A B C … --out-link warm` wrote NO symlink until the WHOLE set
+                # completed — so if any single member never converged (a corpus aggregate racing a
+                # fast-moving main whose per-case CA hashes churn, or the heavy wasm-opt-gaps sweep),
+                # ZERO roots appeared and the corpus stayed cold (observed ALL-session 2026-08-28 by
+                # v-ft: only 8 stale deps/store roots, zero corpus-*; 10 clients still cold-sweeping).
+                # Sharding lets fast/foundational targets root FIRST and a slow/churning one starve only
+                # itself. Sequential (one build client at a time) also caps daemon pressure — no
+                # self-inflicted contention. Best-effort: a failed shard logs WARN and we continue (a
+                # supervisor re-run cache-HITs the rooted ones and retries the rest); we exit 0 so a
+                # cron/nohup supervisor doesn't alarm on a partial pass.
+                # First drop the OLD monolithic-era roots (warm, warm-<N>): they pin STALE closures the
+                # current gates don't want, so removing them lets the next GC reclaim that churn; the
+                # loop below immediately re-establishes fresh per-target roots (warm-<slug>).
+                # rm -f removes the symlink itself (live OR dangling target) and ignores the literal
+                # glob when nothing matches (-f), so no set -e trip and stale dangling roots are cleared.
+                rm -f "$root_dir"/warm "$root_dir"/warm-[0-9]*
                 # --out-link registers each as an indirect GC-root so the store stays hot.
-                nix build \
-                  ".#packages.${system}.cargo-artifacts" \
-                  ".#packages.${system}.cargo-artifacts-release" \
-                  ".#packages.${system}.cargo-artifacts-release-codegen" \
-                  ".#packages.${system}.store" \
-                  ".#checks.${system}.local-gate" \
-                  ".#checks.${system}.corpus" \
-                  ".#checks.${system}.corpus-rust" \
-                  ".#checks.${system}.corpus-rust-async" \
-                  ".#checks.${system}.corpus-cadenza" \
-                  ".#checks.${system}.wasm-opt-gaps" \
-                  --out-link "$root_dir/warm" --print-build-logs
-                echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
+                targets=(
+                  "packages.${system}.cargo-artifacts"
+                  "packages.${system}.cargo-artifacts-release"
+                  "packages.${system}.cargo-artifacts-release-codegen"
+                  "packages.${system}.store"
+                  "checks.${system}.local-gate"
+                  "checks.${system}.corpus"
+                  "checks.${system}.corpus-rust"
+                  "checks.${system}.corpus-rust-async"
+                  "checks.${system}.corpus-cadenza"
+                  "checks.${system}.wasm-opt-gaps"
+                )
+                for t in "''${targets[@]}"; do
+                  slug="''${t##*.}"
+                  echo "cdz warm-keep: rooting .#$t → $root_dir/warm-$slug"
+                  if nix build ".#$t" --out-link "$root_dir/warm-$slug" --print-build-logs; then
+                    echo "cdz warm-keep: rooted $slug"
+                  else
+                    echo "cdz warm-keep: WARN could not root $slug (continuing)"
+                  fi
+                done
+                echo "cdz warm-keep: done — sharded warm layer pinned (per-target roots under $root_dir/warm-*)."
               '';
             };
           in
