@@ -14,7 +14,8 @@
 //!
 //! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main) <body>)
 //! (export main))` where `<body>` is an Int64 expression — edge-biased literal | in-scope var |
-//! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | non-recursive helper call `(f e e)` |
+//! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | a SELF-operation reusing an in-scope var
+//! `(op v v)` / `(rel v v)` (stresses self-identity folds + thunk sharing) | non-recursive helper call `(f e e)` |
 //! non-tail recursive-helper call `(r <small-fuel>)` | tail-recursive-helper call `(t <small-fuel>
 //! <seed>)` — a compound value `(tuple e e)` / `(list e e e)` of Int64 elements, or a Bool value. Kept
 //! type-correct throughout, so a generated program is cleanly HANDLED (it compiles, or cleanly declines
@@ -336,7 +337,19 @@ fn gen_expr<C: Choice>(
         _ => {
             if !scope.is_empty() && c.variant(2) == 1 {
                 let idx = c.variant(scope.len());
-                out.push_str(&scope[idx]);
+                // Sometimes emit a SELF-operation `(op v v)` REUSING the same in-scope var, rather than a
+                // bare `v`. No recursion (operands are the var), so it stays a depth-0-safe leaf. This
+                // densely stresses the const-fold-soundness surface — self-identity folds (`v - v`→0,
+                // `v ^ v`→0, …), CSE, and thunk SHARING of the bound value: if the binding traps on force,
+                // a fold that drops the operand must not elide the trap (cf. the self-identity-fold
+                // miscompile the L2 differential found).
+                if c.variant(2) == 1 {
+                    let op = OPS[c.variant(OPS.len())];
+                    let v = &scope[idx];
+                    write!(out, "({op} {v} {v})").ok();
+                } else {
+                    out.push_str(&scope[idx]);
+                }
             } else {
                 gen_int_literal(c, out);
             }
@@ -384,13 +397,22 @@ fn gen_cond<C: Choice>(
         // underflow — the operand exprs just bottom out at their own base case.
         _ => {
             let rel = RELS[c.variant(RELS.len())];
-            out.push('(');
-            out.push_str(rel);
-            out.push(' ');
-            gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
-            out.push(' ');
-            gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
-            out.push(')');
+            // Sometimes compare the SAME in-scope var to itself — `(rel v v)` — the exact shape that
+            // exposes self-identity RELATIONAL folds (`(< v v)`→false, `(<= v v)`→true, …). If `v`'s
+            // binding traps on force, folding the relation to a constant that drops `v` must NOT elide
+            // the trap (the confirmed self-identity-fold miscompile). Else two independent operands.
+            if !scope.is_empty() && c.variant(3) == 0 {
+                let v = &scope[c.variant(scope.len())];
+                write!(out, "({rel} {v} {v})").ok();
+            } else {
+                out.push('(');
+                out.push_str(rel);
+                out.push(' ');
+                gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
+                out.push(' ');
+                gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
+                out.push(')');
+            }
         }
     }
 }
@@ -695,6 +717,49 @@ mod tests {
         assert!(
             saw_tail,
             "the tail-recursive arm should be reachable across 400 varied entropy inputs"
+        );
+    }
+
+    /// Self-operations on a bound var — `(op v v)` / `(rel v v)`, the same in-scope name reused for both
+    /// operands — are REACHABLE across varied entropy, and every program that emits one is cleanly
+    /// handled. Guards the variable-reuse widening that stresses the const-fold-soundness surface.
+    #[test]
+    fn self_operations_on_bound_vars_are_reachable_and_cleanly_handled() {
+        // A doubled var token `vK vK` (same name, space-separated) is the self-operation signature.
+        fn has_self_op(src: &str) -> bool {
+            let toks: Vec<&str> = src.split(['(', ')', ' ']).collect();
+            toks.windows(2).any(|w| {
+                let t = w[0];
+                !t.is_empty()
+                    && t == w[1]
+                    && t.starts_with('v')
+                    && t[1..].chars().all(|c| c.is_ascii_digit())
+                    && t.len() > 1
+            })
+        }
+        let mut saw_self_op = false;
+        for seed in 0u64..400 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let program = gen_from(&bytes);
+            if has_self_op(&program.source) {
+                saw_self_op = true;
+                let verdict = compile_catching(&program.source);
+                assert!(
+                    matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                    "self-op program must be cleanly handled, got {verdict:?} for: {}",
+                    program.source
+                );
+            }
+        }
+        assert!(
+            saw_self_op,
+            "a self-operation `(op v v)`/`(rel v v)` should be reachable across 400 varied inputs"
         );
     }
 
