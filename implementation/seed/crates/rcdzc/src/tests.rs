@@ -9428,55 +9428,18 @@ mod match_engine {
         );
     }
 
-    /// Verification Inc-b @invariant NAME-RESOLUTION: an `@invariant(pred)` predicate references only the value
-    /// binder `self` (the value of the type) and prelude/global names — no def params (a type has none). A stray
-    /// name is UNBOUND → CDZ0101 at the annotation (the b4c pattern, reused for the data-level member). A valid
-    /// invariant over `self` + prelude ops is NOT flagged.
+    /// Verification Inc-b predicate NAME-RESOLUTION (@requires LIST-REST arm): the predicate binder collector
+    /// (`resolve::arm_pattern_binders`) binds BOTH a rest pattern's leaf + rest names without over-collecting
+    /// the `list` head / `..` marker, and still catches a genuinely-stray name → CDZ0101. (The @invariant
+    /// flat/destructure name-resolution halves migrated to corpus 26-program-conditions.)
     #[test]
-    fn an_invariant_predicate_with_an_unbound_name_is_rejected() {
+    fn a_requires_predicate_list_rest_pattern_arm_binds_both_names_and_still_catches_a_stray() {
         use crate::testkit::parse;
-        // `zzz` is neither the value binder `self` nor a prelude op → unbound.
-        let bad = "(module m (@ (invariant (and (>= self 0) (< self zzz))) (type Percent (Pct Int64))) \
-            (def (main) 0) (export main))";
-        let d = crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
-            .into_iter()
-            .find(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("zzz"))
-            .expect("an unbound name in an @invariant predicate is rejected CDZ0101");
-        assert!(d.message.contains("zzz"), "got: {}", d.message);
-        // NO false positive: an invariant over `self` + prelude ops only is accepted.
-        let ok = "(module m (@ (invariant (and (>= self 0) (<= self 100))) (type Percent (Pct Int64))) \
-            (def (main) 0) (export main))";
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(ok)))
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0101")),
-            "a valid @invariant over `self` + prelude ops is not flagged unbound"
-        );
-        // NO false positive on a DESTRUCTURE-form invariant — the canonical @invariant shape (it = whole
-        // value, unwrap the payload via a match arm; the nominal boundary forbids a bare `(>= it 0)`). The
-        // match-arm binder `v` is predicate-LOCAL (in scope in the arm) and must NOT be flagged unbound — the
-        // name-resolution walk threads binder scopes. (Regression pin: a flat walk wrongly reported `v`
-        // unbound, making the mandatory destructure form unusable.)
-        let destructure = "(module m \
-            (@ (invariant (match self ((Percent.Pct v) (and (>= v 0) (<= v 100))))) (type Percent (Pct Int64))) \
-            (def (main) (match (Percent.Pct 50) ((Percent.Pct n) n))) (export main))";
-        assert!(
-            !crate::diagnostics(&mut crate::db::Db::load(parse(destructure)))
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0101")),
-            "a destructure-form @invariant's match-arm binder `v` is in scope, not flagged unbound"
-        );
-        // ...but a genuinely-unbound name INSIDE a destructure arm is still caught (the binder scope does not
-        // hide a stray name).
-        let bad_arm = "(module m \
-            (@ (invariant (match self ((Percent.Pct v) (> v nope)))) (type Percent (Pct Int64))) \
-            (def (main) 0) (export main))";
-        assert!(
-            crate::diagnostics(&mut crate::db::Db::load(parse(bad_arm)))
-                .iter()
-                .any(|d| d.code.as_deref() == Some("CDZ0101") && d.message.contains("nope")),
-            "a stray name inside a destructure arm is still CDZ0101 (binder scope doesn't mask it)"
-        );
+        // The @invariant flat/destructure name-resolution halves of this test migrated to corpus
+        // 26-program-conditions (unbound-flat 2840, accepted-flat 2863, destructure-binder-in-scope 3022,
+        // and the destructure-arm-stray-name reject added alongside 2840). This keeps the @requires
+        // LIST-REST-pattern binder-scope pin below, whose rest-pattern-in-a-predicate shape has no corpus
+        // form yet (it asserts a predicate-local binder scope + no-spurious-secondary, corpus-inexpressible).
         // PR#562: the predicate binder collector now delegates to `resolve::arm_pattern_binders` (the
         // canonical, well-scoped one), replacing a local walk that pushed EVERY bare name — including a
         // separator `..`/`_` or a compound pattern's HEAD. A REST pattern `(P.Ps (list a .. rest))` must

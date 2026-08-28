@@ -2851,6 +2851,22 @@
             (export main)))
   (error  CDZ0101))
 
+(case "@invariant destructure-arm predicate: a stray name inside the arm is still REJECTED (arm binder scope does not mask it)"
+  (doc    "The destructure-form sibling of the flat unbound-name reject above. The canonical
+           `@invariant(match self ((T.V v) …))` shape binds `v` predicate-LOCALLY (in scope in the arm — see
+           the destructure-invariant establish cases below that use such binders successfully), but a name that
+           is NEITHER the arm binder NOR prelude is STILL unbound: `(match self ((Percent.Pct v) (> v nope)))`
+           resolves `v` (arm binder) yet `nope` is a stray name → CDZ0101. Pins that the invariant predicate's
+           binder-scope walk threads the arm binders WITHOUT masking a genuine unbound name (a flat walk that
+           pushed every bare name would wrongly accept `nope`). Migrated from rcdzc
+           an_invariant_predicate_with_an_unbound_name_is_rejected (its flat/positive/binder-in-scope halves
+           are the 2840/2863/3022 cases here).")
+  (input  (do
+            (@ (invariant (match self ((Percent.Pct v) (> v nope)))) (type Percent (Pct Int64)))
+            (def (main) 0)
+            (export main)))
+  (error  CDZ0101 (message "nope")))
+
 ; ── @invariant ESTABLISH Part 1: a BARE scalar invariant on a newtype AUTO-UNWRAPS + type-checks ──────────
 ; The establish checker `invariant_establish::synthesize` emits `(def (__invariant_check_T (: it T)) …)` per
 ; @invariant type so the predicate is TYPE-CHECKED. For a single-payload newtype it AUTO-UNWRAPS: a bare
