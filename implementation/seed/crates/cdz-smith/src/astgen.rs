@@ -12,10 +12,12 @@
 //! `ValueGenerator` (behind `#[cfg(test)]`, since `bolero` is a dev-dependency) drives the SAME grammar
 //! via a `Driver`→`Choice` adapter for the `cdz_smith_gen_never_panics` target. One grammar, two drivers.
 //!
-//! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main [ (: v0 <heap>) ])
-//! <body>) (export main))` — `main` OPTIONALLY takes one heap/reference-typed param (`String`/`Bytes`/
-//! `(List Int64)`/`(Option Int64)`, left unused) to exercise the exported-entry heap-param ABI path (the
-//! bucket-1 emit miscompile fixed by rcdzc #4961). `<body>` is an Int64 expression — edge-biased literal | in-scope var |
+//! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main [ (: v0 <heap>) |
+//! (: n Int64) ]) <body>) (export main))` — `main` OPTIONALLY takes either one heap/reference-typed param
+//! (`String`/`Bytes`/`(List Int64)`/`(Option Int64)`, left unused) to exercise the exported-entry heap-param
+//! ABI path (the bucket-1 emit miscompile fixed by rcdzc #4961), OR a RUNTIME `(: n Int64)` param put
+//! IN SCOPE so the Int64 body depends on a non-const-foldable input (runtime-dependent programs; an `if`/
+//! `match` on `n` keeps both arms live — no dead-branch-elim masking the join/emit surface). `<body>` is an Int64 expression — edge-biased literal | in-scope var |
 //! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | a SELF-operation reusing an in-scope var
 //! `(op v v)` / `(rel v v)` (stresses self-identity folds + thunk sharing) | non-recursive helper call `(f e e)` |
 //! non-tail recursive-helper call `(r <small-fuel>)` | tail-recursive-helper call `(t <small-fuel>
@@ -198,13 +200,27 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     // drawn (String/Bytes/(List Int64)/(Option Int64) cross the plain export boundary — Tuple/Record/Unit
     // decline there, which is still "cleanly handled" but pointless), so the program COMPILES (post-#4961)
     // or cleanly declines.
-    if c.variant(2) == 1 {
-        let ty = HEAP_PARAM_TYPES[c.variant(HEAP_PARAM_TYPES.len())];
-        write!(source, "(def (main (: v0 {ty})) ").ok();
-    } else {
-        source.push_str("(def (main) ");
-    }
+    // Also: sometimes give `main` a RUNTIME `(: n Int64)` param and put `n` IN SCOPE. `n` is a genuine
+    // entry input the compiler cannot const-fold, so the Int64 grammar (`gen_expr`/`gen_cond`/`gen_compound`
+    // reference it) becomes RUNTIME-DEPENDENT — programs whose values depend on `n` are NOT collapsed by
+    // const-folding, and an `if`/`match` on `n` keeps BOTH arms live (no dead-branch-elim). That un-masks
+    // the join/emit surface: a const condition/scrutinee lets dead-branch-elim ELIDE the mismatched arm
+    // (the masking that hid the float-widen class in probes) — a runtime `n` keeps the join actually
+    // emitted. Broader emit coverage + the runtime-scrutinee foundation the aggressive mixed-type mode needs.
     let mut scope: Vec<String> = Vec::new();
+    match c.variant(3) {
+        0 => {
+            let ty = HEAP_PARAM_TYPES[c.variant(HEAP_PARAM_TYPES.len())];
+            write!(source, "(def (main (: v0 {ty})) ").ok();
+        }
+        1 => {
+            source.push_str("(def (main (: n Int64)) ");
+            scope.push("n".to_string()); // `n` is a runtime Int64 in scope → runtime-dependent programs
+        }
+        _ => {
+            source.push_str("(def (main) ");
+        }
+    }
     gen_main_body(c, &mut scope, &mut fresh, caps, &mut source);
     source.push_str(") (export main))");
     Program { source }
@@ -1143,6 +1159,40 @@ mod tests {
         assert!(
             saw,
             "the coercing generator should reach a heap-param entry `(def (main (: v0 …)) …)`"
+        );
+    }
+
+    /// The generator REACHES a runtime `(: n Int64)` entry that actually REFERENCES `n` — a
+    /// runtime-dependent program (not const-foldable) that keeps `if`/`match` joins live (no dead-branch
+    /// elim). Guards that the runtime-`n` branch produces `n`-using bodies, not just an unused param.
+    #[test]
+    fn generator_reaches_a_runtime_n_entry() {
+        let mut saw = false;
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(61);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let src = generate_coerced(&bytes).source;
+            // A runtime-n entry that USES n: after the `(: n Int64))` param, the body has a standalone
+            // `n` token (a var reference) — tokenize on non-identifier chars so `main` doesn't false-match.
+            if let Some((_, after)) = src.split_once("(def (main (: n Int64)) ") {
+                let body = after.strip_suffix(") (export main))").unwrap_or(after);
+                if body
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|tok| tok == "n")
+                {
+                    saw = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw,
+            "the coercing generator should reach a runtime `(: n Int64)` entry that references `n`"
         );
     }
 
