@@ -1366,6 +1366,68 @@ fn reference_transaction_hook_body(log_path: &str) -> String {
     )
 }
 
+/// A recognizable line from the hand-placed `pre-commit` trunk-guard — used as the `adopt_signature` so
+/// `install_git_hooks` replaces that (unmarked) hand-placed hook with the fleet-marked version (which
+/// carries the SAME trunk-guard + the fmt-check) instead of leaving it foreign. A third-party pre-commit
+/// hook lacking both the marker and this signature is still left untouched.
+const PRE_COMMIT_TRUNK_GUARD_SIGNATURE: &str =
+    "pre-commit blocked: you are committing directly onto";
+const PRE_COMMIT_HOOK_MARKER: &str = "# fleet:pre-commit";
+
+/// The fleet `pre-commit` hook body. Two guards: (1) the TRUNK-GUARD (refuse a direct commit onto
+/// `trunk` outside the pr-sync worktree — the single-writer invariant, same as the prior hand-placed
+/// hook); (2) a WARN-ONLY staged-`.rs` rustfmt check (concierge call 2026-08-28). WHY warn-only: it is
+/// FAIL-OPEN (never blocks a mid-flow commit — only the trunk-guard blocks), matching the
+/// `reference-transaction` logger's philosophy, and it catches at the SOURCE the recurring
+/// ambient-vs-pinned fmt drift that reds fast-gate / `cargo xtask check` cargo-fmt fleet-wide (fixed
+/// reactively 3× — the active toolchain IS the pinned 1.95.0 via rust-toolchain.toml, so ambient
+/// `cargo fmt --check` == pinned; a fast check with no dev-shell suffices). Only runs when a `.rs` file
+/// is staged (a docs/config commit skips it). `FLEET_SKIP_FMT_CHECK=1` silences the warn;
+/// `ALLOW_TRUNK_COMMIT=1` bypasses the trunk-guard (both preserved).
+fn pre_commit_hook_body() -> String {
+    format!(
+        r##"#!/usr/bin/env bash
+{PRE_COMMIT_HOOK_MARKER}
+# Fleet pre-commit (installed by `cargo xtask fleet up` -> install_git_hooks; reproducible, self-healing,
+# never clobbers a truly-foreign hook). (1) trunk-guard: single-writer protection for `trunk`.
+# (2) warn-only staged-.rs fmt check: fail-open, catches ambient-vs-pinned rustfmt drift at the source.
+set -uo pipefail
+
+# (1) TRUNK-GUARD — refuse a direct commit onto `trunk` unless in the pr-sync worktree (the integrator).
+if [ "${{ALLOW_TRUNK_COMMIT:-}}" != "1" ] && [ "${{ALLOW_MAIN_COMMIT:-}}" != "1" ]; then
+  branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+  if [ "$branch" = "trunk" ]; then
+    toplevel="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    case "$toplevel" in
+      */.claude/worktrees/pr-sync) : ;;   # the integrator — allowed
+      *)
+        echo "✗ pre-commit blocked: you are committing directly onto \`trunk\`." >&2
+        echo "  \`trunk\` is the integration branch, advanced ONLY by pr-sync in .claude/worktrees/pr-sync." >&2
+        echo "  Work on your own topic branch and send pr-sync a merge-request instead." >&2
+        echo "  If this trunk commit is genuinely intentional + human-authorized: ALLOW_TRUNK_COMMIT=1 git commit …" >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
+
+# (2) WARN-ONLY staged-.rs rustfmt check (fail-open — this section NEVER exits non-zero).
+if [ "${{FLEET_SKIP_FMT_CHECK:-}}" != "1" ]; then
+  if git diff --cached --name-only --diff-filter=ACM -- '*.rs' 2>/dev/null | grep -q . ; then
+    # ambient cargo fmt == the pinned 1.95.0 (rust-toolchain.toml), so --check is exact + fast (no nix).
+    if ! cargo fmt --check >/dev/null 2>&1; then
+      echo "⚠ fleet pre-commit: rustfmt drift in the workspace (you are staging .rs files)." >&2
+      echo "  Run \`cargo fmt\` (pinned 1.95.0 via rust-toolchain.toml) — unformatted rust reds fast-gate /" >&2
+      echo "  \`cargo xtask check\` cargo-fmt FLEET-WIDE. Warn-only: this commit proceeds." >&2
+      echo "  (Silence with FLEET_SKIP_FMT_CHECK=1.)" >&2
+    fi
+  fi
+fi
+exit 0
+"##
+    )
+}
+
 /// What `install_git_hooks` should DO with an existing hook file, decided purely from its content vs
 /// the desired body. Split out so the "when do we (over)write" policy is unit-testable without touching
 /// the filesystem — and so the caller can distinguish a fresh install from a DRIFT-HEAL (an
@@ -1384,17 +1446,36 @@ enum HookInstallAction {
     Heal,
 }
 
-/// Pure policy for `install_git_hooks`: given the current hook file content (None if absent) and the
-/// desired body, decide the action. Only ever (over)writes a hook carrying OUR marker — a pre-existing
-/// foreign hook of the same name is left alone (we never clobber a hand-placed hook). An ours-marked
-/// hook whose body no longer matches source is HEALED (the self-heal that stops a landed hook-body fix
-/// from silently failing to reach the running fleet).
-fn hook_install_action(existing: Option<&str>, desired: &str) -> HookInstallAction {
+/// Pure policy for `install_git_hooks`: given the current hook file content (None if absent), the
+/// desired body, our `marker`, and an optional `adopt_signature`, decide the action. Only ever
+/// (over)writes a hook carrying OUR `marker` — a pre-existing foreign hook of the same name is left
+/// alone (we never clobber a hand-placed THIRD-PARTY hook). An ours-marked hook whose body no longer
+/// matches source is HEALED (the self-heal that stops a landed hook-body fix from silently failing to
+/// reach the running fleet). `adopt_signature` handles the one-time transition of a fleet hook that was
+/// hand-placed WITHOUT our marker (e.g. the pre-commit trunk-guard): an unmarked hook whose body
+/// contains that recognizable signature is OURS → adopt it (Install the marked version). A hook that is
+/// neither marked nor signature-matching stays LeaveForeign.
+fn hook_install_action(
+    existing: Option<&str>,
+    desired: &str,
+    marker: &str,
+    adopt_signature: Option<&str>,
+) -> HookInstallAction {
     match existing {
         None => HookInstallAction::Install,
-        Some(cur) if !cur.contains(REF_TXN_HOOK_MARKER) => HookInstallAction::LeaveForeign,
-        Some(cur) if cur == desired => HookInstallAction::AlreadyCurrent,
-        Some(_) => HookInstallAction::Heal,
+        Some(cur) if cur.contains(marker) => {
+            if cur == desired {
+                HookInstallAction::AlreadyCurrent
+            } else {
+                HookInstallAction::Heal
+            }
+        }
+        // Unmarked but recognizably OUR hand-placed hook (e.g. the trunk-guard) → adopt the marked body.
+        Some(cur) if adopt_signature.is_some_and(|sig| cur.contains(sig)) => {
+            HookInstallAction::Install
+        }
+        // Truly foreign (no marker, no known signature) → never clobber.
+        Some(_) => HookInstallAction::LeaveForeign,
     }
 }
 
@@ -1433,33 +1514,70 @@ fn install_git_hooks_inner(fleet: &Fleet, verbose: bool) -> HookInstallAction {
         );
         return HookInstallAction::LeaveForeign;
     }
+    // The fail-open reference-transaction clobber logger (no adopt-signature: it never had a hand-placed
+    // predecessor). Its action is returned for back-compat (the watchdog self-heal keys off a ref-txn heal).
     let log_path = fleet.root.join("trunk-clobber.log");
-    let hook_path = hooks.join("reference-transaction");
-    let body = reference_transaction_hook_body(&log_path.to_string_lossy());
+    let ref_txn = install_one_hook(
+        &hooks,
+        "reference-transaction",
+        &reference_transaction_hook_body(&log_path.to_string_lossy()),
+        REF_TXN_HOOK_MARKER,
+        None,
+        "fail-open trunk-clobber logger",
+        verbose,
+    );
+    // The pre-commit trunk-guard + warn-only fmt-check. adopt_signature lets us replace the pre-existing
+    // HAND-PLACED trunk-guard (unmarked) with the fleet-marked version (same guard + the fmt-check) — a
+    // truly foreign pre-commit hook (no marker, no signature) is still left untouched. Its own outcome is
+    // surfaced by `install_one_hook`'s prints (a heal/install is announced), so it need not be returned.
+    let _pre_commit = install_one_hook(
+        &hooks,
+        "pre-commit",
+        &pre_commit_hook_body(),
+        PRE_COMMIT_HOOK_MARKER,
+        Some(PRE_COMMIT_TRUNK_GUARD_SIGNATURE),
+        "trunk-guard + warn-only fmt-check pre-commit hook",
+        verbose,
+    );
+    ref_txn
+}
+
+/// Install ONE fleet hook idempotently + best-effort into `hooks/<name>`: decide via `hook_install_action`
+/// (own-marker heal, adopt-signature adopt, foreign left alone), write + chmod 0755 on Install/Heal, and
+/// print per `verbose` (a Heal is always surfaced — a drifted hook means a landed body-fix never reached
+/// the live fleet). Returns the action taken.
+fn install_one_hook(
+    hooks: &std::path::Path,
+    name: &str,
+    body: &str,
+    marker: &str,
+    adopt_signature: Option<&str>,
+    label: &str,
+    verbose: bool,
+) -> HookInstallAction {
+    let hook_path = hooks.join(name);
     let existing = std::fs::read_to_string(&hook_path).ok();
-    let action = hook_install_action(existing.as_deref(), &body);
+    let action = hook_install_action(existing.as_deref(), body, marker, adopt_signature);
     match action {
         HookInstallAction::LeaveForeign => {
-            // Don't clobber a foreign hook of the same name — only overwrite one we own.
             eprintln!(
-                "fleet: WARNING — a non-fleet `reference-transaction` hook already exists at {}; \
-                 leaving it (not installing the clobber logger). Merge it by hand if you want \
-                 clobber logging.",
+                "fleet: WARNING — a non-fleet `{name}` hook already exists at {}; leaving it (not \
+                 installing the {label}). Merge it by hand if you want it.",
                 hook_path.display()
             );
         }
         HookInstallAction::AlreadyCurrent => {
             if verbose {
                 println!(
-                    "fleet: reference-transaction clobber logger already up to date at {}.",
+                    "fleet: {label} already up to date at {}.",
                     hook_path.display()
                 );
             }
         }
         HookInstallAction::Install | HookInstallAction::Heal => {
-            if std::fs::write(&hook_path, &body).is_err() {
+            if std::fs::write(&hook_path, body).is_err() {
                 eprintln!(
-                    "fleet: WARNING — could not write the reference-transaction hook to {}.",
+                    "fleet: WARNING — could not write the `{name}` hook to {}.",
                     hook_path.display()
                 );
                 return HookInstallAction::LeaveForeign;
@@ -1471,21 +1589,13 @@ fn install_git_hooks_inner(fleet: &Fleet, verbose: bool) -> HookInstallAction {
                 let _ =
                     std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
             }
-            // A HEAL is always surfaced (even when quiet): a drifted hook means a landed body-fix never
-            // reached the live fleet — the operator/agent should know the self-heal fired. A fresh
-            // Install prints only when verbose (a first-time `up` is expected, not a signal).
             if verbose || action == HookInstallAction::Heal {
                 let what = if action == HookInstallAction::Heal {
                     "re-installed (drift-healed — the installed hook body no longer matched source)"
                 } else {
                     "installed"
                 };
-                println!(
-                    "fleet: {what} the fail-open trunk-clobber logger at {} (logs backward trunk \
-                     moves to {}).",
-                    hook_path.display(),
-                    log_path.display()
-                );
+                println!("fleet: {what} the {label} at {}.", hook_path.display());
             }
         }
     }
@@ -17873,14 +17983,15 @@ mod tests {
     #[test]
     fn hook_install_action_heals_a_drifted_ours_hook_but_never_clobbers_a_foreign_one() {
         let desired = reference_transaction_hook_body("/hub/.claude/fleet/trunk-clobber.log");
+        let m = REF_TXN_HOOK_MARKER;
         // No hook file yet → fresh install.
         assert_eq!(
-            hook_install_action(None, &desired),
+            hook_install_action(None, &desired, m, None),
             HookInstallAction::Install
         );
         // Byte-identical ours-hook → no write (the common sweep case must be a silent no-op).
         assert_eq!(
-            hook_install_action(Some(&desired), &desired),
+            hook_install_action(Some(&desired), &desired, m, None),
             HookInstallAction::AlreadyCurrent
         );
         // An OURS-marked hook whose body drifted from source → HEAL. This is the reported bug: a stale
@@ -17892,15 +18003,83 @@ mod tests {
         assert!(stale_ours.contains(REF_TXN_HOOK_MARKER));
         assert_ne!(stale_ours, desired);
         assert_eq!(
-            hook_install_action(Some(&stale_ours), &desired),
+            hook_install_action(Some(&stale_ours), &desired, m, None),
             HookInstallAction::Heal
         );
         // A foreign hook (no marker) is NEVER touched, even if its body differs — hand-placed hooks win.
         let foreign = "#!/usr/bin/env bash\n# someone's hand-rolled pre-receive guard\nexit 0\n";
         assert_eq!(
-            hook_install_action(Some(foreign), &desired),
+            hook_install_action(Some(foreign), &desired, m, None),
             HookInstallAction::LeaveForeign
         );
+
+        // ADOPT-SIGNATURE (the pre-commit trunk-guard transition): an UNMARKED hook that is recognizably
+        // OURS (contains the signature) is adopted → Install the marked body. A hook with NEITHER the
+        // marker NOR the signature stays LeaveForeign even with an adopt_signature configured.
+        let pc_desired = pre_commit_hook_body();
+        let pcm = PRE_COMMIT_HOOK_MARKER;
+        let sig = Some(PRE_COMMIT_TRUNK_GUARD_SIGNATURE);
+        let hand_placed_guard = format!(
+            "#!/usr/bin/env bash\n# {PRE_COMMIT_TRUNK_GUARD_SIGNATURE} trunk (hand-placed, no marker)\nexit 1\n"
+        );
+        assert!(!hand_placed_guard.contains(PRE_COMMIT_HOOK_MARKER));
+        assert_eq!(
+            hook_install_action(Some(&hand_placed_guard), &pc_desired, pcm, sig),
+            HookInstallAction::Install,
+            "the unmarked hand-placed trunk-guard is adopted, not left foreign"
+        );
+        // The fleet-marked pre-commit, byte-identical → AlreadyCurrent; drifted → Heal.
+        assert_eq!(
+            hook_install_action(Some(&pc_desired), &pc_desired, pcm, sig),
+            HookInstallAction::AlreadyCurrent
+        );
+        // A truly foreign pre-commit (no marker, no signature) is left alone even with adopt configured.
+        assert_eq!(
+            hook_install_action(Some(foreign), &pc_desired, pcm, sig),
+            HookInstallAction::LeaveForeign
+        );
+    }
+
+    #[test]
+    fn pre_commit_hook_body_keeps_the_trunk_guard_and_is_fmt_warn_only() {
+        let b = pre_commit_hook_body();
+        // Fleet-marked (so install adopts/heals it) + carries the trunk-guard signature (so the unmarked
+        // hand-placed hook is recognized for adoption).
+        assert!(b.contains(PRE_COMMIT_HOOK_MARKER));
+        assert!(b.contains(PRE_COMMIT_TRUNK_GUARD_SIGNATURE));
+        // Trunk-guard still BLOCKS (exit 1) + preserves the ALLOW_TRUNK_COMMIT bypass.
+        assert!(b.contains("exit 1"));
+        assert!(b.contains("ALLOW_TRUNK_COMMIT"));
+        // FMT check is WARN-ONLY: runs cargo fmt --check, has the silence escape, only on staged .rs,
+        // and the script's LAST statement is `exit 0` (fail-open — the fmt section never blocks).
+        assert!(b.contains("cargo fmt --check"));
+        assert!(b.contains("FLEET_SKIP_FMT_CHECK"));
+        assert!(b.contains("--diff-filter=ACM -- '*.rs'"));
+        assert!(
+            b.trim_end().ends_with("exit 0"),
+            "the hook must END fail-open (exit 0) so the fmt check never blocks a commit"
+        );
+    }
+
+    #[test]
+    fn pre_commit_hook_body_is_valid_bash() {
+        // A broken pre-commit hook would fail EVERY commit fleet-wide, so guard its shell syntax with
+        // `bash -n` (parse-only, no execution). Skips gracefully if bash is unavailable.
+        let dir = std::env::temp_dir().join(format!("ft-precommit-syntax-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("pre-commit");
+        if std::fs::write(&f, pre_commit_hook_body()).is_err() {
+            return;
+        }
+        match Command::new("bash").arg("-n").arg(&f).output() {
+            Ok(o) => assert!(
+                o.status.success(),
+                "pre_commit_hook_body has a bash syntax error:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            Err(_) => { /* bash absent — skip */ }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
