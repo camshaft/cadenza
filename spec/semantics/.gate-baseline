@@ -1531,6 +1531,7 @@ pass	a catch-all after the specific arms already cover a finite type is unreacha
 pass	a chain of let bindings each referencing the immediately-preceding one accumulates
 pass	a chain of perform-fed let inits — each binding feeds the next perform's argument
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
+pass	a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
 pass	a chained generic instantiates at a MAP type and both tuple slots share the CHAMP
@@ -6176,6 +6177,7 @@ pass	decoding ill-formed bytes through a helper takes the None arm
 pass	decoding well-formed UTF-8 bytes yields the string
 pass	deeply nested pattern matching
 pass	demoting a Float64 to Float32 rounds to the nearest binary32
+pass	deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)
 pass	df1 a MONOMORPHIC user sum mirroring Option's shape (heap list payload) deforests completely
 pass	df2 a GENERIC user sum at a heap list payload leaks its shells like Option (the one non-fusing cell)
 pass	df3 the SAME generic sum at a scalar payload deforests completely
@@ -6569,6 +6571,7 @@ pass	generated string keys OVERWRITE by content and the first word's final value
 pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
 pass	gh1 a guard condition builds and consumes a heap temporary (guard taken)
 pass	gh2 a FAILED guard's heap temporary reclaims before the next arm
+pass	gib1 a user-generic Box wrap/unwrap over a runtime heap payload is value-exact and leaks the shells linearly
 pass	gl1 the let-lifted pure-guard equivalent of the gp1 dispatch shape — the pre-bound guard draw advances the state the arms read
 pass	gl2 the let-lifted pure-guard equivalent of the gp2 cascade — both guard draws pre-bound, all three arms reachable
 pass	glb1 a GLASSBLOWER'S bench — each blow thins the wall by a third of the gather FLOORED at one and halves the gather (a would-be wall under two CRACKS instead, both fields frozen), heating adds gather, the read packs wall gather and cracks, and the seed's opening gather thins fast toward the crack line on one bench while the other's gentle thirds leave wall to spare
@@ -8615,6 +8618,7 @@ pass	trn6 six dispatches — coin unlocks or wastes (wasted coins answer a deepe
 pass	true is greater than false
 pass	true is not less than false
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
+pass	tryh1 fifty try-unwraps of a HEAP (list) Ok payload under a Result boundary reclaim to zero
 pass	ts1 a tuple-returning op SPLIT-refed — each destructured half feeds a DIFFERENT later op against advancing state
 pass	tsqS a TWO-STACK amortized FIFO queue — enq pushes the in-stack, deq pops the out-stack and reverse-refills from the in-stack only when empty, so an element enqueued between refills never overtakes one already staged
 pass	tt1 a NESTED-tuple op ARG destructured two levels inside the arm — both dispatches read the live state
@@ -9035,6 +9039,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	tryh1 fifty try-unwraps of a HEAP (list) Ok payload under a Result boundary reclaim to zero
-pass	deq1 a DES priority queue built by sorted insert then drained is value-exact and leaks its rebuilt spine prefixes (superlinear)
-pass	gib1 a user-generic Box wrap/unwrap over a runtime heap payload is value-exact and leaks the shells linearly

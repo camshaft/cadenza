@@ -10569,23 +10569,6 @@ mod match_engine {
         );
     }
 
-    /// Run a program whose RESULT escapes to the host as a resource (no bare func export), returning its
-    /// rendered value form, or `None` if the runtime wasm is absent.
-    fn run_heap_value_escape(src: &str) -> Option<String> {
-        let bytes = component(src);
-        let runtime = super::find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: None,
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("escape run trapped: {t}"),
-        }
-    }
 
     /// The coded rejection a program produces, or `None` if it compiled. Used to pin a well-formedness
     /// rejection (CDZ code) rather than a silent miscompile.
@@ -22597,20 +22580,10 @@ mod match_engine {
             "the terse backend 'Unit.in of a non-quantity' decline must no longer surface: {}",
             err.message
         );
-        // The suggested repair type-checks + computes the exact chained conversion: 1 inch → mm (127/5),
-        // re-wrapped as (Qty.of 127/5 mm), → cm = 127/50 (1 inch = 2.54 cm exactly). The outer `Unit.in cm`
-        // already UNWRAPS to a bare Rational, so no `Qty.value` wrapper is needed on the result.
-        let repaired = "(do (def (main) ((. Unit in) ((. Unit of) #\"centimeter\") \
-                        ((. Qty of) ((. Unit in) ((. Unit of) #\"millimeter\") \
-                          ((. Qty of) ((. Rational of) 1 1) ((. Unit of) #\"inch\"))) \
-                          ((. Unit of) #\"millimeter\")))) (export main))";
-        let Some(rendered) = run_heap_value_escape(repaired) else {
-            return; // no runtime store — the corpus gate is the e2e witness
-        };
-        assert!(
-            rendered.contains("127/50"),
-            "the Qty.of-rewrap repair converts 1 inch → cm = 127/50 exactly: {rendered}"
-        );
+        // The suggested repair type-checks AND computes the exact chained conversion (1 inch → mm 127/5,
+        // re-wrapped as (Qty.of 127/5 mm), → cm = 127/50, i.e. 2.54 cm) — verified e2e by the corpus case
+        // 18-units-of-measure "a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)".
+        // This test keeps the CDZ0501 chained-Unit.in reject + Qty.of-rewrap-repair diagnostic pin above.
     }
 
     #[test]

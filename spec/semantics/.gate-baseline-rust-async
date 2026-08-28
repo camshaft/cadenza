@@ -8480,3 +8480,4 @@ pass	an integer width reached through a let-bound constant folds and is honored
 pass	a list-arm map element binds both of two named keys
 pass	an irrefutable single-variant ctor map value sub-pattern binds its payload
 pass	a deeply-nested tuple map value sub-pattern binds through two tuple levels
+pass	a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)
