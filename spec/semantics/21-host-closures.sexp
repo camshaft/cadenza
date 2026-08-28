@@ -5786,6 +5786,35 @@
   (output (: (list 1 2 3) (List Int64)))
   (live-objects 0))
 
+(case "hcz3 dropping a closure whose body RETURNED its captured MAP reclaims cleanly"
+  (doc "The Map face of the hcz1/hcz2 escape-then-drop pair (breaker flip-watch on #5007): the read-site
+        capture dup must balance the env-cell drop for a CHAMP capture exactly as for tuple/list — a
+        double-release here corrupts the returned map's shared nodes. Renders canonically key-sorted.")
+  (input (do (def (f (: n Int64)) (let ((m (map (n 10) (0 20)))) (fn ((: q Int64)) m))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (map (0 20) (1 10)) (Map Int64 Int64)))
+  (live-objects 0))
+
+(case "hcz4 dropping a closure whose body RETURNED its captured SET reclaims cleanly"
+  (doc "The Set twin of hcz3 — same read-site-dup balance over the set CHAMP.")
+  (input (do (def (f (: n Int64)) (let ((s ((. Set of) (list n 5)))) (fn ((: q Int64)) s))) (export f)))
+  (call f (: 1 Int64) (: 9 Int64))
+  (drop)
+  (output (: ((. Set of) (list 1 5)) (Set Int64)))
+  (live-objects 0))
+
+(case "hcz5 dropping a closure whose body RETURNED its captured WRAPPED compound (record holding a tuple) reclaims cleanly"
+  (doc "The wrapped face: the capture is a record whose field is itself heap (a tuple) — the escape dup
+        and the drop cascade must balance through the nesting (a single-level dup would double-release the
+        inner tuple). Completes the hcz escape-then-drop faces except STRING (a returned captured String
+        currently mis-renders as a bare byte tuple — routed to v-rust-backend; pin it on that fix).")
+  (input (do (def (f (: n Int64)) (let ((r (record (= t (tuple n 7))))) (fn ((: q Int64)) r))) (export f)))
+  (call f (: 1 Int64) (: 5 Int64))
+  (drop)
+  (output (: (record (= t (tuple 1 7))) (Record (: t (Tuple Int64 Int64)))))
+  (live-objects 0))
+
 ; ── breaker batch 568: nested-closure + CHAMP-capture cells (campaign cells 3-4; the tuple-capture
 ; projection cells stay blocked on the hcx1 ICE). A closure capturing ANOTHER closure dispatches
 ; through it; a CHAMP (Map) capture serves lookups by the call arg; and the handle drop cascades
