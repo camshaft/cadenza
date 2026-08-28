@@ -2040,6 +2040,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_ctor_leaf_heads_are_recognized_after_a_codec_round_trip() {
+        // The full wire→recognition path the M2 flip depends on: a compound literal's ctor-leaf head must
+        // still be recognized by KIND after an encode→decode round-trip (decode re-canonicalizes the leaf
+        // pool + renumbers occurrences, but the head leaf's kind must survive so a consumer reading the
+        // DECODED arena — the compiler's trusted path, or a re-reading platform consumer — still recognizes
+        // it). Build one node of each shape (each with its OWN fresh children, so the tree needs no
+        // de-sharing) as the root's children, round-trip, then recognize each on the DECODED arena.
+        let mut b = Builder::new();
+        let (la, lb) = (b.name("a"), b.name("b"));
+        let list = b.compound(CompoundCtor::List, &[la, lb]);
+        let (ta, tb) = (b.name("c"), b.name("d"));
+        let tuple = b.compound(CompoundCtor::Tuple, &[ta, tb]);
+        let (rk, rv) = (b.name("k"), b.name("v"));
+        let rfp = b.field_pair(rk, rv);
+        let record = b.compound(CompoundCtor::Record, &[rfp]);
+        let (mk, mv) = (b.name("mk"), b.name("mv"));
+        let mfp = b.field_pair(mk, mv);
+        let map = b.compound(CompoundCtor::Map, &[mfp]);
+        let (sa, sb) = (b.name("e"), b.name("f"));
+        let set = b.compound(CompoundCtor::Set, &[sa, sb]);
+        let (mo, mkey) = (b.name("obj"), b.name("key"));
+        let member = b.member(mo, mkey);
+        let (fk, fv) = (b.name("fk"), b.name("fv"));
+        let fp = b.field_pair(fk, fv);
+        // Fixed child order so the decoded nodes are findable by index (decode preserves tree shape).
+        let root = b.list(vec![list, tuple, record, map, set, member, fp]);
+        let a = b.finish(root);
+
+        let back = crate::codec::decode(&crate::codec::encode(&a))
+            .expect("decode of an arena with native ctor-leaf heads");
+        let Struct::List(kids) = back.get(back.root) else {
+            panic!("decoded root is a list");
+        };
+        assert_eq!(kids.len(), 7, "root has 7 children");
+        assert_eq!(back.compound_ctor_leaf(kids[0]), Some(CompoundCtor::List));
+        assert_eq!(back.compound_ctor_leaf(kids[1]), Some(CompoundCtor::Tuple));
+        assert_eq!(back.compound_ctor_leaf(kids[2]), Some(CompoundCtor::Record));
+        assert_eq!(back.compound_ctor_leaf(kids[3]), Some(CompoundCtor::Map));
+        assert_eq!(back.compound_ctor_leaf(kids[4]), Some(CompoundCtor::Set));
+        assert!(
+            back.member_parts(kids[5]).is_some(),
+            "member recognized after decode"
+        );
+        assert!(
+            back.field_pair_parts(kids[6]).is_some(),
+            "field pair recognized after decode"
+        );
+        // The record's entry is a recognizable FieldPair on the decoded arena too (its head-child [0] is
+        // the RECORD_CTOR leaf; child [1] is the field pair).
+        let Struct::List(rec_kids) = back.get(kids[2]) else {
+            panic!("record is a list");
+        };
+        assert!(
+            back.field_pair_parts(rec_kids[1]).is_some(),
+            "a RecordCtor's child is a FieldPair after decode"
+        );
+    }
+
     /// Helper: the ctor_head_key of a lone NAME atom spelled `s` (for the negative case).
     fn b2_head_tag(s: &str) -> Option<CompoundCtor> {
         let mut b = Builder::new();
