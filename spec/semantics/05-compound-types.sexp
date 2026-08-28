@@ -23328,3 +23328,54 @@
     (def (main (: n Int64)) (f (build 0 n (list))))
     (export main)))
   (call main (: 3 Int64)) (output (: 20 Int64)))
+
+; ── breaker batch 569: the Class-B UAF fix witnesses (#4685 — suppress enclosing list
+; shell-reclaim when a nested match re-reads the owned scrutinee). These three cells TRAPPED the
+; #4475 detector pre-fix (my tick-320 minimization matrix); now they compute exactly with FULL
+; reclaim. They join the cbm boundary controls (sequential/Option/tuple, which stayed clean
+; throughout) as the positive faces of the fix.
+
+(case "cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (f (: xs (List Int64)))
+  (match xs
+    ((list) 0)
+    ((list h .. t)
+      (match xs
+        ((list) -1)
+        ((list h2 .. t2) (+ (* 100 h) (+ h2 (List.len t2))))))))
+(def (main (: n Int64)) (f (bld (+ n 2))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 103 Int64))
+  (live-objects 0))
+
+(case "cbw2 the nested re-match with no tail consume computes and reclaims"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (f (: xs (List Int64)))
+  (match xs
+    ((list) 0)
+    ((list h .. t)
+      (match xs
+        ((list) -1)
+        ((list h2 .. t2) (+ (* 100 h) h2))))))
+(def (main (: n Int64)) (f (bld (+ n 2))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 101 Int64))
+  (live-objects 0))
+
+(case "cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)"
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (f (: xs (List Int64)))
+  (match xs
+    ((list) 0)
+    ((list h .. t)
+      (match xs
+        ((list) -1)
+        (_ (+ (* 100 h) (List.len t)))))))
+(def (main (: n Int64)) (f (bld (+ n 2))))
+(export main)))
+  (call main (: 1 Int64))
+  (output (: 102 Int64))
+  (live-objects 0))

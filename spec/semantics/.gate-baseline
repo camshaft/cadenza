@@ -9005,3 +9005,6 @@ fail	hcz2 dropping a closure whose body RETURNED its captured LIST crashes (doub
 pass	hcn1 a closure CAPTURING another closure crosses and dispatches through it
 pass	hcn2 a closure capturing a runtime-built MAP looks up by the call argument
 pass	hcn3 dropping a closure with a CHAMP capture cascades the reclaim to zero
+pass	cbw1 a nested same-scrutinee LIST match computes and fully reclaims (the #4685 fix witness)
+pass	cbw2 the nested re-match with no tail consume computes and reclaims
+pass	cbw3 the nested re-match through a WILDCARD inner arm computes and reclaims (the header-read-only face)
