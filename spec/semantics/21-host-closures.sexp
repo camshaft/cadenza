@@ -5692,12 +5692,14 @@
 (case "hcx1 tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection reads the captured tuple env cell, not the inlined element (was the chr1 ICE's effects-free face: no-local-slot)"
   (input (do (def (f (: n Int64)) (let ((a (tuple n 7))) (fn ((: q Int64)) (+ q (. a 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 2))
 
 (case "hcx2 a NESTED tuple-index projection of a captured tuple in a host-called closure body FOLDS — the projection chain stays runtime over the captured env cell (the nested face of the hcx1 no-local-slot ICE)"
   (input (do (def (f (: n Int64)) (let ((a (tuple (tuple n 1) 7))) (fn ((: q Int64)) (+ q (. (. a 0) 0))))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
-  (output (: 6 Int64)))
+  (output (: 6 Int64))
+  (live-objects known-leak 3))
 
 ; ── breaker batch 567: drop-cascade fences + the capture-escape double-release crash (see
 ; issues/BUG-closure-drop-after-capture-escape-double-release-silent-abort). hcd1/hcd2 pin the
