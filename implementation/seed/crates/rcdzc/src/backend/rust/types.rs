@@ -315,6 +315,15 @@ pub(super) fn env_closure_args(
 /// wrapper would have to be threaded through the tuple, a later increment); this covers the bare-`Float`
 /// key/element the corpus exercises. Any other type falls through to `rust_type` unchanged.
 pub(super) fn ord_key_type(ncx: &crate::ty::NameCtx, ty: &Ty) -> Option<String> {
+    // A `Qty` erases to its inner numeric, so a Qty-over-Float KEY TYPE is the total-order wrapper
+    // `__CdzF{N}` — the same as a bare float — NOT the raw `f64` the `_ => rust_type` fallback would spell
+    // (which is not `Ord` → `f64: Ord` E0277 at the `BTreeMap`/`BTreeSet` key, qkm1/qkm3). Peel `Qty`
+    // (possibly under a nominal) and recurse; the matching VALUE wrap is `expr::wrap_ord_key`'s Qty peel.
+    // A Qty inner is always numeric (Float/Int/Rational), so this only exposes a numeric leaf — a Qty-over-
+    // Int key recurses to `i64` (unchanged), a nominal (non-Qty) key keeps its existing verbatim handling.
+    if let Ty::Qty { inner, .. } = ty.strip_nominal() {
+        return ord_key_type(ncx, inner);
+    }
     match ty {
         Ty::Float(ft) => Some(if ft.ground_width() == 32 {
             "__CdzF32".to_string()

@@ -311,7 +311,7 @@ pub fn emit_body(
 /// while `ord_key_type` still wraps that field's type → a bare `f64` value in a `__CdzF64` slot (rustc
 /// E0308). A nominal is peeled (the boundary erases the tag); any other shape has no wrappable float.
 fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
-    match ty.strip_nominal() {
+    match ty.strip_nominal_and_qty() {
         Ty::Float(_) => true,
         Ty::Tuple(elems) => elems.iter().any(key_ty_has_wrappable_float),
         Ty::Record(fields) => fields.values().any(key_ty_has_wrappable_float),
@@ -325,7 +325,7 @@ fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
 /// type agree. (Bare Option key, or Option nested — this walks the same Float/Tuple/Record/Option shapes the
 /// wrap descends; a plain Int/String/etc. needs no wrap.)
 fn key_ty_needs_ord_wrap(ncx: &crate::ty::NameCtx, ty: &Ty) -> bool {
-    match ty.strip_nominal() {
+    match ty.strip_nominal_and_qty() {
         Ty::Float(_) => true,
         s if types::is_flip_order_option_key_shallow(ncx, s) => true,
         Ty::Tuple(elems) => elems.iter().any(|e| key_ty_needs_ord_wrap(ncx, e)),
@@ -359,7 +359,7 @@ fn is_float_carrying_compound(ty: &Ty) -> bool {
 /// the DEEP companion of [`key_ty_has_wrappable_float`] that also descends `List`/`Sum` (the #34 faces
 /// include a float-leaf list + nested tuple, not just direct tuple/record fields).
 fn key_ty_has_wrappable_float_deep(ty: &Ty) -> bool {
-    match ty.strip_nominal() {
+    match ty.strip_nominal_and_qty() {
         Ty::Float(_) => true,
         Ty::Tuple(elems) => elems.iter().any(key_ty_has_wrappable_float_deep),
         Ty::Record(fields) => fields.values().any(key_ty_has_wrappable_float_deep),
@@ -375,6 +375,13 @@ fn key_ty_has_wrappable_float_deep(ty: &Ty) -> bool {
 }
 
 fn wrap_ord_key(ncx: &crate::ty::NameCtx, expr: String, key_ty: &Ty) -> String {
+    // A `Qty` erases to its inner numeric, so a Qty-over-Float KEY VALUE wraps in `__CdzF{N}` exactly like a
+    // bare float (the value `expr` is already the erased `f64`/`f32`) — else a raw `f64` key sits in a
+    // `__CdzF64` slot / `f64: Ord` E0277 (qkm1/qkm3). Peel `Qty` (possibly under a nominal) here so the value
+    // wrap agrees with `ord_key_type`'s Qty peel. A Qty inner is always numeric (never nominal/compound).
+    if let Ty::Qty { inner, .. } = key_ty.strip_nominal() {
+        return wrap_ord_key(ncx, expr, inner);
+    }
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
         Ty::Float(_) => format!("__CdzF64::new({expr})"),

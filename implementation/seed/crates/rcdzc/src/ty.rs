@@ -1090,6 +1090,22 @@ impl Ty {
         t
     }
 
+    /// Peel BOTH `Nominal` and `Qty` wrappers to the underlying representation type — the erased form a
+    /// key/element crosses as (a `Qty Float64 <unit>` erases to `Float64`, a newtype to its inner). Ord-key
+    /// wrapping (`__CdzF{N}`) keys on this repr, so a Qty-over-Float `BTreeMap`/`BTreeSet` key gets the
+    /// total-order wrapper a bare float does (else a raw `f64` key → `f64: Ord` E0277). Loops so a
+    /// `Nominal(Qty(…))` / `Qty(Nominal(…))` fully unwraps to the innermost representation.
+    pub fn strip_nominal_and_qty(&self) -> &Ty {
+        let mut t = self;
+        loop {
+            match t {
+                Ty::Nominal { inner, .. } => t = inner,
+                Ty::Qty { inner, .. } => t = inner,
+                _ => return t,
+            }
+        }
+    }
+
     /// Whether the type contains an UNRESOLVED type variable ([`Ty::Var`]) — a payload/element/parameter
     /// the inference solve never determined (a bare `(None)` is `Option ?0`; an empty `(list)` is `List
     /// ?0`). Such a type has no defined serialization, so a value of it reaching the HOST BOUNDARY is a
