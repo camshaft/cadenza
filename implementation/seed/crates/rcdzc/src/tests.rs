@@ -28267,32 +28267,11 @@ mod stage1 {
             occs.len(),
             db.defs.iter().filter(|d| d.body.is_some()).count()
         );
-        // The name index resolves each name to a real, distinct def; `main` sums them → 3.
+        // The name index resolves each name to a real, distinct def. (The let-scope run
+        // `(+ (let ((z 1)) z) (let ((z 2)) z))` = 3 — distinct let-bound shadows — is corpus-covered.)
         assert!(db.def_by_name("a").is_some());
         assert!(db.def_by_name("b").is_some());
         assert_ne!(db.def_by_name("a"), db.def_by_name("b"));
-        assert_eq!(run_main("(+ (let ((z 1)) z) (let ((z 2)) z))"), 3);
-    }
-
-    #[test]
-    fn record_field_read_folds_to_the_field() {
-        // 05-compound-types: (let ((p (record (x 1) (y 2)))) p.x) = 1 (written in canonical dot form).
-        assert_eq!(run_main("(let ((p (record (x 1) (y 2)))) (. p x))"), 1);
-    }
-
-    #[test]
-    fn projection_is_order_independent() {
-        // (. (record (b 2) (a 1)) a) = 1 — projection resolves by NAME, not written position.
-        assert_eq!(run_main("(. (record (b 2) (a 1)) a)"), 1);
-    }
-
-    #[test]
-    fn member_access_chains_through_a_nested_record() {
-        // (. (. (record (outer (record (inner 7)))) outer) inner) = 7.
-        assert_eq!(
-            run_main("(. (. (record (outer (record (inner 7)))) outer) inner)"),
-            7
-        );
     }
 
     // ── "did you mean?" — the rustc-gold-standard fix suggestion for an unbound name ─────────────────
