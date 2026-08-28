@@ -6514,17 +6514,18 @@
 ; (the recursive-generic monomorphization tie family); pinned as a clean decline so a future fix flips it to
 ; a run (6 + byte-len("ab")=2 = 8) and NEVER a miscompile meanwhile. (v-iterators' reduce/reduce1 residual.)
 
-(case "a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie"
+(case "a reduce-shaped wrapper seeding a second generic helper at two element types monomorphizes via the transitive-binder tie"
   (doc    "`reduce1` (a `reduce`-shaped wrapper) matches its iterator's `Cons` arm and seeds a SECOND
            recursive-generic helper `go` with the head element as the initial accumulator; used at TWO
            element types (Int64 `(+ x y)` folding [1,2,3], String `String.concat` folding [\"a\",\"b\"])
-           in one program, it declines — the delegated `go`'s parameter type is not tied across the two
-           monomorphizations of the wrapper (a TRANSITIVE recursive-generic tie, sibling of the
-           producer/transformer ties above). An uncoded decline, not CDZ0201; NO annotation can express
-           `go`'s polymorphic element (a lowercase `(GIter a)` annotation is unbound), so the decline
-           message names that honestly. A DIRECT element-typed fold at two types works; only this
-           wrapper→second-helper delegation is unrealized. Intended value when the tie lands: the Int64
-           reduce (1+2+3=6) plus the byte length of the String reduce (\"ab\"=2) = 8.")
+           in one program. This USED to decline (the delegated `go`'s parameter type was not tied across
+           the wrapper's two monomorphizations — a TRANSITIVE recursive-generic tie). The tie now lands:
+           `go`'s seeds at reduce1's `(go rest h f)` are `h`/`rest`, the `Cons` HEAD/TAIL BINDERS of
+           reduce1's generic iterator param `it` — the transitive-genericity walk now traces a match-BINDER
+           seed back to the caller PARAM it destructures and PROJECTS that param's per-call-site concrete
+           types (`GIter Int64` + `GIter String`) through the pattern path to the binder's sub-position
+           (`h`→`{Int64,String}`), so `go`'s accumulator is detected genuinely generic and monomorphizes per
+           call. Result = the Int64 reduce (1+2+3=6) plus the byte length of the String reduce (\"ab\"=2) = 8.")
   (input  (do
             (type GIter (Nil) (Cons a (GIter a)))
             (def (from-list xs)
@@ -6539,7 +6540,8 @@
                  (match (reduce1 (from-list (list "a" "b")) (fn (x y) (String.concat x y)))
                    ((Option.None) 0) ((Option.Some v) (String.byte-len v)))))
             (export main)))
-  (declines))
+  (output (: 8 Int64))
+  (live-objects known-leak 20))
 
 ; SECOND witness of the same transitive-delegate tie — the seed is an ACCUMULATOR, not the head. `reverse`
 ; is a wrapper `(reverse it) = (rev-onto it (GIter.Nil))` that seeds a SECOND recursive-generic helper
