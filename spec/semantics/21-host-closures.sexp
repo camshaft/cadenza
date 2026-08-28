@@ -5793,7 +5793,7 @@
   (input (do (def (f (: n Int64)) (let ((m (map (n 10) (0 20)))) (fn ((: q Int64)) m))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (drop)
-  (output (: (map (0 20) (1 10)) (Map Int64 Int64)))
+  (output (: #map((= 0 20) (= 1 10)) (Map Int64 Int64)))
   (live-objects 0))
 
 (case "hcz4 dropping a closure whose body RETURNED its captured SET reclaims cleanly"
