@@ -3070,6 +3070,48 @@
           oracle-check --manifest "$caseDirs" | tee result
           echo "ok: oracle-lean corpus conformance — $(cat result)" > "$out"
         '';
+        # Cross-shell PATH wrapper-scripts for the all-nix entrypoints (v-nix 2026-08-28). Hoisted here so
+        # BOTH devShells.default (packages) AND packages.cdz-shell-wrappers use the SAME wrappers (no drift).
+        # NOT shell functions: agents' claude Bash-tool subshells are ZSH + the shell snapshot HARD-RESETS
+        # PATH per command (v-ft), so functions/nix-develop-PATH never reach them. Delivery: v-ft symlinks
+        # packages.cdz-shell-wrappers/bin/* into ~/.local/bin (@snapshot-PATH pos49, writable, BEFORE
+        # rustup ~/.cargo/bin) so they resolve in every agent subshell + a cargo-shim there shadows cargo.
+        # Each execs `nix run <worktree>#app` → rebuild-on-edit from the dirty worktree (needs only nix+git,
+        # which the snapshot PATH has) — a fixed wrapper forwarding to a rebuilding target, not a frozen bin.
+        cdzShellWrap = name: app: pkgs.writeShellApplication {
+          inherit name;
+          runtimeInputs = [ pkgs.nix pkgs.git ];
+          text = ''
+            root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+            exec nix run --option warn-dirty false "$root#${app}" -- "$@"
+          '';
+        };
+        cdzShellHelp = pkgs.writeShellApplication {
+          name = "cdz-help";
+          runtimeInputs = [ ];
+          text = ''
+            cat <<'CDZHELP'
+            cdz all-nix shell — custom commands (nix compiles on demand from your worktree, warm-cached):
+              cdz …               compile / run / test / doctor  (builds the component store on 1st run)
+              cdz-run FILE.wasm   run a component
+              cdz-compile …       the standalone compiler (what cdz delegates to)
+              roundtrip [files]   corpus round-trip (sexpr exact-repro + ml fixed-point)
+              fast-gate [crates]  fast touched-crate gate (inner loop)
+              gate                full local-gate battery (convenience)
+              cdz-help            print this list
+              → authoritative MERGE gate stays: cargo xtask fleet gate-local
+            CDZHELP
+          '';
+        };
+        cdzShellWrappers = [
+          (cdzShellWrap "cdz" "cdz")
+          (cdzShellWrap "cdz-run" "cdz-run")
+          (cdzShellWrap "cdz-compile" "cdz-compile")
+          (cdzShellWrap "roundtrip" "roundtrip")
+          (cdzShellWrap "gate" "gate")
+          (cdzShellWrap "fast-gate" "fast-gate")
+          cdzShellHelp
+        ];
       in
       {
         # N1: the value-heap runtime components as NORMAL (input-addressed) derivations — `nix build
@@ -3124,6 +3166,15 @@
 
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
+        # packages.cdz-shell-wrappers — the 7 all-nix entrypoint PATH wrappers (cdz/cdz-run/cdz-compile/
+        # roundtrip/gate/fast-gate/cdz-help) as a single symlinkJoin, so v-fleet-tooling's window.sh can
+        # `ln -sf result/bin/* ~/.local/bin` (a snapshot-PATH dir) each boot — reaching the agents' zsh
+        # Bash-tool subshells, which the shell snapshot's PATH hard-reset otherwise cuts off from nix
+        # develop. Same wrappers the devShell ships (shared cdzShellWrappers, no drift).
+        packages.cdz-shell-wrappers = pkgs.symlinkJoin {
+          name = "cdz-shell-wrappers";
+          paths = cdzShellWrappers;
+        };
 
         # xtask dev-tool binary as a relocatable nix package (v-xtask-decompose). `nix build .#xtask` →
         # result/bin/xtask. The per-subcommand `apps.*` (roundtrip, &c.) wrap it; a direct `nix run .#xtask
@@ -3711,52 +3762,10 @@
           # sweep. Per-CASE reports are CA on {emit, binaryen} → shared with `wasm-opt-gaps` + cached.
           // optGapFileAggs;
 
-        devShells.default =
-          let
-            # Cross-shell PATH WRAPPER-SCRIPTS for the all-nix entrypoints (v-nix 2026-08-28). NOT shell
-            # functions: agents boot into `nix develop` and their claude Bash-tool subshells are ZSH, which
-            # does NOT import bash `export -f` functions (v-ft catch) — so functions silently never reach the
-            # agent. PATH lookup is shell-AGNOSTIC (zsh/bash/sh + every subshell inheriting PATH). Each execs
-            # `nix run <worktree>#app`, so it compiles ON DEMAND from the CURRENT (dirty) worktree (edits to
-            # tracked files picked up) reusing the warm cache — a fixed wrapper forwarding to a REBUILDING
-            # target, so it is NOT frozen like a PATH-injected binary would be. CDZ_STORE / CDZ_COMPILE_BIN
-            # are set by the apps themselves (apps.cdz/cdz-run wrappers), so no shell-level store-ensure.
-            cdzWrap = name: app: pkgs.writeShellApplication {
-              inherit name;
-              runtimeInputs = [ pkgs.nix pkgs.git ];
-              text = ''
-                root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-                exec nix run --option warn-dirty false "$root#${app}" -- "$@"
-              '';
-            };
-            cdzHelp = pkgs.writeShellApplication {
-              name = "cdz-help";
-              runtimeInputs = [ ];
-              text = ''
-                cat <<'CDZHELP'
-                cdz all-nix shell — custom commands (nix compiles on demand from your worktree, warm-cached):
-                  cdz …               compile / run / test / doctor  (builds the component store on 1st run)
-                  cdz-run FILE.wasm   run a component
-                  cdz-compile …       the standalone compiler (what cdz delegates to)
-                  roundtrip [files]   corpus round-trip (sexpr exact-repro + ml fixed-point)
-                  fast-gate [crates]  fast touched-crate gate (inner loop)
-                  gate                full local-gate battery (convenience)
-                  cdz-help            print this list
-                  → authoritative MERGE gate stays: cargo xtask fleet gate-local
-                CDZHELP
-              '';
-            };
-            cdzWrappers = [
-              (cdzWrap "cdz" "cdz")
-              (cdzWrap "cdz-run" "cdz-run")
-              (cdzWrap "cdz-compile" "cdz-compile")
-              (cdzWrap "roundtrip" "roundtrip")
-              (cdzWrap "gate" "gate")
-              (cdzWrap "fast-gate" "fast-gate")
-              cdzHelp
-            ];
-          in
-          pkgs.mkShell {
+        # devShell packages include cdzShellWrappers (the hoisted PATH wrapper-scripts, defined in the let
+        # above + shared with packages.cdz-shell-wrappers). Cross-shell (agent Bash-tool subshells are zsh),
+        # each execs `nix run <worktree>#app` (rebuild-on-edit). CDZ_STORE/CDZ_COMPILE_BIN set by the apps.
+        devShells.default = pkgs.mkShell {
           # THE SINGLE dev shell everyone runs everything in (operator 2026-08-28): one uniform
           # environment, no per-lane shells. All EXTERNAL/SUBSTITUTABLE tooling (fetched from the binary
           # cache, shared ONCE per box via /nix/store — not a per-agent compile), so eager is fine:
@@ -3784,7 +3793,7 @@
             pkgs.lean4
             pkgs.git
             pkgs.gh
-          ] ++ cdzWrappers;
+          ] ++ cdzShellWrappers;
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
           # resolve `CDZ_STORE` (env) before the compiled `target/cadenza-store` fallback (the --store
