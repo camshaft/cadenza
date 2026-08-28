@@ -2928,9 +2928,12 @@ pub fn reduce_handle(
     // ABORTIVE same-handler perform that reads state — the resuming observer (sr4), the observer as the
     // recursion BASE CASE (sr2), and a plain same-op observer (sr1) all thread/fold correctly and are NOT
     // flagged.
-    if !ctx.abortive.is_empty() && body_recursive_advance_observed_by_abort(db, body, &ctx) {
-        return None;
-    }
+    // sr5: FORMERLY a blanket decline of a recursive-advance-observed-by-abort. Now the multi-value path threads
+    // the recursion's out-state to the abort observer (specialize_recursive's caller-observed multi-value mode,
+    // extended to the abortive-observer case) when the callee is threadable — so the fold serves it. A callee the
+    // multi-value machinery cannot bind still DECLINES cleanly, at specialize_recursive's caller-observed abortive
+    // floor (not here). So this pre-reduction blanket guard is removed; the threadable case folds to the advanced
+    // state, the non-threadable case declines downstream.
     // SEED LET-LIFT for a NON-CONSTANT init carrying a live CAPTURE. The `thread` perform arm splices the
     // threaded state (which starts as `init`) at every `s` reference and `deep_fresh_copy`s each splice to
     // break value/next-state sharing (the resume(a,a) bug). That fresh copy re-pushes each leaf UNPINNED, so
@@ -3055,10 +3058,31 @@ pub fn reduce_handle(
         // name) so it never exhibited this — only a runtime arg leaves a free reference. Re-parenting under
         // the handle restores the chain abort → handle → def so `k` re-resolves to the param and types
         // Int64. (Mirrors the identity-arm pass-through reparent for the resumptive path.)
+        // DRAIN before returning (sr5): the abort arm value may read a pending MULTIVALUE self-call temp. For
+        // `(do (def _g (grow k)) (Acc.fin))` where `grow` is caller-observed multi-value, threading the pre-abort
+        // `(grow k)` pushed `$t0` to `ctx.pending` and advanced `cur[slot]` to `(. t0 1)`; the abort arm
+        // `(fin (u) s s)` reads that state, so the abort value IS `(. t0 1)` — which references the unbound `$t0`
+        // unless we bind it here. `drain_and_wrap` wraps the abort value in the pending binding-`let`s
+        // (`(let (($t0 (grow k))) (. t0 1))`), so the recursion RUNS (advancing state) and the abort reads the
+        // advanced out-state. A no-op when nothing is pending (the common bare-abort case → byte-identical).
+        // Filter the `#st` per-dispatch inits to FORGET (re-resolve `#seed`/`#st` refs against the grafted
+        // chain) exactly as the do-form + resumptive twins do; a non-`#st` temp (the `$t0` self-call node) is
+        // NOT forgotten (its `call_node` may hold a body binder → CDZ0101 if re-resolved).
+        let abort_pending_inits: Vec<StructId> = ctx
+            .pending
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name.starts_with("#st") || name.starts_with("#fa"))
+            .map(|(_, init)| *init)
+            .collect();
+        let abort = drain_and_wrap(db, &ctx, 0, abort);
         // Wrap in the seed let-lift: an abort arm that READS a heap-typed state binder carries `#seed` refs
         // (the state was threaded as `#seed`); without the wrapping `let` they read unbound (CDZ0101).
         let abort = apply_seed_wrap(db, abort);
         reparent_under_handle_site(db, abort, body);
+        for &init in &abort_pending_inits {
+            crate::resolve::forget_subtree(db, init);
+        }
         return Some(abort);
     }
     // MULTI-VALUE (repro-1): if the handle BODY was itself a self-call to a multi-value spec — `(handle …
@@ -8962,90 +8986,6 @@ fn collect_rec_eff_call_defs(db: &mut Db, node: StructId, ctx: &HandlerCtx, out:
     }
 }
 
-/// Whether `node` contains an ABORTIVE same-handler perform — a call to one of this handler's ops whose arm
-/// is in `ctx.abortive` (a `(fin (u) s s)` with no `resume`). Used to detect the breaker-sr5 shape where a
-/// same-effect ABORT arm observes a recursive callee's out-state (which the abort collapse currently reads
-/// from the pre-recursion SEED slot, not the threaded out-state → silent miscompile).
-fn contains_abortive_perform(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-    if let Resolved::Apply { head, .. } = resolved_of(db, node)
-        && let Some(id) = is_perform(db, head, ctx)
-        && ctx.abortive.contains(&id)
-    {
-        return true;
-    }
-    match db.ast.get(node).clone() {
-        Struct::List(children) => children
-            .iter()
-            .any(|&c| contains_abortive_perform(db, c, ctx)),
-        Struct::Atom(_) => false,
-    }
-}
-
-/// Whether the handle body has a strict spine on which a recursive-effectful callee (which advances THIS
-/// handler's state, the same shape `mark_caller_observed_outstate` upgrades to multi-value) is followed by an
-/// element containing an ABORTIVE same-handler perform that observes that out-state — breaker sr5. The
-/// multi-value out-state threads correctly to a RESUMING observer (sr4), but the ABORT collapse materializes
-/// its arm value against the pre-recursion seed slot, dropping the recursion-era advances → reads the seed
-/// (0) not the advanced state (2). Declined by `reduce_handle` until the abort collapse can read the threaded
-/// out-state. NARROW — the observing element must contain an abortive perform, so a resuming observer (sr4),
-/// a plain non-abort same-op observer (sr1), and the observer-as-recursion-base-case (sr2) do NOT match.
-fn body_recursive_advance_observed_by_abort(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> bool {
-    fn scan_seq(db: &mut Db, seq: &[StructId], ctx: &HandlerCtx) -> bool {
-        let mut pending: Vec<usize> = Vec::new();
-        for &el in seq {
-            // A recursive-effectful callee is pending, and a LATER spine element aborts observing its
-            // out-state — the sr5 miscompile shape.
-            if !pending.is_empty() && contains_abortive_perform(db, el, ctx) {
-                return true;
-            }
-            collect_rec_eff_call_defs(db, el, ctx, &mut pending);
-        }
-        false
-    }
-    if let Resolved::Apply { args, .. } = resolved_of(db, node)
-        && scan_seq(db, &args, ctx)
-    {
-        return true;
-    }
-    if let Some(items) = db.ast.as_form(node, "do").map(|t| t.to_vec())
-        && scan_seq(db, &items, ctx)
-    {
-        return true;
-    }
-    if let Some(form) = db.ast.as_form(node, "let").map(|t| t.to_vec())
-        && form.len() == 2
-        && let Struct::List(pairs) = db.ast.get(form[0]).clone()
-    {
-        let mut seq: Vec<StructId> = pairs
-            .iter()
-            .filter_map(|&pair| match db.ast.get(pair).clone() {
-                Struct::List(kv) if kv.len() == 2 => Some(kv[1]),
-                _ => None,
-            })
-            .collect();
-        seq.push(form[1]);
-        if scan_seq(db, &seq, ctx) {
-            return true;
-        }
-    }
-    if let Resolved::Match { scrutinee, arms } = resolved_of(db, node) {
-        for &(_, arm_body) in &arms {
-            if scan_seq(db, &[scrutinee, arm_body], ctx) {
-                return true;
-            }
-        }
-    }
-    // Recurse structurally so a spine nested inside a branch/let/operand is scanned too.
-    if let Struct::List(children) = db.ast.get(node).clone() {
-        for c in children {
-            if body_recursive_advance_observed_by_abort(db, c, ctx) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Scan the HANDLE BODY for a recursive-effectful call whose FINAL out-state is OBSERVED by a LATER item on
 /// the same strict spine — `(do (run-ops …) (Prim.run 0))` where the trailing perform reads the state the
 /// recursion advanced — and record each such callee in `db.force_multivalue` so `specialize_recursive`
@@ -9482,15 +9422,29 @@ fn specialize_recursive(db: &mut Db, head: StructId, ctx: &HandlerCtx) -> Option
             }
         }
     }
+    // sr5: a CALLER-OBSERVED callee whose out-state an ABORTIVE observer reads (`(do (def _g (grow k)) (Acc.fin))`,
+    // `fin` aborts reading state) MUST still thread multi-value — the abort collapse binds its arm-state from the
+    // threaded `cur[slot]`, so a single-return callee (which leaves `cur` unadvanced) makes the abort read the
+    // PRE-recursion seed (breaker sr5, was a guarded decline). The `ctx.abortive.is_empty()` floor over-excluded
+    // this: `selfcall_precedes` genuinely needs abortive-empty (its advance isn't threaded), but a caller-observed
+    // out-state IS threaded to the abort via `cur`. So allow the abortive context for the caller-observed case.
     let multivalue = ((selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx)
-        || caller_observes_outstate)
         && ctx.abortive.is_empty()
+        || caller_observes_outstate)
         && multivalue_leaves_threadable(db, orig_body, callee_def))
         || group_member
         || group_entry;
     if selfcall_precedes_perform_in_operands(db, orig_body, callee_def, ctx) && !multivalue {
         return None; // an out-state-observing shape the multi-value path does not cover yet (abortive, or
         // a self-call gated behind a conditional inside a leaf) — decline BEFORE reserving the def.
+    }
+    // sr5 SAFE-DECLINE (the non-threadable subset): a caller-observed callee under an ABORTIVE observer whose
+    // leaves the multi-value machinery CANNOT bind stays single-return, which would leave `cur` unadvanced and
+    // make the abort read the pre-recursion seed (the sr5 miscompile). Fold it only when threadable (above);
+    // decline cleanly otherwise. This replaces the pre-reduction `body_recursive_advance_observed_by_abort`
+    // guard's role for the shape the threading path cannot serve.
+    if caller_observes_outstate && !ctx.abortive.is_empty() && !multivalue {
+        return None;
     }
     // MUTUAL-PARTNER OUT-STATE OBSERVED (the group-fold soundness floor). A mutual-partner call PRECEDES an
     // out-state observation on the strict spine. If this is NOT a group multi-value member/entry (the group

@@ -9061,7 +9061,7 @@ todo	a block-wrapped OUTER-effect perform in a non-tail do-statement INSIDE a ne
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a mutually-recursive group with a BRANCH-PERFORM sharing a strict expr with the mutual call declines cleanly (adv-69 rw4 sub-face)
-todo	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
+pass	a recursive same-effect advance observed by an ABORTIVE arm — must fold to the advanced state or decline, never the pre-recursion seed (sr5)
 todo	a recursive scalar-walk classifies characters across a multibyte String entry arg
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
