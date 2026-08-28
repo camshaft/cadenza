@@ -8991,3 +8991,7 @@ todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a diamond peer graph shares one provider across two middle peers
 pass	reclaim across a nested-compound projection from a peer result
 pass	an effect bound to a peer routes a two-argument op to the boundary
+pass	hcp1 a captured tuple returned WHOLE from a host-called closure works (projection is the ICE, not the capture)
+pass	hcp2 a closure capturing an IMMORTAL 33-trie plus a runtime scalar crosses and reads through the immortal
+pass	hcp3 a closure capturing a runtime-BUILT list crosses and reads it (mortal capture retained by the host-held handle)
+fail	hcx1 tuple-index projection of a captured tuple in a host-called closure body ICEs (no local slot; tracked known-FAIL, the chr1 ICE's effects-free face)
