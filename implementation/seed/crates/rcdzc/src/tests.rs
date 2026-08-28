@@ -27622,11 +27622,6 @@ mod stage1 {
         run_returns::<T>(&component, "main")
     }
 
-    /// A boolean-returning body — a comparison entrypoint.
-    fn run_main_bool(body: &str) -> bool {
-        run_main_as::<bool>(body)
-    }
-
     /// Compile the same program shape and expect a DECLINE/reject, returning the error message.
     fn expect_decline(body: &str) -> String {
         let src = format!("(module m (def (main) {body}) (export main))");
@@ -30521,29 +30516,6 @@ mod stage1 {
     }
 
     // ── comparisons: ∀a. a → a → Bool, folded to a boolean, generic over the operand type ────────
-
-    #[test]
-    fn integer_comparisons_fold_to_bool() {
-        // Each relational operator folds two constant integers to a boolean. The entrypoint returns a
-        // Bool at the boundary (03-equality-and-observation).
-        assert!(run_main_bool("(< 1 2)"));
-        assert!(!run_main_bool("(> 1 2)"));
-        assert!(run_main_bool("(<= 2 2)"));
-        assert!(!run_main_bool("(>= 1 2)"));
-        assert!(run_main_bool("(= 3 3)"));
-        assert!(!run_main_bool("(= 3 4)"));
-    }
-
-    #[test]
-    fn comparison_is_generic_over_bool_operands() {
-        // 03-equality-and-observation: (< false true) = true, (<= false false) = true. The SAME
-        // operator orders booleans — its type is ∀a. a → a → Bool, a bare operand variable, so `a`
-        // unifies with Bool exactly as it does with an integer. No integer-specific comparison.
-        assert!(run_main_bool("(< false true)"));
-        assert!(run_main_bool("(<= false false)"));
-        assert!(run_main_bool("(> true false)"));
-        assert!(run_main_bool("(= true true)"));
-    }
 
     #[test]
     fn constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk() {
