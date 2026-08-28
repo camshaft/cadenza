@@ -21321,6 +21321,30 @@ mod tests {
         );
     }
 
+    /// LANE-SPLIT PROBE (v-memory-safety/breaker slice-view-as-key leak-2): does a SINGLE-use borrowed
+    /// slice-view, compacted then borrowed-compared then dropped, balance at the RUNTIME layer? The corpus
+    /// cases (19-sets view-as-CHAMP-key, value-eq-of-view) leak 2. If this exact runtime op sequence
+    /// balances, the leak is COMPILER emit reclaim (a missing/extra drop around the compacted operand); if
+    /// it leaks, the leak is RUNTIME (bytes_flatten of a single-owned view). Distinct from the dual-use
+    /// `compact_of_a_dual_used_shared_slice_view_is_balanced_with_the_dup` above (that needs the compiler dup).
+    #[test]
+    fn probe_single_use_compacted_slice_view_balances_at_runtime() {
+        reset();
+        let before = live_nodes();
+        let parent = bytes_leaf(&[9, 20, 30, 8]); // P (rc1)
+        let sl = op_bytes_slice(parent, 1, 2); // view [20,30]; view now owns P's ref (P rc1, held by view)
+        let k = op_bytes_compact(sl); // flatten in place → drops P; k == sl, now a flat [20,30] leaf
+        let flat = bytes_leaf(&[20, 30]);
+        let _eq = champ_eq(k, flat); // a BORROWING compare (map-lookup/value-eq shape) — consumes neither
+        op_drop(flat); // drop the flat RHS/probe (owned temp)
+        op_drop(k); // drop the (arm-owned) compacted key
+        assert_eq!(
+            live_nodes(),
+            before,
+            "single-use compacted slice-view balances at the runtime layer (→ any corpus leak-2 is COMPILER emit reclaim, not runtime)"
+        );
+    }
+
     /// CONTRACT-BOUNDARY TRIPWIRE for `value-eq` (op 61, the language `=`): it is `champ_eq` — a PHYSICAL-
     /// byte compare, BY CONTRACT (fast, shared with the map-key path). So a ROPE Bytes/String value is
     /// value-eq-DISTINCT from its flat twin even with equal CONTENT — the COMPILER must canonicalize
