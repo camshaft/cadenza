@@ -9050,7 +9050,7 @@
 (case "trm1 an export returns a two-element Set (one reachable cell, constructor-application render)"
   (input (do (def (main (: n Int64)) (Set.of (list n (+ n 1)))) (export main)))
   (call main (: 5 Int64))
-  (output (: ((. Set of) (list 5 6)) (Set Int64)))
+  (output (: #set(5 6) (Set Int64)))
   (live-objects 1))
 
 (case "trm2 an export returns a one-entry Map (one reachable cell)"

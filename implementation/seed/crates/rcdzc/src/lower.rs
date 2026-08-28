@@ -4068,6 +4068,14 @@ struct AstDiscs {
     bytes: u32,
     char: u32,
     symbol: u32,
+    // The native-compound-data (Option B) reflected ctors — mirror the codec ctor-head leaf kinds.
+    list_ctor: u32,
+    tuple_ctor: u32,
+    record_ctor: u32,
+    map_ctor: u32,
+    set_ctor: u32,
+    field_pair: u32,
+    member: u32,
     ty: crate::ty::Ty,
 }
 /// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
@@ -4104,6 +4112,13 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
         bytes: variant_disc_by_name(db, &ty, "Bytes")?,
         char: variant_disc_by_name(db, &ty, "Char")?,
         symbol: variant_disc_by_name(db, &ty, "Symbol")?,
+        list_ctor: variant_disc_by_name(db, &ty, "ListCtor")?,
+        tuple_ctor: variant_disc_by_name(db, &ty, "TupleCtor")?,
+        record_ctor: variant_disc_by_name(db, &ty, "RecordCtor")?,
+        map_ctor: variant_disc_by_name(db, &ty, "MapCtor")?,
+        set_ctor: variant_disc_by_name(db, &ty, "SetCtor")?,
+        field_pair: variant_disc_by_name(db, &ty, "FieldPair")?,
+        member: variant_disc_by_name(db, &ty, "Member")?,
         ty,
     })
 }
@@ -4193,6 +4208,49 @@ fn encode_ast_value(
             return None;
         };
         Some(b.atom_leaf(crate::ast::Leaf::Sym(s)))
+    } else if let Some(ctor) = [
+        (disc.list_ctor, crate::ast::CompoundCtor::List),
+        (disc.tuple_ctor, crate::ast::CompoundCtor::Tuple),
+        (disc.record_ctor, crate::ast::CompoundCtor::Record),
+        (disc.map_ctor, crate::ast::CompoundCtor::Map),
+        (disc.set_ctor, crate::ast::CompoundCtor::Set),
+    ]
+    .iter()
+    .find(|(dd, _)| *dd == d)
+    .map(|(_, c)| *c)
+    {
+        // A native compound-ctor Ast value (Option B) → `(<ctor-leaf> child…)`. The payload is a `(List Ast)`
+        // of the children (record/map children are FieldPair Ast values), each recursively encoded.
+        if payloads.len() != 1 {
+            return None;
+        }
+        let Core::ListNew { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let mut children = Vec::with_capacity(elems.len());
+        for e in elems.iter().copied() {
+            children.push(encode_ast_value(db, e, disc, b)?);
+        }
+        Some(b.compound(ctor, &children))
+    } else if (d == disc.field_pair || d == disc.member) && payloads.len() == 1 {
+        // Ast.FieldPair `(= k v)` / Ast.Member `(. obj key)` — payload is a `(Tuple Ast Ast)` of the two
+        // children; emit the payloadless FieldPair / Member head via the Builder primitives.
+        let Core::Tuple { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        if elems.len() != 2 {
+            return None;
+        }
+        let x = encode_ast_value(db, elems[0], disc, b)?;
+        let y = encode_ast_value(db, elems[1], disc, b)?;
+        Some(if d == disc.field_pair {
+            // Emit the native payloadless FIELD_PAIR leaf head directly (rcdzc's Builder::field_pair still
+            // emits the legacy Name("=") head; its flip is the const_value_ast/field_pair slice).
+            let head = b.atom_leaf(crate::ast::Leaf::FieldPair);
+            b.list(vec![head, x, y])
+        } else {
+            b.member(x, y)
+        })
     } else {
         None
     }
@@ -4310,9 +4368,64 @@ fn arenas_to_ast_value(
     disc: &AstDiscs,
 ) -> Option<StructId> {
     match arenas.get(sid) {
-        // A `Struct::List` → `Ast.List` of the rebuilt children (each an arena-local child id).
+        // A `Struct::List`. A native-compound-data HEAD (Option B) reflects to its DISTINCT Ast variant;
+        // any other list is the generic `Ast.List` of the rebuilt children.
         crate::ast::Struct::List(children) => {
             let children = children.clone();
+            // Native ctor-head → Ast.{List,Tuple,Record,Map,Set}Ctor of the reflected TAIL (a (List Ast)).
+            if let Some(ctor) = arenas.compound_ctor_leaf(sid) {
+                let disc_ctor = match ctor {
+                    crate::ast::CompoundCtor::List => disc.list_ctor,
+                    crate::ast::CompoundCtor::Tuple => disc.tuple_ctor,
+                    crate::ast::CompoundCtor::Record => disc.record_ctor,
+                    crate::ast::CompoundCtor::Map => disc.map_ctor,
+                    crate::ast::CompoundCtor::Set => disc.set_ctor,
+                };
+                let mut elems = Vec::with_capacity(children.len().saturating_sub(1));
+                for &c in &children[1..] {
+                    elems.push(arenas_to_ast_value(db, arenas, c, disc)?);
+                }
+                let payload = synth_core(
+                    db,
+                    Core::ListNew {
+                        elems: elems.into(),
+                    },
+                    crate::ty::Ty::List(Box::new(disc.ty.clone())),
+                );
+                return Some(synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_ctor,
+                        payloads: vec![payload],
+                    },
+                    disc.ty.clone(),
+                ));
+            }
+            // Native FIELD_PAIR (`(= k v)`) / MEMBER (`(. obj key)`) head → Ast.FieldPair / Ast.Member of a
+            // `(Tuple Ast Ast)` of the two reflected children.
+            let pair = arenas
+                .field_pair_parts(sid)
+                .map(|kv| (kv, disc.field_pair))
+                .or_else(|| arenas.member_parts(sid).map(|ok| (ok, disc.member)));
+            if let Some(((x, y), disc_pair)) = pair {
+                let ax = arenas_to_ast_value(db, arenas, x, disc)?;
+                let ay = arenas_to_ast_value(db, arenas, y, disc)?;
+                let payload = synth_core(
+                    db,
+                    Core::Tuple {
+                        elems: vec![ax, ay].into(),
+                    },
+                    crate::ty::Ty::Tuple(vec![disc.ty.clone(), disc.ty.clone()].into()),
+                );
+                return Some(synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_pair,
+                        payloads: vec![payload],
+                    },
+                    disc.ty.clone(),
+                ));
+            }
             let mut elems = Vec::with_capacity(children.len());
             for c in children {
                 elems.push(arenas_to_ast_value(db, arenas, c, disc)?);
@@ -17014,6 +17127,13 @@ fn resolve_leaf_offsets(
             // (resolving it rejects CDZ0001/CDZ0002 before any escape emission), so a runtime template
             // over it is meaningless.
             crate::ast::Leaf::BadEscape(_) | crate::ast::Leaf::BadChar(_) => return None,
+            // A native-compound-data CTOR-HEAD leaf (`Leaf::Ctor`/`FieldPair`/`Member`) is payloadless —
+            // one kind byte, no body and no runtime hole (it is a fixed structural head, never a patched
+            // value leaf; the runtime holes are the Int/Bool value leaves elsewhere in the template). Skip
+            // its single byte, mirroring how the old Str/Name head was skipped (just one byte now).
+            crate::ast::Leaf::Ctor(_) | crate::ast::Leaf::FieldPair | crate::ast::Leaf::Member => {
+                off += 1;
+            }
         }
     }
     let _ = bytes;
@@ -17211,16 +17331,16 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/capabilities/units-of-measure.md#a-stored-quantity-displays-at-its-dimension-s-reference-unit
         //# The reference-unit display MUST recurse into every quantity leaf of a compound value, so that a tuple, a sum payload, a nested compound, or a record field carrying a quantity each displays scaled to its reference independently and in its own inner type, not only a bare top-level quantity.
         Core::Tuple { elems } => {
-            let head = b.name("tuple");
-            let mut children = vec![head];
+            // M2: head-first native TUPLE_CTOR head (recognized by kind), not the `tuple` name head.
+            let mut children = Vec::with_capacity(elems.len());
             for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Tuple, &children))
         }
         Core::Record { fields } => {
-            let head = b.name("record");
-            let mut children = vec![head];
+            // M2: head-first native RECORD_CTOR head; fields are FieldPair-leaf `(= k v)` (b.field_pair).
+            let mut children = Vec::with_capacity(fields.len());
             // Canonical (sorted) field order — a `BTreeMap` iterates sorted, matching the type render.
             for (name, &v) in fields.iter() {
                 let fname = b.name(&*name.name);
@@ -17230,7 +17350,7 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
                 // 2026-08-09). Distinct from a map's `(key value)` pairs, which stay pair-form.
                 children.push(b.field_pair(fname, fval));
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Record, &children))
         }
         // A CONSTANT list literal renders `(list e1 e2 …)` — its length is statically known (unlike a
         // grown/runtime list), so its bytes bake exactly like a constant tuple's. Each element is a
@@ -17241,12 +17361,12 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         //= spec/contracts/deterministic-value-form.md#ordering-of-aggregate-members-is-fixed
         //# The canonical encoding of an ordered aggregate MUST preserve its element order.
         Core::ListNew { elems } => {
-            let head = b.name("list");
-            let mut children = vec![head];
+            // M2: head-first native LIST_CTOR head, not the `list` name head.
+            let mut children = Vec::with_capacity(elems.len());
             for e in elems.iter().copied() {
                 children.push(const_value_ast(db, b, e)?);
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::List, &children))
         }
         // A CONSTANT map value — `(map (k1 v1) (k2 v2) …)` — its entries rendered in CANONICAL KEY ORDER,
         // independent of insertion order and DISTINGUISHABLE from a record (`map` head, `(key value)`
@@ -17282,14 +17402,15 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             if !orderable {
                 return None;
             }
-            let head = b.name("map");
-            let mut children = vec![head];
+            // M2: head-first native MAP_CTOR head; entries are FieldPair-leaf `(= k v)` (map=field-pair
+            // unification), not the legacy `(k v)` raw pair.
+            let mut children = Vec::with_capacity(sorted.len());
             for (k, v) in sorted {
                 let kv = const_value_ast(db, b, k)?;
                 let vv = const_value_ast(db, b, v)?;
-                children.push(b.list(vec![kv, vv]));
+                children.push(b.field_pair(kv, vv));
             }
-            Some(b.list(children))
+            Some(b.compound(crate::ast::CompoundCtor::Map, &children))
         }
         // A CONSTANT set value — `(Set.of (list e1 e2 …))` — its elements rendered in CANONICAL (sorted)
         // ORDER inside a `(list …)`, wrapped in a `(Set.of …)` form (collections-and-text.md §A Set …
@@ -17314,19 +17435,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
             if !orderable {
                 return None;
             }
-            let list_head = b.name("list");
-            let mut list_children = vec![list_head];
+            // M2: head-first native SET_CTOR head with the sorted-deduped elements directly — the
+            // `(. Set of)(list …)` member-path is REPLACED (operator: a set renders `#set(…)` natively).
+            let mut children = Vec::with_capacity(sorted.len());
             for e in sorted {
-                list_children.push(const_value_ast(db, b, e)?);
+                children.push(const_value_ast(db, b, e)?);
             }
-            let inner_list = b.list(list_children);
-            // `(Set.of <list>)` — a member-access `(. Set of)` applied to the list. The value form the
-            // corpus records is the `Set.of (list …)` application, so build it as `((. Set of) <list>)`.
-            let set_mod = b.name("Set");
-            let of_key = b.name("of");
-            let dot = b.name(".");
-            let set_of = b.list(vec![dot, set_mod, of_key]);
-            Some(b.list(vec![set_of, inner_list]))
+            Some(b.compound(crate::ast::CompoundCtor::Set, &children))
         }
         // A CONSTANT sum value — `(Some 5)`, `(None unit)`, `(Some (Some 5))`. Its canonical form is
         // `(VariantName payload…)` with the variant TAG present (`deterministic-value-form.md`;
@@ -17539,10 +17654,12 @@ fn unit_value_ast(b: &mut crate::ast::Builder, unit: &crate::ty::Unit) -> Struct
 /// dotted name `Operand.key` to (an alphabetic-segment postfix desugar). Used to bake a unit/quantity
 /// value form so it re-reads to the same tree the corpus records (`(. Qty of)`, `(. Unit base)`).
 fn member_access(b: &mut crate::ast::Builder, operand: &str, key: &str) -> StructId {
-    let dot = b.name(".");
+    // M2: the `(. operand key)` head is the native MEMBER leaf kind (recognized by kind), not the `.` name.
+    // Keeps the compiler-emitted Qty/Symbol/Unit value-construction member forms native head-first, matching
+    // op62's runtime encode (byte-EQ) and the reader's native `.` flip.
     let op = b.name(operand.to_string());
     let k = b.name(key.to_string());
-    b.list(vec![dot, op, k])
+    b.member(op, k)
 }
 
 /// Reconstruct a TYPE s-expression into `b`, matching `Ty::render_name`'s surface exactly so the host

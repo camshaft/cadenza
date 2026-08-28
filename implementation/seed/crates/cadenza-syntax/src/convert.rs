@@ -646,37 +646,40 @@ mod tests {
     }
 
     #[test]
-    fn list_and_tuple_literals_use_a_string_head_and_round_trip_both_directions() {
-        // A `[…]`/`(a,b)` literal desugars to a STRING-primitive head — `("list" …)` / `("tuple" …)` —
-        // NOT a bare `(list …)` name, ON PURPOSE: the string is the UNSHADOWABLE compound constructor, so
-        // a literal still builds the compound even where the alias name `list`/`tuple` is rebound (see
-        // parser.rs `ctor_head`, [[compound-ctors-are-reserved-symbols-not-names]]). This pins that the
-        // string head is the CANONICAL s-expr form AND that the ML↔s-expr round-trip is SOUND both ways —
-        // it is NOT a miscompile (a v-notebook/concierge report read the quoted head as a bug; it is the
-        // intended canonical form and round-trips idempotently). A regression that emitted a bare-name head
-        // (re-introducing the shadowing hole) OR that failed to re-read the string head back to `[…]`/`(a,b)`
-        // would break this.
+    fn list_and_tuple_literals_use_a_native_ctor_head_and_round_trip_both_directions() {
+        // A `[…]`/`(a,b)` literal desugars to a native COMPOUND-CTOR head — `#list(…)` / `#tuple(…)`, a
+        // `Leaf::Ctor` recognized by kind identity (M2 native-compound-data migration) — NOT a bare
+        // `(list …)` name and NOT the legacy STRING primitive `("list" …)`. The distinct leaf kind is
+        // unshadowable by construction (it cannot collide with a rebound `list`/`tuple` name or a `#"list"`
+        // symbol), so a literal always builds the compound (see parser.rs `ctor_head`). This pins that the
+        // native ctor head is the CANONICAL s-expr form AND that the ML↔s-expr round-trip is SOUND both
+        // ways — a regression that emitted a bare-name head (re-introducing the shadowing hole) OR that
+        // failed to re-read the native head back to `[…]`/`(a,b)` would break this. The LEGACY string-head
+        // input still re-reads until the M3 reader drop (dual-read window), pinned below.
         let ml_to_sx = |src: &[u8]| {
             String::from_utf8(convert(src, Format::Ml, Format::Sexpr).unwrap()).unwrap()
         };
         let sx_to_ml = |src: &[u8]| {
             String::from_utf8(convert(src, Format::Sexpr, Format::Ml).unwrap()).unwrap()
         };
-        // ML literal → the STRING-head s-expr canonical form.
-        assert_eq!(ml_to_sx(b"[1, 2]"), "(\"list\" 1 2)");
-        assert_eq!(ml_to_sx(b"(1, 2)"), "(\"tuple\" 1 2)");
-        // The nested list-of-tuple case (v-notebook's chart/table cell) — still string heads throughout.
+        // ML literal → the NATIVE-ctor-head s-expr canonical form.
+        assert_eq!(ml_to_sx(b"[1, 2]"), "#list(1 2)");
+        assert_eq!(ml_to_sx(b"(1, 2)"), "#tuple(1 2)");
+        // The nested list-of-tuple case (v-notebook's chart/table cell) — native heads throughout.
         assert_eq!(
             ml_to_sx(b"[(1, 2), (3, 4)]"),
-            "(\"list\" (\"tuple\" 1 2) (\"tuple\" 3 4))"
+            "#list(#tuple(1 2) #tuple(3 4))"
         );
-        // The string-head s-expr re-reads + prints BACK to the ML literal sugar — round-trip is sound.
-        assert_eq!(sx_to_ml(b"(\"list\" 1 2)"), "[1, 2]");
-        assert_eq!(sx_to_ml(b"(\"tuple\" 1 2)"), "(1, 2)");
+        // The native-head s-expr re-reads + prints BACK to the ML literal sugar — round-trip is sound.
+        assert_eq!(sx_to_ml(b"#list(1 2)"), "[1, 2]");
+        assert_eq!(sx_to_ml(b"#tuple(1 2)"), "(1, 2)");
         assert_eq!(
-            sx_to_ml(b"(\"list\" (\"tuple\" 1 2) (\"tuple\" 3 4))"),
+            sx_to_ml(b"#list(#tuple(1 2) #tuple(3 4))"),
             "[(1, 2), (3, 4)]"
         );
+        // The LEGACY string-head surface still re-reads to the same ML sugar (dual-read until M3).
+        assert_eq!(sx_to_ml(b"(\"list\" 1 2)"), "[1, 2]");
+        assert_eq!(sx_to_ml(b"(\"tuple\" 1 2)"), "(1, 2)");
         // ARENA-IDEMPOTENT through the binary codec: ML → binary → sexpr is stable across a second pass.
         let bin = convert(b"[(1, 2), (3, 4)]", Format::Ml, Format::Binary).unwrap();
         let sx = convert(&bin, Format::Binary, Format::Sexpr).unwrap();
@@ -817,8 +820,8 @@ mod tests {
             1 => format!("(f {} {})", sub(rng), sub(rng)),
             2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
             3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
-            4 => format!("(\"list\" {} {})", sub(rng), sub(rng)),
-            _ => format!("(\"tuple\" {} {})", sub(rng), sub(rng)),
+            4 => format!("#list({} {})", sub(rng), sub(rng)),
+            _ => format!("#tuple({} {})", sub(rng), sub(rng)),
         }
     }
 

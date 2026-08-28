@@ -2382,7 +2382,7 @@
            (Set Int64))`, members in canonical order (the runtime CHAMP set encode sorts).")
   (input  (do (def (mk) (fn ((: n Int64)) (Set.of (list n (+ n 1) n)))) (export mk)))
   (call   mk (: 5 Int64))
-  (output (: ((. Set of) (list 5 6)) (Set Int64)))
+  (output (: #set(5 6) (Set Int64)))
   (live-objects known-leak 1))
 
 (case "a closure returning a Map — canonical key order"
@@ -2608,7 +2608,7 @@
               (def (c) (fn ((: n Int64)) (Set.of (list n))))
               (export a) (export b) (export c)))
   (call   b (: 3 Int64))
-  (output (: ((. Set of) (list 3 6)) (Set Int64)))
+  (output (: #set(3 6) (Set Int64)))
   (live-objects known-leak 1))
 
 (case "multi-export Set-result closures — the singleton one"
@@ -2619,7 +2619,7 @@
               (def (c) (fn ((: n Int64)) (Set.of (list n))))
               (export a) (export b) (export c)))
   (call   c (: 9 Int64))
-  (output (: ((. Set of) (list 9)) (Set Int64)))
+  (output (: #set(9) (Set Int64)))
   (live-objects known-leak 1))
 
 ; A VARIABLE-LENGTH collection (List/Map/Set) closure RESULT on the MIXED path — a collection-returning
@@ -2769,7 +2769,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list x (g x) x)))
               (export mk) (export app)))
   (call   app (: 3 Int64))
-  (output (: ((. Set of) (list 3 6)) (Set Int64))))
+  (output (: #set(3 6) (Set Int64))))
 
 (case "round-trip: a consumer returns a Map from the closure result"
   (doc    "`mk` adds 100; `app : (own<t>, Int64) -> (Map Int64 Int64)` = `(map (0 x) (1 (g x)))`. `app(handle,
@@ -5322,7 +5322,7 @@
               (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list (g x) (g x) x)))
               (export mk) (export app)))
   (call   app (: 3 Int64))
-  (output (: ((. Set of) (list 3 30)) (Set Int64))))
+  (output (: #set(3 30) (Set Int64))))
 
 (case "mixed: two closure exports alongside a plain export — driving the plain export"
   (doc    "`inc`/`dbl` are two same-signature closure exports (crossing via `make-<name>` + a shared borrow
@@ -5798,10 +5798,10 @@
 
 (case "hcz4 dropping a closure whose body RETURNED its captured SET reclaims cleanly"
   (doc "The Set twin of hcz3 — same read-site-dup balance over the set CHAMP.")
-  (input (do (def (f (: n Int64)) (let ((s ((. Set of) (list n 5)))) (fn ((: q Int64)) s))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((s #set(n 5))) (fn ((: q Int64)) s))) (export f)))
   (call f (: 1 Int64) (: 9 Int64))
   (drop)
-  (output (: ((. Set of) (list 1 5)) (Set Int64)))
+  (output (: #set(1 5) (Set Int64)))
   (live-objects 0))
 
 (case "hcz5 dropping a closure whose body RETURNED its captured WRAPPED compound (record holding a tuple) reclaims cleanly"

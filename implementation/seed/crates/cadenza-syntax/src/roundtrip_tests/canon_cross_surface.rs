@@ -235,8 +235,8 @@ fn gen_prog(rng: &mut Rng, depth: usize) -> String {
         1 => format!("(f {} {})", sub(rng), sub(rng)),
         2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
         3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
-        4 => format!("(\"list\" {} {})", sub(rng), sub(rng)),
-        _ => format!("(\"tuple\" {} {})", sub(rng), sub(rng)),
+        4 => format!("#list({} {})", sub(rng), sub(rng)),
+        _ => format!("#tuple({} {})", sub(rng), sub(rng)),
     }
 }
 

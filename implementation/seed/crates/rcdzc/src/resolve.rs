@@ -428,6 +428,14 @@ fn compute(db: &Db, id: StructId) -> Resolved {
                     "`#\\{s}` does not name a Unicode scalar value (a code point in U+0000..=U+10FFFF, excluding the surrogates U+D800..=U+DFFF)"
                 ),
             )),
+            // A native-compound-data CTOR-HEAD leaf (`Leaf::Ctor`/`FieldPair`/`Member`) is STRUCTURAL — it
+            // only ever occupies the HEAD position of a compound `List` node, where the List-level dispatch
+            // (`compound_ctor` etc.) reads it. In a bare ATOM (non-head) position it is not a value, so —
+            // like a non-finite float leaf above — a stray occurrence is a malformed node.
+            Leaf::Ctor(_) | Leaf::FieldPair | Leaf::Member => Resolved::Poison(Reject::coded(
+                Code::Malformed,
+                "a compound-constructor head leaf is not a value on its own".to_string(),
+            )),
         },
         Struct::List(children) => {
             // `()` — the empty list — is unit.
@@ -441,13 +449,21 @@ fn compute(db: &Db, id: StructId) -> Resolved {
             // are NOT matched below: a `(tuple …)` NAME head falls through to `Resolved::Apply` and
             // resolves lexically-first (a local `tuple` binding shadows the alias). ("The strings are
             // the symbols.")
-            match db.ast.compound_ctor(id) {
+            // Recognize the native ctor-LEAF-KIND head (what the reader now emits) OR the legacy
+            // string-primitive head (`compound_ctor_prim`), both unshadowable — the migration dual-read.
+            match db.ast.compound_ctor_prim(id) {
                 Some(CompoundCtor::Record) => return resolve_record(db, id),
                 Some(CompoundCtor::Tuple) => return resolve_tuple(db, id),
                 Some(CompoundCtor::List) => return resolve_list(db, id),
                 Some(CompoundCtor::Map) => return resolve_map(db, id),
                 Some(CompoundCtor::Set) => return resolve_set(db, id),
                 None => {}
+            }
+            // A native MEMBER-leaf head (`(. obj key)`, what the reader now emits for `.`/`obj.key`) —
+            // recognized by leaf kind, not the `.` head text. Dispatch to member access before the
+            // name-head match (the legacy `Name(".")` head is still handled by the `Some(".")` arm below).
+            if db.ast.member_parts(id).is_some() {
+                return resolve_member(db, id);
             }
             match db.ast.head_name(id) {
                 Some("if") => resolve_if(db, id),
@@ -6211,7 +6227,10 @@ fn resolve_lambda(db: &Db, id: StructId) -> Resolved {
 /// (`core-semantics.md` §A Record Has A Fixed Set Of Named Fields); the check is over the WHOLE field
 /// list, not adjacent pairs.
 fn resolve_record(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.as_ctor_form(id, "record").unwrap_or(&[]);
+    let tail = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Record)
+        .unwrap_or(&[]);
     match read_record_fields(db, tail) {
         Ok(fields) => Resolved::Record {
             fields: std::rc::Rc::new(fields),
@@ -6237,7 +6256,10 @@ pub(crate) fn read_record_fields(
         // pair is still accepted (an un-migrated node / hand-built AST), so both shapes read.
         // The canonical `(= name value)` ascription triple (Phase B): read via the shared
         // `Arenas::field_pair` (the ONE `(= k v)` reader for record fields + map entries).
-        let (key_id, val_id) = if let Some(kv) = db.ast.field_pair(field) {
+        let (key_id, val_id) = if let Some(kv) = db.ast.field_pair_parts(field) {
+            // Native FIELD_PAIR-leaf-headed entry (M2, what the reader now emits for #record fields).
+            kv
+        } else if let Some(kv) = db.ast.field_pair(field) {
             kv
         } else {
             match db.ast.get(field) {
@@ -6358,7 +6380,15 @@ fn withheld_ctor_reject(db: &Db, id: StructId, ty: &str, key: &Symbol) -> Option
 }
 
 fn resolve_member(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.as_form(id, ".").unwrap_or(&[]);
+    // Native MEMBER-leaf head (M2, what the reader now emits for `.`/`obj.key`) OR the legacy `Name(".")`
+    // head. Read `(operand key)` from whichever; the rest works on the 2-element tail unchanged.
+    let member_tail: Vec<StructId>;
+    let tail: &[StructId] = if let Some((operand, key)) = db.ast.member_parts(id) {
+        member_tail = vec![operand, key];
+        &member_tail
+    } else {
+        db.ast.as_form(id, ".").unwrap_or(&[])
+    };
     if tail.len() != 2 {
         // `(. operand key)` is a fixed-arity form (want 2), so route it through the SHARED
         // `fixed_arity_reject` the other fixed-arity forms (`if`/`and`/`not`/`resume`/`let`/`fn`) use — a
@@ -6438,7 +6468,11 @@ fn tuple_index(value: &crate::ast::IntValue) -> Option<usize> {
 /// elements — it is the empty product, which coincides with unit; but the reader writes `()` for unit,
 /// so a written `(tuple)` is kept as a zero-element tuple here and typed as such (its arity is 0).
 fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "tuple").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Tuple)
+        .unwrap_or(&[])
+        .into();
     Resolved::Tuple { elems }
 }
 
@@ -6447,7 +6481,11 @@ fn resolve_tuple(db: &Db, id: StructId) -> Resolved {
 /// element type — `infer`/`type_errors` enforce homogeneity). An empty `(list)` has no elements — a
 /// list of a deferred element type.
 fn resolve_list(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "list").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::List)
+        .unwrap_or(&[])
+        .into();
     Resolved::List { elems }
 }
 
@@ -6456,7 +6494,11 @@ fn resolve_list(db: &Db, id: StructId) -> Resolved {
 /// element type (homogeneity enforced by `infer`/`type_errors`); DUPLICATES collapse at build. Lowers to
 /// `Core::SetOf`. An empty `("set")` is a set of a deferred element type.
 fn resolve_set(db: &Db, id: StructId) -> Resolved {
-    let elems: std::rc::Rc<[StructId]> = db.ast.as_ctor_form(id, "set").unwrap_or(&[]).into();
+    let elems: std::rc::Rc<[StructId]> = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Set)
+        .unwrap_or(&[])
+        .into();
     Resolved::Set { elems }
 }
 
@@ -6468,12 +6510,20 @@ fn resolve_set(db: &Db, id: StructId) -> Resolved {
 /// value) is a `Poison` (CDZ0201), never a panic reaching for the absent value. An empty `(map)` is a
 /// map with no entries. `infer`/`type_errors` enforce key/value homogeneity + duplicate-const-key.
 fn resolve_map(db: &Db, id: StructId) -> Resolved {
-    let tail = db.ast.as_ctor_form(id, "map").unwrap_or(&[]);
+    let tail = db
+        .ast
+        .compound_form_of(id, CompoundCtor::Map)
+        .unwrap_or(&[]);
     let mut entries: Vec<(StructId, StructId)> = Vec::with_capacity(tail.len());
     for &entry in tail {
         // Prefer the canonical `(= key value)` FieldPair — map entries unify with record fields
         // (operator-ruled 2026-08-27: "prefer `=` for maps"; the `#map((= k v))` surface). The legacy
         // raw `(key value)` pair is still accepted through the migration (corpus migrates at M3).
+        if let Some((k, v)) = db.ast.field_pair_parts(entry) {
+            // Native FIELD_PAIR-leaf-headed entry (M2, what the reader now emits for #map entries).
+            entries.push((k, v));
+            continue;
+        }
         if let Some((k, v)) = db.ast.field_pair(entry) {
             entries.push((k, v));
             continue;

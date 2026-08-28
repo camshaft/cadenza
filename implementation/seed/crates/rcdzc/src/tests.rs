@@ -40049,11 +40049,15 @@ mod r2_runtime_resource {
                 .collect()
         };
         let want_ints: std::collections::BTreeSet<i64> = [1, 3].into_iter().collect();
+        // M2 native compound heads: a tuple value is headed by the payloadless `Ctor(Tuple)` leaf
+        // kind (not a `Name("tuple")` string head anymore), so recognize the native ctor-leaf.
+        let has_tuple_ctor = |a: &crate::ast::Arenas| -> bool {
+            a.leaves
+                .iter()
+                .any(|l| matches!(l, crate::ast::Leaf::Ctor(crate::ast::CompoundCtor::Tuple)))
+        };
         // BARE: the tuple value + its constants, with NO `(: value Type)` frame.
-        assert!(
-            names(&bare_a).contains("tuple"),
-            "bare doc is the tuple value"
-        );
+        assert!(has_tuple_ctor(&bare_a), "bare doc is the tuple value");
         assert!(
             !names(&bare_a).contains(":"),
             "the bare doc carries NO `(: value type)` frame"
@@ -40068,7 +40072,7 @@ mod r2_runtime_resource {
             names(&framed_a).contains(":"),
             "the framed doc has the `(: value type)` frame"
         );
-        assert!(names(&framed_a).contains("tuple"));
+        assert!(has_tuple_ctor(&framed_a));
         assert_eq!(ints(&framed_a), want_ints);
     }
 

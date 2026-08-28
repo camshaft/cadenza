@@ -154,6 +154,37 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         let list_head = push_atom(ast, Leaf::Name("List".into()));
         let ast_ref = push_atom(ast, Leaf::Name("Ast".into()));
         let list_ast = push_list(ast, vec![list_head, ast_ref]);
+        // The native-compound-data OPTION-B variants (operator 2026-08-28: "end-to-end native collections
+        // in the binary AST, no string heads for collections anywhere") — one reflected variant per
+        // ctor-head leaf kind (20-26), so `quote`/`Ast.encode` of a collection produces a FIRST-CLASS
+        // native ctor variant instead of a string/name-headed `List`. The 5 collection ctors carry
+        // `(List Ast)` children (a record/map's children are `FieldPair` nodes); `FieldPair`/`Member` carry
+        // `(Tuple Ast Ast)` (`(= key value)` and `(. obj key)` respectively). The generic `List` variant is
+        // KEPT for a non-collection name-headed node (`(if …)`, `(fn …)`, an application). Appended LAST so
+        // existing discriminants are unchanged (discs are read BY NAME via `ast_variant_discs`). The codec
+        // already carries these leaf kinds (`KIND_*_CTOR`/`FIELD_PAIR`/`MEMBER` 20-26 + the `Leaf::Ctor`/
+        // `FieldPair`/`Member` leaves), so no byte-format change here — this is the guest-facing `Ast` VALUE
+        // sum gaining the seven variants. See `DESIGN-native-ast-compound-data.md` + type-system.md.
+        // A fresh `(List Ast)` payload node per collection variant (own occurrence, mirrors `list_ast`).
+        let list_ast_payload = |ast: &mut Arenas| {
+            let h = push_atom(ast, Leaf::Name("List".into()));
+            let a = push_atom(ast, Leaf::Name("Ast".into()));
+            push_list(ast, vec![h, a])
+        };
+        // A fresh `(Tuple Ast Ast)` payload node — the `(= key value)` / `(. obj key)` pair shape.
+        let tuple_ast_ast_payload = |ast: &mut Arenas| {
+            let h = push_atom(ast, Leaf::Name("Tuple".into()));
+            let a1 = push_atom(ast, Leaf::Name("Ast".into()));
+            let a2 = push_atom(ast, Leaf::Name("Ast".into()));
+            push_list(ast, vec![h, a1, a2])
+        };
+        let listctor_pay = list_ast_payload(&mut *ast);
+        let tuplector_pay = list_ast_payload(&mut *ast);
+        let recordctor_pay = list_ast_payload(&mut *ast);
+        let mapctor_pay = list_ast_payload(&mut *ast);
+        let setctor_pay = list_ast_payload(&mut *ast);
+        let fieldpair_pay = tuple_ast_ast_payload(&mut *ast);
+        let member_pay = tuple_ast_ast_payload(&mut *ast);
         // The `Ast` sum's variants follow the spec's enumeration order (`type-system.md` §The Abstract
         // Syntax Tree Is An Ordinary Sum Type: "an integer, a float, a string, a boolean, a name, and a
         // list of child nodes"). The variants: `Int` (BigInt — non-lossy quoted-integer storage), `Float`
@@ -181,6 +212,14 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
                 ("Bytes", &[bytes_pay]),
                 ("Char", &[char_pay]),
                 ("Symbol", &[sym_pay]),
+                // Option-B native compound-ctor variants (mirror leaf kinds 20-26), appended LAST.
+                ("ListCtor", &[listctor_pay]),
+                ("TupleCtor", &[tuplector_pay]),
+                ("RecordCtor", &[recordctor_pay]),
+                ("MapCtor", &[mapctor_pay]),
+                ("SetCtor", &[setctor_pay]),
+                ("FieldPair", &[fieldpair_pay]),
+                ("Member", &[member_pay]),
             ],
         );
         let mut decl = crate::db::scan_type_decl(ast, form).expect("built-in Ast decl scans");

@@ -343,6 +343,12 @@ impl<'a> Printer<'a> {
             // A TYPE-SUFFIXED literal renders `<body><suffix>` (`100N`, `0.5R`) — re-reads (via the ML
             // lexer's glued-suffix scan) to the same leaf.
             Leaf::Suffixed { value, kind } => self.doc.word(literal::render_suffixed(value, *kind)),
+            // Native compound HEAD leaves (M2) are LIST heads, resugared to their ML surface at the list
+            // level; a bare atom occurrence (not expected in a well-formed tree) renders a best-effort
+            // marker so the printer stays total.
+            Leaf::Ctor(c) => self.doc.word(crate::sexpr::compound_ctor_word(*c)),
+            Leaf::FieldPair => self.doc.word("="),
+            Leaf::Member => self.doc.word("."),
         }
     }
 
@@ -368,6 +374,10 @@ impl<'a> Printer<'a> {
                 "tuple" if !args.is_empty() && inline_ok => return self.print_tuple(args),
                 "record" if self.is_record_shape(args) => return self.print_record(args),
                 "map" if self.is_map_shape(args) => return self.print_map(args),
+                // Native `Leaf::Ctor(Set)` — elements are its direct children (the M2 native set ctor,
+                // uniform with the others); renders back to `#(…)`. The legacy `((. Set of) (list …))`
+                // member form is recognized separately below (dual-support during the corpus migration).
+                "set" if inline_ok => return self.bracketed_comment_aware("#(", ")", false, args),
                 _ => {}
             }
         }
@@ -3001,7 +3011,9 @@ impl<'a> Printer<'a> {
             // SURFACE `{ name = value }` is UNCHANGED (only the arena gained the explicit `=`). Tolerate
             // the legacy bare `(name value)` pair too, so a stray un-migrated node still prints.
             let (name, value) = match p.a.get(field) {
-                Struct::List(items) if items.len() == 3 && p.a.as_name(items[0]) == Some("=") => {
+                Struct::List(items)
+                    if items.len() == 3 && p.head_name(items[0]).as_deref() == Some("=") =>
+                {
                     (items[1], items[2])
                 }
                 Struct::List(pair) if pair.len() == 2 => (pair[0], pair[1]),
@@ -3210,7 +3222,14 @@ impl<'a> Printer<'a> {
     fn print_map(&mut self, entries: &[StructId]) {
         let entry = |p: &mut Self, entry: StructId| {
             if let Struct::List(pair) = p.a.get(entry) {
-                let (key, value) = (pair[0], pair[1]);
+                // A native FieldPair entry `(= key value)` (M2) — key/value are children 1/2, dropping the
+                // `=` head; tolerate a legacy bare `(key value)` pair too.
+                let (key, value) =
+                    if pair.len() == 3 && p.head_name(pair[0]).as_deref() == Some("=") {
+                        (pair[1], pair[2])
+                    } else {
+                        (pair[0], pair[1])
+                    };
                 p.expr(key, 0);
                 p.doc.word(" = ");
                 p.expr(value, 0);
@@ -3517,7 +3536,7 @@ impl<'a> Printer<'a> {
     /// (field = child 0). The field must be a plain name. `None` if neither shape.
     fn record_pattern_field(&self, entry: StructId) -> Option<(StructId, StructId)> {
         match self.a.get(entry) {
-            Struct::List(p) if p.len() == 3 && self.a.as_name(p[0]) == Some("=") => {
+            Struct::List(p) if p.len() == 3 && self.head_name(p[0]).as_deref() == Some("=") => {
                 self.head_name(p[1]).is_some().then_some((p[1], p[2]))
             }
             Struct::List(p) if p.len() == 2 && self.head_name(p[0]).is_some() => Some((p[0], p[1])),
@@ -3711,6 +3730,15 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::Atom(l) => match self.a.leaf(*l) {
                 Leaf::Name(n) => Some(n.to_string()),
+                // Native compound heads (M2) render through the SAME head-keyed recognizers as their
+                // legacy spellings: a `Member` head IS the `.` of a `(. obj key)` projection, a `FieldPair`
+                // head IS the `=` of a record/map entry `(= k v)`. Reporting their surface spelling here
+                // lets `member_key`/`is_member_call`/`is_record_shape`/`print_record` etc. recognize a
+                // native-headed node with no per-site change (a `(FieldPair k v)`/`(Member o k)` has the
+                // same child positions as `(= k v)`/`(. o k)`). Head-IDENTITY comparison (`node_eq`) is a
+                // separate cadenza-ast concern and does NOT collapse these.
+                Leaf::Member => Some(".".to_string()),
+                Leaf::FieldPair => Some("=".to_string()),
                 _ => None,
             },
             _ => None,
@@ -3725,6 +3753,10 @@ impl<'a> Printer<'a> {
         match self.a.get(id) {
             Struct::Atom(l) => match self.a.leaf(*l) {
                 Leaf::Str(s) => Some(s.to_string()),
+                // A native ctor-leaf head (M2) is the unshadowable compound primitive, exactly like the
+                // string head — report its surface word so `literal_ctor` sugars `(<ctor> …)` to `[…]` /
+                // `(a, b)` / `{…}` / `#{…}` / a set literal.
+                Leaf::Ctor(c) => Some(crate::sexpr::compound_ctor_word(*c).to_string()),
                 _ => None,
             },
             _ => None,
@@ -4194,7 +4226,15 @@ impl<'a> Printer<'a> {
             // See through any comment wrappers (own-line LEADING `(comment …)` on any field + a same-line
             // TRAILING `(comment-after …)` on the last) so a commented field still counts as a pair.
             let inner = self.strip_field_comments(a);
-            matches!(self.a.get(inner), Struct::List(p) if p.len() == 2)
+            match self.a.get(inner) {
+                // Native FieldPair entry `(= key value)` (M2) — head "=" (native-aware `head_name`).
+                Struct::List(p) if p.len() == 3 && self.head_name(p[0]).as_deref() == Some("=") => {
+                    true
+                }
+                // Legacy bare `(key value)` pair.
+                Struct::List(p) if p.len() == 2 => true,
+                _ => false,
+            }
         })
     }
 
@@ -4212,7 +4252,7 @@ impl<'a> Printer<'a> {
             let inner = self.strip_field_comments(a);
             match self.a.get(inner) {
                 // `(= name value)` — the canonical field; key is `p[1]`, must be a plain field name.
-                Struct::List(p) if p.len() == 3 && self.a.as_name(p[0]) == Some("=") => {
+                Struct::List(p) if p.len() == 3 && self.head_name(p[0]).as_deref() == Some("=") => {
                     self.plain_key(p[1]).is_some()
                 }
                 // Legacy `(name value)` pair — key is `p[0]`.
@@ -5100,8 +5140,9 @@ mod tests {
             2 => format!("(if {} {} {})", sub(rng), sub(rng), sub(rng)),
             3 => format!("(let ((x {}) (y {})) {})", sub(rng), sub(rng), sub(rng)),
             // A value-RECORD field is the canonical `(= name value)` triple (RV1/RV2, Phase B), so the
-            // generated arena matches what the parser emits and the printer round-trips faithfully.
-            4 => format!("(record (= x {}) (= y {}))", sub(rng), sub(rng)),
+            // generated arena matches what the parser emits and the printer round-trips faithfully. The head
+            // is the native `#record(…)` ctor surface (`Leaf::Ctor`), matching what `read_ml` produces.
+            4 => format!("#record((= x {}) (= y {}))", sub(rng), sub(rng)),
             _ => format!("(* {} (+ {} {}))", sub(rng), sub(rng), sub(rng)),
         }
     }
@@ -5130,8 +5171,11 @@ mod tests {
             0 => format!("(tuple {} {})", sub(rng), sub(rng)),
             1 => format!("(tuple {})", sub(rng)), // 1-tuple: `(p,)`
             2 => format!("(list {} {})", sub(rng), sub(rng)),
-            // A record PATTERN field is the canonical `(= field sub-pattern)` triple (path B — same form
-            // as a value-record field), matching what the parser emits.
+            // A record PATTERN field is the canonical `(= field sub-pattern)` `FieldPair` triple (path B —
+            // the SAME form as a value-record field, per the operator's full-symmetry ruling). The pattern
+            // reader emits the shadowable NAME-alias head `(record …)` with `FieldPair` fields; the s-expr
+            // reader `field_pairify`s a `(= k v)` DIRECT entry under a bare-name `record`/`map` alias head
+            // (not only under `#record(…)`), so this authored form matches `read_ml`'s pattern arena.
             3 => format!("(record (= f {}) (= g {}))", sub(rng), sub(rng)),
             4 => format!("(map ({} {}))", "k", sub(rng)),
             // ctor application `Ctor(p, …)` (name head, so it prints as an application, not a literal).
@@ -6395,7 +6439,7 @@ mod tests {
         // parenthesized — it round-trips bare (and parens would be ugly/needless).
         for (form_sx, want_no_paren) in [
             ("(if a b c)", "@inline\nif a then b else c"),
-            ("(\"list\" 1 2)", "@inline\n[1, 2]"),
+            ("#list(1 2)", "@inline\n[1, 2]"),
             ("(def (f) 1)", "@inline\ndef f() = 1"),
         ] {
             let sx = format!("(def (main) (@ inline {form_sx}))");
@@ -6469,7 +6513,7 @@ mod tests {
                 "@!param(widget: slider) width : Int64",
             ),
             (
-                r#"(pragma param (param (: widget slider) (: range ("tuple" 1 10))) (: width Int64))"#,
+                r#"(pragma param (param (: widget slider) (: range #tuple(1 10))) (: width Int64))"#,
                 "@!param(widget: slider, range: (1, 10)) width : Int64",
             ),
             // empty config -> no `()`
@@ -7269,7 +7313,7 @@ mod tests {
         // drop-guard. strip_comments peels it — a record with a trailing comment compiles.
         assert_eq!(
             sexpr::print(&parser::read_ml("def r() -> Int64 = { a = 1, b = 2 // last\n}").arenas),
-            "(def (r) (: (\"record\" (= a 1) (comment-after \"last\" (= b 2))) Int64))",
+            "(def (r) (: #record((= a 1) (comment-after \"last\" (= b 2))) Int64))",
             "a trailing comment on the last RECORD field is captured, not dropped"
         );
         assert_eq!(
@@ -7280,7 +7324,7 @@ mod tests {
             sexpr::print(
                 &parser::read_ml("def m() -> Int64 = #{ 1 = 10, 2 = 20 // last\n}").arenas
             ),
-            "(def (m) (: (\"map\" (1 10) (comment-after \"last\" (2 20))) Int64))",
+            "(def (m) (: #map((= 1 10) (comment-after \"last\" (= 2 20))) Int64))",
             "a trailing comment on the last MAP entry is captured, not dropped"
         );
         assert_eq!(
@@ -7304,14 +7348,14 @@ mod tests {
             sexpr::print(
                 &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 }").arenas
             ),
-            "(def (r) (: (\"record\" (comment \"lead\" (= a 1)) (= b 2)) Int64))",
+            "(def (r) (: #record((comment \"lead\" (= a 1)) (= b 2)) Int64))",
             "own-line comment before the first record field is captured, printer renders it above"
         );
         assert_eq!(
             sexpr::print(
                 &parser::read_ml("def r() -> Int64 = { a = 1,\n  // mid\n  b = 2 }").arenas
             ),
-            "(def (r) (: (\"record\" (= a 1) (comment \"mid\" (= b 2))) Int64))",
+            "(def (r) (: #record((= a 1) (comment \"mid\" (= b 2))) Int64))",
             "own-line comment before a non-first record field is captured (no swallow hazard)"
         );
         assert_eq!(
@@ -7322,7 +7366,7 @@ mod tests {
             sexpr::print(
                 &parser::read_ml("def m() -> Int64 = #{\n  // lead\n  1 = 10, 2 = 20 }").arenas
             ),
-            "(def (m) (: (\"map\" (comment \"lead\" (1 10)) (2 20)) Int64))",
+            "(def (m) (: #map((comment \"lead\" (= 1 10)) (= 2 20)) Int64))",
             "own-line comment before a map entry is captured"
         );
         // Leading own-line + trailing same-line (last field) compose.
@@ -7331,7 +7375,7 @@ mod tests {
                 &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 // last\n}")
                     .arenas
             ),
-            "(def (r) (: (\"record\" (comment \"lead\" (= a 1)) (comment-after \"last\" (= b 2))) Int64))",
+            "(def (r) (: #record((comment \"lead\" (= a 1)) (comment-after \"last\" (= b 2))) Int64))",
             "leading own-line + trailing same-line record comments compose"
         );
         // Clean record/map (incl. pun) keep their flat layout.
@@ -7358,7 +7402,7 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parser::read_ml(&printed).arenas),
-            r#"(def (r) (: ("record" (comment "c1" (comment "c2" (= a 1))) (= b 2)) _))"#,
+            r#"(def (r) (: #record((comment "c1" (comment "c2" (= a 1))) (= b 2)) _))"#,
             "a doubly-commented field round-trips"
         );
         // A leading + trailing combo on one field normalizes to a stable (idempotent) nesting — nothing
@@ -7385,7 +7429,7 @@ mod tests {
         let src = "def l() -> List(Int64) = [1, 2 // last\n]";
         let tree = sexpr::print(&parser::read_ml(src).arenas);
         assert_eq!(
-            tree, "(def (l) (: (\"list\" 1 (comment-after \"last\" 2)) (List Int64)))",
+            tree, "(def (l) (: #list(1 (comment-after \"last\" 2)) (List Int64)))",
             "the same-line trailing `//` on the last elem is captured, not dropped"
         );
         // The printer re-emits it SAME-LINE and — crucially — forces the closing `]` onto the NEXT line,
@@ -7398,7 +7442,7 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parser::read_ml(&printed).arenas),
-            "(def (l) (: (\"list\" 1 (comment-after \"last\" 2)) (List Int64)))",
+            "(def (l) (: #list(1 (comment-after \"last\" 2)) (List Int64)))",
             "the trailing list comment round-trips"
         );
         // A clean list with no trailing comment keeps the ordinary flat layout (no forced break).
@@ -7530,14 +7574,14 @@ mod tests {
         // Before the FIRST element:
         assert_eq!(
             sexpr::print(&parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2]").arenas),
-            "(def (l) (: (\"list\" (comment \"lead\" 1) 2) (List Int64)))",
+            "(def (l) (: #list((comment \"lead\" 1) 2) (List Int64)))",
             "an own-line comment before the first element is captured, not dropped"
         );
         // BETWEEN elements (own-line before a non-first element) — safe (no swallow hazard, unlike a
         // same-line trailing mid-element comment which stays refused):
         assert_eq!(
             sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1,\n  // mid\n  2]").arenas),
-            "(def (l) (: (\"list\" 1 (comment \"mid\" 2)) (List Int64)))",
+            "(def (l) (: #list(1 (comment \"mid\" 2)) (List Int64)))",
             "an own-line comment between elements is captured, not dropped"
         );
         // Round-trips (leading `//` prints on its own line above the element).
@@ -7550,7 +7594,7 @@ mod tests {
             sexpr::print(
                 &parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2 // last\n]").arenas
             ),
-            "(def (l) (: (\"list\" (comment \"lead\" 1) (comment-after \"last\" 2)) (List Int64)))",
+            "(def (l) (: #list((comment \"lead\" 1) (comment-after \"last\" 2)) (List Int64)))",
             "leading own-line + trailing same-line comments compose"
         );
     }
@@ -7564,12 +7608,12 @@ mod tests {
         // Tuple, before first + between elements:
         assert_eq!(
             sexpr::print(&parser::read_ml("def t() -> Int64 = (\n  // lead\n  1, 2)").arenas),
-            "(def (t) (: (\"tuple\" (comment \"lead\" 1) 2) Int64))",
+            "(def (t) (: #tuple((comment \"lead\" 1) 2) Int64))",
             "own-line comment before the first tuple element is captured"
         );
         assert_eq!(
             sexpr::print(&parser::read_ml("def t() -> Int64 = (1,\n  // mid\n  2)").arenas),
-            "(def (t) (: (\"tuple\" 1 (comment \"mid\" 2)) Int64))",
+            "(def (t) (: #tuple(1 (comment \"mid\" 2)) Int64))",
             "own-line comment between tuple elements is captured"
         );
         assert_eq!(
@@ -7579,7 +7623,7 @@ mod tests {
         // Set:
         assert_eq!(
             sexpr::print(&parser::read_ml("def s() -> Int64 = #(\n  // lead\n  1, 2)").arenas),
-            "(def (s) (: ((. Set of) (\"list\" (comment \"lead\" 1) 2)) Int64))",
+            "(def (s) (: #set((comment \"lead\" 1) 2) Int64))",
             "own-line comment before the first set element is captured"
         );
         // A grouped (non-tuple) parenthesized expr with a leading own-line comment also round-trips (the
@@ -7603,7 +7647,7 @@ mod tests {
         let src = "def t() -> Int64 = (1, 2 // last\n)";
         let tree = sexpr::print(&parser::read_ml(src).arenas);
         assert_eq!(
-            tree, "(def (t) (: (\"tuple\" 1 (comment-after \"last\" 2)) Int64))",
+            tree, "(def (t) (: #tuple(1 (comment-after \"last\" 2)) Int64))",
             "the same-line trailing `//` on the last tuple elem is captured, not dropped"
         );
         let printed = print(&parser::read_ml(src).arenas, 80);
@@ -7613,7 +7657,7 @@ mod tests {
         );
         assert_eq!(
             sexpr::print(&parser::read_ml(&printed).arenas),
-            "(def (t) (: (\"tuple\" 1 (comment-after \"last\" 2)) Int64))",
+            "(def (t) (: #tuple(1 (comment-after \"last\" 2)) Int64))",
             "the trailing tuple comment round-trips"
         );
         // Clean tuples (incl. the 1-tuple `(e,)` and grouping `(e)`) keep their ordinary layout.
@@ -7632,29 +7676,30 @@ mod tests {
         // (the witness the capture didn't fire) and that the bare elements are intact.
         assert_eq!(
             sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1 // note\n, 2]").arenas),
-            "(def (l) (: (\"list\" 1 2) (List Int64)))",
+            "(def (l) (: #list(1 2) (List Int64)))",
             "a comment on a non-last LIST element is not captured (no swallow, no corruption)"
         );
         assert_eq!(
             sexpr::print(&parser::read_ml("def t() -> Int64 = (1 // note\n, 2)").arenas),
-            "(def (t) (: (\"tuple\" 1 2) Int64))",
+            "(def (t) (: #tuple(1 2) Int64))",
             "a comment on a non-last TUPLE element is not captured (no swallow, no corruption)"
         );
         // The LAST-element case still IS captured (the two fixes above remain in force).
         assert_eq!(
             sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1, 2 // last\n]").arenas),
-            "(def (l) (: (\"list\" 1 (comment-after \"last\" 2)) (List Int64)))",
+            "(def (l) (: #list(1 (comment-after \"last\" 2)) (List Int64)))",
             "a comment on the LAST list element is still captured"
         );
     }
 
     #[test]
     fn set_literal_round_trips() {
-        // `#(…)` is sugar for `Set.of([…])` — the third built-in collection surface. It round-trips
-        // and the independent s-expr oracle prints the desugared shape back as `#(…)`.
+        // `#(…)` is the native set ctor literal `#set(…)` — the third built-in collection surface. It
+        // round-trips, and the LEGACY `((. Set of) (list …))` member form still prints back to `#(…)`
+        // too (dual-support during the corpus migration; see the oracle assertion below).
         assert_eq!(assert_roundtrip("#(1, 2, 3)", 80), "#(1, 2, 3)");
         assert_eq!(assert_roundtrip("#(x)", 80), "#(x)");
-        // Empty set: `#()` is `Set.of([])`, distinct from the empty map `#{}` / list `[]`.
+        // Empty set: `#()` is the empty `#set()`, distinct from the empty map `#{}` / list `[]`.
         assert_eq!(assert_roundtrip("#()", 80), "#()");
         // The oracle: the desugared member-access application prints as the `#(…)` surface.
         let a = sexpr::read("((. Set of) (list 1 2 3))").unwrap();
@@ -7673,7 +7718,7 @@ mod tests {
         // Captured as `(comment-after …)`, printed same-line, `)` forced to its own line; round-trips.
         assert_eq!(
             sexpr::print(&parser::read_ml("def s() -> Int64 = #(1, 2 // last\n)").arenas),
-            "(def (s) (: ((. Set of) (\"list\" 1 (comment-after \"last\" 2))) Int64))",
+            "(def (s) (: #set(1 (comment-after \"last\" 2)) Int64))",
             "a same-line trailing comment on the last set element is captured, not dropped"
         );
         assert_eq!(
@@ -7995,7 +8040,7 @@ mod tests {
         // Both a record PATTERN binder AND a record VALUE are the canonical `(= name value)` triple
         // (path B — full symmetry; operator ruling): patterns and literals spell the identical form.
         for sx in [
-            "(def (main) (let (((record (= x a) (= y b)) (record (= x 3) (= y 4)))) (+ a b)))",
+            "(def (main) (let (((record (= x a) (= y b)) #record((= x 3) (= y 4)))) (+ a b)))",
             "(def (f (record (= x a))) a)",
         ] {
             let a = sexpr::read(sx).unwrap();
@@ -8134,25 +8179,10 @@ mod tests {
         assert_eq!(print(&sexpr::read("(map)").unwrap(), 80), "#{}");
     }
 
-    #[test]
-    fn name_headed_literal_round_trips_via_head_normalization() {
-        // Sugaring a NAME head means the reprint re-reads with a STRING head; `structurally_eq`
-        // normalizes the two head kinds for the four ctors, so the round-trip still holds.
-        for src in [
-            "(record (= x 1) (= y 2))",
-            "(tuple 1 2 3)",
-            "(list 1 2 3)",
-            "(map (a 1))",
-        ] {
-            let a = sexpr::read(src).unwrap();
-            let printed = print(&a, 80);
-            let back = parser::read_ml(&printed);
-            assert!(
-                back.ok() && back.arenas.structurally_eq(&a),
-                "{src} -> {printed} did not round-trip"
-            );
-        }
-    }
+    // (Removed `name_headed_literal_round_trips_via_head_normalization`: it pinned the Name↔native head
+    // NORMALIZATION that M2 ruling (ii) removes — read_ml now produces native heads end-to-end, so a
+    // legacy name-headed input no longer cross-surface round-trips; the native surface is covered by the
+    // native-form tests. See DESIGN-native-ast-compound-data.md / v-ast-compound M2.)
 
     #[test]
     fn record_field_shorthand() {
@@ -8178,7 +8208,7 @@ mod tests {
         // per the reader's literal desugar).
         assert_eq!(
             sexpr::print(&parser::read_ml("{ x }").arenas),
-            "(\"record\" (= x x))"
+            "#record((= x x))"
         );
         assert_eq!(assert_roundtrip("{ x }", 80), "{ x }");
         assert_eq!(assert_roundtrip("{ x = x }", 80), "{ x }");

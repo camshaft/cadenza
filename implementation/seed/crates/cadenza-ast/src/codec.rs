@@ -13,6 +13,8 @@
 //!       Str | Name | Sym | Bytes      [ len:var ][ bytes ]   (Str/Name/Sym are UTF-8; Bytes is raw)
 //!       Char | BadChar | BadEscape    [ len:var ][ utf8:bytes ]  (one scalar; BadChar/BadEscape are markers)
 //!       BoolFalse | BoolTrue          (no payload)
+//!       FloatNan | FloatPosInf | FloatNegInf         (no payload — non-finite float values)
+//!       List|Tuple|Record|Map|Set-Ctor | FieldPair | Member   (no payload — native-compound-data heads)
 //! [ struct_count:var ]
 //!   for each structure entry, in canonical (post-order) order:
 //!     [ tag:1 ]
@@ -79,7 +81,8 @@
 //! swapping the tag's content is a drop-in change.
 
 use crate::ast::{
-    Arenas, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId, SuffixBody, SuffixKind,
+    Arenas, CompoundCtor, Decimal, IntValue, Leaf, LeafId, Radix, Struct, StructId, SuffixBody,
+    SuffixKind,
 };
 use crate::leb128::{self, Reader};
 // `alloc` (not std's prelude) so the minimal core compiles under `#![no_std]`.
@@ -114,6 +117,21 @@ const KIND_SUFFIXED: u8 = 16;
 const KIND_FLOAT_NAN: u8 = 17;
 const KIND_FLOAT_POS_INF: u8 = 18;
 const KIND_FLOAT_NEG_INF: u8 = 19;
+// The native-compound-data CTOR-HEAD kinds — payloadless kind tags (like `KIND_BOOL_*` / the non-finite
+// floats), a single byte with no body. A compound literal's HEAD child is one of these leaves, so the
+// compound KIND is recognized by leaf-kind identity (a byte) rather than by comparing the head's text
+// (`native-ast-compound-data`; `DESIGN-native-ast-compound-data.md` D1). Appended after the existing
+// kinds so the assignment is additive-evolution-safe (no renumber); IDENTICAL byte-for-byte in the rcdzc
+// codec twin. `KIND_LIST_CTOR..=KIND_SET_CTOR` are the five collection constructors (a
+// [`Leaf::Ctor(CompoundCtor)`] head); `KIND_FIELD_PAIR` is the record/map entry head (`=`) and
+// `KIND_MEMBER` the member-access head (`.`).
+const KIND_LIST_CTOR: u8 = 20;
+const KIND_TUPLE_CTOR: u8 = 21;
+const KIND_RECORD_CTOR: u8 = 22;
+const KIND_MAP_CTOR: u8 = 23;
+const KIND_SET_CTOR: u8 = 24;
+const KIND_FIELD_PAIR: u8 = 25;
+const KIND_MEMBER: u8 = 26;
 const SUFFIX_BIGINT: u8 = 0;
 const SUFFIX_RATIONAL: u8 = 1;
 const BODY_INT: u8 = 0;
@@ -283,6 +301,17 @@ fn write_leaf(out: &mut Vec<u8>, leaf: &Leaf) {
                 KIND_FLOAT_POS_INF
             });
         }
+        // The native-compound-data CTOR-HEAD leaves — payloadless, one kind byte per constructor (the
+        // leaf-kind identity IS the recognized compound kind). No body.
+        Leaf::Ctor(ctor) => out.push(match ctor {
+            CompoundCtor::List => KIND_LIST_CTOR,
+            CompoundCtor::Tuple => KIND_TUPLE_CTOR,
+            CompoundCtor::Record => KIND_RECORD_CTOR,
+            CompoundCtor::Map => KIND_MAP_CTOR,
+            CompoundCtor::Set => KIND_SET_CTOR,
+        }),
+        Leaf::FieldPair => out.push(KIND_FIELD_PAIR),
+        Leaf::Member => out.push(KIND_MEMBER),
         Leaf::Str(s) => {
             out.push(KIND_STR);
             write_bytes(out, s.as_bytes());
@@ -511,6 +540,15 @@ fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
         KIND_FLOAT_NAN => Leaf::FloatNan,
         KIND_FLOAT_POS_INF => Leaf::FloatInf { negative: false },
         KIND_FLOAT_NEG_INF => Leaf::FloatInf { negative: true },
+        // The native-compound-data CTOR-HEAD leaves — payloadless, so the kind byte alone reconstructs
+        // the leaf.
+        KIND_LIST_CTOR => Leaf::Ctor(CompoundCtor::List),
+        KIND_TUPLE_CTOR => Leaf::Ctor(CompoundCtor::Tuple),
+        KIND_RECORD_CTOR => Leaf::Ctor(CompoundCtor::Record),
+        KIND_MAP_CTOR => Leaf::Ctor(CompoundCtor::Map),
+        KIND_SET_CTOR => Leaf::Ctor(CompoundCtor::Set),
+        KIND_FIELD_PAIR => Leaf::FieldPair,
+        KIND_MEMBER => Leaf::Member,
         KIND_STR => Leaf::Str(read_string(r)?.into()),
         KIND_BYTES => Leaf::Bytes(read_raw_bytes(r)?.into()),
         KIND_BOOL_FALSE => Leaf::Bool(false),
@@ -990,6 +1028,69 @@ mod tests {
             nan != pinf && pinf != ninf && nan != ninf,
             "the three non-finite float tags are distinct"
         );
+    }
+
+    #[test]
+    fn native_compound_ctor_head_leaves_encode_to_the_frozen_payloadless_tags_20_through_26() {
+        // The native-compound-data CTOR-HEAD leaves (a compound literal's head is recognized by leaf-KIND
+        // identity, not head text — `DESIGN-native-ast-compound-data.md` D1) are a FROZEN wire contract
+        // shared byte-identically with the rcdzc codec twin: KIND_LIST_CTOR=20, TUPLE=21, RECORD=22,
+        // MAP=23, SET=24, FIELD_PAIR(`=`)=25, MEMBER(`.`)=26 — each a single kind byte with NO body,
+        // appended after the non-finite floats (19) so the assignment is additive-evolution-safe. Pin the
+        // EXACT tag bytes (a future edit cannot silently renumber them), payloadlessness, and equal
+        // round-trip encode->decode.
+        for (leaf, tag) in [
+            (Leaf::Ctor(CompoundCtor::List), 20u8),
+            (Leaf::Ctor(CompoundCtor::Tuple), 21u8),
+            (Leaf::Ctor(CompoundCtor::Record), 22u8),
+            (Leaf::Ctor(CompoundCtor::Map), 23u8),
+            (Leaf::Ctor(CompoundCtor::Set), 24u8),
+            (Leaf::FieldPair, 25u8),
+            (Leaf::Member, 26u8),
+        ] {
+            let mut raw = Vec::new();
+            write_leaf(&mut raw, &leaf);
+            assert_eq!(
+                raw,
+                vec![tag],
+                "{leaf:?} must encode to the single frozen tag byte {tag}"
+            );
+            let mut r = Reader::new(&raw);
+            assert_eq!(
+                read_leaf(&mut r).unwrap(),
+                leaf,
+                "read_leaf inverts tag {tag}"
+            );
+            // A lone ctor-head leaf as an arena root round-trips through the full codec.
+            let mut b = Builder::new();
+            let root = b.atom_leaf(leaf.clone());
+            let a = b.finish(root);
+            let back = decode(&encode(&a)).expect("decode of a lone ctor-head leaf");
+            assert!(a.structurally_eq(&back), "{leaf:?} arena round-trip");
+        }
+        // All seven tags are distinct — no two ctor-head leaves collide on the wire.
+        let enc = |l: &Leaf| {
+            let mut v = Vec::new();
+            write_leaf(&mut v, l);
+            v
+        };
+        let all = [
+            enc(&Leaf::Ctor(CompoundCtor::List)),
+            enc(&Leaf::Ctor(CompoundCtor::Tuple)),
+            enc(&Leaf::Ctor(CompoundCtor::Record)),
+            enc(&Leaf::Ctor(CompoundCtor::Map)),
+            enc(&Leaf::Ctor(CompoundCtor::Set)),
+            enc(&Leaf::FieldPair),
+            enc(&Leaf::Member),
+        ];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(
+                    all[i], all[j],
+                    "ctor-head tags {i} and {j} must be distinct"
+                );
+            }
+        }
     }
 
     #[test]

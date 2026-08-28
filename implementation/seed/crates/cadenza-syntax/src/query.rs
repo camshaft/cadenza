@@ -3919,6 +3919,12 @@ pub mod hash {
     // any finite float. Independent of the codec's kind tags (this is a separate digest scheme).
     const TAG_FLOAT_NAN: u8 = 0x0c;
     const TAG_FLOAT_INF: u8 = 0x0d;
+    // Native compound HEAD leaves (M2) — a distinct digest tag each; a `Ctor` also folds its constructor
+    // discriminant so a list vs tuple vs record vs map vs set head hashes distinctly. FieldPair/Member
+    // are payloadless.
+    const TAG_CTOR: u8 = 0x0e;
+    const TAG_FIELD_PAIR: u8 = 0x0f;
+    const TAG_MEMBER: u8 = 0x10;
 
     /// The 64-bit content hash of `t` (first 8 bytes of the SHA-256 Merkle digest, big-endian).
     pub fn hash_tree(t: &Tree) -> u64 {
@@ -4005,6 +4011,11 @@ pub mod hash {
                     }
                 }
             }
+            // Native compound HEAD leaves (M2): Ctor folds its constructor discriminant; the marker
+            // leaves are payloadless.
+            Leaf::Ctor(c) => h.update([TAG_CTOR, *c as u8]),
+            Leaf::FieldPair => h.update([TAG_FIELD_PAIR]),
+            Leaf::Member => h.update([TAG_MEMBER]),
         }
     }
 

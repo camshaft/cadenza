@@ -105,6 +105,21 @@ pub enum Leaf {
         value: SuffixBody,
         kind: SuffixKind,
     },
+    /// A native-compound-data CTOR-HEAD leaf — the HEAD child of a compound literal, one payloadless leaf
+    /// per collection constructor (`("list" …)`'s head becomes `Atom(Leaf::Ctor(CompoundCtor::List))`).
+    /// The compound KIND is recognized by this leaf's IDENTITY (a distinct codec byte), not by comparing
+    /// head text against `"list"`/`"record"`/… — the native-compound-data migration
+    /// (`DESIGN-native-ast-compound-data.md` D1). A distinct kind cannot collide with a user `#"record"`
+    /// symbol value or a rebindable `record` name. Payloadless: the constructor is the whole value.
+    Ctor(CompoundCtor),
+    /// A record/map ENTRY head — the `=` of a `(= key value)` field pair. A dedicated payloadless leaf so
+    /// the structural field-pair head is recognized by kind identity, distinct from the equality operator
+    /// name `=` (which stays a `Name`), per `DESIGN-native-ast-compound-data.md` (the FIELD_PAIR tag).
+    FieldPair,
+    /// A member-access head — the `.` of a `(. obj key)` projection. A dedicated payloadless leaf so the
+    /// structural member head is recognized by kind identity rather than head text
+    /// (`DESIGN-native-ast-compound-data.md`, the MEMBER tag).
+    Member,
 }
 
 /// The numeric body a type suffix decorates — an exact integer (with its display radix) or an exact
@@ -204,7 +219,7 @@ pub enum Struct {
 /// migration; the seed compiler's `rcdzc::ast::CompoundCtor` is the twin. (`set` is not yet a primitive
 /// constructor on this plane — held for operator decision D2 in
 /// `implementation/design/DESIGN-native-ast-compound-data.md`.)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum CompoundCtor {
     /// `("record" (= k v)…)` — a record.
     Record,
@@ -1296,6 +1311,36 @@ impl Builder {
         self.atom(id)
     }
 
+    /// Build a native-compound-data literal `(<ctor-leaf> child…)` — a `List` whose HEAD is an `Atom` of
+    /// the reserved [`Leaf::Ctor`] leaf kind for `ctor`, followed by `children` in order. This is the
+    /// M2 EMIT primitive: a compound literal's head is the ctor LEAF KIND (recognized by kind identity,
+    /// [`Arenas::compound_ctor`]), NOT a `Name`/`Str` head text. `children` are the collection elements
+    /// (positional for list/tuple/set; `field_pair`s for a record; entry pairs for a map). The dual of
+    /// [`Arenas::compound_ctor`] + the child-tail readers.
+    pub fn compound(&mut self, ctor: CompoundCtor, children: &[StructId]) -> StructId {
+        let mut nodes = Vec::with_capacity(1 + children.len());
+        nodes.push(self.atom_leaf(Leaf::Ctor(ctor)));
+        nodes.extend_from_slice(children);
+        self.list(nodes)
+    }
+
+    /// Build a record/map ENTRY `(= key value)` — a `List` whose HEAD is an `Atom` of the payloadless
+    /// [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind, distinct from the equality
+    /// operator `Name("=")`), then the key and value nodes. The M2 EMIT primitive for a record field or a
+    /// map entry.
+    pub fn field_pair(&mut self, key: StructId, value: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::FieldPair);
+        self.list(vec![head, key, value])
+    }
+
+    /// Build a member-access `(. obj key)` — a `List` whose HEAD is an `Atom` of the payloadless
+    /// [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind, distinct from any `Name(".")`),
+    /// then the object and key nodes. The M2 EMIT primitive for a member-access projection.
+    pub fn member(&mut self, obj: StructId, key: StructId) -> StructId {
+        let head = self.atom_leaf(Leaf::Member);
+        self.list(vec![head, obj, key])
+    }
+
     fn push(&mut self, s: Struct) -> StructId {
         let id = StructId(self.structure.len() as u32);
         self.structure.push(s);
@@ -1714,6 +1759,61 @@ impl Arenas {
         CompoundCtor::from_spelling(self.head_ctor(id)?)
     }
 
+    /// The [`CompoundCtor`] this `List` node denotes via its native ctor-LEAF-KIND head — the M2 read
+    /// primitive, recognized by leaf-kind IDENTITY ([`Leaf::Ctor`]) rather than by head text. `None` if
+    /// the head is not a ctor-leaf atom. The dual of the emit primitive [`Builder::compound`]; coexists
+    /// with the transitional string-head recognizer [`compound_ctor`] during the migration (M3 removes the
+    /// latter). See `implementation/design/DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor_leaf(&self, id: StructId) -> Option<CompoundCtor> {
+        match self.get(id) {
+            Struct::List(items) => match self.leaf(self.atom_leaf_id(*items.first()?)?) {
+                Leaf::Ctor(c) => Some(*c),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The `(key, value)` of a native `(= key value)` record/map ENTRY — a `List` of exactly three whose
+    /// head is the [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind). `None` otherwise.
+    /// The dual of [`Builder::field_pair`].
+    pub fn field_pair_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(items) if items.len() == 3 => {
+                match self.leaf(self.atom_leaf_id(items[0])?) {
+                    Leaf::FieldPair => Some((items[1], items[2])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The `(obj, key)` of a native `(. obj key)` MEMBER-ACCESS projection — a `List` of exactly three
+    /// whose head is the [`Leaf::Member`] leaf kind (the `.` marker, recognized by kind). `None`
+    /// otherwise. The dual of [`Builder::member`].
+    pub fn member_parts(&self, id: StructId) -> Option<(StructId, StructId)> {
+        match self.get(id) {
+            Struct::List(items) if items.len() == 3 => {
+                match self.leaf(self.atom_leaf_id(items[0])?) {
+                    Leaf::Member => Some((items[1], items[2])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The [`LeafId`] of `id` if it is an `Atom` occurrence, else `None` — a small accessor the native
+    /// ctor-head recognizers ([`compound_ctor_leaf`], [`field_pair_parts`], [`member_parts`]) use to reach
+    /// a head node's leaf without re-borrowing.
+    fn atom_leaf_id(&self, id: StructId) -> Option<LeafId> {
+        match self.get(id) {
+            Struct::Atom(l) => Some(*l),
+            _ => None,
+        }
+    }
+
     /// If `id` is a `List` headed by the name `head`, the tail (the argument occurrences).
     pub fn as_form(&self, id: StructId, head: &str) -> Option<&[StructId]> {
         match self.get(id) {
@@ -1810,20 +1910,30 @@ impl Arenas {
         true
     }
 
-    /// The compound-ctor TAG an occurrence denotes as a LIST HEAD, collapsing the shadowable NAME alias
-    /// and the unshadowable STRING primitive to one [`CompoundCtor`] — so head-kind normalization in
-    /// [`node_eq`] can treat `Name("record")` and `Str("record")` as the same head. Only the four
-    /// compound ctors qualify; every other name/string is left to exact leaf comparison.
+    /// The compound-ctor TAG an occurrence denotes as a LIST HEAD, collapsing ALL THREE head spellings of
+    /// a compound ctor to one [`CompoundCtor`]: the native unshadowable ctor-LEAF ([`Leaf::Ctor`], the M2
+    /// primitive), the shadowable NAME alias (`(record …)`), and the legacy unshadowable STRING primitive
+    /// (`("record" …)`). So head-kind normalization in [`node_eq`] treats `#record(…)`, `(record …)`, and
+    /// `("record" …)` as the same head — head-KIND never splits structural identity (consistent with the
+    /// documented [`structurally_eq`] contract). This is what lets a native-head value and a still-legacy
+    /// alias/string-head value (e.g. an un-migrated corpus record vs a `read_ml` native record) compare
+    /// structurally equal across the M2 migration. It does NOT weaken byte-level content-addressing: the
+    /// codec still emits DISTINCT bytes per head kind, so their hashes differ — this normalization is only
+    /// for the lenient structural comparison. Only the five compound ctors qualify; the `=`/`.` marker
+    /// leaves ([`Leaf::FieldPair`]/[`Leaf::Member`]) are NOT ctor heads and keep their own identity (they do
+    /// not collapse with `Name("=")`/`Name(".")`). Every other name/string is left to exact leaf comparison.
     fn ctor_head_key(&self, id: StructId) -> Option<CompoundCtor> {
-        let spelling: &str = match self.get(id) {
+        match self.get(id) {
             Struct::Atom(l) => match self.leaf(*l) {
-                Leaf::Name(n) => n,
-                Leaf::Str(s) => s,
-                _ => return None,
+                // The native ctor-LEAF head IS the tag directly (M2 primitive).
+                Leaf::Ctor(c) => Some(*c),
+                // The shadowable NAME alias + legacy STRING primitive collapse to the tag by spelling.
+                Leaf::Name(n) => CompoundCtor::from_spelling(n),
+                Leaf::Str(s) => CompoundCtor::from_spelling(s),
+                _ => None,
             },
-            _ => return None,
-        };
-        CompoundCtor::from_spelling(spelling)
+            _ => None,
+        }
     }
 }
 
@@ -1883,6 +1993,241 @@ mod tests {
                 "ctor_head_key name `{spelling}`"
             );
         }
+    }
+
+    #[test]
+    fn native_compound_value_golden_canonical_bytes() {
+        // GOLDEN VECTORS: the CANONICAL binary bytes the compiler codec (Builder + canon + encode) produces
+        // for representative Option-B compound VALUES. `encode` canonicalizes before serializing, so these
+        // bytes ARE the content-address form. They serve TWO purposes: (1) a wire-contract regression guard
+        // — a future canonical-form change that would silently move a compound value's content hash trips
+        // here; (2) the authoritative reference the RUNTIME value codec (op62/90's DocBuilder) must match
+        // byte-for-byte, or the value-wire forks from the AST-wire despite both being Option B (v-runtime +
+        // v-static-data flagged that op62's shared name-index pool can order leaves differently from the
+        // compiler Builder). Header is `cdzast\x00\x01`. Note the record/map share ONE payloadless
+        // FIELD_PAIR (25) leaf across both entries (pool dedup) — Option B removes the `=` NAME leaf whose
+        // ordering was the known op62/Builder divergence.
+        fn int(b: &mut Builder, n: i64) -> StructId {
+            b.atom_leaf(Leaf::Int {
+                value: IntValue::from_i64(n),
+                radix: Radix::Dec,
+            })
+        }
+        // #record((= a 1) (= b 2)) — leaf pool: RECORD_CTOR=22, FIELD_PAIR=25, "a", 1, "b", 2.
+        let mut b = Builder::new();
+        let a = b.name("a");
+        let one = int(&mut b, 1);
+        let bn = b.name("b");
+        let two = int(&mut b, 2);
+        let fa = b.field_pair(a, one);
+        let fb = b.field_pair(bn, two);
+        let record = b.compound(CompoundCtor::Record, &[fa, fb]);
+        let ra = b.finish(record);
+        assert_eq!(
+            crate::codec::encode(&ra),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 6, 22, 25, 10, 1, 97, 0, 1, 1, 10, 1, 98, 0, 1,
+                2, 10, 0, 0, 0, 1, 0, 2, 0, 3, 1, 3, 1, 2, 3, 0, 1, 0, 4, 0, 5, 1, 3, 5, 6, 7, 1,
+                3, 0, 4, 8, 9
+            ],
+            "record golden bytes"
+        );
+        // #set(1 2 3) — leaf pool: SET_CTOR=24, 1, 2, 3.
+        let mut b = Builder::new();
+        let (s1, s2, s3) = (int(&mut b, 1), int(&mut b, 2), int(&mut b, 3));
+        let set = b.compound(CompoundCtor::Set, &[s1, s2, s3]);
+        let sa = b.finish(set);
+        assert_eq!(
+            crate::codec::encode(&sa),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 4, 24, 0, 1, 1, 0, 1, 2, 0, 1, 3, 5, 0, 0, 0, 1,
+                0, 2, 0, 3, 1, 4, 0, 1, 2, 3, 4
+            ],
+            "set golden bytes"
+        );
+        // #map((= 1 10) (= 2 20)) — leaf pool: MAP_CTOR=23, FIELD_PAIR=25, 1, 10, 2, 20.
+        let mut b = Builder::new();
+        let (k1, v1, k2, v2) = (
+            int(&mut b, 1),
+            int(&mut b, 10),
+            int(&mut b, 2),
+            int(&mut b, 20),
+        );
+        let e1 = b.field_pair(k1, v1);
+        let e2 = b.field_pair(k2, v2);
+        let map = b.compound(CompoundCtor::Map, &[e1, e2]);
+        let ma = b.finish(map);
+        assert_eq!(
+            crate::codec::encode(&ma),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 6, 23, 25, 0, 1, 1, 0, 1, 10, 0, 1, 2, 0, 1, 20,
+                10, 0, 0, 0, 1, 0, 2, 0, 3, 1, 3, 1, 2, 3, 0, 1, 0, 4, 0, 5, 1, 3, 5, 6, 7, 1, 3,
+                0, 4, 8, 9
+            ],
+            "map golden bytes"
+        );
+        // #tuple(1 2) — leaf pool [TUPLE_CTOR=21, 1, 2].
+        let mut b = Builder::new();
+        let (t1, t2) = (int(&mut b, 1), int(&mut b, 2));
+        let tuple = b.compound(CompoundCtor::Tuple, &[t1, t2]);
+        let ta = b.finish(tuple);
+        assert_eq!(
+            crate::codec::encode(&ta),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 3, 21, 0, 1, 1, 0, 1, 2, 4, 0, 0, 0, 1, 0, 2, 1,
+                3, 0, 1, 2, 3
+            ],
+            "tuple golden bytes"
+        );
+        // #list(1 2) — leaf pool [LIST_CTOR=20, 1, 2].
+        let mut b = Builder::new();
+        let (l1, l2) = (int(&mut b, 1), int(&mut b, 2));
+        let list = b.compound(CompoundCtor::List, &[l1, l2]);
+        let la = b.finish(list);
+        assert_eq!(
+            crate::codec::encode(&la),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 3, 20, 0, 1, 1, 0, 1, 2, 4, 0, 0, 0, 1, 0, 2, 1,
+                3, 0, 1, 2, 3
+            ],
+            "list golden bytes"
+        );
+        // NESTED #list(#record((= a 1)) #set(2 3)) — nested ctor heads; ALL four ctor kinds (LIST_CTOR,
+        // RECORD_CTOR, FIELD_PAIR, SET_CTOR) are deduped ONCE in the shared leaf pool across nesting levels
+        // — the cross-level dedup/order op62 must reproduce. Leaf pool [LIST_CTOR=20, RECORD_CTOR=22,
+        // FIELD_PAIR=25, "a", 1, SET_CTOR=24, 2, 3].
+        let mut b = Builder::new();
+        let na = b.name("a");
+        let n1 = int(&mut b, 1);
+        let nfp = b.field_pair(na, n1);
+        let nrec = b.compound(CompoundCtor::Record, &[nfp]);
+        let (ns2, ns3) = (int(&mut b, 2), int(&mut b, 3));
+        let nset = b.compound(CompoundCtor::Set, &[ns2, ns3]);
+        let nested = b.compound(CompoundCtor::List, &[nrec, nset]);
+        let na2 = b.finish(nested);
+        assert_eq!(
+            crate::codec::encode(&na2),
+            vec![
+                99, 100, 122, 97, 115, 116, 0, 1, 8, 20, 22, 25, 10, 1, 97, 0, 1, 1, 24, 0, 1, 2,
+                0, 1, 3, 12, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 1, 3, 2, 3, 4, 1, 2, 1, 5, 0, 5, 0, 6,
+                0, 7, 1, 3, 7, 8, 9, 1, 3, 0, 6, 10, 11
+            ],
+            "nested list-of-(record,set) golden bytes"
+        );
+    }
+
+    #[test]
+    fn native_ctor_leaf_emit_api_round_trips_through_the_read_helpers_and_the_codec() {
+        // The M2 emit primitives (`Builder::compound`/`field_pair`/`member`) build ctor-LEAF-KIND heads,
+        // and the read primitives (`compound_ctor_leaf`/`field_pair_parts`/`member_parts`) recognize them
+        // by leaf-kind identity — never by head text. Emit each shape, recognize it back, and confirm it
+        // survives the binary codec unchanged (the wire carries the ctor-leaf head).
+        let mut b = Builder::new();
+        let one = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_bigint(&BigInt::from(1)),
+            radix: Radix::Dec,
+        });
+        let two = b.atom_leaf(Leaf::Int {
+            value: IntValue::from_bigint(&BigInt::from(2)),
+            radix: Radix::Dec,
+        });
+        let key = b.name("x");
+        // A `(= x 2)` field pair, a `(. x k)` member access, and one compound of each collection kind.
+        let fp = b.field_pair(key, two);
+        let mem = b.member(key, one);
+        let list = b.compound(CompoundCtor::List, &[one, two]);
+        let tuple = b.compound(CompoundCtor::Tuple, &[one, two]);
+        let record = b.compound(CompoundCtor::Record, &[fp]);
+        let map = b.compound(CompoundCtor::Map, &[fp]);
+        let set = b.compound(CompoundCtor::Set, &[one, two]);
+        let root = b.list(vec![list, tuple, record, map, set, fp, mem]);
+        let a = b.finish(root);
+
+        // Read side recognizes each ctor by LEAF KIND.
+        assert_eq!(a.compound_ctor_leaf(list), Some(CompoundCtor::List));
+        assert_eq!(a.compound_ctor_leaf(tuple), Some(CompoundCtor::Tuple));
+        assert_eq!(a.compound_ctor_leaf(record), Some(CompoundCtor::Record));
+        assert_eq!(a.compound_ctor_leaf(map), Some(CompoundCtor::Map));
+        assert_eq!(a.compound_ctor_leaf(set), Some(CompoundCtor::Set));
+        // A native ctor-leaf head is NOT a string/name head, so the transitional `compound_ctor`
+        // (string-head) recognizer does not see it — the two recognizers are disjoint during migration.
+        assert_eq!(a.compound_ctor(list), None);
+        assert_eq!(a.head_ctor(list), None);
+        assert_eq!(a.head_name(list), None);
+        // Field-pair / member parts read back in order.
+        assert_eq!(a.field_pair_parts(fp), Some((key, two)));
+        assert_eq!(a.member_parts(mem), Some((key, one)));
+        // A collection node is not a field pair / member, and vice-versa.
+        assert_eq!(a.field_pair_parts(list), None);
+        assert_eq!(a.member_parts(fp), None);
+        assert_eq!(a.compound_ctor_leaf(fp), None);
+
+        // The whole tree survives the binary codec (the ctor-leaf heads ride the wire).
+        let back = crate::codec::decode(&crate::codec::encode(&a))
+            .expect("decode of an arena with native ctor-leaf heads");
+        assert!(
+            a.structurally_eq(&back),
+            "ctor-leaf arena survives the codec"
+        );
+    }
+
+    #[test]
+    fn native_ctor_leaf_heads_are_recognized_after_a_codec_round_trip() {
+        // The full wire→recognition path the M2 flip depends on: a compound literal's ctor-leaf head must
+        // still be recognized by KIND after an encode→decode round-trip (decode re-canonicalizes the leaf
+        // pool + renumbers occurrences, but the head leaf's kind must survive so a consumer reading the
+        // DECODED arena — the compiler's trusted path, or a re-reading platform consumer — still recognizes
+        // it). Build one node of each shape (each with its OWN fresh children, so the tree needs no
+        // de-sharing) as the root's children, round-trip, then recognize each on the DECODED arena.
+        let mut b = Builder::new();
+        let (la, lb) = (b.name("a"), b.name("b"));
+        let list = b.compound(CompoundCtor::List, &[la, lb]);
+        let (ta, tb) = (b.name("c"), b.name("d"));
+        let tuple = b.compound(CompoundCtor::Tuple, &[ta, tb]);
+        let (rk, rv) = (b.name("k"), b.name("v"));
+        let rfp = b.field_pair(rk, rv);
+        let record = b.compound(CompoundCtor::Record, &[rfp]);
+        let (mk, mv) = (b.name("mk"), b.name("mv"));
+        let mfp = b.field_pair(mk, mv);
+        let map = b.compound(CompoundCtor::Map, &[mfp]);
+        let (sa, sb) = (b.name("e"), b.name("f"));
+        let set = b.compound(CompoundCtor::Set, &[sa, sb]);
+        let (mo, mkey) = (b.name("obj"), b.name("key"));
+        let member = b.member(mo, mkey);
+        let (fk, fv) = (b.name("fk"), b.name("fv"));
+        let fp = b.field_pair(fk, fv);
+        // Fixed child order so the decoded nodes are findable by index (decode preserves tree shape).
+        let root = b.list(vec![list, tuple, record, map, set, member, fp]);
+        let a = b.finish(root);
+
+        let back = crate::codec::decode(&crate::codec::encode(&a))
+            .expect("decode of an arena with native ctor-leaf heads");
+        let Struct::List(kids) = back.get(back.root) else {
+            panic!("decoded root is a list");
+        };
+        assert_eq!(kids.len(), 7, "root has 7 children");
+        assert_eq!(back.compound_ctor_leaf(kids[0]), Some(CompoundCtor::List));
+        assert_eq!(back.compound_ctor_leaf(kids[1]), Some(CompoundCtor::Tuple));
+        assert_eq!(back.compound_ctor_leaf(kids[2]), Some(CompoundCtor::Record));
+        assert_eq!(back.compound_ctor_leaf(kids[3]), Some(CompoundCtor::Map));
+        assert_eq!(back.compound_ctor_leaf(kids[4]), Some(CompoundCtor::Set));
+        assert!(
+            back.member_parts(kids[5]).is_some(),
+            "member recognized after decode"
+        );
+        assert!(
+            back.field_pair_parts(kids[6]).is_some(),
+            "field pair recognized after decode"
+        );
+        // The record's entry is a recognizable FieldPair on the decoded arena too (its head-child [0] is
+        // the RECORD_CTOR leaf; child [1] is the field pair).
+        let Struct::List(rec_kids) = back.get(kids[2]) else {
+            panic!("record is a list");
+        };
+        assert!(
+            back.field_pair_parts(rec_kids[1]).is_some(),
+            "a RecordCtor's child is a FieldPair after decode"
+        );
     }
 
     /// Helper: the ctor_head_key of a lone NAME atom spelled `s` (for the negative case).
@@ -2285,6 +2630,63 @@ mod tests {
         assert!(
             !name_child.structurally_eq(&str_child),
             "a ctor spelling as a non-head child must not collapse"
+        );
+    }
+
+    #[test]
+    fn structurally_eq_collapses_a_native_ctor_leaf_head_with_the_name_and_string_spellings() {
+        // node_eq NORMALIZES the head KIND for the five compound ctors (`ctor_head_key`): the native
+        // ctor-LEAF head (`Leaf::Ctor`, the M2 primitive), the shadowable NAME alias, and the legacy
+        // STRING primitive of the same spelling ALL collapse to one head. So two same-ctor trees are equal
+        // regardless of which of the three head spellings each uses — head-KIND never splits structural
+        // identity (the documented `structurally_eq` contract), which is what lets a native-head value and
+        // a still-legacy alias/string-head value compare equal across the M2 migration (e.g. an un-migrated
+        // corpus record vs a `read_ml` native record). Different ctor KINDS still differ. This does NOT
+        // weaken byte content-addressing: the codec emits distinct bytes per head kind, so their HASHES
+        // differ — only this lenient structural comparison normalizes. See
+        // `DESIGN-native-ast-compound-data.md` (node_eq: head-kind is normalized for the compound ctors).
+        let one = &[Leaf::Int {
+            value: IntValue::from_i64(1),
+            radix: Radix::Dec,
+        }];
+        let list_a = form(Leaf::Ctor(CompoundCtor::List), one);
+        let list_b = form(Leaf::Ctor(CompoundCtor::List), one);
+        let set = form(Leaf::Ctor(CompoundCtor::Set), one);
+        let str_list = form(Leaf::Str("list".into()), one);
+        let name_list = form(Leaf::Name("list".into()), one);
+        // Same ctor kind → equal, and symmetric.
+        assert!(
+            list_a.structurally_eq(&list_b),
+            "same ctor-leaf kind is equal"
+        );
+        assert!(list_b.structurally_eq(&list_a), "equality is symmetric");
+        // Different ctor kinds → distinct.
+        assert!(
+            !list_a.structurally_eq(&set),
+            "List-ctor and Set-ctor heads must differ"
+        );
+        // A native ctor-leaf head COLLAPSES with the legacy string/name head of the same ctor (head-kind
+        // normalization), in BOTH directions.
+        assert!(
+            list_a.structurally_eq(&str_list),
+            "ctor-leaf head collapses with the string-primitive head of the same ctor"
+        );
+        assert!(str_list.structurally_eq(&list_a), "collapse is symmetric");
+        assert!(
+            list_a.structurally_eq(&name_list),
+            "ctor-leaf head collapses with the name-alias head of the same ctor"
+        );
+        // The two field-pair / member marker leaves are likewise their own identities.
+        let fp = form(Leaf::FieldPair, one);
+        let member = form(Leaf::Member, one);
+        let eq_name = form(Leaf::Name("=".into()), one);
+        assert!(
+            !fp.structurally_eq(&member),
+            "FieldPair and Member heads differ"
+        );
+        assert!(
+            !fp.structurally_eq(&eq_name),
+            "the FieldPair leaf head is distinct from a Name(\"=\") head"
         );
     }
 
