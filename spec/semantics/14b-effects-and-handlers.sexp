@@ -154,7 +154,7 @@
             (effect Fresh (op next (-> Int64)))
             (def (main)
               (handle Fresh 0 ((next () s (resume s (+ s 1))))
-                (let ((m ("map" (10 (Fresh.next)) (20 (Fresh.next)))))
+                (let ((m ("map" (= 10 (Fresh.next)) (= 20 (Fresh.next)))))
                   (match (Map.lookup m 20) ((Some v) v) (None 99))))) (export main)))
   (output (: 1 Int64)))
 
@@ -1106,7 +1106,7 @@
   (input  (do
             (effect Seen (op add (-> Int64 Int64)) (op count (-> Unit Int64)))
             (def (main)
-              (handle Seen (Set.of (list 1)) ((add (k) m (resume k (Set.insert m k))) (count (u) m (resume (Set.len m) m)))
+              (handle Seen #set(1) ((add (k) m (resume k (Set.insert m k))) (count (u) m (resume (Set.len m) m)))
                 (let ((a (Seen.add 2))) (let ((b (Seen.add 2))) (Seen.count))))) (export main)))
   (output (: 2 Int64)))
 
@@ -3543,7 +3543,7 @@
             (def (feed (: i Int64) (: n Int64))
               (if (= i n) 0 (+ (Seen.mark (% i 7)) (feed (+ i 1) n))))
             (def (main (: n Int64))
-              (handle Seen (Set.of (list))
+              (handle Seen #set()
                 ((mark (v) s (resume (if (Set.contains s v) 1 0) (Set.insert s v)))
                  (count (u) s (resume (Set.len s) s)))
                 (do
@@ -3565,7 +3565,7 @@
             (def (feed (: i Int64) (: n Int64))
               (if (= i n) 0 (+ (Seen.mark (% i 7)) (feed (+ i 1) n))))
             (def (main (: n Int64))
-              (handle Seen (Set.of (list))
+              (handle Seen #set()
                 ((mark (v) s (resume (if (Set.contains s v) 1 0) (Set.insert s v))))
                 (feed 0 n)))
             (export main)))
@@ -4884,7 +4884,7 @@
   (input  (do
             (effect St (op add (-> Int64 Int64)) (op card (-> Unit Int64)))
             (def (main (: n Int64))
-              (handle St (Set.of (list))
+              (handle St #set()
                 ((add (v) s (if (Set.contains s v) (resume 0 s) (resume v (Set.insert s v))))
                  (card (u) s (resume (Set.len s) s)))
                 (+ (St.add 7) (+ (St.add n) (+ (St.add 7) (* 100 (St.card)))))))
@@ -5086,7 +5086,7 @@
               (handle Ctr k
                 ((tick (_u) s (resume s (+ s 2))))
                 (do
-                  (def s (Set.of (list (Ctr.tick) (Ctr.tick) (Ctr.tick))))
+                  (def s #set((Ctr.tick) (Ctr.tick) (Ctr.tick)))
                   (+ (* 100 (Set.len s))
                      (+ (* 10 (if (Set.contains s k) 1 0))
                         (if (Set.contains s (+ k 4)) 1 0))))))
@@ -5102,7 +5102,7 @@
               (handle Ctr k
                 ((tick (_u) s (resume s s)))
                 (do
-                  (def s (Set.of (list (Ctr.tick) (Ctr.tick) (Ctr.tick))))
+                  (def s #set((Ctr.tick) (Ctr.tick) (Ctr.tick)))
                   (+ (* 10 (Set.len s))
                      (if (Set.contains s k) 1 0)))))
             (export main)))
@@ -6141,7 +6141,7 @@
   (input  (do
         (effect Seen (op note (-> Int64 Int64)))
         (def (main (: k Int64))
-          (handle Seen (Set.of (list))
+          (handle Seen #set()
             ((note (v) st (resume (Set.len st) (Set.insert st v))))
             (do
               (def a (Seen.note k))
@@ -7746,7 +7746,7 @@
   (input  (do
             (effect Reg (op touch (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Reg (map (1 10))
+              (handle Reg (map (= 1 10))
                 ((touch (k) s (resume (match (Map.lookup s k) ((Some v) v) ((None) 0))
                                       (Map.insert s k (+ (match (Map.lookup s k) ((Some v) v) ((None) 0)) 1)))))
                 (+ (Reg.touch n) (+ (* 10 (Reg.touch n)) (* 100 (Reg.touch 1))))))
@@ -7772,7 +7772,7 @@
   (input  (do
             (effect Reg (op drop (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Reg (map (1 11) (2 22) (3 33))
+              (handle Reg (map (= 1 11) (= 2 22) (= 3 33))
                 ((drop (k) s (resume (Map.len (Map.remove s k)) (Map.remove s k))))
                 (+ (Reg.drop n) (+ (* 10 (Reg.drop n)) (* 100 (Reg.drop 3))))))
             (export main)))
@@ -7969,7 +7969,7 @@
   (input  (do
             (effect Sx (op add (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Sx (Set.of (list 1 2))
+              (handle Sx #set(1 2)
                 ((add (v) s (resume (Set.len s) (Set.insert s v))))
                 (+ (Sx.add n) (+ (* 10 (Sx.add 2)) (* 100 (Sx.add n))))))
             (export main)))
@@ -7980,7 +7980,7 @@
   (input  (do
             (effect Sx (op visit (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Sx (Set.of (list 3))
+              (handle Sx #set(3)
                 ((visit (v) s (if (Set.contains s v)
                                   (resume (- 0 v) s)
                                   (resume v (Set.insert s v)))))
@@ -7993,7 +7993,7 @@
   (input  (do
             (effect Sx (op take (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Sx (Set.of (list 1 2 3))
+              (handle Sx #set(1 2 3)
                 ((take (v) s (if (Set.contains s v)
                                  (resume (Set.len (Set.remove s v)) (Set.remove s v))
                                  (resume (* 100 (Set.len s)) s))))
@@ -8078,7 +8078,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((next () s (resume s (+ s 1))))
-                (+ (Map.len (map ((St.next) (St.next)) ((St.next) 100)))
+                (+ (Map.len (map (= (St.next) (St.next)) (= (St.next) 100)))
                    (* 10 (St.next)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 82 Int64))
@@ -8090,7 +8090,7 @@
             (def (main (: n Int64))
               (handle St n
                 ((next () s (resume s (+ s 1))))
-                (+ (Set.len (Set.of (list 7 (St.next) (St.next))))
+                (+ (Set.len #set(7 (St.next) (St.next)))
                    (* 100 (St.next)))))
             (export main)))
   (call   main (: 7 Int64)) (output (: 902 Int64))

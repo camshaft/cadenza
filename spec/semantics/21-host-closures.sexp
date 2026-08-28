@@ -2380,7 +2380,7 @@
 (case "a closure returning a Set — canonical member order"
   (doc    "`(Set.of (list n n+1 n))` dedups to `{n, n+1}`; `call(handle, 5)` → `(: ((. Set of) (list 5 6))
            (Set Int64))`, members in canonical order (the runtime CHAMP set encode sorts).")
-  (input  (do (def (mk) (fn ((: n Int64)) (Set.of (list n (+ n 1) n)))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) #set(n (+ n 1) n))) (export mk)))
   (call   mk (: 5 Int64))
   (output (: #set(5 6) (Set Int64)))
   (live-objects known-leak 1))
@@ -2388,9 +2388,9 @@
 (case "a closure returning a Map — canonical key order"
   (doc    "`(map (1 n) (2 n+1))` → `call(handle, 100)` → `(: (map (1 100) (2 101)) (Map Int64 Int64))`,
            entries in canonical key order.")
-  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (+ n 1))))) (export mk)))
+  (input  (do (def (mk) (fn ((: n Int64)) (map (= 1 n) (= 2 (+ n 1))))) (export mk)))
   (call   mk (: 100 Int64))
-  (output (: (map (1 100) (2 101)) (Map Int64 Int64)))
+  (output (: (map (= 1 100) (= 2 101)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a closure returning a NESTED List"
@@ -2603,9 +2603,9 @@
 (case "multi-export Set-result closures — three sharing one call"
   (doc    "THREE same-signature Set-returning closures share ONE value-encode `call`. `b(3)` builds `{3, 6}`;
            `call(b-handle, 3)` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
-  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
-              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
-              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+  (input  (do (def (a) (fn ((: n Int64)) #set(n n (+ n 1))))
+              (def (b) (fn ((: n Int64)) #set(n (* n 2))))
+              (def (c) (fn ((: n Int64)) #set(n)))
               (export a) (export b) (export c)))
   (call   b (: 3 Int64))
   (output (: #set(3 6) (Set Int64)))
@@ -2614,9 +2614,9 @@
 (case "multi-export Set-result closures — the singleton one"
   (doc    "The SAME three-closure program, driving `c`: `call(c-handle, 9)` → `(: ((. Set of) (list 9)) (Set
            Int64))`. Confirms each of the three shares the one descriptor + value-encodes its own result.")
-  (input  (do (def (a) (fn ((: n Int64)) (Set.of (list n n (+ n 1)))))
-              (def (b) (fn ((: n Int64)) (Set.of (list n (* n 2)))))
-              (def (c) (fn ((: n Int64)) (Set.of (list n))))
+  (input  (do (def (a) (fn ((: n Int64)) #set(n n (+ n 1))))
+              (def (b) (fn ((: n Int64)) #set(n (* n 2))))
+              (def (c) (fn ((: n Int64)) #set(n)))
               (export a) (export b) (export c)))
   (call   c (: 9 Int64))
   (output (: #set(9) (Set Int64)))
@@ -2653,17 +2653,17 @@
   (doc    "`mk : () -> (-> Int64 (Map Int64 Int64))` returns `(map (1 n) (2 2n))`, beside a parameterized
            plain `inc : (Int64) -> Int64`. `call(mk-handle, 10)` → `(: (map (1 10) (2 20)) (Map Int64
            Int64))` in canonical key order.")
-  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (* n 2)))))
+  (input  (do (def (mk) (fn ((: n Int64)) (map (= 1 n) (= 2 (* n 2)))))
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   mk (: 10 Int64))
-  (output (: (map (1 10) (2 20)) (Map Int64 Int64)))
+  (output (: (map (= 1 10) (= 2 20)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a Map-returning closure alongside a parameterized plain export — the plain"
   (doc    "The SAME program, calling `inc(41)` = 42. Pins the parameterized plain export reachable beside a
            Map-result closure.")
-  (input  (do (def (mk) (fn ((: n Int64)) (map (1 n) (2 (* n 2)))))
+  (input  (do (def (mk) (fn ((: n Int64)) (map (= 1 n) (= 2 (* n 2)))))
               (def (inc (: x Int64)) (+ x 1))
               (export mk) (export inc)))
   (call   inc (: 41 Int64))
@@ -2766,7 +2766,7 @@
   (doc    "`mk` doubles; `app : (own<t>, Int64) -> (Set Int64)` = `(Set.of (list x (g x) x))`. `app(handle,
            3)` → `{3, 6}` → `(: ((. Set of) (list 3 6)) (Set Int64))` in canonical member order.")
   (input  (do (def (mk) (fn ((: n Int64)) (* n 2)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list x (g x) x)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #set(x (g x) x))
               (export mk) (export app)))
   (call   app (: 3 Int64))
   (output (: #set(3 6) (Set Int64))))
@@ -2775,10 +2775,10 @@
   (doc    "`mk` adds 100; `app : (own<t>, Int64) -> (Map Int64 Int64)` = `(map (0 x) (1 (g x)))`. `app(handle,
            5)` → `(: (map (0 5) (1 105)) (Map Int64 Int64))` in canonical key order.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 100)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 x) (1 (g x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (= 0 x) (= 1 (g x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (map (0 5) (1 105)) (Map Int64 Int64))))
+  (output (: (map (= 0 5) (= 1 105)) (Map Int64 Int64))))
 
 (case "round-trip: a scalar consumer + a List consumer of the same closure — the list"
   (doc    "One closure signature, TWO consumers: `asnum` returns the value, `aslist` returns `(list x (g x))`.
@@ -2841,7 +2841,7 @@
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
               (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (0 (h y))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appa (: 40 Int64))
   (output (: (list 40 41) (List Int64))))
@@ -2852,10 +2852,10 @@
   (input  (do (def (mka) (fn ((: n Int64)) (+ n 1)))
               (def (mkb) (fn ((: b Bool)) (: (if b 7 8) Int64)))
               (def (appa (: g (-> Int64 Int64)) (: x Int64)) (list x (g x)))
-              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (0 (h y))))
+              (def (appb (: h (-> Bool Int64)) (: y Bool)) (map (= 0 (h y))))
               (export mka) (export mkb) (export appa) (export appb)))
   (call   appb (: true Bool))
-  (output (: (map (0 7)) (Map Int64 Int64))))
+  (output (: (map (= 0 7)) (Map Int64 Int64))))
 
 (case "distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list"
   (doc    "A COLLECTION consumer (`appa` → List, value-encode) AND a COMPOUND consumer (`appb` → tuple, static
@@ -3371,7 +3371,7 @@
                          ((. Map insert) ((. Map insert) (map) (. p 0) 100) (. p 1) 200)))
               (export mk)))
   (call   mk (: (tuple 1 2) (Tuple Int64 Int64)))
-  (output (: (map (1 100) (2 200)) (Map Int64 Int64)))
+  (output (: (map (= 1 100) (= 2 200)) (Map Int64 Int64)))
   (live-objects known-leak 1))
 
 (case "a fixed-shape Tuple ARG with a STRING RESULT crosses the direct-call boundary"
@@ -5231,10 +5231,10 @@
            `(map (0 (list x (g x))) (1 (list x)))`. `app(handle, 5)` → `(: (map (0 (list 5 6)) (1 (list 5)))
            (Map Int64 (List Int64)))` in canonical key order.")
   (input  (do (def (mk) (fn ((: n Int64)) (+ n 1)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (0 (list x (g x))) (1 (list x))))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) (map (= 0 (list x (g x))) (= 1 (list x))))
               (export mk) (export app)))
   (call   app (: 5 Int64))
-  (output (: (map (0 (list 5 6)) (1 (list 5))) (Map Int64 (List Int64)))))
+  (output (: (map (= 0 (list 5 6)) (= 1 (list 5))) (Map Int64 (List Int64)))))
 
 (case "round-trip: a consumer returns an Option of a tuple"
   (doc    "A SUM whose payload is a fixed-shape COMPOUND: `app` returns `(Some (tuple x (g x)))`.
@@ -5319,7 +5319,7 @@
            `app(handle, 3)` → `g(3)`=30 twice, so `{3, 30}` → `(: ((. Set of) (list 3 30)) (Set Int64))` in
            canonical order. Composes repeated in-guest application with a collection value-encode result.")
   (input  (do (def (mk) (fn ((: n Int64)) (* n 10)))
-              (def (app (: g (-> Int64 Int64)) (: x Int64)) (Set.of (list (g x) (g x) x)))
+              (def (app (: g (-> Int64 Int64)) (: x Int64)) #set((g x) (g x) x))
               (export mk) (export app)))
   (call   app (: 3 Int64))
   (output (: #set(3 30) (Set Int64))))
@@ -5537,7 +5537,7 @@
             (def (main (: seed Int64))
               (do
                 (def m (Map.insert (Map.insert Map.empty 1 (String.concat "on" "e")) 2 "two"))
-                (def s (Set.of (list seed 20 30)))
+                (def s #set(seed 20 30))
                 (fn ((: k Int64))
                   (+ (* 100 (match (Map.lookup m k) ((Option.Some v) (String.byte-len v)) ((Option.None _u) -1)))
                      (if (Set.contains s k) 1 0)))))
@@ -5790,7 +5790,7 @@
   (doc "The Map face of the hcz1/hcz2 escape-then-drop pair (breaker flip-watch on #5007): the read-site
         capture dup must balance the env-cell drop for a CHAMP capture exactly as for tuple/list — a
         double-release here corrupts the returned map's shared nodes. Renders canonically key-sorted.")
-  (input (do (def (f (: n Int64)) (let ((m (map (n 10) (0 20)))) (fn ((: q Int64)) m))) (export f)))
+  (input (do (def (f (: n Int64)) (let ((m (map (= n 10) (= 0 20)))) (fn ((: q Int64)) m))) (export f)))
   (call f (: 1 Int64) (: 5 Int64))
   (drop)
   (output (: #map((= 0 20) (= 1 10)) (Map Int64 Int64)))

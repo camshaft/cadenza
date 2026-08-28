@@ -2312,7 +2312,7 @@
             (effect ask (op ask (-> Unit Int64)))
             (def (main)
               (host (ask)
-                (Map.len (Map.insert (map (1 10)) (ask.ask) 20)))) (export main)))
+                (Map.len (Map.insert (map (= 1 10)) (ask.ask) 20)))) (export main)))
   (host-responses (respond ask.ask (: 2 Int64)))
   (host-calls (call ask.ask))
   (output (: 2 Int64)))
@@ -2949,7 +2949,7 @@
             (effect St (op check (-> Int64 Int64)))
             (def (main (: n Int64))
               (do
-                (def allow (Set.of (list 2 5 9)))
+                (def allow #set(2 5 9))
                 (handle St 0
                   ((check (v) s (resume (if (Set.contains allow v) 1 0) s)))
                   (+ (* 100 (St.check n)) (+ (* 10 (St.check 3)) (St.check 9))))))
@@ -2967,7 +2967,7 @@
             (effect St (op next (-> Unit Int64)))
             (def (main (: n Int64))
               (do
-                (def table (Map.insert Map.empty 1 (Set.of (list 2 5 9))))
+                (def table (Map.insert Map.empty 1 #set(2 5 9)))
                 (handle St n
                   ((next (u) s (resume s (+ s 1))))
                   (match (Map.lookup table 1)
@@ -3994,7 +3994,7 @@
             (effect St (op allowed (-> Int64 (Set Int64))))
             (def (main (: n Int64))
               (handle St 0
-                ((allowed (k) s (resume (if (> k 0) (Set.of (list 2 5 9)) (Set.of (list))) s)))
+                ((allowed (k) s (resume (if (> k 0) #set(2 5 9) #set()) s)))
                 (+ (if (Set.contains (St.allowed n) 5) 10 0)
                    (Set.len (St.allowed 0)))))
             (export main)))
@@ -4010,7 +4010,7 @@
             (def (main (: n Int64))
               (handle St 0
                 ((tally (xs) s (resume (+ (Set.len xs) (if (Set.contains xs 5) 100 0)) s)))
-                (St.tally (Set.of (list n 2 9)))))
+                (St.tally #set(n 2 9))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
@@ -4024,7 +4024,7 @@
             (effect St (op groups (-> Unit (List (Set Int64)))))
             (def (main (: n Int64))
               (handle St 0
-                ((groups (u) s (resume (list (Set.of (list 1 2)) (Set.of (list 3 4 n))) s)))
+                ((groups (u) s (resume (list #set(1 2) #set(3 4 n)) s)))
                 (let ((r (St.groups)))
                   (+ (match (List.at r 0) ((Some a) (Set.len a)) ((None _u) -1))
                      (match (List.at r 1) ((Some b) (if (Set.contains b 5) 100 0)) ((None _u) -1))))))
@@ -4043,7 +4043,7 @@
                   (resume (+ (match (List.at xs 0) ((Some a) (+ (* 10 (Set.len a)) (if (Set.contains a 5) 100 0))) ((None _u) -1))
                              (match (List.at xs 1) ((Some b) (Set.len b)) ((None _u) -1)))
                           s)))
-                (St.weigh (list (Set.of (list n 2)) (Set.of (list 7))))))
+                (St.weigh (list #set(n 2) #set(7)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 121 Int64)))
 
@@ -4095,7 +4095,7 @@
                 ((audit (r) s (resume (+ (* 100 (if (Set.contains (. r seen) (. r want)) 1 0))
                                          (Set.len (. r seen)))
                               s)))
-                (St.audit (record (= want n) (= seen (Set.of (list 2 n 9)))))))
+                (St.audit (record (= want n) (= seen #set(2 n 9))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 103 Int64)))
 
@@ -4149,7 +4149,7 @@
               (if (> i k) acc (fill (+ i 1) k (Set.insert acc (* i 3)))))
             (def (main (: n Int64))
               (handle St 0
-                ((universe (k) s (resume (fill 1 k (Set.of (list))) s)))
+                ((universe (k) s (resume (fill 1 k #set()) s)))
                 (let ((xs (St.universe (* n 8))))
                   (+ (* 100 (Set.len xs))
                      (+ (if (Set.contains xs 60) 10 0)
@@ -4279,7 +4279,7 @@
                              (+ (* 10 (if (Set.contains xs (tuple n 1)) 1 0))
                                 (Set.len xs)))
                           s)))
-                (St.check (Set.of (list (tuple 1 n) (tuple 2 8))))))
+                (St.check #set((tuple 1 n) (tuple 2 8)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 102 Int64)))
 
@@ -5100,7 +5100,7 @@
   (input  (do
             (def (main (: n Int64))
               (let ((m Map.empty))
-                (let ((xs (match (Map.lookup m "k") ((Some ys) ys) ((None _u) (Set.of (list))))))
+                (let ((xs (match (Map.lookup m "k") ((Some ys) ys) ((None _u) #set()))))
                   (Set.len (Set.insert xs n)))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 1 Int64))
@@ -5182,7 +5182,7 @@
   (input  (do
             (effect St (op flip (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle St (Set.of (list 1 2 3))
+              (handle St #set(1 2 3)
                 ((flip (k) s
                   (resume (Set.len (if (Set.contains s k) (Set.remove s k) (Set.insert s k)))
                           (if (Set.contains s k) (Set.remove s k) (Set.insert s k)))))
@@ -5218,7 +5218,7 @@
   (input  (do
             (effect St (op dump (-> Unit (List Int64))))
             (def (main (: n Int64))
-              (handle St (Set.of (list 30 n 9))
+              (handle St #set(30 n 9)
                 ((dump (u) s (resume (Set.to-list s) s)))
                 (let ((xs (St.dump)))
                   (+ (* 1000 (match (List.at xs 0) ((Some a) a) ((None _u) -1)))
@@ -5540,7 +5540,7 @@
   (input  (do
             (effect Db (op add (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle Db (record (= seen (Set.of (list))) (= total 0))
+              (handle Db (record (= seen #set()) (= total 0))
                 ((add (v) st
                   (let ((ns (Set.insert (. st seen) v)))
                     (resume (Set.len ns)
@@ -5863,7 +5863,7 @@
             (def (main (: n Int64))
               (handle St 0
                 ((label (u) s (resume (Symbol.of (if (> s 0) "warm" "cold")) (+ s 1))))
-                (let ((xs (Set.of (list (St.label) (St.label) (St.label)))))
+                (let ((xs #set((St.label) (St.label) (St.label))))
                   (Set.len xs))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 2 Int64)))

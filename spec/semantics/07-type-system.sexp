@@ -908,7 +908,7 @@
            `+` is never quietly overloaded to a set operation.")
   (input  (do
             (def (f (: r (Set Int64)) (: q (Set Int64))) (+ r q))
-            (def (main) (f (Set.of (list 1)) (Set.of (list 2)))) (export main)))
+            (def (main) (f #set(1) #set(2))) (export main)))
   (error  CDZ0201))
 
 (case "addition of two symbols is rejected — a symbol is not a number"
@@ -1300,7 +1300,7 @@
            — a record entry is a `(name value)` pair. The compiler rejects it (CDZ0201), never
            panicking reaching for the absent value node. Same never-crash class as the `(let ((x)) x)`
            binding-with-no-value case above, for a record entry.")
-  (input  (record (= a)))
+  (input  (record (= = a)))
   (error  CDZ0201))
 
 (case "a map entry with no value expression is rejected, not a crash"
@@ -2098,7 +2098,7 @@
            wasm formerly INVENTED a closure identity and computed, while rust E0277'd on `dyn Fn: Ord` — the
            uniform CDZ0216 reject at type-check is the ruled fix (v-inference, concierge-confirmed).")
   (input  (do
-            (def (main) (Set.len (Set.of (list (fn (x) (+ x 1))))))
+            (def (main) (Set.len #set((fn (x) (+ x 1)))))
             (export main)))
   (error  CDZ0216))
 
@@ -2142,7 +2142,7 @@
            at any nesting).")
   (input  (do
             (def (main (: n Int64))
-              (Set.len (Set.of (list (list (fn ((: x Int64)) (+ x n)))))))
+              (Set.len #set((list (fn ((: x Int64)) (+ x n))))))
             (export main)))
   (error  CDZ0216))
 

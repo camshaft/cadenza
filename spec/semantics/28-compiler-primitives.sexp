@@ -424,7 +424,7 @@
   (doc    "`Set.of (list 1 2 2 3)` dedups to {1,2,3} (len 3); `Set.contains … 2` is true. The const set is
            queried, never materialized. Here `Set.len` of the deduped set folds to 3.")
   (input  (do
-            (def (main) (const (Set.len (Set.of (list 1 2 2 3)))))
+            (def (main) (const (Set.len #set(1 2 2 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -432,7 +432,7 @@
   (doc    "`Set.contains (Set.insert (Set.of (list 1 2)) 3) 3` folds to true (100 branch) — insert adds a
            new member, contains queries it, all at compile time under the force-eval block.")
   (input  (do
-            (def (main) (const (if (Set.contains (Set.insert (Set.of (list 1 2)) 3) 3) 100 200)))
+            (def (main) (const (if (Set.contains (Set.insert #set(1 2) 3) 3) 100 200)))
             (export main)))
   (output (: 100 Int64)))
 
@@ -451,7 +451,7 @@
   (doc    "Negative path: `Set.contains (Set.of (list 1 2 3)) 9` folds to false → the 200 branch. Pins the
            absent-member result (the present-member case is pinned above).")
   (input  (do
-            (def (main) (const (if (Set.contains (Set.of (list 1 2 3)) 9) 100 200)))
+            (def (main) (const (if (Set.contains #set(1 2 3) 9) 100 200)))
             (export main)))
   (output (: 200 Int64)))
 
@@ -609,7 +609,7 @@
            then counted. (Set has no `.empty`; the empty base is `Set.of (list)`.)")
   (input  (do
             (def (acc (const (: n Int64)))
-              (if (= n 0) (Set.of (list)) (Set.insert (acc (- n 1)) n)))
+              (if (= n 0) #set() (Set.insert (acc (- n 1)) n)))
             (def (main) (const (Set.len (acc 4))))
             (export main)))
   (output (: 4 Int64)))
@@ -886,19 +886,19 @@
 
 (case "Set.union const-folds a membership count"
   (doc "`{1,2} ∪ {2,3}` has 3 distinct members; the union folds and `Set.len` reads 3 (order-independent).")
-  (input (do (def (main) (const (Set.len (Set.union (Set.of (list 1 2)) (Set.of (list 2 3)))))) (export main)))
+  (input (do (def (main) (const (Set.len (Set.union #set(1 2) #set(2 3))))) (export main)))
   (output (: 3 Int64)))
 (case "Set.intersection const-folds a membership count"
   (doc "`{1,2,3} ∩ {2,3,4}` = `{2,3}`; `Set.len` reads 2.")
-  (input (do (def (main) (const (Set.len (Set.intersection (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))))) (export main)))
+  (input (do (def (main) (const (Set.len (Set.intersection #set(1 2 3) #set(2 3 4))))) (export main)))
   (output (: 2 Int64)))
 (case "Set.difference const-folds a membership count"
   (doc "`{1,2,3} ∖ {2}` = `{1,3}`; `Set.len` reads 2.")
-  (input (do (def (main) (const (Set.len (Set.difference (Set.of (list 1 2 3)) (Set.of (list 2)))))) (export main)))
+  (input (do (def (main) (const (Set.len (Set.difference #set(1 2 3) #set(2))))) (export main)))
   (output (: 2 Int64)))
 (case "Set.remove then contains const-folds to false"
   (doc "Removing `2` from `{1,2,3}` then testing membership of `2` folds to false.")
-  (input (do (def (main) (const (Set.contains (Set.remove (Set.of (list 1 2 3)) 2) 2))) (export main)))
+  (input (do (def (main) (const (Set.contains (Set.remove #set(1 2 3) 2) 2))) (export main)))
   (output (: false Bool)))
 (case "Map.remove then len const-folds"
   (doc "Removing key `1` from a 2-entry map leaves 1 entry; `Map.len` reads 1.")
@@ -933,13 +933,13 @@
 (case "a const Set of TUPLES dedups by structural equality"
   (doc "`Set.of (list (1,2) (1,2) (3,4))` folds to a 2-member set — `cval_eq` finds the two `(1,2)` tuples
         equal element-wise and dedups them, leaving `{(1,2),(3,4)}`; `Set.len` reads 2.")
-  (input (const (Set.len (Set.of (list (tuple 1 2) (tuple 1 2) (tuple 3 4))))))
+  (input (const (Set.len #set((tuple 1 2) (tuple 1 2) (tuple 3 4)))))
   (output (: 2 Int64)))
 
 (case "a const Set of RECORDS dedups by structural field equality"
   (doc "`Set.of (list (record (a 1)) (record (a 1)) (record (a 2)))` folds to 2 — `cval_eq` compares records
         field-wise, deduping the two `{a:1}` records. Pins the record arm of structural const-Set dedup.")
-  (input (const (Set.len (Set.of (list (record (= a 1)) (record (= a 1)) (record (= a 2)))))))
+  (input (const (Set.len #set((record (= a 1)) (record (= a 1)) (record (= a 2))))))
   (output (: 2 Int64)))
 
 (case "a const Map keyed on a SUM variant folds a lookup by structural key equality"
@@ -1015,26 +1015,26 @@
            the runtime `set-to-list` op's order), so `(const (List.len (Set.to-list (Set.of (list 1 2 3)))))`
            folds to 3 — no longer a REJECT. Was the CHAMP-order soundness negative; now a fold, sound because
            `const_key_order` byte-matches the runtime op (v-runtime contract + breaker #3749 witnesses).")
-  (input  (do (def (main) (const (List.len (Set.to-list (Set.of (list 1 2 3)))))) (export main)))
+  (input  (do (def (main) (const (List.len (Set.to-list #set(1 2 3))))) (export main)))
   (output (: 3 Int64)))
 
 (case "a const Set.to-list sorts ints in canonical (numeric-ascending) value order, dedup'd"
   (doc    "`(Set.of (list 3 1 2 3))` folds to the 3-member set `{1,2,3}`; `Set.to-list` materializes them in
            canonical value order `(1 2 3)` — insertion order and the duplicate `3` are both erased. Pins that
            the const fold's element ORDER is the canonical numeric-ascending order.")
-  (input  (const (= (Set.to-list (Set.of (list 3 1 2 3))) (list 1 2 3))))
+  (input  (const (= (Set.to-list #set(3 1 2 3)) (list 1 2 3))))
   (output (: true Bool)))
 
 (case "a const Set.to-list orders negative ints numerically, not by encoding"
   (doc    "Negatives sort by NUMERIC value (`-3 < 0 < 2 < 5`), not a two's-complement byte order — the canonical
            value order is numeric. `(Set.to-list (Set.of (list 5 -3 0 -3 2)))` folds to `(-3 0 2 5)`.")
-  (input  (const (= (Set.to-list (Set.of (list 5 -3 0 -3 2))) (list -3 0 2 5))))
+  (input  (const (= (Set.to-list #set(5 -3 0 -3 2)) (list -3 0 2 5))))
   (output (: true Bool)))
 
 (case "a const Set.to-list orders strings lexicographically"
   (doc    "String elements sort lexicographically (the canonical String value order). `(Set.to-list (Set.of
            (list \"banana\" \"apple\" \"cherry\")))` folds to `(\"apple\" \"banana\" \"cherry\")`.")
-  (input  (const (= (Set.to-list (Set.of (list "banana" "apple" "cherry"))) (list "apple" "banana" "cherry"))))
+  (input  (const (= (Set.to-list #set("banana" "apple" "cherry")) (list "apple" "banana" "cherry"))))
   (output (: true Bool)))
 
 (case "a const Set.to-list order byte-matches the RUNTIME set-to-list op (cross-check)"
@@ -1043,7 +1043,7 @@
            fold of `{1,2,3}` — both `(1 2 3)`. Pins that `const_key_order` (compile) and `value_cmp_shaped`
            (runtime) agree, catching any implementation drift between the two impls of the one spec'd order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert (Set.of (list 3 1)) n)) (Set.to-list (Set.of (list 1 2 3)))))
+                (= (Set.to-list (Set.insert #set(3 1) n)) (Set.to-list #set(1 2 3))))
               (export run)))
   (call   run 2)
   (output (: true Bool)))
@@ -1060,8 +1060,8 @@
            the head is `(1,10)` (not `(1,99)`): `(+ (* 100 k) v)` = 110. Dedups a repeated tuple. Pins the
            element-wise recursive tuple order matching the runtime (19-sets).")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (tuple 3 30) (tuple 1 99) (tuple 1 10) (tuple 1 10))))))
-                          (match (List.at (Set.to-list (Set.of (list (tuple 3 30) (tuple 1 99) (tuple 1 10)))) 0)
+                (const (+ (* 1000 (List.len (Set.to-list #set((tuple 3 30) (tuple 1 99) (tuple 1 10) (tuple 1 10)))))
+                          (match (List.at (Set.to-list #set((tuple 3 30) (tuple 1 99) (tuple 1 10))) 0)
                             ((Option.Some (tuple k v)) (+ (* 100 k) v))
                             ((Option.None) -1)))))
               (export main)))
@@ -1072,8 +1072,8 @@
            n)`) equals the COMPILE-TIME fold of `{(1,10),(2,20),(3,30)}` — both lexicographically ordered.
            Pins that `const_key_order`'s recursive Tuple arm agrees with the runtime tuple order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert (Set.of (list (tuple 1 10) (tuple 3 30))) (tuple 2 n)))
-                   (const (Set.to-list (Set.of (list (tuple 1 10) (tuple 2 20) (tuple 3 30)))))))
+                (= (Set.to-list (Set.insert #set((tuple 1 10) (tuple 3 30)) (tuple 2 n)))
+                   (const (Set.to-list #set((tuple 1 10) (tuple 2 20) (tuple 3 30))))))
               (export run)))
   (call   run 20)
   (output (: true Bool)))
@@ -1089,8 +1089,8 @@
            1 before 5) before/after `None` by discriminant, and the head here is `Some 1` (the Some disc sorts
            first, smallest payload). Pins disc-first-then-payload + dedup of a repeated `Some`.")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (Option.Some 5) (Option.None) (Option.Some 1) (Option.Some 1))))))
-                          (match (List.at (Set.to-list (Set.of (list (Option.Some 5) (Option.None) (Option.Some 1)))) 0)
+                (const (+ (* 1000 (List.len (Set.to-list #set((Option.Some 5) (Option.None) (Option.Some 1) (Option.Some 1)))))
+                          (match (List.at (Set.to-list #set((Option.Some 5) (Option.None) (Option.Some 1))) 0)
                             ((Option.Some (Option.Some v)) v)
                             ((Option.Some (Option.None)) -100)
                             ((Option.None) -1)))))
@@ -1102,8 +1102,8 @@
            n)`) equals the COMPILE-TIME fold of `{Some 1, Some 5, None}` — both disc-then-payload ordered. Pins
            that `const_key_order`'s Sum arm agrees with the runtime `value_cmp_shaped` Sum order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert (Set.of (list (Option.Some 1) (Option.None))) (Option.Some n)))
-                   (const (Set.to-list (Set.of (list (Option.Some 1) (Option.Some 5) (Option.None)))))))
+                (= (Set.to-list (Set.insert #set((Option.Some 1) (Option.None)) (Option.Some n)))
+                   (const (Set.to-list #set((Option.Some 1) (Option.Some 5) (Option.None))))))
               (export run)))
   (call   run 5)
   (output (: true Bool)))
@@ -1124,8 +1124,8 @@
            pick). Reads the head's `lo` (9) and confirms len 2 (the repeat deduped): `2*1000 + 9`. Pins record
            field-wise order in the name-canonical order matching the runtime, discriminated against source order.")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)) (record (= lo 9) (= hi 1)))))))
-                          (match (List.at (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))))) 0)
+                (const (+ (* 1000 (List.len (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)) (record (= lo 9) (= hi 1))))))
+                          (match (List.at (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))) 0)
                             ((Option.Some r) (. r lo))
                             ((Option.None) -1)))))
               (export main)))
@@ -1138,8 +1138,8 @@
            `const_key_order`'s Record arm agrees with the runtime `value_cmp_shaped` Record order (descriptor field
            order == name-canonical == the compiler's `BTreeMap<Symbol>` iteration order).")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert (Set.of (list (record (= lo 9) (= hi 1)))) (record (= lo 0) (= hi n))))
-                   (const (Set.to-list (Set.of (list (record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2))))))))
+                (= (Set.to-list (Set.insert #set((record (= lo 9) (= hi 1))) (record (= lo 0) (= hi n))))
+                   (const (Set.to-list #set((record (= lo 9) (= hi 1)) (record (= lo 0) (= hi 2)))))))
               (export run)))
   (call   run 2)
   (output (: true Bool)))
@@ -1376,8 +1376,8 @@
            the last is 128 (0x80 is 128 unsigned, NOT signed −128). Pins Bytes const-fold + the unsigned order
            matching 19-sets' runtime pin; also dedups (the len is 3 distinct).")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list (Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127)))))))
-                          (match (List.at (Set.to-list (Set.of (list (Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127))))) 2)
+                (const (+ (* 1000 (List.len (Set.to-list #set((Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127))))))
+                          (match (List.at (Set.to-list #set((Bytes.of (list 128)) (Bytes.of (list 5)) (Bytes.of (list 127)))) 2)
                             ((Option.Some h) (match (Bytes.at h 0) ((Option.Some v) v) ((Option.None) -1)))
                             ((Option.None) -2)))))
               (export main)))
@@ -1388,8 +1388,8 @@
            COMPILE-TIME fold of the same set — both order the single-byte Bytes {5, 9} identically. Pins that
            `const_key_order`'s Bytes arm (Rust [u8] cmp) agrees with the runtime's unsigned-byte order.")
   (input  (do (def (run (: n Int64))
-                (= (Set.to-list (Set.insert (Set.of (list (Bytes.of (list 5)))) (Bytes.of (list (UInt8.wrap n)))))
-                   (const (Set.to-list (Set.of (list (Bytes.of (list 5)) (Bytes.of (list 9))))))))
+                (= (Set.to-list (Set.insert #set((Bytes.of (list 5))) (Bytes.of (list (UInt8.wrap n)))))
+                   (const (Set.to-list #set((Bytes.of (list 5)) (Bytes.of (list 9)))))))
               (export run)))
   (call   run 9)
   (output (: true Bool)))
@@ -1406,8 +1406,8 @@
            them in Unicode-scalar order, so the head is `#\\a` (scalar 97) and the length is 3 (the duplicate
            `#\\a` deduped). Pins the Char const-fold + scalar order (matching the rust runtime, 19-sets ckr1).")
   (input  (do (def (main)
-                (const (+ (* 1000 (List.len (Set.to-list (Set.of (list #\c #\a #\b #\a)))))
-                          (match (List.at (Set.to-list (Set.of (list #\c #\a #\b #\a))) 0)
+                (const (+ (* 1000 (List.len (Set.to-list #set(#\c #\a #\b #\a))))
+                          (match (List.at (Set.to-list #set(#\c #\a #\b #\a)) 0)
                             ((Option.Some h) (Char.to-int h))
                             ((Option.None) -1)))))
               (export main)))
@@ -1427,7 +1427,7 @@
            `(1 2 3)` (canonical order), and `Set.len` reads 3. Pins the recursion-built materialization.")
   (input  (do
             (def (acc (const (: n Int64)))
-              (if (= n 0) (Set.of (list)) (Set.insert (acc (- n 1)) n)))
+              (if (= n 0) #set() (Set.insert (acc (- n 1)) n)))
             (def (main) (const (= (Set.to-list (acc 3)) (list 1 2 3))))
             (export main)))
   (output (: true Bool)))
@@ -1438,7 +1438,7 @@
            composes with the const-execution engine (breaker gap m4's direct-consumer face).")
   (input  (do
             (def (f (const (: xs (List Int64)))) (List.len xs))
-            (def (main) (const (f (Set.to-list (Set.of (list 3 1 2))))))
+            (def (main) (const (f (Set.to-list #set(3 1 2)))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1458,7 +1458,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: k Int64)))
               (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1469,7 +1469,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: k Int64)))
               (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
-            (def (main) (const (List.len (Set.to-list (grow (Set.of (list)) 3)))))
+            (def (main) (const (List.len (Set.to-list (grow #set() 3)))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1497,7 +1497,7 @@
             (def (grow (const (: s (Set Int64))) (const (: k Int64)) (const (: hi String)))
               (if (= k 0) s
                   (grow (Set.insert s (if (< "b" hi) k (- 0 k))) (- k 1) hi)))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3 "m"))))
+            (def (main) (const (Set.len (grow #set() 3 "m"))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1509,7 +1509,7 @@
             (def (grow (const (: s (Set Int64))) (const (: k Int64)) (const (: low Bool)) (const (: hi Bool)))
               (if (= k 0) s
                   (grow (Set.insert s (if (< low hi) k (- 0 k))) (- k 1) low hi)))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3 false true))))
+            (def (main) (const (Set.len (grow #set() 3 false true))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1527,7 +1527,7 @@
                                         ((Ordering.Less _)    100)
                                         ((Ordering.Equal _)   200)
                                         ((Ordering.Greater _) 300))) (- k 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1543,7 +1543,7 @@
                                         ((Ordering.Less _)    100)
                                         ((Ordering.Equal _)   200)
                                         ((Ordering.Greater _) 300))) (- k 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1556,7 +1556,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: k Int64)))
               (if (= k 0) s (grow (Set.insert s (<< k 1)) (- k 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (output (: 3 Int64)))
 
@@ -1566,7 +1566,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: k Int64)))
               (if (= k 0) s (grow (Set.insert s (& k 1)) (- k 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (output (: 2 Int64)))
 
@@ -1579,7 +1579,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: n Int64)))
               (if (< n 1) s (grow (Set.insert s (% n 10)) (/ n 10))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 12345))))
+            (def (main) (const (Set.len (grow #set() 12345))))
             (export main)))
   (output (: 5 Int64)))
 
@@ -1592,7 +1592,7 @@
   (input  (do
             (def (grow (const (: s (Set Int64))) (const (: n Int64)))
               (if (< n 1) s (grow (Set.insert s (/ 100 (- n n))) (- n 1))))
-            (def (main) (const (Set.len (grow (Set.of (list)) 3))))
+            (def (main) (const (Set.len (grow #set() 3))))
             (export main)))
   (error CDZ0304 (message "division by zero")))
 
@@ -1773,7 +1773,7 @@
            the query answer (a size) is order-independent so it folds soundly.")
   (input  (do
             (effect E (op tick (-> Unit Int64)))
-            (def (main) (const (handle E (Set.of (list 7)) ((tick (u) s (resume (Set.len s) (Set.insert s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
+            (def (main) (const (handle E #set(7) ((tick (u) s (resume (Set.len s) (Set.insert s 0)))) (+ (* 10 (E.tick)) (E.tick)))))
             (export main)))
   (output (: 12 Int64)))
 
@@ -1808,7 +1808,7 @@
     (effect E (op tick (-> Int64)))
     (def (main)
       (const
-        (handle E (Set.of (list 1))
+        (handle E #set(1)
           ((tick () s (resume (Set.len s) (Set.insert s (+ (Set.len s) 1)))))
           (+ (E.tick) (E.tick)))))
     (export main)))
@@ -1991,7 +1991,7 @@
 (case "cn-c2c a Set query composed inside a const-param fn folds under Ast.encode demand"
   (input  (do
             (def (f (const (: n Int64)))
-              (if (Set.contains (Set.of (list 1 2 3)) n) "in" "out"))
+              (if (Set.contains #set(1 2 3) n) "in" "out"))
             (def (run) (= (Ast.encode (Ast.Name (f 2))) (Ast.encode (Ast.Name "in"))))
             (export run)))
   (output (: true Bool)))
@@ -2170,11 +2170,11 @@
 ; (k v). Same-hour pins of the bonus fix that rode the Map.to-list fold.
 
 (case "le1 a SINGLE-element const Set.to-list folds"
-  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list 42)))))) (export main)))
+  (input (do (def (main) (const (List.len (Set.to-list #set(42))))) (export main)))
   (output (: 1 Int64)))
 
 (case "le2 an EMPTY const Set.to-list folds to the empty list"
-  (input (do (def (main) (const (List.len (Set.to-list (: (Set.of (list)) (Set Int64)))))) (export main)))
+  (input (do (def (main) (const (List.len (Set.to-list (: #set() (Set Int64)))))) (export main)))
   (output (: 0 Int64)))
 
 (case "le3 a single-entry const Map.to-list reads its lone (k v)"
@@ -2197,7 +2197,7 @@
         orderability. A tuple carrying a FLOAT is genuinely non-orderable (`const_key_order` declines a float),
         so the per-element pre-check keeps the runtime op → the const demand REJECTS. (A tuple of orderable
         scalars now folds — see the tuple-order cases above; this pins the LONE-non-orderable soundness face.)")
-  (input (do (def (main) (const (List.len (Set.to-list (Set.of (list (tuple 1.5 2))))))) (export main)))
+  (input (do (def (main) (const (List.len (Set.to-list #set((tuple 1.5 2)))))) (export main)))
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr2 a const Map.to-list with a LONE non-orderable KEY still declines"
@@ -2207,7 +2207,7 @@
   (error CDZ0201 (message "compile-time constant")))
 
 (case "lnr3 an EMPTY set of a non-orderable element type IS order-trivial — const to-list folds to 0"
-  (input (do (def (main) (const (List.len (Set.to-list (: (Set.of (list)) (Set (Tuple Int64 Int64))))))) (export main)))
+  (input (do (def (main) (const (List.len (Set.to-list (: #set() (Set (Tuple Int64 Int64))))))) (export main)))
   (output (: 0 Int64)))
 
 ; -- breaker batch 424 (2026-08-26): #3783 same-hour edge pins (the ConstBlock fall-through fix) —
@@ -2220,7 +2220,7 @@
     (def (grow (const (: s (Set Int64))) (const (: k Int64)))
       (if (= k 0) s (grow (Set.insert s (* k 7)) (- k 1))))
     (def (main)
-      (const (match (List.at (Set.to-list (grow (Set.of (list)) 4)) 0)
+      (const (match (List.at (Set.to-list (grow #set() 4)) 0)
                ((Option.Some v) (if (= v 7) (trap "cst1 sorted head seven") (trap "cst1 WRONG")))
                ((Option.None) (trap "cst1 EMPTY")))))
     (export main)))
@@ -2233,7 +2233,7 @@
         ((Option.Some v) (+ v (suml xs (+ i 1))))
         ((Option.None) 0)))
     (def (main)
-      (const (suml (Set.to-list (Set.of (list 5 1 3))) 0)))
+      (const (suml (Set.to-list #set(5 1 3)) 0)))
     (export main)))
     (output (: 9 Int64)))
 
@@ -2264,7 +2264,7 @@
 (case "bk3 runtime digests dedup as set members by content"
   (input (do
     (def (main (: n Int64))
-      (Set.len (Set.of (list (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list 9)))))))
+      (Set.len #set((Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list (UInt8.wrap n)))) (Blake3.of (Bytes.of (list 9))))))
     (export main)))
   (call main (: 5 Int64))
   (output (: 2 Int64))
@@ -2419,7 +2419,7 @@
 (case "chm2 the sorted Char head surfaces a taken trap under the const demand (CDZ0304)"
   (input (do
     (def (main)
-      (const (match (List.at (Set.to-list (Set.of (list #\q #\b #\z))) 0)
+      (const (match (List.at (Set.to-list #set(#\q #\b #\z)) 0)
                ((Option.Some ch) (if (= ch #\b) (trap "chm2 head is b") (trap "chm2 WRONG")))
                ((Option.None) (trap "chm2 EMPTY")))))
     (export main)))

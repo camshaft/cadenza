@@ -881,7 +881,7 @@
            value literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's
            VALUE type; before the descent reached maps, this escaped and silently truncated (999 → -25).
            Pins that the descent reaches map values.")
-  (input  (: (map (1 999)) (Map Int64 Int8)))
+  (input  (: (map (= 1 999)) (Map Int64 Int8)))
   (error  CDZ0302))
 
 (case "a literal MAP KEY that overflows the annotated key width is rejected"
@@ -889,7 +889,7 @@
            literal `999`, which overflows Int8 → CDZ0302. The width fit-check must descend into a map's KEY
            type (not only the value); before the descent reached map keys, this escaped the check. Pins that
            the descent reaches map keys — the key twin of the map-value case.")
-  (input  (: (map (999 1)) (Map Int8 Int64)))
+  (input  (: (map (= 999 1)) (Map Int8 Int64)))
   (error  CDZ0302))
 
 (case "an out-of-range literal MAP VALUE through a builder chain (Map.insert) is rejected"
@@ -914,7 +914,7 @@
            element literal `200` to `Int8` → overflow → CDZ0302. The fit-check must cover a Set element as it
            does a Map key/value; a Set element under a narrow annotation that escaped the check would silently
            truncate. Pins the descent reaches a Set.of element.")
-  (input  (: (Set.of (list 200)) (Set Int8)))
+  (input  (: #set(200) (Set Int8)))
   (error  CDZ0302))
 
 (case "an out-of-range literal SET element via Set.insert is rejected"
@@ -978,7 +978,7 @@
            settles the element type; before the fix this escaped — wasm built a set with a wrapped `-41`,
            rust rejected the emit (E0308), a cross-backend differential. Pins the descent reaches a Set.of
            element whose width is sibling-inferred, the collection-builder companion of the plain-list arm.")
-  (input  (do (def (main) (Set.len (Set.of (list (: 1 UInt64) -41)))) (export main)))
+  (input  (do (def (main) (Set.len #set((: 1 UInt64) -41))) (export main)))
   (error  CDZ0302))
 
 (case "an out-of-range Map.insert value via a sibling-inferred width is CDZ0302"
@@ -1004,7 +1004,7 @@
            (len 2). Pins that the width check admits an in-range sibling-typed Set element AND that rust
            emits it at the UInt64 collection width (not the literal's Int64 default, which had rendered
            `41u64 as i64` into a `BTreeSet<u64>` → E0308); the in-range Set companion of the reject.")
-  (input  (do (def (main) (Set.len (Set.of (list (: 1 UInt64) 41)))) (export main)))
+  (input  (do (def (main) (Set.len #set((: 1 UInt64) 41))) (export main)))
   (call   main) (output (: 2 Int64)))
 
 (case "an IN-RANGE Map.insert value via a sibling-inferred width computes"
@@ -5219,7 +5219,7 @@
            k=3 → trap on both backends.")
   (input  (do
             (def (main (: k Int64))
-              (Set.len (Set.of (list (<< ((. (UInt 4) wrap) 3) ((. (UInt 4) wrap) k)) ((. (UInt 4) wrap) 8)))))
+              (Set.len #set((<< ((. (UInt 4) wrap) 3) ((. (UInt 4) wrap) k)) ((. (UInt 4) wrap) 8))))
             (export main)))
   (call   main (: 3 Int64)) (trap "integer overflow"))
 
@@ -8445,7 +8445,7 @@
            basis as a Bytes/String element), leaving `{5, 7}` of size 2. The set companion of the
            BigInt-map-key case; pins that a BigInt is a first-class set element (a constant element
            materializes as a heap handle at the insert site, not a raw i64).")
-  (input  (Set.len (Set.of (list (BigInt.of 5) (BigInt.of 5) (BigInt.of 7)))))
+  (input  (Set.len #set((BigInt.of 5) (BigInt.of 5) (BigInt.of 7))))
   (output (: 2 Int64)))
 
 (case "a BigInt is usable as a map key, matched by its arbitrary-precision value"
@@ -8528,9 +8528,8 @@
            witness (the small-value dedup pin above cannot see past the first limb).")
   (input  (do
             (def (main (: n Int64))
-              (Set.len (Set.of (list
-                (+ (* (BigInt.of 1) (: 18446744073709551616 BigInt)) (BigInt.of n))
-                (+ (* (BigInt.of 2) (: 18446744073709551616 BigInt)) (BigInt.of n))))))
+              (Set.len #set((+ (* (BigInt.of 1) (: 18446744073709551616 BigInt)) (BigInt.of n))
+                (+ (* (BigInt.of 2) (: 18446744073709551616 BigInt)) (BigInt.of n)))))
             (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
@@ -8747,7 +8746,7 @@
            `2/4` normalize to the SAME rational (one node shape), so the set collapses them — leaving
            `{1/2, 1/3}` of size 2. Confirms a Rational set element deduplicates by its normalized value
            (the CHAMP descends the two BigInt children), the set companion of the Rational-map-key case.")
-  (input  (Set.len (Set.of (list (Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3)))))
+  (input  (Set.len #set((Rational.of 1 2) (Rational.of 2 4) (Rational.of 1 3))))
   (output (: 2 Int64)))
 
 (case "a RUNTIME-built unreduced Rational and its reduced form are ONE map key"
@@ -8823,7 +8822,7 @@
            an i64 overflow-guard temp — and the Set.of emit must keep them on disjoint slots or the wasm
            local is declared at two widths (invalid module). The Rational face of the boxed-numeric family.")
   (input  (do (def (main (: n Int64))
-                (Set.len (Set.of (list (+ (Rational.of n 1) (Rational.of 1 1)) (Rational.of (+ n 2) 1)))))
+                (Set.len #set((+ (Rational.of n 1) (Rational.of 1 1)) (Rational.of (+ n 2) 1))))
               (export main)))
   (call   main (: 5 Int64))
   (output (: 2 Int64)))
@@ -9137,7 +9136,7 @@
            distinct normalized rationals, so `Set.len` = 3 — confirming a runtime-materialized Rational
            set element deduplicates by its normalized value through the CHAMP's two-BigInt-child walk.")
   (input  (do (def (main (: a Int64))
-                (Set.len (Set.of (list (Rational.of a 2) (Rational.of a 4) (Rational.of a 3)))))
+                (Set.len #set((Rational.of a 2) (Rational.of a 4) (Rational.of a 3))))
               (export main)))
   (call   main (: 2 Int64))
   (output (: 3 Int64)))
@@ -9285,9 +9284,9 @@
            keying respects the DECLARED width, not the storage slot (a slot-width key would hold 3).")
   (input  (do
             (def (main (: k Int64))
-              (Set.len (Set.of (list ((. (UInt 4) wrap) k)
+              (Set.len #set(((. (UInt 4) wrap) k)
                                      ((. (UInt 4) wrap) (+ k 16))
-                                     ((. (UInt 4) wrap) (+ k 1))))))
+                                     ((. (UInt 4) wrap) (+ k 1)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 2 Int64)))
 
@@ -10329,7 +10328,7 @@
 (case "two Float64.Infinity constants dedup in a set"
   (doc "`Infinity` keys by its bit pattern like any finite float, so `(Set.of (list Infinity Infinity 1.0))`
         dedups the two infinities to one element → length 2.")
-  (input (do (def (main) (Set.len (Set.of (list Float64.Infinity Float64.Infinity 1.0)))) (export main)))
+  (input (do (def (main) (Set.len #set(Float64.Infinity Float64.Infinity 1.0))) (export main)))
   (output (: 2 Int64)))
 
 (case "an Ast.Float node cannot carry Float64.Infinity (declines, like nan)"
@@ -11856,7 +11855,7 @@
   (let ((x (/ (Float64.of-int (- n 1)) 0.0)))
     (+ (if (= x Float64.nan) 1 0)
        (+ (if (= x x) 10 0)
-          (if (Set.contains (Set.insert (Set.of (list)) x) Float64.nan) 100 0)))))
+          (if (Set.contains (Set.insert #set() x) Float64.nan) 100 0)))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 111 Int64))
@@ -12002,7 +12001,7 @@
         regression mis-nesting, mis-ordering the record fields, or dropping a field would change the value.")
   (input (do (def (main (: n Int64)) (record (= pair (tuple n (+ n 1))) (= xs (list n (* n 2))))) (export main)))
   (call main (: 3 Int64))
-  (output (: (record (= pair (tuple 3 4)) (= xs (list 3 6))) (record (pair (Tuple Int64 Int64)) (xs (List Int64)))))
+  (output (: (record (= pair (tuple 3 4)) (= xs (list 3 6))) (record (= pair (Tuple Int64 Int64)) (= xs (List Int64)))))
   (live-objects 4))
 
 (case "cdzw12 the cadenza backend round-trips a USER-declared multi-variant sum value — the (type …) declaration re-emits"
@@ -12097,7 +12096,7 @@
         holds the LAST value. The hop re-emits entries in STORED order and the recompiled program rebuilds
         by re-inserting — if the emit reordered entries, last-wins would flip the value. n=5 →
         (map (5 2)). Dual-path verified. `(live-objects 1)` = the reachable returned map.")
-  (input (do (def (main (: n Int64)) (map (n 1) (n 2))) (export main)))
+  (input (do (def (main (: n Int64)) (map (= n 1) (= n 2))) (export main)))
   (call main (: 5 Int64))
   (output (: #map((= 5 2)) (Map Int64 Int64)))
   (call main (: -3 Int64))

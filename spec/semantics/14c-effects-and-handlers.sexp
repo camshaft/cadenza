@@ -71,7 +71,7 @@
             (effect R (op touch (-> Int64 Int64)))
             (effect Bail (op bail (-> Int64 Int64)))
             (def (main (: n Int64))
-              (+ (handle R (map (1 10))
+              (+ (handle R (map (= 1 10))
                    ((touch (k) s (resume (Map.len s) (Map.insert s k k))))
                    (+ (R.touch 5)
                       (handle Bail 0
@@ -841,10 +841,10 @@
   (input  (do
             (effect St (op next (-> Int64)))
             (def (main (: n Int64))
-              (let ((m (map (1 (handle St n
+              (let ((m (map (= 1 (handle St n
                                  ((next () s (resume s (+ s 3))))
                                  (+ (St.next) (St.next))))
-                            (2 50))))
+                            (= 2 50))))
                 (+ (match (Map.lookup m 1) ((Some v) v) ((None) -1))
                    (* 100 (match (Map.lookup m 2) ((Some v) v) ((None) -1))))))
             (export main)))
@@ -1139,7 +1139,7 @@
   (input  (do
             (effect Db (op put (-> Int64 Int64)) (op dump (-> (List (Tuple Int64 Int64)))))
             (def (main (: n Int64))
-              (handle Db (map (1 10))
+              (handle Db (map (= 1 10))
                 ((put (k) m (resume (Map.len m) (Map.insert m k (* k 2))))
                  (dump () m (resume (Map.to-list m) m)))
                 (let ((before (List.len (Db.dump))))
@@ -1158,7 +1158,7 @@
             (def (at-or (: xs (List Int64)) (: i Int64))
               (match (List.at xs i) ((Some v) v) ((None) -1)))
             (def (main (: n Int64))
-              (handle Sx (Set.of (list 20 8))
+              (handle Sx #set(20 8)
                 ((add (v) s (resume (Set.len s) (Set.insert s v)))
                  (dump () s (resume (Set.to-list s) s)))
                 (do
@@ -1178,7 +1178,7 @@
                 ((Some p) (match p ((tuple k v) (+ v (sum-snd xs (+ i 1))))))
                 ((None) 0)))
             (def (main (: n Int64))
-              (handle Db (map (1 100))
+              (handle Db (map (= 1 100))
                 ((put (k) m (resume (Map.len m) (Map.insert m k k)))
                  (total () m (resume (sum-snd (Map.to-list m) 0) m)))
                 (do
@@ -1266,7 +1266,7 @@
             (effect St (op adv (-> Int64)))
             (def (main (: n Int64))
               (handle St "a"
-                ((adv () s (resume (match (Map.lookup (map ("a" 10) ("ab" 20) ("abb" 30)) s)
+                ((adv () s (resume (match (Map.lookup (map (= "a" 10) (= "ab" 20) (= "abb" 30)) s)
                                      ((Some v) v)
                                      ((None) -1))
                                    (String.concat s "b"))))
@@ -1532,7 +1532,7 @@
             (effect R (op route (-> Int64)))
             (def (main (: n Int64))
               (handle R #"a"
-                ((route () s (resume (match (Map.lookup (map (#"a" 10) (#"b" 20)) s)
+                ((route () s (resume (match (Map.lookup (map (= #"a" 10) (= #"b" 20)) s)
                                        ((Some v) v)
                                        ((None) -1))
                                      (if (= s #"a") #"b" #"c"))))
@@ -3078,7 +3078,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (% (+ s 1) 3))))
-                (let ((st (Set.of (list (E.next) (E.next) (E.next) (E.next) (E.next)))))
+                (let ((st #set((E.next) (E.next) (E.next) (E.next) (E.next))))
                   (+ (* 100 (Set.len st))
                      (+ (if (Set.contains st n) 10 0)
                         (if (Set.contains st 5) 1 0))))))
@@ -3093,7 +3093,7 @@
             (def (main (: n Int64))
               (handle E n
                 ((next () s (resume s (+ s 10))))
-                (let ((st (Set.of (list 10 20 30))))
+                (let ((st #set(10 20 30)))
                   (if (Set.contains st (E.next))
                       (+ 1000 (E.next))
                       (+ 2000 (E.next))))))
@@ -3109,7 +3109,7 @@
               (handle E n
                 ((next () s (resume s (% (+ s 2) 4)))
                  (probe () s (resume s s)))
-                (let ((st (Set.of (list (E.next) (E.next) (E.next)))))
+                (let ((st #set((E.next) (E.next) (E.next))))
                   (let ((p (E.probe)))
                     (+ (* 1000 (if (Set.contains st p) 1 5))
                        (+ (* 100 (if (Set.contains st (+ p 1)) 1 5))
@@ -5929,7 +5929,7 @@
                       (op has (-> Int64 Int64 Int64))
                       (op cnt (-> Int64)))
             (def (main (: n Int64))
-              (handle E (tuple n (Set.of (list)))
+              (handle E (tuple n #set())
                 ((add () st (match st
                               ((tuple s ss)
                                (resume s (tuple (+ s 2)
@@ -6707,7 +6707,7 @@
               (handle E (list)
                 ((feed (v) win
                   (let ((kept (tail3 (List.push win v))))
-                    (resume (distinct-at kept 0 (Set.of (list))) kept))))
+                    (resume (distinct-at kept 0 #set()) kept))))
                 (let ((r1 (E.feed n)))
                   (let ((r2 (E.feed n)))
                     (let ((r3 (E.feed 7)))
@@ -8070,9 +8070,9 @@
   (input  (do
             (effect S (op probe (-> Int64 Int64)) (op grow (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (Set.of (list n (+ n 2)))
+              (handle S #set(n (+ n 2))
                 ((probe (v) s
-                  (let ((arg (Set.of (list v (+ v 1)))))
+                  (let ((arg #set(v (+ v 1))))
                     (resume (+ (* 100 (Set.len (Set.union s arg)))
                                (+ (* 10 (Set.len (Set.intersection s arg)))
                                   (Set.len (Set.difference s arg))))
@@ -9578,7 +9578,7 @@
   (input  (do
             (effect S (op add (-> Int64 Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (Set.of (list (tuple 0 0)))
+              (handle S #set((tuple 0 0))
                 ((add (a b) st
                   (let ((s2 (Set.insert st (tuple a b))))
                     (resume (Set.len s2) s2))))
@@ -9595,7 +9595,7 @@
   (input  (do
             (effect S (op tag (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (Set.of (list "k-e"))
+              (handle S #set("k-e")
                 ((tag (v) st
                   (let ((key (String.concat "k" (if (= (% v 2) 0) "-e" "-o"))))
                     (let ((s2 (Set.insert st key)))
@@ -10308,7 +10308,7 @@
               (op rm (-> Int64 Int64))
               (op chk (-> Int64 Int64)))
             (def (main (: n Int64))
-              (handle S (tuple Map.empty (Set.of (list)))
+              (handle S (tuple Map.empty #set())
                 ((put (k v) st
                   (match st
                     ((tuple m ks)
@@ -10445,7 +10445,7 @@
             (effect S (op vote (-> Int64 Int64)))
             (def (main (: n Int64))
               (handle S (tuple (Map.insert (Map.insert (Map.insert Map.empty 1 3) 2 n) 3 2)
-                               (tuple (Set.of (list 0)) 0))
+                               (tuple #set(0) 0))
                 ((vote (k) st
                   (match st
                     ((tuple w inner)
@@ -10895,7 +10895,7 @@
                 ((Some v) (maxid xs (+ i 1) (if (> v best) v best)))
                 ((None u) best)))
             (def (main (: n Int64))
-              (handle S (Set.of (list 0))
+              (handle S #set(0)
                 ((reg (k) c
                   (let ((c2 (Set.insert c k)))
                     (resume (- (Set.len c2) 1) c2)))
@@ -17056,7 +17056,7 @@
   (input (do
   (effect E (op add (-> Int64 Int64)) (op has (-> Int64 Int64)))
   (def (main (: n Int64))
-    (handle E (Set.of (list (% n 3)))
+    (handle E #set((% n 3))
       ((add (k) s (resume (Set.len (Set.insert s k)) (Set.insert s k)))
        (has (k) s (resume (if (Set.contains s k) (: 1 Int64) (: 0 Int64)) s)))
       (do (E.add (% n 3))
@@ -17510,7 +17510,7 @@
   (input (do
   (effect E (op tick (-> Unit Int64)))
   (def (main)
-    (const (handle E (Set.of (list 7))
+    (const (handle E #set(7)
       ((tick (u) s (resume (Set.len s) (Set.insert s 0))))
       (+ (* 10 (E.tick)) (E.tick)))))
   (export main)))

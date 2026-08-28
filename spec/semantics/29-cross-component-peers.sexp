@@ -112,7 +112,7 @@
   (doc    "PROVIDER `mk(x)` builds a 2-element (Set Int64) {x, x+1} (distinct); the consumer reads Set.len of
            the crossed set over the shared runtime: mk(7) = {7,8} → 2 (the runtime-built set crossed as a
            handle; the CHAMP survived the boundary).")
-  (peer   "cadenza:ss/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (peer   "cadenza:ss/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert #set() x) (+ x 1))) (export mk)))
   (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:ss/api")
               (def (main (: x Int64)) (host (S) (Set.len (S.mk x)))) (export main)))
   (call   main (: 7 Int64))
@@ -122,7 +122,7 @@
   (doc    "PROVIDER `mk(x)` = {x, x+1}; the consumer queries Set.contains on the crossed set for a PRESENT
            element (x) and an ABSENT one (99): mk(7) = {7,8}, contains 7 → yes (+10), contains 99 → no (+0)
            → 10. Pins that membership reads correctly over the crossed CHAMP on both faces.")
-  (peer   "cadenza:sc/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (peer   "cadenza:sc/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert #set() x) (+ x 1))) (export mk)))
   (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:sc/api")
               (def (main (: x Int64))
                 (host (S) (+ (if (Set.contains (S.mk x) x) 10 0) (if (Set.contains (S.mk x) 99) 1 0))))
@@ -205,7 +205,7 @@
 (case "pcs3 a peer op returning an EMPTY set crosses and reads length zero"
   (doc    "The size-0 boundary for sets: PROVIDER `mk` returns an empty (Set Int64); Set.len of the crossed
            empty set → 0. The set analogue of the empty-map edge — an empty CHAMP crosses as a valid handle.")
-  (peer   "cadenza:se/api" (do (def (mk (: x Int64)) (: (Set.of (list)) (Set Int64))) (export mk)))
+  (peer   "cadenza:se/api" (do (def (mk (: x Int64)) (: #set() (Set Int64))) (export mk)))
   (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:se/api")
               (def (main (: x Int64)) (host (S) (Set.len (S.mk x)))) (export main)))
   (call   main (: 0 Int64))
@@ -302,10 +302,10 @@
            `mk(x)` = {x, x+1}; the consumer unions the crossed set with a LOCALLY-built {x+1, x+2} and reads
            Set.len of the union: mk(7) = {7,8} ∪ {8,9} = {7,8,9} → 3 (the overlapping 8 dedups). Pins that a
            crossed CHAMP handle is a first-class set the local Set.union merges against.")
-  (peer   "cadenza:su/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))) (export mk)))
+  (peer   "cadenza:su/api" (do (def (mk (: x Int64)) (Set.insert (Set.insert #set() x) (+ x 1))) (export mk)))
   (input  (do (effect S (op mk (-> Int64 (Set Int64)))) (bind S "cadenza:su/api")
               (def (main (: x Int64))
-                (host (S) (Set.len (Set.union (S.mk x) (Set.insert (Set.insert (Set.of (list)) (+ x 1)) (+ x 2))))))
+                (host (S) (Set.len (Set.union (S.mk x) (Set.insert (Set.insert #set() (+ x 1)) (+ x 2))))))
               (export main)))
   (call   main (: 7 Int64))
   (output (: 3 Int64)))
@@ -407,7 +407,7 @@
            reads Set.len over the shared runtime: ssz({7, 8}) → 2 (the crossed CHAMP is read by the provider).")
   (peer   "cadenza:sa/api" (do (def (ssz (: s (Set Int64))) (Set.len s)) (export ssz)))
   (input  (do (effect S (op ssz (-> (Set Int64) Int64))) (bind S "cadenza:sa/api")
-              (def (main (: x Int64)) (host (S) (S.ssz (Set.insert (Set.insert (Set.of (list)) x) (+ x 1))))) (export main)))
+              (def (main (: x Int64)) (host (S) (S.ssz (Set.insert (Set.insert #set() x) (+ x 1))))) (export main)))
   (call   main (: 7 Int64))
   (output (: 2 Int64))
   (live-objects known-leak 1))

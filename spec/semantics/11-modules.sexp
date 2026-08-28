@@ -2355,9 +2355,9 @@
       (def (contract (const (: mm Ast)))
         (match mm
           ((Ast.List forms)
-            (record (id (Blake3.of (Ast.encode (Ast.List (List.prepend (collect forms) (Ast.Name "types"))))))
-                    (nm "")))
-          (_ (record (id b"") (nm "")))))
+            (record (= id (Blake3.of (Ast.encode (Ast.List (List.prepend (collect forms) (Ast.Name "types"))))))
+                    (= nm "")))
+          (_ (record (= id b"") (= nm "")))))
       (def (cid) (. (contract Ast.module) id))
       (export cid)))
   (input  (do

@@ -362,7 +362,7 @@
                 (tuple
                   (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 2 4)) ((Some v) v) ((None u) -1))
                   (match (Map.lookup (Map.insert (Map.empty) half 42) (Rational.of 1 3)) ((Some v) v) ((None u) -1))
-                  (if (Set.contains (Set.insert (Set.of (list)) half) (Rational.of 2 4)) 1 0))))
+                  (if (Set.contains (Set.insert #set() half) (Rational.of 2 4)) 1 0))))
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 42 -1 1) (Tuple Int64 Int64 Int64)))
   (live-objects known-leak 1))
@@ -468,8 +468,8 @@
             (def big (BigInt.of 9223372036854775807))
             (def (main (: n Int64))
               (do
-                (def stored (Set.of (list (* big (BigInt.of 2)) (BigInt.of n))))
-                (def probe (Set.of (list (BigInt.of n) (* (BigInt.of 2) big))))
+                (def stored #set((* big (BigInt.of 2)) (BigInt.of n)))
+                (def probe #set((BigInt.of n) (* (BigInt.of 2) big)))
                 (match (Map.lookup (Map.insert Map.empty stored 42) probe)
                   ((Some v) v) ((None _u) -1))))
             (export main)))
@@ -508,7 +508,7 @@
            `(BigInt.of 5)` → true, `(BigInt.of 9)` is NOT → false. The BigInt element/query compares by its
            canonical sign-magnitude bytes through `champ_eq`/`champ_hash`, so a runtime BigInt key hashes+
            matches its equal — the BigInt companion of the Rational map-key case.")
-  (input  (do (def (mem (: x BigInt)) (Set.contains (Set.of (list (BigInt.of 5))) x))
+  (input  (do (def (mem (: x BigInt)) (Set.contains #set((BigInt.of 5)) x))
               (def (main) (mem (BigInt.of 5))) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -516,7 +516,7 @@
 (case "a runtime BigInt absent from a Set is not found"
   (doc    "The negative companion: `(BigInt.of 9)` is NOT in a set holding `(BigInt.of 5)` → false. Confirms
            the BigInt Set-membership is a genuine canonical-byte match, not always-present.")
-  (input  (do (def (mem (: x BigInt)) (Set.contains (Set.of (list (BigInt.of 5))) x))
+  (input  (do (def (mem (: x BigInt)) (Set.contains #set((BigInt.of 5)) x))
               (def (main) (mem (BigInt.of 9))) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -845,7 +845,7 @@
            byte form through the CHAMP `champ_eq`/`champ_hash` (box-float canonicalizes on construct), so a
            runtime float key hashes+matches its equal — the Set/CHAMP-key face of runtime float equality.")
   (input  (do
-            (def (mem (: x Float64)) (Set.contains (Set.of (list 1.5 2.5)) x))
+            (def (mem (: x Float64)) (Set.contains #set(1.5 2.5) x))
             (def (main) (mem 1.5)) (export main)))
   (call   main)
   (output (: true Bool)))
@@ -854,7 +854,7 @@
   (doc    "The negative companion: a runtime float `9.9` NOT in `(Set.of (list 1.5 2.5))` → false. Confirms
            the float Set-membership is a genuine canonical-byte match, not always-present.")
   (input  (do
-            (def (mem (: x Float64)) (Set.contains (Set.of (list 1.5 2.5)) x))
+            (def (mem (: x Float64)) (Set.contains #set(1.5 2.5) x))
             (def (main) (mem 9.9)) (export main)))
   (call   main)
   (output (: false Bool)))
@@ -2569,7 +2569,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def s (Set.of (list (Some k) (: (None unit) (Option Int64)) (Some 1))))
+                (def s #set((Some k) (: (None unit) (Option Int64)) (Some 1)))
                 (match (List.at (Set.to-list s) 0)
                   ((Option.Some v) (match v ((Option.Some inner) inner) ((Option.None _u) -99)))
                   ((Option.None _u) -1))))
@@ -2624,7 +2624,7 @@
             (def (mk (: k Int64)) (if (< k 0) (Tri.Lo unit) (if (= k 0) (Tri.Mid unit) (Tri.Hi unit))))
             (def (main (: k Int64))
               (do
-                (def s (Set.of (list (Tri.Hi unit) (mk k) (Tri.Lo unit))))
+                (def s #set((Tri.Hi unit) (mk k) (Tri.Lo unit)))
                 (+ (* 10 (Set.len s))
                    (match (List.at (Set.to-list s) 0)
                      ((Option.Some v) (match v ((Tri.Lo _u) 1) ((Tri.Mid _u) 2) ((Tri.Hi _u) 3)))
@@ -3130,7 +3130,7 @@
   (output (: true Bool)))
 
 (case "ce09 equality of two RUNTIME-built Sets"
-  (input  (do (def (f (: n Int64)) (= (Set.of (list n 2)) (Set.of (list 2 n)))) (export f)))
+  (input  (do (def (f (: n Int64)) (= #set(n 2) #set(2 n))) (export f)))
   (call   f 1)
   (output (: true Bool)))
 
@@ -3318,7 +3318,7 @@
   (input (do (def (main (: n Int64))
   (let ((a (tuple n (tuple n (tuple n n))))
         (b (tuple n (tuple n (tuple n n)))))
-    (+ (* 1000 (. (. (. a 1) 1) 1)) (if (Set.contains (Set.of (list a)) b) 100 0))))
+    (+ (* 1000 (. (. (. a 1) 1) 1)) (if (Set.contains #set(a) b) 100 0))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 1100 Int64))
@@ -3498,7 +3498,7 @@
 
 (case "fk2 canonical NaN self-contains as a Set element"
   (input (do (def (main (: n Int64))
-  (if (Set.contains (Set.insert (Set.of (list)) (if (> n 0) Float64.nan 1.5)) Float64.nan) 1000 0))
+  (if (Set.contains (Set.insert #set() (if (> n 0) Float64.nan 1.5)) Float64.nan) 1000 0))
 (export main)))
   (call main (: 1 Int64))
   (output (: 1000 Int64))
@@ -3550,7 +3550,7 @@
   (let ((rs (Symbol.of (String.concat "fo" (if (> n 0) "o" "x")))))
     (+ (if (= rs #"foo") 1 0)
        (+ (* 10 (match (Map.lookup (Map.insert (Map.empty) #"foo" 42) rs) ((Some v) v) ((None u) -1)))
-          (if (Set.contains (Set.insert (Set.of (list)) rs) #"foo") 1000 0)))))
+          (if (Set.contains (Set.insert #set() rs) #"foo") 1000 0)))))
 (export main)))
   (call main (: 1 Int64))
   (output (: 1421 Int64))
