@@ -11690,3 +11690,16 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64)))
+
+(case "nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)"
+  (doc    "fold-vs-runtime consistency at the i8 boundary: the const -128*-1 is a compile-provable
+           CDZ0304 (rejected); its RUNTIME twin (n * -1 at Int8) computes 5*-1 = -5 in range and TRAPS
+           integer-overflow at n = -128 (Int8.MIN * -1 has no i8 representation). Pins that the runtime
+           narrow-width overflow check fires at exactly the boundary the const path rejects — the two
+           agree on WHERE the overflow is, differing only in reject-time (compile vs run).")
+  (input (do (def (main (: n Int64))
+  (let ((rt (: (* (Int8.wrap n) (Int8.wrap -1)) Int8)))
+    (Int64.of rt)))
+(export main)))
+  (call main (: 5 Int64))    (output (: -5 Int64))
+  (call main (: -128 Int64)) (trap "integer overflow"))
