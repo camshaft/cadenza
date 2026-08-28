@@ -43,6 +43,31 @@ enum CorpusCmd {
         #[arg(long)]
         out_dir: Option<String>,
     },
+    /// Check a committed `.gate-baseline` for TITLE DRIFT against the corpus — FAST, no compile/run.
+    ///
+    /// A baseline line is `verdict\tdescription`; a corpus case's description is its `(case "…")` /
+    /// `(platform-case "…")` title. When a case is RENAMED or REMOVED but the baseline is not
+    /// regenerated, the stale baseline title matches no case = a "VANISHED" entry, which reds a FULL
+    /// `cargo xtask gate --check` / `gate-local` fleet-wide — but only after a ~15-30min gate. This lint
+    /// catches that drift INSTANTLY by set-diffing the two title sets (no compiler, no runtime). It exits
+    /// NON-ZERO on any VANISHED title (the red-causing drift) and only WARNS on MISSING titles (a
+    /// case present in the corpus but absent from the baseline — a new/renamed case that a
+    /// `cargo xtask gate --save` should record; not itself a `--check` red unless the case also fails).
+    BaselineDrift {
+        /// Corpus `.sexp` files whose case titles form the CURRENT set. Pass the COMPLETE set the
+        /// baseline covers (the full `spec/semantics/*.sexp` glob) — a SUBSET makes every other file's
+        /// baselined case look VANISHED (its title is genuinely absent from the files given), a false red.
+        #[arg(required = true)]
+        files: Vec<String>,
+        /// The committed baseline file to check (e.g. `spec/semantics/.gate-baseline`).
+        #[arg(long)]
+        baseline: String,
+        /// Also list every MISSING title (corpus case absent from the baseline). Off by default —
+        /// missing titles are only WARNINGS (a `gate --save` records them), summarized as a count so a
+        /// wired-in guard stays quiet; the full list can be long when the baseline is stale.
+        #[arg(long)]
+        list_missing: bool,
+    },
 }
 
 /// Run a corpus command per `args`, returning the process exit code. `prog` names the tool in
@@ -53,6 +78,11 @@ pub fn run(args: &CorpusArgs, prog: &str) -> ExitCode {
             Some(dir) => shred_records(files, dir),
             None => run_records(files),
         },
+        CorpusCmd::BaselineDrift {
+            files,
+            baseline,
+            list_missing,
+        } => check_baseline_drift(files, baseline, *list_missing),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -83,6 +113,109 @@ fn run_records(files: &[String]) -> Result<(), String> {
         .write_all(out.as_bytes())
         .map_err(|e| format!("writing stdout: {e}"))?;
     Ok(())
+}
+
+/// `baseline-drift --baseline B FILE…`: the fast title-drift GUARD. Collect the current corpus case
+/// titles from `files`, read the committed baseline `B`, and report the two set-differences. Exits
+/// NON-ZERO (via `Err`) iff any VANISHED title is found (a baseline entry with no matching case — the
+/// exact drift that reds a full `gate --check`); MISSING titles (a corpus case absent from the baseline)
+/// are printed as WARNINGS only (a `gate --save` records them; not a `--check` red on their own).
+fn check_baseline_drift(
+    files: &[String],
+    baseline: &str,
+    list_missing: bool,
+) -> Result<(), String> {
+    let mut corpus: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for path in files {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+        corpus.extend(corpus_descriptions(&text).map_err(|e| format!("{path}: {e}"))?);
+    }
+    let bl_text =
+        std::fs::read_to_string(baseline).map_err(|e| format!("reading {baseline}: {e}"))?;
+    let baseline_descs = baseline_descriptions(&bl_text);
+    let (vanished, missing) = baseline_drift(&corpus, &baseline_descs);
+
+    // MISSING titles are warnings only (a `gate --save` records them) — summarized by count so a wired-in
+    // guard stays quiet, with the full list gated behind `--list-missing`.
+    if list_missing {
+        for m in &missing {
+            eprintln!(
+                "baseline-drift: WARN missing from baseline (run `cargo xtask gate --save`): {m:?}"
+            );
+        }
+    }
+    for v in &vanished {
+        eprintln!(
+            "baseline-drift: VANISHED baseline title has no corpus case (reds `gate --check`): {v:?}"
+        );
+    }
+    let missing_hint = if !missing.is_empty() && !list_missing {
+        " (pass --list-missing to list them; `cargo xtask gate --save` records them)"
+    } else {
+        ""
+    };
+    if vanished.is_empty() {
+        println!(
+            "baseline-drift: OK — no vanished titles in {baseline} ({} corpus titles, {} baseline titles, {} missing-from-baseline{missing_hint})",
+            corpus.len(),
+            baseline_descs.len(),
+            missing.len()
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "{} VANISHED baseline title(s) in {baseline} — a renamed/removed case left the baseline stale; regenerate with `cargo xtask gate --save`",
+            vanished.len()
+        ))
+    }
+}
+
+/// The case titles in one corpus file's text, genre-dispatched: a compiler-genre file's titles are its
+/// `(case "…")` descriptions; a platform-genre file's are its `(platform-case "…")` titles. These are the
+/// exact strings the shred writes as each case's `(description …)` and the gate records in the baseline.
+fn corpus_descriptions(text: &str) -> Result<Vec<String>, String> {
+    if crate::is_platform_genre(text) {
+        Ok(crate::read_platform(text)?
+            .into_iter()
+            .map(|r| r.title)
+            .collect())
+    } else {
+        Ok(crate::read(text)?
+            .into_iter()
+            .map(|r| r.description)
+            .collect())
+    }
+}
+
+/// The descriptions in a `.gate-baseline` file — the `description` half of each `verdict\tdescription`
+/// line (`#`-comment and blank lines skipped), matching `cdz-corpus-grade::baseline_verdict`'s line shape.
+fn baseline_descriptions(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| l.split_once('\t').map(|(_, d)| d.to_string()))
+        .collect()
+}
+
+/// Pure title-set diff: `(vanished, missing)` where VANISHED = a baseline description absent from the
+/// corpus set (the red-causing drift) and MISSING = a corpus title absent from the baseline. Both sorted
+/// + de-duplicated (the corpus arrives as a `BTreeSet`; a baseline dup collapses). Pure so it is unit-testable.
+fn baseline_drift(
+    corpus: &std::collections::BTreeSet<String>,
+    baseline_descs: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let baseline: std::collections::BTreeSet<&str> =
+        baseline_descs.iter().map(|s| s.as_str()).collect();
+    let vanished: Vec<String> = baseline
+        .iter()
+        .filter(|d| !corpus.contains(**d))
+        .map(|d| d.to_string())
+        .collect();
+    let missing: Vec<String> = corpus
+        .iter()
+        .filter(|d| !baseline.contains(d.as_str()))
+        .cloned()
+        .collect();
+    (vanished, missing)
 }
 
 /// `records --out-dir DIR FILE…`: SHRED each corpus file into one directory per case under
@@ -480,6 +613,60 @@ fn slug(desc: &str) -> String {
 mod tests {
     use super::*;
     use cadenza_syntax::sexpr;
+
+    /// `baseline_descriptions` reads the description half of each `verdict\tdescription` line, skipping
+    /// `#`-comments and blanks (matching the gate's baseline shape).
+    #[test]
+    fn baseline_descriptions_reads_the_description_column() {
+        let bl = "# gate baseline\n\
+                  pass\ta passing case\n\
+                  \n\
+                  todo\tan incomplete case\n\
+                  fail\ta known-fail case\n";
+        assert_eq!(
+            baseline_descriptions(bl),
+            vec![
+                "a passing case".to_string(),
+                "an incomplete case".to_string(),
+                "a known-fail case".to_string(),
+            ]
+        );
+    }
+
+    /// `baseline_drift` reports VANISHED (baseline title absent from corpus — the red-causing drift) and
+    /// MISSING (corpus title absent from baseline), both sorted; a matched title is neither.
+    #[test]
+    fn baseline_drift_flags_vanished_and_missing() {
+        let corpus: std::collections::BTreeSet<String> = ["stays", "brand new case"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let baseline = vec![
+            "stays".to_string(),
+            "renamed OLD title".to_string(), // in baseline, not in corpus → vanished
+        ];
+        let (vanished, missing) = baseline_drift(&corpus, &baseline);
+        assert_eq!(vanished, vec!["renamed OLD title".to_string()]);
+        assert_eq!(missing, vec!["brand new case".to_string()]);
+
+        // A baseline that exactly matches the corpus has no drift either way.
+        let exact = vec!["stays".to_string(), "brand new case".to_string()];
+        assert_eq!(
+            baseline_drift(&corpus, &exact),
+            (Vec::<String>::new(), Vec::<String>::new())
+        );
+    }
+
+    /// `corpus_descriptions` extracts the `(case "…")` titles of a compiler-genre file (the strings the
+    /// shred records + the baseline stores) — the current-title set the drift lint diffs against.
+    #[test]
+    fn corpus_descriptions_reads_compiler_case_titles() {
+        let src = r#"(case "first case" (input 1) (output (: 1 Int64)))
+(case "second case" (input 2) (output (: 2 Int64)))"#;
+        let descs = corpus_descriptions(src).expect("reads");
+        assert!(descs.contains(&"first case".to_string()), "got {descs:?}");
+        assert!(descs.contains(&"second case".to_string()), "got {descs:?}");
+    }
 
     /// Each per-case artifact is a WELL-FORMED binary AST: it decodes, and re-encoding the decode is
     /// stable. Drives real cases through `read` so the builders see the actual `Record` shape (output /
