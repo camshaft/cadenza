@@ -849,7 +849,9 @@ partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children 
           match dc[1]?, dc[dc.size - 1]? with
           | some targetId, some valId =>
             match nameOf? m targetId with
-            | some nm => bindStmts ((nm, Thunk.mk (fun _ => evalNode m env defaultIntTy fuel valId), none) :: env) rest
+            | some nm =>
+              let bindTy := (operandTy? m valId).filter (fun t => t.width == .big)
+              bindStmts ((nm, Thunk.mk (fun _ => evalNode m env defaultIntTy fuel valId), bindTy) :: env) rest
             | none => .error (.unsupported "eval: do-block local function def not modeled")
           | _, _ => .error (.unsupported "eval: malformed do-block def")
         | none => .error (.unsupported "eval: do-block non-def statement not modeled")
@@ -878,7 +880,11 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
               match nameOf? m nId with
               | some nm =>
                 let captured := env
-                extend ((nm, (Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)), none) :: env) rest
+                -- propagate a BigInt-typed binding's width so later arithmetic on it stays unbounded
+                -- (a `(let ((x (. BigInt of …))) (* x x))` must not false-overflow); other widths keep
+                -- the Int64 default (narrowing widths are pending the trap-kind policy ruling).
+                let bindTy := (operandTy? m vId).filter (fun t => t.width == .big)
+                extend ((nm, (Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)), bindTy) :: env) rest
               | none => .error "eval: let binding target is not a name"
             | _, _ => .error "eval: malformed let binding pair"
           | _ => .error "eval: malformed let binding"
