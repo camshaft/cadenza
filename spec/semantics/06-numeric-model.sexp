@@ -12099,9 +12099,9 @@
         (map (5 2)). Dual-path verified. `(live-objects 1)` = the reachable returned map.")
   (input (do (def (main (: n Int64)) (map (n 1) (n 2))) (export main)))
   (call main (: 5 Int64))
-  (output (: (map (5 2)) (Map Int64 Int64)))
+  (output (: #map((= 5 2)) (Map Int64 Int64)))
   (call main (: -3 Int64))
-  (output (: (map (-3 2)) (Map Int64 Int64)))
+  (output (: #map((= -3 2)) (Map Int64 Int64)))
   (live-objects 1))
 
 (case "cdzw20 the cadenza backend round-trips a GUARDED list arm whose condition reads the REST binder"
@@ -12189,7 +12189,7 @@
         = the reachable returned list + its Some cells.")
   (input (do (def (main (: n Int64)) (list (Some n) (None) (Some (+ n 2)))) (export main)))
   (call main (: 9 Int64))
-  (output (: (list (Some 9) (None unit) (Some 11)) (List (Option Int64))))
+  (output (: #list((Some 9) (None unit) (Some 11)) (List (Option Int64))))
   (live-objects 4))
 
 (case "cdzw27 the cadenza backend preserves compound-compare SHORT-CIRCUIT — a differing first component never forces the trapping second"
@@ -12256,7 +12256,7 @@
         re-emit with the heap payload. `(live-objects 2)` = the reachable returned value.")
   (input (do (type LW (Mk (List Int64))) (def (main (: n Int64)) (Mk (list n (+ n 1)))) (export main)))
   (call main (: 4 Int64))
-  (output (: (list 4 5) LW))
+  (output (: #list(4 5) LW))
   (live-objects 2))
 
 (case "cdzw34 two width-DIFFERENT .wrap Converts of one operand keep their OWN widths (the CSE-key fence), Int32-first order"
@@ -12283,7 +12283,7 @@
         (`(Both (tuple 5 6))`) failed recompile CDZ0201. Renders the erased value `(: (tuple 5 6) P2)`.")
   (input (do (type P2 (Both Int64 Int64)) (def (main (: n Int64)) (Both n (+ n 1))) (export main)))
   (call main (: 5 Int64))
-  (output (: (tuple 5 6) P2))
+  (output (: #tuple(5 6) P2))
   (call main (: -4 Int64))
-  (output (: (tuple -4 -3) P2))
+  (output (: #tuple(-4 -3) P2))
   (live-objects 1))
