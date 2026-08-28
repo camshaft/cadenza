@@ -468,10 +468,20 @@ struct Paths {
 
 impl Paths {
     fn resolve() -> Self {
-        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask crate has a parent (the repo root)")
-            .to_path_buf();
+        // `CDZ_REPO_ROOT` override (the nix-native decomposition path, v-xtask-decompose): the default
+        // resolution below bakes `CARGO_MANIFEST_DIR` at COMPILE time, which is the real worktree only
+        // for a `cargo`-built binary run in place. A nix-built `xtask` (crane) bakes the build-sandbox
+        // path — nonexistent at runtime — so a relocatable nix app (`nix run .#roundtrip` &c.) can't
+        // self-locate the repo. The per-subcommand nix apps therefore pass `CDZ_REPO_ROOT=<worktree>`
+        // (from `git rev-parse --show-toplevel`) and this honors it. Unset (the `cargo xtask` path) →
+        // the CARGO_MANIFEST_DIR fallback, so existing behavior is byte-for-byte unchanged.
+        let repo = match std::env::var_os("CDZ_REPO_ROOT") {
+            Some(root) => PathBuf::from(root),
+            None => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask crate has a parent (the repo root)")
+                .to_path_buf(),
+        };
         let seed = repo.join("implementation/seed");
         Paths { repo, seed }
     }

@@ -236,6 +236,25 @@
           doInstallCargoArtifacts = false;
         };
 
+        # xtaskBin — the `xtask` dev-tool binary AS a relocatable nix package (v-xtask-decompose, operator
+        # all-nix mandate 2026-08-28: decompose the xtask monolith into per-subcommand nix apps agents run
+        # via `nix run .#<cmd>` — no bare `cargo`). Mirrors `seedCompiler`: warm cargoArtifacts + pinned
+        # seedCargoVendor + the non-closure stub preBuild, scoped to `-p xtask` so it reuses the same
+        # ~383MB dep-closure layer instead of a cold per-worktree rebuild. Output: `$out/bin/xtask`. The
+        # per-subcommand apps (`apps.roundtrip`, &c.) wrap this + set `CDZ_REPO_ROOT` so the relocated
+        # binary self-locates the invoking worktree (xtask's `Paths::resolve` bakes CARGO_MANIFEST_DIR,
+        # which a nix build points at the sandbox — the env override is the relocatability seam). Src via
+        # `craneCrateCommon { crate = "xtask"; }` — xtask's dep-CLOSURE fileset with xtask's real src
+        # present + the other members stubbed (seedCompilerSrc would instead STUB xtask itself, building an
+        # empty bin). `doCheck = false` = build the binary only (tests run in the per-crate test-xtask check).
+        # NON-BREAKING: the existing `cargo xtask …` path (env unset) is unchanged; this builds the SAME
+        # binary alongside it.
+        xtaskBin = craneLib.buildPackage ((craneCrateCommon { crate = "xtask"; }) // {
+          pname = "cdz-xtask";
+          cargoExtraArgs = "-p xtask";
+          doCheck = false;
+        });
+
         # ── Full-CI-in-nix (operator GO 2026-08-04): re-express each GHA `checks.yml` job as a nix
         # derivation so the WHOLE CI is runnable inside nix (replacing the one-off scripts + brittle
         # hand-wiring), then cut over. Incremental — one job-class per increment, each ADVISORY
@@ -3065,6 +3084,11 @@
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
 
+        # xtask dev-tool binary as a relocatable nix package (v-xtask-decompose). `nix build .#xtask` →
+        # result/bin/xtask. The per-subcommand `apps.*` (roundtrip, &c.) wrap it; a direct `nix run .#xtask
+        # -- <cmd>` works too if `CDZ_REPO_ROOT` is set (the apps set it for you).
+        packages.xtask = xtaskBin;
+
         # oracle-lean (L0.1): the Lean differential oracle. `nix build .#oracle-lean` →
         # result/bin/{cdz-oracle,oracle-selftest}.
         packages.oracle-lean = oracleLean;
@@ -3982,6 +4006,35 @@
         # The tight inner loop stays `nix run .#fast-gate`; the full merge gate is
         # `nix build .#checks.<system>.local-gate`. Together these remove every reason to reach for raw
         # cargo (v-fleet-tooling wires the boot-into-nix-develop + the cargo-redirect wrapper).
+
+        # apps.roundtrip — the FIRST per-subcommand xtask nix app (v-xtask-decompose proof-of-pattern,
+        # operator all-nix mandate 2026-08-28). Decomposes `cargo xtask roundtrip` into a nix-native app an
+        # agent runs as `nix run .#roundtrip -- [files…]` — it auto-builds the warm-cached `xtaskBin` (no bare
+        # cargo, no per-worktree cold rebuild) and forwards args. Roundtrip is the cleanest first subcommand:
+        # PURE (reads spec/semantics + cadenza-syntax only — no runtime store, no cdz-run, no component build),
+        # so it isolates the wrapper+relocatability pattern from the heavier store-dependent subcommands
+        # (gate/build) that come next. RELOCATABILITY: the nix-built binary baked its build-sandbox path into
+        # `CARGO_MANIFEST_DIR`, so it can't self-locate the repo at runtime; the wrapper resolves the invoking
+        # worktree via `git rev-parse --show-toplevel` and exports `CDZ_REPO_ROOT`, which `Paths::resolve`
+        # honors (falling back to CARGO_MANIFEST_DIR when unset — the unchanged `cargo xtask` path). Every
+        # subsequent per-subcommand app reuses this wrapper shape.
+        apps.roundtrip =
+          let
+            wrapper = pkgs.writeShellApplication {
+              name = "cdz-roundtrip";
+              runtimeInputs = [ pkgs.git ];
+              text = ''
+                root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+                export CDZ_REPO_ROOT="$root"
+                exec ${xtaskBin}/bin/xtask roundtrip "$@"
+              '';
+            };
+          in
+          {
+            type = "app";
+            program = "${wrapper}/bin/cdz-roundtrip";
+          };
+
         #
         # WRAPPED (not a bare bin): the nix `seedCompiler` builds `cdz` in DELEGATE mode
         # (`--no-default-features`, v-cdz-delegate #3397) — so `cdz compile` SPAWNS the external
