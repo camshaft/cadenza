@@ -437,6 +437,42 @@ fn emit_expr_viewed(
                                 .to_string(),
                         )
                     })?;
+                    // A MULTI-payload single-variant sum (`(type P2 (Both Int64 Int64))`) erases its
+                    // payload to a TUPLE (`inner` is `Ty::Tuple`), so wrapping that tuple as ONE argument
+                    // (`(Both (tuple 5 6))`) is NON-re-compilable against the two-slot constructor
+                    // (CDZ0201 — a tuple applied where two Int64 slots are declared). Emit the payload
+                    // SLOT-WISE (`(Both 5 6)`) when the erased value is a statically-visible `Core::Tuple`
+                    // literal of the declared arity; otherwise decline (a runtime tuple — a call/proj
+                    // result — cannot be statically unpacked into the constructor's slots).
+                    let arity = db
+                        .type_decl_by_occ(decl)
+                        .and_then(|t| t.variants.first())
+                        .map(|v| v.payloads.len())
+                        .unwrap_or(1);
+                    if arity >= 2 {
+                        let elems = match core_of(db, id) {
+                            Core::Tuple { elems } if elems.len() == arity => elems,
+                            _ => {
+                                return Err(Reject::decline(
+                                    "the Cadenza backend does not yet re-emit a multi-payload \
+                                     newtype value whose erased payload is not a statically-visible \
+                                     tuple literal of the declared arity"
+                                        .to_string(),
+                                ));
+                            }
+                        };
+                        let slot_tys = match &inner {
+                            Ty::Tuple(ts) => Some(ts.clone()),
+                            _ => None,
+                        };
+                        let mut children = Vec::with_capacity(1 + elems.len());
+                        children.push(head);
+                        for (i, &e) in elems.iter().enumerate() {
+                            let ex = slot_tys.as_ref().and_then(|ts| ts.get(i).cloned());
+                            children.push(emit_expr(db, b, e, ex, env, emitted)?);
+                        }
+                        return Ok(b.list(children));
+                    }
                     let payload = emit_expr_viewed(db, b, id, Some(inner), None, env, emitted)?;
                     return Ok(b.list(vec![head, payload]));
                 }
