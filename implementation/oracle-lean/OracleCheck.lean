@@ -50,7 +50,20 @@ def readDirs (file : String) : IO (List String) := do
 def Tally.add (a b : Tally) : Tally :=
   { holds := a.holds + b.holds, mismatch := a.mismatch + b.mismatch, skip := a.skip + b.skip }
 
+/-- Read every byte available on a stream. -/
+partial def readAll (s : IO.FS.Stream) (acc : ByteArray) : IO ByteArray := do
+  let chunk ← s.read 65536
+  if chunk.isEmpty then return acc else readAll s (acc ++ chunk)
+
 def main (args : List String) : IO UInt32 := do
+  -- L2 differential (design §L2): read a REQUEST batch frame on stdin, judge each trial (oracle output
+  -- vs the rcdzc output carried in the trial), write the VERDICT batch frame on stdout. A malformed
+  -- FRAME is a diagnostic + non-zero exit (never a bogus verdict frame); a malformed TRIAL is a skip.
+  if args == ["--batch-stream"] then
+    let input ← readAll (← IO.getStdin) ByteArray.empty
+    match Batch.judgeBatchBytes input with
+    | .error e => (← IO.getStderr).putStrLn s!"oracle-check --batch-stream: {e}"; return 1
+    | .ok resp => (← IO.getStdout).write resp; return 0
   let mut total : Tally := {}
   match args with
   | ["--manifest", file] =>
