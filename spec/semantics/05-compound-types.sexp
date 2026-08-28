@@ -21440,6 +21440,32 @@
   (output (: 22 Int64))
   (live-objects 0))
 
+(case "ruw2b a PARAM boxed-sum scrutinee matched twice, first arm CONSUMES the payload (corpus twin of the b2_disjoint lib test)"
+  (doc    "The runnable corpus/DETECTOR twin of the `b2_disjoint_shared_owned_boxed_sum_scrutinee` rcdzc lib
+           unit test — added (v-memory-safety coverage) because that lib test is NOT run by the fleet corpus/nix
+           gate, so a select.rs reclaim change (#4857) could red it while main stayed corpus-green. Distinct
+           from ruw1/ruw2 (borrow-only both arms → 0): here `w` is a FUNCTION PARAM boxed sum matched TWICE
+           (shared/borrowed — the first match is NOT the last use), and the FIRST arm CONSUMES the extracted
+           payload (`List.push xs 9`) while the second only borrows it (`List.len ys`). This is the shape that
+           exercises the shell-reclaim-vs-dup disjoint marking on a SHARED param scrutinee whose payload is
+           consumed: shell_reclaim must NOT fire on the borrowed `w` (its shell is not owned — the second match
+           still reads it) and the shared scrutinee read is covered by mark_binder_dups instead. Memory-SAFE
+           (value correct, NO use-after-free under the detector): f(Wrap[1,2,3]) = List.len(push[1,2,3] 9) +
+           List.len[1,2,3] = 4 + 3 = 7. Leaks 1 — the pre-existing consume-first-arm shared-scrutinee shell
+           leak (same family as xop1/xop4/xop5, NOT the borrow-only ruw twins); flips to 0 when the shared
+           boxed-sum shell reclaim lands. A regression that reclaimed `w`'s shell after the first (consuming)
+           match would read freed memory in the second match → detector UAF trap or a value off 7.")
+  (input  (do
+            (type Box (Wrap (List Int64)) (Empty))
+            (def (mk (: n Int64)) (if (> n 0) (mk (- n 1)) (Wrap (list 1 2 3))))
+            (def (f (: w Box))
+              (+ (match w ((Wrap xs) (List.len (List.push xs 9))) ((Empty) 0))
+                 (match w ((Wrap ys) (List.len ys)) ((Empty) 0))))
+            (def (main) (f (mk 3)))
+            (export main)))
+  (output (: 7 Int64))
+  (live-objects known-leak 1))
+
 (case "ruw3 a fresh Option matched THREE times still reads three — the census counts objects not refs"
   (input (do
     (def (main (: n Int64))
