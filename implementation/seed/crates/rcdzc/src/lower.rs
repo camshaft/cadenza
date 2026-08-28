@@ -4068,6 +4068,14 @@ struct AstDiscs {
     bytes: u32,
     char: u32,
     symbol: u32,
+    // The native-compound-data (Option B) reflected ctors — mirror the codec ctor-head leaf kinds.
+    list_ctor: u32,
+    tuple_ctor: u32,
+    record_ctor: u32,
+    map_ctor: u32,
+    set_ctor: u32,
+    field_pair: u32,
+    member: u32,
     ty: crate::ty::Ty,
 }
 /// Whether a `Core::SumNew { disc }` at result type `ty` constructs the reify `Ast` sum's `Float` variant
@@ -4104,6 +4112,13 @@ fn ast_variant_discs(db: &mut Db) -> Option<AstDiscs> {
         bytes: variant_disc_by_name(db, &ty, "Bytes")?,
         char: variant_disc_by_name(db, &ty, "Char")?,
         symbol: variant_disc_by_name(db, &ty, "Symbol")?,
+        list_ctor: variant_disc_by_name(db, &ty, "ListCtor")?,
+        tuple_ctor: variant_disc_by_name(db, &ty, "TupleCtor")?,
+        record_ctor: variant_disc_by_name(db, &ty, "RecordCtor")?,
+        map_ctor: variant_disc_by_name(db, &ty, "MapCtor")?,
+        set_ctor: variant_disc_by_name(db, &ty, "SetCtor")?,
+        field_pair: variant_disc_by_name(db, &ty, "FieldPair")?,
+        member: variant_disc_by_name(db, &ty, "Member")?,
         ty,
     })
 }
@@ -4193,6 +4208,49 @@ fn encode_ast_value(
             return None;
         };
         Some(b.atom_leaf(crate::ast::Leaf::Sym(s)))
+    } else if let Some(ctor) = [
+        (disc.list_ctor, crate::ast::CompoundCtor::List),
+        (disc.tuple_ctor, crate::ast::CompoundCtor::Tuple),
+        (disc.record_ctor, crate::ast::CompoundCtor::Record),
+        (disc.map_ctor, crate::ast::CompoundCtor::Map),
+        (disc.set_ctor, crate::ast::CompoundCtor::Set),
+    ]
+    .iter()
+    .find(|(dd, _)| *dd == d)
+    .map(|(_, c)| *c)
+    {
+        // A native compound-ctor Ast value (Option B) → `(<ctor-leaf> child…)`. The payload is a `(List Ast)`
+        // of the children (record/map children are FieldPair Ast values), each recursively encoded.
+        if payloads.len() != 1 {
+            return None;
+        }
+        let Core::ListNew { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        let mut children = Vec::with_capacity(elems.len());
+        for e in elems.iter().copied() {
+            children.push(encode_ast_value(db, e, disc, b)?);
+        }
+        Some(b.compound(ctor, &children))
+    } else if (d == disc.field_pair || d == disc.member) && payloads.len() == 1 {
+        // Ast.FieldPair `(= k v)` / Ast.Member `(. obj key)` — payload is a `(Tuple Ast Ast)` of the two
+        // children; emit the payloadless FieldPair / Member head via the Builder primitives.
+        let Core::Tuple { elems } = core_of(db, payloads[0]) else {
+            return None;
+        };
+        if elems.len() != 2 {
+            return None;
+        }
+        let x = encode_ast_value(db, elems[0], disc, b)?;
+        let y = encode_ast_value(db, elems[1], disc, b)?;
+        Some(if d == disc.field_pair {
+            // Emit the native payloadless FIELD_PAIR leaf head directly (rcdzc's Builder::field_pair still
+            // emits the legacy Name("=") head; its flip is the const_value_ast/field_pair slice).
+            let head = b.atom_leaf(crate::ast::Leaf::FieldPair);
+            b.list(vec![head, x, y])
+        } else {
+            b.member(x, y)
+        })
     } else {
         None
     }
@@ -4310,9 +4368,64 @@ fn arenas_to_ast_value(
     disc: &AstDiscs,
 ) -> Option<StructId> {
     match arenas.get(sid) {
-        // A `Struct::List` → `Ast.List` of the rebuilt children (each an arena-local child id).
+        // A `Struct::List`. A native-compound-data HEAD (Option B) reflects to its DISTINCT Ast variant;
+        // any other list is the generic `Ast.List` of the rebuilt children.
         crate::ast::Struct::List(children) => {
             let children = children.clone();
+            // Native ctor-head → Ast.{List,Tuple,Record,Map,Set}Ctor of the reflected TAIL (a (List Ast)).
+            if let Some(ctor) = arenas.compound_ctor_leaf(sid) {
+                let disc_ctor = match ctor {
+                    crate::ast::CompoundCtor::List => disc.list_ctor,
+                    crate::ast::CompoundCtor::Tuple => disc.tuple_ctor,
+                    crate::ast::CompoundCtor::Record => disc.record_ctor,
+                    crate::ast::CompoundCtor::Map => disc.map_ctor,
+                    crate::ast::CompoundCtor::Set => disc.set_ctor,
+                };
+                let mut elems = Vec::with_capacity(children.len().saturating_sub(1));
+                for &c in &children[1..] {
+                    elems.push(arenas_to_ast_value(db, arenas, c, disc)?);
+                }
+                let payload = synth_core(
+                    db,
+                    Core::ListNew {
+                        elems: elems.into(),
+                    },
+                    crate::ty::Ty::List(Box::new(disc.ty.clone())),
+                );
+                return Some(synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_ctor,
+                        payloads: vec![payload],
+                    },
+                    disc.ty.clone(),
+                ));
+            }
+            // Native FIELD_PAIR (`(= k v)`) / MEMBER (`(. obj key)`) head → Ast.FieldPair / Ast.Member of a
+            // `(Tuple Ast Ast)` of the two reflected children.
+            let pair = arenas
+                .field_pair_parts(sid)
+                .map(|kv| (kv, disc.field_pair))
+                .or_else(|| arenas.member_parts(sid).map(|ok| (ok, disc.member)));
+            if let Some(((x, y), disc_pair)) = pair {
+                let ax = arenas_to_ast_value(db, arenas, x, disc)?;
+                let ay = arenas_to_ast_value(db, arenas, y, disc)?;
+                let payload = synth_core(
+                    db,
+                    Core::Tuple {
+                        elems: vec![ax, ay].into(),
+                    },
+                    crate::ty::Ty::Tuple(vec![disc.ty.clone(), disc.ty.clone()].into()),
+                );
+                return Some(synth_core(
+                    db,
+                    Core::SumNew {
+                        disc: disc_pair,
+                        payloads: vec![payload],
+                    },
+                    disc.ty.clone(),
+                ));
+            }
             let mut elems = Vec::with_capacity(children.len());
             for c in children {
                 elems.push(arenas_to_ast_value(db, arenas, c, disc)?);
