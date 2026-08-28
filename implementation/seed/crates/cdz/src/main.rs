@@ -4811,6 +4811,117 @@ fn provider_cache_dir() -> Option<std::path::PathBuf> {
     Some(default_store().join("providers"))
 }
 
+/// Enumerate the resolved suite's `@test` definitions as JSON and return — the body of `cdz test --list`.
+/// WASMTIME-FREE by construction: it loads each file's import closure, builds the compiler `Db`, and reads
+/// `db.test_defs()` — the same front-half `cdz test` runs BEFORE any wasm emit/JIT (`run_test_file`'s
+/// 5172-5285 enumeration head), stopping there. It compiles nothing and links no runtime, so a
+/// `--no-default-features` `cdz` (no `cdz-run`) still produces it.
+///
+/// Output: `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`. The names come
+/// from the `Db`, NOT a regex (the compiler's own source carries `@test` as a parsed token — a regex would
+/// massively over-count, per v-test-shred). `is_property` is `!def.params.is_empty()` — a `@test` that
+/// takes parameters is a property test (run over generated inputs); a nullary `@test` is a plain unit test.
+/// (The gate suites carry no property tests, so the field is uniformly `false` there — kept for the future.)
+///
+/// Enumeration mirrors `run_test_file` exactly: a PACKAGE (a file that declares imports) links its whole
+/// closure and keeps only the ENTRY file's own `@test`s (an imported library's tests belong to THAT file,
+/// counted when it is itself the entry — a directory run visits each); a lone file decodes directly. Dedup
+/// is PER FILE (`seen`), matching the run. Order is the resolved-`files` order (path-sorted / manifest
+/// order) then declaration order — deterministic, so a drift-guard comparing a fresh `--list` to a
+/// committed one is stable. Ignores `--filter`/`--tag`: a manifest must enumerate the WHOLE suite.
+fn list_tests(target: &str, files: &[String]) -> ExitCode {
+    // One JSON record per test. Built with `serde_json` so quoting/escaping of a test name is correct.
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    for file in files {
+        // Follow the file's import closure — the SAME linked program `cdz test`/`cdz check` sees, so a test
+        // in a module that imports a sibling enumerates against the same package. A load error is FATAL for
+        // `--list` (a broken project cannot be honestly enumerated; failing red is what the drift-guard wants).
+        let closure = match load_import_closure_with(file, &|_| None) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("{PROG}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let is_package = !declared_import_paths(&closure[0].arenas).is_empty();
+        // Encode each closure file's AST to the canonical binary form (the front-end↔compiler bridge), then
+        // build the `Db` the enumeration reads — a package links every file into one arena + loads it WITH
+        // its linkage (so `file_of` can scope tests to the entry); a lone file decodes directly.
+        let ast_arts: Vec<rcdzc::Artifact> = closure
+            .iter()
+            .map(|f| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    f.name.clone(),
+                    cadenza_syntax::codec::encode(&f.arenas),
+                )
+            })
+            .collect();
+        let (db, entry_filter) = if is_package {
+            let mut rcdzc_files = Vec::with_capacity(ast_arts.len());
+            for art in &ast_arts {
+                let Some(a) = rcdzc::codec::decode(&art.bytes) else {
+                    eprintln!("{PROG}: {file}: could not decode `{}`'s AST", art.name);
+                    return ExitCode::FAILURE;
+                };
+                rcdzc_files.push((art.name.clone(), a));
+            }
+            let program = match rcdzc::link::link(&rcdzc_files, &closure[0].name) {
+                Ok(p) => p,
+                Err(r) => {
+                    eprintln!("{PROG}: {file}: {}", r.message);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let linkage = program.linkage();
+            let entry_ix = program.entry;
+            let db = rcdzc::db::Db::load_linked(program.arenas, Some(linkage.clone()));
+            (db, Some((linkage, entry_ix)))
+        } else {
+            let Some(rcdzc_arenas) = rcdzc::codec::decode(&ast_arts[0].bytes) else {
+                eprintln!("{PROG}: {file}: could not decode the program's AST");
+                return ExitCode::FAILURE;
+            };
+            (rcdzc::db::Db::load(rcdzc_arenas), None)
+        };
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for i in db.test_defs() {
+            // In a PACKAGE, `test_defs()` sees every linked file's `@test`s — keep only the ENTRY file's own
+            // (an imported library's tests are enumerated when it is itself the entry), byte-for-byte the
+            // `run_test_file` filter, so `--list` and the run enumerate the identical set.
+            if let Some((linkage, entry_ix)) = &entry_filter {
+                match linkage.file_of(db.defs[i].sig_occ) {
+                    Some(fi) if fi == *entry_ix => {}
+                    _ => continue,
+                }
+            }
+            let name = db.defs[i].name.clone();
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            // A `@test` taking parameters is a PROPERTY test (run over generated inputs); a nullary one is a
+            // plain unit test. `params` is empty for a nullary def (`db::Def`), the cheap wasmtime-free signal.
+            let is_property = !db.defs[i].params.is_empty();
+            records.push(serde_json::json!({
+                "name": name,
+                "file": file,
+                "is_property": is_property,
+            }));
+        }
+    }
+    let doc = serde_json::json!({ "project": target, "tests": records });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(s) => {
+            println!("{s}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{PROG}: --list: could not serialize the test manifest: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn run_test(args: &TestArgs) -> ExitCode {
     // Resolve WHICH files to run. Cases:
     //  - NO arg → search UP from the current directory for the nearest `Project.cdz` (like `cargo test`
@@ -4908,6 +5019,15 @@ fn run_test(args: &TestArgs) -> ExitCode {
         }
         vec![target.clone()]
     };
+
+    // `--list`: ENUMERATE the resolved suite's `@test` names as JSON and EXIT — no check-gate, no emit, no
+    // JIT, no wasmtime. This is the eval-time enumeration the test-shred nix matrix reads from a committed
+    // file; it must be cheap and touch NONE of the run machinery below. Short-circuit here, right after
+    // resolving `files`, so it shares the exact file-resolution `cdz test` uses (manifest / dir walk / one
+    // file) but nothing after it.
+    if args.list {
+        return list_tests(&target, &files);
+    }
 
     // GATE ON `cdz check` CLEAN FIRST — before running any `@test`. A source file that fails to PARSE (an
     // unclosed paren, a truncated form) is RECOVERED by the reader (it prints the errors, then hands back a
@@ -5797,6 +5917,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 seed,
                 warm_only: false, // watch RUNS the tests on each change, never a warm-only pass
                 report_time: false, // watch is an interactive re-run; timing is an opt-in of a direct run
+                list: false, // watch RE-RUNS the suite; enumeration-and-exit is a one-shot direct-run mode
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -7353,6 +7474,19 @@ struct TestArgs {
     /// suite fails RED, same as a normal run). Exit 0 iff the check passed and the providers were warmed.
     #[arg(long)]
     warm_only: bool,
+    /// ENUMERATE the resolved suite's `@test` definitions as JSON and EXIT — compile NOTHING, run nothing,
+    /// link no wasmtime. Prints `{ "project": <target>, "tests": [ { "name", "file", "is_property" }, … ] }`
+    /// where the names come from the compiler `Db` (`db.test_defs`), NOT a source regex (the compiler's own
+    /// source contains `@test` as a parsed token, so a regex massively over-counts). `is_property` is true
+    /// for a `@test` that takes parameters (a nullary test is a plain unit test). This is the EVAL-time
+    /// enumeration the test-shred nix matrix reads from a COMMITTED file to fan out one derivation per test
+    /// (no IFD) + drift-guard against (fresh `--list` ≠ committed ⇒ loud red). Wasmtime-free by construction:
+    /// it loads the import closure, builds the `Db`, and enumerates — the same front-half `cdz test` runs
+    /// BEFORE any emit/JIT — so a `--no-default-features` `cdz` (no `cdz-run` link) can still produce it.
+    /// Ignores `--filter`/`--tag` (a manifest must list the WHOLE suite). Peer of `--emit-shred` (which adds
+    /// the per-test wasm + the full manifest as a BUILD output); `--list` is the eval-time NAMES-only half.
+    #[arg(long)]
+    list: bool,
 }
 
 // ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
