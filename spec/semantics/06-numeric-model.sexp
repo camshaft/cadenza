@@ -11811,3 +11811,17 @@
         (dual-path verified). Extends the simple single-op param witnesses to nested mixed-type composition.")
   (input (do (def (main (: x Int64)) (let ((a (+ x 1)) (b (/ 10.0 4.0))) (if (< b 3.0) a (* a 2)))) (export main)))
   (call main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "cdzw8 the cadenza backend round-trips recursive calls — self-recursion and mutual recursion"
+  (doc "Fresh-territory cadenza witness beyond B1b/B2 (operators/control/let): the backend lowers recursive
+        CALLS back to Cadenza and re-emits them, so a self-recursive `fact` and a mutually-recursive `ev`/`od`
+        pair round-trip value-equal through sexp→cadenza→wasm vs direct (dual-path verified). `fact 5` = 120,
+        `ev 5` = 0 (5 is odd), `od 5` = 1 → `1000*120 + 10*0 + 1` = 120001. Fences that the call reverse-map +
+        the cross-referencing mutual-call recovery survive the round-trip.")
+  (input (do
+    (def (fact (: n Int64)) (if (< n 2) 1 (* n (fact (- n 1)))))
+    (def (ev (: n Int64)) (if (= n 0) 1 (od (- n 1))))
+    (def (od (: n Int64)) (if (= n 0) 0 (ev (- n 1))))
+    (def (main (: n Int64)) (+ (* 1000 (fact n)) (+ (* 10 (ev n)) (od n))))
+    (export main)))
+  (call main (: 5 Int64)) (output (: 120001 Int64)))
