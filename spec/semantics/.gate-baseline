@@ -8998,3 +8998,7 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	hcd1 dropping a closure whose capture is a runtime-BUILT list cascades the reclaim
+pass	hcd2 dropping a closure capturing an IMMORTAL trie + scalar reclaims the mortal env and no-ops the immortal
+fail	hcz1 dropping a closure whose body RETURNED its captured TUPLE crashes (double-release; tracked known-FAIL)
+fail	hcz2 dropping a closure whose body RETURNED its captured LIST crashes (double-release; tracked known-FAIL)
