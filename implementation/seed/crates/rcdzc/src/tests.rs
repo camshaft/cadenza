@@ -40209,12 +40209,18 @@ mod r2_runtime_resource {
     }
 
     #[test]
-    fn a_bytes_provider_member_with_a_constant_result_pre_encodes_and_runs() {
+    fn a_bytes_provider_member_with_a_constant_result_pre_encodes_the_static_bytes() {
         // §2d PRE-ENCODE (Axis 2, PROVIDER path): a reducer whose result is a compile-time constant (ignores
         // its event) emits an apply body that writes the precomputed bare value-form bytes and returns — no
-        // per-event value-decode / body / value-encode. End-to-end proof: RUN the compiled reducer with an
-        // ARBITRARY (ignored) input and assert its output list<u8> is EXACTLY `constant_value_form_bare` of the
-        // result — the pre-encoded bytes ARE what the boundary emits.
+        // per-event value-decode / body / value-encode. WHITE-BOX EMIT PIN (corpus-inexpressible — it inspects
+        // the EMITTED code, not a value; the reducer value-encode boundary is wire-level, not a corpus value):
+        // assert the emitted component writes EXACTLY `constant_value_form_bare(result).len()` bytes as static
+        // `i32.store8`s (the pre-encode path — a per-event reducer would value-encode via a runtime call and
+        // emit no such per-byte store run). The bytes' CORRECTNESS is pinned by
+        // `constant_value_form_bare_is_the_framed_value_without_the_type_frame`; this pins the EMIT takes the
+        // pre-encode path. (Formerly RAN the reducer via `cdz_run::run_reducer_bytes` to compare the output
+        // list<u8> to those bytes — dropped with the cdz-run dep migration; the run half has no value-level
+        // corpus home because the list<u8> reducer boundary output is the wire bytes themselves.)
         use crate::testkit::parse;
         let src = "(module m \
                      (world reducer (export fold (member apply \
@@ -40255,23 +40261,20 @@ mod r2_runtime_resource {
         let body = db.defs[d].body.expect("body");
         let cbytes =
             crate::lower::constant_value_form_bare(&mut db, body).expect("constant result");
-        // Run with an ARBITRARY input (the constant apply ignores it) → output IS the pre-encoded bytes.
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping reducer run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: None,
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        let got = cdz_run::run_reducer_bytes(&wasm, "cadenza:reducer/api", "apply", &[], &opts)
-            .expect("run constant-result reducer");
+        // The pre-encode apply writes each of the `cbytes.len()` constant bytes with one `i32.store8`
+        // (address + value + store8); the retarea ptr/len writes use `i32.store` (4-byte), not store8. So the
+        // component's store8 count equals the pre-encoded byte length exactly IFF the apply took the pre-encode
+        // path. A per-event reducer would call the runtime value-encode op and emit no such per-byte store run.
+        let store8s = crate::tests::count_opcode(&wasm, |op| {
+            matches!(op, wasmparser::Operator::I32Store8 { .. })
+        });
         assert_eq!(
-            got, cbytes,
-            "the reducer emits EXACTLY the pre-encoded constant bytes"
+            store8s,
+            cbytes.len(),
+            "the constant-result apply must pre-encode its {} result bytes as static i32.store8 writes \
+             (the pre-encode path), got {} store8s",
+            cbytes.len(),
+            store8s
         );
     }
 
