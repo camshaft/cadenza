@@ -1423,6 +1423,7 @@ pass	a branch refinement does not leak into the else arm's overflow guard
 pass	a branch refinement elides a redundant AND-mask covering the refined range (value parity)
 pass	a branch refinement folds a comparison of two disjoint refined ranges (value parity)
 pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
+pass	a branch-dead host-call leaks no import or host-call at any optimization level
 pass	a branch-divergent next-state under a multi-perform body folds to 18
 pass	a branch-performing conditional in a self-recursive performer threads the advance across recursion (rw1)
 pass	a branching recursive tree fold infers its unannotated callback across both arms

@@ -50,6 +50,24 @@
   (host-calls (call ask.ask))
   (output (: 100 Int64)))
 
+(case "a branch-dead host-call leaks no import or host-call at any optimization level"
+  (doc    "Capability-safety fence at the #4805 (force-lower-all POST-layout) seam: an effectful helper `io`
+           that delegates `ask.ask` to the host is referenced ONLY inside a `(if false …)` branch that const-
+           fold eliminates, so `io` becomes DEAD. The module must NOT acquire the host-call boundary for dead
+           code — a leaked import would spuriously require the `ask` capability for a program that never
+           performs it. The case runs to 42 WITHOUT any `(host-responses …)` fixture: if force-lower-all (or
+           DCE) leaked the `ask.ask` call, `main` would require a response at the boundary and the run would
+           fail rather than return 42. Verified opt-level-equivalent (identical 42 across O0..O3) and import-
+           free (a `wasm-tools` import count of 0 at every level, vs 2 for the reachable host-call twin). A
+           regression that force-lowered the dead effectful def into the boundary would either decline on the
+           unhandled effect at O2 or emit a spurious host import.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (def (io) (host (ask) (ask.ask)))
+            (def (main) (if false (io) 42))
+            (export main)))
+  (output (: 42 Int64)))
+
 (case "a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)"
   (doc    "The runtime-parameter `@param` Quantity host path: a host-delegated op whose declared result is a
            `(Qty T u)` — `Env.width : Unit -> (Qty Int64 meter)` — crosses the host boundary as its INNER
