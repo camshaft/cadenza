@@ -29468,6 +29468,73 @@ mod stage1 {
     }
 
     #[test]
+    fn a_self_identity_fold_is_blocked_when_the_operand_binding_can_trap() {
+        // SOUNDNESS (cdz-smith L2 differential): the self-identity folds (`x OP x → const`) DISCARD their
+        // operand, so they must not fire when forcing that operand could TRAP — else an observable trap is
+        // elided. A `let` binding is lazy, so `(< v0 v0)` with `v0 = (/ 10 n)` (a runtime checked div that
+        // ÷0-traps) must NOT fold to `false`: `is_trap_free` now follows the ref to v0's init `(/ 10 n)`,
+        // which is not trap-free, so the compare stays runtime (forces v0 → traps at n=0). (#4417 precedent.)
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        let main_core = |src: &str| {
+            let mut db = Db::load(crate::testkit::parse(src));
+            let d = db.def_by_name("main").expect("def main");
+            let mainb = db.defs[d].body.expect("main body");
+            core_of(&mut db, mainb)
+        };
+        // Each buggy self-identity fold (cdz-smith's precise set) over a TRAPPING lazy binding must be
+        // BLOCKED: v0's force ÷0-TRAPS, so if the fold fired it would drop v0 (dead) and elide the trap.
+        // Blocked ⇒ v0 stays USED (twice) ⇒ A-normalization KEEPS it as a live `Core::Let` (forced → traps).
+        // The six comparisons return Bool (wrapped in an `if` for an Int64 body); `-`/`^` return Int64
+        // directly. `(/ 10 n)` is a runtime checked divide (÷0-traps at n=0), so `is_trap_free` follows the
+        // ref to it and reports NOT trap-free — the discarding fold declines for every operator.
+        for body in [
+            "(if (< v0 v0) 1 0)",
+            "(if (<= v0 v0) 1 0)",
+            "(if (> v0 v0) 1 0)",
+            "(if (>= v0 v0) 1 0)",
+            "(- v0 v0)",
+            "(^ v0 v0)",
+        ] {
+            let src = format!(
+                "(module m (def (main (: n Int64)) (let ((v0 (/ 10 n))) {body})) (export main))"
+            );
+            assert!(
+                matches!(main_core(&src), Core::Let { .. }),
+                "self-identity over a TRAPPING lazy binding must NOT fold — v0 must stay a live Core::Let \
+                 (forced → traps); body was {body}"
+            );
+        }
+        // REGRESSION GUARD: a PURE binding still folds away. `w = wrapping-add` never traps → `(< w w)` folds
+        // to false → w is dead-eliminated → `main` is NOT a `Core::Let` (fully folded), proving the fix ONLY
+        // tightens trapping bindings.
+        assert!(
+            !matches!(
+                main_core(
+                    "(module m (def (main (: n Int64)) (let ((w (Int64.wrapping-add n 1))) (if (< w w) 1 0))) (export main))"
+                ),
+                Core::Let { .. }
+            ),
+            "self-comparison over a PURE (wrapping) binding still folds — w must be eliminated, main not a Let"
+        );
+        // SECOND EFFECT KIND (cdz-smith reinforcement, 2026-08-28): the elided effect is ANY force-trap, not
+        // just ÷0. A checked left-shift init `(<< 1 n)` traps on an OUT-OF-RANGE runtime shift count — a
+        // DIFFERENT `is_trap_free` path than `/` (Shl is not in the trap-free set, so a full-range runtime
+        // count is not trap-free) — so the fold must ALSO decline over it. Pins that the fix is
+        // fault-kind-agnostic: v0 stays a live `Core::Let` (forced → traps), not folded away.
+        assert!(
+            matches!(
+                main_core(
+                    "(module m (def (main (: n Int64)) (let ((v0 (<< 1 n))) (if (< v0 v0) 1 0))) (export main))"
+                ),
+                Core::Let { .. }
+            ),
+            "self-identity over a lazy binding whose init is a checked shift (out-of-range count traps) must NOT fold"
+        );
+    }
+
+    #[test]
     fn left_shift_that_overflows_fails_the_build() {
         // (<< 4611686018427387904 1) overflows Int64 — traps like `*`, so CDZ0304, not a silent wrap.
         // The message names it as an overflow (in-range count, but the shifted result doesn't fit).
