@@ -45,10 +45,12 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// A generated WIT type: its Cadenza type syntax `ty` and a matching VALUE literal `lit` (a valid,
-/// unambiguous value of that type, for a host-call argument).
+/// A generated WIT type in three consistent forms: the Cadenza source type `ty` (e.g. `Int64`,
+/// `(List Int64)`), the WIT-LEVEL type `wit` (e.g. `s64`, `(list s64)` — the vocabulary a `(world …)`
+/// interface member uses), and a matching unambiguous VALUE literal `lit` (for a host-call argument).
 struct WitType {
     ty: String,
+    wit: String,
     lit: String,
 }
 
@@ -71,18 +73,22 @@ fn gen_wit(c: &mut Cursor, depth: usize) -> WitType {
     match c.pick(4 + compound) {
         0 => WitType {
             ty: "Int64".into(),
+            wit: "s64".into(),
             lit: int_literal(c),
         },
         1 => WitType {
             ty: "Bool".into(),
+            wit: "bool".into(),
             lit: (if c.pick(2) == 0 { "true" } else { "false" }).into(),
         },
         2 => WitType {
             ty: "String".into(),
+            wit: "string".into(),
             lit: "\"x\"".into(),
         },
         3 => WitType {
             ty: "Unit".into(),
+            wit: "unit".into(),
             lit: "unit".into(),
         },
         // (List T)
@@ -90,6 +96,7 @@ fn gen_wit(c: &mut Cursor, depth: usize) -> WitType {
             let e = gen_wit(c, depth - 1);
             WitType {
                 ty: format!("(List {})", e.ty),
+                wit: format!("(list {})", e.wit),
                 lit: format!("(list {} {})", e.lit, e.lit),
             }
         }
@@ -99,6 +106,7 @@ fn gen_wit(c: &mut Cursor, depth: usize) -> WitType {
             let b = gen_wit(c, depth - 1);
             WitType {
                 ty: format!("(Tuple {} {})", a.ty, b.ty),
+                wit: format!("(tuple {} {})", a.wit, b.wit),
                 lit: format!("(tuple {} {})", a.lit, b.lit),
             }
         }
@@ -107,15 +115,17 @@ fn gen_wit(c: &mut Cursor, depth: usize) -> WitType {
             let e = gen_wit(c, depth - 1);
             WitType {
                 ty: format!("(Option {})", e.ty),
+                wit: format!("(option {})", e.wit),
                 lit: format!("(Some {})", e.lit),
             }
         }
-        // (Record (: a T) (: b U))
+        // (Record (: a T) (: b U)) — WIT record fields are `(field wit-ty)` (no `:`, no `=`).
         _ => {
             let a = gen_wit(c, depth - 1);
             let b = gen_wit(c, depth - 1);
             WitType {
                 ty: format!("(Record (: a {}) (: b {}))", a.ty, b.ty),
+                wit: format!("(record (a {}) (b {}))", a.wit, b.wit),
                 lit: format!("(record (= a {}) (= b {}))", a.lit, b.lit),
             }
         }
@@ -220,10 +230,52 @@ pub fn generate_module_program(entropy: &[u8]) -> (String, String) {
     (module_src, entry_src)
 }
 
+/// Coerce entropy into a WIT-WORLD guest + world pair for the per-cell WIT-BINDING decline surface (via
+/// [`crate::oracle::compile_world_catching`]). The world declares interface `iface` with one member `f`
+/// of an ARBITRARY WIT type `T` ([`gen_wit`]'s `wit` form): `(world w (export iface (member f (func
+/// (param m <wit>) (result <wit>)))))`; the guest is the IDENTITY over `T`'s Cadenza type: `(module m
+/// (def (f (: m <ty>)) m) (export f))`. So `T` crosses the WIT ABI boundary as both param + result — a
+/// WIT type the boundary does not yet marshal cleanly DECLINES (a per-cell gap); a supported one compiles.
+/// Returns `(guest_src, iface, world_src)` for `compile_world_catching(guest_src, iface, world_src)`.
+pub fn generate_world_program(entropy: &[u8]) -> (String, String, String) {
+    let mut c = Cursor::new(entropy);
+    let t = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    let world_src = format!(
+        "(world w (export iface (member f (func (param m {}) (result {})))))",
+        t.wit, t.wit
+    );
+    let guest_src = format!("(module m (def (f (: m {})) m) (export f))", t.ty);
+    (guest_src, "cadenza:demo/iface".to_string(), world_src)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oracle::{Verdict, compile_catching, compile_modules_catching};
+    use crate::oracle::{
+        Verdict, compile_catching, compile_modules_catching, compile_world_catching,
+    };
+
+    /// Every `generate_world_program` triple is CLEANLY HANDLED by the wit-world oracle — it COMPILES (a
+    /// WIT type the ABI boundary marshals) or cleanly DECLINES (a per-cell WIT-binding gap) — never a
+    /// crash / invalid wasm / parse error. The decline-hunting invariant for the WIT-world surface.
+    #[test]
+    fn world_programs_are_cleanly_handled() {
+        for seed in 0u64..96 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(17);
+            let mut bytes = Vec::new();
+            for _ in 0..12 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let (guest, iface, world) = generate_world_program(&bytes);
+            let verdict = compile_world_catching(&guest, &iface, &world);
+            assert!(
+                matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                "world program must be cleanly handled, got {verdict:?}\nworld: {world}\nguest: {guest}"
+            );
+        }
+    }
 
     /// Every `generate_module_program` pair is CLEANLY HANDLED by the multi-module oracle — it COMPILES
     /// (a cross-module type-crossing the linker supports) or cleanly DECLINES (a WIT-binding gap) — never
