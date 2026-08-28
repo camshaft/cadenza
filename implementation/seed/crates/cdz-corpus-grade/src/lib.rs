@@ -220,6 +220,14 @@ pub struct TestRun {
     /// runtime reclaims). This flag only records the INTENT (a shrinking exception set), so tooling can
     /// find + retire markers; it does not change the assertion. `false` for `None` or a plain count.
     pub live_objects_known_leak: bool,
+    /// PER-CALL positional expected counts — `Some` iff the case authored `(live-objects [known-leak] N1 N2
+    /// …)` with 2+ counts, one per trial in call order. `None` for the uniform/absent forms (then
+    /// `live_objects` applies to every call). This expresses an ARM-DEPENDENT balance a single count cannot:
+    /// a leak that scales with input size (FLETCHER-16 r=1→3, r=4→13, r=0→0), or a benign per-call count
+    /// difference (dedup 17→16) — surfaced once `#5008` graded every call, not just call[0]. `live_objects`
+    /// still holds the FIRST count (so the uniform/direct-gate path keeps grading call[0]); the wasm nix
+    /// grade path uses this list to balance EACH call against its own count.
+    pub live_objects_per_call: Option<Vec<u32>>,
 }
 
 /// The combined grade of a case + whether any runnable trial actually ran (a pure error/declines case runs
@@ -242,7 +250,38 @@ pub struct GradeResult {
 /// call 0 but leaks on call 2 (or whose leak scales with call depth) is a real leak the corpus MUST catch.
 /// The first-call-only capture silently FALSE-GREENED those leaks fleet-wide. No-heap trials are skipped
 /// (never a false fail), so a mixed case is graded on its heap trials alone.
-pub fn check_live_objects(per_trial: &[Option<u32>], expected: Option<u32>) -> Option<String> {
+pub fn check_live_objects(
+    per_trial: &[Option<u32>],
+    expected: Option<u32>,
+    per_call: Option<&[u32]>,
+) -> Option<String> {
+    // POSITIONAL: `(live-objects [known-leak] N1 N2 …)` — one expected count per trial, index-aligned to
+    // the call order. This is the arm-dependent case (e.g. a leak that SCALES with input size): call 0 may
+    // balance to N1 while call 1 balances to N2. A no-heap trial (`None`) is skipped (its entry is ignored).
+    // The list length MUST equal the trial count so an author can't silently under-specify a call.
+    if let Some(list) = per_call {
+        if list.len() != per_trial.len() {
+            return Some(format!(
+                "live-objects per-call list has {} entr{} but the case ran {} trial(s)",
+                list.len(),
+                if list.len() == 1 { "y" } else { "ies" },
+                per_trial.len()
+            ));
+        }
+        for (i, live) in per_trial.iter().enumerate() {
+            if let Some(n) = live
+                && *n != list[i]
+            {
+                return Some(format!(
+                    "live-objects mismatch on call {i}: expected {}, got {n}",
+                    list[i]
+                ));
+            }
+        }
+        return None;
+    }
+    // UNIFORM: `(live-objects [known-leak] N)` (or no clause → 0) — every heap trial must end at the SAME
+    // count. Checks EVERY call, not just call[0] (the systemic false-green the first-call-only capture hid).
     let want = expected.unwrap_or(0);
     for (i, live) in per_trial.iter().enumerate() {
         if let Some(n) = live
@@ -854,6 +893,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
     let mut warns = Vec::new();
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
+    let mut live_objects_per_call: Option<Vec<u32>> = None;
 
     for &clause in children(&a, root) {
         match a.head_name(clause) {
@@ -904,24 +944,26 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
                     }
                 }
             }
-            // `(live-objects <N>)` — the post-run heap-balance the case asserts (N as a string leaf). A
-            // `(live-objects known-leak <N>)` marker prefixes the count with the literal `known-leak`
-            // (the opt-out grandfather form); both assert == N, the marker also records the intent.
+            // `(live-objects <N>…)` — the post-run heap-balance the case asserts (each N a string leaf). A
+            // `(live-objects known-leak <N>…)` marker prefixes the counts with the literal `known-leak`.
+            // ONE count = uniform (every call == N); 2+ counts = PER-CALL positional (call i == Ni). Both
+            // forms may carry the known-leak marker. `live_objects` gets the FIRST count (uniform/direct-gate
+            // path); `live_objects_per_call` gets the whole list when 2+ (the wasm nix path's per-call check).
             Some("live-objects") => {
                 let items = a.as_form(clause, "live-objects").unwrap_or(&[]);
-                let first = items.first().copied().and_then(|id| str_leaf(&a, id));
-                match first.as_deref() {
-                    Some("known-leak") => {
-                        live_objects_known_leak = true;
-                        live_objects = items
-                            .get(1)
-                            .copied()
-                            .and_then(|id| str_leaf(&a, id))
-                            .and_then(|s| s.trim().parse::<u32>().ok());
-                    }
-                    _ => {
-                        live_objects = first.and_then(|s| s.trim().parse::<u32>().ok());
-                    }
+                let mut leaves: Vec<String> =
+                    items.iter().filter_map(|&id| str_leaf(&a, id)).collect();
+                if leaves.first().map(String::as_str) == Some("known-leak") {
+                    live_objects_known_leak = true;
+                    leaves.remove(0);
+                }
+                let counts: Vec<u32> = leaves
+                    .iter()
+                    .filter_map(|s| s.trim().parse::<u32>().ok())
+                    .collect();
+                live_objects = counts.first().copied();
+                if counts.len() >= 2 {
+                    live_objects_per_call = Some(counts);
                 }
             }
             _ => {}
@@ -936,6 +978,7 @@ pub fn decode_test_run(bytes: &[u8]) -> Result<TestRun> {
         warns,
         live_objects,
         live_objects_known_leak,
+        live_objects_per_call,
     })
 }
 
@@ -1806,42 +1849,69 @@ mod tests {
     /// where a multi-call case that balanced on the first call hid a leak on later calls.
     #[test]
     fn check_live_objects_balances_every_call() {
-        // No-heap trials are skipped entirely (never a false fail), regardless of `expected`.
-        assert_eq!(check_live_objects(&[None, None], Some(0)), None);
-        assert_eq!(check_live_objects(&[], None), None);
+        // UNIFORM form (`per_call = None`). No-heap trials are skipped, regardless of `expected`.
+        assert_eq!(check_live_objects(&[None, None], Some(0), None), None);
+        assert_eq!(check_live_objects(&[], None, None), None);
         // A single heap trial at the expected count passes; the message on a miss is index-free (stable text).
-        assert_eq!(check_live_objects(&[Some(0)], Some(0)), None);
+        assert_eq!(check_live_objects(&[Some(0)], Some(0), None), None);
         assert_eq!(
-            check_live_objects(&[Some(1)], Some(0)).as_deref(),
+            check_live_objects(&[Some(1)], Some(0), None).as_deref(),
             Some("live-objects mismatch: expected 0, got 1")
         );
         // Absent clause ⇒ opt-out default of 0.
         assert_eq!(
-            check_live_objects(&[Some(2)], None).as_deref(),
+            check_live_objects(&[Some(2)], None, None).as_deref(),
             Some("live-objects mismatch: expected 0, got 2")
         );
-        // THE FIX: a multi-call case that balances on call 0 but LEAKS on call 2 is now caught — the
+        // THE #5008 FIX: a multi-call case that balances on call 0 but LEAKS on call 2 is now caught — the
         // historical first-call-only capture returned None here (false green).
         assert_eq!(
-            check_live_objects(&[Some(0), Some(0), Some(0)], Some(0)),
+            check_live_objects(&[Some(0), Some(0), Some(0)], Some(0), None),
             None
         );
         assert_eq!(
-            check_live_objects(&[Some(0), Some(0), Some(3)], Some(0)).as_deref(),
+            check_live_objects(&[Some(0), Some(0), Some(3)], Some(0), None).as_deref(),
             Some("live-objects mismatch on call 2: expected 0, got 3")
         );
         // A depth-scaling leak on the FIRST call still reports call 0 (multi-call message form).
         assert_eq!(
-            check_live_objects(&[Some(1), Some(2)], Some(0)).as_deref(),
+            check_live_objects(&[Some(1), Some(2)], Some(0), None).as_deref(),
             Some("live-objects mismatch on call 0: expected 0, got 1")
         );
         // A uniform expected N > 0 (an explicit `(live-objects N)` / known-leak N) holds across every call.
-        assert_eq!(check_live_objects(&[Some(2), Some(2)], Some(2)), None);
+        assert_eq!(check_live_objects(&[Some(2), Some(2)], Some(2), None), None);
         // Interleaved no-heap trials don't shift the reported call index (index is the trial position).
         assert_eq!(
-            check_live_objects(&[None, Some(0), Some(5)], Some(0)).as_deref(),
+            check_live_objects(&[None, Some(0), Some(5)], Some(0), None).as_deref(),
             Some("live-objects mismatch on call 2: expected 0, got 5")
         );
+    }
+
+    /// PER-CALL positional counts (`(live-objects N1 N2 N3)`) — the arm-dependent balance a uniform count
+    /// cannot express (FLETCHER-16: a leak that scales with input size). Each call is checked against its
+    /// OWN count; a no-heap trial's slot is ignored; a length mismatch is a clear authoring Fail.
+    #[test]
+    fn check_live_objects_per_call_positional() {
+        // FLETCHER-16 shape: three calls balancing 3 / 13 / 0 — the uniform form would fail calls 1+2.
+        let fletcher = &[Some(3), Some(13), Some(0)];
+        assert_eq!(
+            check_live_objects(fletcher, Some(3), Some(&[3, 13, 0])),
+            None
+        );
+        // Uniform-3 (per_call None) WOULD fail this — the phantom fail #5008 surfaced.
+        assert!(check_live_objects(fletcher, Some(3), None).is_some());
+        // A wrong per-call count is caught at the offending call.
+        assert_eq!(
+            check_live_objects(fletcher, Some(3), Some(&[3, 12, 0])).as_deref(),
+            Some("live-objects mismatch on call 1: expected 12, got 13")
+        );
+        // A no-heap (None) trial's positional slot is ignored (skipped), not failed.
+        assert_eq!(
+            check_live_objects(&[Some(3), None, Some(0)], Some(3), Some(&[3, 99, 0])),
+            None
+        );
+        // Length mismatch (list ≠ trial count) is an authoring Fail, not a silent under-check.
+        assert!(check_live_objects(fletcher, Some(3), Some(&[3, 13])).is_some());
     }
 
     /// `decode_test_run` reads a `(live-objects <N>)` form into `TestRun.live_objects` (and the
@@ -1874,17 +1944,30 @@ mod tests {
             let root = b.list(kids);
             codec::encode(&b.finish(root))
         };
-        // Plain count.
+        // Plain (uniform) count — one count, no per-call list.
         let tr = decode_test_run(&build(Some(&["0"]))).unwrap();
         assert_eq!(tr.live_objects, Some(0));
         assert!(!tr.live_objects_known_leak);
+        assert_eq!(tr.live_objects_per_call, None);
         // known-leak marker → count + flag.
         let tr = decode_test_run(&build(Some(&["known-leak", "3"]))).unwrap();
         assert_eq!(tr.live_objects, Some(3));
+        assert!(tr.live_objects_known_leak);
+        assert_eq!(tr.live_objects_per_call, None);
+        // PER-CALL positional (2+ counts) → live_objects = first, live_objects_per_call = whole list.
+        let tr = decode_test_run(&build(Some(&["3", "13", "0"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(3));
+        assert_eq!(tr.live_objects_per_call, Some(vec![3, 13, 0]));
+        assert!(!tr.live_objects_known_leak);
+        // known-leak + per-call positional.
+        let tr = decode_test_run(&build(Some(&["known-leak", "3", "13", "0"]))).unwrap();
+        assert_eq!(tr.live_objects, Some(3));
+        assert_eq!(tr.live_objects_per_call, Some(vec![3, 13, 0]));
         assert!(tr.live_objects_known_leak);
         // No clause.
         let tr = decode_test_run(&build(None)).unwrap();
         assert_eq!(tr.live_objects, None);
         assert!(!tr.live_objects_known_leak);
+        assert_eq!(tr.live_objects_per_call, None);
     }
 }

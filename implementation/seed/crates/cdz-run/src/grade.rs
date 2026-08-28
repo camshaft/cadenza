@@ -143,7 +143,11 @@ pub fn grade(
     // meaningful only on the DEBUG-COUNTERS runtime the exec passes via `--runtime` (→ `runtime` here); the
     // shipped runtime reports 0 vacuously.
     let mut result = result;
-    if let Some(msg) = check_live_objects(&per_trial_live, test_run.live_objects) {
+    if let Some(msg) = check_live_objects(
+        &per_trial_live,
+        test_run.live_objects,
+        test_run.live_objects_per_call.as_deref(),
+    ) {
         result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
     }
 
