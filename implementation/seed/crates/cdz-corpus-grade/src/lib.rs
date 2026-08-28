@@ -120,30 +120,46 @@ pub fn check_regression(actual: Verdict, description: &str, baseline: &str) -> O
 
 /// The per-case exec EXIT CODE — prints the verdict, then decides pass/fail. WITHOUT a baseline, the exec
 /// fails on any outright `Fail` (the miscompile check). WITH a baseline, it reproduces `xtask gate --check`
-/// EXACTLY: it fails ONLY on a REGRESSION (a case the baseline recorded as `pass` that no longer passes).
-/// A NON-regression verdict — including a baseline-`todo`/absent case that is now `Todo` OR even `Fail`
-/// (`todo→fail` and a new-case fail are NOT flagged by `--check`) — passes; a suppressed `Fail` is noted so
-/// the log stays honest. (The whole-run "vanished" case is a separate aggregate.)
+/// EXACTLY (main.rs `check_baseline`), failing on THREE conditions so the nix corpus check can be the
+/// authoritative landing bar (so `--check` may delegate to it + drop the in-process grade):
+///   (1) REGRESSION — a case the baseline recorded as `pass` that no longer passes (`pass → not-pass`);
+///   (2) GATE-HOLE #3984 — a `todo`/absent case that now `Fail`s (baseline verdict NOT `pass` and NOT
+///       `fail`): a real miscompile that the pass→not-pass rule alone would let slip past `--check`,
+///       making the fleet bar strictly weaker than plain `gate`. Reds it, matching `check_baseline`'s
+///       `failing` set.
+/// A `fail`-baseline + `fail` verdict is the EXCEPTION — a TRACKED, git-committed known-fail (#4547): the
+/// EXPECTED state, NOT a gate failure (noted so it stays visible; a later PASS surfaces as a regression to
+/// re-baseline). The whole-run "vanished" case (a baseline title with no run) is a separate global aggregate.
 pub fn exec_exit(result: &GradeResult, description: &str, baseline: Option<&str>) -> ExitCode {
     let printed = print_verdict(result, description);
     match baseline {
         None => printed,
-        Some(bl) => match check_regression(result.grade.verdict(), description, bl) {
-            Some(msg) => {
+        Some(bl) => {
+            // (1) pass → not-pass regression.
+            if let Some(msg) = check_regression(result.grade.verdict(), description, bl) {
                 eprintln!("grade: {msg}");
-                ExitCode::FAILURE
+                return ExitCode::FAILURE;
             }
-            None => {
-                if matches!(result.grade, Grade::Fail(_)) {
+            let bv = baseline_verdict(bl, description);
+            if matches!(result.grade, Grade::Fail(_)) {
+                // (2) #3984: a `todo`/absent (NOT pass, NOT fail) case that now FAILs reds — a miscompile
+                //     the pass→not-pass rule misses. Matches `check_baseline`'s `failing` set.
+                if !matches!(bv, Some(Verdict::Pass) | Some(Verdict::Fail)) {
                     eprintln!(
-                        "grade: {description}: FAIL but baseline verdict is {:?} — not a regression \
-                         (xtask gate --check parity: only pass→not-pass fails)",
-                        baseline_verdict(bl, description)
+                        "grade: {description}: FAIL and baseline verdict is {bv:?} (todo/absent) — gate \
+                         hole (xtask #3984): a non-pass, non-fail baseline that now fails reds `--check`"
                     );
+                    return ExitCode::FAILURE;
                 }
-                ExitCode::SUCCESS
+                // (3) #4547: a `fail` baseline + `fail` verdict is the EXPECTED tracked known-fail — exempt,
+                //     but noted so the log stays honest + the pin stays visible.
+                eprintln!(
+                    "grade: {description}: FAIL, TRACKED known-fail (explicit `fail` baseline) — not a \
+                     gate failure (a later pass surfaces as a regression to re-baseline)"
+                );
             }
-        },
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -1255,7 +1271,7 @@ mod tests {
         let fmt = |c: ExitCode| format!("{c:?}"); // ExitCode has no PartialEq; compare Debug
         let success = fmt(ExitCode::SUCCESS);
         let failure = fmt(ExitCode::FAILURE);
-        let baseline = "pass\ta passing case\ntodo\tan incomplete case\n";
+        let baseline = "pass\ta passing case\ntodo\tan incomplete case\nfail\ta known-fail case\n";
         let res = |g: Grade| GradeResult {
             grade: g,
             ran_a_trial: true,
@@ -1269,20 +1285,38 @@ mod tests {
             )),
             failure
         );
-        // WITH baseline: a baseline-TODO case that now FAILS is NOT a regression → SUCCESS (xtask parity).
+        // WITH baseline: a baseline-TODO case that now FAILS reds (#3984 gate-hole) → FAILURE.
         assert_eq!(
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "an incomplete case",
                 Some(baseline)
             )),
-            success
+            failure
         );
-        // WITH baseline: an ABSENT case that FAILS is not a regression → SUCCESS.
+        // WITH baseline: an ABSENT case that FAILS reds (#3984: non-pass, non-fail) → FAILURE.
         assert_eq!(
             fmt(exec_exit(
                 &res(Grade::Fail("x".into())),
                 "absent",
+                Some(baseline)
+            )),
+            failure
+        );
+        // WITH baseline: a baseline-TODO case that stays TODO is NOT a regression → SUCCESS.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Todo("x".into())),
+                "an incomplete case",
+                Some(baseline)
+            )),
+            success
+        );
+        // WITH baseline: a `fail` baseline + `fail` verdict is a TRACKED known-fail (#4547) → SUCCESS.
+        assert_eq!(
+            fmt(exec_exit(
+                &res(Grade::Fail("x".into())),
+                "a known-fail case",
                 Some(baseline)
             )),
             success
