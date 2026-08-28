@@ -96,7 +96,7 @@ pub const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
 /// with no cross-host byte-reproducibility requirement); absent, the committed default is used.
 pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05Fthj9Zq1GVviE5cPfdAkqFrGnb5fH0dHBSX2dqYqvDu",
+    None => "05qidmHvf4dfkyzw5yr227AoNoxLWa86VX4IFyv9SYsbX",
 };
 /// The BLAKE3 content address of the DEBUG-COUNTERS runtime build — the same runtime code
 /// with the `live-objects` leak counter compiled in (`--features debug-counters`). A shipped
@@ -106,7 +106,7 @@ pub const REQUIRED_RUNTIME_HASH: &str = match option_env!("CDZ_RUNTIME_HASH") {
 /// Overridable at compile time via the `CDZ_DEBUG_RUNTIME_HASH` env (see `REQUIRED_RUNTIME_HASH`).
 pub const DEBUG_RUNTIME_HASH: &str = match option_env!("CDZ_DEBUG_RUNTIME_HASH") {
     Some(h) => h,
-    None => "05gyiivCoUI19g2VTqmq8CsF7I2S4ey2V3NTH6ZYQKvFK",
+    None => "05fwLFjgUclyuaeYdB5rBfFeWDNViJN7ABBeBpBTdziTn",
 };
 /// The NFC-normalization interface — the plain WIT name the value-heap RUNTIME imports for
 /// Unicode Normalization Form C. FINDING#23 (operator ruling d): NFC lives in a SEPARATE
@@ -705,6 +705,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "vec-prepend",
+        params: &[AbiValType::U32, AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "vec-push",
         params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -821,6 +827,7 @@ pub struct RuntimeOps {
     pub vec_get: &'static RtOp,
     pub vec_len: &'static RtOp,
     pub vec_of_arr: &'static RtOp,
+    pub vec_prepend: &'static RtOp,
     pub vec_push: &'static RtOp,
     pub vec_split: &'static RtOp,
     pub vec_update: &'static RtOp,
@@ -921,7 +928,8 @@ pub const OPS: RuntimeOps = RuntimeOps {
     vec_get: &RUNTIME_OPS[91],
     vec_len: &RUNTIME_OPS[92],
     vec_of_arr: &RUNTIME_OPS[93],
-    vec_push: &RUNTIME_OPS[94],
-    vec_split: &RUNTIME_OPS[95],
-    vec_update: &RUNTIME_OPS[96],
+    vec_prepend: &RUNTIME_OPS[94],
+    vec_push: &RUNTIME_OPS[95],
+    vec_split: &RUNTIME_OPS[96],
+    vec_update: &RUNTIME_OPS[97],
 };

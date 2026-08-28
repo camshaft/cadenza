@@ -963,6 +963,16 @@ pub mod exports {
                     let result0 = T::mark_immortal_deep(arg0 as u32);
                     _rt::as_i32(result0)
                 }
+                #[doc(hidden)]
+                #[allow(non_snake_case)]
+                pub unsafe fn _export_vec_prepend_cabi<T: Guest>(
+                    arg0: i32,
+                    arg1: i32,
+                ) -> i32 {
+                    #[cfg(target_arch = "wasm32")] _rt::run_ctors_once();
+                    let result0 = T::vec_prepend(arg0 as u32, arg1 as u32);
+                    _rt::as_i32(result0)
+                }
                 pub trait Guest {
                     /// ── Scalar leaves (indices 0–5). Box a primitive, read it back. No type tag: `get-*` is only
                     ///    ever called where the compiler's static type already says which primitive this handle
@@ -1532,6 +1542,14 @@ pub mod exports {
                     ///    shared immortal. Returns the same root handle. APPENDED last (frozen-contract rule). See
                     ///    `op_mark_immortal_deep`.
                     fn mark_immortal_deep(handle: u32) -> u32;
+                    /// 96 — transitively convert a heap value + all reachable nodes (RRB/CHAMP internals + k/v/elements) to IMMORTAL
+                    ///  vec-prepend(v, elem) -> v'
+                    ///    A new owned vector = `elem` followed by the elements of `v`. CONSUMES both (a CONSTRUCTOR, the
+                    ///    front-growth twin of `vec-push`). The dedicated op `List.prepend` lowers to, replacing the old
+                    ///    `vec-concat(singleton, v)` path — which invoked the full RRB merge per prepend and leaked the
+                    ///    superseded front-spine (~17 cells/prepend). Reclaims the old header + root shell while the shared
+                    ///    children carry forward; sound on the immortal empty-vec base.
+                    fn vec_prepend(v: u32, elem: u32) -> u32;
                 }
                 #[doc(hidden)]
                 macro_rules! __export_cadenza_runtime_heap_cabi {
@@ -1885,7 +1903,11 @@ pub mod exports {
                         "cadenza:runtime/heap#mark-immortal-deep")] unsafe extern "C" fn
                         export_mark_immortal_deep(arg0 : i32,) -> i32 { unsafe {
                         $($path_to_types)*:: _export_mark_immortal_deep_cabi::<$ty >
-                        (arg0) } } };
+                        (arg0) } } #[unsafe (export_name =
+                        "cadenza:runtime/heap#vec-prepend")] unsafe extern "C" fn
+                        export_vec_prepend(arg0 : i32, arg1 : i32,) -> i32 { unsafe {
+                        $($path_to_types)*:: _export_vec_prepend_cabi::<$ty > (arg0,
+                        arg1) } } };
                     };
                 }
                 #[doc(hidden)]
@@ -2094,10 +2116,10 @@ pub(crate) use __export_runtime_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2493] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbf\x12\x01A\x02\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2509] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xcf\x12\x01A\x02\x01\
 A\x04\x01B\x03\x01p}\x01@\x01\x04utf8\0\0\0\x04\0\x03nfc\x01\x01\x03\0\x15cadenz\
-a:nfc/normalize\x05\0\x01B\x98\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
+a:nfc/normalize\x05\0\x01B\x99\x01\x01@\x01\x01vx\0y\x04\0\x07box-int\x01\0\x01@\
 \x01\x06handley\0x\x04\0\x07get-int\x01\x01\x01@\x01\x01v\x7f\0y\x04\0\x08box-bo\
 ol\x01\x02\x01@\x01\x06handley\0\x7f\x04\0\x08get-bool\x01\x03\x01@\x01\x01vu\0y\
 \x04\0\x09box-float\x01\x04\x01@\x01\x06handley\0u\x04\0\x09get-float\x01\x05\x01\
@@ -2148,9 +2170,10 @@ str-nfc-normalize\x01$\x01@\x02\x05bytesy\x04descy\0y\x04\0\x0cvalue-decode\x013
 \x01@\x01\x05bytesy\0y\x04\0\x0bhash-blake3\x014\x01@\x02\x06handley\x05discsy\0\
 y\x04\0\x09ast-print\x015\x04\0\x0aast-encode\x015\x01@\x02\x0cbytes-handley\x05\
 discsy\0y\x04\0\x0aast-decode\x016\x04\0\x0dmark-immortal\x01\x0b\x04\0\x12mark-\
-immortal-deep\x01\x0b\x04\0\x14cadenza:runtime/heap\x05\x01\x04\0\x17cadenza:run\
-time/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\0G\x09producers\x01\x0cproce\
-ssed-by\x02\x0dwit-component\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+immortal-deep\x01\x0b\x04\0\x0bvec-prepend\x01\x1b\x04\0\x14cadenza:runtime/heap\
+\x05\x01\x04\0\x17cadenza:runtime/runtime\x04\0\x0b\x0d\x01\0\x07runtime\x03\0\0\
+\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x070.227.1\x10wit-bind\
+gen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

@@ -1356,7 +1356,7 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_closure_codes(db, operand, out)
         }
-        Core::ListPush { list, elem } => {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             collect_closure_codes(db, list, out);
             collect_closure_codes(db, elem, out);
         }
@@ -1658,7 +1658,8 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
             collect_call_callees(db, lhs, out);
             collect_call_callees(db, rhs, out);
         }
-        crate::core::Core::ListPush { list, elem } => {
+        crate::core::Core::ListPush { list, elem }
+        | crate::core::Core::ListPrepend { list, elem } => {
             collect_call_callees(db, list, out);
             collect_call_callees(db, elem, out);
         }

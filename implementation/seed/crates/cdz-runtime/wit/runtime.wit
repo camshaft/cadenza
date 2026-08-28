@@ -542,6 +542,13 @@ interface heap {
   //    shared immortal. Returns the same root handle. APPENDED last (frozen-contract rule). See
   //    `op_mark_immortal_deep`.
   mark-immortal-deep: func(handle: u32) -> u32;        // 96 — transitively convert a heap value + all reachable nodes (RRB/CHAMP internals + k/v/elements) to IMMORTAL
+  //  vec-prepend(v, elem) -> v'
+  //    A new owned vector = `elem` followed by the elements of `v`. CONSUMES both (a CONSTRUCTOR, the
+  //    front-growth twin of `vec-push`). The dedicated op `List.prepend` lowers to, replacing the old
+  //    `vec-concat(singleton, v)` path — which invoked the full RRB merge per prepend and leaked the
+  //    superseded front-spine (~17 cells/prepend). Reclaims the old header + root shell while the shared
+  //    children carry forward; sound on the immortal empty-vec base.
+  vec-prepend: func(v: u32, elem: u32) -> u32;         // 97 — elem then v's elements (consumes both)
 }
 
 world runtime {

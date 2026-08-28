@@ -2507,7 +2507,11 @@
            0..=1099 of k = 604450 (same total as the push case, but reached through front-growth). Any miss
            poisons by -1000000. A prepend that mis-shifted the front boundary or a vec-get that mis-navigated
            the left interior digit loses/misroutes an element and breaks the checksum. The FRONT-growth
-           companion of the push-built multi-level RRB read case. Expected: 604450.")
+           companion of the push-built multi-level RRB read case. Expected: 604450. `List.prepend` lowers to the
+           dedicated `vec-prepend` op (front-growth twin of `vec-push`); the op reclaims the BUILD phase to zero
+           (see the `List.len`-only build sibling), so the 18,972 residual here is `vec-get`'s PRE-EXISTING
+           relaxed-node read-path leak (identical whether the relaxed tree is built by this op or the old
+           `concat`) — a distinct target from the build reclaim the dedicated op governs.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
@@ -2522,18 +2526,19 @@
 
 (case "a small single-level prepend-built runtime list reads every index (no relaxed root spawned)"
   (doc    "The SINGLE-LEVEL twin of the 1100-element prepend case above, isolating the prepend share/dup path
-           BELOW the relaxed-root threshold. `build` prepends 0..n-1 via `List.prepend` (which lowers to
-           vec-concat of a fresh singleton and the list — `lower_list_prepend`), so at n=10 the list is
-           [9,8,..,1,0] and stays a SINGLE RRB leaf (n < 32) — no relaxed size-table root is spawned. `readsum`
-           reads every index i=n-1..0; value at index i is (n-1-i), so Sigma i in 0..=9 of (9-i) = Sigma k in
-           0..=9 of k = 45. Built at a runtime recursion base (defeats fold). CENSUS ROLE (v-memory-safety
-           coverage, for the op_vec_prepend acceptance): the single-level leaf-copy prepend leaks only a
-           CONSTANT base (measured got = 2 at BOTH n=10 and n=20 — NOT per-element), in contrast to the
-           multi-level case above whose 18,972 is the RELAXED-ROOT path-copy reclaim gap accumulating per
-           prepend. So the leak is relaxed-root-specific, not single-level; this case pins the single-level
-           path stays a small constant and flips when op_vec_prepend's reclaim (and/or the immortal-empty-vec
-           base) lands. A regression that broke the single-level share/dup or corrupted the shifted indices
-           would move the value off 45.")
+           BELOW the relaxed-root threshold. `build` prepends 0..n-1 via `List.prepend` (which lowers to the
+           dedicated `vec-prepend` op — `Core::ListPrepend` — the front-growth twin of `vec-push`), so at n=10
+           the list is [9,8,..,1,0] and stays a SINGLE RRB leaf (n < 32) — no relaxed size-table root is
+           spawned. `readsum` reads every index i=n-1..0; value at index i is (n-1-i), so Sigma i in 0..=9 of
+           (9-i) = Sigma k in 0..=9 of k = 45. Built at a runtime recursion base (defeats fold). CENSUS ROLE
+           (v-memory-safety coverage): the single-level path leaks only a CONSTANT base of 2 (the readsum
+           Option-shell overhead, NOT per-element — measured got = 2 at both n=10 and n=20). The dedicated op
+           reclaims the build phase to ZERO (see the sibling `List.len`-only build case), so this residual 2 is
+           the READSUM overhead, not a build leak. The multi-level case above's 18,972 is a DISTINCT, PRE-EXISTING
+           leak in `vec-get`'s RELAXED-NODE read path (both this op AND the old `concat` produce relaxed trees, so
+           its read-leak behaviour is identical for both) — not a build leak the dedicated op governs. A
+           regression that broke the single-level share/dup or corrupted the shifted indices would move the value
+           off 45.")
   (input  (do
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
@@ -2545,6 +2550,28 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 45 Int64))
   (live-objects known-leak 2))
+
+(case "a multi-level prepend-built list reclaims every intermediate version (build-phase leak-free)"
+  (doc    "The BUILD-PHASE census that pins the dedicated `vec-prepend` op's reclaim, ISOLATED from the
+           read-path leak the two reading cases above carry. `build` prepends 0..n-1 via `List.prepend` (→ the
+           `vec-prepend` op), threading each result as the next accumulator — so every intermediate list version
+           is CONSUMED by the next prepend. `main` returns `List.len` of the final list: a BORROW that reads the
+           header count then drops the list, leaving nothing live. At n=1100 the trie is a 3-level RRB grown
+           front-first (relaxed root), exercising the interior-root reclaim path (old children dup'd into the new
+           root, old header + root SHELL freed) at every step. Expected: 1100, and `(live-objects 0)` — the whole
+           chain of intermediate versions AND the final list reclaim clean. This is the op's REAL win the
+           read-inclusive cases mask: the isolated `op_vec_prepend` census unit test proves this at the runtime
+           layer, and this case pins it end-to-end through the compiled front-growth accumulation. A reclaim
+           regression (an intermediate version left live, or a double-free) moves the count off 0; a build that
+           mis-shaped the tree moves the length off 1100.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
+            (def (main (: n Int64))
+              (List.len (build 0 n (list))))
+            (export main)))
+  (call   main (: 1100 Int64)) (output (: 1100 Int64))
+  (live-objects 0))
 
 ; --- Large-vector CONCATENATION (the RRB MERGE/rebalance path, distinct from push/prepend growth) ---
 ; The push/prepend cases above grow ONE RRB vector element-by-element. `List.concat` of two ALREADY-LARGE

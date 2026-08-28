@@ -5499,6 +5499,74 @@ fn op_vec_push(v: Handle, elem: Handle) -> Handle {
     v
 }
 
+/// `vec-prepend` — a new owned vector = `elem` followed by the elements of `v`. CONSUMES `v` and `elem`
+/// (a constructor, like `vec-push`); the FRONT-growth twin of `vec-push`'s tail-growth. `List.prepend`
+/// lowers to this, REPLACING the old `concat(singleton, v)` path — which invoked the full RRB merge
+/// (lifting the singleton to `v`'s level) per prepend and leaked the superseded front-spine, ~17
+/// cells/prepend at multi-level (the corpus's single biggest leak, 18,972 at n=1100). RECLAIM discipline
+/// (concat's, minus the merge overhead): the old children are `dup`'d into the result and `v` is dropped,
+/// so the old header + root SHELL are freed while the children carry forward — rc-correct for BOTH a
+/// uniquely-owned `v` (rc 1 → the shell frees, children go rc2→1) AND a shared `v` (rc > 1 → decremented,
+/// children stay shared, RRB persistence intact). SOUND on the immortal empty-vec base (count 0 → a fresh
+/// one-element vector; `op_drop` of the shared immortal is a no-op). Bounded-depth (no fan-out recursion):
+/// one relaxed root over the ≤32 old children plus the front element, growing one level on overflow.
+fn op_vec_prepend(v: Handle, elem: Handle) -> Handle {
+    let (count, shift, root) = vec_read_header(v);
+    let cap = VEC_MASK as usize + 1; // 32 — max children per node
+    if count == 0 {
+        // Onto an empty vector (incl. the shared immortal empty-vec): a fresh one-element vector.
+        let hdr = vec_alloc_header(1, 0, vec_leaf_of(elem));
+        op_drop(v); // frees a mortal empty header; a no-op on the immortal empty singleton
+        return hdr;
+    }
+    if shift == 0 {
+        // Leaf root: the new leaf is `elem` then the old ≤32 elements (dup'd so they survive op_drop(v)).
+        let mut kids = Vec::with_capacity(count as usize + 1);
+        kids.push(elem);
+        vec_collect_children_dup(root, &mut kids);
+        let (new_root, new_shift) = if kids.len() <= cap {
+            (vec_leaf_from_handles(kids), 0)
+        } else {
+            // 33 elements → two leaves under a 2-child relaxed parent (one level up).
+            let k = kids.len().div_ceil(2);
+            let right = kids.split_off(k);
+            (
+                vec_relaxed_node(
+                    vec![vec_leaf_from_handles(kids), vec_leaf_from_handles(right)],
+                    VEC_BITS,
+                ),
+                VEC_BITS,
+            )
+        };
+        let hdr = vec_alloc_header(count + 1, new_shift, new_root);
+        op_drop(v);
+        return hdr;
+    }
+    // Interior root: `elem` becomes a new FRONT child of a relaxed root at `shift`. Lift it to a subtree
+    // at the root's child level (`shift - VEC_BITS`), then prepend it to the old children (dup'd).
+    let lifted = vec_grow_to_shift(vec_leaf_of(elem), 0, shift - VEC_BITS);
+    let mut kids = Vec::with_capacity(cap + 1);
+    kids.push(lifted);
+    vec_collect_children_dup(root, &mut kids);
+    let (new_root, new_shift) = if kids.len() <= cap {
+        (vec_relaxed_node(kids, shift), shift)
+    } else {
+        // >32 front children → two balanced groups + a 2-child relaxed parent one level up.
+        let k = kids.len().div_ceil(2);
+        let right = kids.split_off(k);
+        (
+            vec_relaxed_node(
+                vec![vec_relaxed_node(kids, shift), vec_relaxed_node(right, shift)],
+                shift + VEC_BITS,
+            ),
+            shift + VEC_BITS,
+        )
+    };
+    let hdr = vec_alloc_header(count + 1, new_shift, new_root);
+    op_drop(v);
+    hdr
+}
+
 /// `vec-update` — a new owned vector = `v` with `index` set to `elem`. CONSUMES `v` and `elem`. OOB
 /// index traps (like `vec-get`). FBIP fast path: when `v`'s header is uniquely owned it is reused and
 /// the affected root→leaf path is refit in place wherever each node is uniquely owned; a shared node
@@ -6543,6 +6611,9 @@ impl Guest for Component {
     }
     fn vec_push(v: u32, elem: u32) -> u32 {
         op_vec_push(Handle::from_u32(v), Handle::from_u32(elem)).to_u32()
+    }
+    fn vec_prepend(v: u32, elem: u32) -> u32 {
+        op_vec_prepend(Handle::from_u32(v), Handle::from_u32(elem)).to_u32()
     }
     fn vec_update(v: u32, index: u32, elem: u32) -> u32 {
         op_vec_update(Handle::from_u32(v), index, Handle::from_u32(elem)).to_u32()
@@ -20562,6 +20633,40 @@ mod tests {
             live_nodes() - base,
             0,
             "balanced — only the census-excluded immortal empties remain"
+        );
+    }
+
+    /// `op_vec_prepend` builds a correct multi-level RRB AND reclaims each intermediate version — the
+    /// dedicated front-growth op that replaces `concat(singleton, v)` (which leaked ~17 cells/prepend).
+    /// Mirrors the 05:2521 build loop (out = prepend(out, i)): the result is [n-1, …, 1, 0]. The
+    /// post-drop census == base is the leak witness — if intermediate versions leaked, dropping the final
+    /// list would leave them live (unreachable from `v`), so census > base.
+    #[test]
+    fn vec_prepend_builds_correct_multilevel_and_reclaims() {
+        let base = live_nodes();
+        let n: i64 = 100; // > 32 → multi-level (interior relaxed root exercised)
+        let mut v = op_vec_empty();
+        for i in 0..n {
+            v = op_vec_prepend(v, op_box_int(i));
+        }
+        assert_eq!(op_vec_len(v) as i64, n, "prepend built an n-element list");
+        // Prepend puts the last-added element at index 0, the first at index n-1.
+        assert_eq!(op_get_int(op_vec_get(v, 0)), n - 1, "index 0 = the last-prepended element");
+        assert_eq!(
+            op_get_int(op_vec_get(v, (n - 1) as u32)),
+            0,
+            "index n-1 = the first-prepended element"
+        );
+        let mut sum = 0i64;
+        for idx in 0..n {
+            sum += op_get_int(op_vec_get(v, idx as u32));
+        }
+        assert_eq!(sum, (0..n).sum(), "every element is present + readable (sum matches)");
+        op_drop(v);
+        assert_eq!(
+            live_nodes() - base,
+            0,
+            "NO LEAK — each intermediate prepend version was reclaimed, and the final list frees clean"
         );
     }
 

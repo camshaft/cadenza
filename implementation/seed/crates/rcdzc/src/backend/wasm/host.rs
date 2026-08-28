@@ -1330,7 +1330,7 @@ fn collect_host_imports_at(db: &mut Db, id: StructId, out: &mut Vec<HostImport>)
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_host_imports(db, operand, out)
         }
-        Core::ListPush { list, elem } => {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             collect_host_imports(db, list, out);
             collect_host_imports(db, elem, out);
         }

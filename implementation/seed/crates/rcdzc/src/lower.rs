@@ -2199,12 +2199,12 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     }
                 }
                 // `List.prepend` — insert an element at the FRONT (receiver-first: args = [list, elem]).
-                // Phase-1 DERIVED lowering: `concat(list-new(elem), list)` — a singleton list of the element
-                // concatenated ahead of the operand list, reusing the persistent `vec-concat` (no dedicated
-                // runtime op, hash-neutral). A poison operand propagates. A compile-time-visible list literal
-                // FOLDS: the element is INSERTED AT THE FRONT of the constant `Core::ListNew` (mirroring the
-                // `ListConcat` fold of `[elem] ++ xs`), so a constant prepend bakes / folds through
-                // `List.at`/`len` exactly as a written `(list …)`.
+                // Lowers to the dedicated `Core::ListPrepend` (runtime `vec-prepend` op, the front-growth twin
+                // of `vec-push`), REPLACING the old `concat(list-new(elem), list)` path — which invoked the full
+                // RRB merge per prepend and leaked the superseded front-spine (~17 cells/prepend). A poison
+                // operand propagates. A compile-time-visible list literal FOLDS: the element is INSERTED AT THE
+                // FRONT of the constant `Core::ListNew` (mirroring the `ListConcat` fold of `[elem] ++ xs`), so a
+                // constant prepend bakes / folds through `List.at`/`len` exactly as a written `(list …)`.
                 // `List.prepend` — the body is in an `#[inline(never)]` helper so its locals (a `Vec`, the
                 // `synth_core` scratch) stay OFF `core_of`'s per-frame stack: `core_of` is the recursive
                 // lowering hub every nested node walks through, and a `DESCENT_DEPTH_LIMIT`-deep input (the
@@ -29797,7 +29797,8 @@ fn bin_option_is_some(db: &mut Db, opt_node: StructId, disc_some: u32) -> Struct
 /// `List.prepend list elem` → insert `elem` at the FRONT. Kept `#[inline(never)]` so its locals stay off
 /// `core_of`'s recursive frame (the printer-arm-locals-bloat family — a deep-input decline test overflows
 /// the compile thread's stack if the lowering hub's frame grows). FOLD onto a constant list (element at
-/// index 0); a runtime list builds `concat(list-new(elem), list)` reusing the persistent `vec-concat`.
+/// index 0); a runtime list lowers to the dedicated `Core::ListPrepend` (runtime `vec-prepend` op — the
+/// front-growth twin of `vec-push`), replacing the old `concat(list-new(elem), list)` path.
 #[inline(never)]
 fn lower_list_prepend(db: &mut Db, id: StructId, list: StructId, elem: StructId) -> Core {
     match (core_of(db, list), core_of(db, elem)) {
@@ -29809,20 +29810,11 @@ fn lower_list_prepend(db: &mut Db, id: StructId, list: StructId, elem: StructId)
             trace!(target: "rcdzc::fold", node = id.0, len = a.len(), "List.prepend folds onto a constant list");
             Core::ListNew { elems: a.into() }
         }
-        _ => {
-            let list_ty = crate::infer::type_of(db, list);
-            let singleton = synth_core(
-                db,
-                Core::ListNew {
-                    elems: std::rc::Rc::from([elem]),
-                },
-                list_ty,
-            );
-            Core::ListConcat {
-                lhs: singleton,
-                rhs: list,
-            }
-        }
+        // A RUNTIME list operand lowers to the dedicated `vec-prepend` op (front-growth twin of `vec-push`),
+        // REPLACING the old `concat(singleton, list)` path — which invoked the full RRB merge per prepend and
+        // leaked the superseded front-spine (~17 cells/prepend, the corpus's single biggest leak). `elem`'s
+        // boxing is applied by the backend exactly as for `ListPush`.
+        _ => Core::ListPrepend { list, elem },
     }
 }
 

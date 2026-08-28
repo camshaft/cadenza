@@ -397,6 +397,17 @@ pub enum Core {
         list: StructId,
         elem: StructId,
     },
+    /// `List.prepend` — insert `elem` at the FRONT of `list`, returning the new list (runtime `vec-prepend`;
+    /// persistent, no mutation). The front-growth twin of `ListPush`: identical ABI shape (`(list, elem) ->
+    /// list`, consumes both, `elem` boxed by its type before the op), differing ONLY in which runtime op is
+    /// emitted. Replaces the old `concat(singleton, list)` lowering, which invoked the full RRB merge per
+    /// prepend and leaked the superseded front-spine (~17 cells/prepend). A constant-list prepend FOLDS to a
+    /// front-inserted `ListNew` in `lower` (like the `push`/`concat` folds), so this only reaches the backend
+    /// for a RUNTIME list operand.
+    ListPrepend {
+        list: StructId,
+        elem: StructId,
+    },
     /// `List.concat` — concatenate `lhs` and `rhs` into one list (runtime `vec-concat`). Both are list
     /// handles of the same element type.
     ListConcat {
