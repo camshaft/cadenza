@@ -12052,3 +12052,50 @@
   (call main (: -3 Int64))
   (output (: (map (-3 2)) (Map Int64 Int64)))
   (live-objects 1))
+
+(case "cdzw20 the cadenza backend round-trips a GUARDED list arm whose condition reads the REST binder"
+  (doc "The #4964 guard face with the guard condition reaching PAST the leading binder into the REST:
+        `((guard (list h .. t) (> (List.len t) 2)) …)` re-emits as the (guard …) surface and must
+        evaluate the length of the RestFrom binder in the COND position on both the guard-true and
+        guard-false paths. n=7: f(7 1 2 3) rest-len 3 → 107; f(7 9) rest-len 1 → falls to the plain arm
+        → 7; total 114. Dual-path verified; fully scalarized.")
+  (input (do (def (f (: xs (List Int64))) (match xs ((guard (list h .. t) (> (List.len t) 2)) (+ 100 h)) ((list h .. t) h) (_ -1))) (def (main (: n Int64)) (+ (f (list n 1 2 3)) (f (list n 9)))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 114 Int64))
+  (call main (: 2 Int64))
+  (output (: 104 Int64)))
+
+(case "cdzw21 the cadenza backend round-trips a guarded arm FALLING THROUGH to a later SAME-SHAPE arm"
+  (doc "The fall-through face of #4964: two arms with the IDENTICAL list pattern where only the guard
+        separates them — a false guard must fall to the second arm and bind ITS binders (a re-emit that
+        merged or reordered the twin arms would take the wrong body). n=7: f(7 3) guard 7>5 → 70;
+        f(2 7) guard 2>5 false → falls through → 2+7=9; total 79. Dual-path verified; heap balances.")
+  (input (do (def (f (: xs (List Int64))) (match xs ((guard (list a b) (> a 5)) (* a 10)) ((list a b) (+ a b)) (_ -1))) (def (main (: n Int64)) (+ (f (list n 3)) (f (list 2 n)))) (export main)))
+  (call main (: 7 Int64))
+  (output (: 79 Int64))
+  (call main (: 2 Int64))
+  (output (: 9 Int64))
+  (live-objects 0))
+
+(case "cdzw22 the cadenza backend round-trips a JOIN-RESOLVED bare (None) — the if-branch Option"
+  (doc "The #4972 fence (breaker-found GAP fixed): a bare `(None)` in an if-arm whose Option type is
+        solved only by the JOIN with the sibling `(Some …)` arm — the backend recovers the concrete
+        sum type from the threaded expected-type instead of declining as under-determined. Both arms
+        exercised. Dual-path verified; `(live-objects 1)` = the reachable returned Option.")
+  (input (do (def (main (: n Int64)) (if (> n 0) (Some (* n 2)) (None))) (export main)))
+  (call main (: 7 Int64))
+  (output (: (Some 14) (Option Int64)))
+  (call main (: 0 Int64))
+  (output (: (None unit) (Option Int64)))
+  (live-objects 1))
+
+(case "cdzw23 the cadenza backend round-trips a join-resolved Result — the Ok/Err twin"
+  (doc "The Result twin of cdzw22: `(Ok …)`/`(Err …)` join-solve the Result's BOTH type parameters
+        across the if — each arm under-determines one side alone. Both arms exercised. Dual-path
+        verified.")
+  (input (do (def (main (: n Int64)) (if (> n 0) (Ok (+ n 1)) (Err (- 0 n)))) (export main)))
+  (call main (: 7 Int64))
+  (output (: (Ok 8) (Result Int64 Int64)))
+  (call main (: 0 Int64))
+  (output (: (Err 0) (Result Int64 Int64)))
+  (live-objects 1))
