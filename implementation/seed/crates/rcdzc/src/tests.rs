@@ -24074,38 +24074,14 @@ mod diagnostics {
     }
 
     #[test]
-    fn an_unknown_type_in_a_let_binder_annotation_is_rejected() {
-        // The let-binding sibling of the parameter/value-annotation type check: an unknown type in a
-        // `(let (((: x Nonesuch) …)) …)` binder annotation was silently accepted (`check_binding_pattern`
-        // only checks the annotation AGREES with the value, and an unresolvable type agrees vacuously, so
-        // `x` typed `Any`). Now the annotation type is validated — an unknown name → CDZ0101 (recursing
-        // into `(List Nonesuch)`), a well-formed non-type → CDZ0203.
-        let d = first_error("(module m (def (main) (let (((: x Nonesuch) 5)) x)) (export main))");
-        assert_eq!(d.code.as_deref(), Some("CDZ0101"), "got: {}", d.message);
-        assert!(
-            d.message.contains("Nonesuch"),
-            "names the unknown annotation type: {}",
-            d.message
-        );
-        let nested = first_error(
-            "(module m (def (main) (let (((: x (List Nonesuch)) (list 1))) x)) (export main))",
-        );
-        assert_eq!(
-            nested.code.as_deref(),
-            Some("CDZ0101"),
-            "got: {}",
-            nested.message
-        );
-        // A well-formed NON-type annotation (a literal) → CDZ0203.
-        let lit = first_error("(module m (def (main) (let (((: x 5) 3)) x)) (export main))");
-        assert_eq!(lit.code.as_deref(), Some("CDZ0203"), "got: {}", lit.message);
-        // NO false positive: a KNOWN type annotation compiles; a mismatch keeps its M63 coercion fix
-        // (not a spurious "requires a type").
-        assert!(
-            all_errors("(module m (def (main) (let (((: x Int64) 5)) x)) (export main))")
-                .is_empty(),
-            "a known-type let-binder annotation compiles"
-        );
+    fn a_known_type_let_binder_mismatch_keeps_its_coercion_fix() {
+        // WHITE-BOX pin (corpus-inexpressible — asserts a STRUCTURED `.fix`, which the corpus `(error …)`
+        // form has no field for): a let-binder annotation whose KNOWN type mismatches the value keeps its
+        // M63 coercion fix, NOT a spurious unknown-type reject. `(let (((: x Float64) 3)) x)` → CDZ0203
+        // "bound to a value" WITH a fix. The backend-agnostic halves of the let-binder annotation
+        // VALIDATION — unknown-type → CDZ0101 (incl. nested `(List Nonesuch)`), non-type → CDZ0203,
+        // known-type → compiles + runs — migrated to corpus `spec/semantics/07-type-system.sexp`
+        // ("…let-binder annotation…" cases). Only this fix-quality assertion is inexpressible there.
         let m63 = first_error("(module m (def (main) (let (((: x Float64) 3)) x)) (export main))");
         assert_eq!(m63.code.as_deref(), Some("CDZ0203"), "got: {}", m63.message);
         assert!(
