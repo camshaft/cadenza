@@ -1594,6 +1594,25 @@
   (call   main (: 99 Int64)) (output (: true Bool))
   (call   main (: 7 Int64))  (output (: false Bool)))
 
+(case "compound equality short-circuits at the first differing element — a later trapping element is not forced"
+  (doc    "The short-circuit complement of the deepest-node walk: `(= (tuple 1 (/ 5 d)) (tuple 9 9))` compares
+           element 0 first (1 vs 9) — they DIFFER, so the result is decided FALSE without element 1, whose
+           `(/ 5 d)` at d=0 is a divide-by-zero. The trapping element is UNOBSERVED (its value cannot change the
+           already-decided result), so it is NOT forced and its trap does NOT occur (core-semantics.md #A Trap
+           Occurs Only Where Its Computation Is Observed). At d=0 the comparison is false, NOT a trap.")
+  (input  (do (def (main (: d Int64)) (= (tuple 1 (/ 5 d)) (tuple 9 9))) (export main)))
+  (call   main (: 0 Int64))
+  (output (: false Bool)))
+
+(case "compound equality forces through an equal-prefix element to the deciding element, whose trap occurs"
+  (doc    "The anchor to the short-circuit case: `(= (tuple 9 (/ 5 d)) (tuple 9 9))` — element 0 is EQUAL (9 = 9),
+           so the comparison must continue to element 1 to decide, forcing `(/ 5 d)`; at d=0 that is a
+           divide-by-zero, so the comparison TRAPS. Pins that short-circuit stops at the first DIFFERENCE only —
+           an equal prefix is forced through, and the first not-yet-decided element IS observed.")
+  (input  (do (def (main (: d Int64)) (= (tuple 9 (/ 5 d)) (tuple 9 9))) (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero"))
+
 (case "recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk"
   (doc    "The float-leaf member of the recursive-walk family (the Int64-payload cases above compare
            integer leaves): `(type FL (FNil) (FCons Float64 FL))` — each spine node carries a Float64, so
