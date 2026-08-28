@@ -134,10 +134,12 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
     Program { source }
 }
 
-/// `main`'s body: an Int64 expression, or a COMPOUND value built from Int64 sub-expressions — a
-/// `(tuple <e> <e>)` or `(list <e> <e> <e>)`. Keeping the elements Int64 stays type-safe without full
-/// type-directed generation, while reaching product/collection construction + the compound value codec
-/// (a lowering surface a bare scalar body never exercises).
+/// `main`'s body: an Int64 expression, a COMPOUND value built from Int64 sub-expressions — a
+/// `(tuple <e> <e>)` or `(list <e> <e> <e>)` — or a BOOL value. Keeping the elements Int64 stays
+/// type-safe without full type-directed generation, while reaching product/collection construction +
+/// the compound value codec (a lowering surface a bare scalar body never exercises). The bool arm
+/// returns a `Bool` from `main` (via [`gen_cond`]), exercising bool RETURN-value lowering + the bool
+/// value codec — distinct from bool-as-`if`-condition, the only place a Bool appears otherwise.
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -145,7 +147,10 @@ fn gen_main_body<C: Choice>(
     can_call_f: bool,
     out: &mut String,
 ) {
-    match c.variant(3) {
+    match c.variant(4) {
+        // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
+        // the bool value codec), a surface a scalar/compound Int64 body never hits.
+        3 => gen_cond(c, MAX_DEPTH, scope, fresh, can_call_f, out),
         // (tuple <e> <e>) — a 2-tuple of Int64.
         1 => {
             out.push_str("(tuple ");
@@ -479,6 +484,22 @@ mod tests {
             assert!(
                 matches!(compile_catching(src), Verdict::Compiled { .. }),
                 "compound main body must compile: {src}"
+            );
+        }
+    }
+
+    /// The bool-valued `main`-body shapes the generator can emit compile to VALID wasm: `main : Bool`
+    /// from a relation and from boolean connectives. Pins that bool RETURN-value lowering (bool-as-i32
+    /// result + the bool value codec) — distinct from bool-as-`if`-condition — is valid Cadenza.
+    #[test]
+    fn bool_main_body_shapes_compile() {
+        for src in [
+            "(do (def (main) (< 1 2)) (export main))",
+            "(do (def (main) (and (< 1 2) (not (>= 3 4)))) (export main))",
+        ] {
+            assert!(
+                matches!(compile_catching(src), Verdict::Compiled { .. }),
+                "bool main body must compile to valid wasm: {src}"
             );
         }
     }
