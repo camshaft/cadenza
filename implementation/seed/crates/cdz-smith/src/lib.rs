@@ -37,6 +37,12 @@
 /// the crate's `[features]` in Cargo.toml.
 #[cfg(feature = "differential")]
 pub mod differential;
+// The coercing bolero generator lives behind `#[cfg(test)]` because it uses the `bolero` generator
+// traits, and `bolero` is a DEV-dependency (kept out of the lean lib/bin + the instrumented libFuzzer
+// link — see Cargo.toml). It is exercised by the `cdz_smith_gen_never_panics` target under `cargo test`
+// / `cargo bolero test`, which is exactly the coverage-guided path the operator directed.
+#[cfg(test)]
+mod astgen;
 pub mod driver;
 pub mod finding;
 pub mod generator;
@@ -141,4 +147,36 @@ fn cdz_smith_ast_never_panics() {
             Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_) => {}
         }
     });
+}
+
+// ── the COERCING-generator target ─────────────────────────────────────────────────────────────────
+// The operator's directed generation mechanism (see `astgen`): instead of mutating a seeded corpus,
+// drive a bolero `ValueGenerator` that COERCES arbitrary entropy → a valid, type-correct program. Bolero
+// mutates the driver's entropy coverage-guided, and `astgen::ProgramGen` maps every input to a program
+// the compiler accepts — so the fuzz budget is spent in the compiler, not on inputs the decode-gate
+// skips. Same crash / invalid-wasm property + both emit backends. Run it:
+//   cargo bolero test cdz_smith_gen_never_panics --engine libfuzzer -T 10m --timeout 10s …  (nightly)
+//   cargo test cdz_smith_gen_never_panics                                                    (bounded random)
+#[cfg(test)]
+#[test]
+fn cdz_smith_gen_never_panics() {
+    use bolero::check;
+    check!()
+        .with_generator(astgen::ProgramGen)
+        .for_each(
+            |program: &generator::Program| match compile_catching(&program.source) {
+                Verdict::Crash(info) => panic!(
+                    "compiler panicked at {} on a coerced program: {}\nprogram:\n{}",
+                    info.site.as_deref().unwrap_or("<unknown>"),
+                    info.message.lines().next().unwrap_or(""),
+                    program.source
+                ),
+                Verdict::InvalidWasm { detail, .. } => panic!(
+                    "compiler emitted INVALID wasm on a coerced program: {}\nprogram:\n{}",
+                    detail.lines().next().unwrap_or(""),
+                    program.source
+                ),
+                Verdict::Compiled { .. } | Verdict::Declined { .. } | Verdict::ParseError(_) => {}
+            },
+        );
 }
