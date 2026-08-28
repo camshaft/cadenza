@@ -22,9 +22,11 @@
 //! backends follow. Coverage so far:
 //! - **B0**: whole-program shape (`(do (def …)… (export …)…)`) with CONSTANT-bodied definitions — the
 //!   PLAIN constant leaves (Int/Bool/Str/Char/Float/Unit) as literals, and the WRAPPER-typed numeric-
-//!   tower / nominal-leaf constants via their CONSTRUCTOR surface: `BigInt`→`(BigInt.of n)`,
-//!   `Rational`→`(Rational.of n d)`, `Symbol`→`(Symbol.of "…")` (emitting the bare scalar would drop the
-//!   type and miscompile the value). `Ty::Qty` still declines (needs unit reconstruction — a later slice).
+//!   tower / nominal-leaf constants via a re-compilable surface: `BigInt`→`(: n BigInt)` (the direct
+//!   ascription — `BigInt.of` widens an `Int64` so it can't hold a beyond-`Int64` literal),
+//!   `Rational`→`(Rational.of n d)` when num/den fit `Int64` (else declines), `Symbol`→`(Symbol.of "…")`
+//!   (emitting the bare scalar would drop the type and miscompile the value). `Ty::Qty` still declines
+//!   (needs unit reconstruction — a later slice).
 //! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
 //!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
 //!   with no value-form surface (function/unsolved) declines.
@@ -194,15 +196,19 @@ fn emit_expr(
                 value: v,
                 radix: Radix::Dec,
             })),
-        // A BigInt constant is a `ConstInt` typed `Ty::BigInt` — re-emit `(BigInt.of <n>)` so it re-reads
-        // as the arbitrary-precision value rather than a fixed-width Int.
+        // A BigInt constant is a `ConstInt` typed `Ty::BigInt` — re-emit the DIRECT ascription
+        // `(: <n> BigInt)`, NOT `(BigInt.of <n>)`: `BigInt.of` WIDENS a fixed-size `Int64`, so it cannot
+        // hold a beyond-`Int64` literal (`(BigInt.of 9223372036854775808)` fails CDZ0201 "out of range
+        // for Int64 … write the literal directly as a BigInt with (: … BigInt)"). The ascription form
+        // takes the literal directly as a BigInt and round-trips at every magnitude.
         Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::BigInt) => {
-            let head = member_access(b, "BigInt", "of");
+            let colon = b.name(":");
             let n = b.atom_leaf(Leaf::Int {
                 value: v,
                 radix: Radix::Dec,
             });
-            Ok(b.list(vec![head, n]))
+            let ty = b.name("BigInt");
+            Ok(b.list(vec![colon, n, ty]))
         }
         Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::String) => {
             Ok(b.atom_leaf(Leaf::Str(s)))
@@ -218,8 +224,11 @@ fn emit_expr(
             Ok(b.atom_leaf(Leaf::Float(d)))
         }
         // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
-        // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair.
-        Core::ConstRational(n, d) => {
+        // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair. `Rational.of`
+        // takes two `Int64` arguments, so a numerator/denominator BEYOND `Int64` cannot be expressed this
+        // way (same limit as `BigInt.of`); such a constant DECLINES (a beyond-`Int64` rational literal
+        // surface is a later slice) rather than emit a non-re-compilable `(Rational.of <huge> …)`.
+        Core::ConstRational(n, d) if n.to_i64().is_some() && d.to_i64().is_some() => {
             let head = member_access(b, "Rational", "of");
             let num = b.atom_leaf(Leaf::Int {
                 value: n,
