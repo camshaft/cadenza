@@ -1782,6 +1782,11 @@
         cdzCorpus = mkPhaseBin { pname = "cdz-corpus"; crate = "cdz-corpus"; closure = crateClosure "cdz-corpus"; };
         cdzCompile = mkPhaseBin { pname = "cdz-compile"; crate = "rcdzc"; bin = "cdz-compile"; closure = crateClosure "rcdzc"; injectRuntimeHash = true; };
         cdzRun = mkPhaseBin { pname = "cdz-run"; crate = "cdz-run"; closure = crateClosure "cdz-run"; };
+        # cdz-calc: the standalone calc/repl binary `cdz calc` (alias `cdz repl`) forwards to (v-cdz-crate-split
+        # #5167 dropped cdz's cdz-calc lib dep — it pulled cdz-run/wasmtime transitively — making it a
+        # CDZ_CALC_BIN passthrough). Built here so apps.cdz can inject CDZ_CALC_BIN for an interactive
+        # `cdz calc`/`cdz repl` in the nix shell / packaged cdz (no gate site runs the REPL, so no gate needs it).
+        cdzCalc = mkPhaseBin { pname = "cdz-calc"; crate = "cdz-calc"; closure = crateClosure "cdz-calc"; };
         # The RUST exec grader (`cdz-rust-run --grade`) — the rust-target analogue of `cdz-run` for the corpus
         # rust exec layer. COMPILER-FREE by construction (its closure is cdz-rust-run's deps: cdz-rust-render +
         # cdz-corpus-grade + cadenza-syntax, NO rcdzc), so a compiler change cannot rotate a rust exec beyond
@@ -3614,6 +3619,9 @@
         packages.cdz-wasm-pkg = cdzWasmPkg;
         # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
         packages.guide-shred = guideShred;
+        # The standalone calc/repl binary `cdz calc`/`cdz repl` forwards to (v-cdz-crate-split #5167). Exposed
+        # so `nix build .#cdz-calc` builds it directly; apps.cdz injects it as CDZ_CALC_BIN for interactive use.
+        packages.cdz-calc = cdzCalc;
         packages.cargo-artifacts-release = cargoArtifactsRelease;
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
@@ -4765,6 +4773,11 @@
                 # cdz-rust-run is the corpus --grade GRADER (no source→verdict bin to forward to), so a
                 # CDZ_RUST_RUN_BIN pre-wire was dropped as unneeded.
                 export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
+                # CDZ_CALC_BIN: `cdz calc`/`cdz repl` is a passthrough to the standalone cdz-calc binary
+                # (v-cdz-crate-split #5167, so cdz sheds cdz-calc's transitive cdz-run/wasmtime lib dep). So
+                # an interactive `cdz calc` in the nix shell / packaged cdz resolves the binary. Same
+                # env→sibling→PATH convention + caller-override :- as the other CDZ_*_BIN.
+                export CDZ_CALC_BIN="''${CDZ_CALC_BIN:-${cdzCalc}/bin/cdz-calc}"
                 exec "${seedCompiler}/bin/cdz" "$@"
               '';
             };
