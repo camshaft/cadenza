@@ -9582,3 +9582,21 @@
               (def (main) (match (f -60) ((Mk x _) x))) (export main)))
   (output (: 1 Int64))
   (live-objects known-leak 59))
+
+(case "ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)"
+  (doc    "#4754 collapses identical core functypes for closure-free programs. Five (Int64)->Int64 defs
+           (a/b/c/d + the pick selector) dispatched via a runtime-selected chain must stay value-correct
+           after the dedup: pick(5%4=1)=b(5)=7 + pick(6%4=2)=c(5)=8 = 15. Pins that collapsing the
+           functype section preserves per-function BEHAVIOR (a dedup that merged the wrong bodies, or
+           mis-indexed a call after collapsing types, would change this value).")
+  (input (do
+(def (a (: x Int64)) (+ x 1))
+(def (b (: x Int64)) (+ x 2))
+(def (c (: x Int64)) (+ x 3))
+(def (d (: x Int64)) (* x 2))
+(def (pick (: n Int64) (: x Int64))
+  (if (= n 0) (a x) (if (= n 1) (b x) (if (= n 2) (c x) (d x)))))
+(def (main (: n Int64)) (+ (pick (% n 4) n) (pick (% (+ n 1) 4) n)))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 15 Int64)))

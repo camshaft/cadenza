@@ -9050,3 +9050,4 @@ pass	rmn1 MIN %/-1 is 0 (not a trap) on both fold and runtime — the remainder 
 pass	rmn2 a RUNTIME MIN %/-1 returns 0 while the same operand under / -1 would trap (rem is total, div is not)
 pass	fno1 a runtime NaN is self-EQUAL (canonical-byte) but self-UNORDERED under <= and >= (the intentional =/order split)
 pass	fno2 runtime +/-infinity is FULLY ORDERED (only NaN is unordered, not all non-finite)
+pass	ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)
