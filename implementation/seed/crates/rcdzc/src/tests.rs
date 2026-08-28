@@ -1433,21 +1433,9 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         imports_value_heap_runtime(&bytes),
         "an if-selected narrow tuple, projected, must build on the heap (import the runtime)"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("pair-sum".to_string()),
-        args: vec!["100".to_string(), "50".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(s, "150", "narrow heap round-trip"),
-        cdz_run::Outcome::Trap(t) => panic!("narrow heap run trapped (miscompile?): {t}"),
-    }
+    // The RUN — pair-sum(100, 50) reads both narrow UInt8 elements back off the heap tuple and adds them =
+    // 150 — is corpus-covered by 05-compound-types "two narrow tuple elements are projected and added"
+    // (same (+ (. t 0) (. t 1)) over UInt8 params = 150); this test keeps the builds-on-the-heap pin.
 }
 
 /// adv-66 (breaker/v-runtime, HIGH wasm-only UAF/OOB): `Bytes.compact` was mis-classified as a BORROW in
