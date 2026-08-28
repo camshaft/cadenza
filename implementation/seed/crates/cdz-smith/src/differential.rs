@@ -187,9 +187,29 @@ pub fn run_wasm(source: &str, store: &std::path::Path) -> Side {
         Err(e) => return Side::Declined(format!("parse error: {}", e.0)),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
+    run_wasm_bytes(&bytes, store)
+}
 
+/// Run a BINARY-AST blob through the WASM backend — the next-gen entropy path's analog of [`run_wasm`].
+/// DECODE-GATE first (strict + total `codec::decode_detailed`: malformed / truncated / non-tree bytes
+/// → [`Side::Declined`], never a false mismatch or a panic), re-encode canonical, then compile + run
+/// exactly as [`run_wasm`]. This is how a binary-AST-entropy program's rcdzc OUTPUT (value / trap) is
+/// captured to run the wasm backend — and, in the L2 differential, as the rcdzc-output side of a Lean
+/// trial. A blob that does not decode is a malformed entropy input (not comparable), not a bug.
+pub fn run_wasm_ast(ast_bytes: &[u8], store: &std::path::Path) -> Side {
+    let arenas = match cadenza_syntax::codec::decode_detailed(ast_bytes) {
+        Ok(a) => a,
+        Err(e) => return Side::Declined(format!("decode: {e:?}")),
+    };
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    run_wasm_bytes(&bytes, store)
+}
+
+/// Compile already-encoded binary-AST `bytes` to a component and run it in-process — the shared tail
+/// of [`run_wasm`] (text path) and [`run_wasm_ast`] (binary-AST-entropy path).
+fn run_wasm_bytes(bytes: &[u8], store: &std::path::Path) -> Side {
     // Compile to a component. A rejection/decline (errors-as-data) → not comparable.
-    let component = match rcdzc::compile_component(&bytes) {
+    let component = match rcdzc::compile_component(bytes) {
         Ok(c) => c,
         Err(diag) => {
             return Side::Declined(
@@ -380,6 +400,47 @@ pub fn parse_rust_verdict(verdict: &str) -> Side {
         // An unrecognized line — treat conservatively as declined (not comparable), never a mismatch.
         Side::Declined(format!("unrecognized run-rust verdict: {verdict}"))
     }
+}
+
+/// Outcome tally of running an AST seed corpus through the wasm backend (see [`run_ast_corpus_sweep`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AstSweepStats {
+    /// `.ast` seeds run.
+    pub seeds: usize,
+    /// Seeds that produced a value.
+    pub values: usize,
+    /// Seeds that trapped at run time.
+    pub traps: usize,
+    /// Seeds the front-end/backend declined, or that didn't decode / lacked a runtime in the store.
+    pub declined: usize,
+}
+
+/// Run every `*.ast` seed in `seeds_dir` through the WASM backend ([`run_wasm_ast`]), tallying
+/// value / trap / declined outcomes. This is the operator's "run the wasm backend on the
+/// semantics-corpus AST seeds" end-to-end: S1 decode-gate → re-encode → compile → S3 wasm run, over
+/// the S2 seed corpus. It never files anything — it's a throughput/health probe (and the substrate the
+/// L2 Lean differential will pipeline over). Seeds are visited in sorted order for reproducibility.
+pub fn run_ast_corpus_sweep(
+    seeds_dir: &std::path::Path,
+    store: &std::path::Path,
+) -> std::io::Result<AstSweepStats> {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(seeds_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ast"))
+        .collect();
+    paths.sort();
+
+    let mut stats = AstSweepStats::default();
+    for path in &paths {
+        let bytes = std::fs::read(path)?;
+        stats.seeds += 1;
+        match run_wasm_ast(&bytes, store) {
+            Side::Value(_) => stats.values += 1,
+            Side::Trap(_) => stats.traps += 1,
+            Side::Declined(_) | Side::ArtifactError(_) => stats.declined += 1,
+        }
+    }
+    Ok(stats)
 }
 
 /// The full differential check for one program: run both backends and compare. `store` is the runtime
@@ -714,5 +775,63 @@ mod tests {
             }
             Err(e) => eprintln!("skipping rust side: {e}"),
         }
+    }
+
+    // ── the binary-AST-entropy wasm-run path (`run_wasm_ast`) ─────────────────────────────────────
+
+    /// Encode a source program to canonical binary-AST bytes — the shape the entropy path consumes.
+    fn ast_bytes_of(source: &str) -> Vec<u8> {
+        let arenas = cadenza_syntax::sexpr::read(source).expect("test source parses");
+        cadenza_syntax::codec::encode(&arenas)
+    }
+
+    /// Run the WASM backend directly from a BINARY-AST blob: a pure scalar imports no runtime, so it
+    /// runs to its value with NO store — proving the decode-gate → re-encode → compile → run path is
+    /// equivalent to the text `run_wasm` for a real program. This is the operator's "run the wasm
+    /// backend" on binary-AST entropy.
+    #[test]
+    fn run_wasm_ast_runs_a_scalar_blob_without_a_store() {
+        let bytes = ast_bytes_of("(do (def (main) (+ 1 2)) (export main))");
+        let side = run_wasm_ast(&bytes, std::path::Path::new("/nonexistent-store"));
+        assert_eq!(side, Side::Value("3".into()));
+    }
+
+    /// A malformed entropy blob is DECLINED by the decode-gate (not a panic, not a false mismatch) —
+    /// the strict + total codec keeps the differential sound on arbitrary/mutated bytes.
+    #[test]
+    fn run_wasm_ast_declines_garbage_bytes() {
+        let side = run_wasm_ast(
+            b"not a binary ast",
+            std::path::Path::new("/nonexistent-store"),
+        );
+        assert!(matches!(side, Side::Declined(_)), "got {side:?}");
+    }
+
+    /// The corpus sweep runs every `*.ast` seed and tallies outcomes. Two pure-scalar seeds → two
+    /// values, no store needed — exercising S2-seed → S3-wasm-run end to end. A garbage `.ast`
+    /// declines (decode-gate) without derailing the sweep.
+    #[test]
+    fn run_ast_corpus_sweep_tallies_scalar_seeds() {
+        let dir = std::env::temp_dir().join(format!("cdz-smith-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.ast"),
+            ast_bytes_of("(do (def (main) (+ 1 2)) (export main))"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.ast"),
+            ast_bytes_of("(do (def (main) 42) (export main))"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("bad.ast"), b"not a binary ast").unwrap();
+
+        let stats = run_ast_corpus_sweep(&dir, std::path::Path::new("/nonexistent-store")).unwrap();
+        assert_eq!(stats.seeds, 3);
+        assert_eq!(stats.values, 2);
+        assert_eq!(stats.declined, 1);
+        assert_eq!(stats.traps, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
