@@ -381,6 +381,54 @@
   (output (: 35 Int64))
   (live-objects known-leak 2))
 
+(case "brv1 a sibling view's arm-end reclaim leaves the surviving view's window intact"
+  (doc    "The post-reclaim ALIAS-READ-ORDERING face of the shared-storage pin above (there both views
+           are read with both matches still OPEN; here the sibling's match CLOSES first): v2's arm only
+           scalar-extracts (`Bytes.at`), so under the arm-borrow relax its Option shell AND the view
+           deep-drop at arm end — and THEN the surviving sibling v1 (a view of the SAME parent) is read.
+           A deep-drop that recursed into the shared parent storage (instead of just releasing v2's
+           reference) would corrupt or dangle v1's read. n=0: 30+10=40; n=2: 30+30=60 — and the heap
+           fully balances (0), unlike the both-open shape's residual 2.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+                (match (Bytes.slice b 0 3)
+                  ((Some v1)
+                    (+ (match (Bytes.slice b 2 4)
+                         ((Some v2) (match (Bytes.at v2 0) ((Some v) v) ((None u) -4)))
+                         ((None u) -2))
+                       (match (Bytes.at v1 n) ((Some v) v) ((None u) -3))))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 40 Int64))
+  (call   main (: 2 Int64))
+  (output (: 60 Int64))
+  (live-objects 0))
+
+(case "brv2 an inner slice-of-a-slice's reclaim leaves the OUTER view readable"
+  (doc    "The parent-chain twin of brv1: the reclaimed view w2 is a slice OF the outer view w (not a
+           sibling), so its arm-end deep-drop releases a reference INTO w's chain — and then w itself is
+           read. An over-release up the view chain (freeing w's window or its transitive parent storage
+           when w2's shell drops) would corrupt the later `(Bytes.at w n)`. w=(10,20,30,40), w2=(20,30,40),
+           inner read 20; n=0: 20+10=30; n=3: 20+40=60; heap fully balances.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((b (Bytes.of (list 10 20 30 40 50 60))))
+                (match (Bytes.slice b 0 4)
+                  ((Some w)
+                    (+ (match (Bytes.slice w 1 3)
+                         ((Some w2) (match (Bytes.at w2 0) ((Some v) v) ((None u) -4)))
+                         ((None u) -2))
+                       (match (Bytes.at w n) ((Some v) v) ((None u) -3))))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64))
+  (call   main (: 3 Int64))
+  (output (: 60 Int64))
+  (live-objects 0))
+
 (case "a slice returned from a helper OUTLIVES the helper's local parent"
   (doc    "The strongest escape: `mk-slice` builds `parent` as a LOCAL and returns a view of it — the
            parent binding dies at the helper's return while the view crosses the boundary. The caller
