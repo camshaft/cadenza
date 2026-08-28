@@ -663,6 +663,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       match m.headName? (Node.list children) with
       | some h =>
         if h == "let".toUTF8 then evalLet m env ty fuel children
+        else if h == "do".toUTF8 then evalDo m env ty fuel children
         else if h == "quote".toUTF8 then
           -- `(quote <expr>)`: reflect the single quoted subtree structurally, WITHOUT evaluating it.
           match children[1]? with
@@ -813,6 +814,33 @@ partial def evalQuasi (m : Module) (env : Env) (level : Nat) (i : Nat) : Outcome
       match reflected with
       | .ok vs => .value (Value.variant "List".toUTF8 (Value.list vs))
       | .error o => o
+
+/-- `(do stmt… lastExpr)` as an EXPRESSION (e.g. a function body): the LEADING statements are local
+value bindings `(def name valueExpr)` bound SEQUENTIALLY + LAZILY (a later def sees the earlier), and the
+FINAL child is the result expression, evaluated with all bindings in scope. A leading statement that is
+NOT a `(def <bare-name> value)` — a local FUNCTION def `(def (f …) …)`, a bare effectful expression, an
+`(export …)` — is not modeled → `unsupported` (a sound skip, never wrong semantics). -/
+partial def evalDo (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children : Array Nat) : Outcome :=
+  let items := children.extract 1 children.size
+  match items.back? with
+  | none => .unsupported "eval: empty do"
+  | some lastId =>
+    let rec bindStmts (env : Env) (js : List Nat) : Except Outcome Env :=
+      match js with
+      | [] => .ok env
+      | j :: rest =>
+        match asDef? m j with
+        | some dc =>
+          match dc[1]?, dc[dc.size - 1]? with
+          | some targetId, some valId =>
+            match nameOf? m targetId with
+            | some nm => bindStmts ((nm, Thunk.mk (fun _ => evalNode m env defaultIntTy fuel valId), none) :: env) rest
+            | none => .error (.unsupported "eval: do-block local function def not modeled")
+          | _, _ => .error (.unsupported "eval: malformed do-block def")
+        | none => .error (.unsupported "eval: do-block non-def statement not modeled")
+    match bindStmts env (items.extract 0 (items.size - 1)).toList with
+    | .ok env' => evalNode m env' ty fuel lastId
+    | .error o => o
 
 /-- `(let (bindings) body)`: bind each `(name val)` SEQUENTIALLY (a later binding sees the earlier),
 then evaluate `body`. Binding values are evaluated at the default integer type (their own annotation,
