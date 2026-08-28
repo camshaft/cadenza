@@ -4976,13 +4976,15 @@ fn a_multi_use_constant_tuple_folds_away_with_no_heap() {
     // tuple, so it is not kept; both projections fold to 10 and 20, the body folds to `(+ 10 20)` → 30.
     let src = "(module m (def (main) (let ((t (tuple 10 20))) (+ (. t 0) (. t 1)))) (export main))";
     let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    // The H2c property: NO runtime import — the static tuple left no heap trace at all.
+    // The H2c property (the point of this test, a compile-artifact only white-box can assert): NO runtime
+    // import — the static tuple left no heap trace at all.
     assert!(
         !imports_value_heap_runtime(&bytes),
         "a constant tuple must fold away, importing no runtime op (no per-call arr-alloc)"
     );
-    // And it runs to the folded scalar without any runtime composed in.
-    assert_eq!(run_returns::<i64>(&bytes, "main"), 30);
+    // It runs to the folded scalar (10+20=30); that RUN value is corpus-covered by the constant
+    // tuple-projection folds in 05-compound-types (e.g. "constant tuple projections fold at boundary and
+    // multi-digit indices" + "a let-bound tuple produced by an if, projected at two indices").
 }
 
 /// The routing pin: a projection-only tuple LITERAL folds whether or not its elements are runtime —
