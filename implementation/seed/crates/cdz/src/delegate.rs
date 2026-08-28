@@ -612,6 +612,7 @@ mod tests {
             Target::Dwarf,
             Target::Rust,
             Target::RustAsync,
+            Target::Cadenza,
         ] {
             let parsed = rcdzc::cli::CompileArgs::try_parse_from([
                 "cdz-compile",
