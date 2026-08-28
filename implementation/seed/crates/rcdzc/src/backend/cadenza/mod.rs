@@ -93,6 +93,9 @@
 //!   `RationalOfIntWiden`→`(Rational.of-int n)`, `RationalNum`/`RationalDen`→`(Rational.numerator/
 //!   denominator r)`; `BigIntToI64`→`(<IntType>.of <bigint>)` (the checked narrow, target from result type).
 //!   A `Core::SumNew` with MULTIPLE payloads re-emits `(<Variant> p0 p1 …)`.
+//! - **CONVERT**: `Core::Convert` → `((. <ResultType> <member>) operand)` — the target type is the result
+//!   type, the member is `of-int` for `FloatOfInt` (int→float) else `of` (float-width / int-width). A
+//!   non-numeric (boolean-coercion) Convert declines; an int→int narrow declines on its range-check `Trap`.
 //! - **STRING.CONCAT / NFC**: `String.concat` shares `Core::BytesConcat` (a String is a UTF-8 byte leaf),
 //!   disambiguated from `Bytes.concat` by the result type; its compiler-inserted `Core::NfcNormalize` (no
 //!   surface member) emits TRANSPARENTLY (its inner string), the surface `String.concat`/`to-bytes`
@@ -583,6 +586,32 @@ fn emit_expr_viewed(
                 }
             };
             let head = member_access(b, &module, "of");
+            let x = emit_expr(db, b, operand, None, env, emitted)?;
+            Ok(b.list(vec![head, x]))
+        }
+        // A numeric CONVERSION `(<TargetType>.<member> <operand>)` — the TARGET type is this node's OWN
+        // result type (`render_name` → `Int8`/`Float64`/…); the MEMBER depends on the conversion kind:
+        // `FloatOfInt` (int→float) is written `Float64.of-int`, while a float→float WIDTH change (`FloatOf`)
+        // and an int→int width/sign change are `<Type>.of`. The operand's type + target re-select the exact
+        // op on recompile. A non-numeric result (the boolean-coercion `!`) declines (a later slice). (An
+        // int→int NARROW carries a range-check `Trap` above the `Convert`, which declines on `Trap` first.)
+        Core::Convert { op, operand } => {
+            let ty = crate::infer::type_of(db, id);
+            let module = match &ty {
+                Ty::Int(_) | Ty::Float(_) => ty.render_name(&db.name_ctx()),
+                _ => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet lower a non-numeric Convert (e.g. a boolean \
+                         coercion) — a later slice"
+                            .to_string(),
+                    ));
+                }
+            };
+            let member = match op {
+                crate::resolved::Prim::FloatOfInt => "of-int",
+                _ => "of",
+            };
+            let head = member_access(b, &module, member);
             let x = emit_expr(db, b, operand, None, env, emitted)?;
             Ok(b.list(vec![head, x]))
         }
