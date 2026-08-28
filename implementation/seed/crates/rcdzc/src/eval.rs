@@ -834,14 +834,25 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     // β-immune exactly like the legacy `(key value)` pair's first child — without this a
     // `(def (f (: x Int64)) (record (= x 5)))` substitutes the arg for the key `x`, corrupting
     // `(record (= x 5))` into `(record (= 7 5))` → CDZ0201. Handle it directly, before the first-child gate.
+    // The ascription is recognized in EITHER FieldPair spelling: the native `FieldPair` leaf head (M2b, what
+    // records now carry after resolution) via `field_pair_parts`, and the transitional name-head `(= …)` via
+    // `field_pair`. Restricted to a RECORD grandparent (a MAP entry's key is a VALUE expression that may
+    // legitimately reference a param, so it stays substitutable). Missing the native leaf arm reds the §9
+    // flagship reducer suite: a record field key colliding with a param (`{ id = id }`) β-substitutes the arg
+    // for the key → CDZ0201.
     let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
         return false;
     };
-    if pair_children.len() == 3
-        && db.ast.as_name(pair_children[0]) == Some("=")
-        && pair_children.get(1) == Some(&id)
+    if let Some((key, _)) = db
+        .ast
+        .field_pair_parts(pair)
+        .or_else(|| db.ast.field_pair(pair))
+        && key == id
         && let Some(grandparent) = db.parent_of(pair)
-        && (db.ast.compound_ctor_either(grandparent) == Some(CompoundCtor::Record))
+        && db
+            .ast
+            .compound_form_of(grandparent, CompoundCtor::Record)
+            .is_some()
     {
         return true;
     }
