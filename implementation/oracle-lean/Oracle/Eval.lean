@@ -875,7 +875,10 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         | some hid =>
           match evalNode m env defaultIntTy fuel hid with
           | .value (.closure params body cap) => applyClosure m env fuel params body cap children
-          | .value _ => .unsupported "eval: applied a non-function computed head"
+          -- a NULLARY application `(e)` (single child, no args) of a non-closure value = that value: a
+          -- zero-arg module value/ctor called in call position, e.g. `(Map.empty)` = `((. Map empty))`.
+          | .value v => if children.size == 1 then .value v
+                        else .unsupported "eval: applied a non-function computed head"
           | other => other
         | none => .unsupported "eval: empty list"
     | none => .unsupported "eval: node index out of range"
@@ -1255,6 +1258,9 @@ partial def evalModuleFn (m : Module) (env : Env) (fuel : Nat) (qual mem : ByteA
   else if is "Map" "len" then
     some (match a1 with | some (.value (.map es)) => .value (.int es.size)
                         | some (.value _) => .unsupported "Map.len: not a map" | some o => o | none => .unsupported "Map.len arity")
+  else if is "Set" "len" then
+    some (match a1 with | some (.value (.set es)) => .value (.int es.size)
+                        | some (.value _) => .unsupported "Set.len: not a set" | some o => o | none => .unsupported "Set.len arity")
   else if is "List" "push" then
     -- append an element (deferred as a poison if non-value, like a list literal element).
     some (match a1 with
