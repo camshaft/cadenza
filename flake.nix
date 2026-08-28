@@ -3086,6 +3086,52 @@
           '';
         };
 
+        # ── guide-examples SHRED (operator directive 2026-08-28: the serial check:examples takes 10min+;
+        # examples never change → SHRED it like the corpus, heavily cached + parallel). v-guide-infra owns the
+        # shred CLI (scripts/shred-examples.mjs, #5091/#5096 — deterministic dir names, no timestamps); v-nix
+        # owns the nix wiring. This FOUNDATION derivation runs the CLI ONCE into per-example artifact dirs
+        # (mirrors mkCorpusShred). Content-addressed → the per-case build/exec layer (a follow-up, once the
+        # eval-time case enumeration is settled with v-guide-infra) keys on these exact bytes + caches.
+        #
+        # The CLI is plain node (≥22.6 for .ts type-stripping) + the browser compiler wasm for `render_syntax`
+        # ONLY (surface conversion sexpr↔ml — it does NOT compile or run, so NO runtime store / npm ci needed,
+        # unlike guideExamplesCheck). It loads guide/src/wasm/pkg/cdz_wasm.js, so stage cdzWasmPkg (the #5089-
+        # fixed browser-compiler pkg) there. `cargo xtask guide-wasm` is the non-nix equivalent of that staging.
+        guideShred = pkgs.stdenvNoCC.mkDerivation {
+          pname = "guide-shred";
+          version = "0.0.0";
+          src = pkgs.lib.fileset.toSource { root = ./guide; fileset = ./guide; };
+          nativeBuildInputs = [ pkgs.nodejs_22 ];
+          __contentAddressed = true;
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          buildPhase = ''
+            runHook preBuild
+            mkdir -p src/wasm/pkg
+            cp ${cdzWasmPkg}/cdz_wasm.js ${cdzWasmPkg}/cdz_wasm_bg.wasm src/wasm/pkg/
+            node --expose-gc scripts/shred-examples.mjs --out-dir "$out"
+            runHook postBuild
+          '';
+          # The CLI writes the per-case dirs + manifest.json straight to $out.
+          dontInstall = true;
+        };
+        # Verify the shred emitted the expected case population (guards a silently-empty or truncated shred —
+        # the manifest's own `emitted` count must match the number of case dirs actually written).
+        guideShredCheck = pkgs.runCommand "guide-shred-check" { } ''
+          set -euo pipefail
+          dirs=$(find ${guideShred} -mindepth 1 -maxdepth 1 -type d | wc -l)
+          emitted=$(${pkgs.jq}/bin/jq -r .emitted ${guideShred}/manifest.json)
+          count=$(${pkgs.jq}/bin/jq -r .count ${guideShred}/manifest.json)
+          deferred=$(${pkgs.jq}/bin/jq -r .deferred ${guideShred}/manifest.json)
+          echo "guide-shred: $dirs case dirs; manifest count=$count emitted=$emitted deferred=$deferred"
+          # EVERY case gets a dir (deferred test-mode cases too — they carry meta.deferred=true, no program),
+          # so the dir population equals the manifest's total count; emitted = count - deferred are compilable.
+          [ "$dirs" -eq "$count" ] || { echo "MISMATCH: $dirs case dirs != manifest count=$count"; exit 1; }
+          [ "$emitted" -eq "$((count - deferred))" ] || { echo "MISMATCH: emitted=$emitted != count-deferred=$((count - deferred))"; exit 1; }
+          [ "$emitted" -gt 300 ] || { echo "too few emitted cases ($emitted) — shred likely broke"; exit 1; }
+          echo "ok: guide-shred $dirs case dirs (count=$count emitted=$emitted deferred=$deferred)" > "$out"
+        '';
+
         # ── oracle-lean (L0.1): the Lean reference interpreter as an independent differential oracle ─
         #
         # A pure Lean 4 model of Cadenza semantics over the frozen binary AST, cross-checked against
@@ -3312,6 +3358,8 @@
         # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
         # compiler-latest store pointer).
         packages.cdz-wasm-pkg = cdzWasmPkg;
+        # The per-example shred artifact dirs (v-guide-infra CLI, v-nix wiring). `nix build .#guide-shred`.
+        packages.guide-shred = guideShred;
         packages.cargo-artifacts-release = cargoArtifactsRelease;
         packages.cargo-artifacts-release-codegen = cargoArtifactsReleaseCodegen;
         packages.rcdzc-wasm = rcdzcWasm;
@@ -3850,6 +3898,7 @@
             # Full-CI-in-nix increment 6f: the GHA guide-examples job (the guide's runnable-content gate —
             # hermetic wasm-pack + npm ci + the check:* battery + build + bundle). The LAST required job.
             guide-examples = guideExamplesCheck;
+            guide-shred-check = guideShredCheck;
             # Full-CI-in-nix increment 6a: the GHA `roundtrip` job — every corpus program round-trips
             # through the syntax surfaces. Corpus-only (reads spec/semantics, no runtime store) → narrow
             # `seedRoundtripSrc` (no compiler-ml, #2007). Invoked via `cargo run --locked` (not the bare
