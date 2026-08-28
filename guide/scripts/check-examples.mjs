@@ -28,6 +28,11 @@ import { tmpdir } from "node:os";
 const here = dirname(fileURLToPath(import.meta.url));
 const guideRoot = join(here, "..");
 
+// Example EXTRACTION (cookTemplate / extractFilesProp / extractExamples) is shared with
+// scripts/shred-examples.mjs via ./example-extract.mjs, so the inline gate and the per-example
+// nix-cached shred can NEVER drift in how they parse `<Runnable>`/`<Exercise>` out of a chapter.
+import { cookTemplate, extractFilesProp, extractExamples } from "./example-extract.mjs";
+
 // ---- the blocklist: examples that DON'T run yet, classified + routed (operator policy 2026-07-15) ----
 // An entry marks a KNOWN failure the guide can't fix on its own (a filed compiler bug, or a content bug
 // owned by v-guide). Such an example is reported "known-blocked" (loud + tracked) rather than
@@ -400,148 +405,8 @@ async function checkTestProgram(ex) {
 }
 
 // ---- extract `source=`/`solution=`/`expected=`/`expect=` from a chapter's TSX ----
-// Each example is a `<Runnable …/>` or `<Exercise …/>` element; we pull the template-literal blocks
-// and the string attributes. A tolerant scan (not a full JSX parse) — the guide's examples all use the
-// `attr={`…`}` / `attr="…"` shapes, so a per-attribute regex is enough and stays simple.
-// Extract the `files={[{name, source: `…`, surface, entry}]}` entries of a multi-file <Runnable>. The
-// authored shape (locked with v-guide-editor; the I4/I5 codegen emits the same order) is one object per
-// file with fields in the order name → source → surface → entry, `source` a template literal (the only
-// multiline field). We match per-entry on that shape. A `files={[` marker that yields <2 entries, or an
-// entry missing name/source, is an authoring/extraction bug — THROW (the caller turns it into a hard fail),
-// mirroring the vacuous-floor discipline: a multi-file runnable must never silently extract nothing.
-// Interpret the escapes in a captured template-literal body EXACTLY as JS would when evaluating the
-// `…` at runtime — because that cooked value is what the live <Runnable> `source` prop receives, so the
-// gate must compile the SAME string the browser does. The extractor captures the RAW source text between
-// the backticks (no un-escaping), so without this a `#\a` char literal (authored `#\\a`) reached the
-// compiler as `#\\a` and hard-declined (CDZ0002), while the live app compiled the cooked `#\a`. Only
-// backslash sequences are transformed; every other character passes through byte-identical, so a source
-// with no backslash is unchanged. Mirrors template-literal cooked semantics (no interpolation: guide code
-// snippets carry no `${…}`); a cadenza-level escape written with a doubled backslash (`\\x00`, `\\n`)
-// survives as its single-backslash form for the cadenza lexer, matching the live path.
-function cookTemplate(raw) {
-  let out = "";
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
-    if (c !== "\\") {
-      out += c;
-      continue;
-    }
-    const n = raw[i + 1];
-    if (n === undefined) {
-      out += "\\";
-      break;
-    }
-    i++;
-    switch (n) {
-      case "n": out += "\n"; break;
-      case "r": out += "\r"; break;
-      case "t": out += "\t"; break;
-      case "b": out += "\b"; break;
-      case "f": out += "\f"; break;
-      case "v": out += "\v"; break;
-      case "0": out += "\0"; break;
-      case "\n": break; // line continuation: backslash-newline cooks to nothing
-      case "x": {
-        const hex = raw.slice(i + 1, i + 3);
-        if (/^[0-9a-fA-F]{2}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 2; } else { out += "x"; }
-        break;
-      }
-      case "u": {
-        if (raw[i + 1] === "{") {
-          const close = raw.indexOf("}", i + 2);
-          const hex = close > 0 ? raw.slice(i + 2, close) : "";
-          if (close > 0 && /^[0-9a-fA-F]+$/.test(hex)) { out += String.fromCodePoint(parseInt(hex, 16)); i = close; } else { out += "u"; }
-        } else {
-          const hex = raw.slice(i + 1, i + 5);
-          if (/^[0-9a-fA-F]{4}$/.test(hex)) { out += String.fromCharCode(parseInt(hex, 16)); i += 4; } else { out += "u"; }
-        }
-        break;
-      }
-      default: out += n; // \\ → \, \` → `, \$ → $, and any other \C → C (backslash dropped), as JS does
-    }
-  }
-  return out;
-}
-
-function extractFilesProp(attrs, file) {
-  const entryRe =
-    /\{\s*name:\s*"([^"]+)"\s*,\s*source:\s*`([\s\S]*?)`\s*(?:,\s*surface:\s*"(ml|sexpr)")?\s*(?:,\s*entry:\s*(true|false))?\s*,?\s*\}/g;
-  const files = [];
-  let m;
-  while ((m = entryRe.exec(attrs))) {
-    files.push({ name: m[1], source: cookTemplate(m[2]), surface: m[3] ?? "sexpr", entry: m[4] === "true" });
-  }
-  if (files.length < 2) {
-    throw new Error(
-      `${file}: a <Runnable files={[…]}> extracted ${files.length} file(s) — a multi-file example needs ≥2 ` +
-        `(entry + ≥1 preloaded). Check the files= entries follow the {name, source: \`…\`, surface, entry} shape ` +
-        `in that field order (the extractor + codegen pin that order).`,
-    );
-  }
-  const entries = files.filter((f) => f.entry);
-  if (entries.length !== 1) {
-    throw new Error(`${file}: a <Runnable files={[…]}> must mark exactly one file \`entry: true\` (found ${entries.length}).`);
-  }
-  return files;
-}
-
-function extractExamples(tsx, file) {
-  const out = [];
-  // Chunk the file by element-open positions. `<Runnable>`/`<Exercise>` are ALWAYS self-closing
-  // (`… />`) and never nest, so each element's attributes run from its opening tag up to the next
-  // element's opening tag (or EOF). A prior non-greedy `…*?(?:/>|>…</\1>)` regex truncated `attrs`
-  // at the first `/>`-or-`>` inside a JSX prompt fragment (`prompt={<>…</>}`), so every Exercise's
-  // `solution`/`expected` (which follow `prompt`) fell off the end and ALL 45 exercises were silently
-  // skipped — the suite validated runnables only. Chunking to the next open tag is robust to that.
-  const openRe = /<(Runnable|Exercise)\b/g;
-  const opens = [];
-  let om;
-  while ((om = openRe.exec(tsx))) opens.push({ kind: om[1], start: om.index });
-  for (let i = 0; i < opens.length; i++) {
-    const { kind, start } = opens[i];
-    const end = i + 1 < opens.length ? opens[i + 1].start : tsx.length;
-    const attrs = tsx.slice(start, end);
-    const grab = (name) => {
-      const tl = new RegExp(`${name}=\\{\`([\\s\\S]*?)\`\\}`).exec(attrs);
-      if (tl) return cookTemplate(tl[1]);
-      const s = new RegExp(`${name}="([^"]*)"`).exec(attrs);
-      return s ? s[1] : null;
-    };
-    const expect = grab("expect") ?? "value";
-    const expected = grab("expected");
-    // Skip a `wrap={false}` example (a full module the author wrote) — still compiled, just not wrapped.
-    const noWrap = /wrap=\{false\}/.test(attrs);
-    if (kind === "Runnable") {
-      // MULTI-FILE Runnable (operator-mandated): `files={[{name, source: `…`, surface, entry}]}` — a file
-      // SET compiled together via compile_with_preloaded (the explorer seam). Extracted distinctly from the
-      // single-`source` path; a Runnable is one or the other. If a `files={[` marker is present it MUST
-      // yield ≥2 well-formed entries (a 0-extract on a marked runnable is a silent miss — thrown below).
-      if (/files=\{\[/.test(attrs)) {
-        const mfFiles = extractFilesProp(attrs, file);
-        out.push({ file, kind, files: mfFiles, expect, expected, snippet: mfFiles.map((f) => f.source).join("\n") });
-        continue;
-      }
-      const source = grab("source");
-      // A `mode="test"` Runnable runs its @test defs as tests (like `cdz test`). We compile-tests + run
-      // each @test export and assert the expected pass/fail: default every @test PASSES; `expect="error"`
-      // means at least one @test is meant to FAIL (a teaching example demonstrating a failing test).
-      const isTest = /mode="test"/.test(attrs) || /mode=\{"test"\}/.test(attrs);
-      // Default the shared assert prelude ON (matches <Runnable> prelude default); `prelude={false}` opts out.
-      const prelude = isTest && !/prelude=\{false\}/.test(attrs);
-      // `authoredIn` (default s-expr) is the surface the `source` is WRITTEN in — matches the <Runnable>
-      // prop. A chapter snippet authored in ML (e.g. reducer `type`/`def apply` forms that read naturally
-      // only in ML) must be wrapped+compiled in ML FIRST, then render_syntax'd to s-expr for the toggle
-      // pass — the mirror of the default s-expr-first path below.
-      const authoredIn = grab("authoredIn") ?? "sexpr";
-      if (source != null) out.push({ file, kind, snippet: source, expect, expected: null, noWrap, isTest, prelude, authoredIn });
-    } else {
-      // Exercise: check the SOLUTION (the starter has a `?` hole by design).
-      const solution = grab("solution");
-      if (solution != null) out.push({ file, kind, snippet: solution, expect: "value", expected, noWrap });
-    }
-  }
-  return out;
-}
+// cookTemplate / extractFilesProp / extractExamples now live in ./example-extract.mjs (imported above),
+// shared verbatim with scripts/shred-examples.mjs so the gate and the shred can never drift.
 
 // ---- gather every example across the content ----
 const chaptersDir = join(guideRoot, "src/content/chapters");
