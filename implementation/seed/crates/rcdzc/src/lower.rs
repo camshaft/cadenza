@@ -15037,6 +15037,15 @@ fn is_markable_constant_elem(db: &mut Db, id: StructId) -> bool {
         // needs (`value-canonicalize`/`bytes-compact`) are force-imported into the static-compound init.
         // Terminates: a finite constant literal bottoms out at a scalar / `Bytes` / `String` leaf.
         Core::ListNew { .. } => is_markable_constant_list(db, id),
+        // A NESTED constant MAP/SET — a collection element of a tuple/record/list/sum-payload (a map as a
+        // record field, a set in a list, a `Cons` payload). Recurse into `is_markable_constant_map`/`_set`
+        // (non-empty, every key/value/element itself markable); the ROOT's `mark-immortal-DEEP` transitively
+        // covers the nested CHAMP (HAMT spine + entry handles). `emit_immortal_elem` has matching `MapNew`/
+        // `SetOf` arms (→ `emit_immortal_static`); the START-init declares the canonicalize scratch locals a
+        // nested list-keyed map needs (`static_compound_init_locals`). Terminates: a finite constant literal
+        // bottoms out at a scalar / `Bytes` / `String` leaf.
+        Core::MapNew { .. } => is_markable_constant_map(db, id),
+        Core::SetOf { .. } => is_markable_constant_set(db, id),
         _ => is_constant_bytes(db, id) || constant_string_value(db, id).is_some(),
     }
 }
