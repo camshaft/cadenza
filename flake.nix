@@ -1786,19 +1786,21 @@
             caps = builtins.filter builtins.isList (builtins.split "\n\\(case[[:space:]]+\"" txt);
           in
           builtins.length caps;
-        # The `idx`-th case's TITLE, extracted at EVAL time from the SOURCE `.sexp` (same line-anchored
-        # `(case "…"` split as corpusCaseCount, no IFD). Used to LABEL an opt-gap record WITHOUT taking a
-        # dependency on the whole-file shred — so a single case's edit re-runs ONLY its own opt-gap derivation
-        # (keyed on its content-addressed emit.wasm), never the whole file's wasm-opt work. The split yields
-        # `[pre, seg0, seg1, …]` where `seg<i>` is the text right after the i-th `(case "`; the title is that
-        # segment up to its first `"`. Titles carry no embedded quote in the corpus (verified).
-        corpusCaseTitle = file: idx:
+        # ALL case TITLES of a file, extracted at EVAL time with ONE split over the SOURCE `.sexp` (same
+        # line-anchored `(case "…"` split as corpusCaseCount, no IFD). Computed ONCE PER FILE — the earlier
+        # per-idx `corpusCaseTitle file idx` re-read+re-split the whole file for EVERY case, i.e. O(N²) per
+        # file (1375 full-file splits for 05-compound-types), which made the whole-corpus wasm-opt-gaps eval
+        # pathologically slow / fail. The split yields `[pre, seg0, seg1, …]` where `seg<i>` is the text right
+        # after the i-th `(case "`; `tail` drops the pre-string, so the result is EXACTLY one title per case
+        # (length == corpusCaseCount), safely indexable 0..N-1. Each title = its segment up to the first `"`
+        # (corpus titles carry no embedded quote, verified). Used to LABEL an opt-gap record WITHOUT a
+        # whole-file-shred dependency, so a single case's edit re-runs ONLY its own (CA-keyed) opt-gap.
+        corpusCaseTitles = file:
           let
-            txt = "\n" + builtins.readFile file;
-            strs = builtins.filter builtins.isString (builtins.split "\n\\(case[[:space:]]+\"" txt);
-            seg = builtins.elemAt strs (idx + 1);
+            strs = builtins.filter builtins.isString
+              (builtins.split "\n\\(case[[:space:]]+\"" ("\n" + builtins.readFile file));
           in
-          builtins.head (builtins.split "\"" seg);
+          map (seg: builtins.head (builtins.split "\"" seg)) (builtins.tail strs);
 
         # SHRED (content-addressed) — parse a whole corpus file into per-case artifact dirs, ONCE. Closure =
         # the parser (`cdzCorpus`); reruns only when the `.sexp` changes. Clean-name copy first: `cdz-corpus`
@@ -2024,15 +2026,16 @@
           let
             shred = mkCorpusShred { inherit name file; };
             n = corpusCaseCount file;
-            idxs = builtins.genList (i: pkgs.lib.fixedWidthNumber 4 i) n;
+            titles = corpusCaseTitles file;   # ONE split for the whole file, indexed per case below
           in
-          map
-            (idx: mkCorpusOptGap {
-              inherit name idx;
-              caseTitle = corpusCaseTitle file (pkgs.lib.toIntBase10 idx);
-              build = mkCorpusBuild { inherit name shred idx; };
+          builtins.genList
+            (i: mkCorpusOptGap {
+              inherit name;
+              idx = pkgs.lib.fixedWidthNumber 4 i;
+              caseTitle = builtins.elemAt titles i;
+              build = mkCorpusBuild { inherit name shred; idx = pkgs.lib.fixedWidthNumber 4 i; };
             })
-            idxs;
+            n;
 
         # AGGREGATOR: collect a set of per-case records, TALLY them by kind (for the self-describing summary),
         # DROP the optimal/skip markers, sort the `(gap …)` records by o3-delta DESC, wrap in the top-level
