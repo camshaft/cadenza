@@ -16775,19 +16775,18 @@ fn reify_effect_to_tuple(
         Some(db.push_atom(crate::ast::Leaf::Bytes(bytes)))
     });
 
-    // Synthesize the record AST `("record" (= correlation …) (= kind …) (= payload …) [(= target …)]
-    // [(= schema_descriptor …)])`. A record VALUE is a STR-head `("record" …)` form; each field the canonical
-    // `(= name value)` triple. `resolve_record` reads the fields into a name-SORTED BTreeMap, so the slot order
-    // is canonical regardless of the order written here.
+    // Synthesize the record AST `(#record (= correlation …) (= kind …) (= payload …) [(= target …)]
+    // [(= schema_descriptor …)])` in the M2 NATIVE form: a native RecordCtor-leaf head + native FieldPair-leaf
+    // fields (`push_compound`/`push_field_pair`), not the legacy `("record" …)` string head. `resolve_record`
+    // reads the fields into a name-SORTED BTreeMap, so the slot order is canonical regardless of order here.
     let field = |db: &mut Db, name: &str, val: StructId| -> StructId {
         let n = db.push_name(name);
         db.push_field_pair(n, val)
     };
-    let record_head = db.push_str("record");
     let corr = field(db, "correlation", correlation_field);
     let kind = field(db, "kind", kind_field);
     let payload = field(db, "payload", payload_field);
-    let mut record_items = vec![record_head, corr, kind, payload];
+    let mut record_items = vec![corr, kind, payload];
     if let Some(t) = target_field {
         let target = field(db, "target", t);
         record_items.push(target);
@@ -16796,7 +16795,7 @@ fn reify_effect_to_tuple(
         let sd_field = field(db, "schema_descriptor", sd);
         record_items.push(sd_field);
     }
-    let record = db.push_list(record_items);
+    let record = db.push_compound(crate::ast::CompoundCtor::Record, record_items);
     // Re-resolve the synthesized subtree (binds `Some`/`None`/the field spellings) then lower it — reusing
     // the typed record/sum-value machinery so the `Core::Record` + its `Some`/`None` payloads are built +
     // typed exactly as a source-written record would be.

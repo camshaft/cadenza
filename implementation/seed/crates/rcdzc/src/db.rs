@@ -3670,9 +3670,23 @@ impl Db {
     /// Append a canonical `(= key value)` FIELD PAIR node — the shape shared by record fields and map
     /// entries. The runtime-construction twin of [`crate::ast::Arenas::field_pair`] /
     /// [`crate::ast::Builder::field_pair`], so synthesized record/map forms route through one place.
+    /// Emits the NATIVE `FieldPair` leaf head (recognized by kind), matching what the reader now produces;
+    /// the `as_name` migration bridge still spells it `"="` for any legacy name-head consumer.
     pub fn push_field_pair(&mut self, key: StructId, value: StructId) -> StructId {
-        let eq = self.push_name("=");
+        let eq = self.push_atom(Leaf::FieldPair);
         self.push_list(vec![eq, key, value])
+    }
+
+    /// Append a native compound-constructor form `(#<ctor> child…)` — the runtime-construction twin of
+    /// [`crate::ast::Builder::compound`], emitting the payloadless ctor-LEAF head (recognized by kind, not
+    /// head text). Synthesized record/list/tuple/map/set values route through here so they carry the M2
+    /// native head rather than a legacy `"record"` string / `record` name alias.
+    pub fn push_compound(&mut self, ctor: CompoundCtor, children: Vec<StructId>) -> StructId {
+        let head = self.push_atom(Leaf::Ctor(ctor));
+        let mut nodes = Vec::with_capacity(1 + children.len());
+        nodes.push(head);
+        nodes.extend(children);
+        self.push_list(nodes)
     }
 
     /// The definition of the given name, if one exists — how an export resolves its target and how a
