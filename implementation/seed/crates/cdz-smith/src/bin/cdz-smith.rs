@@ -231,8 +231,14 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     }
 
     eprintln!(
-        "[cdz-smith] lean-differential done: {} trials | {} holds, {} mismatch ({} new buckets), {} skip | {} not-comparable",
-        stats.trials, stats.holds, stats.mismatches, new_buckets, stats.skips, stats.not_comparable
+        "[cdz-smith] lean-differential done: {} trials | {} holds, {} mismatch ({} new buckets), {} skip, {} trap-kind-pending | {} not-comparable",
+        stats.trials,
+        stats.holds,
+        stats.mismatches,
+        new_buckets,
+        stats.skips,
+        stats.trap_kind_pending,
+        stats.not_comparable
     );
     if stats.mismatches > 0 {
         ExitCode::from(1)
