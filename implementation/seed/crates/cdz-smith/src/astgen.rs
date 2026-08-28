@@ -2,26 +2,23 @@
 //!
 //! Operator: *"the bolero type/value generator traits all try really really hard to COERCE a valid
 //! value. We should use those instead of a seeded libfuzzer corpus — libfuzzer isn't going to get
-//! value out of the seeded corpus with seeds."* So the driving mechanism is a bolero
-//! [`ValueGenerator`] that maps ARBITRARY entropy → a VALID Cadenza program (always succeeds, by
-//! construction), driven coverage-guided by bolero — rather than mutating a corpus of seed bytes that
-//! the strict decode-gate mostly rejects. Bolero's [`Driver`] does the coercion (bounded ints, variant
-//! choices, depth), so every input maps to a well-formed, type-correct program the compiler accepts.
+//! value out of the seeded corpus with seeds."* So the driving mechanism maps ARBITRARY entropy → a
+//! VALID Cadenza program (always succeeds, by construction), rather than mutating a corpus of seed
+//! bytes the strict decode-gate mostly rejects.
 //!
-//! This v0 grammar is deliberately small — `(do (def (main) <expr>) (export main))` where `<expr>` is
-//! an `Int64` literal, a binary arithmetic tree, or a conditional (`(if (<rel> …) … …)`) — kept
-//! type-correct Int64 throughout so a generated program is cleanly HANDLED (it compiles, or cleanly
-//! declines e.g. on a const-folded overflow), and the property target asserts the compiler never
-//! PANICS or emits invalid wasm on them. Later
-//! increments widen the grammar (let/if/functions/…, and direct binary-AST emission) behind the same
-//! `ValueGenerator` seam; the semantics-corpus ASTs inform which constructs to add, but the DRIVING
-//! mechanism stays "coerce entropy → valid program", never a seed corpus.
+//! The grammar is written against a small [`Choice`] abstraction (`variant` + `int_bounded`), so it is
+//! driver-agnostic and LIB-available: [`generate_coerced`] drives it from a plain `&[u8]` (usable by
+//! the `lean-differential` subcommand and any non-test caller), while the coverage-guided bolero
+//! `ValueGenerator` (behind `#[cfg(test)]`, since `bolero` is a dev-dependency) drives the SAME grammar
+//! via a `Driver`→`Choice` adapter for the `cdz_smith_gen_never_panics` target. One grammar, two drivers.
+//!
+//! Grammar: `(do [ (def (f a b) …) ] (def (main) <body>) (export main))` where `<body>` is an Int64
+//! expression — edge-biased literal | in-scope var | arithmetic (10 ops) | `(if <bool-cond> … …)` |
+//! `let` | non-recursive helper call `(f e e)` — or a compound value `(tuple e e)` / `(list e e e)` of
+//! Int64 elements. Kept type-correct Int64 throughout, so a generated program is cleanly HANDLED (it
+//! compiles, or cleanly declines e.g. on a const-folded overflow) — never a crash / invalid wasm.
 
 use core::fmt::Write as _;
-use core::ops::Bound;
-
-use bolero::generator::ValueGenerator;
-use bolero::generator::bolero_generator::Driver;
 
 use crate::generator::Program;
 
@@ -58,120 +55,156 @@ const INT_BOUNDARIES: [i64; 15] = [
     4_294_967_295,
 ];
 
-/// A bolero [`ValueGenerator`] that coerces the driver's entropy into a valid `(do (def (main) …)
-/// (export main))` program. Wire it with `check!().with_generator(ProgramGen)`.
-pub struct ProgramGen;
+/// The coercion the grammar reads from: pick a variant in `0..n` (arm 0 is the base/simplest, so
+/// exhausted entropy bottoms out there) and a bounded `i64`. Infallible — an implementation must always
+/// return a value (falling back to the simplest choice on exhaustion), which is what makes the generator
+/// "coerce ANY entropy → a valid program".
+pub trait Choice {
+    /// A variant index in `0..n` (returns `0` when `n == 0`), biased toward `0` on exhaustion.
+    fn variant(&mut self, n: usize) -> usize;
+    /// An `i64` in `[min, max]` (returns `min` on exhaustion / an empty range).
+    fn int_bounded(&mut self, min: i64, max: i64) -> i64;
+}
 
-impl ValueGenerator for ProgramGen {
-    type Output = Program;
+/// A plain byte-cursor [`Choice`]: consumes the entropy `&[u8]` left to right, yielding `0` once spent
+/// (so every choice bottoms out at its base and generation terminates). The LIB driver — no bolero.
+struct ByteCursorChoice<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
 
-    fn generate<D: Driver>(&self, driver: &mut D) -> Option<Program> {
-        // INFALLIBLE by design: a coercing generator always yields a valid program, even from empty /
-        // exhausted entropy (every driver read falls back to a default), so `generate` never returns
-        // `None`. That is the operator's "coerce ANY entropy → a valid value".
-        let mut source = String::from("(do ");
-        let mut fresh = 0usize;
-        // Optionally emit a NON-RECURSIVE helper `(def (f a b) <body>)`: its body uses the Int64 params
-        // `a`/`b` but CANNOT call `f` (so it always terminates), and `main`'s body may then call
-        // `(f <e> <e>)` — reaching multi-arg function-def + call lowering, kept total.
-        let has_helper = driver.gen_variant(2, 0).unwrap_or(0) == 1;
-        if has_helper {
-            source.push_str("(def (f a b) ");
-            let mut fscope = vec!["a".to_string(), "b".to_string()];
-            gen_expr(
-                driver,
-                MAX_DEPTH,
-                &mut fscope,
-                &mut fresh,
-                false,
-                &mut source,
-            );
-            source.push_str(") ");
-        }
-        source.push_str("(def (main) ");
-        let mut scope: Vec<String> = Vec::new();
-        gen_main_body(driver, &mut scope, &mut fresh, has_helper, &mut source);
-        source.push_str(") (export main))");
-        Some(Program { source })
+impl<'a> ByteCursorChoice<'a> {
+    fn new(bytes: &'a [u8]) -> ByteCursorChoice<'a> {
+        ByteCursorChoice { bytes, pos: 0 }
     }
+    fn byte(&mut self) -> u8 {
+        let v = self.bytes.get(self.pos).copied().unwrap_or(0);
+        self.pos = self.pos.saturating_add(1);
+        v
+    }
+}
+
+impl Choice for ByteCursorChoice<'_> {
+    fn variant(&mut self, n: usize) -> usize {
+        // Every `n` the grammar uses is < 256, so a single byte suffices.
+        if n == 0 {
+            0
+        } else {
+            (self.byte() as usize) % n
+        }
+    }
+    fn int_bounded(&mut self, min: i64, max: i64) -> i64 {
+        if min >= max {
+            return min;
+        }
+        let mut v: u64 = 0;
+        for _ in 0..8 {
+            v = (v << 8) | self.byte() as u64;
+        }
+        let span = (max as i128 - min as i128 + 1) as u128;
+        (min as i128 + (v as u128 % span) as i128) as i64
+    }
+}
+
+/// Coerce an arbitrary entropy `&[u8]` into a valid Cadenza program (always succeeds). This is the
+/// LIB entry the `lean-differential` subcommand and any non-test caller use.
+pub fn generate_coerced(entropy: &[u8]) -> Program {
+    build_program(&mut ByteCursorChoice::new(entropy))
+}
+
+/// Build a `(do [helper] (def (main) <body>) (export main))` program by making choices via `c`. Shared
+/// by [`generate_coerced`] (byte cursor) and the bolero `ValueGenerator` (a `Driver`→`Choice` adapter).
+fn build_program<C: Choice>(c: &mut C) -> Program {
+    let mut source = String::from("(do ");
+    let mut fresh = 0usize;
+    // Optionally emit a NON-RECURSIVE helper `(def (f a b) <body>)`: its body uses the Int64 params
+    // `a`/`b` but CANNOT call `f` (so it always terminates), and `main`'s body may then call
+    // `(f <e> <e>)` — reaching multi-arg function-def + call lowering, kept total.
+    let has_helper = c.variant(2) == 1;
+    if has_helper {
+        source.push_str("(def (f a b) ");
+        let mut fscope = vec!["a".to_string(), "b".to_string()];
+        gen_expr(c, MAX_DEPTH, &mut fscope, &mut fresh, false, &mut source);
+        source.push_str(") ");
+    }
+    source.push_str("(def (main) ");
+    let mut scope: Vec<String> = Vec::new();
+    gen_main_body(c, &mut scope, &mut fresh, has_helper, &mut source);
+    source.push_str(") (export main))");
+    Program { source }
 }
 
 /// `main`'s body: an Int64 expression, or a COMPOUND value built from Int64 sub-expressions — a
 /// `(tuple <e> <e>)` or `(list <e> <e> <e>)`. Keeping the elements Int64 stays type-safe without full
 /// type-directed generation, while reaching product/collection construction + the compound value codec
 /// (a lowering surface a bare scalar body never exercises).
-fn gen_main_body<D: Driver>(
-    driver: &mut D,
+fn gen_main_body<C: Choice>(
+    c: &mut C,
     scope: &mut Vec<String>,
     fresh: &mut usize,
     can_call_f: bool,
     out: &mut String,
 ) {
-    match driver.gen_variant(3, 0).unwrap_or(0) {
+    match c.variant(3) {
         // (tuple <e> <e>) — a 2-tuple of Int64.
         1 => {
             out.push_str("(tuple ");
-            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // (list <e> <e> <e>) — a homogeneous Int64 list.
         2 => {
             out.push_str("(list ");
-            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // A bare Int64 expression (the base case + exhaustion default).
-        _ => gen_expr(driver, MAX_DEPTH, scope, fresh, can_call_f, out),
+        _ => gen_expr(c, MAX_DEPTH, scope, fresh, can_call_f, out),
     }
 }
 
-/// Append one coerced `Int64` expression: at `depth == 0` (or when the driver picks the base variant) an
-/// integer literal; otherwise a binary arithmetic node over two sub-expressions. Every driver read falls
-/// back to a default on exhaustion, so this always produces a well-formed sub-expression.
-fn gen_expr<D: Driver>(
-    driver: &mut D,
+/// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
+/// integer literal / variable reference; otherwise arithmetic, an `if`, a `let`, or a helper call.
+fn gen_expr<C: Choice>(
+    c: &mut C,
     depth: usize,
     scope: &mut Vec<String>,
     fresh: &mut usize,
     can_call_f: bool,
     out: &mut String,
 ) {
-    // At `depth == 0` force the base case (0); otherwise `gen_variant(n, 0)` biases toward it — so
-    // generation always terminates within the depth budget. The `(f …)` call arm is only offered when a
-    // helper is in scope (`can_call_f`). Exhaustion → base case (0).
+    // At `depth == 0` force the base case (0); otherwise `variant` biases toward it — so generation
+    // always terminates within the depth budget. The `(f …)` call arm is only offered when a helper is
+    // in scope (`can_call_f`). Exhaustion → base case (0).
     let arms = if can_call_f { 5 } else { 4 };
-    let variant = if depth == 0 {
-        0
-    } else {
-        driver.gen_variant(arms, 0).unwrap_or(0)
-    };
+    let variant = if depth == 0 { 0 } else { c.variant(arms) };
     match variant {
         // Binary arithmetic `(op <e> <e>)`.
         1 => {
-            let op = OPS[driver.gen_variant(OPS.len(), 0).unwrap_or(0)];
+            let op = OPS[c.variant(OPS.len())];
             out.push('(');
             out.push_str(op);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Conditional `(if <cond> <e> <e>)` — `<cond>` is a Bool (relations + boolean connectives),
         // both branches Int64, so the whole `if` is Int64 and type-checks.
         2 => {
             out.push_str("(if ");
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Let binding `(let ((vN <val>)) <body>)` — binds a FRESH Int64 name (so no shadowing) and adds
@@ -183,10 +216,10 @@ fn gen_expr<D: Driver>(
             out.push_str("(let ((");
             out.push_str(&name);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push_str(")) ");
             scope.push(name);
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             scope.pop();
             out.push(')');
         }
@@ -194,26 +227,24 @@ fn gen_expr<D: Driver>(
         // the call terminates. Only reachable when `can_call_f`. Reaches function-call lowering.
         4 => {
             out.push_str("(f ");
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_expr(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Base case: an in-scope Int64 variable reference (when any is bound and the driver picks it) —
         // which keeps the expression Int64 — else a bounded Int64 literal.
         _ => {
-            if !scope.is_empty() && driver.gen_variant(2, 0).unwrap_or(0) == 1 {
-                let idx = driver.gen_variant(scope.len(), 0).unwrap_or(0);
+            if !scope.is_empty() && c.variant(2) == 1 {
+                let idx = c.variant(scope.len());
                 out.push_str(&scope[idx]);
             } else {
                 // Bias toward boundary values (where width/overflow/wrap miscompiles cluster); else a
                 // bounded random int. Both are valid Int64 literals.
-                let n = if driver.gen_variant(2, 0).unwrap_or(0) == 1 {
-                    INT_BOUNDARIES[driver.gen_variant(INT_BOUNDARIES.len(), 0).unwrap_or(0)]
+                let n = if c.variant(2) == 1 {
+                    INT_BOUNDARIES[c.variant(INT_BOUNDARIES.len())]
                 } else {
-                    driver
-                        .gen_i64(Bound::Included(&-1_000_000), Bound::Included(&1_000_000))
-                        .unwrap_or(0)
+                    c.int_bounded(-1_000_000, 1_000_000)
                 };
                 write!(out, "{n}").ok();
             }
@@ -224,69 +255,96 @@ fn gen_expr<D: Driver>(
 /// Append one coerced Bool CONDITION (for an `if`): a base relation `(<rel> <e> <e>)` over Int64
 /// sub-expressions, or a boolean connective `(and <c> <c>)` / `(or <c> <c>)` / `(not <c>)`. Reaches
 /// boolean-connective + short-circuit lowering. Depth-bounded (base = a relation) so it terminates.
-fn gen_cond<D: Driver>(
-    driver: &mut D,
+fn gen_cond<C: Choice>(
+    c: &mut C,
     depth: usize,
     scope: &mut Vec<String>,
     fresh: &mut usize,
     can_call_f: bool,
     out: &mut String,
 ) {
-    let variant = if depth == 0 {
-        0
-    } else {
-        driver.gen_variant(4, 0).unwrap_or(0)
-    };
+    let variant = if depth == 0 { 0 } else { c.variant(4) };
     match variant {
         // `(and <c> <c>)` — short-circuit conjunction.
         1 => {
             out.push_str("(and ");
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // `(or <c> <c>)` — short-circuit disjunction.
         2 => {
             out.push_str("(or ");
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // `(not <c>)` — negation.
         3 => {
             out.push_str("(not ");
-            gen_cond(driver, depth - 1, scope, fresh, can_call_f, out);
+            gen_cond(c, depth - 1, scope, fresh, can_call_f, out);
             out.push(')');
         }
         // Base case: a relation `(<rel> <e> <e>)` over Int64 → Bool. `saturating_sub` because `gen_cond`
         // can be entered at depth 0 (the `if` arm always emits a condition), where `depth - 1` would
         // underflow — the operand exprs just bottom out at their own base case.
         _ => {
-            let rel = RELS[driver.gen_variant(RELS.len(), 0).unwrap_or(0)];
+            let rel = RELS[c.variant(RELS.len())];
             out.push('(');
             out.push_str(rel);
             out.push(' ');
-            gen_expr(
-                driver,
-                depth.saturating_sub(1),
-                scope,
-                fresh,
-                can_call_f,
-                out,
-            );
+            gen_expr(c, depth.saturating_sub(1), scope, fresh, can_call_f, out);
             out.push(' ');
-            gen_expr(
-                driver,
-                depth.saturating_sub(1),
-                scope,
-                fresh,
-                can_call_f,
-                out,
-            );
+            gen_expr(c, depth.saturating_sub(1), scope, fresh, can_call_f, out);
             out.push(')');
         }
+    }
+}
+
+// ── the bolero coverage-guided driver (dev-dependency, so behind `#[cfg(test)]`) ───────────────────
+// A `Driver`→`Choice` adapter lets the bolero `ValueGenerator` drive the SAME grammar as
+// `generate_coerced`, so `cargo bolero test cdz_smith_gen_never_panics` gets coverage-guided coercion.
+
+#[cfg(test)]
+use bolero::generator::ValueGenerator;
+#[cfg(test)]
+use bolero::generator::bolero_generator::Driver;
+
+/// Adapts a bolero [`Driver`] to [`Choice`] (variant + bounded-int), so the grammar is driven by
+/// bolero's coercing entropy under `cargo bolero` / `cargo test`.
+#[cfg(test)]
+struct BoleroChoice<'a, D: Driver>(&'a mut D);
+
+#[cfg(test)]
+impl<D: Driver> Choice for BoleroChoice<'_, D> {
+    fn variant(&mut self, n: usize) -> usize {
+        self.0.gen_variant(n, 0).unwrap_or(0)
+    }
+    fn int_bounded(&mut self, min: i64, max: i64) -> i64 {
+        self.0
+            .gen_i64(
+                core::ops::Bound::Included(&min),
+                core::ops::Bound::Included(&max),
+            )
+            .unwrap_or(min)
+    }
+}
+
+/// A bolero [`ValueGenerator`] that coerces the driver's entropy into a valid program via the shared
+/// grammar. Wire it with `check!().with_generator(ProgramGen)`.
+#[cfg(test)]
+pub struct ProgramGen;
+
+#[cfg(test)]
+impl ValueGenerator for ProgramGen {
+    type Output = Program;
+
+    fn generate<D: Driver>(&self, driver: &mut D) -> Option<Program> {
+        // Infallible: the grammar always produces a valid program (Choice falls back to base choices on
+        // exhaustion), so this never returns `None`.
+        Some(build_program(&mut BoleroChoice(driver)))
     }
 }
 
@@ -298,7 +356,8 @@ mod tests {
     // so the byte-slice test driver lives at this path.
     use bolero::generator::bolero_generator::driver::{ByteSliceDriver, Options};
 
-    /// Generate a program by coercing a fixed byte string through the bolero driver (deterministic).
+    /// Generate a program by coercing a fixed byte string through the BOLERO driver (deterministic) —
+    /// exercises the `Driver`→`Choice` adapter + the shared grammar, matching the `cargo bolero` path.
     fn gen_from(bytes: &[u8]) -> Program {
         let options = Options::default();
         let mut driver = ByteSliceDriver::new(bytes, &options);
@@ -307,11 +366,11 @@ mod tests {
             .expect("ProgramGen always produces a program")
     }
 
-    /// The coercion invariant: ANY entropy → a valid, type-correct program that COMPILES (not merely a
-    /// clean decline). This is the whole point of a coercing generator over a seed corpus — every input
-    /// reaches the backend.
+    /// The coercion invariant: ANY entropy → a valid, well-formed program the compiler CLEANLY handles
+    /// (compiles, or a correct decline like a const-folded overflow) — never a crash / invalid wasm /
+    /// parse error. Every input reaches the compiler.
     #[test]
-    fn any_entropy_coerces_to_a_compilable_program() {
+    fn any_entropy_coerces_to_a_cleanly_handled_program() {
         let inputs: [&[u8]; 6] = [
             &[],
             &[0],
@@ -333,9 +392,6 @@ mod tests {
                 "shape: {}",
                 program.source
             );
-            // A coerced program is always CLEANLY handled: it compiles, or it cleanly DECLINES (e.g. a
-            // const-folded `*` overflowing Int64 → CDZ0304 is a correct rejection). It never crashes the
-            // compiler, never emits invalid wasm, and never fails to parse.
             let verdict = compile_catching(&program.source);
             assert!(
                 matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
@@ -343,6 +399,35 @@ mod tests {
                 program.source
             );
         }
+    }
+
+    /// `generate_coerced` (the LIB byte-cursor path) coerces ANY entropy into a cleanly-handled program
+    /// too — the same invariant as the bolero path, exercised through `ByteCursorChoice`.
+    #[test]
+    fn generate_coerced_lib_path_is_cleanly_handled() {
+        for seed in 0u64..64 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let program = generate_coerced(&bytes);
+            assert!(
+                program.source.starts_with("(do ") && program.source.ends_with("(export main))"),
+                "shape: {}",
+                program.source
+            );
+            let verdict = compile_catching(&program.source);
+            assert!(
+                matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                "generate_coerced program must be cleanly handled, got {verdict:?} for: {}",
+                program.source
+            );
+        }
+        // Empty entropy still yields a valid program (all choices bottom out).
+        assert!(generate_coerced(&[]).source.ends_with("(export main))"));
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
@@ -399,12 +484,10 @@ mod tests {
     }
 
     /// The base case (empty entropy) coerces to the simplest program — a single bounded literal main —
-    /// which COMPILES, proving the generator reaches the backend, not just the parser. (Exhausted
-    /// entropy resolves each driver read to a bound default, so no arith node is emitted.)
+    /// which COMPILES, proving the generator reaches the backend, not just the parser.
     #[test]
     fn base_case_entropy_compiles() {
         let program = gen_from(&[]);
-        // Exhausted entropy → a single bounded literal main (no arith node), which compiles.
         assert!(
             !program.source.contains("(+ ")
                 && !program.source.contains("(- ")
@@ -418,7 +501,7 @@ mod tests {
         ));
     }
 
-    /// Sweeping varied entropy: the `if` arm is REACHABLE, and every coerced program (arith or `if`) is
+    /// Sweeping varied entropy: the `if` and `let` arms are REACHABLE, and every coerced program is
     /// cleanly handled (never a crash / invalid wasm / parse error). Guards that the widened grammar
     /// stays in-bounds.
     #[test]
@@ -454,16 +537,14 @@ mod tests {
         );
     }
 
-    /// A recursive-entropy input coerces into a NESTED arithmetic program (exercises the recursive arm),
-    /// still compilable.
+    /// A recursive-entropy input coerces into a NESTED program (exercises the recursive arms), cleanly
+    /// handled.
     #[test]
     fn recursive_entropy_builds_a_nested_arith_program() {
-        // Bias every `gen_variant(2,0)` toward the recursive arm (1) so we get a deeper tree.
-        let bytes = [1u8; 24];
-        let program = gen_from(&bytes);
+        let program = gen_from(&[1u8; 24]);
         assert!(
-            program.source.contains('(') && program.source.matches('(').count() >= 2,
-            "expected a nested arith node: {}",
+            program.source.matches('(').count() >= 2,
+            "expected a nested node: {}",
             program.source
         );
         assert!(matches!(
