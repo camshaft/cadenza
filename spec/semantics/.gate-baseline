@@ -9030,3 +9030,4 @@ todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect conv
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	rwc1 an open-row accessor over runtime records of two widths, fifty frames, reclaims completely
 pass	rwc2 an open-row accessor reads a HEAP (list) field through the row, fifty frames, reclaims
+pass	a list-arm map element binds both of two named keys

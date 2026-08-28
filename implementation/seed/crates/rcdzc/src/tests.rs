@@ -19394,41 +19394,10 @@ mod match_engine {
             .is_none(),
             "a map list element now compiles (dispatches by key presence)"
         );
-        // RUN: the value at the named key is bound and returned; an absent key falls through.
-        let Some(v) = run_heap_value(
-            "(module m (def (f (: xs (List (Map Int64 Int64)))) \
-               (match xs ((list (map (1 a)) .. rest) a) (_ (- 0 1)))) \
-             (def (main) (f (list (map (1 77))))) (export main))",
-            vec![],
-        ) else {
-            eprintln!("runtime wasm not found; skipping map-list-element run");
-            return;
-        };
-        assert_eq!(v, "77", "the map element binds the value at key 1");
-        // An ABSENT key: the key-presence guard fails, so the arm falls through to the catch-all → -1.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (f (: xs (List (Map Int64 Int64)))) \
-                   (match xs ((list (map (9 a)) .. rest) a) (_ (- 0 1)))) \
-                 (def (main) (f (list (map (1 77))))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "-1",
-            "a map element naming an absent key falls through (a genuine key-presence test)"
-        );
-        // TWO named keys, both present → both values bind: 100 + 5 = 105.
-        assert_eq!(
-            run_heap_value(
-                "(module m (def (f (: xs (List (Map Int64 Int64)))) \
-                   (match xs ((list (map (1 a) (2 b)) .. rest) (+ a b)) (_ (- 0 1)))) \
-                 (def (main) (f (list (map (1 100) (2 5))))) (export main))",
-                vec![],
-            )
-            .unwrap(),
-            "105",
-            "a map element with two named keys binds both values"
-        );
+        // The RUNTIME dispatch — key-present binds the value (77), an absent key falls through (-1), and two
+        // named keys bind both (105) — is corpus-covered by 05-compound-types "a map pattern as a list-arm
+        // element binds its value binder" / "a list-arm map element whose key is absent falls through" / "a
+        // list-arm map element binds both of two named keys"; this test keeps the compile (CDZ0201-gone) pin.
     }
 
     #[test]
