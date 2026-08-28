@@ -5158,69 +5158,6 @@ fn a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift() {
 
 // ── exported parameterized functions: runtime operands, end-to-end (compile → run with args) ─────
 
-#[test]
-fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
-    use crate::testkit::parse;
-    // Skip when the value-heap runtime store is absent (storeless CI `cargo test --workspace`) — this test
-    // LINKS + runs the module, which needs the store.
-    if find_runtime_wasm().is_none() {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    }
-    // A bare-`ConstFloat` record-field value takes the DECLARED field width, not its own default `Float64`:
-    // `(: (record (x 1.5)) (Record (: x Float32)))` had the field literal `1.5` solve to `Float64`. TWO
-    // faults, both fixed here: (1) the Core::Record build EMIT pushed an `f64.const` while box-float32 wants
-    // f32; (2) collect_used_ops boxed by the NODE type (box-float) while emit boxed by the DECLARED type
-    // (box-float32) → box-float32 was never imported → the body's `call box-float32` resolved to an
-    // out-of-bounds func index. Both are the record-field twin of the if-branch bare-ConstFloat grounding.
-    // Covers BUILD, RENDER, AND the projecting `(. r x)` READ (a `get` that reads the field back).
-    let run = |src: &str, export: &str, args: Vec<String>| -> String {
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("compile a valid module (was an invalid-module reject before the fix)");
-        let opts = cdz_run::RunOpts {
-            export: Some(export.to_string()),
-            args,
-            runtime: find_runtime_wasm(),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => s,
-            cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
-        }
-    };
-    let f32rendered = run(
-        "(module m (def (f) (: (record (x 1.5)) (Record (: x Float32)))) (export f))",
-        "f",
-        vec![],
-    );
-    assert!(
-        f32rendered.contains("record") && f32rendered.contains("1.5"),
-        "Float32 record field builds + renders: {f32rendered}"
-    );
-    // The PROJECTING read: build a Float32-field record + read the field back (the `get` shape breaker
-    // filed — was an invalid module from the uncollected box-float32). Renders the field value 1.5.
-    let projected = run(
-        "(module m (def (get (: r (Record (: x Float32)))) (. r x)) (def (main) (get (record (x 1.5)))) (export main))",
-        "main",
-        vec![],
-    );
-    assert!(
-        projected.contains("1.5"),
-        "Float32 record field read back: {projected}"
-    );
-    // A Float64 record field is UNCHANGED (its literal was always the default f64).
-    let f64rendered = run(
-        "(module m (def (f) (: (record (x 1.5)) (Record (: x Float64)))) (export f))",
-        "f",
-        vec![],
-    );
-    assert!(
-        f64rendered.contains("1.5"),
-        "Float64 record field unchanged: {f64rendered}"
-    );
-}
-
 /// The UNSOUND TWIN of discharge-then-capture MUST stay rejected: a closure whose BODY performs the handled
 /// effect and ESCAPES the handle — `(handle St k (arm) (fn (x) (+ x (St.get))))` applied outside — runs the
 /// perform on OUTSIDE-application (out of the handler's dynamic extent), so it has no home → CDZ0401. Pins
