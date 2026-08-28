@@ -18892,14 +18892,28 @@ fn lower_rational_round(db: &mut Db, r: StructId) -> Core {
     core_of(db, derivation)
 }
 
-/// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
-/// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
+/// The two `IntValue`s of a constant rational OPERAND (already normalized), or `None` if `id` did not fold
+/// to a compile-time constant (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
+///
+/// A `Core::ConstInt(n)` counts as the rational `n/1`: this function only classifies operands of a RATIONAL
+/// op (`lower_rational_arith`/`lower_rational_cmp`), so an integer-valued operand there IS a constant
+/// rational whose denominator is 1 — the whole number n as an exact rational. This matters because a
+/// projection/const-eval fold of an INTEGER-VALUED Rational field folds to a bare `Core::ConstInt` (its
+/// numerator), not a `Core::ConstRational` (e.g. #3543's nullary-record field fold: `(. (rect) w)` with a
+/// Rational field `w = 4` folds to `ConstInt(4)`). Without this arm the constant pair `(* 4 3)` failed to
+/// recognize its operands as rationals, fell through to the RUNTIME `RationalBinOp`, and — since a bare
+/// `ConstInt` has no heap ownership class at the borrowing-op emit — DECLINED ("borrowing op operand has an
+/// ownership this backend cannot yet prove"; the notebook Rational-field regression breaker bisected to
+/// #3543). Folding to `n/1` here reduces the whole op to a `Core::ConstRational`, so no runtime op (and no
+/// borrow classification) is reached at all — the fully-general const-fold outcome.
 fn const_rational_of(
     db: &mut Db,
     id: StructId,
 ) -> Option<(crate::ast::IntValue, crate::ast::IntValue)> {
     match core_of(db, id) {
         Core::ConstRational(n, d) => Some((n, d)),
+        // An integer-valued rational operand: `n` as the exact rational `n/1` (denominator 1).
+        Core::ConstInt(n) => Some((n, crate::ast::IntValue::from_i64(1))),
         _ => None,
     }
 }
