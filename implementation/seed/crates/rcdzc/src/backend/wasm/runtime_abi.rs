@@ -705,6 +705,12 @@ pub const RUNTIME_OPS: &[RtOp] = &[
         lowerable: true,
     },
     RtOp {
+        name: "vec-prepend",
+        params: &[AbiValType::U32, AbiValType::U32],
+        result: Some(AbiValType::U32),
+        lowerable: true,
+    },
+    RtOp {
         name: "vec-push",
         params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
@@ -719,12 +725,6 @@ pub const RUNTIME_OPS: &[RtOp] = &[
     RtOp {
         name: "vec-update",
         params: &[AbiValType::U32, AbiValType::U32, AbiValType::U32],
-        result: Some(AbiValType::U32),
-        lowerable: true,
-    },
-    RtOp {
-        name: "vec-prepend",
-        params: &[AbiValType::U32, AbiValType::U32],
         result: Some(AbiValType::U32),
         lowerable: true,
     },
@@ -928,8 +928,8 @@ pub const OPS: RuntimeOps = RuntimeOps {
     vec_get: &RUNTIME_OPS[91],
     vec_len: &RUNTIME_OPS[92],
     vec_of_arr: &RUNTIME_OPS[93],
-    vec_prepend: &RUNTIME_OPS[97],
-    vec_push: &RUNTIME_OPS[94],
-    vec_split: &RUNTIME_OPS[95],
-    vec_update: &RUNTIME_OPS[96],
+    vec_prepend: &RUNTIME_OPS[94],
+    vec_push: &RUNTIME_OPS[95],
+    vec_split: &RUNTIME_OPS[96],
+    vec_update: &RUNTIME_OPS[97],
 };
