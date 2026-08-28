@@ -23558,6 +23558,35 @@
   (output (: 21 Int64))
   (live-objects known-leak 6))
 
+(case "pim1 constant-payloaded immortal variants keep payload identity and stay census-excluded (scalar + deep heap child)"
+  (doc    "The PAYLOADED extension (#4814) of the nullary-terminal immortal above (#4785): a mixed sum's variant
+           whose payloads are all markable constants is built ONCE and marked immortal — a scalar payload
+           `(Option.Some 5)` boxed direct to sum-new, a HEAP-CHILD payload `(Option.Some \"hi\")` mark-immortal-
+           DEEP (the String child is a heap node). Fences the payload-keyed identity the disc-only nullary case
+           could not: distinct payloads stay `=`-distinct (`Some 5` ≠ `Some 6`, `Some \"hi\"` ≠ `Some \"bye\"` →
+           the two distinctness legs contribute 0), while each payload recovers by match (scalar 5; String
+           byte-len 2). All four variants are built at a RUNTIME recursion base so const-fold cannot collapse
+           them to the immortal path. `100000*0 + 10000*5 + 100*0 + 2` = 50002. The census is 0: the immortal
+           payloaded variants AND their deep-marked heap children are correctly EXCLUDED from the leak count
+           (intentional permanent data) — a regression that conflated payloads (disc-only keying), failed to
+           deep-mark the String child (leak/UAF → non-zero census or trap), or mutated the immortal would move
+           the value off 50002 or the census off 0.")
+  (input (do
+    (def (mk5  (: n Int64)) (if (> n 0) (mk5  (- n 1)) (Option.Some 5)))
+    (def (mk6  (: n Int64)) (if (> n 0) (mk6  (- n 1)) (Option.Some 6)))
+    (def (mkhi (: n Int64)) (if (> n 0) (mkhi (- n 1)) (Option.Some "hi")))
+    (def (mkby (: n Int64)) (if (> n 0) (mkby (- n 1)) (Option.Some "bye")))
+    (def (ipay (: o (Option Int64)))  (match o ((Option.Some v) v) ((Option.None) -1)))
+    (def (spay (: o (Option String))) (match o ((Option.Some s) (String.byte-len s)) ((Option.None) -1)))
+    (def (main)
+      (+ (* 100000 (if (= (mk5 3) (mk6 3)) 1 0))
+      (+ (* 10000  (ipay (mk5 3)))
+      (+ (* 100    (if (= (mkhi 3) (mkby 3)) 1 0))
+         (spay (mkhi 3))))))
+    (export main)))
+  (output (: 50002 Int64))
+  (live-objects 0))
+
 (case "a list rest pattern binds an EMPTY rest when the fixed heads exactly consume a runtime list"
   (doc    "The list-pattern boundary the #4798 oracle path (list patterns in match — fixed + `.. rest`) newly
            grades but the rest-form corpus family doesn't isolate: when a `(list a b .. rest)` pattern's fixed

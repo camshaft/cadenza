@@ -7397,6 +7397,7 @@ pass	pg1 a PUT/GET store — put returns the value it displaces, a counter track
 pass	pgn1 a PAGINATION cursor over a seed-sized collection — next serves up to the page size answering the count actually served (the LAST page runs short), a drained cursor answers -1, rewind resets answering the pages served, and the smaller collection drains one page EARLIER so its short page and its -1 land at different rows
 pass	phs5 inner guard made CONSTANT (latent never checked) — each tick delivers one quantum which either RAISES the temperature by a degree or, exactly at the melting point with latent heat unpaid, pays two units of latent answering a tagged fifty-plus row, and the warm seed climbs straight through while the cold seed hits the plateau and stalls there
 pass	pid1 an integer P+I CONTROLLER stepping a plant toward the setpoint 20 — each step folds the error into the integral, applies u = (2*err + integral) / 4 with a NEGATIVE dividend on the overshoot face, and the closing draw reads the wound-up integral
+pass	pim1 constant-payloaded immortal variants keep payload identity and stay census-excluded (scalar + deep heap child)
 pass	pir1 a sum of two masked nibbles is guard-free and exact
 pass	pir2 a masked nibble times three is guard-free and exact
 pass	pir3 a narrow UInt8 sum of two masked values fits the width guard-free
