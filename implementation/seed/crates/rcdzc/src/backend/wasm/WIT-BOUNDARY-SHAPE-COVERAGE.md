@@ -96,8 +96,6 @@ NOT verify a typed WIT `enum` export — the compiler cannot emit one today and 
   With no world, there is no declared `WitType::Enum`, so `record_interface_export` isn't reached and the
   program falls back to run/encode (SHAPE 58/59). Closing it needs the SYNTHESIZED-world builder to derive
   an `enum` member result from the guest (db-aware `enum_cases`), then the SHAPE-60 lower applies.
-- **[emit, export] typed VARIANT-with-payload / Sum RESULT export — remaining slice** (the non-enum twin
-  of SHAPE 60): route it through the typed path via the db-aware variant detectors, same shape.
 - **[emit, export]** a NON-SCALAR entry PARAM (enum/Sum, and a record whose fields aren't all
   boundary-scalar) — `try_bare_entry_param_component` + `is_boundary_record`/`field_boundary_abi`
   decline it: *"parameter … has no scalar boundary representation — a non-scalar entry parameter is not
