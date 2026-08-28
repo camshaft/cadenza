@@ -1611,6 +1611,20 @@
   (input  (Unit.in (Unit.of #"meter") (Qty.of (Rational.of 1 1) (Unit.of #"inch"))))
   (output (: 127/5000 Rational)))
 
+(case "a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)"
+  (doc    "The two-step within-dimension conversion the chained-Unit.in CDZ0501 repair suggests: because
+           `Unit.in` UNWRAPS to a bare number, chaining needs a `Qty.of` RE-WRAP between steps. `(Unit.in cm
+           (Qty.of (Unit.in mm (Qty.of 1/1 inch)) mm))` converts 1 inch → mm (127/5), re-wraps as mm, → cm =
+           127/50 (1 inch = 2.54 cm exactly). The exact-rational composition companion of the single-step
+           conversion above. Relocated from rcdzc
+           chaining_two_unit_in_conversions_is_a_clean_cdz0501_not_a_terse_runtime_decline — its CDZ0501
+           chained-Unit.in reject + Qty.of-rewrap repair diagnostic stays in rcdzc.")
+  (input  (Unit.in (Unit.of #"centimeter")
+            (Qty.of (Unit.in (Unit.of #"millimeter")
+                      (Qty.of (Rational.of 1 1) (Unit.of #"inch")))
+                    (Unit.of #"millimeter"))))
+  (output (: 127/50 Rational)))
+
 (case "adding two units of one dimension converts to the reference unit exactly"
   (doc    "THE mixing case: `(+ (Qty 1 inch) (Qty 1 mm))` over exact rational magnitudes — both are
            dimension `length`, so each converts to the reference `meter` by its exact scale (1 inch =
