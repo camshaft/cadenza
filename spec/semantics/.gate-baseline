@@ -9021,3 +9021,5 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
+pass	bcr1 a runtime bin construction round-trips through its own pattern with explicit wrap semantics (300 → u16 300 / u8 44)
+pass	bcr2 fifty runtime bin construct+match cycles reclaim to zero
