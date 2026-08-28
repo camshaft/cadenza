@@ -20059,6 +20059,23 @@
   ; WIT static encoding: record-return build-once hoists the two constant list fields → residual leak 7→1.
   (live-objects known-leak 1))
 
+(case "vse12 a RUNTIME-BUILT record with String + Bytes fields escapes via the runtime value-encode walker (the reducer-Event shape)"
+  (doc    "The reducer Event shape {content-type, payload} — a record carrying a String field AND a Bytes field —
+           built at RUNTIME (a recursive `f` defeats the constant fold) so it escapes through the RUNTIME
+           value-encode WALKER, not the const-fold pre-render the sibling vse cases take. Pins that the mixed
+           String+Bytes field shape value-encodes to the canonical name-head `(= name value)` wire with the Bytes
+           field rendered as `b\"..\"` — the value-encode half of the reducer apply's result path (the runtime
+           walker must have a sound descriptor + encoder for the real Event shape, not just all-scalar records).
+           Relocated (RUN half) from rcdzc a_reducer_event_shaped_record_with_bytes_escapes_via_value_encode; its
+           white-box value-heap-runtime-import assertion stays in rcdzc.")
+  (input  (do
+            (def (f (: n Int64))
+              (if (= n 0) (record (= ct "wasm") (= pl (Bytes.of (list 1 2 3)))) (f (- n 1))))
+            (def (main) (f 2))
+            (export main)))
+  (call   main)
+  (output (: (record (= ct "wasm") (= pl b"\x01\x02\x03")) (record (ct String) (pl Bytes)))))
+
 ;; -- Perceus dup-site boundary faces: record-field alias + cross-fn param + closure capture across a persistent update (breaker batch 373, from the 2026-07-17 banked candidate) --
 (case "pd1 a list shared into a RECORD field survives an update through the original binding"
   (input (do
