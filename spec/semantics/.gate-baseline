@@ -7232,6 +7232,7 @@ pass	nsa1 a narrow Int8 addition computes at the max boundary and traps one past
 pass	nss1 a narrow Int8 subtraction range-checks both edges
 pass	nst1 the arm's NEXT-STATE expression divides by a state-derived quantity — both signs thread, the zero seed traps
 pass	nt1 a NESTED tuple state (a (b c)) — the arm destructures two levels and rebuilds with three different strides
+pass	nts1 a non-tail recursive-sum consumer over a SHARED spine does not over-reclaim it (sum then len both read it)
 pass	nullary constructor patterns are uniform with unary
 pass	nullary variants of a payload-carrying sum order by discriminant
 pass	nwc1 a produced non-aliased signed width crosses widened and sign-extended (Int24 wrap)

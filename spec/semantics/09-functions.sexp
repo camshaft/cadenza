@@ -9703,3 +9703,24 @@
     (export main)))
   (call main (: 5 Int64)) (output (: 5 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64)) (live-objects known-leak 5))
+
+(case "nts1 a non-tail recursive-sum consumer over a SHARED spine does not over-reclaim it (sum then len both read it)"
+  (doc    "Soundness fence for the #4857 non-tail recursive-sum spine reclaim (drop a CALLEE-OWNED, dead-after
+           param's shell after its MatchSum). `sum` is a NON-tail consumer `(+ h (sum t))` — exactly the shape
+           #4857 targets, so its param `l` takes the new shell-drop. But here the runtime-built list `xs` is
+           SHARED: consumed by `sum` AND then read by `len`. The drop must NOT over-reclaim the shared spine —
+           `xs` is dup'd for the two consumers (dup <=> drop coupled), so `len xs` reads it intact AFTER `sum`
+           has consumed its copy: `1000*sum(1..4) + len = 1000*10 + 4` = 10004. A regression that narrowed the
+           callee-owned exclusion (dropping a shared/boundary spine) would double-free → a wrong value or a
+           trap in `len`. The residual `known-leak 8` is the tracked spine residue (the conservative fix reduces
+           it, never increases; flips lower when the full §5 reclaim lands). release==debug (no latent UAF).")
+  (input  (do
+            (type L (Cons Int64 L) (Nil))
+            (def (bld (: n Int64)) (if (> n 0) (Cons n (bld (- n 1))) (Nil)))
+            (def (sum (: l L)) (match l ((Cons h t) (+ h (sum t))) ((Nil) 0)))
+            (def (len (: l L)) (match l ((Cons h t) (+ 1 (len t))) ((Nil) 0)))
+            (def (main (: n Int64)) (let ((xs (bld n))) (+ (* 1000 (sum xs)) (len xs))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 10004 Int64))
+  (live-objects known-leak 8))
