@@ -12,13 +12,14 @@
 //! `ValueGenerator` (behind `#[cfg(test)]`, since `bolero` is a dev-dependency) drives the SAME grammar
 //! via a `Driver`→`Choice` adapter for the `cdz_smith_gen_never_panics` target. One grammar, two drivers.
 //!
-//! Grammar: `(do [ (def (r n) …) ] [ (def (f a b) …) ] (def (main) <body>) (export main))` where
-//! `<body>` is an Int64 expression — edge-biased literal | in-scope var | arithmetic (10 ops) |
-//! `(if <bool-cond> … …)` | `let` | non-recursive helper call `(f e e)` | terminating recursive-helper
-//! call `(r <small-fuel>)` — a compound value `(tuple e e)` / `(list e e e)` of Int64 elements, or a
-//! Bool value. Kept type-correct throughout, so a generated program is cleanly HANDLED (it compiles, or
-//! cleanly declines e.g. on a const-folded overflow) — never a crash / invalid wasm / non-terminating
-//! run (the recursive helper is fuel-bounded + structurally decreasing).
+//! Grammar: `(do [ (def (r n) …) ] [ (def (t n acc) …) ] [ (def (f a b) …) ] (def (main) <body>)
+//! (export main))` where `<body>` is an Int64 expression — edge-biased literal | in-scope var |
+//! arithmetic (10 ops) | `(if <bool-cond> … …)` | `let` | non-recursive helper call `(f e e)` |
+//! non-tail recursive-helper call `(r <small-fuel>)` | tail-recursive-helper call `(t <small-fuel>
+//! <seed>)` — a compound value `(tuple e e)` / `(list e e e)` of Int64 elements, or a Bool value. Kept
+//! type-correct throughout, so a generated program is cleanly HANDLED (it compiles, or cleanly declines
+//! e.g. on a const-folded overflow) — never a crash / invalid wasm / non-terminating run (both recursive
+//! helpers are fuel-bounded + structurally decreasing).
 
 use core::fmt::Write as _;
 
@@ -114,30 +115,58 @@ pub fn generate_coerced(entropy: &[u8]) -> Program {
     build_program(&mut ByteCursorChoice::new(entropy))
 }
 
+/// Which optional helpers are in scope for an expression, so the call arms (`gen_expr`) know what they
+/// may emit. A `Copy` struct threaded by value — cheaper to extend with a new helper than a positional
+/// `bool` per generator function.
+#[derive(Clone, Copy)]
+struct Caps {
+    /// `(def (f a b) …)` — a NON-recursive 2-arg helper is in scope (call arm `(f <e> <e>)`).
+    f: bool,
+    /// `(def (r n) …)` — the NON-tail recursive helper is in scope (call arm `(r <fuel>)`).
+    r: bool,
+    /// `(def (t n acc) …)` — the TAIL-recursive accumulator helper is in scope (arm `(t <fuel> <seed>)`).
+    t: bool,
+}
+
 /// Build a `(do [helpers] (def (main) <body>) (export main))` program by making choices via `c`. Shared
 /// by [`generate_coerced`] (byte cursor) and the bolero `ValueGenerator` (a `Driver`→`Choice` adapter).
 fn build_program<C: Choice>(c: &mut C) -> Program {
     let mut source = String::from("(do ");
     let mut fresh = 0usize;
-    let has_helper = c.variant(2) == 1;
-    // Optionally emit a TERMINATING recursive helper. Its shape is FIXED — `(def (r n) (if (<= n 0)
-    // <base> (<op> n (r (- n 1)))))` — so the only recursive call is `(r (- n 1))`: structurally
-    // decreasing on `n` with an `(<= n 0)` base guard, hence it terminates for ANY argument. Callers
-    // (`gen_expr`'s r-arm) only ever pass a SMALL bounded fuel literal, so runtime recursion depth stays
-    // tiny. Reaches SELF-RECURSIVE call lowering (corpus §"a do-local function declaration is recursive":
-    // `(def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))`) — a surface no other arm exercises. `r`'s body
+    let caps = Caps {
+        f: c.variant(2) == 1,
+        r: c.variant(2) == 1,
+        t: c.variant(2) == 1,
+    };
+    // NON-tail recursive helper. Shape is FIXED — `(def (r n) (if (<= n 0) <base> (<op> n (r (- n 1)))))`
+    // — so the only recursive call is `(r (- n 1))`: structurally decreasing on `n`, `(<= n 0)`
+    // base-guarded, hence total for ANY argument. Callers (`gen_expr`'s r-arm) pass only a SMALL bounded
+    // fuel literal, so runtime depth stays tiny. Reaches SELF-recursive call lowering (corpus §"a do-local
+    // function declaration is recursive": `(def (fac n) (if (= n 0) 1 (* n (fac (- n 1)))))`). `r`'s body
     // is self-contained (never calls `f`/`gen_expr` arms), so termination cannot be broken by the driver.
-    let has_rec = c.variant(2) == 1;
-    if has_rec {
+    if caps.r {
         let op = OPS[c.variant(OPS.len())];
         source.push_str("(def (r n) (if (<= n 0) ");
         gen_int_literal(c, &mut source);
         write!(source, " ({op} n (r (- n 1))))) ").ok();
     }
-    // Optionally emit a NON-RECURSIVE helper `(def (f a b) <body>)`: its body uses the Int64 params
-    // `a`/`b` but CANNOT call `f` (so it always terminates); it MAY call `r` (bounded fuel → total).
-    // `main`'s body may then call `(f <e> <e>)` — reaching multi-arg function-def + call lowering.
-    if has_helper {
+    // TAIL-recursive accumulator helper `(def (t n acc) (if (<= n 0) acc (t (- n 1) (<op> acc n))))`. The
+    // recursive `(t …)` sits in TAIL position of the else-branch, so it reaches tail-call / loop lowering
+    // (corpus "a tail-recursive counted loop") — a surface DISTINCT from `r`'s non-tail call. Also
+    // structurally decreasing on `n` + `(<= n 0)` base-guarded → total. In the else-branch `n >= 1`, so
+    // the accumulator op `(<op> acc n)` NEVER divides by zero — `t` is trap-free (all comparable values).
+    if caps.t {
+        let op = OPS[c.variant(OPS.len())];
+        write!(
+            source,
+            "(def (t n acc) (if (<= n 0) acc (t (- n 1) ({op} acc n)))) "
+        )
+        .ok();
+    }
+    // NON-recursive 2-arg helper `(def (f a b) <body>)`: body uses `a`/`b` but CANNOT call `f` (total);
+    // it MAY call `r`/`t` (bounded fuel → total). `main` may then call `(f <e> <e>)` — multi-arg
+    // function-def + call lowering.
+    if caps.f {
         source.push_str("(def (f a b) ");
         let mut fscope = vec!["a".to_string(), "b".to_string()];
         gen_expr(
@@ -145,15 +174,14 @@ fn build_program<C: Choice>(c: &mut C) -> Program {
             MAX_DEPTH,
             &mut fscope,
             &mut fresh,
-            false,
-            has_rec,
+            Caps { f: false, ..caps },
             &mut source,
         );
         source.push_str(") ");
     }
     source.push_str("(def (main) ");
     let mut scope: Vec<String> = Vec::new();
-    gen_main_body(c, &mut scope, &mut fresh, has_helper, has_rec, &mut source);
+    gen_main_body(c, &mut scope, &mut fresh, caps, &mut source);
     source.push_str(") (export main))");
     Program { source }
 }
@@ -180,34 +208,33 @@ fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
     fresh: &mut usize,
-    can_call_f: bool,
-    can_call_r: bool,
+    caps: Caps,
     out: &mut String,
 ) {
     match c.variant(4) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
-        3 => gen_cond(c, MAX_DEPTH, scope, fresh, can_call_f, can_call_r, out),
+        3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
         // (tuple <e> <e>) — a 2-tuple of Int64.
         1 => {
             out.push_str("(tuple ");
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // (list <e> <e> <e>) — a homogeneous Int64 list.
         2 => {
             out.push_str("(list ");
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, MAX_DEPTH - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, MAX_DEPTH - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // A bare Int64 expression (the base case + exhaustion default).
-        _ => gen_expr(c, MAX_DEPTH, scope, fresh, can_call_f, can_call_r, out),
+        _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
 }
 
@@ -218,38 +245,51 @@ fn gen_expr<C: Choice>(
     depth: usize,
     scope: &mut Vec<String>,
     fresh: &mut usize,
-    can_call_f: bool,
-    can_call_r: bool,
+    caps: Caps,
     out: &mut String,
 ) {
     // At `depth == 0` force the base case (0); otherwise `variant` biases toward it — so generation
-    // always terminates within the depth budget. The `(f …)` and `(r …)` call arms are only offered when
-    // the respective helper is in scope; when present they occupy the arms ABOVE the fixed 0..3
-    // (`f_arm`, then `r_arm`). Exhaustion → base case (0).
-    let f_arm = if can_call_f { Some(4) } else { None };
-    let r_arm = if can_call_r {
-        Some(4 + can_call_f as usize)
+    // always terminates within the depth budget. The helper-call arms (`f`, then `r`, then `t`) are only
+    // offered when the respective helper is in scope; when present they occupy the arms ABOVE the fixed
+    // 0..3, in that order. Exhaustion → base case (0).
+    let f_arm = if caps.f { Some(4) } else { None };
+    let r_arm = if caps.r {
+        Some(4 + caps.f as usize)
     } else {
         None
     };
-    let arms = 4 + can_call_f as usize + can_call_r as usize;
+    let t_arm = if caps.t {
+        Some(4 + caps.f as usize + caps.r as usize)
+    } else {
+        None
+    };
+    let arms = 4 + caps.f as usize + caps.r as usize + caps.t as usize;
     let variant = if depth == 0 { 0 } else { c.variant(arms) };
     // Call the in-scope helper `(f <e> <e>)` — `f: Int64,Int64 -> Int64` is non-recursive + total, so
     // the call terminates. Reaches multi-arg function-call lowering.
     if Some(variant) == f_arm {
         out.push_str("(f ");
-        gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+        gen_expr(c, depth - 1, scope, fresh, caps, out);
         out.push(' ');
-        gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+        gen_expr(c, depth - 1, scope, fresh, caps, out);
         out.push(')');
         return;
     }
-    // Call the recursive helper `(r <fuel>)` with a SMALL bounded fuel LITERAL (0..12), so it recurses
-    // at most ~12 deep and terminates fast — NEVER an arbitrary expr (which could recurse a million
-    // deep). Reaches self-recursive call lowering.
+    // Call the NON-tail recursive helper `(r <fuel>)` with a SMALL bounded fuel LITERAL (0..12), so it
+    // recurses at most ~12 deep and terminates fast — NEVER an arbitrary expr (which could recurse a
+    // million deep). Reaches self-recursive call lowering.
     if Some(variant) == r_arm {
         let fuel = c.int_bounded(0, 12);
         write!(out, "(r {fuel})").ok();
+        return;
+    }
+    // Call the TAIL-recursive helper `(t <fuel> <seed>)`: a small bounded fuel LITERAL (0..12) + an Int64
+    // seed literal for the accumulator. Reaches tail-call / loop lowering (distinct from the `r` arm).
+    if Some(variant) == t_arm {
+        let fuel = c.int_bounded(0, 12);
+        write!(out, "(t {fuel} ").ok();
+        gen_int_literal(c, out);
+        out.push(')');
         return;
     }
     match variant {
@@ -259,20 +299,20 @@ fn gen_expr<C: Choice>(
             out.push('(');
             out.push_str(op);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // Conditional `(if <cond> <e> <e>)` — `<cond>` is a Bool (relations + boolean connectives),
         // both branches Int64, so the whole `if` is Int64 and type-checks.
         2 => {
             out.push_str("(if ");
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // Let binding `(let ((vN <val>)) <body>)` — binds a FRESH Int64 name (so no shadowing) and adds
@@ -284,10 +324,10 @@ fn gen_expr<C: Choice>(
             out.push_str("(let ((");
             out.push_str(&name);
             out.push(' ');
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             out.push_str(")) ");
             scope.push(name);
-            gen_expr(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_expr(c, depth - 1, scope, fresh, caps, out);
             scope.pop();
             out.push(')');
         }
@@ -312,8 +352,7 @@ fn gen_cond<C: Choice>(
     depth: usize,
     scope: &mut Vec<String>,
     fresh: &mut usize,
-    can_call_f: bool,
-    can_call_r: bool,
+    caps: Caps,
     out: &mut String,
 ) {
     let variant = if depth == 0 { 0 } else { c.variant(4) };
@@ -321,23 +360,23 @@ fn gen_cond<C: Choice>(
         // `(and <c> <c>)` — short-circuit conjunction.
         1 => {
             out.push_str("(and ");
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // `(or <c> <c>)` — short-circuit disjunction.
         2 => {
             out.push_str("(or ");
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(' ');
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // `(not <c>)` — negation.
         3 => {
             out.push_str("(not ");
-            gen_cond(c, depth - 1, scope, fresh, can_call_f, can_call_r, out);
+            gen_cond(c, depth - 1, scope, fresh, caps, out);
             out.push(')');
         }
         // Base case: a relation `(<rel> <e> <e>)` over Int64 → Bool. `saturating_sub` because `gen_cond`
@@ -348,25 +387,9 @@ fn gen_cond<C: Choice>(
             out.push('(');
             out.push_str(rel);
             out.push(' ');
-            gen_expr(
-                c,
-                depth.saturating_sub(1),
-                scope,
-                fresh,
-                can_call_f,
-                can_call_r,
-                out,
-            );
+            gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
             out.push(' ');
-            gen_expr(
-                c,
-                depth.saturating_sub(1),
-                scope,
-                fresh,
-                can_call_f,
-                can_call_r,
-                out,
-            );
+            gen_expr(c, depth.saturating_sub(1), scope, fresh, caps, out);
             out.push(')');
         }
     }
@@ -620,6 +643,58 @@ mod tests {
         assert!(
             saw_rec,
             "the recursive-helper arm should be reachable across 400 varied entropy inputs"
+        );
+    }
+
+    /// The TAIL-recursive accumulator helper shapes compile to VALID wasm: `(def (t n acc) (if (<= n 0)
+    /// acc (t (- n 1) (<op> acc n))))` called with a small fuel + seed. Pins that tail-position recursive
+    /// call lowering (the corpus "tail-recursive counted loop" surface) is valid Cadenza — distinct from
+    /// the non-tail `r`. In the else-branch `n >= 1`, so `/`/`%` never divide by zero (trap-free).
+    #[test]
+    fn tail_recursive_shape_compiles() {
+        for src in [
+            "(do (def (t n acc) (if (<= n 0) acc (t (- n 1) (+ acc n)))) (def (main) (t 5 0)) (export main))",
+            "(do (def (t n acc) (if (<= n 0) acc (t (- n 1) (* acc n)))) (def (main) (t 5 1)) (export main))",
+            // `/` in the accumulator — safe because n >= 1 in the recursive branch (no div-by-zero).
+            "(do (def (t n acc) (if (<= n 0) acc (t (- n 1) (/ acc n)))) (def (main) (t 4 100)) (export main))",
+            // fuel 0 → base case immediately, returns the seed.
+            "(do (def (t n acc) (if (<= n 0) acc (t (- n 1) (- acc n)))) (def (main) (t 0 9)) (export main))",
+        ] {
+            assert!(
+                matches!(compile_catching(src), Verdict::Compiled { .. }),
+                "tail-recursive helper shape must compile to valid wasm: {src}"
+            );
+        }
+    }
+
+    /// Sweeping varied entropy: the tail-recursive arm (`(t <fuel> <seed>)`) is REACHABLE, and every
+    /// coerced program that emits it is cleanly handled (compiles / declines — never crash / invalid wasm
+    /// / parse error, and never a non-terminating run). Guards the tail-recursion widening.
+    #[test]
+    fn tail_recursive_arm_is_reachable_and_cleanly_handled() {
+        let mut saw_tail = false;
+        for seed in 0u64..400 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut bytes = Vec::new();
+            for _ in 0..24 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let program = gen_from(&bytes);
+            if program.source.contains("(def (t n acc)") {
+                saw_tail = true;
+                let verdict = compile_catching(&program.source);
+                assert!(
+                    matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                    "tail-recursive program must be cleanly handled, got {verdict:?} for: {}",
+                    program.source
+                );
+            }
+        }
+        assert!(
+            saw_tail,
+            "the tail-recursive arm should be reachable across 400 varied entropy inputs"
         );
     }
 
