@@ -26,8 +26,11 @@ use core::fmt::Write as _;
 
 use crate::generator::Program;
 
-/// The recursion budget for a generated expression (bounds program size + guarantees termination).
-const MAX_DEPTH: usize = 4;
+/// The recursion budget for a generated expression (bounds program size + guarantees termination). At 5
+/// this yields deeper nesting — more const-fold / CSE / sharing INTERACTIONS per program (the surface the
+/// self-identity-fold miscompile lives in) — while staying small enough to compile+run fast. (Runtime
+/// recursion via the `r`/`t` helpers is bounded SEPARATELY by their fuel literal, so depth ≠ run time.)
+const MAX_DEPTH: usize = 5;
 
 /// Int64 → Int64 → Int64 binary operators: arithmetic, division/modulo, and bitwise/shift. All
 /// type-check as Int64; runtime edges (a const `*` overflow → CDZ decline; a `/`/`%` by zero → a
