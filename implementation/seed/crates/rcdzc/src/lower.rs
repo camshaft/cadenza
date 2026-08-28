@@ -1430,7 +1430,17 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     n
                 };
                 if closure_arity > 0 && all_args.len() < closure_arity {
-                    trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), arity = closure_arity, "apply: PARTIAL application of a runtime closure → decline (no residual-closure emit yet)");
+                    // RESIDUAL-CLOSURE LIFT: eta-abstract the missing params into a synthesized lambda
+                    // `(fn (__eta…) (fn_head supplied… __eta…))` and lift it — the closure + supplied args
+                    // capture into the residual closure's env, and its body is a FULL application (→ a valid
+                    // `CallClosure`), so the machine reps agree (no under-arity `CallClosure` miscompile).
+                    if let Some(core) = partial_closure_eta_closure(db, fn_head, &all_args) {
+                        trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), arity = closure_arity, "apply: PARTIAL application of a runtime closure → residual-closure lift");
+                        return core;
+                    }
+                    // Synthesis could not classify the eta-lambda (an unresolved/degenerate head) — decline
+                    // cleanly rather than emit an under-arity call (still reject-don't-miscompile).
+                    trace!(target: "rcdzc::lower", node = id.0, head = fn_head.0, n_args = all_args.len(), arity = closure_arity, "apply: PARTIAL application of a runtime closure → decline (residual-closure synthesis failed)");
                     return Core::Poison(Reject::decline(
                         "a partial application of a runtime closure (fewer arguments than its arity) \
                          is not yet emittable — apply it to all its arguments, or wrap the remaining \
@@ -12462,6 +12472,67 @@ fn partial_ctor_eta_closure(
         db.param_types
             .entry(occ)
             .or_insert_with(|| payload_tys[m + k].clone());
+    }
+    match resolved_of(db, lambda) {
+        Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
+        _ => None,
+    }
+}
+
+/// A PARTIAL application of a runtime CLOSURE `(g 3)` (fewer args than its curried arity) as a runtime
+/// value: synthesize the equivalent explicit lambda over the REMAINING params, splicing the already-
+/// supplied args into the body so they (and the closure `g` itself) are CAPTURED — `(fn (__eta0 …
+/// __eta{r-1}) (g <supplied…> __eta0 …))`. This is exactly the shape a source `(fn (y) (g 3 y))` takes,
+/// which lowers+runs correctly today: the synthesized body is a FULL application of `g` (→ `Core::CallClosure`),
+/// and the lambda-lift captures `g` + the supplied args into the residual closure's env (no bare-scalar-in-a-
+/// handle-slot — the miscompile the old under-arity `CallClosure` produced). The runtime-closure twin of
+/// [`partial_ctor_eta_closure`]; `supplied` are the args already applied (`< arity`), the lambda binds the
+/// `arity - supplied.len()` remaining params, whose types come from the closure's curried arrow type.
+fn partial_closure_eta_closure(
+    db: &mut Db,
+    fn_head: StructId,
+    supplied: &[StructId],
+) -> Option<Core> {
+    // The closure's curried arrow `(-> p0 (-> p1 … result))` — peel each param type. (The head's type is
+    // grounded by `check`; a non-arrow head has no params and is not a partial, handled by the caller.)
+    let mut param_tys: Vec<crate::ty::Ty> = Vec::new();
+    let mut cur = crate::infer::type_of(db, fn_head);
+    while let crate::ty::Ty::Fn(p, r) = cur {
+        param_tys.push(*p);
+        cur = *r;
+    }
+    let m = supplied.len();
+    if m == 0 || m >= param_tys.len() {
+        return None; // not a genuine partial (0 args / full / over-application handled elsewhere)
+    }
+    let r = param_tys.len() - m; // remaining params to eta-abstract
+    // Body: `(fn_head supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The `fn_head` + supplied occurrences
+    // are the caller's own nodes (already lowered/typed in this scope), spliced verbatim so they capture.
+    let remaining_occs: Vec<StructId> =
+        (0..r).map(|k| db.push_name(&format!("__eta{k}"))).collect();
+    let mut body_children = Vec::with_capacity(1 + m + r);
+    body_children.push(fn_head);
+    for &a in supplied {
+        body_children.push(a);
+    }
+    for k in 0..r {
+        body_children.push(db.push_name(&format!("__eta{k}")));
+    }
+    let body = db.push_list(body_children);
+    let params_list = db.push_list(remaining_occs.clone());
+    let fn_kw = db.push_name("fn");
+    let lambda = db.push_list(vec![fn_kw, params_list, body]);
+    crate::resolve::resolve_subtree(db, lambda);
+    let params = match resolved_of(db, lambda) {
+        Resolved::Lambda { params, .. } => params,
+        _ => return None,
+    };
+    // Seed each remaining param's machine type from the closure's arrow (the params AFTER the supplied ones).
+    for (k, &p) in params.iter().enumerate() {
+        let occ = crate::eval::param_name_occ(db, p);
+        db.param_types
+            .entry(occ)
+            .or_insert_with(|| param_tys[m + k].clone());
     }
     match resolved_of(db, lambda) {
         Resolved::Lambda { params, body } => Some(lower_lambda_value(db, lambda, &params, body)),
