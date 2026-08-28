@@ -22476,6 +22476,42 @@ mod tests {
         );
     }
 
+    // WIT-ABI completion (result side): a bare `string` host-import RESULT now lifts — the result-side twin of
+    // the string ARG (which already crosses on every path). A `string` result crosses on the world-driven
+    // boundary as the SAME `(ptr,len)` spill a `list<u8>` (Bytes) result rides (a guest `String` is a byte-rope
+    // handle, the same value-heap representation the Bytes lift produces), so `result_is_liftable` admits it via
+    // its shared `Ty::Bytes | Ty::String` leaf arm and `spilled_result_wit_type` maps it to `WitType::String`.
+    // Pure-fn classification test (per the Rust-is-unit-tests-only directive); the emit+run proof lives in the
+    // corpus WIT-integration harness (28-wit-abi-boundary SHAPE 57).
+    #[test]
+    fn a_string_host_result_lifts_and_maps_to_wit_string() {
+        use crate::backend::wasm::host;
+        use crate::wit_world::WitType;
+        // A bare `string` result — the same spilled `(ptr,len)` shape as `list<u8>`, so it lifts.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (f (: x String)) x) (def (main) 0) (export main))",
+        ));
+        let (params, _) = function_of(&mut db, "f");
+        assert!(
+            host::result_is_liftable(&mut db, &params[0].1),
+            "a bare string result lifts — the (ptr,len) spill twin of a list<u8> (Bytes) result"
+        );
+        assert_eq!(
+            host::spilled_result_wit_type(&mut db, &params[0].1),
+            Some(WitType::String),
+            "a string result maps to the WIT type string"
+        );
+        // Regression: a `list<u8>` (Bytes) result still lifts (the arm it now shares).
+        let mut db2 = Db::load(crate::testkit::parse(
+            "(module m (def (g (: y Bytes)) y) (def (main) 0) (export main))",
+        ));
+        let (p2, _) = function_of(&mut db2, "g");
+        assert!(
+            host::result_is_liftable(&mut db2, &p2[0].1),
+            "a list<u8> (Bytes) result still lifts"
+        );
+    }
+
     // WIT-ABI completion (arg side): a record host-arg FIELD is now any aliased SCALAR width, not just
     // 64-bit ints — narrow ints (s8..s32/u8..u32), char, and narrow floats cross via `field_boundary_abi` →
     // `abi_val_type` (general over width), read back with `get-int` + an i64→i32 narrow. Pure-fn unit test
