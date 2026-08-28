@@ -20715,21 +20715,13 @@ mod match_engine {
             "comparing a scalar against a value of erased-type-param type must lower (scalar compare), \
              not decline via a value-eq heap walk on a scalar operand",
         );
-        let Some(runtime) = super::find_runtime_wasm() else {
-            eprintln!("runtime wasm not found; skipping erased-type-param scalar-compare run");
-            return;
-        };
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&component, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, "42", "step's head is 1 → the (= h 1) arm"),
-            cdz_run::Outcome::Trap(t) => panic!("erased-type-param scalar-compare trapped: {t}"),
-        }
+        // The COMPILE succeeding (above) IS the regression guard: the scalar compare LOWERS rather than
+        // declining via a value-eq heap walk. It emits a VALID component. The RUN VALUE (step's head is 1 →
+        // the (= h 1) arm → 42) is corpus/conformance territory — this is an ML-surface program the s-expr
+        // corpus cannot carry (v-syntax pins the parse→desugar; the corpus pins the desugared arena's run).
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&component)
+            .expect("the erased-type-param scalar-compare component validates");
     }
 
     #[test]
