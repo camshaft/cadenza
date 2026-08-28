@@ -3991,6 +3991,17 @@ fn gate_via_nix_cache(paths: &Paths, files: &[PathBuf], target: GateTarget) -> O
         .arg("build")
         .args(&installables)
         .args(["-L", "--keep-going"]);
+    // Operator directive (2026-08-28, via concierge; v-nix substituter RCA): these `.#checks.…corpus-*`
+    // outputs are `__contentAddressed` + LOCAL-ONLY, so querying remote substituters (cache.nixos.org /
+    // install.determinate.systems) for their realisations is a guaranteed MISS — pure network-query waste
+    // that stalled a whole-corpus sweep ~1.5h. Skip substitution for THESE builds only (scoped here at the
+    // corpus-build chokepoint — NOT a global nix.conf `substitute = false`, so deliberate dep-fetch paths
+    // like cache-warm keep the default and still fetch toolchain deps from cache). Escape: set
+    // `CDZ_GATE_SUBSTITUTE=1` to re-enable — e.g. the first corpus build right after a flake.lock bump,
+    // when a new rustc/binaryen must come from cache instead of building from source.
+    if std::env::var_os("CDZ_GATE_SUBSTITUTE").is_none() {
+        cmd.args(["--option", "substitute", "false"]);
+    }
     let child = match cmd
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
