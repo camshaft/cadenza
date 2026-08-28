@@ -11,7 +11,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use cdz_corpus_grade::{
-    GTrial, Grade, Outcome as GradeOutcome, decode_test_run, exec_exit, grade_run,
+    GTrial, Grade, Outcome as GradeOutcome, check_live_objects, decode_test_run, exec_exit,
+    grade_run,
 };
 
 use crate::{
@@ -55,10 +56,11 @@ pub fn grade(
     // component, and map cdz-run's `Outcome` → the shared grade `Outcome` (carrying the observed
     // host-calls). It ALSO reads the value-heap runtime's live-cell count when the component imports the
     // runtime (a HEAP case) — `run_with_live_objects` returns `Some(n)` then, `None` for a no-heap
-    // scalar/const program. The count of the FIRST runnable trial is stashed for the opt-out balance
-    // assertion below (a heap case is a single value trial in practice; re-driving per trial produces the
-    // same balance).
-    let mut first_live: Option<Option<u32>> = None;
+    // scalar/const program. The count of EVERY runnable trial is collected (in trial order) for the opt-out
+    // balance assertion below: a multi-call case must balance on EACH call, not just call[0]. Checking only
+    // the first call silently false-greened leaks that appear (or scale) on calls 2+ — the systemic gate
+    // hole this harness owns. A no-heap trial contributes `None` and is skipped when balancing.
+    let mut per_trial_live: Vec<Option<u32>> = Vec::new();
     let result = grade_run(&test_run, compile_status, compile_diag, |trial: &GTrial| {
         let export = match (&trial.call, component_name) {
             // A `(call-method …)` case has no export (empty) — leave it None so the run routes to the
@@ -125,9 +127,7 @@ pub fn grade(
                 Err(e) => (Outcome::Trap(format!("{e}")), Vec::new(), None),
             }
         };
-        if first_live.is_none() {
-            first_live = Some(live);
-        }
+        per_trial_live.push(live);
         Ok(match outcome {
             Outcome::Value(v) => GradeOutcome::Value(v, observed),
             Outcome::Trap(t) => GradeOutcome::Trap(t),
@@ -135,19 +135,16 @@ pub fn grade(
     })?;
 
     // Heap-balance assertion (corpus-infra OPT-OUT default): a HEAP-importing case must end at its expected
-    // live-cell count after the run — the default is 0 (no leak / no double-free) for a case with no
+    // live-cell count after EACH call — the default is 0 (no leak / no double-free) for a case with no
     // `(live-objects …)` clause, or N for `(live-objects N)` / `(live-objects known-leak N)`. A no-heap
-    // case (`first_live == Some(None)`) is SKIPPED (nothing to balance, never a false fail), as is a
-    // refused/unrun case (`first_live == None`). The count is meaningful only on the DEBUG-COUNTERS runtime
-    // the exec passes via `--runtime` (→ `runtime` here); the shipped runtime reports 0 vacuously.
+    // trial contributes `None` and is skipped (nothing to balance, never a false fail), as is a refused/
+    // unrun case (`per_trial_live` empty). Every heap trial is checked — not just call[0] — so a multi-call
+    // leak on a later call is caught (`check_live_objects`, tested in `cdz-corpus-grade`). The count is
+    // meaningful only on the DEBUG-COUNTERS runtime the exec passes via `--runtime` (→ `runtime` here); the
+    // shipped runtime reports 0 vacuously.
     let mut result = result;
-    if let Some(Some(live)) = first_live {
-        let expected = test_run.live_objects.unwrap_or(0);
-        if live != expected {
-            let msg = format!("live-objects mismatch: expected {expected}, got {live}");
-            result.grade =
-                std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
-        }
+    if let Some(msg) = check_live_objects(&per_trial_live, test_run.live_objects) {
+        result.grade = std::mem::replace(&mut result.grade, Grade::Pass).worse(Grade::Fail(msg));
     }
 
     // The exit reproduces `xtask gate --check` when a baseline is supplied (fail ONLY on a pass→not-pass
