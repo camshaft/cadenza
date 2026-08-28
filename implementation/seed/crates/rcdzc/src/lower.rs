@@ -12505,6 +12505,20 @@ fn partial_closure_eta_closure(
     if m == 0 || m >= param_tys.len() {
         return None; // not a genuine partial (0 args / full / over-application handled elsewhere)
     }
+    // SCALAR-CAPTURE ONLY (for now): the residual lambda CAPTURES each supplied arg + the head closure. A
+    // scalar capture is copied by value (no refcount), so it round-trips cleanly; but a COMPOUND (heap-value)
+    // capture spliced from the caller's own occurrence is double-owned (the caller created it AND the residual
+    // closure captures it) and is NOT dup'd/dropped at the capture site → a LEAK (`live-objects` mismatch),
+    // the capture-escape hazard v-effects flagged (its #5007 collect_captured_escape_dup_sites machinery is the
+    // real fix). Until that dup-site wiring is reused here, DECLINE a partial whose supplied args (or the head
+    // itself, a closure handle) include a heap value — a scalar-only partial (the corpus `(f 3)` case) folds
+    // soundly, a compound-capturing one keeps declining (reject-don't-miscompile, as before). fn_head is a
+    // closure HANDLE (heap) but is captured by the same lambda-lift every source closure uses (proven), so it
+    // is not the leak source — only the spliced compound ARG occurrences are; gate on those.
+    if supplied.iter().any(|&a| !is_scalar(db, a)) {
+        trace!(target: "rcdzc::lower", head = fn_head.0, "partial-closure eta: a supplied arg is a COMPOUND capture (leak hazard) → decline pending capture-escape dup wiring");
+        return None;
+    }
     let r = param_tys.len() - m; // remaining params to eta-abstract
     // Body: `(fn_head supplied[0] … supplied[m-1] __eta0 … __eta{r-1})`. The `fn_head` + supplied occurrences
     // are the caller's own nodes (already lowered/typed in this scope), spliced verbatim so they capture.
