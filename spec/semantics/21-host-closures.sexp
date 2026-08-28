@@ -2542,6 +2542,24 @@
   (call   main) (output (: 2131 Int64))
   (live-objects known-leak 2))
 
+(case "TWO closures capturing one let-bound host call in a HELPER def's RECORD share ONE firing"
+  (doc    "The RECORD-face sibling of the helper-def tuple case above (adv-62b): a helper `mk` returns a
+           RECORD of two closures capturing the let-bound host result `v`, from inside `(host (io) …)`; `main`
+           projects `.f` and `.g` and calls both. `v` binds ONE host response captured by both, so `io.get`
+           fires EXACTLY ONCE (the host-calls list is the assertion) — a per-projection re-fire consumes a
+           second (unsupplied) response and traps. io.get = 21: (. r f)(10) = 31 + (. r g)(100) = 2100 = 2131.
+           Relocated from rcdzc adv62b_a_host_result_captured_by_two_closures_in_a_record_fires_the_host_op_once.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (mk) (host (io) (let ((v (io.get unit)))
+              (record (= f (fn ((: x Int64)) (+ v x))) (= g (fn ((: x Int64)) (* v x)))))))
+            (def (main) (let ((r (mk))) (+ ((. r f) 10) ((. r g) 100))))
+            (export main)))
+  (host-responses (respond io.get (: 21 Int64)))
+  (host-calls (call io.get))
+  (call   main) (output (: 2131 Int64))
+  (live-objects known-leak 3))
+
 (case "a trap raised inside a host-called closure body reaches the host as a trap"
   (doc    "`mk(100)` captures k=100 and returns `(fn (d) (/ k d))`; the host calls it with d = 0 and the
            division traps INSIDE the closure body — behind the resource `call` dispatch, not in a plain

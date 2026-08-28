@@ -26919,7 +26919,7 @@ mod diagnostics {
 // record used as a runtime value declines (needs the heap, a later stage). Programs are built with
 // the test s-expr reader in `testkit`.
 mod stage1 {
-    use super::{count_opcode, find_runtime_wasm, imports_value_heap_runtime};
+    use super::{count_opcode, imports_value_heap_runtime};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -34332,48 +34332,6 @@ mod stage1 {
         wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
             .validate_all(&bytes)
             .expect("the host+bytes-resource-escape (with-methods) component must be valid");
-    }
-
-    #[test]
-    fn adv62b_a_host_result_captured_by_two_closures_in_a_record_fires_the_host_op_once() {
-        // adv-62b: the RECORD-face sibling of adv-62. `mk` returns a RECORD of two closures capturing the
-        // let-bound host result `v`, from inside `(host (io) …)`; `main` projects + calls both. BUG: `r`'s
-        // init `(mk)` reaches a host call THROUGH THE CALL, but the AST-based `subtree_reaches_host_call`
-        // stopped at the `(mk)` node and missed it → `r` copy-propagated → each `(. r •)` re-inlined the
-        // `(host …)` block → io.get fired per projection → 2nd call has no recorded response → TRAP. FIX:
-        // `should_keep_binding`'s host-force-keep now ALSO follows a CALL init into its inlined callee body
-        // (`core_reaches_host_call`, gated to a `Resolved::Apply` init), so `r` is force-kept + materialized
-        // once; both projections read the shared record slot. Run with EXACTLY ONE response: the pre-fix
-        // double-fire traps here. io.get=21 → f(10)=31 + g(100)=2100 = 2131.
-        let Some(runtime) = find_runtime_wasm() else {
-            eprintln!("[adv62b] runtime wasm not in the store; skipping run");
-            return;
-        };
-        let src = "(do (effect io (op get (-> Unit Int64))) \
-                   (def (mk) (host (io) (let ((v (io.get unit))) \
-                     (record (f (fn ((: x Int64)) (+ v x))) (g (fn ((: x Int64)) (* v x))))))) \
-                   (def (main) (let ((r (mk))) (+ ((. r f) 10) ((. r g) 100)))) (export main))";
-        let bytes = compile_component(&crate::codec::encode(&parse(src)))
-            .expect("adv-62b record-of-closures host-capture must compile");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec![],
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: vec![cdz_run::HostResponse {
-                op: "io.get".to_string(),
-                value: "21".to_string(),
-            }],
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(
-                s, "2131",
-                "io.get (=21) fires ONCE, shared by both record-field closures: 31 + 2100 = 2131"
-            ),
-            cdz_run::Outcome::Trap(t) => panic!(
-                "adv-62b regressed: the record-held host call fired more than once → trap: {t}"
-            ),
-        }
     }
 
     #[test]
