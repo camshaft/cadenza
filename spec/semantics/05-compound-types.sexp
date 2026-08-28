@@ -2542,6 +2542,37 @@
   (output (: "ab" String))
   (live-objects known-leak 9))
 
+(case "npd1 a nested TUPLE destructure inside a Some arm survives the cadenza hop byte-idempotently"
+  (doc "The #5137 nested-sub-pattern probe pair, tuple half (breaker-found; fixed #5152). A match arm's
+        Some sub-pattern destructures a runtime-built tuple in place — the hop re-emits this shape and
+        the corpus-cadenza checks enforce hop byte-idempotence, so this case pins the emit staying at
+        its fold fixpoint. Fully scalar content (the tuple scalarizes; no heap), so no live clause.")
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Some (tuple n (+ n 1))) (None))
+        ((Some m) (match m ((tuple a c) (+ (* a 10) c))))
+        ((None u) -1)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 78 Int64))
+  (call main (: -5 Int64)) (output (: -1 Int64)))
+
+(case "npd2 a nested RECORD destructure inside a Some arm folds Proj-over-record-literal at FIRST emit — the #5137 fixpoint fence"
+  (doc "The record half of the #5137 pair — THE bug shape (fixed #5152): the record literal inlines into
+        the match scrutinee, the nested destructure materializes a Core::Proj OVER that literal after the
+        projection-fold pass, and pre-fix the first hop emitted the unfolded (. #record(…) x) which only
+        the SECOND compile folded — hop² ≠ hop, breaking the cadenza byte-idempotence contract. #5152
+        folds Proj-over-Tuple/Record-literal at emit. The corpus-cadenza idempotence check makes this
+        case the direct regression fence; values also pin dual-path agreement.")
+  (input (do
+    (def (main (: n Int64))
+      (match (if (> n 0) (Some (record (= x n) (= y 3))) (None))
+        ((Some r) (match r ((record (= x a) (= y b)) (+ (* a 100) b))))
+        ((None u) -1)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 703 Int64))
+  (call main (: -5 Int64)) (output (: -1 Int64))
+  (live-objects 0))
+
 (case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
   (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
            RRB vector (value at index i is i), and at n=1100 the vector is a THREE-level trie (32*32 = 1024
