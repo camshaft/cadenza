@@ -219,6 +219,12 @@ A closed sum MUST remain the default: a sum declared without a row variable is c
 
 The abstract syntax tree type MUST be an ordinary sum type of the language — a variant per syntactic form (an integer, a float, a string, a boolean, a name, and a list of child nodes) with the list variant carrying a list of the same type — rather than a primitive the type system special-cases.
 
+The abstract syntax tree type MUST carry a distinct first-class variant for each collection constructor — a list, a tuple, a record, a map, and a set (`Ast.ListCtor`, `Ast.TupleCtor`, `Ast.RecordCtor`, `Ast.MapCtor`, `Ast.SetCtor`), each carrying its child abstract syntax trees — rather than reflecting a collection as a generic child-node list headed by the collection's name, so that a reflected collection is its own variant and no collection is a string- or name-headed node.
+
+The abstract syntax tree type MUST additionally carry a distinct variant for a key-value field pair (`Ast.FieldPair`, a key and a value abstract syntax tree) and a distinct variant for a member access (`Ast.Member`, an operand and a key abstract syntax tree), so that a record's and a map's child abstract syntax trees are field-pair variants and the reflected form of `(= key value)` and of `(. obj key)` is likewise a first-class variant rather than a name-headed node.
+
+The generic child-node-list variant MUST remain, carrying the syntactic forms that are not collections — a name-headed form such as a conditional, a function, a match, or an application, whose head reflects as a name — so that giving collections their own variants removes string- and name-headed *collections* without removing the generic node for the name-headed forms that keep it.
+
 The AST sum type MUST be constructed and deconstructed by the same variant-construction and match mechanisms as any other sum type, so that a compiler written in the language walks a program as data with no reflection primitive.
 
 ### Types Are First-Class Values Whose Type Is The Type Of Types
