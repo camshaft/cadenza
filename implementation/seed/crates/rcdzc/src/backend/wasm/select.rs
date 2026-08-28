@@ -2081,8 +2081,20 @@ fn expr_tail_is_call_consuming_payload(db: &mut Db, id: StructId, scrut: StructI
 /// is claimed by both collectors (the exactly-one-of B2 invariant breaks — a benign double-mark, dedup'd by
 /// the union set in emit, but a real collector over-claim). `count_param_consumes==0` does NOT catch this
 /// (a match scrutinee borrow is not a consume), so this is the missing shared-scrutinee guard. Cheap: one
-/// cycle-guarded walk. A `binder` that is a Sum param is read only through matches (a Sum has no borrowing
-/// op like `vec-len`), so counting MatchSum scrutinees is the complete sharing signal for this path.
+/// cycle-guarded walk.
+///
+/// SOUNDNESS SCOPE (v-mem-safety, #4888 close): this is NOT a COMPLETE sharing oracle — it counts only
+/// `MatchSum` scrutinees and MISSES other borrows of the param, notably `Core::ValueEq` (structural `=` on
+/// a Sum lowers to a `champ_eq` runtime borrow, not a `MatchSum`). It is a SUFFICIENT (restrictive) sharing
+/// OVER-APPROXIMATION that is SAFE **only because** the non-tail-spine param-shell reclaim it gates is
+/// TAIL-POSITION-emit-gated: `param_reclaim` fires ONLY when the `MatchSum` IS the fn's tail/result position
+/// (so nothing uses the param after the match) and the shell `drop` is placed AFTER `emit_sum_cont` (so an
+/// in-arm `ValueEq` borrows the LIVE shell + yields a non-aliasing scalar `Bool`, shell dropped after). A
+/// param matched once but `=`-compared AFTER the match ⟹ the match is NON-tail ⟹ the reclaim never fires ⟹
+/// no UAF (benign dup-without-drop leak only). ⚠️ DO NOT reuse `count_matchsum_over_binder` as a "complete
+/// sharing" signal in a NON-tail-gated reclaim context — a `ValueEq`-after-a-non-tail-reclaimed-match would
+/// be a real UAF; add a matched-once+eq (ValueEq-aware) predicate FIRST if you ever move the reclaim off
+/// tail-position gating.
 fn count_matchsum_over_binder(db: &mut Db, top_body: StructId, binder: StructId) -> usize {
     fn go(
         db: &mut Db,
@@ -2169,6 +2181,9 @@ fn collect_shell_reclaim_child_dups_seen(
                 // payload dup, so the shell-reclaim pass must NOT also mark it (else the same SumPayload
                 // node is double-claimed: the b2 shared-scrutinee overlap, flagged by v-mem-safety). The
                 // single-match non-tail spine (sum-nat) matches its param exactly once → unaffected.
+                // count_matchsum is a SUFFICIENT (restrictive) sharing over-approximation, NOT a complete
+                // oracle (it misses ValueEq borrows) — SAFE here only because the reclaim it gates is
+                // TAIL-POSITION-emit-gated (see count_matchsum_over_binder's SOUNDNESS SCOPE).
                 total == 0 && count_matchsum_over_binder(db, top_body, binder) <= 1
             })
             // §5-DISJOINTNESS: skip if the payload is consumed by a call in the arm's TAIL position — that is
