@@ -40,6 +40,17 @@ fn main() -> ExitCode {
         }
         "seed-corpus" => cmd_seed_corpus(&args[1..]),
         #[cfg(feature = "differential")]
+        "lean-differential" => cmd_lean_differential(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "lean-differential" => {
+            eprintln!(
+                "cdz-smith: the `lean-differential` subcommand needs the `differential` feature \
+                 (it runs the wasm backend via cdz-run) — rebuild: \
+                 `cargo run --features differential -- lean-differential …`."
+            );
+            ExitCode::from(2)
+        }
+        #[cfg(feature = "differential")]
         "run-ast-corpus" => cmd_run_ast_corpus(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "run-ast-corpus" => {
@@ -75,11 +86,144 @@ fn usage() {
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
+         \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR]\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
          \x20 cdz-smith triage-artifacts <CRASHES_DIR> [--findings DIR] [--commit SHA]\n"
     );
+}
+
+/// The LEAN L2 differential sweep (S4b): generate terminating programs, run each under the WASM backend,
+/// and judge (program + rcdzc output) batches with `oracle-check --batch-stream` (the Lean oracle as a
+/// 3rd differential Side). A `mismatch` — the oracle's value/trap disagrees with rcdzc's — is a candidate
+/// miscompile, filed as a `Differential` finding. `--count` programs (default 500), `--seed` (else
+/// wall-clock), `--store` (runtime store; default beside the cdz target), `--oracle` (the `oracle-check`
+/// binary; else `CDZ_SMITH_ORACLE_CHECK` / PATH — `nix build .#oracle-lean`), `--findings`. Exits 1 on
+/// any mismatch.
+#[cfg(feature = "differential")]
+fn cmd_lean_differential(args: &[String]) -> ExitCode {
+    let mut count: u64 = 500;
+    let mut seed: Option<u64> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut oracle: Option<PathBuf> = None;
+    let mut findings: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--store" => store = it.next().map(PathBuf::from),
+            "--oracle" => oracle = it.next().map(PathBuf::from),
+            "--findings" => findings = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith lean-differential: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    // Resolve the oracle-check binary (flag > env/PATH). Without it the differential can't run.
+    let oracle = match oracle
+        .filter(|p| p.is_file())
+        .or_else(cdz_smith::lean::discover_oracle_check)
+    {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "cdz-smith lean-differential: no `oracle-check` found (build it — `nix build .#oracle-lean` \
+                 → result/bin/oracle-check — and set CDZ_SMITH_ORACLE_CHECK or pass --oracle PATH)."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let store = store.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(4)
+            .map(|repo| repo.join("target").join("cadenza-store"))
+            .unwrap_or_else(|| PathBuf::from("target/cadenza-store"))
+    });
+    let findings_dir = match resolve_findings_dir(findings) {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    let commit = driver::detect_commit();
+
+    // Generate `count` TERMINATING programs from varied entropy (generator::generate's grammar is
+    // structurally terminating, so the in-process wasm run cannot hang).
+    let mut rng = run_seed;
+    let mut sources = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let mut bytes = Vec::with_capacity(24);
+        for _ in 0..24 {
+            rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bytes.push(((z ^ (z >> 31)) >> 24) as u8);
+        }
+        sources.push(cdz_smith::generate(&bytes).source);
+    }
+
+    eprintln!(
+        "[cdz-smith] lean-differential @{commit} | {count} programs | seed {run_seed} | store {} | oracle {} | findings → {}",
+        store.display(),
+        oracle.display(),
+        findings_dir.display()
+    );
+    let mut mismatches: Vec<(String, String)> = Vec::new();
+    let stats = match cdz_smith::differential::lean_differential_sweep(
+        &sources,
+        &store,
+        &oracle,
+        200,
+        &mut mismatches,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cdz-smith lean-differential: oracle run failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // File each mismatch as a Differential finding.
+    let mut new_buckets = 0usize;
+    if !mismatches.is_empty() {
+        match cdz_smith::FindingStore::open(&findings_dir) {
+            Ok(store) => {
+                for (source, detail) in &mismatches {
+                    let finding = cdz_smith::Finding {
+                        category: cdz_smith::Category::Differential,
+                        program: source.clone(),
+                        crash: None,
+                        detail: Some(format!("lean-differential: {detail}")),
+                        commit: commit.clone(),
+                    };
+                    if let Ok(cdz_smith::finding::Filed::New(path)) = store.file(&finding) {
+                        new_buckets += 1;
+                        eprintln!(
+                            "[cdz-smith] FILED differential finding → {}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+            Err(e) => eprintln!("cdz-smith lean-differential: cannot open findings dir: {e}"),
+        }
+    }
+
+    eprintln!(
+        "[cdz-smith] lean-differential done: {} trials | {} holds, {} mismatch ({} new buckets), {} skip | {} not-comparable",
+        stats.trials, stats.holds, stats.mismatches, new_buckets, stats.skips, stats.not_comparable
+    );
+    if stats.mismatches > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// The DIFFERENTIAL sweep: run `count` seeds through BOTH backends and file any value disagreement.
