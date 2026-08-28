@@ -381,6 +381,10 @@ fn cmd_host_declines(args: &[String]) -> ExitCode {
 ///   frontier gap (one interface per envelope); breaker-tracked + flip-watched.
 /// * `the-host-operation-has-a-result` — a compound/Bytes/String host RESULT on a bare `(effect …)` has
 ///   no component-boundary form emitted yet (crosses on the world-driven path); breaker-tracked.
+/// * `the-host-operation-has-an-argument` — a compound (Tuple/List) host ARGUMENT on a bare effect has no
+///   component-boundary form yet (arg-side face of the result gap); breaker-tracked + flip-watched.
+/// * `a-closures-parameter-type-has-no` — a higher-order (closure) host ARGUMENT: its parameter type has
+///   no machine representation; breaker-tracked + flip-watched (flips when callback/resource support lands).
 ///
 /// (Breaker triage notes, 2026-08-28.)
 #[cfg(feature = "differential")]
@@ -388,6 +392,8 @@ const FILTERED_DECLINE_SIGNATURES: &[&str] = &[
     "CDZ0304",
     "delegating-more-than-one-host-effect",
     "the-host-operation-has-a-result",
+    "the-host-operation-has-an-argument",
+    "a-closures-parameter-type-has-no",
 ];
 
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
