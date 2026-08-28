@@ -3582,6 +3582,12 @@
                 #    that go dead after those checks build, so without their own root a corpus MR rebuilds the
                 #    release deps cold, negating the crane conversion);
                 #  - the component store + the local-gate aggregate (pulls the 9 required checks' closure);
+                #  - the CORPUS aggregates (wasm / rust / rust-async / cadenza) + the wasm-opt-gaps sweep:
+                #    their per-case CA build+exec outputs were UNROOTED, so the store GC evicted them, forcing
+                #    agents into COLD whole-corpus FROM-SOURCE sweeps — which overloaded the daemon (builders
+                #    died → stale build-locks → the fleet-wide daemon WEDGE, ~15 clients stuck 9-12h, 2026-08-28).
+                #    Rooting the aggregates keeps every per-case CA output hot so a corpus check cache-HITS
+                #    instead of rebuilding from source. This is the durable fix for the recurring wedge.
                 # --out-link registers each as an indirect GC-root so the store stays hot.
                 nix build \
                   ".#packages.${system}.cargo-artifacts" \
@@ -3589,6 +3595,10 @@
                   ".#packages.${system}.cargo-artifacts-release-codegen" \
                   ".#packages.${system}.store" \
                   ".#checks.${system}.local-gate" \
+                  ".#checks.${system}.corpus" \
+                  ".#checks.${system}.corpus-rust" \
+                  ".#checks.${system}.corpus-rust-async" \
+                  ".#checks.${system}.wasm-opt-gaps" \
                   --out-link "$root_dir/warm" --print-build-logs
                 echo "cdz warm-keep: done — local /nix/store warm layer pinned (gate-local stays fast)."
               '';
