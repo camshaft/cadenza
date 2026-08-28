@@ -9068,3 +9068,4 @@ todo	trm5 a parameterized export returning a Symbol declines truthfully pending 
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
 pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
+pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read

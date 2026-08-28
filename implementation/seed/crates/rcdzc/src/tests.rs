@@ -1945,26 +1945,9 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
         imports_value_heap_runtime(&bytes),
         "a runtime list must build on the value heap (import the runtime)"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["4".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "9",
-            "shared element-2 read (2+2) plus a still-live len (5) = 9"
-        ),
-        cdz_run::Outcome::Trap(t) => {
-            panic!("CSE-shared indexed read trapped (refcount miscompile?): {t}")
-        }
-    }
+    // The RUN — the shared element-2 read (2+2) plus a still-live List.len (5) = 9, proving the CSE-shared
+    // borrow leaves the list live — is corpus-covered by 05-compound-types "a repeated same-index List.at
+    // shared by CSE leaves the list live for a later length read"; this test keeps the builds-on-the-heap pin.
 }
 
 /// A repeated keyed lookup `(Option.expect (Map.lookup m k))` is shared by CSE (one `map-lookup` — an

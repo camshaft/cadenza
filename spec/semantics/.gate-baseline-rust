@@ -8491,3 +8491,4 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read
+pass	a repeated same-index List.at shared by CSE leaves the list live for a later length read
