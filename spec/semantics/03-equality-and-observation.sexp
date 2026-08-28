@@ -2918,6 +2918,22 @@
             (export main)))
   (call   main) (output (: 1 Int64)))
 
+(case "cho1 a runtime-selected Char in a compound orders by full CODEPOINT at run time — a multi-byte scalar sorts above ASCII"
+  (doc    "The RUNTIME + multi-byte companion of the fold-path ASCII tuple case above (#4862): the Char field
+           of a `(tuple c 0)` is SELECTED at run time by a branch (`(if b #\\a #\\🦀)`), so the comparison runs
+           through the runtime `value_cmp_shaped` (a Char-in-compound orders as its codepoint `Shape::Int`), not
+           const-fold. Ordered against `(tuple #\\m 0)`: at b=true the tuple holds `#\\a` (U+0061=97) < `#\\m`
+           (U+006D=109) → 1; at b=false it holds `#\\🦀` (U+1F980=128384) which is NOT < `#\\m` → 0. The 🦀 leg
+           is the byte-vs-codepoint fence — a compare keyed on a low byte or the UTF-8 first byte (0xF0) rather
+           than the full scalar would mis-order it. Uniform across wasm/rust/rust-async. (Runtime Chars have no
+           representation, so the Char is a compile-time constant SELECTED at run time — the only way the
+           runtime Char-in-compound path is reachable.)")
+  (input  (do
+            (def (main (: b Bool)) (if (< (tuple (if b #\a #\🦀) 0) (tuple #\m 0)) 1 0))
+            (export main)))
+  (call   main (: true Bool))  (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 0 Int64)))
+
 ; breaker probe W — stress the cmp-walk recursion just pinned in 3c223e37b one level DEEPER:
 ; a LIST of user SUMS whose payload is itself a LIST — the walk must recurse list→sum→list.
 ; Also the discriminant-before-payload rule at the deeper level, and prefix tiebreak on the

@@ -5877,6 +5877,7 @@ pass	chk2 a closed handle with STRING state folds under (const ...)
 pass	chm1 a const Map with CHAR keys to-lists key-sorted
 pass	chm2 the sorted Char head surfaces a taken trap under the const demand (CDZ0304)
 pass	chn1 a BUTTER churn — churning turns a QUARTER of the cream to butter floored at one whole scoop (the empty churn answering nine hundred), pouring past ten SPILLS the excess (an eight-hundred row with the excess and the running spill's low digit), the read packs butter cream and spills, and the seed's cream quarters to different scoops every churn with one pail spilling its pour and the other taking it whole
+pass	cho1 a runtime-selected Char in a compound orders by full CODEPOINT at run time — a multi-byte scalar sorts above ASCII
 pass	chr1 a capture-once closure driven by a RECURSIVE higher-order fn folds — its enclosing-param capture is threaded into the escaping closure env
 pass	cj03 Ast.print of a RUNTIME AST value renders
 pass	cj03n Ast.print of a runtime NESTED Ast renders the canonical s-expr text
