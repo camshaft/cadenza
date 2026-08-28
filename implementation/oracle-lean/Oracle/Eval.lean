@@ -1478,6 +1478,22 @@ partial def evalBinValues (m : Module) (env : Env) (fuel : Nat) (aId bId : Nat)
                    | other => other
     | other => other
 
+/-- Evaluate an `=` operand. A `(list …)` LITERAL directly under `=` is built LAZILY — its elements as
+`poison` (recursively, so a nested list literal is lazy too), exactly like a tuple/record/Option already
+is — so `eqSC` can short-circuit at the first differing element WITHOUT forcing a later (possibly nested)
+trapping element. This is the compound-`=` short-circuit ruling (#5145: a later UNOBSERVED element's trap
+is elided — pins tuples; both backends do the same for lists; core-semantics §"A Trap Occurs Only Where
+Its Computation Is Observed"). Materialization (`.len`, a binding, a return) still forces list elements
+STRICTLY (#4952) — that is a DIFFERENT consumer; only a list literal compared under `=` is not
+materialized. A non-list operand evaluates normally (a bound/returned/concat'd list is already a value). -/
+partial def evalEqOperand (m : Module) (env : Env) (fuel : Nat) (nodeId : Nat) : Outcome :=
+  match m.nodes[nodeId]? with
+  | some (Node.list cs) =>
+    if m.headName? (Node.list cs) == some "list".toUTF8 then
+      .value (.list ((cs.extract 1 cs.size).map (fun j => outcomeToValue (evalEqOperand m env fuel j))))
+    else evalNode m env defaultIntTy fuel nodeId
+  | _ => evalNode m env defaultIntTy fuel nodeId
+
 /-- `(= a b)` — structural equality (spec §Equality Is Structural: value equality agrees with the
 canonical byte form). Modeled by the `Value` domain's structural `BEq`, which is byte-canonical by
 construction. A float operand is unmodeled → propagates `unsupported` (sound skip). -/
@@ -1487,10 +1503,11 @@ partial def evalEq (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) 
     if children.size != 3 then .unsupported "eval: = expects 2 operands"
     else
       -- evaluate each operand (its own trap/unsupported/diverges propagates — a comparison operand IS
-      -- observed, spec §Trap…Observed), then SHORT-CIRCUIT compare (do NOT deep-force both up front).
-      match evalNode m env defaultIntTy fuel aId with
+      -- observed, spec §Trap…Observed), then SHORT-CIRCUIT compare (do NOT deep-force both up front). A
+      -- list-literal operand is built lazily (evalEqOperand) so a past-the-difference element is elided.
+      match evalEqOperand m env fuel aId with
       | .value va =>
-        (match evalNode m env defaultIntTy fuel bId with
+        (match evalEqOperand m env fuel bId with
          | .value vb => eqSC va vb
          | other => other)
       | other => other
