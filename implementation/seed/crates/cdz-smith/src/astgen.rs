@@ -289,7 +289,7 @@ fn gen_main_body<C: Choice>(
     caps: Caps,
     out: &mut String,
 ) {
-    match c.variant(8) {
+    match c.variant(9) {
         // A BOOL-typed body: `main : Bool`. Reaches bool return-value lowering (bool-as-i32 result +
         // the bool value codec), a surface a scalar/compound Int64 body never hits.
         3 => gen_cond(c, MAX_DEPTH, scope, fresh, caps, out),
@@ -305,6 +305,8 @@ fn gen_main_body<C: Choice>(
         6 => gen_typed_compound(c, COMPOUND_DEPTH, fresh, out),
         // A TYPED local function def + call `(do (def (g (: x T)) …) (g <T-expr>))`: typed param/return/call.
         7 => gen_typed_fn_call_body(c, fresh, out),
+        // BUILD + CONSUME a compound (projection / List.len / Option match): consumption emit.
+        8 => gen_compound_consume(c, out),
         // A bare Int64 expression (the base case + exhaustion default).
         _ => gen_expr(c, MAX_DEPTH, scope, fresh, caps, out),
     }
@@ -716,6 +718,56 @@ fn gen_compound_ty<C: Choice>(c: &mut C) -> (String, String) {
         }
     }
     (ty, val)
+}
+
+/// A body that BUILDS a compound and immediately CONSUMES it — tuple/record projection (`(. c i/field)`),
+/// `(List.len …)`, or an Option `match`. The generator builds compounds elsewhere but rarely CONSUMES
+/// them; this exercises the distinct extract / project / list-len / match consumption emit (where the S52
+/// closure buckets lived). Self-contained + type-correct (payload types drive the leaves; a match's
+/// None arm defaults to the payload type). Reaches consumption lowering the construction arms never hit.
+fn gen_compound_consume<C: Choice>(c: &mut C, out: &mut String) {
+    match c.variant(4) {
+        // Tuple projection: (. (tuple <a> <b>) <0|1>).
+        0 => {
+            let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+            let idx = c.variant(2);
+            out.push_str("(. (tuple ");
+            gen_scalar_leaf(c, a, out);
+            out.push(' ');
+            gen_scalar_leaf(c, b, out);
+            write!(out, ") {idx})").ok();
+        }
+        // Record field access: (. (record (= a <>) (= b <>)) <a|b>).
+        1 => {
+            let (a, b) = (pick_scalar_ty(c), pick_scalar_ty(c));
+            let field = if c.variant(2) == 0 { "a" } else { "b" };
+            out.push_str("(. (record (= a ");
+            gen_scalar_leaf(c, a, out);
+            out.push_str(") (= b ");
+            gen_scalar_leaf(c, b, out);
+            write!(out, ")) {field})").ok();
+        }
+        // List length: (List.len (list <t> <t> <t>)).
+        2 => {
+            let t = pick_scalar_ty(c);
+            out.push_str("(List.len (list ");
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push(' ');
+            gen_scalar_leaf(c, t, out);
+            out.push_str("))");
+        }
+        // Option match: (match (Some <t>) ((Some x) x) ((None) <t-default>)) — both arms type `t`.
+        _ => {
+            let t = pick_scalar_ty(c);
+            out.push_str("(match (Some ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str(") ((Some x) x) ((None) ");
+            gen_scalar_leaf(c, t, out);
+            out.push_str("))");
+        }
+    }
 }
 
 /// Append one coerced `Int64` expression: at `depth == 0` (or when the base variant is picked) an
@@ -1291,6 +1343,30 @@ mod tests {
             saw_non_int64_param,
             "typed fn bodies should reach a non-Int64 param type"
         );
+    }
+
+    /// Every `gen_compound_consume` (tuple/record projection, `List.len`, Option `match`) COMPILES — the
+    /// build+consume shapes are type-correct by construction and stay on the compile path (no overflow /
+    /// div0), so this exercises consumption emit and guards `gen_compound_consume` (a malformed
+    /// projection / match would surface as decline/InvalidWasm here).
+    #[test]
+    fn gen_compound_consume_compiles() {
+        for seed in 0u64..256 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(53);
+            let mut bytes = Vec::new();
+            for _ in 0..16 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let mut src = String::from("(do (def (main) ");
+            gen_compound_consume(&mut ByteCursorChoice::new(&bytes), &mut src);
+            src.push_str(") (export main))");
+            assert!(
+                matches!(compile_catching(&src), Verdict::Compiled { .. }),
+                "compound-consume body must COMPILE: {src}"
+            );
+        }
     }
 
     /// Every operator the generator can emit is a valid Int64→Int64→Int64 op the compiler CLEANLY
