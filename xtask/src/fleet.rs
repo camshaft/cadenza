@@ -9061,23 +9061,92 @@ fn nix_gate_argv(target: &str) -> [String; 6] {
 /// build log streams live. UNBOUNDED (blocks to completion) — correct for the manual `gate-local` CLI +
 /// the `--local-gate` drain (the invoking worktree's trunk tip). The batch pre-filter must NOT use this
 /// (an inline unbounded gate can hang pr-sync's tick) — it uses [`run_gate_local_bounded`] instead.
+/// Extract the failing sub-check derivation NAME(s) from captured `nix build` output so `gate-local` can
+/// SURFACE them instead of nix's opaque "1 dependency of …local-gate.drv failed" summary (concierge ask
+/// 2026-08-28: a red-and-bypassed gate that doesn't name its failure masks regressions). Nix emits
+/// `error: builder for '/nix/store/<hash>-<name>.drv' failed` for each FAILED derivation, above the
+/// dependency-summary; we take `<name>` (store-path basename minus the leading nix-hash `-` segment,
+/// minus the `.drv`) and EXCLUDE the `local-gate` aggregate itself. De-duped, order-stable. Pure so the
+/// parse is unit-tested without running nix.
+fn parse_failing_subchecks(nix_output: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in nix_output.lines() {
+        let Some(idx) = line.find("builder for '") else {
+            continue;
+        };
+        let rest = &line[idx + "builder for '".len()..];
+        let Some(end) = rest.find(".drv'") else {
+            continue;
+        };
+        // rest[..end] = /nix/store/<hash>-<name>  → basename → strip the leading <hash>- segment.
+        let base = rest[..end].rsplit('/').next().unwrap_or("");
+        let name = base.split_once('-').map(|(_, n)| n).unwrap_or(base);
+        if name.is_empty() || name == "local-gate" {
+            continue;
+        }
+        if !out.iter().any(|e| e == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
 fn run_gate_local(arch: &str) -> CiVerdict {
     let target = format!(".#checks.{arch}-linux.local-gate");
     let nix_bin = nix_binary();
     eprintln!(
         "gate-local: running `{nix_bin} build {target}` (local required-set gate; aarch64; --max-jobs {NIX_GATE_MAX_JOBS})…"
     );
-    let out = Command::new(&nix_bin).args(nix_gate_argv(&target)).status();
-    let (spawned_ok, build_ok) = match out {
-        Ok(s) => (true, s.success()),
+    // stdout INHERITS (the --print-out-paths result); stderr is PIPED so we can TEE it live (the build log
+    // still streams) AND capture it to NAME the failing sub-check on RED (nix's summary alone doesn't).
+    let spawned = Command::new(&nix_bin)
+        .args(nix_gate_argv(&target))
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
         Err(e) => {
             eprintln!(
                 "gate-local: could not invoke `nix` ({e}) — NO-CHECKS (can't verify locally)."
             );
-            (false, false)
+            return local_gate_verdict(/*spawned_ok=*/ false, /*build_ok=*/ false);
         }
     };
-    local_gate_verdict(spawned_ok, build_ok)
+    // Drain stderr to EOF, teeing each line live + accumulating for the failing-check parse. (stdout is
+    // inherited → no pipe to drain → no deadlock; only stderr is piped here.)
+    let mut captured = String::new();
+    if let Some(err) = child.stderr.take() {
+        use std::io::{BufRead, BufReader};
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            eprintln!("{line}");
+            captured.push_str(&line);
+            captured.push('\n');
+        }
+    }
+    let (spawned_ok, build_ok) = match child.wait() {
+        Ok(s) => (true, s.success()),
+        Err(_) => (false, false),
+    };
+    let verdict = local_gate_verdict(spawned_ok, build_ok);
+    if matches!(verdict, CiVerdict::Red) {
+        let failing = parse_failing_subchecks(&captured);
+        if failing.is_empty() {
+            eprintln!(
+                "gate-local: HOLD — a required sub-check failed, but its name was not parseable from the \
+                 nix output above; re-run `{nix_bin} build {target} -L` to see which."
+            );
+        } else {
+            eprintln!(
+                "gate-local: HOLD — failing sub-check(s): {}",
+                failing.join(", ")
+            );
+            for f in &failing {
+                eprintln!("  → for its error: {nix_bin} build .#checks.{arch}-linux.{f} -L");
+            }
+        }
+    }
+    verdict
 }
 
 /// Wall-clock cap for the BATCH pre-filter `local-gate` nix build. A warm gate finishes in a few minutes,
@@ -15406,6 +15475,25 @@ mod tests {
             &queued,
             old
         ));
+    }
+
+    #[test]
+    fn parse_failing_subchecks_names_the_failed_derivations_excluding_local_gate() {
+        // Real-shape nix output: a failed sub-check's builder line + the local-gate dependency summary.
+        let out = "\
+building '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-codegen.drv'...
+error: builder for '/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-wasm-runtime-build.drv' failed with exit code 1
+error: builder for '/nix/store/cccccccccccccccccccccccccccccccc-corpus-09-functions.drv' failed
+error: 1 dependency of '/nix/store/dddddddddddddddddddddddddddddddd-local-gate.drv' failed";
+        let got = parse_failing_subchecks(out);
+        // Names extracted (hash prefix + .drv stripped), multi-hyphen names intact, local-gate EXCLUDED.
+        assert_eq!(got, vec!["wasm-runtime-build", "corpus-09-functions"]);
+        // Clean run → nothing.
+        assert!(parse_failing_subchecks("building '…'\nok: local-gate\n").is_empty());
+        // De-dup: the same failing check reported twice → once.
+        let dup = "error: builder for '/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle.drv' failed\n\
+                   error: builder for '/nix/store/ffffffffffffffffffffffffffffffff-oracle.drv' failed";
+        assert_eq!(parse_failing_subchecks(dup), vec!["oracle"]);
     }
 
     #[test]
