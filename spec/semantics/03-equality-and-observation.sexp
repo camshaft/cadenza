@@ -8,6 +8,25 @@
   (input  (= 3 3))
   (output (: true Bool)))
 
+(case "constant compound equality folds structurally over Option, None, tuple, and nesting"
+  (doc    "Equality of two CONSTANT compounds folds STRUCTURALLY (core-semantics.md §Equality Is Structural:
+           same type + component-wise equal), reducing to a boolean at compile time (was once declined
+           'comparison of a compound value needs a heap walk'). Weighted so one result pins six facts:
+           (= (Some 1)(Some 1))=T→1, (= (Some 1)(Some 2))=F→2, (= None None)=T→4, (= (tuple 1 2)(tuple 1 2))
+           =T→8, (= (tuple 1 2)(tuple 1 3))=F→16, (= (Some (Some 1))(Some (Some 1)))=T→32, summing to 63.
+           Relocated from rcdzc constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk (its
+           runtime-heap-walk compile+import pin stays in rcdzc).")
+  (input  (do (def (main)
+                (+ (if (= (Some 1) (Some 1)) 1 0)
+                (+ (if (= (Some 1) (Some 2)) 0 2)
+                (+ (if (= None None) 4 0)
+                (+ (if (= (tuple 1 2) (tuple 1 2)) 8 0)
+                (+ (if (= (tuple 1 2) (tuple 1 3)) 0 16)
+                   (if (= (Some (Some 1)) (Some (Some 1))) 32 0)))))))
+              (export main)))
+  (call   main)
+  (output (: 63 Int64)))
+
 ; Equality of a RUNTIME boolean against a boolean LITERAL: `(= b true)` is `b`, `(= b false)` is `¬b`.
 ; A Bool has exactly two values, so comparing one to a constant is a boolean coercion (whether the
 ; compiler folds it to the operand / a negation or emits an i32 compare, the VALUE is the operand or its

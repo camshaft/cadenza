@@ -41,6 +41,23 @@
   (input  (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))))
   (output (: true Bool)))
 
+(case "constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms"
+  (doc    "The negative + composed companions of the byte-order equality above, all folding to a boolean at
+           compile time (a Bytes.of/concat/compact of constants folds to a constant Core::BytesOf, so its `=`
+           folds too). Weighted so one result pins five facts: same bytes → T→1; a differing byte → F→2; a
+           length difference → F→4; a concat equals the flat build → T→8; a compact equals the plain build →
+           T→16, summing to 31. Relocated from rcdzc
+           constant_compound_equality_folds_and_a_runtime_one_emits_a_heap_walk (the Bytes arms).")
+  (input  (do (def (main)
+                (+ (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 30))) 1 0)
+                (+ (if (= (Bytes.of (list 10 20 30)) (Bytes.of (list 10 20 99))) 0 2)
+                (+ (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2 3))) 0 4)
+                (+ (if (= (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4))) (Bytes.of (list 1 2 3 4))) 8 0)
+                   (if (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))) 16 0))))))
+              (export main)))
+  (call   main)
+  (output (: 31 Int64)))
+
 (case "the length of a byte sequence is its byte count"
   (doc    "Witnesses Bytes.len — the compiler needs a byte count to lay out a wasm
            section's size prefix.")

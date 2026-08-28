@@ -8486,3 +8486,5 @@ todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over 
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
 pass	Map.to-list of an empty map is the empty list
+pass	constant compound equality folds structurally over Option, None, tuple, and nesting
+pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms
