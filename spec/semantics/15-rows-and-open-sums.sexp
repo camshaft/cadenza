@@ -1646,3 +1646,27 @@
   (call main (: 50 Int64))
   (output (: 150 Int64))
   (live-objects 0))
+
+; (migrated from rcdzc an_open_sum_match_requires_an_open_tail_wildcard_arm — type-system.md §A Sum Type May
+;  Be Open, With A Mandatory Open-Tail Arm. An OPEN sum's row variable stands for unnamed variants, so a match
+;  covering every NAMED variant but omitting `_` is still non-exhaustive; the SAME arm set over a CLOSED sum IS
+;  exhaustive. Both halves are backend-agnostic.)
+(case "an open sum match without an open-tail wildcard arm is non-exhaustive"
+  (input (do (type V (Known Int64) (Unknown Int64) .. r)
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n)))
+             (def (main) (f (Known 1))) (export main)))
+  (error CDZ0210))
+
+(case "a closed sum match covering every named variant is exhaustive without a wildcard"
+  (input (do (type V (Known Int64) (Unknown Int64))
+             (def (f (: v V)) (match v ((Known n) n) ((Unknown n) n)))
+             (def (main) (f (Known 1))) (export main)))
+  (call main)
+  (output (: 1 Int64)))
+
+(case "an open sum match WITH an open-tail wildcard arm is exhaustive and compiles"
+  (input (do (type V (Known Int64) (Unknown Int64) .. r)
+             (def (f (: v V)) (match v ((Known n) n) (_ 0)))
+             (def (main) (f (Known 1))) (export main)))
+  (call main)
+  (output (: 1 Int64)))
