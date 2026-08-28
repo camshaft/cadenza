@@ -657,3 +657,20 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 1499 Int64))
   (call   main (: 0 Int64)) (output (: 999 Int64)))
+
+(case "tryh1 fifty try-unwraps of a HEAP (list) Ok payload under a Result boundary reclaim to zero"
+  (doc    "The census face of the success `?`/try fold on a HEAP payload: the existing runtime-payload
+           pins use scalar Ok payloads; this unwraps a runtime-built list per frame, reads its length, and
+           re-wraps — fifty frames leave NO live cell (the unwrapped list is consumed by List.len, the
+           re-wrap is a fresh scalar Result). The runtime-Err short-circuit face stays BRICK-3b-gated
+           (operator-owned, v-try-operator) — this pins only the success-path heap reclaim.")
+  (input (do (def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (step (: k Int64)) (: (let ((xs (try (Ok (bld 3))))) (Ok (List.len xs))) (Result Int64 String)))
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (match (step k) ((Ok v) v) ((Err e) -1)) (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 150 Int64))
+  (live-objects 0))
