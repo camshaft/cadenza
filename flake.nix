@@ -755,6 +755,34 @@
               echo "ok: cdz-run lib dependents subset of allowed (goal: none - PATH-only)" > $out
             '';
 
+        # EXACTLY-ONE-WASMTIME-HOLDER assert (v-cdz-crate-split; operator: "i dont want two things to link
+        # to wasmtime"). Complements cdzRunDependentsAssert (which guards LINKING cdz-run) — this guards a
+        # NEW DIRECT wasmtime dep anywhere. Pure-eval: the workspace members with a NON-OPTIONAL `wasmtime`
+        # in [dependencies] must be exactly [ cdz-run ]. cdz-platform's wasmtime is optional=true (host
+        # feature, off in routine builds) -> excluded + a sanctioned 2nd integration. A new non-optional
+        # wasmtime dep elsewhere fails LOUD at eval.
+        wasmtimeSingleHolderAssert =
+          let
+            holdsWasmtime = name:
+              let
+                manifest = builtins.fromTOML
+                  (builtins.readFile (./. + "/${rootWorkspaceCrates.${name}}/Cargo.toml"));
+                w = (manifest.dependencies or { }).wasmtime or null;
+              in
+              w != null && !(builtins.isAttrs w && (w.optional or false));
+            holders = builtins.filter holdsWasmtime rootCrateNames;
+          in
+          if holders != [ "cdz-run" ] then
+            throw ("flake.nix wasmtime-single-holder-assert: non-optional `wasmtime` [dependencies] holders = "
+              + builtins.toString holders + ", expected [ cdz-run ] — wasmtime must stay confined to cdz-run "
+              + "(operator: one crate links wasmtime). cdz-platform's host-feature wasmtime is OPTIONAL "
+              + "(excluded); a NEW non-optional wasmtime dep is a regression — drop it, reach the runner via "
+              + "the cdz-run binary.")
+          else
+            pkgs.runCommand "wasmtime-single-holder-assert" { } ''
+              echo "ok: non-optional wasmtime confined to cdz-run" > $out
+            '';
+
         # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
         #
         # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
@@ -3747,7 +3775,8 @@
                 # advisory (exposed as a check but NOT in this fail-set).
                 inherit clippyShardA clippyShardB codegenCheck gateCheck gateCheckRust guideExamplesCheck
                   benchCheck runtimeHashParity fmtCheck testCraneAggregate roundtripCheck
-                  mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert;
+                  mandateLintCheck cdzRunDependentsAssert standaloneWasmWorkspaceAssert
+                  wasmtimeSingleHolderAssert;
                 # gateCheckRust folded into the fail-set (v-nix+v-ft 2026-08-10): closes the RUST-backend gate
                 # hole — gateCheck is wasm-only, so a rust-only emit divergence (v-effects E0425 mutual-rec)
                 # reached trunk green. Narrow `--case mutual` subset (rustc-per-case → full 6686 is prohibitive
@@ -3840,6 +3869,7 @@
             # batch tests).
             crate-closure-assert = crateClosureAssert;
             cdz-run-dependents-assert = cdzRunDependentsAssert;
+            wasmtime-single-holder-assert = wasmtimeSingleHolderAssert;
             standalone-wasm-workspace-assert = standaloneWasmWorkspaceAssert;
             # cdz = WORKSPACE-SRC (concierge-confirmed 1a), NOT closure/tests-dir-scoped like the other 10.
             # WHY cdz differs: its run_rust_cli tests are WORKSPACE-INTEGRATION — they rustc-compile emitted
