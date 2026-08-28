@@ -97,7 +97,16 @@ by WIT-dump, never a gate PASS (the encode envelope masks a typed-export decline
   `record_result_lower` gained a payloadless-enum arm → `Passthrough` i32 (the def already returns the
   raw disc = `flatten(Enum)`), and `needs_result_wrapper` is set for it so the typed path takes over from
   the provider path; the enum defined type is emitted + re-exported by the existing `note` pass. Guard:
-  guest decl-order case names must equal the WIT case order (else a runtime disc remap — declines).
+  guest decl-order case names must equal the WIT case order (a reorder would need a runtime disc remap).
+  🐛 **KNOWN BUG (breaker, 2026-08-28) — SILENT DEGRADE, my next fix:** on that order-MISMATCH the guard
+  `return None`s, which does NOT decline loudly — it falls through to the PROVIDER path and silently
+  exports `f: func(s64) -> u32`, so a component can export a DIFFERENT type than the imposed world declares
+  (WIT-dump: guest `(Red Green Blue)` under `(enum green red blue)` → `-> u32`). Same silent degrade for
+  disjoint case names, and (more broadly) for ANY typed export member `record_interface_export` declines
+  under an imposed world. FIX (needs care — must not over-decline legit peer-provider worlds): when
+  `component_name`+`wit_world` are imposed and a declared typed member can't be emitted, DECLINE loudly
+  instead of `assemble_provider`. This is also the general asymmetry: a compound export RESULT silently
+  degrades where an export PARAM declines `todo`.
 - **[emit, export] typed enum RESULT on a fully-SYNTHESIZED world (NO clause at all) — remaining slice.**
   With no world, there is no declared `WitType::Enum`, so `record_interface_export` isn't reached and the
   program falls back to run/encode (SHAPE 58/59). Closing it needs the SYNTHESIZED-world builder to derive

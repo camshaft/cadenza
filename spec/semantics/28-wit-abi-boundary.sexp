@@ -1221,10 +1221,14 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (wit-world (world w (export cadenza:demo/iface (member f (func (param x (s64)) (result ("variant" (continue) (close (s64)))))))))
   (component-name "cadenza:demo/iface")
   (input (do (type Outcome (Continue) (Close Int64)) (def (f (: x Int64)) (if (= x 0) Outcome.Continue (Outcome.Close x))) (export f)))
+  ; PAYLOAD arm FIRST: the harness balance-checks the FIRST call only, and the payload (Close) arm is the
+  ; one that leaks the SpillRecord result cell (known-leak 1, same class as SHAPE 60/62/63); ordering it
+  ; first makes that leak the CHECKED one (a nullary-first order hid it — breaker WIT-dump audit).
+  (call f (: 7 Int64))
+  (output (: (close 7) Outcome))
   (call f (: 0 Int64))
   (output (: (continue unit) Outcome))
-  (call f (: 7 Int64))
-  (output (: (close 7) Outcome)))
+  (live-objects known-leak 1))
 
 (case "a bare TUPLE export result crosses as a typed WIT tuple (declared world)"
   (doc "SHAPE 62 - a bare `tuple<s64, s64>` EXPORT result under a declared world. Before this, canon_write_of had NO Ty::Tuple arm, so a tuple result declined the typed path and degraded to a bare u32 via the provider path (verified by WIT-dump). Fix: canon_write_of gained a Ty::Tuple arm (the POSITIONAL twin of the Record arm - element i at cell slot i, written at the WIT tuple's canonical offset; reuses CanonWrite::Record, no new writer). WIT-dump now shows `f: func(x: s64) -> tuple<s64, s64>`. Element writes recurse, so a nested tuple/record/bytes element composes.")
