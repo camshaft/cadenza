@@ -9055,3 +9055,5 @@ pass	qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak li
 pass	ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction
 pass	Map.to-list of an empty map is the empty list
 pass	mge1 an effect performed in a match GUARD is rejected (CDZ0407 — guards must be side-effect-free)
+pass	gex1 a sum variant covered ONLY by a guarded arm is non-exhaustive (rejected CDZ0210)
+pass	gex2 a guarded arm plus an unguarded fall-through for the same variant IS exhaustive (guard-first ordering honored)

@@ -2553,3 +2553,28 @@
 (export main)))
   (call main (: 3 Int64))
   (output (: 2 Int64)))
+
+; ── breaker batch 596: exhaustiveness-with-GUARDS soundness (a guarded arm does NOT count as
+; covering its variant — a failed guard leaves a gap). gex1: Some covered ONLY by a guarded arm
+; (+ a None arm) is NON-EXHAUSTIVE, rejected CDZ0210. gex2: adding an UNGUARDED Some fall-through
+; makes it exhaustive, and the guard-first arm ordering is honored (n=5 guard fails -> unguarded
+; -> 5; n=200 guard holds -> *10 -> 2000). Pins that guards can NARROW an arm but never SATISFY
+; exhaustiveness — a compiler that let gex1 compile would trap-or-fall-through at runtime.
+
+(case "gex1 a sum variant covered ONLY by a guarded arm is non-exhaustive (rejected CDZ0210)"
+  (input (do (def (main (: n Int64))
+  (match (if (> n 0) (Option.Some n) (Option.None))
+    ((guard (Option.Some v) (> v 100)) (* v 10))
+    ((Option.None) -1)))
+(export main)))
+  (error CDZ0210))
+
+(case "gex2 a guarded arm plus an unguarded fall-through for the same variant IS exhaustive (guard-first ordering honored)"
+  (input (do (def (main (: n Int64))
+  (match (if (> n 0) (Option.Some n) (Option.None))
+    ((guard (Option.Some v) (> v 100)) (* v 10))
+    ((Option.Some v) v)
+    ((Option.None) -1)))
+(export main)))
+  (call main (: 5 Int64))   (output (: 5 Int64))
+  (call main (: 200 Int64)) (output (: 2000 Int64)))
