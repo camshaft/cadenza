@@ -204,11 +204,50 @@ pub fn compile_catching(source: &str) -> Verdict {
         Err(e) => return Verdict::ParseError(e.0),
     };
     let bytes = cadenza_syntax::codec::encode(&arenas);
+    compile_bytes_catching(&bytes)
+}
 
+/// The **binary-AST-entropy** oracle: treat the fuzzer's `&[u8]` as a binary-AST module.
+///
+/// This is the entry the next-gen engine drives — entropy IS the binary AST (`cadenza-ast` codec
+/// bytes), seeded from real semantics-corpus encodings and mutated by libFuzzer, rather than s-expr
+/// text run through the parser. Driving generation from the binary AST reaches the compiler with
+/// well-formed, structurally-dense programs far more often than mutating text (the operator's
+/// "generates a lot better").
+///
+/// We first DECODE-GATE the bytes. `codec::decode` is strict + total: it never panics — it cleanly
+/// rejects malformed / truncated / non-tree bytes as a typed [`cadenza_syntax::codec::DecodeError`].
+/// So a mutated blob that isn't a well-formed AST is classified as [`Verdict::ParseError`] (the
+/// entropy-quality analog of a text parse failure) and never reaches the compiler as a spurious
+/// decline — keeping [`Verdict::Declined`] meaning "the compiler rejected a WELL-FORMED program".
+/// A blob that DOES decode is re-encoded to its canonical form (mutation can leave a well-formed but
+/// non-canonical encoding; the compiler consumes the canonical form its own front-end produces) and
+/// compiled through the exact same path as the text oracle — so a crash / invalid-wasm here is the
+/// same finding class, both emit backends driven.
+pub fn compile_catching_ast(ast_bytes: &[u8]) -> Verdict {
+    install_panic_hook();
+
+    let arenas = match cadenza_syntax::codec::decode_detailed(ast_bytes) {
+        Ok(a) => a,
+        Err(e) => return Verdict::ParseError(format!("decode: {e:?}")),
+    };
+    let bytes = cadenza_syntax::codec::encode(&arenas);
+    compile_bytes_catching(&bytes)
+}
+
+/// Compile already-encoded binary-AST bytes in-process, catching any panic. The shared crash /
+/// invalid-wasm oracle behind BOTH the text-source path ([`compile_catching`], which parses + encodes
+/// first) and the binary-AST-entropy path ([`compile_catching_ast`], which decode-gates first): both
+/// reduce to "here are the canonical bytes the compiler consumes".
+///
+/// TWO emit backends are driven per program (see [`compile_catching`] for the full rationale): the
+/// primary WebAssembly-component path yields the reported verdict, and — only when that path did not
+/// itself crash — the Rust-source backend is driven purely as a second crash oracle.
+fn compile_bytes_catching(bytes: &[u8]) -> Verdict {
     // Clear the slot so, on a crash, we read THIS run's panic and not a stale one.
     *slot().lock().unwrap() = None;
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| rcdzc::compile_component(&bytes)));
+    let result = panic::catch_unwind(AssertUnwindSafe(|| rcdzc::compile_component(bytes)));
 
     let wasm_verdict = match result {
         Ok(Ok(component)) => match validate_component(&component) {
@@ -234,7 +273,7 @@ pub fn compile_catching(source: &str) -> Verdict {
     if matches!(wasm_verdict, Verdict::Crash(_)) {
         return wasm_verdict;
     }
-    if let Some(crash) = compile_rust_catching(&bytes) {
+    if let Some(crash) = compile_rust_catching(bytes) {
         return Verdict::Crash(crash);
     }
     wasm_verdict
@@ -364,6 +403,50 @@ mod tests {
     fn unparseable_source_is_a_parse_error_not_a_crash() {
         let _g = slot_guard();
         let v = compile_catching("(do (def (main) ");
+        assert!(matches!(v, Verdict::ParseError(_)), "got {v:?}");
+    }
+
+    // ── binary-AST-entropy path (`compile_catching_ast`) ─────────────────────────────────────────
+
+    /// Encode a source program to canonical binary-AST bytes — the shape the entropy path consumes.
+    fn ast_bytes_of(source: &str) -> Vec<u8> {
+        let arenas = cadenza_syntax::sexpr::read(source).expect("test source parses");
+        cadenza_syntax::codec::encode(&arenas)
+    }
+
+    #[test]
+    fn a_valid_binary_ast_blob_compiles() {
+        // A well-formed binary-AST module reaches the compiler and compiles to validating wasm —
+        // i.e. the decode-gate + re-encode + compile path is equivalent to the text path for a real
+        // program.
+        let _g = slot_guard();
+        let bytes = ast_bytes_of("(do (def (main) (+ 1 2)) (export main))");
+        let v = compile_catching_ast(&bytes);
+        assert!(
+            matches!(v, Verdict::Compiled { .. }),
+            "expected Compiled from a valid AST blob, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn garbage_bytes_are_a_parse_error_not_a_crash() {
+        // The decode-gate is strict + total: arbitrary bytes are rejected cleanly (a bad header /
+        // bad tag), classified as the entropy-quality ParseError analog — NEVER a panic or a
+        // spurious Declined that would masquerade as a compiler rejection of a real program.
+        let _g = slot_guard();
+        let v = compile_catching_ast(b"not a binary ast at all");
+        assert!(matches!(v, Verdict::ParseError(_)), "got {v:?}");
+        assert!(matches!(compile_catching_ast(&[]), Verdict::ParseError(_)));
+    }
+
+    #[test]
+    fn a_truncated_valid_blob_is_a_parse_error_not_a_crash() {
+        // A mid-stream truncation of a valid encoding (the classic libFuzzer mutation) decodes to a
+        // `Truncated` error → ParseError, never an over-read panic.
+        let _g = slot_guard();
+        let full = ast_bytes_of("(do (def (main) (+ 1 2)) (export main))");
+        let truncated = &full[..full.len() / 2];
+        let v = compile_catching_ast(truncated);
         assert!(matches!(v, Verdict::ParseError(_)), "got {v:?}");
     }
 
