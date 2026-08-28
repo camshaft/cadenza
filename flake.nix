@@ -364,6 +364,18 @@
         rootWorkspaceCrates = {
           cadenza-ast = "implementation/seed/crates/cadenza-ast";
           cadenza-syntax = "implementation/seed/crates/cadenza-syntax";
+          # cadenza-syntax-* (v-syntax #5076/#5082): cadenza-syntax was split into a dependency-light bottom
+          # (cadenza-syntax-core: spans + arena read-helpers + shared literal lexing) plus one crate per data
+          # surface — json/sexpr/toml (always-on, re-exported) and cedar (feature-gated, isolates the heavy
+          # cedar-policy dep off the front-end hot path). All are ROOT workspace members (crates/*, no own
+          # [workspace]), so — like cdz-contract / cdz-world-artifact — each MUST be registered here or the
+          # crane deps-layer src omits its Cargo.toml and the whole workspace fails to load (`cargo check`
+          # can't read a member's manifest → cadenza-seed-deps-deps.drv fails → cascades fleet-wide).
+          cadenza-syntax-cedar = "implementation/seed/crates/cadenza-syntax-cedar";
+          cadenza-syntax-core = "implementation/seed/crates/cadenza-syntax-core";
+          cadenza-syntax-json = "implementation/seed/crates/cadenza-syntax-json";
+          cadenza-syntax-sexpr = "implementation/seed/crates/cadenza-syntax-sexpr";
+          cadenza-syntax-toml = "implementation/seed/crates/cadenza-syntax-toml";
           cdz = "implementation/seed/crates/cdz";
           cdz-calc = "implementation/seed/crates/cdz-calc";
           # cdz-component-rewrite: the isolated wasm-component import re-addresser (bare import -> +hash),
@@ -680,8 +692,20 @@
               # dev-dep) and the xtask closure (direct dep). cadenza-ast was already present via cdz-contract.
               # cdz-run then gained a `cdz-corpus-grade` dep (#3470: the shared corpus grade compare), which
               # only path-deps cadenza-syntax (already present) — so it enters rcdzc's closure via cdz-run.
-              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cdz-contract" "cdz-corpus-grade" "cdz-num" "cdz-rt" "cdz-run" "rcdzc" ];
-              cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" ];
+              # rcdzc's ONLY path-deps are its dev-deps cadenza-syntax + cdz-rt + cdz-num (#5000 DROPPED the
+              # cdz-run dev-dep — wasmtime AND cdz-run are now fully out of the compiler crate; that also
+              # removed cdz-contract + cdz-corpus-grade, which had entered only via cdz-run). The cadenza-syntax
+              # split (#5076/#5082) then pulled the extracted surface crates into cadenza-syntax's closure —
+              # cadenza-syntax-core (bottom) + json/sexpr/toml (always-on) + cadenza-syntax-cedar (optional, but
+              # the default-true closure walk counts it) — each deps only cadenza-ast + cadenza-syntax-core, so
+              # rcdzc reaches all five transitively through cadenza-syntax.
+              rcdzc = [ "cadenza-ast" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" "cdz-num" "cdz-rt" "rcdzc" ];
+              cadenza-syntax = [ "cadenza-ast" "cadenza-syntax" "cadenza-syntax-cedar" "cadenza-syntax-core" "cadenza-syntax-json" "cadenza-syntax-sexpr" "cadenza-syntax-toml" ];
+              cadenza-syntax-core = [ "cadenza-ast" "cadenza-syntax-core" ];
+              cadenza-syntax-cedar = [ "cadenza-ast" "cadenza-syntax-cedar" "cadenza-syntax-core" ];
+              cadenza-syntax-json = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-json" ];
+              cadenza-syntax-sexpr = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-sexpr" ];
+              cadenza-syntax-toml = [ "cadenza-ast" "cadenza-syntax-core" "cadenza-syntax-toml" ];
               cdz-num = [ "cdz-num" ];
               # cdz-world-artifact deps only cadenza-ast (the language's binary-AST builders/codec) + the
               # external wit-parser; xtask still deps cadenza-ast via codegen.rs, so its closure is unchanged.
@@ -700,7 +724,8 @@
           if mismatches != [ ] then
             throw ("flake.nix Part-B closure-assert: fromTOML closure walk disagrees with expected for "
               + builtins.toString mismatches
-              + " — the crate dep graph changed; re-verify vs `cargo metadata` and update `expected`.")
+              + " — the crate dep graph changed; re-verify vs `cargo metadata` and update `expected`. ACTUAL: "
+              + builtins.concatStringsSep " | " (map (n: n + "=[" + builtins.concatStringsSep " " (crateClosure n) + "]") mismatches))
           else
             pkgs.runCommand "crate-closure-assert" { } ''
               echo "ok: per-crate closures match expected (${builtins.toString (builtins.attrNames expected)})" > $out
@@ -3327,6 +3352,12 @@
             perCrateClippyCrane = {
               clippy-cadenza-ast = mkCrateClippyCrane { crate = "cadenza-ast"; };
               clippy-cadenza-syntax = mkCrateClippyCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
+              # cadenza-syntax split (#5076/#5082): leaf surface crates, no tests/ dir, no spec/semantics dep.
+              clippy-cadenza-syntax-cedar = mkCrateClippyCrane { crate = "cadenza-syntax-cedar"; };
+              clippy-cadenza-syntax-core = mkCrateClippyCrane { crate = "cadenza-syntax-core"; };
+              clippy-cadenza-syntax-json = mkCrateClippyCrane { crate = "cadenza-syntax-json"; };
+              clippy-cadenza-syntax-sexpr = mkCrateClippyCrane { crate = "cadenza-syntax-sexpr"; };
+              clippy-cadenza-syntax-toml = mkCrateClippyCrane { crate = "cadenza-syntax-toml"; };
               clippy-cdz-calc = mkCrateClippyCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               clippy-cdz-component-rewrite = mkCrateClippyCrane { crate = "cdz-component-rewrite"; };
               clippy-cdz-contract = mkCrateClippyCrane { crate = "cdz-contract"; };
@@ -3361,6 +3392,12 @@
             perCrateTestCrane = {
               test-cadenza-ast = mkCrateTestCrane { crate = "cadenza-ast"; };
               test-cadenza-syntax = mkCrateTestCrane { crate = "cadenza-syntax"; extraSrc = [ ./spec/semantics ]; };
+              # cadenza-syntax split (#5076/#5082): leaf surface crates, no tests/ dir, no spec/semantics dep.
+              test-cadenza-syntax-cedar = mkCrateTestCrane { crate = "cadenza-syntax-cedar"; };
+              test-cadenza-syntax-core = mkCrateTestCrane { crate = "cadenza-syntax-core"; };
+              test-cadenza-syntax-json = mkCrateTestCrane { crate = "cadenza-syntax-json"; };
+              test-cadenza-syntax-sexpr = mkCrateTestCrane { crate = "cadenza-syntax-sexpr"; };
+              test-cadenza-syntax-toml = mkCrateTestCrane { crate = "cadenza-syntax-toml"; };
               test-cdz-calc = mkCrateTestCrane { crate = "cdz-calc"; extraSrc = [ ./implementation/seed/crates/cdz-runtime/src/bigint.rs ]; };
               test-cdz-component-rewrite = mkCrateTestCrane { crate = "cdz-component-rewrite"; };
               test-cdz-contract = mkCrateTestCrane { crate = "cdz-contract"; };
@@ -3434,9 +3471,11 @@
             clippyShardA = pkgs.runCommand "cargo-clippy-shard-a"
               {
                 inherit (perCrateClippyCrane) clippy-rcdzc clippy-cdz-num clippy-cdz-calc clippy-cadenza-syntax clippy-cdz-platform
-                  clippy-cdz-component-rewrite clippy-cdz-contract;
+                  clippy-cdz-component-rewrite clippy-cdz-contract
+                  clippy-cadenza-syntax-cedar clippy-cadenza-syntax-core clippy-cadenza-syntax-json
+                  clippy-cadenza-syntax-sexpr clippy-cadenza-syntax-toml;
               } ''
-              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
+              echo "ok: clippy shard A — rcdzc + cdz-num + cdz-calc + cadenza-syntax(+core/cedar/json/sexpr/toml) + cdz-platform + cdz-component-rewrite + cdz-contract" > $out
             '';
             clippyShardB = pkgs.runCommand "cargo-clippy-shard-b"
               {
