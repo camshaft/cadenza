@@ -9600,3 +9600,22 @@
 (export main)))
   (call main (: 5 Int64))
   (output (: 15 Int64)))
+
+(case "hta1 a 24-field runtime tuple builds a VALID artifact and every field projects (high-arity, verified by running)"
+  (doc    "The in-guest high-arity seam (compile-success proves nothing — verify by RUNNING; the 17-flat-WIT-
+           param bug produced silent invalid wasm). A 24-field tuple all bound to a runtime n, summed over all
+           24 projections = 24n. n=5 -> 120. Pins that a wide tuple lowers to a runnable artifact and no field
+           index aliases another.")
+  (input (do (def (main (: n Int64))
+  (let ((t (tuple n n n n n n n n n n n n n n n n n n n n n n n n)))
+    (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (. t 0) (. t 1)) (. t 2)) (. t 3)) (. t 4)) (. t 5)) (. t 6)) (. t 7)) (. t 8)) (. t 9)) (. t 10)) (. t 11)) (. t 12)) (. t 13)) (. t 14)) (. t 15)) (. t 16)) (. t 17)) (. t 18)) (. t 19)) (. t 20)) (. t 21)) (. t 22)) (. t 23))))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 120 Int64)))
+
+(case "hta2 a 20-parameter function builds a VALID artifact and sums all params (high param-count, verified by running)"
+  (input (do (def (wide (: p0 Int64) (: p1 Int64) (: p2 Int64) (: p3 Int64) (: p4 Int64) (: p5 Int64) (: p6 Int64) (: p7 Int64) (: p8 Int64) (: p9 Int64) (: p10 Int64) (: p11 Int64) (: p12 Int64) (: p13 Int64) (: p14 Int64) (: p15 Int64) (: p16 Int64) (: p17 Int64) (: p18 Int64) (: p19 Int64)) (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ p0 p1) p2) p3) p4) p5) p6) p7) p8) p9) p10) p11) p12) p13) p14) p15) p16) p17) p18) p19))
+(def (main (: n Int64)) (wide n n n n n n n n n n n n n n n n n n n n))
+(export main)))
+  (call main (: 5 Int64))
+  (output (: 100 Int64)))
