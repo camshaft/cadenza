@@ -603,6 +603,15 @@ const FILTERED_DECLINE_SIGNATURES: &[&str] = &[
     // Float cross as entry params) — breaker triaged LEGIT frontier + flip-watched (the PARAM twin of the
     // Unit RESULT cell #4903 closed; documented non-scalar-entry-param gap family, v-rust-backend emit lane).
     "export--parameter-type-has-no",
+    // WIT-world declared-typed export RESULT the compiler cannot emit typed yet (String/list/option/…
+    // outside the supported record/enum/variant/tuple + scalar set) — #4950's honest-decline guard: it
+    // declines loudly rather than silently exporting an opaque u32 handle. breaker triaged LEGIT +
+    // flip-watched; confirmed at scale by the differential (post-#4950 compiled 3502→1285, this ONE
+    // signature, 0 ICE). Canonical repro (breaker asked to keep on file): guest identity over String —
+    // `(wit-world (world w (export iface (member f (func (param m string) (result string))))))` +
+    // `(input (module m (def (f (: m String)) m) (export f)))`. Filter NARROWS when v-rust-backend lands
+    // typed string/list/option EXPORT results (v-rust-backend emit lane).
+    "the-export-returns--which-the",
 ];
 
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
