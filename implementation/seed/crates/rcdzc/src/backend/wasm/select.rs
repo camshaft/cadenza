@@ -1993,14 +1993,34 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, lhs, scrut, false, out);
             collect_consuming_payload_sites_expr(db, rhs, scrut, false, out);
         }
+        // `Map.lookup`/`Set.contains` BORROW BOTH operands (core.rs: "the boxed key/elem is dropped after") —
+        // a HEAP key/elem (a Bytes/String/compound handle) is read in place for the hash+compare and retained
+        // by NOTHING (no box for an already-heap key), so a scrutinee-child reached AS the key/elem is BORROWED,
+        // never moved out → descend with `consuming=false`, exactly like the `value-eq`/`value-cmp` compare
+        // operands above. (The prior `consuming=true` here over-marked such a probe key as a consumed-child dup
+        // site → the shell-reclaim child-dup was UNBALANCED → a 1-cell leak on the slice-view-as-CHAMP-key
+        // BORROWED-PROBE, 13-strings:1408; the op only borrows the key, so no dup is owed — seam (b) of the
+        // CHAMP-key reclaim, v-mem-safety-co-designed.) A SCALAR key copies out (get-int) → not a heap child →
+        // unaffected by the flag.
         Core::MapLookup { map, key, .. } => {
             collect_consuming_payload_sites_expr(db, map, scrut, false, out);
-            collect_consuming_payload_sites_expr(db, key, scrut, true, out);
+            collect_consuming_payload_sites_expr(db, key, scrut, false, out);
         }
         Core::MapSize { map } => collect_consuming_payload_sites_expr(db, map, scrut, false, out),
         Core::SetContains { set, elem, .. } => {
             collect_consuming_payload_sites_expr(db, set, scrut, false, out);
-            collect_consuming_payload_sites_expr(db, elem, scrut, true, out);
+            collect_consuming_payload_sites_expr(db, elem, scrut, false, out);
+        }
+        // `Map.remove`/`Set.remove` BORROW the key/elem (core.rs) but CONSUME the collection: descend the
+        // key/elem BORROWED (false) and the collection CONSUMING (true, safe default — a slice-view is never
+        // the collection). Mirrors the `arm_borrows_heap_subvalue` relax for the same ops.
+        Core::MapRemove { map, key, .. } => {
+            collect_consuming_payload_sites_expr(db, map, scrut, true, out);
+            collect_consuming_payload_sites_expr(db, key, scrut, false, out);
+        }
+        Core::SetRemove { set, elem, .. } => {
+            collect_consuming_payload_sites_expr(db, set, scrut, true, out);
+            collect_consuming_payload_sites_expr(db, elem, scrut, false, out);
         }
         Core::SetLen { set } => collect_consuming_payload_sites_expr(db, set, scrut, false, out),
         Core::Arith { lhs, rhs, .. }
@@ -2011,6 +2031,14 @@ fn collect_consuming_payload_sites_expr(
             collect_consuming_payload_sites_expr(db, rhs, scrut, false, out);
         }
         Core::Convert { operand, .. } | Core::Not { operand } => {
+            collect_consuming_payload_sites_expr(db, operand, scrut, consuming, out)
+        }
+        // `Bytes.compact` is a SAME-HANDLE IN-PLACE canonicalize (op_bytes_compact returns the SAME handle,
+        // rc-neutral) — an IDENTITY transform for the consume/borrow question: it PASSES THROUGH its operand's
+        // status. A compact whose RESULT is a borrowed key-op operand (a CHAMP probe key) reads its operand as
+        // a borrow → NOT a consumed-child dup site (seam (b): without this, a `Map.lookup { key: Bytes.compact
+        // view }` fell to the `_ =>` CONSUMING default and re-marked the view even after the key was relaxed).
+        Core::BytesCompact { operand } => {
             collect_consuming_payload_sites_expr(db, operand, scrut, consuming, out)
         }
         Core::If { cond, then_, else_ } => {
@@ -9691,7 +9719,26 @@ fn sum_shell_reclaim_payload_ok(
                 && scrutinee_dead_after_destructure(db, scrutinee, root))
             || (!sum_cont_arm_borrows_heap_subvalue(db, root)
                 && !sum_cont_arm_constructs_compound(db, root))
-            || sum_cont_extraction_consume_allowlisted(db, root, scrutinee))
+            || sum_cont_extraction_consume_allowlisted(db, root, scrutinee)
+            // (5) EXTRACTION-BORROWED-PROBE (CHAMP-key, v-mem-safety-approved as a new disjoint disjunct — do
+            // NOT broaden branch (3)'s !arm_constructs_compound, which is the general FBIP fence for non-
+            // extraction scrutinees where rc>=2 is not guaranteed). Reclaim a compound Some from a fallible
+            // EXTRACTION (List.at/Bytes.at/Str.at/Str.slice/Bytes.slice/Map.lookup) whose arm is BORROW-CLEAN,
+            // EVEN WHEN the arm constructs a compound. Two hazards, two conjuncts, both load-bearing:
+            //   (i) FBIP-REUSE — scrutinee_is_fallible_extraction: the extraction dup-retains the payload into
+            //       the Some, holding it at rc>=2 through the arm (the inc2b property, mts1 6->3 no-trap), so
+            //       any in-place FBIP reuse of its cell path-copies (node_rc: rc>1 never mutates) → the arm's
+            //       compound build cannot alias/consume the payload cell.
+            //   (ii) ESCAPE — !sum_cont_arm_borrows_heap_subvalue: no heap sub-value is read out as a live
+            //       handle outliving the shell-deep-drop (the borrow-relax above classifies a Set.contains/
+            //       Map.lookup/value-eq key/probe as a borrow, NOT an escape). A view CONSUMED/STORED into a
+            //       collection (Set.of/insert, Map.insert — MIXED/STORED negative controls) is NOT in the
+            //       borrow allowlist → arm_borrows stays TRUE → this disjunct does NOT fire → those stay a
+            //       defined leak, never a double-free. The outer `&& !cont_rematches_scrutinee` (Class-B) still
+            //       applies. This is the borrowed-probe sub-case of the Stage-A extraction-rebuild inc2b already
+            //       verified — strictly SAFER (the payload is only READ, never flows into the compound).
+            || (scrutinee_is_fallible_extraction(db, scrutinee)
+                && !sum_cont_arm_borrows_heap_subvalue(db, root)))
         // Class-B UAF (cb3-5): a scrutinee RE-MATCHED by a NESTED `MatchSum` in an arm (`match s { Circle =>
         // match s { … } … }`, `s` an owned/inlined sum) is reclaimed by the INNER match's shell-drop already;
         // this ENCLOSING reclaim would deep-drop the SAME handle a 2nd time → double-free. Suppress the
@@ -17946,6 +17993,48 @@ fn arm_borrows_heap_subvalue_seen(
         Core::BytesAt { bytes, index, .. } => {
             arm_borrows_heap_subvalue_seen(db, bytes, true, seen)
                 || arm_borrows_heap_subvalue_seen(db, index, false, seen)
+        }
+        // `Bytes.compact` (adv-66) is a SAME-HANDLE IN-PLACE canonicalization (op_bytes_compact flattens the
+        // rope in place and returns the SAME handle, refcount-neutral — v-mem-safety runtime-verified) — an
+        // IDENTITY transform on the handle for the ESCAPE question: it PASSES THROUGH its operand's borrow
+        // status. Recurse the operand with the CURRENT `borrowed` flag. A compact whose RESULT is a borrowed
+        // key-op operand (a CHAMP probe) reads the operand as a borrow (does NOT escape → un-blocks the shell-
+        // reclaim); a compact whose result is CONSUMED still reads it consuming (safe default — leak, not UAF).
+        Core::BytesCompact { operand } => {
+            arm_borrows_heap_subvalue_seen(db, operand, borrowed, seen)
+        }
+        // The BORROWING key-ops read a heap sub-value ONLY as a key/probe/compare operand and retain nothing:
+        // `Map.lookup`/`Set.contains` BORROW both operands (dropping only the boxed key/elem after),
+        // `Map.remove`/`Set.remove` BORROW the key/elem (and CONSUME the collection), and the structural
+        // `value-eq`/`value-cmp`/`value-eq-shaped` compares BORROW both operands (core.rs). A slice-view read
+        // out of the matched scrutinee and used ONLY as such a borrowed key/probe does NOT escape the arm →
+        // relax the key/elem/compare operands to `borrowed`, un-blocking the enclosing MatchSum shell-reclaim
+        // for the slice-view-as-CHAMP-key BORROWED-PROBE shape (13-strings:1408, v-mem-safety co-design, the
+        // ESCAPE conjunct (ii) of the extraction-probe reclaim disjunct). The remove ops' CONSUMED collection
+        // operand stays consuming (safe default; a slice-view is never the collection). NOT `Map.insert`/
+        // `Set.insert`/`Set.of`: those CONSUME/STORE the key into the collection (owned-transfer) → the view
+        // genuinely escapes → stays consuming (the STORED-KEY + MIXED negative-control fence — no double-free).
+        Core::MapLookup { map, key, .. } => {
+            arm_borrows_heap_subvalue_seen(db, key, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, map, false, seen)
+        }
+        Core::SetContains { set, elem, .. } => {
+            arm_borrows_heap_subvalue_seen(db, elem, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, set, false, seen)
+        }
+        Core::MapRemove { map, key, .. } => {
+            arm_borrows_heap_subvalue_seen(db, key, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, map, false, seen)
+        }
+        Core::SetRemove { set, elem, .. } => {
+            arm_borrows_heap_subvalue_seen(db, elem, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, set, false, seen)
+        }
+        Core::ValueEq { lhs, rhs }
+        | Core::ValueEqShaped { lhs, rhs, .. }
+        | Core::ValueCmp { lhs, rhs, .. } => {
+            arm_borrows_heap_subvalue_seen(db, lhs, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, rhs, true, seen)
         }
         // Every other node kind (calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
         // children carry no borrow relaxation. SAFE-BY-DEFAULT: an unhandled shape can only over-decline.
