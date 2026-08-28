@@ -170,13 +170,22 @@ Slice order (roughly cheapest-dep-drop first; each is one merge-request):
     single largest extraction and unblocks the dep-drop; it is its own multi-step slice (skeleton crate →
     move runner + its `param_generators`/`decode_value`/`narrow_from_predicate` helpers → wire forward →
     gate `cdz test` e2e).
-  - **S4b — the shallow runners.** `cdz run` (plain component) + `run_project`'s run-step + `cdz run-rust`
-    verdict use only `cdz_run::cli::run` / `run_core_module` — forward these to the `cdz-run` /
-    `cdz-rust-run` binaries (like `smith`/`cad`). `run_project`'s BUILD step stays in `cdz` (compiler), only
-    its run-step shells `cdz-run`. `run-rust`→`cdz-rust-run` also drops `cdz-rust-render`.
-  - **S4c — flip + drop.** Once S4a+S4b land, `cdz` has no `cdz-run` caller → make `cdz-run` optional
-    (`standalone = ["dep:cdz-run", …]`) and drop it from the default/`!standalone` build; **`wasmtime` leaves
-    `cdz`'s (and `seedCompiler`'s) graph** — the headline win. Shrink the assert allowlist to `["cdz-calc"]`.
+  - **S4b — the other `cdz-run` (wasmtime) users in `cdz` (ACCURATE MAP, verified against the code).** The
+    `cdz_run::` call sites in `cdz` are exactly: (1) **`Cmd::Run` direct-component** — ✅ DONE, #5123 forwards
+    it to the `cdz-run` binary via `$CDZ_RUN_BIN`→sibling→`$PATH`; (2) **`run_project`'s run-step**
+    (`cdz_run::cli::run` on the built wasm, main.rs ~2375) — forward to the `cdz-run` binary, but this needs a
+    `RunArgs`→argv reconstruction (component temp path + `--peer`/`--format`/`--call` …), fiddlier than the
+    raw-argv Cmd::Run forward; the BUILD step stays in `cdz`; (3) **`emit_and_run_module`** (`run_core_module`,
+    the run-ml/run-emitted/chor CORE-module runner) — runs a bare core wasm module → i64, which `cdz-run` has
+    **no bin mode for** (it runs value-heap COMPONENTS via the store), so this needs a new `cdz-run` core-run
+    subcommand OR a small extraction; (4) the **`cdz test` runner** — S4a. **⚠ CORRECTION: `cdz run-rust` is
+    NOT a `cdz-run` user** — it is rust-target (emits `--target rust`, `rustc`-compiles + runs natively via
+    `cdz_rust_render`, no wasmtime). And `cdz-rust-run` is the corpus rust-exec GRADER (`--grade <test-run.ast>`),
+    NOT a source→verdict oracle, so there is no drop-in bin to forward `cdz run-rust` to anyway. run-rust is
+    therefore IRRELEVANT to the `cdz-run`/wasmtime drop; leave it linked (`cdz_rust_render` is pure/light).
+  - **S4c — flip + drop.** Once S4a + S4b(2)(3) land (Cmd::Run done; run_project run-step + emit_and_run_module
+    severed; cdz test extracted), `cdz` has no `cdz_run::` caller → make `cdz-run` optional and drop it; **`wasmtime`
+    leaves `cdz`'s (and `seedCompiler`'s) graph** — the headline win. Shrink the assert allowlist to `["cdz-calc"]`.
   - **S4d — `cdz-calc`.** Sever `cdz-calc`'s `cdz-run` lib dep (its `runtime.rs run_component` / `lib.rs`
     `cdz_run::run`) → shell the `cdz-run` binary. Coordinate with v-guide-infra (owns the calc engine). Then
     `cdz-run` has ZERO lib dependents; shrink the allowlist to `[]` (goal met).
