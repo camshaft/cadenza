@@ -8475,3 +8475,4 @@ todo	two compound arguments each cross as their own handle in one peer call
 todo	a String argument handle passed to a peer stays live for a later local read (borrow not move)
 pass	constant tuple projections fold at boundary and multi-digit indices
 pass	a nested constant tuple projection folds through both levels
+pass	the unit value observes its total order — equal to itself, never less

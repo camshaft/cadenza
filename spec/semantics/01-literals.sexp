@@ -336,6 +336,17 @@
   (input  (= unit ()))
   (output (: true Bool)))
 
+(case "the unit value observes its total order — equal to itself, never less"
+  (doc    "Unit is a total-order type with exactly one value, so all four ordering operators observe the
+           trivial order: `(< unit ())` is FALSE (Equal, not Less), while `(<= unit ())` and `(>= () unit)`
+           are TRUE (reflexive). Folded at compile time — unit carries no data and has no machine slot.
+           Weighted so one result pins all three: (if (< unit ()) 100 0) + (if (<= unit ()) 1 0) +
+           (if (>= () unit) 10 0) = 0 + 1 + 10 = 11. Relocated from rcdzc two_unit_values_compare_equal
+           (its (= unit ()) equality is the case above; its (= unit 5) cross-type reject stays in rcdzc).")
+  (input  (do (def (main) (+ (if (< unit ()) 100 0) (+ (if (<= unit ()) 1 0) (if (>= () unit) 10 0)))) (export main)))
+  (call   main)
+  (output (: 11 Int64)))
+
 (case "a string literal"
   (input  "hello")
   (output (: "hello" String)))

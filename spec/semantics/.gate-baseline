@@ -5597,6 +5597,8 @@ pass	applying a boolean is a type error
 pass	applying a float is a type error
 pass	applying a non-function is a type error
 pass	applying the result of a match whose arms return payload-capturing closures
+pass	aq1 constant quotes hoist build-once and each depth-walk over the immortal Ast leaks its extraction dups
+pass	aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)
 pass	ar1 a WHOLE nested handle expression inside a handler ARM's resume value
 pass	arithmetic between a char and a BigInt is rejected with a working two-step conversion fix
 pass	arithmetic between a char and a FLOAT is rejected with a working two-step conversion fix
@@ -8109,6 +8111,8 @@ pass	sts1 a persistent Set.insert against a constant Set leaves the constant wit
 pass	sts2 fifty frames of runtime-indexed membership over a 40-element constant Set hit every element and the miss cells
 pass	sts3 fifty frames of runtime-keyed Set.insert against a 40-element constant Set never corrupt it (sibling stays without the key)
 pass	stt1 a SET-OF-TUPLES state seeded by Set.of — structural dedup across dispatches: the repeated pair does not grow the set and the order-swapped pair only counts when the components differ
+pass	stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)
+pass	stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)
 pass	su1 a SUM-typed state machine — Idle transitions to Run on first dispatch, Run accumulates thereafter
 pass	su2 a THREE-variant cyclic machine — the op arg selects the transition, both Mid exits exercised
 pass	su3 a RECURSIVE sum state — the arm grows a Peano tower by two per dispatch, a recursive fn measures it
@@ -8490,6 +8494,7 @@ pass	the union contains the elements of either set
 pass	the union of sets of TUPLES holds a shared tuple once and preserves component order
 pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
+pass	the unit value observes its total order — equal to itself, never less
 pass	the unit-op response-cursor discriminator: a nonzero ping row is not misread by the later get (adv-65)
 pass	the untaken branch's runtime div-by-zero does not fire
 pass	the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range
@@ -9001,6 +9006,7 @@ todo	grx4 the entry List param reaches a self-recursive summer through a non-rec
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
+todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)
 todo	read of malformed text is a coded reject, not a wrong value
 todo	rpp1 a scalar-fielded Record entry param projects both fields
 todo	rpp2 an open-row helper projects a field of the boundary Record param
@@ -9010,8 +9016,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	stt1 a runtime-built binary Exp tree evals exactly and leaks the whole tree (branching-walk calibration)
-pass	stt2 a tree-to-tree transform then eval preserves meaning and leaks BOTH trees (transform calibration)
-pass	aq1 constant quotes hoist build-once and each depth-walk over the immortal Ast leaks its extraction dups
-pass	aq2 fifty depth-walks over a hoisted constant quote leak LINEARLY (per-walk extraction dups)
-todo	prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)
