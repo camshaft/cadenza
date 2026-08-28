@@ -6827,7 +6827,19 @@ mod tests {
         );
     }
 
+    // FIXME(cdz/lsp — guide-editor lane): the LSP `code_lenses_for` BATCHED path (this file, ~L2749) returns
+    // ZERO lenses for a program whose generic IS specialized. The failure is NOT inference / monomorphization
+    // and NOT a recursive-generic tie: `loopn` here compiles AND RUNS at both Int64 and String (`cdz test`
+    // PASS, `cdz check` clean), and the rcdzc sidecar queries are CORRECT on this exact program —
+    // `cdz instantiations loopn` reports 2 specializations ([n:Int64,x:Int64], [n:Int64,x:String]) and
+    // `cdz symbols` lists loopn+main. The bug is isolated to code_lenses_for batching a per-name
+    // `Instantiations` query for every top-level name into ONE `rcdzc::compile` with a multi-request
+    // sidecar-drive artifact: that batched compile yields 0 matching answers, while the SINGLE-query CLI path
+    // returns 2. Fix the batched-query glue (or the multi-request sidecar-drive compile), then un-ignore.
+    // Ignored (not deleted) to un-red gate-local + clippy-shard-b fleet-wide (operator greenlit 2026-08-28);
+    // reversible. Diagnosed by v-inference (rcdzc-sidecar owner); the batched LSP glue is the cdz/lsp lane's.
     #[test]
+    #[ignore = "FIXME cdz/lsp: code_lenses_for batched Instantiations path returns 0 lenses for a specialized generic (sidecar queries + compile are correct); un-red the fleet gate — see FIXME above"]
     fn code_lens_reports_a_specialized_generics_monomorphizations() {
         // `loopn` is a recursive generic specialized at `x: Int64` and `x: String` — a lens above it lists
         // both concrete instances (the `Instantiations` query surfaced in the editor).
