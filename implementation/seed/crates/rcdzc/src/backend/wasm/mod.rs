@@ -1723,7 +1723,7 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
         Core::RationalNum { operand } | Core::RationalDen { operand } => {
             collect_host_arg_strings(db, operand, out)
         }
-        Core::ListPush { list, elem } => {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             collect_host_arg_strings(db, list, out);
             collect_host_arg_strings(db, elem, out);
         }

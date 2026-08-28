@@ -2651,6 +2651,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let e = emit(db, elem, env, ctx)?;
             Ok(format!("{{ let mut __v = {l}; __v.push({e}); __v }}"))
         }
+        // `List.prepend` → insert `elem` at the FRONT, returning the NEW list (persistent semantics; the
+        // front-growth twin of `List.push`). Consume the operand into a `mut` local and `insert(0, …)`.
+        Core::ListPrepend { list, elem } => {
+            let l = emit(db, list, env, ctx)?;
+            let e = emit(db, elem, env, ctx)?;
+            Ok(format!("{{ let mut __v = {l}; __v.insert(0, {e}); __v }}"))
+        }
         // `List.concat` → the two lists joined in order (`lhs` then `rhs`). Consume `lhs` into a `mut`
         // local and `extend` it with `rhs`, returning it — one new `Vec`, order-preserving.
         Core::ListConcat { lhs, rhs } => {

@@ -4736,8 +4736,8 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         | Core::ListLen { operand }
         | Core::BytesLen { operand }
         | Core::StrScalarLen { operand } => collect_reached_poisons(db, operand, out),
-        // `List.push`/`concat` unconditionally evaluate both operands — descend into each.
-        Core::ListPush { list, elem } => {
+        // `List.push`/`prepend`/`concat` unconditionally evaluate both operands — descend into each.
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             collect_reached_poisons(db, list, out);
             collect_reached_poisons(db, elem, out);
         }

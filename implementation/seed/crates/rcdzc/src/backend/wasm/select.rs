@@ -332,6 +332,9 @@ const OP_AST_PRINT: &str = "ast-print";
 const OP_AST_ENCODE: &str = "ast-encode";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
+/// `vec-prepend(v, elem) -> handle` — a new list = `elem` then `v`'s elements (consumes both). The
+/// dedicated front-growth twin of `vec-push`, backing `Core::ListPrepend` (replaces `concat(singleton, v)`).
+const OP_VEC_PREPEND: &str = "vec-prepend";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
 /// out-of-bounds `index` traps).
 const OP_VEC_UPDATE: &str = "vec-update";
@@ -1626,9 +1629,9 @@ fn binding_escapes_dup_aware(
                 || off_plus
                     .is_some_and(|op| binding_escapes_dup_aware(db, op, binder, false, dup_sites))
         }
-        // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
-        // the pushed/concatenated value into the result).
-        Core::ListPush { list, elem } => {
+        // `List.push`/`prepend`/`concat` CONSUME both operands (the persistent op takes ownership of the list
+        // and the pushed/prepended/concatenated value into the result).
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             binding_escapes_dup_aware(db, list, binder, false, dup_sites)
                 || binding_escapes_dup_aware(db, elem, binder, false, dup_sites)
         }
@@ -2685,6 +2688,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BytesConcat { lhs: a, rhs: b }
         | Core::ListConcat { lhs: a, rhs: b }
         | Core::ListPush { list: a, elem: b }
+        | Core::ListPrepend { list: a, elem: b }
         | Core::MapLookup { map: a, key: b, .. }
         | Core::MapRemove { map: a, key: b, .. }
         | Core::SetInsert {
@@ -3373,7 +3377,7 @@ fn mark_binder_dups_inner(
                 sites,
             ),
         },
-        Core::ListPush { list, elem } => {
+        Core::ListPush { list, elem } | Core::ListPrepend { list, elem } => {
             seq(db, &[(list, false), (elem, false)], live_after, sites)
         }
         Core::ListUpdate { list, index, elem } => seq(
@@ -3655,6 +3659,7 @@ fn node_produces_heap_handle(db: &mut Db, node: StructId) -> bool {
         | Core::MapRemove { .. }
         | Core::ListNew { .. }
         | Core::ListPush { .. }
+        | Core::ListPrepend { .. }
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
         | Core::SetOf { .. }
@@ -4671,6 +4676,15 @@ fn collect_used_ops_into_seen(
         // `List.push` uses `vec-push` (the pushed element boxed by its type); `List.concat` uses `vec-concat`.
         Core::ListPush { list, elem } => {
             out.insert(OP_VEC_PUSH);
+            if let Ok(Some(op)) = box_op(db, elem) {
+                out.insert(op);
+            }
+            collect_used_ops_into_seen(db, list, out, visited);
+            collect_used_ops_into_seen(db, elem, out, visited);
+        }
+        // `List.prepend` uses `vec-prepend` (the prepended element boxed by its type, like a push).
+        Core::ListPrepend { list, elem } => {
+            out.insert(OP_VEC_PREPEND);
             if let Ok(Some(op)) = box_op(db, elem) {
                 out.insert(op);
             }
@@ -8488,6 +8502,7 @@ fn count_param_consumes(
             }
         }
         Core::ListPush { list, elem }
+        | Core::ListPrepend { list, elem }
         | Core::SetInsert {
             set: list, elem, ..
         }
@@ -9277,6 +9292,7 @@ fn is_allowlisted_builder(db: &mut Db, id: StructId) -> bool {
     matches!(
         core_of(db, id),
         Core::ListPush { .. }
+            | Core::ListPrepend { .. }
             | Core::ListConcat { .. }
             | Core::ListUpdate { .. }
             | Core::BytesConcat { .. }
@@ -12606,6 +12622,18 @@ fn emit(
             let boxed = box_op(db, elem)?;
             emit_heap_store_tail(db, elem, boxed, out); // [list, handle]
             out.push(Lir::CallImport(OP_VEC_PUSH)); // → [list']
+            Ok(())
+        }
+        // `List.prepend(l, x)` — the FRONT-growth twin of `List.push`: identical emission (list handle, then
+        // the element boxed by its type above the list's high-water — the same disjoint-slot discipline),
+        // differing ONLY in the op called: `vec-prepend` (RETURNS the new list handle). Replaces the old
+        // `concat(singleton, l)` lowering, which leaked the superseded front-spine (~17 cells/prepend).
+        Core::ListPrepend { list, elem } => {
+            emit(db, list, slots, base, high, scratch_ty, layout, out)?; // [list]
+            emit(db, elem, slots, *high, high, scratch_ty, layout, out)?; // [list, elem]
+            let boxed = box_op(db, elem)?;
+            emit_heap_store_tail(db, elem, boxed, out); // [list, handle]
+            out.push(Lir::CallImport(OP_VEC_PREPEND)); // → [list']
             Ok(())
         }
         // `List.concat(a, b)` — emit both list handles, then `vec-concat` (→ the joined list handle). The
@@ -18032,6 +18060,7 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // untouched. A shared/borrowed `acc` (rc>1) is already `dup`'d before the push by the Perceus retain,
         // so `vec-push` produces a genuinely fresh result — dropping it can never double-free the live `acc`.
         | Core::ListPush { .. }
+        | Core::ListPrepend { .. }
         | Core::ListConcat { .. }
         | Core::ListUpdate { .. }
         // A fallible READ that returns an `(Option T)` builds a FRESH owned `sum-new` Some shell (or a
