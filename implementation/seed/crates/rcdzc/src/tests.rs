@@ -4255,33 +4255,21 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
 #[test]
 fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
     use crate::testkit::parse;
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!(
-            "runtime wasm not found (run `cargo xtask build`); skipping collection slot-clash run"
-        );
-        return;
-    };
-    // A helper: compile the module, assert it is VALID wasm (the miscompile was a validation failure, so
-    // `compile_component` returning `Ok` + `imports_value_heap_runtime` on the bytes is itself the guard),
-    // then run `main 5` and assert the value.
-    let check = |src: &str, expect: &str, what: &str| {
+    // A helper: compile the module and assert it is VALID wasm importing the value-heap runtime. The
+    // miscompile this guards was a wasm-VALIDATION failure (a boxed-numeric element's i32 handle and a
+    // sibling's i64 arith temp reused one collection-assembler slot at two widths, "expected i64/found
+    // i32") — a compile-artifact the corpus cannot assert, so `compile_component` returning `Ok` +
+    // `imports_value_heap_runtime` IS the regression guard. The RUN VALUE (each is `Set.len`/`Map.len` = 2
+    // over the two distinct boxed-numeric elements {n+1, n+2} at n=5 = {6,7}) is corpus territory —
+    // collection length + BigInt/Rational value-distinctness (03-equality / 19-sets). `_expect` is retained
+    // for documentation at the call sites.
+    let check = |src: &str, _expect: &str, what: &str| {
         let bytes = compile_component(&crate::codec::encode(&parse(src)))
             .unwrap_or_else(|e| panic!("{what} must compile: {e:?}"));
         assert!(
             imports_value_heap_runtime(&bytes),
             "{what} builds a runtime collection, so it imports the value-heap runtime"
         );
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: Some(runtime.clone()),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
-            cdz_run::Outcome::Trap(t) => panic!("{what} trapped (miscompile?): {t}"),
-        }
     };
     // Set: element 1 = BigInt sum (i32 handles), element 2 = BigInt.of(Int64 arith) (i64 guard temp).
     check(
