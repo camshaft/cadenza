@@ -2533,3 +2533,23 @@
   (call main (: 50 Int64))
   (output (: 75 Int64))
   (live-objects known-leak 276))
+
+; ── breaker batch 587: element-DISCARDING generic at two heap domains, TRI-TARGET. A Wrap
+; rewrapped (payload threaded but never read) then peeked (payload discarded, returns 1),
+; instantiated at (List Int64) AND String. This is the discarding-consumer shape adjacent to
+; gtx3 (the transformer whose element-discarding single-domain case still declines) — but a plain
+; Wrap threads it fine on wasm+rust+rust-async (2). The contrast pins that the gtx3 residual is
+; TRANSFORMER-specific (closure-result element grounding), not a general discard-generic gap.
+
+(case "gdc1 an element-discarding generic (rewrap + peek) at two heap domains is correct on every backend"
+  (input (do
+(type Wrap (Wrap a))
+(def (rewrap (: w (Wrap a))) (match w ((Wrap.Wrap v) (Wrap.Wrap v))))
+(def (peek (: w (Wrap a))) (match w ((Wrap.Wrap _) 1)))
+(def (bld (: i Int64)) (if (= i 0) (list) (List.push (bld (- i 1)) i)))
+(def (main (: n Int64))
+  (+ (peek (rewrap (Wrap.Wrap (bld n))))
+     (peek (rewrap (Wrap.Wrap (String.concat "x" (if (> n 0) "y" "z")))))))
+(export main)))
+  (call main (: 3 Int64))
+  (output (: 2 Int64)))
