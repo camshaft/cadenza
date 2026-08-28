@@ -317,12 +317,27 @@ def cmpHolds (op : String) : Ordering → Bool
 /-- If an operand node is a `(: e T)` ascription with an integer type `T`, that type — so an operation
 takes its width from its operands (e.g. `(+ (: v UInt64) (: 0 UInt64))` is UInt64 arithmetic, not the
 ambient default). A minimal bottom-up inference for the scalar core. -/
-def operandTy? (m : Module) (i : Nat) : Option IntTy :=
+partial def operandTy? (m : Module) (i : Nat) : Option IntTy :=
   match m.nodes[i]? with
   | some (Node.list cs) =>
     match m.headName? (Node.list cs) with
-    | some h => if h == ":".toUTF8 && cs.size ≥ 3 then parseIntTy? m cs[2]! else none
-    | none => none
+    | some h =>
+      if h == ":".toUTF8 && cs.size ≥ 3 then parseIntTy? m cs[2]!
+      -- BigInt is CONTAGIOUS: an arithmetic op with a BigInt operand produces a BigInt (unbounded, no
+      -- overflow). Recursing here so a nested `(* (. BigInt of …) …)` chain stays BigInt-typed.
+      else if arithOps.contains ((String.fromUTF8? h).getD "") &&
+              (((cs[1]?).bind (operandTy? m)).any (·.width == .big) ||
+               ((cs[2]?).bind (operandTy? m)).any (·.width == .big)) then
+        some { signed := true, width := .big }
+      else none
+    | none =>
+      -- a qualified `((. BigInt <m>) …)` call (e.g. `(. BigInt of) x`) yields a BigInt value. (Inlined
+      -- rather than via `qualHead?`, which is defined later.)
+      match (cs[0]?).bind (fun hid => m.nodes[hid]?) with
+      | some (Node.list hc) =>
+        if m.headName? (Node.list hc) == some ".".toUTF8 && (hc[1]?).bind (nameOf? m) == some "BigInt".toUTF8
+        then some { signed := true, width := .big } else none
+      | _ => none
   | _ => none
 
 /-- Surface a deferred element outcome (poison) as an evaluator `Outcome`. -/
