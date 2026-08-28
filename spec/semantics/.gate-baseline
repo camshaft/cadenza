@@ -7192,6 +7192,8 @@ pass	ng1 the arm NEGATES alternate draws — a Bool flip in a tuple state signs 
 pass	nh1 nested handlers with LIST state at BOTH levels — both reclaim
 pass	nh2 the inner arm DELEGATES to the outer with heap state at both levels
 pass	nh3 the inner handle RESULT is a heap value consumed by the outer body
+pass	nim1 a NESTED constant sum immortal is FBIP-safe — a map over it does not mutate the original
+pass	nim2 nested constant-sum immortals differing at DEPTH stay distinct (deep mark does not conflate)
 pass	nk1 two runtime-computed NaNs dedup to ONE set member (canonical NaN)
 pass	nk2 +inf, -inf, and NaN are THREE distinct set members
 pass	nk3 a NaN Map KEY is findable by another runtime NaN (hash and equality agree)
