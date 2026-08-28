@@ -1193,6 +1193,19 @@ And a direct record-with-bytes-field: same shape but the sink push param is ("re
   (output (: (record (= requests ((record (= contract (1)) (= payload (2)) (= token (3)) (= deadline-nanos (None unit))))) (= outcome (continue unit))) (record (requests (List (record (contract (List UInt8)) (payload (List UInt8)) (token (List UInt8)) (deadline-nanos (Option UInt64))))) (outcome outcome))))
   (live-objects known-leak 8))
 
+(case "a payloadless enum crosses a BARE export result on a SYNTHESIZED world (no wit-world clause)"
+  (doc "SHAPE 58 - a payloadless enum (Color = Red|Green|Blue) returned BARE from a scalar-param export, world SYNTHESIZED from the guest annotation (no wit-world clause, like SHAPE 1-7). Verifies that the enum RESULT crosses by value (one i32 disc) with its component `enum` type synthesized DB-AWARE on the emit side (enum_cases / the by-value enum-result path), NOT via the db-less ty_natural_wit (which returns None for a Ty::Sum). Pins that enum SELF-DECLARATION already works on the synthesized-world path for RESULTS - the remaining enum gap is the export PARAM position (a non-scalar entry param is not yet emitted), an emit-side slice. A broken lift would render a wrong case. Promoted from a v-rust-backend synthesized-world enum probe.")
+  (input (do (type Color (Red) (Green) (Blue)) (def (f (: x Int64)) (if (= x 0) Color.Red Color.Green)) (export f)))
+  (call f (: 0 Int64))
+  (output (: (Red unit) Color)))
+
+(case "a payloadless enum in a record result crosses a SYNTHESIZED world (no wit-world clause)"
+  (doc "SHAPE 59 - the record-wrapped twin of SHAPE 58: a payloadless enum as a record-result FIELD (record{c: Color}), world synthesized from the guest annotation. Exercises the enum-disc field write (canon_write_of's payloadless enum-disc arm) inside the record result lift + the enum component type synthesized db-aware. Complements SHAPE 2 (a variant-WITH-payload record field) with the NULLARY-enum face, which variant_liftable_payload_cases does not admit (requires >=1 payload case). Promoted from a v-rust-backend synthesized-world enum probe.")
+  (input (do (type Color (Red) (Green) (Blue)) (def (f (: m (Record (: x Int64)))) (record (= c (if (= (. m x) 0) Color.Red Color.Green)))) (export f)))
+  (call f (: (record (= x 0)) (Record (: x Int64))))
+  (output (: (record (= c (Red unit))) (record (c Color))))
+  (live-objects known-leak 2))
+
 ; -- breaker batch 408 (2026-08-26): the scalar-param + compound-result acceptance ladder, promoted
 ; on the #3721 fix (gate admission: a scalar-param member with a SpillRecord compound result now takes
 ; the typed-interface wrapper instead of leaking the raw handle). All 8 faces flipped on the fix:
