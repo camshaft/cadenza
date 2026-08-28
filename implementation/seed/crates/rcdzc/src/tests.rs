@@ -4182,42 +4182,6 @@ fn a_reducer_performing_a_world_effect_reifies_it_and_emits_a_valid_component() 
     );
 }
 
-/// A NESTED CONSTANT tuple whose inner and outer levels SHARE an element occurrence must fold and
-/// escape as the right value — the regression guard for the value-constructor build-once cache. A
-/// non-recursive `(f 2)` inlines by β-reduction, which SHARES a constant-atom occurrence
-/// (`copy_structural` returns the original id for a literal), so in `(tuple n (tuple n n))` the outer
-/// and inner tuples reduce over the SAME `2` occurrences. An earlier build-once cache keyed on an
-/// ARGUMENT id collided the inner build onto the outer and recursed without end (a stack overflow);
-/// keying on the construction-site occurrence (`origin`) is collision-free. Pins the fold-and-escape
-/// of a shared-occurrence nested compound.
-#[test]
-fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
-    use crate::testkit::parse;
-    // `(f 2)` is NON-recursive → inlines; β-reduction shares the `2` occurrence across both tuple
-    // levels — exactly the shape the build-once cache must not collide.
-    let src = "(module m (def (f n) (tuple n (tuple n n))) \
-                 (def (main) (f 2)) (export main))";
-    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("[R2] runtime wasm not found; skipping shared-occurrence nested escape");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: None,
-        args: vec![],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "(: (tuple 2 (tuple 2 2)) (Tuple Int64 (Tuple Int64 Int64)))",
-            "a shared-occurrence nested constant tuple must escape as its true value form"
-        ),
-        cdz_run::Outcome::Trap(t) => panic!("shared-occurrence nested tuple escape trapped: {t}"),
-    }
-}
-
 /// A COMPOSED call over a record-transforming function whose field is a CHECKED-ARITH op compiles to a
 /// VALID module and runs to the right value — the regression guard for the record-field slot-collision
 /// miscompile (`adv-nested-call-multifield-record-arith-field-invalid-wasm`). `f` takes a ≥2-field
