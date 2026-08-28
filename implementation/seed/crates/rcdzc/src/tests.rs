@@ -17893,8 +17893,9 @@ mod match_engine {
         let rejects_0203 = |src: &str| {
             let ds = crate::diagnostics(&mut crate::db::Db::load(crate::testkit::parse(src)));
             assert!(
-                ds.iter().any(|d| d.code.as_deref() == Some("CDZ0203")
-                    && d.message.contains("segment takes")),
+                ds.iter()
+                    .any(|d| d.code.as_deref() == Some("CDZ0203")
+                        && d.message.contains("segment takes")),
                 "expected a CDZ0203 segment type error for {src}, got: {ds:?}"
             );
         };
