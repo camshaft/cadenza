@@ -572,7 +572,12 @@
   (call   main (: 5 Int64)) (output (: 4 Int64))
   (call   main (: 4 Int64)) (output (: -1 Int64))
   (call   main (: 14 Int64)) (output (: 4 Int64))
-  (live-objects known-leak 3))
+  ; Per-call (B2 #5101): the seen-set accumulator leak SCALES with the number of `Set.insert seen h`
+  ; before the walk stops, then plateaus — 1/2/4/5/4 inserts → 3/5/9/9/9 live. The whole-case
+  ; `known-leak 3` only matched call 0 (target 9, 1 insert); the true per-call vector is recorded here.
+  ; Underlying leak = a runtime Set/CHAMP accumulator + per-iteration walk cells not reclaimed (routed
+  ; to v-core-opt; distinct from the 3050 String-view/backing class). (v-memory-safety, coord v-corpus-harness)
+  (live-objects known-leak 3 5 9 9 9))
 
 (case "HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution"
   (doc    "Cycle detection via a seen-set over a NUMERIC orbit (the two-sum above probes complements;
@@ -3071,7 +3076,13 @@
   (call   main (: 1 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 3 Int64)) (output (: 42 Int64))
-  (call   main (: 4 Int64)) (output (: -1 Int64)))
+  (call   main (: 4 Int64)) (output (: -1 Int64))
+  ; mode 3 (view over a RUNTIME rope — concat with an if-branch operand — stored as CHAMP key) leaks 2:
+  ; the slice-view does not retain/reclaim its backing runtime rope (String-family concat/rope-intermediate
+  ; reclaim class, sumexpect_view_reclaim sub-gap; routed to v-core-opt, queued as a view/backing co-design
+  ; arc behind glb1). Modes 1/2/4 reclaim clean: 2's flat-literal backing is immortal; 1/4 borrow-probe.
+  ; Flips back to 0 when the view-owns-runtime-backing reclaim lands. (v-memory-safety, coord v-corpus-harness)
+  (live-objects known-leak 0 0 2 0))
 
 (case "Set.to-list over STRING elements orders by content with a rope participating"
   (doc    "The STRING sibling of the Float64/compound to-list pins (and the ruled-decline Bytes face):
