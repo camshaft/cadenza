@@ -1489,6 +1489,17 @@ impl Arenas {
         }
     }
 
+    /// The compound constructor a `List` node denotes for STRUCTURAL DISPATCH — accepting EITHER the native
+    /// ctor-LEAF-KIND head ([`compound_ctor_leaf`], the M2 form the reader now emits) OR the legacy
+    /// unshadowable STRING-primitive head ([`compound_ctor`], transitional). BOTH are unshadowable (a
+    /// ctor-leaf can't be rebound; a string can't be spelled as an identifier), so this is safe for the
+    /// resolver's structural dispatch — unlike the NAME alias (`(list …)`), which resolves lexically-first
+    /// (a bound `list` shadows it) and is NOT recognized here. The migration dual-read for dispatch; M3
+    /// drops the string arm, leaving `compound_ctor_leaf`. See `DESIGN-native-ast-compound-data.md`.
+    pub fn compound_ctor_prim(&self, id: StructId) -> Option<CompoundCtor> {
+        self.compound_ctor_leaf(id).or_else(|| self.compound_ctor(id))
+    }
+
     /// The `(key, value)` of a native `(= key value)` record/map ENTRY — a `List` of exactly three whose
     /// head is the [`Leaf::FieldPair`] leaf kind (the `=` marker, recognized by kind). `None` otherwise.
     /// The leaf-kind read primitive; distinct from the transitional name-headed `(= …)` the current
@@ -1536,6 +1547,10 @@ impl Arenas {
         match self.get(id) {
             Struct::List(items) => {
                 let &h = items.first()?;
+                // Native ctor-LEAF-KIND head (M2, what the reader now emits) OR the legacy name/string head.
+                if self.compound_ctor_leaf(id) == Some(want) {
+                    return Some(&items[1..]);
+                }
                 let spelling = self.as_name(h).or_else(|| self.as_str(h))?;
                 (CompoundCtor::from_spelling(spelling) == Some(want)).then_some(&items[1..])
             }
