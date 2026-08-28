@@ -148,3 +148,23 @@
             (def (main) Ast.module)
             (export main)))
   (error  CDZ0201))
+
+(case "prr1 a RUNTIME print-then-read Ast round-trip declines pending runtime Ast.read (constant strings only today)"
+  (doc    "Every existing read(print(quote …)) round-trip is fully CONSTANT and const-folds; a runtime-
+           SELECTED quote through the same pipeline declines honestly (\"read of a runtime string is not
+           yet computed (constant strings only)\"). Auto-flip witness for the runtime-Ast.read increment.
+           Oracle traced twice: 50 frames x depth(read(print(quote (f (g 1))))) = 50 x 2 = 100; the walk
+           will also carry the per-walk extraction-dup leak (aq2: ~10/walk -> ~500) when it flips —
+           re-measure census at flip time rather than pre-pinning a leak clause on a decline.")
+  (input (do
+(def (depth (: node Ast)) (match node
+  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  (_ 1)))
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (depth (Ast.read (Ast.print (if (> k 0) (quote (f (g 1))) (quote z)))))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 100 Int64)))
