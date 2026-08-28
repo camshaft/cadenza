@@ -436,7 +436,7 @@
   (call   main)
   (host-responses (respond Param.cut (: 1 Int64)))
   (output (: 23 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a @param slice window at an interior cut reads the non-straddling bytes"
   (doc    "The companion rows to the seam-straddling slice case above (which pins cut=1 -> [2,3] -> 23):
@@ -457,7 +457,7 @@
   (call   main)
   (host-responses (respond Param.cut (: 3 Int64)))
   (output (: 45 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a @param slice window whose length exceeds the remaining bytes yields None"
   (doc    "The doc's third claimed row: a cut leaving fewer than the window length yields None. cut=4 over
@@ -478,7 +478,7 @@
   (call   main)
   (host-responses (respond Param.cut (: 4 Int64)))
   (output (: -2 Int64))
-  (live-objects known-leak 1))
+  (live-objects 0))
 
 ; --- Response-consumption ORDER: one accessor performed twice, and two accessors interleaved. ---
 

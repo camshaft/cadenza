@@ -220,7 +220,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 30 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a slice of a runtime-start SLICE composes both offsets"
   (doc    "The view-of-a-view face: an inner `(Bytes.slice outer 1 2)` over an outer runtime-start slice
@@ -328,7 +328,7 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 30 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 ; --- Slice-view LIVENESS: the view keeps its parent's bytes alive (the Perceus face) ---------------
 ; A slice is a view over its parent's storage, so the memory manager must keep the parent's bytes
@@ -353,7 +353,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 30 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "two slices of one parent both read after the parent is dead"
   (doc    "The shared-storage face: two views of ONE parent, both read after the parent binding's last
@@ -379,7 +379,7 @@
   (output (: 13 Int64))
   (call   main (: 2 Int64))
   (output (: 35 Int64))
-  (live-objects known-leak 4))
+  (live-objects known-leak 2))
 
 (case "a slice returned from a helper OUTLIVES the helper's local parent"
   (doc    "The strongest escape: `mk-slice` builds `parent` as a LOCAL and returns a view of it — the
@@ -611,7 +611,7 @@
                 (match (Bytes.slice (rope s) 3 2) ((Option.Some _) 1)                              ((Option.None) 0))))
             (export main)))
   (call main (: 0 Int64)) (output (: (tuple 2 20 30 0) (Tuple Int64 Int64 Int64 Int64)))
-  (live-objects known-leak 5))
+  (live-objects known-leak 1))
 
 ; --- Compacting a slice preserves its value while releasing shared storage ---------------
 ; A slice MAY retain its parent's whole storage to represent a small range of it (a view holds the
@@ -1887,7 +1887,7 @@
             (export main)))
   (call   main (: 200 Int64))
   (output (: 110 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "String.from-bytes decodes a 400-byte 200-seam rope end to end"
   (doc    "The total UTF-8 decode over a DEEP rope: 200 (97,98) pairs = \"abab…\" — the decoder must
@@ -1925,7 +1925,7 @@
   (call   main (: 1 Int64)) (output (: 3040 Int64))
   (call   main (: 2 Int64)) (output (: 4050 Int64))
   (call   main (: 3 Int64)) (output (: 7 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut"
   (doc    "Composes three byte-layer features the existing pins cover only pairwise: a Bytes ROPE whose
@@ -2564,4 +2564,4 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 5207 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))

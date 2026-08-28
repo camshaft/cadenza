@@ -17451,6 +17451,19 @@ fn arm_borrows_heap_subvalue_seen(
         Core::SumPayload { scrutinee, .. } => {
             arm_borrows_heap_subvalue_seen(db, scrutinee, true, seen)
         }
+        // `Bytes.at bytes index` is a SCALAR-EXTRACTING borrow: its result is ALWAYS a raw Int64 byte
+        // (`box-int(bytes-get(...))` — NO borrowed-handle `dup`, core.rs:463), so the `bytes` operand is only
+        // READ (a slice-VIEW handle read here does NOT escape as a live handle) → relax it to `borrowed`,
+        // exactly like `BytesLen`. This un-blocks the enclosing MatchSum shell-reclaim for the
+        // slice-view-then-scalar-`Bytes.at` shape (10-bytes:209/:325/:349 known-leak-2, v-mem-safety's
+        // rope/slice-view lever, MATCH-shape half). The `index` is a scalar operand read CONSUMING (safe
+        // default — a heap escape in the index subtree is still caught). NOT `StrAt`/`StrSlice`/`BytesSlice`/
+        // `ListAt`/`MapLookup`: each can RETURN a heap handle (a String span / a view / a heap element)
+        // aliasing the operand, which CAN escape — those stay consuming (blocking the reclaim = leak, not UAF).
+        Core::BytesAt { bytes, index, .. } => {
+            arm_borrows_heap_subvalue_seen(db, bytes, true, seen)
+                || arm_borrows_heap_subvalue_seen(db, index, false, seen)
+        }
         // Every other node kind (calls, constructors, `if`/`let`, arithmetic, …) consumes / results — its
         // children carry no borrow relaxation. SAFE-BY-DEFAULT: an unhandled shape can only over-decline.
         _ => core_child_ids(db, id)
