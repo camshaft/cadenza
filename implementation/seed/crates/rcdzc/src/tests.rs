@@ -53264,44 +53264,37 @@ mod cross_component_oracle {
     }
 
     #[test]
-    fn x3_the_production_extern_envelope_binds_a_peer_and_runs() {
-        // The consumer envelope is emitted by `assemble_extern` (not hand-built), composed with the
-        // provider, and run: main(5) = f(5)*10 = (5+1)*10 = 60. Proves the fourth import-envelope shape
-        // (peer-interface import) is structurally valid AND executes when composed with a provider.
+    fn x3_the_production_extern_envelope_composes_into_a_valid_component() {
+        // The consumer envelope is emitted by the PRODUCTION `envelope::assemble_extern` (not hand-built),
+        // NESTED with a hand-built provider under one outer component that re-exports `main`. STRUCTURAL pin:
+        // assemble_extern's fourth import-envelope shape (a peer-interface import bound under
+        // `cadenza:peer/api`) composes into a VALID component. The RUN — main(5) = f(5)*10 = (5+1)*10 = 60 —
+        // is corpus/conformance territory: EVERY 29-* peer case compiles a peer-bound-effect consumer through
+        // this same assemble_extern path and RUNS it composed with a source provider, so the envelope's
+        // runnability is witnessed there (dropping the in-crate run drops the cdz-run/wasmtime dep).
         let comp = composed_via_extern_envelope();
         let mut validator =
             wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
         validator
             .validate_all(&comp)
             .expect("assemble_extern-composed component validates");
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&comp, &opts).expect("run assemble_extern-composed") {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(s, "60", "(5+1)*10 through the production extern envelope")
-            }
-            cdz_run::Outcome::Trap(t) => panic!("extern-envelope run trapped: {t}"),
-        }
+        assert!(
+            contains_bytes(&comp, b"cadenza:peer/api"),
+            "the composed envelope carries the peer interface name"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
-    // X4a — the cdz-run MULTI-COMPONENT composition primitive (`cdz_run::run_with_peers`). Unlike X1/X3
-    // (which NEST the peer + consumer in one outer ComponentBuilder), here the provider and consumer are
-    // SEPARATE component artifacts, composed by the runner at instantiate time — the shape the
-    // front-end (X4b) will produce (each `.cdz` → its own component) and the deployment story needs.
+    // X4a — SEPARATE consumer + peer ARTIFACTS (the shape the front-end produces: each `.cdz` → its own
+    // component). STRUCTURAL pin: the assemble_extern-built consumer and the provider are each valid
+    // STANDALONE components whose interface names line up (peer EXPORTS what consumer IMPORTS). The RUN —
+    // cdz_run::run_with_peers links the separate peer into the consumer's like-named import over one store,
+    // main(5) = f(5)*10 = 60 — is corpus/conformance territory (every 29-* peer case composes a separate
+    // Cadenza-source provider into a consumer via that same runner path), so the run drops with the dep.
     // ------------------------------------------------------------------------------------------------
 
     #[test]
-    fn x4a_the_runner_composes_a_consumer_with_a_separate_peer_component() {
-        // Provider and consumer are DISTINCT finished components; `run_with_peers` instantiates the peer
-        // and forwards its `cadenza:peer/api` interface into the consumer's like-named import. Both share
-        // one store. main(5) = f(5)*10 = 60 — the same result as the nested X3 composition, now with the
-        // peer as a genuinely separate artifact the runner links.
+    fn x4a_the_extern_envelope_and_its_peer_are_independently_valid_components() {
         let peer_bytes = provider_interface_component().finish();
         let consumer_bytes = consumer_component_b_via_envelope();
         // Each is a valid standalone component: the peer EXPORTS the interface, the consumer IMPORTS it.
@@ -53315,28 +53308,16 @@ mod cross_component_oracle {
             v.validate_all(&consumer_bytes)
                 .expect("consumer component validates");
         }
-        let peers = vec![cdz_run::Peer {
-            bytes: peer_bytes,
-            interface: "cadenza:peer/api".to_string(),
-        }];
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args: vec!["5".to_string()],
-            runtime: None,
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run_with_peers(&consumer_bytes, &peers, &opts)
-            .expect("run_with_peers composes the consumer + separate peer")
-        {
-            cdz_run::Outcome::Value(s) => {
-                assert_eq!(
-                    s, "60",
-                    "(5+1)*10 across separate peer + consumer components"
-                )
-            }
-            cdz_run::Outcome::Trap(t) => panic!("run_with_peers trapped: {t}"),
-        }
+        // The compose contract, checked structurally: both artifacts carry `cadenza:peer/api` — the peer
+        // exports it, the assemble_extern consumer imports it — so the runner CAN link them.
+        assert!(
+            contains_bytes(&peer_bytes, b"cadenza:peer/api"),
+            "the peer exports cadenza:peer/api"
+        );
+        assert!(
+            contains_bytes(&consumer_bytes, b"cadenza:peer/api"),
+            "the assemble_extern consumer imports cadenza:peer/api"
+        );
     }
 
     // ------------------------------------------------------------------------------------------------
