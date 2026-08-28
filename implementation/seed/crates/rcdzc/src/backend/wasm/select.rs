@@ -1295,8 +1295,40 @@ fn is_heap_type_for_retain(ty: &Ty) -> bool {
 //# The aliasing discipline MUST be one the compiler applies internally to reclaim and reuse storage, rather than a use-counting obligation the program's author writes, so that a program's author states no aliasing annotation to be memory-safe.
 //= spec/capabilities/memory-and-resource-model.md#aliasing-is-statically-disciplined
 //# A value MUST NOT be observably mutated through one reference while it is read through another in a way the executable semantics leaves unspecified.
+/// What occurrence the escape walk keys on. A `let`/`Core::Param` binding is matched by its `StructId`
+/// (`Binder`); a CLOSURE CAPTURE is referenced inside the closure body via `Core::Captured { index }` — a
+/// slot index into the closure's capture list, NOT a binder — so it is matched by that INDEX (`Capture`).
+/// One walk, two occurrence keys: the borrow-vs-escape classification (every non-base arm) is IDENTICAL,
+/// only the base-case "is this THE occurrence" test differs. Used by the hcz capture-escape discriminator
+/// ([`capture_escapes_via_body`]): a capture that escapes via the closure body's return needs a `dup` at
+/// its `Core::Captured` read so the returned value owns an independent ref (else the monolithic cell-drop
+/// double-frees it — the hcz1/hcz2 UAF). `Copy` so the 96 recursive forwards move nothing.
+#[derive(Clone, Copy)]
+pub(crate) enum EscapeTarget {
+    /// A `let`/param binding, matched by its binder `StructId` (the existing binding-escape query).
+    Binder(StructId),
+    /// A closure capture, matched by its `Core::Captured { index }` slot index.
+    Capture(usize),
+}
+
 fn binding_escapes(db: &mut Db, id: StructId, binder: StructId, tail_borrowed: bool) -> bool {
-    binding_escapes_dup_aware(db, id, binder, tail_borrowed, None)
+    binding_escapes_dup_aware(db, id, EscapeTarget::Binder(binder), tail_borrowed, None)
+}
+
+/// Whether closure CAPTURE #`capture_index` ESCAPES the closure `body` via its return/a consuming use (vs is
+/// only BORROWED) — the hcz capture-escape DISCRIMINATOR. Reuses [`binding_escapes_dup_aware`]'s exact
+/// borrow-vs-escape walk, keyed on `Core::Captured { index }` occurrences ([`EscapeTarget::Capture`]) rather
+/// than a binder. `true` = the capture flows out (the closure body returns it / passes it to a consuming
+/// op), so its `Core::Captured` read MUST `dup` (retain +1) — the returned value then owns an independent
+/// ref and the monolithic closure-cell drop frees only the cell's copy, so each ref frees exactly once (no
+/// double-release, hcz1/hcz2). `false` = borrow-only (a `List.len`/field read of the capture, hcd1/hcd2) →
+/// NO dup → the cell drop reclaims it once (v-memory-safety gate C: a borrow-only capture stays reclaimed,
+/// by construction — the same borrow classification the binder query draws). No `dup_sites` (a fresh query).
+// CONSUMED by v-effects' hcz dup-on-escaping-captured-read gate (in flight) — dead until that lands, which
+// also exercises `EscapeTarget::Capture`; the `allow` retires when the gate calls this.
+#[allow(dead_code)]
+pub(crate) fn capture_escapes_via_body(db: &mut Db, body: StructId, capture_index: usize) -> bool {
+    binding_escapes_dup_aware(db, body, EscapeTarget::Capture(capture_index), false, None)
 }
 
 /// Whether the parameter `binder` ESCAPES (is consumed / flows out) the function `body`, vs is only
@@ -1326,7 +1358,7 @@ pub(crate) fn param_escapes_body(db: &mut Db, body: StructId, binder: StructId) 
 fn binding_escapes_dup_aware(
     db: &mut Db,
     id: StructId,
-    binder: StructId,
+    binder: EscapeTarget,
     tail_borrowed: bool,
     dup_sites: Option<&HashSet<StructId>>,
 ) -> bool {
@@ -1338,7 +1370,9 @@ fn binding_escapes_dup_aware(
         // gave the consuming op its own reference, so the binding's slot reference survives + must be
         // reclaimed by the `let` drop (see the fn doc). Only applies when `dup_sites` is `Some`.
         Core::LocalRef { binder: b } => {
-            b == binder && !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id))
+            matches!(binder, EscapeTarget::Binder(t) if t == b)
+                && !tail_borrowed
+                && !dup_sites.is_some_and(|s| s.contains(&id))
         }
         // A reference to a PARAMETER, treated exactly like a `LocalRef` to a `let` binding: it escapes
         // unless this occurrence is a borrow (`tail_borrowed`) or a Perceus retain (`dup_sites`). Params are
@@ -1346,9 +1380,23 @@ fn binding_escapes_dup_aware(
         // (the owned-heap-param drop epilogue's `param_escapes_non_backedge`) would NEVER see the param's
         // own occurrences and wrongly report "never escapes" → drop a value that flows out → UAF. SAFE for
         // the ~80 let-binder callers: they pass a `let`-binding id, and a param occurrence's `b` is a
-        // distinct param-binder id, so `b == binder` is false there (this arm is inert for them).
+        // distinct param-binder id, so the `Binder(t) if t == b` guard is false there (this arm is inert).
         Core::Param { binder: b } => {
-            b == binder && !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id))
+            matches!(binder, EscapeTarget::Binder(t) if t == b)
+                && !tail_borrowed
+                && !dup_sites.is_some_and(|s| s.contains(&id))
+        }
+        // A CLOSURE CAPTURE read (`Core::Captured { index }`, the `arr-get env slot` inside a closure body)
+        // — the capture-escape twin of the two binder arms above, matched by slot INDEX rather than binder.
+        // It escapes UNLESS this occurrence is a borrow (`tail_borrowed`, set by a `Proj`/`*.len`/etc. arm) —
+        // the SAME borrow classification. Only fires for an `EscapeTarget::Capture(ci)` query and only when
+        // this read is of THAT capture (`ci == index`); a `Binder` query never matches a `Captured` node, so
+        // this arm is inert for every existing binder caller. Drives [`capture_escapes_via_body`] → the hcz
+        // dup-on-escaping-captured-read gate. (No `dup_sites` interplay: the capture query passes `None`.)
+        Core::Captured { index, .. } => {
+            matches!(binder, EscapeTarget::Capture(ci) if ci == index)
+                && !tail_borrowed
+                && !dup_sites.is_some_and(|s| s.contains(&id))
         }
         // A projection of a SCALAR element BORROWS its operand — `arr-get` then `get-int`/`get-bool` COPIES
         // the value out, retaining nothing from the aggregate — so a `LocalRef` directly under such a `Proj`
@@ -1736,7 +1784,8 @@ fn binding_escapes_dup_aware(
                     .iter()
                     .any(|&a| binding_escapes_dup_aware(db, a, binder, false, dup_sites))
         }
-        // Leaves reference no binding (a `Captured` read reads the env cell, not a body binding). `trap`
+        // Leaves reference no binding. (`Core::Captured` is handled by its own arm ABOVE — it matches a
+        // `Capture(index)` query and is inert for a `Binder` query, so it is NOT in this leaf group.) `trap`
         // diverges with no operand, so it holds no binding to escape.
         Core::ConstInt(_)
         | Core::ConstRational(_, _)
@@ -1751,7 +1800,6 @@ fn binding_escapes_dup_aware(
         | Core::Trap
         | Core::TrapDivZero
         | Core::TrapOverflow
-        | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
 }
@@ -1762,7 +1810,7 @@ fn binding_escapes_dup_aware(
 fn cont_binding_escapes(
     db: &mut Db,
     cont: &crate::core::SumCont,
-    binder: StructId,
+    binder: EscapeTarget,
     dup_sites: Option<&HashSet<StructId>>,
 ) -> bool {
     match cont {
@@ -7777,7 +7825,13 @@ fn emit_tail(
             let dup_sites = out.dup_sites.clone();
             let any_drop = bindings.iter().any(|(binder, _)| {
                 is_heap_type(&type_of(db, *binder))
-                    && !binding_escapes_dup_aware(db, body, *binder, false, Some(&dup_sites))
+                    && !binding_escapes_dup_aware(
+                        db,
+                        body,
+                        EscapeTarget::Binder(*binder),
+                        false,
+                        Some(&dup_sites),
+                    )
             });
             if any_drop {
                 return emit(db, id, slots, base, high, scratch_ty, layout, out);
@@ -15127,7 +15181,13 @@ fn emit(
             // `out.push` can borrow `out` mutably in the same loop.
             let dup_sites = out.dup_sites.clone();
             for &(binder, slot, value) in &heap_bindings {
-                if binding_escapes_dup_aware(db, body, binder, false, Some(&dup_sites)) {
+                if binding_escapes_dup_aware(
+                    db,
+                    body,
+                    EscapeTarget::Binder(binder),
+                    false,
+                    Some(&dup_sites),
+                ) {
                     continue;
                 }
                 // BORROWED-OPERAND materialize (breaker #45 witness-2 UAF): a self-keyed materialize
