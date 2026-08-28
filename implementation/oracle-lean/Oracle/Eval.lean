@@ -542,6 +542,24 @@ partial def quoteReflect (m : Module) (fuel : Nat) (i : Nat) : Outcome :=
       | .error o => o
     | none => .unsupported "quote: node index out of range"
 
+/-- Lift an unquote-SPLICED value into its `Ast` representation for embedding in a quasiquote result.
+A scalar becomes its matching `Ast` variant (corpus-verified: `,x` with x=7 → `(Ast.Int 7)`); a value
+that is ALREADY an `Ast` variant (one of the 9 ctor tags) embeds as-is; a compound/closure/poison cannot
+be faithfully lifted to a syntax node → `unsupported` (a sound skip). -/
+def valueToAst : Value → Outcome
+  | .int n => .value (Value.variant "Int".toUTF8 (Value.int n))
+  | .float a b c => .value (Value.variant "Float".toUTF8 (Value.float a b c))
+  | .floatNan => .value (Value.variant "Float".toUTF8 Value.floatNan)
+  | .floatInf n => .value (Value.variant "Float".toUTF8 (Value.floatInf n))
+  | .bool b => .value (Value.variant "Bool".toUTF8 (Value.bool b))
+  | .str b => .value (Value.variant "Str".toUTF8 (Value.str b))
+  | .char b => .value (Value.variant "Char".toUTF8 (Value.char b))
+  | .bytes b => .value (Value.variant "Bytes".toUTF8 (Value.bytes b))
+  | .variant tag p =>
+    if ["Int", "Float", "Bool", "Str", "Name", "List", "Bytes", "Char", "Symbol"].contains ((String.fromUTF8? tag).getD "")
+    then .value (Value.variant tag p) else .unsupported "quasiquote: cannot splice a non-Ast variant value"
+  | _ => .unsupported "quasiquote: cannot splice a compound/unmodeled value into an AST"
+
 mutual
 /-- Evaluate a node under `env` at expected integer type `ty` to an `Outcome`. Models the pure-core:
 scalar literals, variable references, `let`, `if`, `(: e T)` ascription, and binary integer arithmetic
@@ -606,6 +624,12 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
           match children[1]? with
           | some c => quoteReflect m fuel c
           | none => .unsupported "quote: missing quoted argument"
+        else if h == "quasiquote".toUTF8 then
+          -- `(quasiquote <body>)`: reflect the body at nesting level 1 — active unquotes splice, deeper
+          -- ones stay structure. The top quasiquote is consumed (replaced by its reflected body).
+          match children[1]? with
+          | some c => evalQuasi m env 1 c
+          | none => .unsupported "quasiquote: missing body"
         else if h == "if".toUTF8 then evalIf m env ty fuel children
         else if h == ":".toUTF8 then evalAscribe m env ty fuel children
         else if h == "fn".toUTF8 then evalFn m env fuel children
@@ -637,6 +661,90 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
              | none => .unsupported "eval: non-UTF8 head"
       | none => .unsupported "eval: headless list"
     | none => .unsupported "eval: node index out of range"
+
+/-- Reflect a quasiquote body at nesting `level` (≥1) into an `Ast` value (`metaprogramming.md`
+#Quasiquote Constructs AST With Selective Evaluation). Standard level arithmetic: an `(unquote E)` at
+level 1 is ACTIVE — evaluate `E` and SPLICE its value (lifted via `valueToAst`); a DEEPER unquote
+DECREMENTS the level and stays literal `(unquote …)` structure. A nested `(quasiquote Y)` INCREMENTS the
+level and stays literal `(quasiquote …)` structure. Any other list reflects its children at the SAME
+level into `Ast.List`; a leaf reflects to its `Ast` variant (as `quoteReflect`). -/
+partial def evalQuasi (m : Module) (env : Env) (level : Nat) (i : Nat) : Outcome :=
+  match m.nodes[i]? with
+  | some (Node.atom _) => quoteReflect m defaultFuel i
+  | none => .unsupported "quasiquote: node index out of range"
+  | some (Node.list children) =>
+    let hd := m.headName? (Node.list children)
+    if hd == some "unquote".toUTF8 then
+      match children[1]? with
+      | some e =>
+        if level ≤ 1 then
+          -- ACTIVE unquote: evaluate + lift the value into its Ast representation.
+          match evalNode m env defaultIntTy defaultFuel e with
+          | .value v => valueToAst v
+          | other => other
+        else
+          -- DEEPER unquote: decrement, keep the `(unquote …)` wrapper as structure.
+          match evalQuasi m env (level - 1) e with
+          | .value inner => .value (Value.variant "List".toUTF8 (Value.list
+              #[Value.variant "Name".toUTF8 (Value.str "unquote".toUTF8), inner]))
+          | other => other
+      | none => .unsupported "quasiquote: unquote missing argument"
+    else if hd == some "quasiquote".toUTF8 then
+      match children[1]? with
+      | some y =>
+        -- nested quasiquote: increment, keep the `(quasiquote …)` wrapper as structure.
+        match evalQuasi m env (level + 1) y with
+        | .value inner => .value (Value.variant "List".toUTF8 (Value.list
+            #[Value.variant "Name".toUTF8 (Value.str "quasiquote".toUTF8), inner]))
+        | other => other
+      | none => .unsupported "quasiquote: quasiquote missing argument"
+    else if hd == some "unquote-splicing".toUTF8 then
+      -- an `(unquote-splicing …)` splices a LIST's elements into its PARENT (handled per-child in the
+      -- list fold below); a bare one that is itself the whole body is ill-formed → skip.
+      .unsupported "quasiquote: unquote-splicing outside a list context"
+    else
+      -- ordinary (or headless) list: reflect each child at the same level into an Ast.List. A child
+      -- `(unquote-splicing E)` at level 1 SPLICES E's list elements (each lifted) into this list,
+      -- flattening; at a deeper level it decrements and stays a single `(unquote-splicing …)` node.
+      let reflected : Except Outcome (Array Value) :=
+        children.foldl (fun acc j =>
+          match acc with
+          | .error o => .error o
+          | .ok vs =>
+            match m.nodes[j]? with
+            | some (Node.list jc) =>
+              if m.headName? (Node.list jc) == some "unquote-splicing".toUTF8 then
+                match jc[1]? with
+                | some e =>
+                  if level ≤ 1 then
+                    match evalNode m env defaultIntTy defaultFuel e with
+                    | .value (.list elems) =>
+                      elems.foldl (fun a el =>
+                        match a with
+                        | .error o => .error o
+                        | .ok vs2 =>
+                          match valueToAst el with
+                          | .value av => .ok (vs2.push av)
+                          | other => .error other) (.ok vs)
+                    | .value _ => .error (.unsupported "quasiquote: unquote-splicing of a non-list value")
+                    | other => .error other
+                  else
+                    match evalQuasi m env (level - 1) e with
+                    | .value inner => .ok (vs.push (Value.variant "List".toUTF8 (Value.list
+                        #[Value.variant "Name".toUTF8 (Value.str "unquote-splicing".toUTF8), inner])))
+                    | other => .error other
+                | none => .error (.unsupported "quasiquote: unquote-splicing missing argument")
+              else
+                match evalQuasi m env level j with
+                | .value v => .ok (vs.push v)
+                | other => .error other
+            | _ =>
+              match evalQuasi m env level j with
+              | .value v => .ok (vs.push v)
+              | other => .error other) (.ok #[])
+      match reflected with
+      | .ok vs => .value (Value.variant "List".toUTF8 (Value.list vs))
+      | .error o => o
 
 /-- `(let (bindings) body)`: bind each `(name val)` SEQUENTIALLY (a later binding sees the earlier),
 then evaluate `body`. Binding values are evaluated at the default integer type (their own annotation,
