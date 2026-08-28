@@ -8134,25 +8134,6 @@ mod match_engine {
         );
     }
 
-    /// Run `src`'s `main` through the composed value-heap runtime, returning its rendered value (or
-    /// skipping with the given message when the runtime wasm is absent). For a program whose result is a
-    /// runtime heap value (a multi-payload sum destructure builds a tuple-payload handle at run time).
-    fn run_heap_value(src: &str, args: Vec<String>) -> Option<String> {
-        let bytes = component(src);
-        let runtime = super::find_runtime_wasm()?;
-        let opts = cdz_run::RunOpts {
-            export: Some("main".to_string()),
-            args,
-            runtime: Some(runtime),
-            runtime_cache_dir: None,
-            host_responses: Vec::new(),
-        };
-        match cdz_run::run(&bytes, &opts).expect("run") {
-            cdz_run::Outcome::Value(s) => Some(s),
-            cdz_run::Outcome::Trap(t) => panic!("run trapped: {t}"),
-        }
-    }
-
     #[test]
     fn a_char_literal_pattern_type_mismatch_and_non_exhaustion_reject() {
         // WELL-FORMEDNESS of char-literal patterns (checked structurally, storeless — no heap run). A char
@@ -19233,28 +19214,11 @@ mod match_engine {
             .is_none(),
             "a per-variant list-payload split composes with sibling variants"
         );
-        // Runtime: the guard-drop preserves first-match-wins AND the moved length dispatch. mk(0) → (Bx [])
-        // → arm 0; mk(1) → (Bx [7]) → the non-empty arm binds x=7.
-        let run = |n: &str| -> String {
-            run_heap_value(
-                "(module m (type Box (Bx (List Int64))) \
-                   (def (mk (: n Int64)) (if (< n 1) (Bx (list)) (Bx (list 7)))) \
-                   (def (f (: b Box)) (match b ((Bx (list)) 0) ((Bx (list x .. _r)) x))) \
-                   (def (main (: n Int64)) (f (mk n))) (export main))",
-                vec![n.to_string()],
-            )
-            .unwrap_or_default()
-        };
-        if run("0").is_empty() {
-            eprintln!("runtime wasm not found; skipping list-payload-split run");
-            return;
-        }
-        assert_eq!(run("0"), "0", "(Bx []) matches the empty-list arm");
-        assert_eq!(
-            run("1"),
-            "7",
-            "(Bx [7]) matches the non-empty arm, binding x=7"
-        );
+        // The RUNTIME dispatch — the guard-drop preserves first-match-wins and the moved length dispatch:
+        // mk(0) → (Bx []) → the empty-list arm; mk(1) → (Bx [7]) → the non-empty arm binds x=7 — is
+        // corpus-covered by 05-compound-types "a sum variant's list payload split across empty and rest arms
+        // is exhaustive and dispatches" (and its erased-newtype vec-get twin); this test keeps the
+        // COMPILE-time exhaustiveness pins above (a list-arm set covering empty + every non-empty is total).
     }
 
     #[test]
