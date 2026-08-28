@@ -132,8 +132,11 @@ structure IntTy where
 /-- The model-default integer literal type (unconstrained literal) — `Int64`. -/
 def defaultIntTy : IntTy := { signed := true, width := .bits 64 }
 
-/-- A lazily-computed binding outcome. -/
-abbrev Thunk := Unit → Outcome
+/-- A lazily-computed binding outcome. Uses Lean's built-in `Thunk` so forcing is MEMOIZED — evaluated
+at most once and cached. This is load-bearing for RECURSION: without memoization, a recursive binding
+chain (e.g. a tail-recursive accumulator's `i`/`acc` re-derived each iteration) re-forces the whole
+chain on every access → O(n²) blow-up that effectively HANGS on a large loop. Memoized → O(n). -/
+abbrev Thunk := _root_.Thunk Outcome
 
 /-- A lexical environment: each name bound LAZILY to a thunk (forced on first use) PLUS its declared
 integer type if known (a typed parameter / ascribed binding), innermost first. Laziness is
@@ -616,7 +619,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
       | some (Leaf.name b) =>
         -- a bare name: force its (lazy) binding, or (unmodeled) a free/prelude name
         match env.lookup? b with
-        | some (thunk, _) => thunk ()  -- propagates the binding's value / trap / unsupported / diverges
+        | some (thunk, _) => thunk.get  -- propagates the binding's value / trap / unsupported / diverges
         | none => .unsupported "eval: free name (variable not bound; prelude/global not yet modeled)"
       | some l =>
         match Value.ofLeaf l with
@@ -689,7 +692,7 @@ partial def evalNode (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (i : Nat
         else if (env.lookup? h).isSome then
           -- the head is a BOUND local — an application of that binding. If it forces to a CLOSURE,
           -- apply it; otherwise (a non-function value applied) it is not modeled → skip.
-          match ((env.lookup? h).map (fun e => e.1 ())).getD (.unsupported "") with
+          match ((env.lookup? h).map (fun e => e.1.get)).getD (.unsupported "") with
           | .value (.closure params body cap) => applyClosure m env fuel params body cap children
           | .value _ => .unsupported "eval: head is a bound non-function value"
           | other => other
@@ -832,7 +835,7 @@ partial def evalLet (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (children
               match nameOf? m nId with
               | some nm =>
                 let captured := env
-                extend ((nm, (fun _ => evalNode m captured defaultIntTy fuel vId), none) :: env) rest
+                extend ((nm, (Thunk.mk (fun _ => evalNode m captured defaultIntTy fuel vId)), none) :: env) rest
               | none => .error "eval: let binding target is not a name"
             | _, _ => .error "eval: malformed let binding pair"
           | _ => .error "eval: malformed let binding"
@@ -969,11 +972,16 @@ declared integer type, then evaluate the body in that fresh scope (top-level def
 not via env; recursion is fuel-bounded). Partial application / first-class `fn` closures are NOT modeled
 here (they never reach this — a partial call has a wrong arg count, a closure head is a bound local). -/
 partial def evalCall (m : Module) (env : Env) (fuel : Nat) (paramSpecs : Array Nat) (bodyId : Nat) (children : Array Nat) : Outcome :=
-  let args := children.extract 1 children.size
-  let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
-    (paramSpec? m specId).map (fun (nm, ty) => (nm, (fun _ => evalNode m env defaultIntTy fuel argId), ty)))
-  if bindings.size == paramSpecs.size then evalNode m bindings.toList defaultIntTy fuel bodyId
-  else .unsupported "eval: call has a malformed parameter spec"
+  -- DECREMENT fuel per call so an unbounded/too-deep recursion yields `diverges` instead of HANGING
+  -- (a genuine infinite/large loop consumes fuel down to 0 — a sound skip, never a wedged process).
+  match fuel with
+  | 0 => .diverges
+  | Nat.succ fuel' =>
+    let args := children.extract 1 children.size
+    let bindings := (paramSpecs.zip args).filterMap (fun (specId, argId) =>
+      (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
+    if bindings.size == paramSpecs.size then evalNode m bindings.toList defaultIntTy fuel' bodyId
+    else .unsupported "eval: call has a malformed parameter spec"
 
 /-- `(fn (param…) body)` → a closure value capturing the CURRENT env (each binding forced now to a value
 or a `poison`, so an unused captured binding never surfaces its trap; laziness preserved via poison). -/
@@ -981,7 +989,7 @@ partial def evalFn (m : Module) (env : Env) (fuel : Nat) (children : Array Nat) 
   match children[1]?, children[2]? with
   | some paramListId, some bodyId =>
     let params := match m.nodes[paramListId]? with | some (Node.list ps) => ps | _ => #[]
-    let cap := env.map (fun e => (e.1, outcomeToValue (e.2.1 ())))
+    let cap := env.map (fun e => (e.1, outcomeToValue e.2.1.get))
     .value (.closure params bodyId cap)
   | _, _ => .unsupported "eval: malformed fn"
 
@@ -990,14 +998,18 @@ its parameter name + declared type, plus the captured env (each name → its sto
 shallowly on use), then evaluate the body. A partial application (wrong arg count) is not modeled → skip. -/
 partial def applyClosure (m : Module) (env : Env) (fuel : Nat) (params : Array Nat) (body : Nat)
     (cap : List (ByteArray × Value)) (children : Array Nat) : Outcome :=
-  let args := children.extract 1 children.size
-  if params.size != args.size then .unsupported "eval: closure arity mismatch (partial application not modeled)"
-  else
-    let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
-      (paramSpec? m specId).map (fun (nm, ty) => (nm, (fun _ => evalNode m env defaultIntTy fuel argId), ty)))
-    let capBindings : Env := cap.map (fun (nm, v) => (nm, (fun _ => observeShallow v), Option.none))
-    if argBindings.length == params.size then evalNode m (argBindings ++ capBindings) defaultIntTy fuel body
-    else .unsupported "eval: closure has a malformed parameter spec"
+  -- DECREMENT fuel per application (like evalCall) so a recursive closure diverges rather than hangs.
+  match fuel with
+  | 0 => .diverges
+  | Nat.succ fuel' =>
+    let args := children.extract 1 children.size
+    if params.size != args.size then .unsupported "eval: closure arity mismatch (partial application not modeled)"
+    else
+      let argBindings : Env := (params.zip args).toList.filterMap (fun (specId, argId) =>
+        (paramSpec? m specId).map (fun (nm, ty) => (nm, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel' argId)), ty)))
+      let capBindings : Env := cap.map (fun (nm, v) => (nm, (Thunk.mk (fun _ => observeShallow v)), Option.none))
+      if argBindings.length == params.size then evalNode m (argBindings ++ capBindings) defaultIntTy fuel' body
+      else .unsupported "eval: closure has a malformed parameter spec"
 
 /-- Function-FREE collection query/update module fns (flat `((. Mod fn) args…)`): `List.len`,
 `List.concat`, `Set.contains`, `Map.len`, `Map.lookup` (→ Option), `Map.remove`. `none` = not one of
@@ -1345,7 +1357,7 @@ partial def matchPat (m : Module) (patId : Nat) (subj : Value) : Except Outcome 
     match m.leaves[lid]? with
     | some (Leaf.name b) =>
       if b == "_".toUTF8 then .ok (some [])
-      else .ok (some [(b, (fun _ => observeShallow subj), Option.none)])
+      else .ok (some [(b, (Thunk.mk (fun _ => observeShallow subj)), Option.none)])
     | some pl =>
       match Value.ofLeaf pl with
       | some litV => match observeDeep subj with
@@ -1591,7 +1603,7 @@ partial def evalMatch (m : Module) (env : Env) (ty : IntTy) (fuel : Nat) (childr
         match m.leaves[lid]? with
         | some (Leaf.name b) =>
           if b == "_".toUTF8 then some (evalNode m env ty fuel bodyId)          -- wildcard: no force
-          else some (evalNode m ((b, (fun _ => evalNode m env defaultIntTy fuel scrutId), Option.none) :: env)
+          else some (evalNode m ((b, (Thunk.mk (fun _ => evalNode m env defaultIntTy fuel scrutId)), Option.none) :: env)
                        ty fuel bodyId)                                          -- binder: lazy bind
         | _ => forced ()                                                        -- scalar literal
       | _ => forced ()                                                          -- decomposition pattern
@@ -1632,7 +1644,7 @@ def execute (m : Ast.Module) (args : Array Value) : Outcome :=
       -- bind each already-evaluated arg value under its parameter name + declared type
       let bindings := (specs.zip args).filterMap (fun (specId, v) =>
         (Eval.paramSpec? m specId).map (fun (nm, ty) =>
-          (nm, (fun _ => Outcome.value v : Eval.Thunk), ty)))
+          (nm, (Thunk.mk (fun _ => Outcome.value v)), ty)))
       if bindings.size != specs.size then
         .unsupported "execute: a parameter spec is malformed"
       else
