@@ -8482,3 +8482,4 @@ pass	an irrefutable single-variant ctor map value sub-pattern binds its payload
 pass	a deeply-nested tuple map value sub-pattern binds through two tuple levels
 pass	a chained Unit.in re-wrapped with Qty.of converts inch to cm exactly (127/50)
 pass	gid1 a user-generic Box at TWO distinct heap domains (List + String) in one program is correct on every backend
+pass	gdc1 an element-discarding generic (rewrap + peek) at two heap domains is correct on every backend
