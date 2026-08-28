@@ -3338,6 +3338,14 @@ dependencies = [
  "wasmparser 0.239.0",
  "wit-parser",
  "xshell",
+ "xtask-mandates",
+]
+
+[[package]]
+name = "xtask-mandates"
+version = "0.0.0"
+dependencies = [
+ "syn 2.0.119",
 ]
 
 [[package]]

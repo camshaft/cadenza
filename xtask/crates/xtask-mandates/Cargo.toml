@@ -1,0 +1,24 @@
+# xtask-mandates — the mechanizable STANDING-MANDATE lint, carved out of the xtask monolith into its
+# OWN minimal-dep crate (v-xtask-decompose, operator 2026-08-28: "move all subcommands into small crates
+# with minimal dependencies so they don't rebuild the world"). Its ONLY dep is `syn` (Rust-source
+# parsing) — so building/editing this lint recompiles just this crate + syn, NOT xtask's ~15-dep closure
+# (wit-parser, wasm-encoder, cdz-contract, cadenza-ast, clap, …). The nix `test-xtask-mandates` /
+# `lint-mandates` app builds only this crate. The monolith `cargo xtask lint-mandates` still works — it
+# depends on this crate and dispatches to `lint_mandates` (non-breaking during the transition).
+[package]
+name = "xtask-mandates"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "xtask-mandates"
+path = "src/main.rs"
+
+[dependencies]
+# Rust-source parsing for the syn-based mandate rules (no-integration-tests, no-hard-coded-runtime-hash).
+# The sole dependency — the whole point of the carve-out.
+syn = { version = "2", features = ["full", "parsing", "visit"] }

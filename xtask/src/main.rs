@@ -382,7 +382,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Cmd::LintMandates => match mandates::lint_mandates(&paths.repo) {
+        Cmd::LintMandates => match xtask_mandates::lint_mandates(&paths.repo) {
             Ok(v) if v.is_empty() => println!("lint-mandates: ok — no mandate violations"),
             Ok(violations) => {
                 for x in &violations {
@@ -451,7 +451,6 @@ mod codegen;
 mod duvet_check;
 mod fleet;
 mod install_lsp;
-mod mandates;
 mod world_artifact;
 
 /// The workspace directory anchors, resolved once from this crate's manifest location. xtask lives
@@ -6674,7 +6673,7 @@ fn check(paths: &Paths, profile: &str) {
     // crate); v-ft wires it here + into localGate (via v-nix, mirroring emojiLintCheck) so it gates the
     // sole merge path. Follow-on syn rules (hex/thin-wrapper/hard-coded-names) extend mandates.rs behind
     // this same entrypoint (no re-wire). Maps violations → one Err naming the count + first file.
-    log.step_native("mandates", || match mandates::lint_mandates(&paths.repo) {
+    log.step_native("mandates", || match xtask_mandates::lint_mandates(&paths.repo) {
         Ok(v) if v.is_empty() => Ok(()),
         Ok(violations) => {
             let first = &violations[0];

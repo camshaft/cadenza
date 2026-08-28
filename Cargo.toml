@@ -15,7 +15,7 @@
 [workspace]
 resolver = "3"
 # `cadenza-syntax` (the front-end library) is picked up automatically by the `crates/*` glob.
-members = ["implementation/seed/crates/*", "xtask"]
+members = ["implementation/seed/crates/*", "xtask", "xtask/crates/*"]
 # `cdz-runtime` (the wasm value-heap) and `cdz-wasm` (the browser-facing wasm-bindgen wrapper for the
 # interactive guide) are STANDALONE workspaces of their own — excluded so the native seed build/gate
 # never compiles a wasm-only crate. Both only ever build for wasm32-unknown-unknown.
