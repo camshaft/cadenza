@@ -52,6 +52,17 @@ inductive Leaf where
   | suffixed (suffix : UInt8) (body : SuffBody)  -- 16 (suffix 0 = N bigint, 1 = R rational)
   | floatNan                         -- 17
   | floatInf (negative : Bool)       -- 18 / 19
+  -- M2 native-compound-data ctor-leaf HEADS (payloadless, single kind byte — like bool/floatNan):
+  -- a compound `(tuple e…)` / `(record …)` / `(list …)` / `(map …)` / `(Set.of …)` now leads with the
+  -- matching ctor leaf instead of a `name "tuple"` head; `fieldPair` is the `=` record/map-entry head
+  -- and `member` the `.` member-access head. (rcdzc codec `KIND_LIST_CTOR`..`KIND_MEMBER` = 20..26.)
+  | listCtor                         -- 20
+  | tupleCtor                        -- 21
+  | recordCtor                       -- 22
+  | mapCtor                          -- 23
+  | setCtor                          -- 24
+  | fieldPair                        -- 25
+  | member                           -- 26
   deriving Inhabited
 
 /-- A structure-arena node. -/
@@ -179,6 +190,14 @@ def readLeaf (c : Cursor) : Except String (Leaf × Cursor) := do
   else if k == 17 then .ok (.floatNan, c)
   else if k == 18 then .ok (.floatInf false, c)
   else if k == 19 then .ok (.floatInf true, c)
+  -- M2 native-compound ctor-leaf heads (payloadless): kinds 20..26.
+  else if k == 20 then .ok (.listCtor, c)
+  else if k == 21 then .ok (.tupleCtor, c)
+  else if k == 22 then .ok (.recordCtor, c)
+  else if k == 23 then .ok (.mapCtor, c)
+  else if k == 24 then .ok (.setCtor, c)
+  else if k == 25 then .ok (.fieldPair, c)
+  else if k == 26 then .ok (.member, c)
   else
     .error s!"ast: unknown leaf kind {k.toNat}"
 
@@ -300,6 +319,14 @@ def writeLeaf (acc : ByteArray) (leaf : Leaf) : ByteArray :=
   | .floatNan => acc.push 17
   | .floatInf false => acc.push 18
   | .floatInf true => acc.push 19
+  -- M2 native-compound ctor-leaf heads (payloadless): kinds 20..26.
+  | .listCtor => acc.push 20
+  | .tupleCtor => acc.push 21
+  | .recordCtor => acc.push 22
+  | .mapCtor => acc.push 23
+  | .setCtor => acc.push 24
+  | .fieldPair => acc.push 25
+  | .member => acc.push 26
 
 /-- Append one node. -/
 def writeNode (acc : ByteArray) (node : Node) : ByteArray :=
@@ -332,6 +359,16 @@ def Module.headName? (m : Module) (node : Node) : Option ByteArray :=
       | some (Node.atom lid) =>
         match m.leaves[lid]? with
         | some (Leaf.name b) => some b
+        -- M2 native-compound ctor-leaf heads decode to the SAME canonical head SYMBOL a pre-M2
+        -- `name`-head node carried, so all the name-based head dispatch (tuple/list/record/map/set
+        -- construction, `.` member-access, `=` field pair) keeps working unchanged.
+        | some Leaf.tupleCtor => some "tuple".toUTF8
+        | some Leaf.listCtor => some "list".toUTF8
+        | some Leaf.recordCtor => some "record".toUTF8
+        | some Leaf.mapCtor => some "map".toUTF8
+        | some Leaf.setCtor => some "set".toUTF8
+        | some Leaf.member => some ".".toUTF8
+        | some Leaf.fieldPair => some "=".toUTF8
         | _ => none
       | _ => none
     | none => none

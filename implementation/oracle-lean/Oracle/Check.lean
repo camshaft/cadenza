@@ -122,6 +122,9 @@ partial def expectedValue? (m : Module) (i : Nat) : Option Value :=
     | Option.some "tuple" => (seqVals m (cs.extract 1 cs.size)).map Value.tuple
     | Option.some "list" => (seqVals m (cs.extract 1 cs.size)).map Value.list
     | Option.some "map" => (mapEntries m (cs.extract 1 cs.size)).bind (fun es => (Eval.canonMap es).map Value.map)
+    -- an M2 native SET value `(setCtor e…)` (renders `#set(…)`) — its elements canonicalize (sort + dedupe)
+    -- into a Set value, the same `Value.set` `evalSetOf` produces from the `((. Set of) (list…))` form.
+    | Option.some "set" => (seqVals m (cs.extract 1 cs.size)).bind (fun es => (Eval.canonSet es).map Value.set)
     | Option.some "record" => (recordFields? m (cs.extract 1 cs.size)).map Value.record
     | Option.some ctor =>
       -- a prelude/user sum VARIANT value `(Ctor payload)` — bare ctor head + one payload child
