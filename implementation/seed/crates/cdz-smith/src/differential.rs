@@ -497,6 +497,7 @@ pub fn lean_differential_sweep(
     oracle_bin: &std::path::Path,
     batch_size: usize,
     mismatches: &mut Vec<(String, String)>,
+    declines: &mut Vec<(String, String)>,
 ) -> std::io::Result<LeanDiffStats> {
     let mut stats = LeanDiffStats::default();
     let mut batch_srcs: Vec<String> = Vec::new();
@@ -504,7 +505,14 @@ pub fn lean_differential_sweep(
     let batch_size = batch_size.max(1);
 
     for src in sources {
-        let output = match side_to_rcdzc_output(run_wasm(src, store)) {
+        let side = run_wasm(src, store);
+        // Capture DECLINES — a shape the front-end/backend does not compile yet — for the breaker
+        // decline→corpus gap hand-off (operator directive). A decline is EXPECTED output (never a bug),
+        // but it is a coverage GAP worth pinning; `(source, reason)` is deduped by signature at the CLI.
+        if let Side::Declined(reason) = &side {
+            declines.push((src.clone(), reason.clone()));
+        }
+        let output = match side_to_rcdzc_output(side) {
             Some(o) => o,
             None => {
                 stats.not_comparable += 1;
@@ -540,6 +548,34 @@ pub fn lean_differential_sweep(
         )?;
     }
     Ok(stats)
+}
+
+/// A dedup signature for a decline reason — the `CDZNNNN` diagnostic code if present, else a normalized
+/// short prefix of the reason. Groups the many declining programs a campaign hits into distinct GAP
+/// classes for the breaker decline→corpus hand-off (one repro per signature, not one per instance).
+pub fn decline_signature(reason: &str) -> String {
+    // Prefer an embedded `CDZ<digits>` diagnostic code.
+    if let Some(pos) = reason.find("CDZ") {
+        let code: String = reason[pos..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if code.len() > 3 && code.as_bytes()[3].is_ascii_digit() {
+            return code;
+        }
+    }
+    // Else a normalized short prefix of the reason (first few words, alnum/`-`, lowercased).
+    let prefix: String = reason
+        .split_whitespace()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("-");
+    let norm: String = prefix
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(48)
+        .collect();
+    norm.to_ascii_lowercase()
 }
 
 /// A Lean `Mismatch` is a trap-KIND-only disagreement — PENDING an operator policy ruling, NOT a filed
@@ -996,6 +1032,26 @@ mod tests {
         assert!(side_to_rcdzc_output(Side::Value("(( unbalanced".into())).is_none());
     }
 
+    /// `decline_signature` groups declines by their CDZ code when present, else a normalized reason
+    /// prefix — so the breaker hand-off gets ONE repro per distinct gap class, not one per instance.
+    #[test]
+    fn decline_signature_groups_by_code_then_prefix() {
+        assert_eq!(
+            decline_signature("CDZ0304: shift count out of range"),
+            "CDZ0304"
+        );
+        assert_eq!(decline_signature("declined CDZ0101 near stuff"), "CDZ0101");
+        // Same code from two different programs → same signature (deduped together).
+        assert_eq!(
+            decline_signature("CDZ0304 here"),
+            decline_signature("CDZ0304 elsewhere entirely")
+        );
+        // No code → a normalized, spaceless, lowercased prefix; a bare "CDZ" with no digits is NOT a code.
+        let s = decline_signature("not lowered yet: some construct");
+        assert!(!s.is_empty() && s == s.to_ascii_lowercase() && !s.contains(' '));
+        assert_ne!(decline_signature("CDZ without digits"), "CDZ");
+    }
+
     /// `is_trap_kind_pending` isolates the PENDING-policy runtime-fault trap-KIND class (rcdzc trapped +
     /// oracle's "trap kind …" difference) WITHOUT swallowing real value-vs-trap miscompiles.
     #[test]
@@ -1040,8 +1096,10 @@ mod tests {
         ];
         let store = std::path::Path::new("/nonexistent-store"); // pure scalars need no runtime
         let mut mismatches = Vec::new();
-        let stats = lean_differential_sweep(&sources, store, &oracle, 8, &mut mismatches)
-            .expect("sweep runs");
+        let mut declines = Vec::new();
+        let stats =
+            lean_differential_sweep(&sources, store, &oracle, 8, &mut mismatches, &mut declines)
+                .expect("sweep runs");
         assert_eq!(stats.trials, 2, "both scalars are comparable");
         assert_eq!(
             stats.mismatches, 0,

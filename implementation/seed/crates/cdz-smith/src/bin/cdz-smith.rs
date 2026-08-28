@@ -97,7 +97,7 @@ fn usage() {
          \x20 cdz-smith differential     [--count N] [--seed S] [--findings DIR] [--store DIR] [--cdz PATH]\n\
          \x20 cdz-smith seed-corpus      [--semantics DIR] [--out DIR]\n\
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
-         \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR]\n\
+         \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR]\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
@@ -120,6 +120,7 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     let mut store: Option<PathBuf> = None;
     let mut oracle: Option<PathBuf> = None;
     let mut findings: Option<PathBuf> = None;
+    let mut declines_dir: Option<PathBuf> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -129,6 +130,7 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
             "--store" => store = it.next().map(PathBuf::from),
             "--oracle" => oracle = it.next().map(PathBuf::from),
             "--findings" => findings = it.next().map(PathBuf::from),
+            "--declines-dir" => declines_dir = it.next().map(PathBuf::from),
             other => {
                 eprintln!("cdz-smith lean-differential: unexpected arg `{other}`");
                 return ExitCode::from(2);
@@ -190,12 +192,14 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
         findings_dir.display()
     );
     let mut mismatches: Vec<(String, String)> = Vec::new();
+    let mut declines: Vec<(String, String)> = Vec::new();
     let stats = match cdz_smith::differential::lean_differential_sweep(
         &sources,
         &store,
         &oracle,
         200,
         &mut mismatches,
+        &mut declines,
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -203,6 +207,30 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Bubble DECLINES up for the breaker decline→corpus hand-off (operator directive): dedup by signature
+    // (CDZ code / normalized reason), then write ONE minimal repro `.sexp` + `.reason.txt` per distinct
+    // gap into `--declines-dir`. Declines are EXPECTED output (never a bug) — this is a GAP inventory.
+    let distinct_declines = if let Some(dir) = &declines_dir {
+        match write_declines(dir, &declines) {
+            Ok(n) => {
+                eprintln!(
+                    "[cdz-smith] {} declines ({} distinct) → {} (hand off to breaker)",
+                    declines.len(),
+                    n,
+                    dir.display()
+                );
+                n
+            }
+            Err(e) => {
+                eprintln!("cdz-smith lean-differential: cannot write declines dir: {e}");
+                0
+            }
+        }
+    } else {
+        0
+    };
+    let _ = distinct_declines;
 
     // File each mismatch as a Differential finding.
     let mut new_buckets = 0usize;
@@ -245,6 +273,54 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
+/// distinct signature into `dir` — the breaker decline→corpus gap hand-off producer. Keeps the shortest
+/// repro seen for each signature ACROSS runs (skips overwriting when an existing repro is already no
+/// longer), so the dir accumulates a minimal repro per distinct gap. Returns the count of distinct
+/// signatures. Declines are EXPECTED output (never a bug) — this is a tracked gap inventory for breaker.
+#[cfg(feature = "differential")]
+fn write_declines(dir: &std::path::Path, declines: &[(String, String)]) -> std::io::Result<usize> {
+    use std::collections::HashMap;
+    if declines.is_empty() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(dir)?;
+    // Shortest source + its reason per signature (this run).
+    let mut best: HashMap<String, (&str, &str)> = HashMap::new();
+    for (src, reason) in declines {
+        // Skip HARNESS declines (not compiler gaps): a `cdz-run` "runtime … not in store" is a missing
+        // value-heap-runtime blob (we sweep with `--store /nonexistent` for speed), and its
+        // content-hash makes every instance a UNIQUE signature — it would flood breaker with non-gaps.
+        // Breaker wants real front-end/backend declines (CDZ-coded / "not lowered"), so drop store misses.
+        if reason.contains("not in store") {
+            continue;
+        }
+        let sig = cdz_smith::differential::decline_signature(reason);
+        best.entry(sig)
+            .and_modify(|e| {
+                if src.len() < e.0.len() {
+                    *e = (src, reason);
+                }
+            })
+            .or_insert((src, reason));
+    }
+    for (sig, (src, reason)) in &best {
+        let sexp = dir.join(format!("decline-{sig}.smith.sexp"));
+        // Keep the globally-shortest repro: skip if an existing one is already no longer than this.
+        if let Ok(existing) = std::fs::read_to_string(&sexp)
+            && existing.trim().len() <= src.trim().len()
+        {
+            continue;
+        }
+        std::fs::write(&sexp, format!("{}\n", src.trim()))?;
+        std::fs::write(
+            dir.join(format!("decline-{sig}.reason.txt")),
+            format!("{}\n", reason.trim()),
+        )?;
+    }
+    Ok(best.len())
 }
 
 /// The DIFFERENTIAL sweep: run `count` seeds through BOTH backends and file any value disagreement.
@@ -439,12 +515,14 @@ fn cmd_verify_differential(args: &[String]) -> ExitCode {
             );
         } else {
             let mut mm: Vec<(String, String)> = Vec::new();
+            let mut dcl: Vec<(String, String)> = Vec::new();
             match cdz_smith::differential::lean_differential_sweep(
                 std::slice::from_ref(&source),
                 &store,
                 &oracle,
                 1,
                 &mut mm,
+                &mut dcl,
             ) {
                 Ok(s) if s.mismatches > 0 => {
                     disagreed = true;
