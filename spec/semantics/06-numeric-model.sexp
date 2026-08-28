@@ -11765,3 +11765,13 @@
   (doc "B2 let + B1b if/control: `(let ((y (* x 2))) (if (> y 0) (+ y 1) (- 0 y)))` round-trips value-equal.")
   (input (do (def (main (: x Int64)) (let ((y (* x 2))) (if (> y 0) (+ y 1) (- 0 y)))) (export main)))
   (call main (: 3 Int64)) (output (: 7 Int64)))
+
+(case "cdzw7 the cadenza backend round-trips a nested let/if mixing int and float operators in one program"
+  (doc "The complex-nesting companion of cdzw4-6 (#4786 B1b/B2): a single program combines int `+`/`*`, float
+        `/`/`<`, a multi-binding `let`, and an `if` — so the Prim→operator reverse-map must resolve BOTH the
+        integer and the float operators correctly in one body through the cadenza hop (a float FDiv and an int
+        Mul both reverse-map to their shared surface `/`/`*`, recovered by operand type). `a = x+1 = 6`,
+        `b = 10.0/4.0 = 2.5`; `(< b 3.0)` true → `a` = 6. Round-trips value-equal sexp→cadenza→wasm vs direct
+        (dual-path verified). Extends the simple single-op param witnesses to nested mixed-type composition.")
+  (input (do (def (main (: x Int64)) (let ((a (+ x 1)) (b (/ 10.0 4.0))) (if (< b 3.0) a (* a 2)))) (export main)))
+  (call main (: 5 Int64)) (output (: 6 Int64)))
