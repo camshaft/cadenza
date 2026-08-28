@@ -106,7 +106,23 @@ pub struct Emit {
     /// THIS set (single source of truth for the dup-at-extract + view-drop lockstep), never re-derived.
     /// v-mem-safety co-verified (co-own of the rope/slice-view lever). Empty unless the scalar-extracted-view
     /// shape is present; the multi-`Bytes.at` (multi-borrow) case is NOT marked (would double-drop) → leaks.
+    /// The VIEW-reclaim set (net -1: WE drop the view): the single consumer is a SCALAR-returning read WITH a
+    /// view-drop hook (`Bytes.at`→reclaim_bytes / `String.scalar-len`→StrScalarLen reclaim). `compound_dupd`
+    /// dups the view + drops the shell; the consumer's reclaim drops the now-owned view.
     sumexpect_view_reclaim: HashSet<StructId>,
+    /// (2) SA2 — the SHELL-reclaim set (net 0: the CONSUMER owns the view, we free only the orphaned shell).
+    /// `Core::SumExpect` node ids whose Owned SINGLE-heap-payload Some (a `String.at` / `Bytes.slice` char/
+    /// bytes view producer) is consumed ONWARD by a single non-scalar-read consumer (a `Call`/op that takes
+    /// the view). `compound_dupd` dups the view (+1) — which EXACTLY compensates the shell-drop's cascade (-1,
+    /// a single Some→payload ref) → NET-0 on the view → its existing (correct) consumption is undisturbed, and
+    /// only the orphaned shell is freed. NO view-drop on our side (the consumer owns it), so — unlike the
+    /// VIEW set — reclaim_bytes/StrScalarLen do NOT fire for these. v-mem-safety's transparency reframe: net-0
+    /// is sound for ANY consumer (consume OR borrow), so no call-convention predicate is needed. SINGLE-HEAP-
+    /// PAYLOAD FENCE (load-bearing, v-mem-safety): only a Some with EXACTLY ONE heap payload — a multi-payload
+    /// variant cascades >1 and dup==1 under-compensates → double-free; scoped to `String.at`/`Bytes.slice`
+    /// (inherently single-view) for this increment (Option A). DISJOINT from `sumexpect_view_reclaim` by
+    /// consumer-kind (scalar-read→VIEW, consumed-onward→SHELL, count>1/escape→neither) — the b2 exactly-one-of.
+    sumexpect_shell_reclaim: HashSet<StructId>,
     /// Site A (self-loop-tail reclaim): wasm-local SLOTS of loop-carried params that, THIS loop iteration,
     /// are reassigned (`local.set`) with NO end-of-scope drop AND whose last emitted use is a consuming
     /// `vec-drop` tail-slice (PART 2 ordered it last). Their PRESERVATION dups (`emit_binder_ref` retain,
@@ -2308,43 +2324,109 @@ fn collect_row_op_field_dups_seen(
 /// MUST-HOLD: a view that escapes (returned / passed as a handle / read by a non-`Bytes.at` consumer) has
 /// `count != 1` for the direct-`Bytes.at`-operand shape OR its sole use is not a `Bytes.at`, so it is not
 /// marked → not reclaimed (v-mem-safety's #4917 SumExpect-escape control must stay leaking).
-fn collect_sumexpect_view_reclaim(db: &mut Db, body: StructId, set: &mut HashSet<StructId>) {
+fn collect_sumexpect_view_reclaim(
+    db: &mut Db,
+    body: StructId,
+    view_set: &mut HashSet<StructId>,
+    shell_set: &mut HashSet<StructId>,
+) {
     let mut seen = HashSet::new();
-    collect_sumexpect_view_reclaim_seen(db, body, body, set, &mut seen);
+    collect_sumexpect_view_reclaim_seen(db, body, body, view_set, shell_set, &mut seen);
+}
+
+/// Whether `scrutinee` is a SINGLE-heap-payload owned Some PRODUCER eligible for the (2) reclaim (Option A):
+/// `String.at` (Some char-view) or `Bytes.slice` (Some bytes-view) — both return a fresh `Some(one view)`,
+/// inherently single-heap-payload (the load-bearing fence: dup==1 balances the single Some→payload cascade),
+/// and Owned (a fresh sum-new the SumExpect emit's `reclaim_shell` frees). (Option B would generalize the
+/// producer set with an explicit #heap-payloads==1 check; A scopes to these two inherently-single producers.)
+fn is_owned_single_view_producer(db: &mut Db, scrutinee: StructId) -> bool {
+    // `String.at` / `Bytes.slice` ALWAYS return a fresh `Some(one view)` — owned + single-heap-payload BY
+    // CONSTRUCTION (that IS the load-bearing fence for Option A). We check the NODE KIND directly rather than
+    // `heap_operand_ownership` because `StrAt` is deliberately NOT globally-Owned (to avoid perturbing the
+    // MatchSum Stage-B path — see the heap_operand_ownership note); being a StrAt/BytesSlice node is itself
+    // the owned-single-view proof, and the SumExpect `reclaim_shell` treats it as owned LOCALLY via the set.
+    matches!(
+        core_of(db, scrutinee),
+        Core::StrAt { .. } | Core::BytesSlice { .. }
+    )
+}
+
+/// Whether `parent`'s use of `target` is a SCALAR-returning read WITH a view-drop hook — a `Bytes.at`
+/// (→reclaim_bytes) or `String.scalar-len` (→the StrScalarLen reclaim). Such a consumer lets us OWN + drop
+/// the view (VIEW-set, net -1). Any OTHER single consumer (a `Call`/op that takes the view onward) leaves the
+/// view to that consumer (SHELL-set, net 0). This is the two-set partition by consumer-kind (disjoint).
+fn is_view_scalar_read_consumer(db: &mut Db, parent: StructId, target: StructId) -> bool {
+    match core_of(db, parent) {
+        Core::BytesAt { bytes, .. } => bytes == target,
+        Core::StrScalarLen { operand } => operand == target,
+        _ => false,
+    }
 }
 
 fn collect_sumexpect_view_reclaim_seen(
     db: &mut Db,
     id: StructId,
     top_body: StructId,
-    set: &mut HashSet<StructId>,
+    view_set: &mut HashSet<StructId>,
+    shell_set: &mut HashSet<StructId>,
     seen: &mut HashSet<StructId>,
 ) {
     if !seen.insert(id) {
         return;
     }
-    if let Core::BytesAt { bytes, .. } = core_of(db, id) {
-        // The `bytes` operand IS a fresh Option.expect extraction (`Core::SumExpect`) — not a reused
-        // param/kept-local (that shape reclaims via the operand's owner, not here).
-        if let Core::SumExpect { scrutinee, .. } = core_of(db, bytes) {
-            // The SumExpect's scrutinee must be OWNED (a `Bytes.slice`/computed Some), so the SumExpect emit
-            // deep-drops the shell (`reclaim_shell`) — the dup-at-extract's paired free. A borrowed-scrutinee
-            // Option.expect is left to its owner (no shell to reclaim here).
-            let owned_scrutinee = matches!(
-                heap_operand_ownership(db, scrutinee),
-                Ok(HandleOwnership::Owned)
-            );
-            // SINGLE-CONSUMER + NO-ESCAPE: the SumExpect node is referenced EXACTLY ONCE in the whole body —
-            // by this `Bytes.at`'s `bytes` operand. count > 1 ⟹ multiple `Bytes.at` (double-drop) or an
-            // escaping use ⟹ leave unmarked (leak, never UAF).
-            if owned_scrutinee && count_node_refs(db, top_body, bytes) == 1 {
-                set.insert(bytes);
+    // A fresh `Option.expect` extraction (`Core::SumExpect`) over an Owned single-view Some producer, used
+    // EXACTLY ONCE (single-consumer + no-escape: count > 1 ⟹ multi-consumer/escape ⟹ neither set). Classify
+    // by its single consumer's kind — the disjoint two-set partition.
+    if let Core::SumExpect { scrutinee, .. } = core_of(db, id)
+        && is_owned_single_view_producer(db, scrutinee)
+        && is_heap_type(&type_of(db, id))
+        && count_node_refs(db, top_body, id) == 1
+    {
+        match single_parent_of(db, top_body, id) {
+            // Consumer is a scalar-read with a view-drop hook (Bytes.at / String.scalar-len) → VIEW-set:
+            // compound_dupd dups + shell-drops, and the consumer's reclaim drops the now-owned view (net -1).
+            Some(parent) if is_view_scalar_read_consumer(db, parent, id) => {
+                view_set.insert(id);
             }
+            // Consumer is a Call/op that takes the view onward → SHELL-set: compound_dupd's dup (+1) exactly
+            // compensates the shell-drop cascade (-1) = NET-0 on the view (consumer owns it), only the
+            // orphaned shell freed. No view-drop on our side. (None = escape/body-result → neither.)
+            Some(_) => {
+                shell_set.insert(id);
+            }
+            None => {}
         }
     }
     for child in core_child_ids(db, id) {
-        collect_sumexpect_view_reclaim_seen(db, child, top_body, set, seen);
+        collect_sumexpect_view_reclaim_seen(db, child, top_body, view_set, shell_set, seen);
     }
+}
+
+/// The SINGLE node in `body` that has `target` as a direct child, or `None` if `target` is unreferenced
+/// (escapes as the body result) or referenced more than once (callers gate on `count_node_refs == 1`, so
+/// `None` here means the body-result/escape case). Used to classify a single-consumer SumExpect's consumer.
+fn single_parent_of(db: &mut Db, body: StructId, target: StructId) -> Option<StructId> {
+    fn go(
+        db: &mut Db,
+        id: StructId,
+        target: StructId,
+        seen: &mut HashSet<StructId>,
+        found: &mut Option<StructId>,
+    ) {
+        if !seen.insert(id) {
+            return;
+        }
+        for c in core_child_ids(db, id) {
+            if c == target {
+                *found = Some(id);
+            }
+            go(db, c, target, seen, found);
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut found = None;
+    go(db, body, target, &mut seen, &mut found);
+    found
 }
 
 /// The number of times `target` appears as a direct CHILD of any node reachable from `body` — a
@@ -4026,8 +4108,12 @@ pub fn collect_used_ops(
     // shell) and the sole `Bytes.at`'s `reclaim_bytes` `drop`s it, so import BOTH `dup` and `drop` iff any
     // view is marked. Exact (empty when the scalar-extracted-view shape is absent → no over-declare).
     let mut view_reclaim: HashSet<StructId> = HashSet::new();
-    collect_sumexpect_view_reclaim(db, id, &mut view_reclaim);
-    if !view_reclaim.is_empty() {
+    let mut shell_reclaim: HashSet<StructId> = HashSet::new();
+    collect_sumexpect_view_reclaim(db, id, &mut view_reclaim, &mut shell_reclaim);
+    // VIEW set: compound_dupd `dup`s + shell-`drop`s AND the consumer reclaim `drop`s the view → both ops.
+    // SHELL set: compound_dupd `dup`s + shell-`drop`s only → both ops too (dup for the net-0 compensation,
+    // drop for the shell). Either non-empty ⟹ import dup+drop (exact — empty when neither shape is present).
+    if !view_reclaim.is_empty() || !shell_reclaim.is_empty() {
         out.insert(OP_DUP);
         out.insert(OP_DROP);
     }
@@ -5920,10 +6006,17 @@ pub fn select_function_of(
         // so the emit's child-`dup` + the `dup` import agree. Empty for scalar-only / fresh-record row ops.
         collect_row_op_field_dups(db, body, &mut code.dup_sites);
     }
-    // (2) rope/slice-view: the SumExpect-extracted Bytes views that are scalar-read by exactly one Bytes.at
-    // and don't escape — a DEDICATED set (disjoint from dup_sites) that both `compound_dupd` (dup-at-extract
-    // + shell-drop) and `reclaim_bytes` (the sole Bytes.at's post-borrow view-drop) consult, in lockstep.
-    collect_sumexpect_view_reclaim(db, body, &mut code.sumexpect_view_reclaim);
+    // (2) rope/slice-view: partition the SumExpect-extracted single-view Somes (String.at/Bytes.slice) into
+    // the VIEW set (scalar-read-dead single consumer → we dup+shell-drop+view-drop, net -1) and the SHELL set
+    // (consumed-onward single consumer → dup+shell-drop only, net-0, consumer owns the view). Dedicated sets
+    // (disjoint from dup_sites AND each other by consumer-kind) that compound_dupd (both) + reclaim_bytes/
+    // StrScalarLen (VIEW only) consult, in lockstep.
+    collect_sumexpect_view_reclaim(
+        db,
+        body,
+        &mut code.sumexpect_view_reclaim,
+        &mut code.sumexpect_shell_reclaim,
+    );
     code.nontail_match_reclaim_binders = nontail_reclaim;
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
@@ -12434,11 +12527,14 @@ fn emit(
         Core::StrScalarLen { operand } => {
             // RECLAMATION (same as `Core::BytesLen`): the walk BORROWS the string (`bytes-len`/`bytes-get`);
             // an OWNED-temporary operand is dropped after the last borrow, a borrowed param/local is left to
-            // its owner.
+            // its owner. (2) SA1: ALSO drop when `operand` is a SumExpect char-view in the VIEW set — the
+            // SumExpect emit dup'd it (rc1 owned) + freed the shell, and THIS (the sole scalar-read consumer)
+            // is its liveness last-use, so the post-scan drop reclaims the view (the String twin of
+            // reclaim_bytes; VIEW set only — a SHELL-set view is owned by its Call consumer, NOT dropped here).
             let reclaim = matches!(
                 heap_operand_ownership(db, operand),
                 Ok(HandleOwnership::Owned)
-            );
+            ) || out.sumexpect_view_reclaim.contains(&operand);
             let str_slot = base;
             let pos_slot = base + 1;
             let bytelen_slot = base + 2;
@@ -14668,11 +14764,16 @@ fn emit(
             // the rarer non-live-after compound expect; a residual leak there, never a double-free). Only a
             // FRESHLY-STASHED owned scrutinee is dropped: a reused param/kept-local slot (`reuse.is_some()`)
             // is borrowed and left to its owner (mirrors the `List.len`/`List.at` owned-operand reclaim gate).
+            // (2) SumExpect-LOCAL owned treatment: a `String.at`/`Bytes.slice` view in the view/shell reclaim
+            // sets is owned-single-payload BY CONSTRUCTION, so its shell is reclaimable HERE even though
+            // `heap_operand_ownership(StrAt)` is (deliberately) not globally Owned — this local check keeps the
+            // MatchSum Stage-B / value-eq consumers seeing StrAt UNCHANGED (the local>global discipline).
             let reclaim_shell = reuse.is_none()
-                && matches!(
+                && (matches!(
                     heap_operand_ownership(db, scrutinee),
                     Ok(HandleOwnership::Owned)
-                );
+                ) || out.sumexpect_view_reclaim.contains(&id)
+                    || out.sumexpect_shell_reclaim.contains(&id));
             // The result block type is this node's solved type (the payload type).
             let block_ty = match type_of(db, id) {
                 Ty::Unit => BlockType::Empty,
@@ -14715,12 +14816,15 @@ fn emit(
             // child, dup the copy, leave the original for the consumer. A fresh scratch slot at `*high`
             // (never `base`, which a width-different sibling may claim).
             let unit_leaf = matches!(type_of(db, id).strip_nominal(), Ty::Unit);
-            // Also fire for a (2) rope/slice-view SumExpect reclaim: the extracted Bytes view is scalar-read
-            // by exactly one Bytes.at + doesn't escape (in `sumexpect_view_reclaim`), so dup it here (+ drop
-            // the Some shell below) — its paired liveness view-drop is the sole Bytes.at's `reclaim_bytes`.
+            // Also fire for a (2) rope/slice-view SumExpect reclaim (dup the extracted view + drop the Some
+            // shell below): the VIEW set (scalar-read-dead — its paired view-drop is the sole Bytes.at's
+            // reclaim_bytes / String.scalar-len's reclaim) OR the SHELL set (consumed-onward — the dup here is
+            // the NET-0 compensation for the shell-drop cascade; NO view-drop, the consumer owns the view).
             let compound_dupd = unboxed.is_none()
                 && !unit_leaf
-                && (out.dup_sites.contains(&id) || out.sumexpect_view_reclaim.contains(&id));
+                && (out.dup_sites.contains(&id)
+                    || out.sumexpect_view_reclaim.contains(&id)
+                    || out.sumexpect_shell_reclaim.contains(&id));
             if compound_dupd {
                 let child_slot = *high;
                 *high = child_slot + 1;
@@ -17938,6 +18042,13 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         // emit); here we classify the fallible RESULT they hand out, which is a fresh owned sum.
         | Core::ListAt { .. }
         | Core::BytesAt { .. }
+        // NOTE: `String.at` (`Core::StrAt`) also returns a FRESH owned `Some(char-view)`, but it is
+        // DELIBERATELY NOT classified Owned here — a GLOBAL reclassification perturbs the MatchSum Stage-B
+        // extraction-consume reclaim (a String.at-view consumed by an allowlisted `String.concat` nets +1 =
+        // a latent Stage-B imbalance, v-mem-safety's separate follow-up). Instead the (2) SumExpect view/shell
+        // reclaim treats a `StrAt` scrutinee as owned LOCALLY (in the SumExpect `reclaim_shell` emit, gated by
+        // the `sumexpect_view_reclaim`/`sumexpect_shell_reclaim` membership) — same local>global discipline as
+        // the reclaim_bytes-local (2) check, so the MatchSum/value-eq/Stage-B consumers see StrAt UNCHANGED.
         | Core::MapLookup { .. }
         | Core::MapNew { .. }
         | Core::MapInsert { .. }
