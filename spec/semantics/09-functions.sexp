@@ -6000,7 +6000,7 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 5 Int64))
   (call   main (: 10 Int64)) (output (: 5 Int64))
-  (live-objects known-leak 20))
+  (live-objects known-leak 10))
 
 ; A recursive-generic PRODUCER applied to a list whose ELEMENTS are themselves results of the SAME
 ; producer — `(from-list (list (inner) (inner)))` where `(inner) = (from-list (list 1 2)) : Iter Int64`,
@@ -6125,7 +6125,7 @@
                  (icount (flatten (from-list (list (from-list (list "a" "b")) (from-list (list "c"))))))))
             (export main)))
   (output (: 8 Int64))
-  (live-objects known-leak 62))
+  (live-objects known-leak 46))
 
 ; The SOUNDNESS SENTINEL for the tie above: broadening `collect_param_constraints` to accept a SumPayload-of-
 ; a-param arg (so the element flows into the callee's domain) must NOT loosen type-safety — a threaded element
@@ -6179,7 +6179,7 @@
                  (icount (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 32))
+  (live-objects known-leak 20))
 
 ; The AGGREGATE-RESULT face: the threaded closure's RESULT is a compound (a tuple), not a scalar.
 ; `(fn (x) (tuple x x))` maps Int64 -> (Tuple Int64 Int64) while `(fn (s) (String.concat s s))` maps
@@ -6205,7 +6205,7 @@
                  (count (gmap (from-list (list "a" "b")) (fn (s) (String.concat s s))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 16))
 
 (case "a recursive-generic filter threading a predicate closure composes at two element types"
   (doc    "`filt : (Iter a) → (a → Bool) → (Iter a)` keeps the elements a predicate closure accepts,
@@ -6228,7 +6228,7 @@
                  (icount (filt (from-list (list "a" "bb")) (fn (s) (> (String.byte-len s) 1))))))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 26))
+  (live-objects known-leak 20))
 
 (case "a recursive-generic transformer with a bare-Nil STOP branch composes at two element types"
   (doc    "`take-while : (Iter a) → (a → Bool) → (Iter a)` keeps a leading run, STOPPING at a bare
@@ -6254,7 +6254,7 @@
                  (icount (take-while (from-list (list "a" "bb" "ccc")) (fn (s) (< (String.byte-len s) 3))))))
             (export main)))
   (output (: 4 Int64))
-  (live-objects known-leak 32))
+  (live-objects known-leak 24))
 
 (case "a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict"
   (doc    "AD-HOC POLYMORPHISM via a record of functions, generic over the element type — a `(: t Type)`
@@ -6494,7 +6494,7 @@
                            (icount (gmap (from-list (list "a" "b")) (fn (s) s)))))
             (export main)))
   (output (: 5 Int64))
-  (live-objects known-leak 30))
+  (live-objects known-leak 20))
 
 ; A TRANSITIVE recursive-generic tie: a `reduce`-shaped WRAPPER (`reduce1`) whose `Cons` arm seeds a
 ; SECOND recursive-generic helper (`go`) with the HEAD element, used at TWO element types in one program
@@ -9578,7 +9578,7 @@
 (export main)))
   (call main)
   (output (: 2 Int64))
-  (live-objects known-leak 14))
+  (live-objects known-leak 8))
 
 (case "gtx5 a generic transformer's Option-result closure with a discarding consumer at two domains (the nominal-sum cell is green on every target)"
   (input (do
@@ -9590,7 +9590,7 @@
 (export main)))
   (call main)
   (output (: 4 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 16))
 
 ; ── breaker batch 532: constant-RETURN calibration extended to the immortal era (the imc family's
 ; size classes). Post #4330/#4354 (deep-mark hoisting for internal uses), a constant in RETURN
