@@ -3647,24 +3647,25 @@
           // optGapFileAggs;
 
         devShells.default = pkgs.mkShell {
-          # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
+          # THE SINGLE dev shell everyone runs everything in (operator 2026-08-28): one uniform
+          # environment, no per-lane shells. All EXTERNAL/SUBSTITUTABLE tooling (fetched from the binary
+          # cache, shared ONCE per box via /nix/store — not a per-agent compile), so eager is fine:
           #   rustToolchain : rustc/cargo/clippy/rustfmt/rust-src + wasm32 target (from the pin)
-          #   wasm-tools    : CI installs this per wasm job (checks.yml `wasm-tools: true`); the
-          #                   runtime component build + `cdz test` need it. Pin it from nixpkgs.
-          #   cargo-component : the runtime component build is `cargo component build` (see xtask
-          #                   build_component_with_features). Without it in the shell, `cargo
-          #                   component` leaks from the host `~/.cargo/bin`, defeating hermeticity.
-          #                   nixpkgs pins 0.21.1 — the exact version the recorded REQUIRED_RUNTIME_HASH
-          #                   was produced with, so the devShell build reproduces the committed hash.
-          # NOT added: anything a specific later derivation needs — those go in that derivation's
-          # own inputs (N1+), not this shared shell, to keep cache invalidation fine-grained. In
-          # particular the oracle-lean lane's `lean4` (a 2.5GiB-unpacked single-lane toolchain) lives
-          # in `devShells.oracle` below, NOT here — so the ~40 agents that `nix develop` the default
-          # shell don't pull it into their dev closure (v-nix flake-owner closure-hygiene, 2026-08-27).
+          #   wasm-tools    : the runtime component build + `cdz test` need it (nixpkgs pin)
+          #   cargo-component : the runtime component build is `cargo component build` — pinned 0.21.1
+          #                   (the version the recorded REQUIRED_RUNTIME_HASH was produced with), from
+          #                   nixpkgs not the host ~/.cargo/bin (hermeticity)
+          #   lean4         : lean + lake for the differential oracle (implementation/oracle-lean/). Folded
+          #                   in from the retired `devShells.oracle` — a substitutable ~2.5GiB fetch shared
+          #                   once per box, so the single-shell simplicity is worth it (supersedes the
+          #                   2026-08-27 closure-hygiene split; operator wants ONE shell). `.#oracle` is
+          #                   kept below as a deprecated ALIAS to this shell so no caller breaks.
+          # LOCAL builds are NOT eager here — the shellHook defers them (see the lazy-boot note below).
           packages = [
             rustToolchain
             pkgs.wasm-tools
             pkgs.cargo-component
+            pkgs.lean4
           ];
 
           # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
@@ -3675,30 +3676,40 @@
           # guests) from the nix-built, content-addressed store — the operator's load-by-hash north star.
           # OPT-IN + non-destructive: `cargo xtask build` (the store WRITER) still writes
           # target/cadenza-store; this only overrides the READ path for a nix-develop session.
+          # LAZY BOOT (operator 2026-08-28): agents boot directly into this shell, so it must be REACTIVE.
+          # A LOCALLY-BUILT derivation referenced in the shellHook is realised at BOOT (nix must build it to
+          # substitute its path) — previously `CDZ_STORE=<the component store>` forced 9 local derivations
+          # (runtime component + debug + NFC + guests + hashes, minutes cold) on every fresh `nix develop`.
+          # Rule: EAGER for external/substitutable tooling (rustToolchain/wasm-tools/cargo-component — the
+          # `packages` above, fetched from the binary cache), LAZY for anything derived from LOCAL builds
+          # (the component store, the compiler) — deferred to first actual use. So the shellHook references
+          # NO local derivation; CDZ_STORE is resolved on the first cdz/cdz-run call and memoized.
           shellHook = ''
-            export CDZ_STORE="${componentStore}"
-            # NIX_REMOTE=daemon: in-shell nix MUST use the shared multi-user daemon/store so the warm
-            # crane dep-closure + component store are visible (not a private store) — v-fleet-tooling
-            # boots agents into this shell (all-nix cutover, operator 2026-08-28). CARGO_BUILD_JOBS caps
-            # any residual in-shell cargo fan-out (composes with the daemon's cores; overridable).
             export NIX_REMOTE=daemon
             export CARGO_BUILD_JOBS="''${CARGO_BUILD_JOBS:-8}"
+            # Resolve the flake root INSIDE each call (not a shell var) so the functions work from any
+            # subdir and after `export -f` into bash children/scripts (an unexported var would be lost there).
+            __cdz_flakeroot() { git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"; }
+            # LAZY store: build + pin the nix component store (runtime/NFC/guests) on the FIRST cdz/cdz-run
+            # use (memoized for the session), so `cdz run`/`cdz test` resolve components by hash from the nix
+            # store rather than a `target/cadenza-store` fallback — WITHOUT paying that build at boot.
+            __cdz_ensure_store() {
+              if [ -z "''${CDZ_STORE:-}" ]; then
+                CDZ_STORE="$(nix build --no-link --print-out-paths --option warn-dirty false "$(__cdz_flakeroot)#store")" && export CDZ_STORE
+              fi
+            }
             # ALL-NIX AGENT ENTRYPOINTS: invoke the tool directly — nix compiles it ON DEMAND from your
             # CURRENT worktree (picks up uncommitted edits to TRACKED files; new untracked files need
             # `git add`) reusing the warm dep-closure, so there is no bare-cargo per-worktree cold rebuild.
             # FUNCTIONS not PATH: `nix run` rebuilds from the dirty tree each call, whereas a PATH-injected
             # binary would freeze at shell-entry rev and miss your edits (v-nix+operator 2026-08-28).
-            # Resolve the flake root INSIDE each call (not a shell var) so the functions work from any
-            # subdir and after `export -f` into bash children/scripts (an unexported var would be lost there).
-            __cdz_flakeroot() { git rev-parse --show-toplevel 2>/dev/null || echo "$PWD"; }
-            cdz()       { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"       -- "$@"; }
-            cdz-run()   { nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"   -- "$@"; }
+            cdz()       { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz"       -- "$@"; }
+            cdz-run()   { __cdz_ensure_store; nix run --option warn-dirty false "$(__cdz_flakeroot)#cdz-run"   -- "$@"; }
             gate()      { nix run --option warn-dirty false "$(__cdz_flakeroot)#gate"      -- "$@"; }
             fast-gate() { nix run --option warn-dirty false "$(__cdz_flakeroot)#fast-gate" -- "$@"; }
-            export -f __cdz_flakeroot cdz cdz-run gate fast-gate 2>/dev/null || true
-            echo "cdz: CDZ_STORE → nix component store ($CDZ_STORE); NIX_REMOTE=$NIX_REMOTE"
-            echo "cdz all-nix shell — invoke tools directly (nix compiles on demand, reuses the warm cache):"
-            echo "  cdz …               compile / run / test / doctor"
+            export -f __cdz_flakeroot __cdz_ensure_store cdz cdz-run gate fast-gate 2>/dev/null || true
+            echo "cdz all-nix shell (LAZY boot) — tools compile on FIRST use, reusing the warm cache:"
+            echo "  cdz …               compile / run / test / doctor  (builds the component store on 1st run)"
             echo "  cdz-run FILE.wasm   run a component"
             echo "  fast-gate [crates]  fast touched-crate gate (inner loop)"
             echo "  gate                full local-gate battery (convenience)"
@@ -3706,20 +3717,11 @@
           '';
         };
 
-        # The oracle-lean lane's dev shell: `nix develop .#oracle` gets the default toolchain PLUS
-        # `lean4` (lean + lake) for building/editing the Lean differential oracle
-        # (implementation/oracle-lean/). Kept OUT of the shared default (v-nix flake-owner
-        # closure-hygiene, 2026-08-27): lean4 is a single-lane 2.5GiB-unpacked toolchain, so only the
-        # oracle lane pulls it. `inputsFrom` inherits the default shell's toolchain (rustToolchain +
-        # wasm-tools + cargo-component); the shellHook re-points CDZ_STORE the same way.
-        devShells.oracle = pkgs.mkShell {
-          inputsFrom = [ self.devShells.${system}.default ];
-          packages = [ pkgs.lean4 ];
-          shellHook = ''
-            export CDZ_STORE="${componentStore}"
-            echo "cdz: oracle dev shell (lean4 + lake); CDZ_STORE → nix component store ($CDZ_STORE)"
-          '';
-        };
+        # DEPRECATED ALIAS: `.#oracle` == the single `default` shell (operator 2026-08-28: one shell for
+        # everyone). lean4 folded into `default`, so there's no separate oracle environment anymore; this
+        # alias only keeps `nix develop .#oracle` working for callers (window.sh / scripts) until they
+        # migrate to plain `nix develop`. Remove once nothing references `.#oracle`.
+        devShells.oracle = self.devShells.${system}.default;
 
         # ── LOCAL WARM-KEEP (v-nix+v-fleet-tooling 2026-08-08) ─────────────────────────────────────
         #
