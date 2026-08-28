@@ -571,6 +571,19 @@ pub(crate) fn run_sharing_aware_emit(
         let Some(body) = db.defs[def].body else {
             continue;
         };
+        // (A) BARE-ENTRY-PARAM EXPORT GATE (v-core-opt tick bw, blessed by v-rb): SKIP B2 binding for the
+        // body of a SINGLE bare export whose entry param is NON-SCALAR (a `List`/`String`/compound). B2's
+        // `Core::Let`-wrap of a shared heap node reshapes such a body so `try_bare_entry_param_component`
+        // (mod.rs) returns None on the wrapped body (its param-escape/shape analysis expects the RAW body) →
+        // main falls through to the "non-scalar entry parameter not emitted on this export path" decline at
+        // O2 where O0/O1 (no B2) compile = an O2 level-equivalence VIOLATION (bisected: B2 no-op → 0 divergences,
+        // GlobalCsePass exonerated). Excluded here because try_bare_entry_param_component needs the raw body; the
+        // lost B2 win on these bodies is a NEGLIGIBLE shared-scalar read (`List.len`/a String/list param read
+        // twice), not a costly recompute; the see-through-Let alternative (option B) is deferred as low-ROI
+        // (subtle `param_escapes_body` interaction). Every OTHER def's body (helpers, lifted closures) still gets B2.
+        if b2_excluded_bare_entry_export(db, layout, def) {
+            continue;
+        }
         // STEP 3: INSTALL the B2 bind plan (v-rb's emit-coupled half of the Option-ii division). Each entry
         // is a shared heap node the plan ALREADY gated as sound to bind (fully-solved-type + not-a-scrutinee +
         // value-stable PARAM-closed + [trap-free OR its scope_node unconditionally reaches it]; template-shares
@@ -589,6 +602,41 @@ pub(crate) fn run_sharing_aware_emit(
                 "sharing-aware-emit: B2 bind plan INSTALLED (shared heap nodes bound into Let slots)");
         }
     }
+}
+
+/// Whether `def`'s body is the body of a SINGLE bare export whose entry param is NON-SCALAR — the (A) gate
+/// (v-core-opt tick bw, blessed by v-rb): B2's `Core::Let`-wrap breaks `try_bare_entry_param_component`'s
+/// raw-body-shape analysis for such an export, declining at O2 what O0/O1 compile (a level-equivalence
+/// violation). TRUE iff there is EXACTLY ONE export, it IS this `def`, and at least one of its params has no
+/// scalar BOUNDARY valtype (`export_result_valtype` is not `Ok(Some(_))` for a `List`/`String`/closure/
+/// compound). Scalar-only-param exports and non-export defs are UNAFFECTED (return false → keep B2).
+/// Conservative: over-excluding only forfeits a cheap shared-read opt on the excluded body, never a miscompile.
+fn b2_excluded_bare_entry_export(
+    db: &mut crate::db::Db,
+    layout: &crate::layout::Layout,
+    def: usize,
+) -> bool {
+    if layout.exports.len() != 1 {
+        return false;
+    }
+    let export = &layout.exports[0];
+    if export.def != def {
+        return false;
+    }
+    // A param with no scalar BOUNDARY valtype (a heap `List`/`String`/`Bytes`/closure/compound) is the one
+    // `try_bare_entry_param_component` lifts specially off the RAW body — the shape B2's Let-wrap breaks. Use
+    // the BOUNDARY check (`export_result_valtype`), NOT the core `valtype_of`: a `List`/`String` IS an i32
+    // handle in the core (`valtype_of == Some`) but has NO scalar boundary form, so `valtype_of` would miss
+    // exactly the List/String entry params that trigger the decline (elc1/icp2/ssc1). A `Unit` param is
+    // zero-width/elided and never hits that lift path, so exclude it from triggering the gate (stays tight).
+    let ncx = db.name_ctx();
+    export.params.iter().any(|(_, ty)| {
+        !matches!(ty.strip_nominal(), crate::ty::Ty::Unit)
+            && !matches!(
+                crate::backend::wasm::serialize::export_result_valtype(ty, &ncx),
+                Ok(Some(_))
+            )
+    })
 }
 
 /// Install one B2 bind plan's entries into the core column (the emit-coupled half — v-rb's lane). Split out
