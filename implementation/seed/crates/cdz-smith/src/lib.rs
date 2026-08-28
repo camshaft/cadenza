@@ -46,6 +46,10 @@ pub mod astgen;
 pub mod driver;
 pub mod finding;
 pub mod generator;
+/// The HOST/EFFECT program generator for WIT/host-boundary DECLINE (gap) hunting — see `hostgen`. Its
+/// product is the compiler's DECLINE (a not-yet-emitted boundary shape), captured for the breaker gap
+/// hand-off; unlike `astgen` it is not tuned for oracle-comparability.
+pub mod hostgen;
 pub mod lean;
 pub mod mutate;
 pub mod oracle;

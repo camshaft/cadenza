@@ -564,10 +564,14 @@ pub fn decline_signature(reason: &str) -> String {
             return code;
         }
     }
-    // Else a normalized short prefix of the reason (first few words, alnum/`-`, lowercased).
-    let prefix: String = reason
+    // Else a normalized short prefix of the reason. First strip BACKTICK-quoted spans (the variable parts
+    // — an op/type/identifier name like `o` / `Bytes`), so a gap CLASS dedups regardless of the specific
+    // op or type: "the host operation `o` … result … `Bytes`" and "… `p` … `(List Int64)`" reduce to ONE
+    // signature (the gap = "host op result crosses no boundary"), not one per op/type instance.
+    let stripped = strip_backtick_spans(reason);
+    let prefix: String = stripped
         .split_whitespace()
-        .take(5)
+        .take(6)
         .collect::<Vec<_>>()
         .join("-");
     let norm: String = prefix
@@ -576,6 +580,21 @@ pub fn decline_signature(reason: &str) -> String {
         .take(48)
         .collect();
     norm.to_ascii_lowercase()
+}
+
+/// Remove `` `…` `` backtick-quoted spans from `s` (the variable identifier/type names in a decline
+/// reason), leaving the fixed wording — so [`decline_signature`] groups by gap class, not by instance.
+fn strip_backtick_spans(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tick = false;
+    for ch in s.chars() {
+        match ch {
+            '`' => in_tick = !in_tick,
+            _ if !in_tick => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A Lean `Mismatch` is a trap-KIND-only disagreement — PENDING an operator policy ruling, NOT a filed
@@ -1050,6 +1069,16 @@ mod tests {
         let s = decline_signature("not lowered yet: some construct");
         assert!(!s.is_empty() && s == s.to_ascii_lowercase() && !s.contains(' '));
         assert_ne!(decline_signature("CDZ without digits"), "CDZ");
+        // Backtick-quoted op/type names are STRIPPED, so a host-boundary gap CLASS dedups regardless of
+        // the specific op (`o` vs `p`) or result type (`Bytes` vs `(List Int64)`) — one gap, one repro.
+        let g_o_bytes = decline_signature("the host operation `o` has a result of type `Bytes`, which …");
+        let g_p_list = decline_signature("the host operation `p` has a result of type `(List Int64)`, which …");
+        assert_eq!(g_o_bytes, g_p_list, "same host-result gap class must share a signature");
+        // A genuinely different gap keeps a different signature.
+        assert_ne!(
+            g_o_bytes,
+            decline_signature("delegating more than one host effect is not yet emitted")
+        );
     }
 
     /// `is_trap_kind_pending` isolates the PENDING-policy runtime-fault trap-KIND class (rcdzc trapped +

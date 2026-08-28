@@ -62,6 +62,17 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         #[cfg(feature = "differential")]
+        "host-declines" => cmd_host_declines(&args[1..]),
+        #[cfg(not(feature = "differential"))]
+        "host-declines" => {
+            eprintln!(
+                "cdz-smith: the `host-declines` subcommand needs the `differential` feature \
+                 (it shares the decline-capture helpers) — rebuild: \
+                 `cargo run --features differential -- host-declines …`."
+            );
+            ExitCode::from(2)
+        }
+        #[cfg(feature = "differential")]
         "verify-differential" => cmd_verify_differential(&args[1..]),
         #[cfg(not(feature = "differential"))]
         "verify-differential" => {
@@ -99,6 +110,7 @@ fn usage() {
          \x20 cdz-smith run-ast-corpus   [--seeds DIR] [--store DIR]   (needs --features differential)\n\
          \x20 cdz-smith lean-differential [--count N] [--seed S] [--store DIR] [--oracle PATH] [--findings DIR] [--declines-dir DIR]\n\
          \x20 cdz-smith verify-differential <FILE.sexp | SEED> [--store DIR] [--cdz PATH] [--oracle PATH]\n\
+         \x20 cdz-smith host-declines     [--count N] [--seed S] [--declines-dir DIR]   (WIT/host gap hunt → breaker)\n\
          \x20 cdz-smith once             <SEED>\n\
          \x20 cdz-smith gen              <SEED>\n\
          \x20 cdz-smith verify           <FILE.sexp | SEED>\n\
@@ -273,6 +285,98 @@ fn cmd_lean_differential(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// The HOST-DECLINE sweep: generate `count` HOST/EFFECT programs (see `hostgen`) and compile each,
+/// collecting the compiler's DECLINES — the WIT/host-boundary GAPS the operator wants bubbled to breaker.
+/// This is a pure decline hunt: it uses only the crash/decline oracle ([`compile_catching`]) — no wasm run,
+/// no Lean oracle — so a `--declines-dir` writes deduped minimal repros exactly like the differential path.
+/// `--count` (default 2000), `--seed` (else wall-clock), `--declines-dir` (the breaker hand-off dir). Feature-
+/// gated with the other campaign subcommands only to share `write_declines`/`decline_signature` (it runs no
+/// wasm itself). Exits 0 always (declines are EXPECTED output, never a finding).
+#[cfg(feature = "differential")]
+fn cmd_host_declines(args: &[String]) -> ExitCode {
+    let mut count: u64 = 2000;
+    let mut seed: Option<u64> = None;
+    let mut declines_dir: Option<PathBuf> = None;
+
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--count" | "-n" => count = it.next().and_then(|s| s.parse().ok()).unwrap_or(count),
+            "--seed" => seed = it.next().and_then(|s| parse_seed(s)),
+            "--declines-dir" => declines_dir = it.next().map(PathBuf::from),
+            other => {
+                eprintln!("cdz-smith host-declines: unexpected arg `{other}`");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let run_seed = seed.unwrap_or_else(driver::wallclock_seed);
+    eprintln!(
+        "[cdz-smith] host-declines @{} | {count} programs | seed {run_seed}",
+        driver::detect_commit()
+    );
+
+    // Coerce varied entropy → host/effect programs; compile each; collect DECLINES as (source, RAW reason).
+    let mut rng = run_seed;
+    let mut declines: Vec<(String, String)> = Vec::new();
+    let mut compiled = 0usize;
+    let mut declined = 0usize;
+    let mut other = 0usize;
+    for _ in 0..count {
+        let mut bytes = Vec::with_capacity(12);
+        for _ in 0..12 {
+            rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            bytes.push(((z ^ (z >> 31)) >> 24) as u8);
+        }
+        let program = cdz_smith::hostgen::generate_host(&bytes);
+        match compile_catching(&program.source) {
+            Verdict::Compiled { .. } => compiled += 1,
+            Verdict::Declined { code, message } => {
+                declined += 1;
+                // RAW reason (breaker routes on the actual error): the CDZ code (if any) + full message,
+                // so `decline_signature` groups coded declines by code and uncoded host gaps by prefix.
+                let reason = match code {
+                    Some(c) => format!("{c}: {message}"),
+                    None => message,
+                };
+                declines.push((program.source, reason));
+            }
+            // A crash / invalid-wasm on a host program IS a bug — but the standalone fuzz/differential
+            // targets own that; here we only inventory declines. Count + note; do not file.
+            other_v => {
+                other += 1;
+                eprintln!("[cdz-smith] host-declines: non-decline outcome {other_v:?}");
+            }
+        }
+    }
+
+    let distinct = if let Some(dir) = &declines_dir {
+        match write_declines(dir, &declines) {
+            Ok(n) => {
+                eprintln!(
+                    "[cdz-smith] {declined} declines ({n} distinct new/updated) → {} (hand off to breaker)",
+                    dir.display()
+                );
+                n
+            }
+            Err(e) => {
+                eprintln!("cdz-smith host-declines: cannot write declines dir: {e}");
+                0
+            }
+        }
+    } else {
+        0
+    };
+    eprintln!(
+        "[cdz-smith] host-declines done: {compiled} compiled, {declined} declined, {other} other | {distinct} distinct decline signatures"
+    );
+    ExitCode::SUCCESS
 }
 
 /// Decline signatures BREAKER has already TRIAGED as legitimate compile-time rejections (expected
