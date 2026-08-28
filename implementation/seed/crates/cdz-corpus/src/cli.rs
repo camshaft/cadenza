@@ -534,7 +534,16 @@ fn test_run_ast(rec: &Record) -> Vec<u8> {
         if rec.live_objects_known_leak {
             leaves.push(str_leaf(&mut b, "known-leak"));
         }
-        leaves.push(str_leaf(&mut b, &n.to_string()));
+        // Per-call positional counts each become a leaf (`(live-objects "3" "13" "0")`); a uniform count is
+        // the single leaf. `decode_test_run` mirrors this (2+ counts ⇒ per-call, one ⇒ uniform).
+        match &rec.live_objects_per_call {
+            Some(counts) => {
+                for c in counts {
+                    leaves.push(str_leaf(&mut b, &c.to_string()));
+                }
+            }
+            None => leaves.push(str_leaf(&mut b, &n.to_string())),
+        }
         kids.push(form(&mut b, "live-objects", leaves));
     }
 
@@ -791,6 +800,22 @@ mod tests {
         assert!(
             leak_tr.contains("(live-objects \"known-leak\" \"2\")"),
             "known-leak marker shreds distinctly: {leak_tr}"
+        );
+        // A PER-CALL positional clause shreds to one leaf per count (`(live-objects "3" "13" "0")`), so the
+        // nix GRADE path (which reads this AST) balances EACH call against its own count.
+        let percall = crate::read(
+            r#"(case "percall"
+                 (input (do (def (main (: r Int64)) r) (export main)))
+                 (call main (: 1 Int64)) (output (: 1 Int64))
+                 (call main (: 4 Int64)) (output (: 4 Int64))
+                 (call main (: 0 Int64)) (output (: 0 Int64))
+                 (live-objects known-leak 3 13 0))"#,
+        )
+        .unwrap();
+        let pc_tr = sexpr::print(&codec::decode(&test_run_ast(&percall[0])).unwrap());
+        assert!(
+            pc_tr.contains("(live-objects \"known-leak\" \"3\" \"13\" \"0\")"),
+            "per-call positional counts shred as one leaf each: {pc_tr}"
         );
     }
 

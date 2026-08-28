@@ -122,6 +122,7 @@ mod tests {
             warns: vec![],
             live_objects: None,
             live_objects_known_leak: false,
+            live_objects_per_call: None,
         }
     }
 

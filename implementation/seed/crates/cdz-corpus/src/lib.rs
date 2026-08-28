@@ -103,6 +103,11 @@ pub struct Record {
     /// current leak grandfathered when the opt-out default landed (graded identically to a plain
     /// `(live-objects N)`; the flag records the intent so the marker set can be shrunk over time).
     pub live_objects_known_leak: bool,
+    /// PER-CALL positional counts from a `(live-objects [known-leak] N1 N2 …)` clause with 2+ counts (one
+    /// per call, in order) — `None` for the uniform/absent form. Expresses an arm-dependent balance a single
+    /// count cannot (a leak that scales with input size). `live_objects` holds the FIRST count (uniform /
+    /// direct-gate path); this carries the whole list for the per-call check (`design/DESIGN-corpus…`).
+    pub live_objects_per_call: Option<Vec<u32>>,
 }
 
 /// One sibling LIBRARY module of a multi-file package case — its file name (the string an `(import
@@ -520,7 +525,15 @@ pub fn render(records: &[Record]) -> String {
             if r.live_objects_known_leak {
                 out.push_str("known-leak\t");
             }
-            out.push_str(&n.to_string());
+            // Per-call positional counts render tab-separated (`live-objects\t3\t13\t0`); a uniform count
+            // renders as the single `live-objects\t<N>`.
+            match &r.live_objects_per_call {
+                Some(counts) => {
+                    let joined: Vec<String> = counts.iter().map(u32::to_string).collect();
+                    out.push_str(&joined.join("\t"));
+                }
+                None => out.push_str(&n.to_string()),
+            }
             out.push('\n');
         }
         out.push_str("---\n");
@@ -719,6 +732,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
     let mut component_name: Option<String> = None;
     let mut live_objects: Option<u32> = None;
     let mut live_objects_known_leak = false;
+    let mut live_objects_per_call: Option<Vec<u32>> = None;
     // Trials accumulate as the clauses are walked: a `(call …)` sets the PENDING call, and the next
     // result clause (`output`/`error`/`trap`) CLOSES a trial pairing that pending call with the result.
     // A result with no preceding `(call …)` is a no-call trial. This lets a case INTERLEAVE several
@@ -983,19 +997,20 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
             // == N.
             Some("live-objects") => {
                 let ids = a.as_form(clause, "live-objects").unwrap_or(&[]);
-                let first = ids
-                    .first()
-                    .map(|&id| sexpr::print_from(a, id).trim().to_string());
-                match first.as_deref() {
-                    Some("known-leak") => {
-                        live_objects_known_leak = true;
-                        live_objects = ids
-                            .get(1)
-                            .and_then(|&id| sexpr::print_from(a, id).trim().parse::<u32>().ok());
-                    }
-                    _ => {
-                        live_objects = first.and_then(|s| s.parse::<u32>().ok());
-                    }
+                let mut toks: Vec<String> = ids
+                    .iter()
+                    .map(|&id| sexpr::print_from(a, id).trim().to_string())
+                    .collect();
+                if toks.first().map(String::as_str) == Some("known-leak") {
+                    live_objects_known_leak = true;
+                    toks.remove(0);
+                }
+                // ONE count = uniform; 2+ = per-call positional (call i asserts count i). `live_objects`
+                // keeps the FIRST (uniform / direct-gate path); `live_objects_per_call` carries the list.
+                let counts: Vec<u32> = toks.iter().filter_map(|s| s.parse::<u32>().ok()).collect();
+                live_objects = counts.first().copied();
+                if counts.len() >= 2 {
+                    live_objects_per_call = Some(counts);
                 }
             }
             // `doc` — not needed to run + compare a case.
@@ -1034,6 +1049,7 @@ fn parse_case(a: &Arenas, case_id: StructId) -> Result<Record, String> {
         wit_world_ast,
         live_objects,
         live_objects_known_leak,
+        live_objects_per_call,
     })
 }
 
@@ -2144,6 +2160,34 @@ mod tests {
         assert!(recs[0].live_objects_known_leak);
         let text = to_records(src).unwrap();
         assert!(text.contains("live-objects\tknown-leak\t2\n"));
+    }
+
+    /// A `(live-objects N1 N2 N3)` clause with 2+ counts parses PER-CALL: `live_objects` = the first, and
+    /// `live_objects_per_call` = the whole list; it renders tab-separated (`live-objects\t3\t13\t0`). The
+    /// `known-leak` marker composes with the per-call form. This is the arm-dependent balance a single
+    /// count cannot express (FLETCHER-16: a leak scaling with input size), surfaced by #5008.
+    #[test]
+    fn live_objects_per_call_positional_parses_and_renders() {
+        let src = r#"(case "x"
+                 (input (do (def (main (: r Int64)) r) (export main)))
+                 (call main (: 1 Int64)) (output (: 1 Int64))
+                 (call main (: 4 Int64)) (output (: 4 Int64))
+                 (call main (: 0 Int64)) (output (: 0 Int64))
+                 (live-objects known-leak 3 13 0))"#;
+        let recs = read(src).unwrap();
+        assert_eq!(recs[0].live_objects, Some(3)); // first count (uniform / direct-gate path)
+        assert_eq!(recs[0].live_objects_per_call, Some(vec![3, 13, 0]));
+        assert!(recs[0].live_objects_known_leak);
+        let text = to_records(src).unwrap();
+        assert!(
+            text.contains("live-objects\tknown-leak\t3\t13\t0\n"),
+            "per-call render: {text}"
+        );
+        // A single-count clause stays uniform (no per-call list).
+        let uni = r#"(case "y" (input (do (def (main) 1) (export main))) (call main) (output (: 1 Int64)) (live-objects 0))"#;
+        let recs = read(uni).unwrap();
+        assert_eq!(recs[0].live_objects, Some(0));
+        assert_eq!(recs[0].live_objects_per_call, None);
     }
 
     /// A case with NO `(live-objects …)` leaves the field `None` and emits no `live-objects` line.
