@@ -10240,3 +10240,21 @@
     (export main)))
   (call main (: 5 Int64))
   (output (: 50 Int64)))
+
+(case "mge1 an effect performed in a match GUARD is rejected (CDZ0407 — guards must be side-effect-free)"
+  (doc    "The soundness gate against the classic speculative-guard bug: a guard the pattern engine may
+           evaluate speculatively/repeatedly must NOT perform an effect (else an earlier arm's guard could
+           fire an effect even when a later arm matches, or fire it twice). `(guard x (> (C.bump) 100))`
+           is rejected CDZ0407 naming the fix (lift to a `let` before the match). Pins that guards are
+           enforced pure — a compiler that let this through would reintroduce speculative-effect hazards.")
+  (input (do
+(effect C (op bump (-> Int64)))
+(def (classify (: v Int64))
+  (handle C 0
+    ((bump () s (resume s (+ s 1))))
+    (match v
+      ((guard x (> (C.bump) 100)) (* x 1000))
+      (x (+ x 1)))))
+(def (main (: n Int64)) (classify n))
+(export main)))
+  (error CDZ0407))
