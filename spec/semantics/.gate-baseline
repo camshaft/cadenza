@@ -279,6 +279,7 @@ pass	Map.to-list enumerates the FULL interior key order, not just the smallest
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
+pass	Map.to-list of an empty map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list orders by SYMBOL keys while float values — NaN included — ride along
@@ -6006,6 +6007,8 @@ pass	conjunction is true exactly when both operands are true
 pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
 pass	const u32 and u16 bin bindings with their top bits set fold unsigned
+pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms
+pass	constant compound equality folds structurally over Option, None, tuple, and nesting
 pass	constant conditions simplify around performs — kept branches dispatch, dropped ones do not
 pass	constant tuple projections fold at boundary and multi-digit indices
 pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds
@@ -6522,6 +6525,8 @@ pass	flt1 a TWO-STAGE sediment filter — pass traps the value's residue mod the
 pass	fm1 a full-width mask on a UInt8 is a no-op (value parity)
 pass	fm2 a full-width mask on a UInt16 is a no-op (value parity)
 pass	fm3 a partial mask on a UInt8 still masks (not elided)
+pass	fno1 a runtime NaN is self-EQUAL (canonical-byte) but self-UNORDERED under <= and >= (the intentional =/order split)
+pass	fno2 runtime +/-infinity is FULLY ORDERED (only NaN is unordered, not all non-finite)
 pass	four nested frames dispatched OUTERMOST-first — every outer perform escapes live inner frames
 pass	four same-signature closure exports share one resource
 pass	fr1 a TRIPLING Float64 thread crosses a fixed threshold — three compares catch the crossing depth, exact integer-valued floats
@@ -6545,6 +6550,7 @@ pass	fse3c single grow op, literal float seed, float-mul next-state
 pass	fse3e cancel arm alone — (- s s) self-subtraction in the answer
 pass	fse3f FINITE computed seed (+ 1.0 0.5)
 pass	fse3g INF seed via a RUNTIME param (corpus-style special passing)
+pass	ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	fx1 a Float64 state with a REGIME SWITCH in the arm — doubling below the threshold, halving above, three draws sum the trajectory
@@ -6572,6 +6578,8 @@ pass	generated FLOAT values are totally ordered (a trichotomy property over two 
 pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
 pass	generated string keys OVERWRITE by content and the first word's final value is observable
 pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
+pass	gex1 a sum variant covered ONLY by a guarded arm is non-exhaustive (rejected CDZ0210)
+pass	gex2 a guarded arm plus an unguarded fall-through for the same variant IS exhaustive (guard-first ordering honored)
 pass	gh1 a guard condition builds and consumes a heap temporary (guard taken)
 pass	gh2 a FAILED guard's heap temporary reclaims before the next arm
 pass	gib1 a user-generic Box wrap/unwrap over a runtime heap payload is value-exact and leaks the shells linearly
@@ -6689,6 +6697,8 @@ pass	hs1 an inner SAME-effect handle's result is the match SCRUTINEE — the sel
 pass	hs2 an OUTER-seeded inner handle builds a tuple scrutinee — the destructured arm re-performs against the outer
 pass	hs3 an inner SAME-effect handle's result is the IF condition — the taken branch re-performs against the outer
 pass	hst1 a HISTOGRAM state with in-arm BUCKETING — observe divides into decade buckets and counts, mode walks the sorted enumeration to answer the densest bucket
+pass	hta1 a 24-field runtime tuple builds a VALID artifact and every field projects (high-arity, verified by running)
+pass	hta2 a 20-parameter function builds a VALID artifact and sums all params (high param-count, verified by running)
 pass	hwp1 a UInt8-width list entry param read inside a handle body composes with the fold
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
@@ -6731,6 +6741,7 @@ pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
 pass	imc1 an EMBEDDED constant tuple in a compound RETURN now hoists build-once (the fixed-shape value-encode assembler gained build-once sections); only the runtime-`n` outer tuple is mortal
 pass	imc2 a constant tuple as a returned LIST element now hoists build-once (the collection-return assembler gained build-once); only the list vec + the runtime-`n` tuple are mortal
+pass	immortal-nullary FBIP witness: a recursive Nat walk REBUILDS the spine (FBIP-reuses S cells) and returns a fresh terminal (Z), then re-folds it — value-correct + the rebuilt immortal Z is shared (0-leak after the immortal fix)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
@@ -6978,6 +6989,7 @@ pass	merging with the empty record on the right is the identity
 pass	mf1 a helper performing TWO different effects — both handlers discharge it, both states advance per call
 pass	mf2 the SAME two-effect helper under the OPPOSITE handler nesting order — distinct effects commute
 pass	mf3 one performing helper called from an ARM's resume-value AND the body — three calls, one advancing thread
+pass	mge1 an effect performed in a match GUARD is rejected (CDZ0407 — guards must be side-effect-free)
 pass	mha1 an op with TWO heap arguments — both read by the arm, both reclaim
 pass	mha2 the arm resumes with the op's OWN heap argument as the answer (arg becomes answer)
 pass	mha3 the arm TRANSFORMS the heap arg into the answer (prepend then resume)
@@ -7049,6 +7061,7 @@ pass	mrd2 a Blake3-baked constant Bytes used twice with drops between — equal 
 pass	mrf1 fifty frames of persistent Map.remove against an immortal 40-key deep CHAMP never corrupt it (the remove-side FBIP fence)
 pass	mrf2 a runtime-map remove drops the length, misses the removed key, and keeps the neighbors
 pass	mrg1 a TWO-POINTER MERGE across two handlers — each holds a sorted list, the body pulls whichever head is smaller each step, and the sentinel head lets one side drain
+pass	mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)
 pass	mrt1 a METRONOME with a downbeat accent — tick advances the beat wrapping at the seed-shaped bar length (counting bars), accent answers a hundred plus the bar count ON a downbeat or the beats remaining until the next one, and the four-beat bar catches the second accent ON the downbeat while the three-beat bar misses both
 pass	mrv1 REMOVE-then-REINSERT churn on a Map state — del answers the removed value (0 when absent); for n=98 the second del hits the n+1 key it planted
 pass	ms1 a WHOLE nested handle expression as a MATCH's SCRUTINEE — the region builds an Option, the chosen arm draws again
@@ -7126,6 +7139,7 @@ pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
 pass	negative zero stays distinct from zero through the hoisted float compare
+pass	nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws
 pass	nested MIXED-direction shifts do not combine — left-then-right is two operations
 pass	nested SAME-effect handlers isolate STATE — inner performs never advance the outer counter
 pass	nested handlers with colliding arm-local bindings each keep their own scope (no compounding leak)
@@ -7166,6 +7180,7 @@ pass	nm3 a non-subset nested mask pair collapses correctly
 pass	nm3 the only overflowing DIVISION (Int64.min / -1) is a CONSTANT-fold reject — the runtime-divisor form runs for every other divisor
 pass	nm4 Int64.min divided by RUNTIME divisors — every non-(-1) divisor has an exact Int64 quotient
 pass	nm4 a narrow Int8 nested mask grounds the folded constant to the width
+pass	nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)
 pass	nmm1 a TWO-LEVEL Map state — group puts lookup-modify-reinsert the inner CHAMP, answers pack both level sizes, reads route through both levels with a miss sentinel
 pass	no over-conservatism: a trap-free masked operand still folds the tautology
 pass	no1 an inner-op arm resume value performing an outer op that reads the inner state folds (the #4540 re-bind, independent shape)
@@ -7616,6 +7631,7 @@ pass	q6 all FIVE arguments are draws — left-to-right evaluation order pinned a
 pass	qkm1 a same-unit Float quantity Map key round-trips with value discrimination
 pass	qkm2 a CROSS-scale Map probe is a compile-time type error (the mixed-scale = conversion does not extend to collection ops)
 pass	qkm3 an explicitly converted cross-scale probe (Unit.in + re-wrap) hits the same-unit key
+pass	qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak linearly (the splice-build face)
 pass	qqs1 eval of a quasiquote splicing a module-const unquote reconstructs and folds
 pass	qqs2 an eval-of-splice composes inside a larger expression
 pass	qrm1 WEIGHTED QUORUM voting with a punitive veto — votes accumulate weight answering whether the threshold is met, veto ZEROES the tally and RAISES the threshold by two, tally packs weight and quorum-bit, and the seed sets the initial threshold so the same votes pass on one seed and never on the other
@@ -7743,7 +7759,9 @@ pass	rls1 left shift multiplies by 2^count; value overflow and out-of-range coun
 pass	rlv0 a returned 2-element list keeps exactly its own 2 cells alive
 pass	rlv1 a returned list plus a DISCARDED sibling temp — live count stays exactly the result
 pass	rlyB single-use arm-perform control (answer only, state untouched) — B's handler arm PERFORMS the outer A (same op name, same signature) doubling the argument and folding A's answer into B's state, so every relay draw advances BOTH threads and the identity question routes THROUGH an arm-perform under schema-hash-only dispatch
+pass	rmn1 MIN %/-1 is 0 (not a trap) on both fold and runtime — the remainder path avoids the divide-overflow trap
 pass	rmn1 a ROMAN-NUMERAL accumulator with subtractive correction — feeding a numeral LARGER than its predecessor retro-subtracts the predecessor twice (the IX rule), the seed picks the second numeral as five or one, and the correction fires at DIFFERENT positions so the totals cross (nineteen versus twenty-three)
+pass	rmn2 a RUNTIME MIN %/-1 returns 0 while the same operand under / -1 would trap (rem is total, div is not)
 pass	rmp1 a RECORD state wrapping a Map plus a counter — computed perform keys; the arm answers 10*lookup + the ADVANCED counter so both fields are observed
 pass	rn1 a RUNNING-AVERAGE state (sum,count) — three feeds then a truncating divide read, negative total exercises toward-zero
 pass	rnc1 a runtime Option carrying a user sum is matched by a nested constructor pattern
@@ -7981,6 +7999,7 @@ pass	sh2d a let bound in a handle body, read by a NESTED handle's seed — folds
 pass	sh2n the config-fetch idiom with its perform LET-LIFTED — folds (let-crossing seed freshened)
 pass	sh2x a let binder feeds a nested handle's SEED and is read again AFTER the region — the freshened seed reference and the tail reference are the same binder
 pass	shadowing resolves nearest-wins through the scope-skip index
+pass	shb1 a RUNTIME left-shift computes below the value-overflow boundary and traps at it (fold-vs-runtime agree; << is checked *2^n)
 pass	shd1 DYNAMIC shift amounts from the state — two drawn widths, the value-63 draw traps the checked shift overflow
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shl1 an inner let SHADOWS a draw binder — the shadow scales it locally, the original stays visible after the shadow closes
@@ -8084,6 +8103,7 @@ pass	ss3 nested SAME-effect handlers with independent STRING states — inner se
 pass	ss5 an op ARG selects WHICH tuple-state slot to bump — index-routed slot mutation, four dispatches revisit slot 0
 pass	ss6 the slot SELECTOR is derived from the state itself — |a mod 3| routes each bump, a same-slot revisit and a two-slot walk both pinned
 pass	ss7 a 2-ary op carries SELECTOR and MAGNITUDE — which slot and by how much are both payload-driven, a trailing read pins slot 0
+pass	ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction
 pass	ssc1 a String entry param captured by a local closure applied twice
 pass	ssc2 a String entry param relayed to a helper def that borrows its byte-length
 pass	ssc3 a String entry param read inside a handle body alongside a dispatch
@@ -8239,6 +8259,7 @@ pass	the accumulator transform declines a non-associative combine with the self-
 pass	the accumulator transform declines when the base is not the operator's identity
 pass	the accumulator transform preserves a product (factorial) shape
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
+pass	the agent-harness loop spine runs model-ask then value-dispatches a tool over turns
 pass	the agent-return shape: three peers with a Cedar-gated escaping string result
 pass	the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
@@ -9030,6 +9051,7 @@ todo	grx2 a recursive scalar helper coexists with a non-recursive consuming use 
 todo	grx3 the entry List param threads a NON-TAIL mutual recursion (suma under +, sumb under *2+)
 todo	grx4 the entry List param reaches a self-recursive summer through a non-recursive relay
 todo	hce2 a borrowing op (=) over a captured value in a closure body declines pending the ownership proof (todo)
+todo	mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)
 todo	phr1 an export returning its lifted List param verbatim declines (ownership-transfer fence)
 todo	phr2 an export with a lifted List param returning a FRESH list declines (the no-flow admission edge)
 todo	phr3 an export extracting a param element into a fresh returned list declines (copied flow)
@@ -9044,24 +9066,3 @@ todo	spx2 a Char entry param declines pending a boundary representation
 todo	trm5 a parameterized export returning a Symbol declines truthfully pending the runtime Sym render
 todo	wfp1 SEVENTEEN scalar entry params decline pending the memory-indirect convention
 todo	wfp3 NINE list entry params are eighteen flat values and decline
-pass	nmb1 a RUNTIME Int8 multiply by -1 computes in range and traps at the MIN/-1 boundary (the narrow-width runtime companion of the checked-mul ladder)
-pass	shb1 a RUNTIME left-shift computes below the value-overflow boundary and traps at it (fold-vs-runtime agree; << is checked *2^n)
-pass	rmn1 MIN %/-1 is 0 (not a trap) on both fold and runtime — the remainder path avoids the divide-overflow trap
-pass	rmn2 a RUNTIME MIN %/-1 returns 0 while the same operand under / -1 would trap (rem is total, div is not)
-pass	fno1 a runtime NaN is self-EQUAL (canonical-byte) but self-UNORDERED under <= and >= (the intentional =/order split)
-pass	fno2 runtime +/-infinity is FULLY ORDERED (only NaN is unordered, not all non-finite)
-pass	ftd1 many same-signature functions dispatched through a selector are value-exact (the #4754 functype-dedup witness)
-pass	qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak linearly (the splice-build face)
-pass	ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction
-pass	Map.to-list of an empty map is the empty list
-pass	mge1 an effect performed in a match GUARD is rejected (CDZ0407 — guards must be side-effect-free)
-pass	gex1 a sum variant covered ONLY by a guarded arm is non-exhaustive (rejected CDZ0210)
-pass	gex2 a guarded arm plus an unguarded fall-through for the same variant IS exhaustive (guard-first ordering honored)
-todo	mrs1 a two-resume arm over a HEAP-allocating body declines cleanly (non-tail resume, later increment)
-pass	mrs2 a PURE-body two-resume arm re-computes the continuation and sums (multi-shot on a re-computable body = 100; v-effects-ruled intended)
-pass	nei1 cross-effect interleave: an inner B handler's arm performs the OUTER A effect, whose state advances across two B draws
-pass	hta1 a 24-field runtime tuple builds a VALID artifact and every field projects (high-arity, verified by running)
-pass	hta2 a 20-parameter function builds a VALID artifact and sums all params (high param-count, verified by running)
-pass	constant compound equality folds structurally over Option, None, tuple, and nesting
-pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms
-pass	the agent-harness loop spine runs model-ask then value-dispatches a tool over turns

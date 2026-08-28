@@ -267,6 +267,7 @@ pass	Map.to-list enumerates the FULL interior key order, not just the smallest
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
 pass	Map.to-list length is the map's entry count
 pass	Map.to-list of a runtime-empty but key/value-typed map is the empty list
+pass	Map.to-list of an empty map is the empty list
 pass	Map.to-list of an empty map through an inlined helper is the empty list
 pass	Map.to-list of an undetermined-type empty map literal is the empty list
 pass	Map.to-list orders by SYMBOL keys while float values — NaN included — ride along
@@ -5691,6 +5692,8 @@ pass	conjunction is true exactly when both operands are true
 pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
 pass	const u32 and u16 bin bindings with their top bits set fold unsigned
+pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms
+pass	constant compound equality folds structurally over Option, None, tuple, and nesting
 pass	constant conditions simplify around performs — kept branches dispatch, dropped ones do not
 pass	constant tuple projections fold at boundary and multi-digit indices
 pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds
@@ -6317,6 +6320,7 @@ pass	if6 named Infinity constant as effect handler seed threads and compares
 pass	il1 strict O-I-O-I body interleave — two independent threads advance in lockstep, positional weights pin the dispatch order
 pass	il2 the interleave WIDTH is data-driven — parity picks one-or-two O draws per I tick, a helper sums each O burst
 pass	im2min5 a performing self-recursive walk then a TRAILING draw — the callee-advanced state reaches the continuation (finding #12 face)
+pass	immortal-nullary FBIP witness: a recursive Nat walk REBUILDS the spine (FBIP-reuses S cells) and returns a fresh terminal (Z), then re-folds it — value-correct + the rebuilt immortal Z is shared (0-leak after the immortal fix)
 pass	import { __ast__ } binds the sibling module's canonical AST as a compound Ast value
 pass	import { __ast__ } reflects a module containing char and symbol literals (reflection is total)
 pass	importing a name a module does not export is rejected
@@ -7636,6 +7640,7 @@ pass	the Sign sum orders Neg below Pos per its declaration
 pass	the absorption law does not discard a trapping runtime operand
 pass	the absorption law holds on runtime-element sets
 pass	the additive-zero identity preserves a boundary-crossing runtime operand
+pass	the agent-harness loop spine runs model-ask then value-dispatches a tool over turns
 pass	the and SHORT-CIRCUITS: the second operand's perform must NOT fire (state proves it)
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
 pass	the arithmetic operator rejects a float-first mixed operand pair
@@ -8485,7 +8490,3 @@ todo	wen1 an enum host-import RESULT lifts and selects the guest arm
 todo	xf2 two IDENTICAL runtime encodes dedup as ONE set member (membership over arena Bytes)
 todo	xf3 Set.contains finds an arena-sourced Bytes member via a FRESH encode
 todo	xf4 a Map keyed by encode-Bytes discriminates two different encodes
-pass	Map.to-list of an empty map is the empty list
-pass	constant compound equality folds structurally over Option, None, tuple, and nesting
-pass	constant Bytes structural equality folds over unequal, length-differing, concat, and compact forms
-pass	the agent-harness loop spine runs model-ask then value-dispatches a tool over turns
