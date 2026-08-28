@@ -450,3 +450,62 @@ Layer-1 (typed-tag recognition, representation-agnostic) is substantially LANDED
   by the `cdzast\x00\x01` byte-stability invariant.
 - **M3:** migrate the corpus to the new forms; delete the string/name-head recognition, the dual-accept
   idiom, and the head-collapse helpers; hard-fail on legacy forms. No back-compat carried through.
+
+## 11. M2 Option-B state + value-wire reconciliation (2026-08-28) — SUPERSEDES §10 "Still open"
+
+Updates that supersede §10's open items:
+
+- **`#set` is LANDED first-class** (`#4652`: `("set" …)` → `Resolved::Set` → `Core::SetOf`). And the SET
+  VALUE RENDER is now **`#set(…)`**, NOT `(Set.of (list …sorted))` (operator ruled 2026-08-28: "render as
+  #set and not Set.of"). §10's "set render stays (Set.of …)" is SUPERSEDED. `19-sets.sexp` + any oracle
+  set-render form migrate to `#set(…)` in the M3 corpus migration.
+- **Reflected-Ast surface = OPTION B** (operator ruled 2026-08-28: "end-to-end native collections in the
+  binary AST, no string heads for collections anywhere"). The reflected `Ast` sum gains DISTINCT first-class
+  ctors — `Ast.ListCtor / TupleCtor / RecordCtor / MapCtor / SetCtor ((List Ast))` + `Ast.FieldPair /
+  Ast.Member ((Tuple Ast Ast))` — so `quote`/`Ast.encode` of a compound produces the native ctor variant,
+  not a string/name-headed node. The generic `Ast.List` variant is KEPT for a non-collection name-headed
+  node (`(if …)`/`(fn …)`/an application). Landed in `sums.rs` (`ast_decl`) + v-spec-oracle's spec arm.
+
+### 11.1 M2 wire (landed additively, both codecs)
+Seven PAYLOADLESS ctor-head leaf kinds appended after `FLOAT_NEG_INF=19`, byte-identical in `cadenza-ast`
++ `rcdzc` codecs: `20 LIST_CTOR, 21 TUPLE_CTOR, 22 RECORD_CTOR, 23 MAP_CTOR, 24 SET_CTOR, 25 FIELD_PAIR,
+26 MEMBER`. A compound literal's HEAD is `Atom(<ctor-leaf>)`, recognized by leaf-KIND identity (not head
+text). Emit/read API: `Builder::compound(ctor,&children)/field_pair(k,v)/member(obj,key)` +
+`Arenas::compound_ctor_leaf/field_pair_parts/member_parts`.
+
+### 11.2 value-wire == AST-wire reconciliation (the content-address invariant)
+The platform content-addresses ENCODED VALUES (`Hash-of(Blob)`), so the runtime value codec (op62/90) and
+the compile-time value form (`const_value_ast`, `lower.rs`) MUST encode a value to BYTE-IDENTICAL output.
+Key facts:
+- **`rcdzc::codec::encode` runs NO canon — it serializes BUILD ORDER** (leaf pool = insertion order). The
+  runtime `#[path]`-includes this codec, so op62/90 AND `const_value_ast` both serialize build-order. So the
+  authoritative content-address value form = build-order = **HEAD-FIRST** (ctor/field-pair head leaf pushed
+  BEFORE its children). (`cadenza-ast::codec::encode` DOES canon under std — but that is the front-end AST
+  codec, a separate path from the runtime value form.)
+- **Both encoders build head-first ctor-leaf forms** → byte-identical by construction. `const_value_ast`
+  (me) flips its 5 compound sites + the set (from the old inner-first `((. Set of)(list …))` member-path to
+  `SET_CTOR` head-first); op62 (v-runtime) flips `encode_value` name-heads → ctor-leaf kinds + set → SET_CTOR.
+  The payloadless `FieldPair` kind (one shared deduped leaf, no `=` name leaf) DISSOLVES the record/field-pair
+  build-order divergence v-static-data found.
+- **Gate:** v-static-data's `op62 == const_value_ast` byte-EQ test across all shapes (list/tuple/option/map/
+  record/set/nested) is the authoritative value-wire==AST-wire gate; `cadenza-ast` golden byte-vectors
+  (record/set/map/tuple/list/nested, head-first) are the compiler-side cross-reference.
+
+### 11.3 corpus migration (M3) — no dual-read window; use `cdz rewrite`; migrate everything
+Operator ruled MIGRATE EVERYTHING via the AST refactoring tooling (`cdz rewrite`/`cdz corpus`). No
+back-compat. Mechanics: v-syntax's flipped reader has NO bootstrap gap — old corpus forms (string/name-headed
+lists, `(Set.of (list …))`) still parse; the reader ADDS native heads only for the `#word(` literal surface
+(`Ctor`), a literal `(= k v)` direct body item of `#record(`/`#map(` (`FieldPair`, at read time), and all
+member access (`Member`). `cdz rewrite` on same-surface `.sexp` is a TEXT splice validated by re-parse; the
+corpus is TEXT the gate RE-READS, so `FieldPair`/ctor heads emerge on the output text (e.g. `#record((= a 1))`
+re-reads with `FieldPair`). Migration must pass `cdz corpus check` + the ML round-trip.
+
+### 11.4 flag-day assembly + coordination
+M2 is a content-address FLAG-DAY assembled as ONE atomic squash (concierge lands). Lanes: ME (codec
+leaf-kinds + APIs + `const_value_ast`/`field_pair` head-first flip + recognition flip + corpus migration),
+v-syntax (`#word` reader/printer + `ast-binary-format.md` 20-26), v-spec-oracle (`§265/§269` + reflected-Ast
+spec), v-runtime (op62/90 + op93/94 flip; both REQUIRED+DEBUG hashes bump → full guest recompile; v-nix
+confirms both), v-static-data (byte-EQ gate). Downstream (sequenced AFTER): v-cadenza-backend (codec
+consumer — build ctor-leaf head-first), v-ast-consolidate (unify rcdzc AST onto cadenza-ast + dep-lighten
+`Leaf::Int` num_bigint→dep-free IntValue, post-M3 — wire-neutral), v-corpus-declines (re-baseline
+`12-metaprogramming` after the corpus migration).
