@@ -100,7 +100,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `cdz test` path is corpus-INDEPENDENT (cdz_corpus is referenced only by the `corpus` subcommand), so
 # dropping it removes cdz-corpus from that build's closure and breaks the seedCompiler→corpus dep edge —
 # a corpus-only MR no longer needlessly re-runs the ~28min spine. A normal `cdz` keeps `corpus` (default).
-default = ["corpus", "standalone", "cedar", "lsp", "watch"]
+default = ["corpus", "standalone", "lsp", "watch"]
 corpus = ["dep:cdz-corpus"]
 # `lsp` (ON by default) mounts the `cdz lsp` stdio Language Server (its whole impl is `mod lsp`, the sole
 # user of `lsp-server`/`lsp-types`). `watch` (ON by default) mounts `cdz watch` (the sole user of `notify`,
@@ -110,11 +110,14 @@ corpus = ["dep:cdz-corpus"]
 # downstream fanout. A normal/dev/packaged `cdz` keeps both (default), so `cdz lsp`/`cdz watch` are unchanged.
 lsp = ["dep:lsp-server", "dep:lsp-types"]
 watch = ["dep:notify"]
-# `cedar` (ON by default) activates the `cadenza-syntax` Cedar convert surface (`cdz convert --from/--to
-# cedar`). Split out as a cdz feature — NOT an unconditional dep-feature — so a `--no-default-features`
-# build (seedCompiler + the compiler-ml spine's test-runner cdz) SHEDS the heavy `cedar-policy` tree that
-# cargo feature-unification would otherwise force into the whole compiler graph. See the `cadenza-syntax`
-# dep comment above for the full rationale.
+# `cedar` (OFF by default — operator ruling 2026-08-28: "we shouldn't need to default with cedar on, it's
+# not getting us anything right now") activates the `cadenza-syntax` Cedar convert surface (`cdz convert
+# --from/--to cedar`). Behind an OPT-IN cdz feature so the heavy `cedar-policy` tree (→ stacker/psm/chrono/
+# lalrpop) stays out of EVERY routine/dev/gate/seed build that cargo feature-unification would otherwise
+# drag it through — `cedar-policy` compiles ONLY when something explicitly asks for `cdz --features cedar`.
+# The packaged/nix `cdz` does NOT enable it (v-nix confirmed); `cdz convert cedar` for end-users moves to
+# the external `cdz-syntax` bin (S5, `design/DESIGN-cdz-plugin-dispatch.md`). Bare-cargo dev needing cedar
+# convert builds with `--features cedar`.
 cedar = ["cadenza-syntax/cedar"]
 # `standalone` (ON by default) BUNDLES the compiler in-process: `cdz` links `rcdzc` and compiles in this
 # process, the self-contained behavior a plain `cargo build` / dev `cdz` wants (operator ruling 2026-08-25:
