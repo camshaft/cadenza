@@ -47,6 +47,9 @@
 //!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
 //!   e.g. a bare `(None unit)`; `type_ast` declines a free-type-arg sum). All mirror lower's value surface.
+//!   A value whose type is a USER-declared sum/nominal DECLINES for now (the backend does not yet re-emit
+//!   the `(type …)` declaration it needs, and a single-variant user sum erases to its payload); PRELUDE
+//!   sums (Option/Result/…) are ambient and round-trip.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
 //! (Seq/Block/Break), map/set values, sum/list MATCHES (MatchSum/MatchList) + non-scalar match probes,
@@ -192,6 +195,26 @@ fn emit_expr(
     id: StructId,
     env: &mut BinderEnv,
 ) -> Result<StructId, Reject> {
+    // A value whose solved type is a USER-DECLARED sum / nominal cannot yet round-trip: the backend does
+    // not re-emit the `(type …)` declaration such a value needs (a user variant value → CDZ0101 "unknown
+    // type" on recompile), and a SINGLE-variant user sum is optimizer-ERASED to its bare payload (so it
+    // would emit without the nominal, a value divergence). DECLINE it (the case SKIPS the round-trip
+    // corpus check rather than mis-round-tripping) until user type-decl emission lands. A PRELUDE sum
+    // (Option / Result / Ordering — ambient, needs no decl) has `file_of(decl) == None`, so it is NOT
+    // declined here and continues to the `SumNew` arm below. (breaker-reported, matching the
+    // decline-don't-miscompile discipline.) `is_user_node` is the canonical user-vs-prelude predicate the
+    // rust backend uses to pick which sums to emit — reliable in the corpus-shred context (unlike a
+    // file-range check).
+    if let Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } = crate::infer::type_of(db, id)
+        && db.is_user_node(decl)
+    {
+        return Err(Reject::decline(
+            "the Cadenza backend does not yet re-emit a USER-declared sum/nominal value (its \
+             `(type …)` declaration is not yet emitted, and a single-variant sum erases to its \
+             payload) — a later slice"
+                .to_string(),
+        ));
+    }
     match core_of(db, id) {
         // A CONSTANT scalar leaf re-reads to its plain value+type when its solved type is the PLAIN scalar
         // type; a numeric-tower / nominal-leaf WRAPPER (`BigInt`/`Rational`/`Symbol`) shares a bare scalar
