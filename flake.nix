@@ -4633,11 +4633,11 @@
                 export CDZ_STORE="''${CDZ_STORE:-${componentStore}}"
                 # CDZ_RUN_BIN: LIVE (v-cdz-crate-split #5123 — `cdz run` direct-component arm now forwards to
                 # the cdz-run binary). Caller override honored via :- , exactly like CDZ_COMPILE_BIN/CDZ_STORE.
+                # This is the ONLY run-side injection needed: v-cdz-crate-split re-scoped (#5125) that
+                # `cdz run-rust` is rust-TARGET (rustc-native, NO wasmtime → not a cdz-run user) and
+                # cdz-rust-run is the corpus --grade GRADER (no source→verdict bin to forward to), so a
+                # CDZ_RUST_RUN_BIN pre-wire was dropped as unneeded.
                 export CDZ_RUN_BIN="''${CDZ_RUN_BIN:-${cdzRun}/bin/cdz-run}"
-                # CDZ_RUST_RUN_BIN: PRE-WIRED INERT (v-cdz-crate-split) — `cdz run-rust` runs in-process today
-                # + ignores it (no-op); becomes live when their run-rust forward lands, no flag-day. Points at
-                # cdzRustRun (the cdz-rust-run binary the corpus rust exec uses). Resolution env->sibling->PATH.
-                export CDZ_RUST_RUN_BIN="''${CDZ_RUST_RUN_BIN:-${cdzRustRun}/bin/cdz-rust-run}"
                 exec "${seedCompiler}/bin/cdz" "$@"
               '';
             };
