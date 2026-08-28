@@ -1898,7 +1898,7 @@
   (call   main (: 1 Int64)) (output (: 4660 Int64))
   (call   main (: 0 Int64)) (output (: 274 Int64))
   (call   main (: 2 Int64)) (output (: 13317 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a dependent-size framing loop walks frames that straddle every rope seam"
   (doc    "The framing-LOOP composition of the dependent-size crown jewel over a ROPE: frames
@@ -1943,7 +1943,7 @@
   (call   main (: 1 Int64)) (output (: 274 Int64))
   (call   main (: 2 Int64)) (output (: 4660 Int64))
   (call   main (: 3 Int64)) (output (: 13398 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a u32 bin binding with the top bit set does unsigned arithmetic"
   (doc    "The 32-bit UNSIGNED-arithmetic face (and the clean control of the open u64 signed-division
@@ -2094,7 +2094,7 @@
   (call   main (: 1 Int64)) (output (: 67305985 Int64))
   (call   main (: 3 Int64)) (output (: 4294837251 Int64))
   (call   main (: 5 Int64)) (output (: -2 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a runtime bin ENCODE lays out le and signed fields byte-exactly"
   (doc    "The ENCODE twin of the le decode pins — expression-position `(bin (u32 x le) (i16 -2))` over a
@@ -2263,7 +2263,7 @@
   (call   main (: 1 Int64)) (output (: 13330 Int64))
   (call   main (: 0 Int64)) (output (: 4609 Int64))
   (call   main (: 2 Int64)) (output (: 1332 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes"
   (doc    "The SIGN face: the seam window [255,254] reads -2 — sign-extension must run on the full stitched 16 bits, not a leaf's first byte (a per-leaf extend gives a positive splice). k=0 (511) and k=2 (-507) bracket the seam from both sides.")
@@ -2279,7 +2279,7 @@
   (call   main (: 1 Int64)) (output (: -2 Int64))
   (call   main (: 0 Int64)) (output (: 511 Int64))
   (call   main (: 2 Int64)) (output (: -507 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a u64 bin field with the top bit set reads unsigned across a rope seam"
   (doc    "The WIDTH+TOP-BIT face: an 8-byte field whose top bit is set crosses the seam (k=1: bytes ff 02..08 -> 18375252745424078600, observed via BigInt.of). An i64-signed carrier or a per-leaf clamp corrupts the high byte; k=2 (top bit clear) is the in-range control.")
@@ -2294,7 +2294,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 18375252745424078600 BigInt))
   (call   main (: 2 Int64)) (output (: 144964032628459529 BigInt))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's"
   (doc    "The BITS face of the seam family: (bits a 4)(bits b2 12) over a 2-byte window whose 16 bits straddle two leaves — the 4/12 split must run on the stitched pair (k=1: [18,52] -> a=1,b2=564 -> 10564). k=0/k=2 are the single-leaf controls (101298 / 31029).")
@@ -2310,7 +2310,7 @@
   (call   main (: 1 Int64)) (output (: 10564 Int64))
   (call   main (: 0 Int64)) (output (: 101298 Int64))
   (call   main (: 2 Int64)) (output (: 31029 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a dependent-size body straddling a rope seam stitches, and an oversize count fails the match"
   (doc    "The DEPENDENT-SIZE face: (u8 n)(bytes body n)(bytes rest) from a runtime-sliced start whose n-byte body crosses the seam (k=1: n=3, body [10,20,30] sums 60 -> 60015 with rest [7,8]); at k=0 the count byte is 9 with only 6 remaining, so the match FAILS to the catch-all (-1) — the oversize face doubles as the honest-decline row.")
@@ -2329,7 +2329,7 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 60015 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64))
-  (live-objects known-leak 11))
+  (live-objects known-leak 10))
 
 ; --- bin construction/decode order + the frame-body perform walk. ---
 

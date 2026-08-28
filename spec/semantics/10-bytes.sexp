@@ -430,7 +430,7 @@
   (output (: 230 Int64))
   (call   main (: 0 Int64))
   (output (: 210 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 ; -- Bytes.at over an OWNED-TEMPORARY rope-producer reclaims it (migrated from rcdzc bytes_at_over_an_owned_
 ; temporary_* reclaim tests). Every rope-producer — Bytes.concat / Bytes.slice / Bytes.compact / String.to-bytes
@@ -1163,7 +1163,7 @@
             (export main)))
   (call   main (: 16 UInt8)) (output (: 1001 Int64))
   (call   main (: 60 UInt8)) (output (: 1001 Int64))
-  (live-objects known-leak 16))
+  (live-objects known-leak 6))
 
 (case "a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit"
   (doc    "The encoder's inverse (the pin above reads the alphabet POSITIONALLY; the decoder must
@@ -2047,7 +2047,7 @@
           (Bytes.len (walk (Bytes.of (list 1 2 3 4 5)) 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 10))
+  (live-objects known-leak 4))
 
 ; --- Byte-wise reversal over a seamed rope. ---
 

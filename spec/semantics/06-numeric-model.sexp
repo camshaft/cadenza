@@ -2836,7 +2836,7 @@
   (call   main (: 27 Int64)) (output (: 21 Int64))
   (call   main (: 702 Int64)) (output (: 21 Int64))
   (call   main (: 703 Int64)) (output (: 31 Int64))
-  (live-objects known-leak 6))
+  (live-objects known-leak 5))
 
 (case "the LUHN checksum doubles alternate digits from the right with the nine-fold correction"
   (doc    "The check-digit walk over the digit peel: positions count from the RIGHT (the `% 10` /

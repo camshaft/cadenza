@@ -86,7 +86,7 @@
             (def (main) (cnt "banana" 0 0))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 6))
 
 (case "a String.at result then reuse of the source does not double-free"
   (doc    "The String.at slice-compaction plus borrow-dup fix must not double-free the source: reading a
@@ -103,7 +103,7 @@
             (def (main) (rd (rep "hi" 3)))
             (export main)))
   (output (: 6 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
   (doc    "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
@@ -496,7 +496,7 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64))
   (call   main (: 5 Int64)) (output (: 1 Int64))
-  (live-objects known-leak 28))
+  (live-objects known-leak 14))
 
 (case "EDIT DISTANCE rolls a two-row Levenshtein table over string scalars"
   (doc    "The general form of the one-edit check above (that one special-cases distance ≤ 1; this
@@ -548,7 +548,7 @@
   (call   main (: 2 Int64)) (output (: 0 Int64))
   (call   main (: 3 Int64)) (output (: 3 Int64))
   (call   main (: 4 Int64)) (output (: 2 Int64))
-  (live-objects known-leak 238))
+  (live-objects known-leak 167))
 
 (case "a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch"
   (doc    "The dual-string lockstep walk (the parse/scan pins above walk ONE string; this reads the
@@ -940,7 +940,7 @@
   (call   main (: 13 Int64)) (output (: 111 Int64))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 26 Int64)) (output (: 111 Int64))
-  (live-objects known-leak 943))
+  (live-objects known-leak 914))
 
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
@@ -1126,7 +1126,7 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 8 Int64))
   (call main (: 2 Int64)) (output (: 3 Int64))
-  (live-objects known-leak 23))
+  (live-objects known-leak 19))
 
 (case "STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter"
   (doc    "The full-algorithm sibling of the FINDING #20 minimal pin above: the same comp-go run-length
@@ -1168,7 +1168,7 @@
   (call main (: 1 Int64)) (output (: 81 Int64))
   (call main (: 2 Int64)) (output (: 31 Int64))
   (call main (: 3 Int64)) (output (: 21 Int64))
-  (live-objects known-leak 46))
+  (live-objects known-leak 38))
 
 (case "a rope threads TWO chained if-selects, each operand multi-use, and every length stays live"
   (doc    "The composition face of the FINDING #20 family above: not one escaping select but a CHAIN —
@@ -1200,7 +1200,7 @@
   (call main (: 1 Int64)) (output (: 565 Int64))
   (call main (: 2 Int64)) (output (: 335 Int64))
   (call main (: 3 Int64)) (output (: 305 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a multi-use rope escapes a select through a Some shell and its twin survives the unwrap"
   (doc    "The sum-shell face of the #20 keep-analysis family: the if-select's escaping result is
@@ -3742,7 +3742,7 @@
                 (if (= (Option.expect (String.at "abc" i) "c") "a") 1 0)) (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
-  (live-objects known-leak 2))
+  (live-objects known-leak 1))
 
 (case "a recursive scan counts a runtime string's matching characters"
   (doc    "`count-a \"banana\"` — a recursive char-scan reading each scalar with `String.at` at a runtime
@@ -3760,7 +3760,7 @@
             (def (main) (cnt "banana" 0 0))
             (export main)))
   (output (: 3 Int64))
-  (live-objects known-leak 12))
+  (live-objects known-leak 6))
 
 ; --- Two matched String KEYS live at once across a recursion: a borrowed lookup key is not freed --------
 ; `Map.lookup`/`Set.contains` BORROW their key — the runtime reads it without consuming it (`champ_hash`/
@@ -4566,7 +4566,7 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 100 Int64))
-  (live-objects known-leak 3))
+  (live-objects known-leak 2))
 
 (case "String.byte-len of a runtime rope agrees with Bytes.len of its to-bytes image"
   (doc    "The runtime-rope face of the const agreement pin: byte-len and Bytes.len∘to-bytes must agree on a concat-built value (6 for café+s).")
@@ -4944,7 +4944,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 50 Int64))
-  (live-objects known-leak 107))
+  (live-objects known-leak 54))
 
 (case "rp3 a slice SPANNING the seams of a deep rope reads exact length and content"
   (input (do (def (grow (: s String) (: k Int64)) (if (= k 0) s (grow (String.concat s "x") (- k 1))))
@@ -4956,7 +4956,7 @@
 (export main)))
   (call main (: 1 Int64))
   (output (: 5101 Int64))
-  (live-objects known-leak 7))
+  (live-objects known-leak 6))
 
 (case "ssc1 String.slice indices are SCALAR (codepoint) positions, not bytes — mid-codepoint cuts are impossible by construction"
   (doc    "Over `aé😀` (a=1B, é=2B, 😀=4B; 7 bytes, 3 scalars), `(String.slice s 0 k)` takes the first k
