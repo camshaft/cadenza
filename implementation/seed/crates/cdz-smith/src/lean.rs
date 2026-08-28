@@ -1,0 +1,358 @@
+//! The Lean L2 differential oracle interface (S4): `oracle-check --batch-stream`.
+//!
+//! Authoritative wire contract: `implementation/oracle-lean/Oracle/Batch.lean` (the source the landed
+//! `oracle-check` binary is built from). The **assertion** model the operator described ("run inputs in
+//! rcdzc, collect the results, pass them to the lean oracle in batches; while lean is judging the
+//! output, rcdzc works on the next batch"):
+//!
+//! cdz-smith runs a program under rcdzc (the wasm backend), captures rcdzc's OUTPUT (value/trap), and
+//! hands the oracle a batch of TRIALS `(trial <program-ast> (args <v>…)? <output>)` where `<output>` is
+//! `(value <ast-value>)` or `(trap "<reason>")`. The oracle re-derives the output and ASSERTS it matches
+//! rcdzc's — per-trial `holds` / `mismatch` / `skip`. A `mismatch` is a candidate rcdzc bug; `skip` is a
+//! coverage gap. cdz-smith pipelines: judge batch N while running/compiling batch N+1.
+//!
+//! ## Everything is the binary AST — no bespoke frame
+//!
+//! Per the operator's steer ("why aren't we using the AST? Lean already has an encoder/decoder"), the
+//! WHOLE wire is the binary AST, encoded/decoded by the one `cadenza-ast` codec both sides already have
+//! — there is NO hand-rolled length-prefix envelope (uleb128 survives only INSIDE the codec):
+//!
+//! ```text
+//! REQUEST  = one cdzast blob:  (batch <trial1> <trial2> …)
+//!            <trialN> = (trial <program> (args <v>…) (value <ast-value>)|(trap "<reason>"))
+//! RESPONSE = one cdzast blob:  (verdicts <v1> <v2> …)   -- one child per trial, in order
+//!            <vN> = (holds) | (mismatch <detail-str>) | (skip <reason-str>)
+//! ```
+//!
+//! `oracle-check --batch-stream` reads the request blob on stdin (`Ast.decode`), iterates the `(batch …)`
+//! children, judges each, and writes the `(verdicts …)` blob on stdout (`Ast.encode`).
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use cadenza_syntax::ast::{Arenas, Builder, Leaf, Struct, StructId};
+
+/// rcdzc's captured output for one trial — what the oracle asserts its own re-derivation against.
+#[derive(Debug, Clone)]
+pub enum RcdzcOutput {
+    /// Ran to a value; the value as an AST (e.g. `sexpr::read` of the rendered wasm result).
+    Value(Arenas),
+    /// Trapped, with a reason string (compared by canonical kind on the oracle side).
+    Trap(String),
+}
+
+/// One trial: a program, its call arguments (as value-ASTs; empty for `main`/0-args), and the output
+/// rcdzc produced for it, which the oracle asserts against.
+#[derive(Debug, Clone)]
+pub struct Trial {
+    pub program: Arenas,
+    pub args: Vec<Arenas>,
+    pub output: RcdzcOutput,
+}
+
+impl Trial {
+    /// A `main`/0-arg trial (the first pipeline shape) with the given rcdzc output.
+    pub fn main_0(program: Arenas, output: RcdzcOutput) -> Trial {
+        Trial {
+            program,
+            args: Vec::new(),
+            output,
+        }
+    }
+}
+
+/// Encode a whole batch as a single binary-AST blob: `(batch <trial>…)`. This is the entire REQUEST —
+/// the oracle `Ast.decode`s it and iterates the children; there is no separate frame.
+pub fn encode_batch_request(trials: &[Trial]) -> Vec<u8> {
+    let mut b = Builder::new();
+    let mut kids = vec![b.name("batch")];
+    for t in trials {
+        kids.push(build_trial(t, &mut b));
+    }
+    let root = b.list(kids);
+    cadenza_syntax::codec::encode(&b.finish(root))
+}
+
+/// Build one `(trial <program> (args <v>…) (value <v>)|(trap "<reason>"))` node into builder `b`.
+fn build_trial(t: &Trial, b: &mut Builder) -> StructId {
+    let head = b.name("trial");
+    let prog = graft(&t.program, t.program.root, b);
+
+    let mut args_kids = vec![b.name("args")];
+    for a in &t.args {
+        args_kids.push(graft(a, a.root, b));
+    }
+    let args_node = b.list(args_kids);
+
+    let output_node = match &t.output {
+        RcdzcOutput::Value(v) => {
+            let head = b.name("value");
+            let val = graft(v, v.root, b);
+            b.list(vec![head, val])
+        }
+        RcdzcOutput::Trap(reason) => {
+            let head = b.name("trap");
+            let leaf = b.atom_leaf(Leaf::Str(reason.as_str().into()));
+            b.list(vec![head, leaf])
+        }
+    };
+
+    b.list(vec![head, prog, args_node, output_node])
+}
+
+/// Copy the subtree at `id` of `src` into builder `b`, returning its new id (structural graft — the AST
+/// is a tree, each occurrence copied). Splices a program / value AST into the batch tree.
+fn graft(src: &Arenas, id: StructId, b: &mut Builder) -> StructId {
+    match src.get(id) {
+        Struct::Atom(leaf) => b.atom_leaf(src.leaf(*leaf).clone()),
+        Struct::List(kids) => {
+            let new: Vec<StructId> = kids.clone().into_iter().map(|k| graft(src, k, b)).collect();
+            b.list(new)
+        }
+    }
+}
+
+/// One trial's verdict from the oracle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// The oracle's re-derived output matched rcdzc's — no bug.
+    Holds,
+    /// The outputs disagree — a candidate rcdzc miscompile; the string is the oracle's detail.
+    Mismatch(String),
+    /// A coverage gap (undecodable trial, or a construct the oracle does not model yet) — never a bug.
+    Skip(String),
+}
+
+/// A malformed `(verdicts …)` response blob from `oracle-check`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameError {
+    /// The response bytes did not decode as a binary AST.
+    Undecodable,
+    /// The root was not a `(verdicts …)` node.
+    NotVerdicts,
+    /// A child was not a well-formed `(holds)` / `(mismatch <str>)` / `(skip <str>)` node.
+    BadVerdict,
+}
+
+/// Decode a `(verdicts <v>…)` response blob into per-trial verdicts, in order.
+pub fn decode_verdicts(bytes: &[u8]) -> Result<Vec<Verdict>, FrameError> {
+    let a = cadenza_syntax::codec::decode(bytes).ok_or(FrameError::Undecodable)?;
+    let Struct::List(kids) = a.get(a.root) else {
+        return Err(FrameError::NotVerdicts);
+    };
+    if kids.first().and_then(|&h| a.as_name(h)) != Some("verdicts") {
+        return Err(FrameError::NotVerdicts);
+    }
+    let mut out = Vec::with_capacity(kids.len().saturating_sub(1));
+    for &vid in &kids[1..] {
+        let Struct::List(vk) = a.get(vid) else {
+            return Err(FrameError::BadVerdict);
+        };
+        let verdict = match vk.first().and_then(|&h| a.as_name(h)) {
+            Some("holds") => Verdict::Holds,
+            Some("mismatch") => Verdict::Mismatch(str_child(&a, vk).ok_or(FrameError::BadVerdict)?),
+            Some("skip") => Verdict::Skip(str_child(&a, vk).ok_or(FrameError::BadVerdict)?),
+            _ => return Err(FrameError::BadVerdict),
+        };
+        out.push(verdict);
+    }
+    Ok(out)
+}
+
+/// The `Str` leaf payload of a single-argument node `(head <"str">)`, if present.
+fn str_child(a: &Arenas, node_kids: &[StructId]) -> Option<String> {
+    let &payload = node_kids.get(1)?;
+    match a.get(payload) {
+        Struct::Atom(leaf) => match a.leaf(*leaf) {
+            Leaf::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        Struct::List(_) => None,
+    }
+}
+
+/// Discover the `oracle-check` binary: `CDZ_SMITH_ORACLE_CHECK` env, else `oracle-check` on `PATH`.
+/// Build it with `nix build .#oracle-lean` (the binary lands at `result/bin/oracle-check`).
+pub fn discover_oracle_check() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("CDZ_SMITH_ORACLE_CHECK") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("oracle-check"))
+        .find(|c| c.is_file())
+}
+
+/// Judge one batch by invoking `oracle-check --batch-stream`: write the `(batch …)` request blob to its
+/// stdin, read the `(verdicts …)` blob from its stdout, decode it. v1 `oracle-check` reads one batch per
+/// invocation (read-all-stdin → one response), so this spawns a fresh process per batch — which is the
+/// async unit the pipeline overlaps (run this on a worker thread while the next batch compiles).
+pub fn judge_batch(oracle_bin: &Path, trials: &[Trial]) -> std::io::Result<Vec<Verdict>> {
+    let request = encode_batch_request(trials);
+    let mut child = Command::new(oracle_bin)
+        .arg("--batch-stream")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        stdin.write_all(&request)?;
+    } // drop stdin → EOF, so the oracle's read-all-stdin returns
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "oracle-check --batch-stream exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    decode_verdicts(&output.stdout).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("bad (verdicts …) response: {e:?}"),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ast(source: &str) -> Arenas {
+        cadenza_syntax::sexpr::read(source).expect("test source parses")
+    }
+
+    /// A batch request is one `(batch (trial …) …)` AST blob, decodable by the shared codec, with each
+    /// child a well-formed `(trial <program> (args) (value|trap …))`.
+    #[test]
+    fn encode_batch_request_is_one_ast_blob() {
+        let trials = vec![
+            Trial::main_0(
+                ast("(do (def (main) 42) (export main))"),
+                RcdzcOutput::Value(ast("42")),
+            ),
+            Trial::main_0(
+                ast("(do (def (main) (/ 1 0)) (export main))"),
+                RcdzcOutput::Trap("div-by-zero".into()),
+            ),
+        ];
+        let blob = encode_batch_request(&trials);
+        let a = cadenza_syntax::codec::decode(&blob).expect("batch blob decodes via the AST codec");
+
+        let Struct::List(kids) = a.get(a.root) else {
+            panic!("root not a list");
+        };
+        assert_eq!(a.as_name(kids[0]), Some("batch"));
+        assert_eq!(kids.len(), 3, "batch head + 2 trials");
+
+        // First trial: (trial <prog> (args) (value 42)).
+        let Struct::List(t0) = a.get(kids[1]) else {
+            panic!("trial not a list");
+        };
+        assert_eq!(a.as_name(t0[0]), Some("trial"));
+        let Struct::List(args0) = a.get(t0[2]) else {
+            panic!("args not a list");
+        };
+        assert_eq!(a.as_name(args0[0]), Some("args"));
+        assert_eq!(args0.len(), 1, "no args for main/0");
+        let Struct::List(out0) = a.get(t0[3]) else {
+            panic!("output not a list");
+        };
+        assert_eq!(a.as_name(out0[0]), Some("value"));
+
+        // Second trial output: (trap "div-by-zero").
+        let Struct::List(t1) = a.get(kids[2]) else {
+            panic!()
+        };
+        let Struct::List(out1) = a.get(t1[3]) else {
+            panic!()
+        };
+        assert_eq!(a.as_name(out1[0]), Some("trap"));
+    }
+
+    /// A hand-built `(verdicts (holds) (mismatch "d") (skip "r"))` AST decodes to the three verdicts in
+    /// order — the exact response shape `oracle-check` emits.
+    #[test]
+    fn decode_verdicts_reads_a_verdicts_ast() {
+        let mut b = Builder::new();
+        let holds = {
+            let h = b.name("holds");
+            b.list(vec![h])
+        };
+        let mismatch = {
+            let h = b.name("mismatch");
+            let s = b.atom_leaf(Leaf::Str("d".into()));
+            b.list(vec![h, s])
+        };
+        let skip = {
+            let h = b.name("skip");
+            let s = b.atom_leaf(Leaf::Str("r".into()));
+            b.list(vec![h, s])
+        };
+        let vhead = b.name("verdicts");
+        let root = b.list(vec![vhead, holds, mismatch, skip]);
+        let bytes = cadenza_syntax::codec::encode(&b.finish(root));
+
+        let verdicts = decode_verdicts(&bytes).unwrap();
+        assert_eq!(
+            verdicts,
+            vec![
+                Verdict::Holds,
+                Verdict::Mismatch("d".into()),
+                Verdict::Skip("r".into()),
+            ]
+        );
+    }
+
+    /// An empty `(verdicts)` decodes to no verdicts.
+    #[test]
+    fn decode_empty_verdicts() {
+        let mut b = Builder::new();
+        let vhead = b.name("verdicts");
+        let root = b.list(vec![vhead]);
+        let bytes = cadenza_syntax::codec::encode(&b.finish(root));
+        assert_eq!(decode_verdicts(&bytes).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn decode_verdicts_rejects_non_verdicts_and_garbage() {
+        // Garbage bytes → Undecodable.
+        assert_eq!(decode_verdicts(b"not an ast"), Err(FrameError::Undecodable));
+        // A well-formed AST that isn't a (verdicts …) root → NotVerdicts.
+        let other = cadenza_syntax::codec::encode(&ast("(nope)"));
+        assert_eq!(decode_verdicts(&other), Err(FrameError::NotVerdicts));
+    }
+
+    /// END-TO-END against the REAL `oracle-check --batch-stream`. Runs ONLY when `CDZ_SMITH_ORACLE_CHECK`
+    /// points at an AST-envelope oracle (`nix build .#oracle-lean` → `result/bin/oracle-check`), since the
+    /// pre-pivot binary speaks the old uleb frame. Mirrors `Batch.lean`'s `_trialHolds`:
+    /// `(trial (do (def (main) 42) (export main)) (args) (value 42))` → the oracle re-derives 42, matches
+    /// rcdzc's 42 → `holds`; a lied `(value 43)` → `mismatch`, proving the assertion fires.
+    #[test]
+    fn end_to_end_against_oracle_check() {
+        let Some(oracle) = discover_oracle_check() else {
+            eprintln!(
+                "skipping: no oracle-check (nix build .#oracle-lean; set CDZ_SMITH_ORACLE_CHECK)"
+            );
+            return;
+        };
+        let program = ast("(do (def (main) 42) (export main))");
+        let trials = vec![
+            Trial::main_0(program.clone(), RcdzcOutput::Value(ast("42"))),
+            Trial::main_0(program, RcdzcOutput::Value(ast("43"))),
+        ];
+        let verdicts = judge_batch(&oracle, &trials).expect("oracle-check --batch-stream runs");
+        assert_eq!(verdicts.len(), 2);
+        assert_eq!(verdicts[0], Verdict::Holds, "42==42 must hold");
+        assert!(
+            matches!(verdicts[1], Verdict::Mismatch(_)),
+            "claiming rcdzc produced 43 must MISMATCH the oracle's 42, got {:?}",
+            verdicts[1]
+        );
+    }
+}
