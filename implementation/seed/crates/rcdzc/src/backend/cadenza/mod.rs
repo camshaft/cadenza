@@ -71,10 +71,13 @@
 //!   container passed down (see `emit_expr`'s `expected` / [`body_ctx`]); a still-free type declines.
 //!   All mirror lower's value surface.
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
-//!   MONOMORPHIC, CLOSED, MULTI-variant sum — recursive payloads OK) and its values then round-trip; a
-//!   GENERIC / OPEN / SINGLE-variant (optimizer-erased) user sum, and a user `Nominal` newtype, still
-//!   DECLINE. PRELUDE sums (Option/Result/…) are ambient (no decl). A user-sum value emits ⇔ its decl was
-//!   emitted (`emitted` set), so there is never an unbound-type recompile.
+//!   MONOMORPHIC, CLOSED sum of ANY arity — recursive payloads OK) and its values then round-trip. A
+//!   SINGLE-variant sum is the ERASED `Ty::Nominal` newtype: its value re-emits the CONSTRUCTOR
+//!   `(<Ctor> <payload>)` at the construction sites [`nominal_disposition`] classifies (the payload peeled
+//!   to `inner` via a `view` recursion), with pass-through positions emitted unwrapped so the constructor
+//!   is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
+//!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
+//!   (`emitted` set), so there is never an unbound-type recompile.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
 //! (Seq/Block/Break), map/set OPERATIONS (insert/lookup/…), richer SUM decision trees (guarded /
@@ -174,13 +177,14 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
 }
 
 /// Reconstruct a user sum's `(type <Name> (<Variant> <PayloadTy>…)…)` declaration, or `None` for a sum
-/// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable), an OPEN
-/// sum (row-variable tail), or a SINGLE-variant sum (optimizer-erased to its payload, so its value emits
-/// without the nominal — a later slice). A variant's payload types are recovered from their declaration
-/// occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`. `decl` is an
-/// owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
+/// this slice does not emit: a GENERIC sum (type parameters — the payload is a type variable) or an OPEN
+/// sum (row-variable tail). A MULTI-variant sum's values are `Ty::Sum`; a SINGLE-variant sum's values are
+/// the erased `Ty::Nominal` newtype (re-emitted as `(<Ctor> <payload>)`) — BOTH need this decl in scope,
+/// so both are emitted (any `variants.len() >= 1`). A variant's payload types are recovered from their
+/// declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`.
+/// `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
 fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    if !decl.params.is_empty() || decl.open_tail.is_some() || decl.variants.len() < 2 {
+    if !decl.params.is_empty() || decl.open_tail.is_some() || decl.variants.is_empty() {
         return None;
     }
     let type_head = b.name("type");
@@ -279,17 +283,8 @@ fn emit_export(
     Ok(b.list(vec![export_head, name_ref]))
 }
 
-/// Reconstruct a Cadenza surface expression from the optimized `Core` at `id`. B0 covers the constant
-/// leaves only; every other node declines (attributed to this target), to be filled in by later
-/// increments (ops/control B1, binding B2, calls B3, data B4, …).
-/// `expected` is the type this expression is REQUIRED to have by its surrounding context (the branch/body
-/// position it occupies) — `Some` when a container passed one down (an `if` gives its branches the join
-/// type; a `let`/match body inherits the whole form's type), else `None`. It is a FALLBACK, used only where
-/// the node's own solved type is under-determined: a nullary/partially-applied `Core::SumNew` whose solved
-/// type has a FREE type argument (`(None)` in `(if c (Some 1) (None))`, whose own type is `Option<?>`) reads
-/// the CONCRETE join type from `expected` to ascribe `(: (None unit) (Option Int64))` — otherwise it would
-/// decline. Threaded only to value/tail positions (branches, bodies); operand/scrutinee/guard positions
-/// pass `None` (they impose no outer type). Passing `None` everywhere reproduces the pre-thread behavior.
+/// Reconstruct a Cadenza surface expression from the optimized `Core` at `id`. Delegates to
+/// [`emit_expr_viewed`] with no type view (the node's own solved type governs). See it for `expected`.
 fn emit_expr(
     db: &mut Db,
     b: &mut Builder,
@@ -298,28 +293,98 @@ fn emit_expr(
     env: &mut BinderEnv,
     emitted: &std::collections::HashSet<StructId>,
 ) -> Result<StructId, Reject> {
+    emit_expr_viewed(db, b, id, None, expected, env, emitted)
+}
+
+/// The body of [`emit_expr`], parameterized by an optional type `view` that OVERRIDES the node's own solved
+/// type for its OWN-type decisions — the user-sum/nominal guard and the constant-scalar arms (which pick the
+/// literal-vs-wrapper surface by type). `view` is `Some` only when a NEWTYPE value is being peeled: an erased
+/// single-variant sum has solved type `Ty::Nominal { inner }` but its core IS the bare payload (a `ConstInt`
+/// typed as the nominal, a `Param`, …). To re-emit `(Mk <payload>)`, the guard recurses on the SAME node with
+/// `view = Some(inner)` so the payload is emitted AS its inner scalar type (the `ConstInt` arm fires on
+/// `Ty::Int`, not on the nominal); a nested newtype peels again. The 29 recursive child emits call the
+/// `view = None` wrapper [`emit_expr`], so only this node's own-type reads consult `view`.
+///
+/// `expected` is the type this expression is REQUIRED to have by its surrounding context (the branch/body
+/// position it occupies) — `Some` when a container passed one down (an `if` gives its branches the join
+/// type; a `let`/match body inherits the whole form's type), else `None`. It is a FALLBACK, used only where
+/// the node's own solved type is under-determined: a nullary/partially-applied `Core::SumNew` whose solved
+/// type has a FREE type argument (`(None)` in `(if c (Some 1) (None))`, whose own type is `Option<?>`) reads
+/// the CONCRETE join type from `expected` to ascribe `(: (None unit) (Option Int64))` — otherwise it would
+/// decline. Threaded only to value/tail positions (branches, bodies); operand/scrutinee/guard positions
+/// pass `None` (they impose no outer type). Passing `None`/`None` everywhere reproduces pre-thread behavior.
+fn emit_expr_viewed(
+    db: &mut Db,
+    b: &mut Builder,
+    id: StructId,
+    view: Option<Ty>,
+    expected: Option<Ty>,
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    // The EFFECTIVE type for this node's own-type decisions: the `view` override when peeling a newtype,
+    // else the node's own solved type. Used by the sum/nominal guard below and the constant-scalar arms.
+    let eff_ty = match view {
+        Some(v) => v,
+        None => crate::infer::type_of(db, id),
+    };
     // A value whose solved type is a USER-declared sum/nominal round-trips only if its `(type …)`
     // declaration is re-emitted. `emit` emits (and records in `emitted`) the declarations it can — a
-    // MONOMORPHIC, CLOSED, MULTI-variant sum. So a user-sum value whose decl IS in `emitted` proceeds
-    // (its `(type …)` is in scope). Otherwise DECLINE: a GENERIC/OPEN sum (no decl emitted), a
-    // SINGLE-variant sum (optimizer-ERASED to its bare payload, so its value would emit without the
-    // nominal — a value divergence), or a `Ty::Nominal` newtype (erased likewise). Prelude sums
-    // (Option/Result — `is_user_node` false) are ambient and always proceed. (breaker-reported;
-    // decline-don't-miscompile.)
-    match crate::infer::type_of(db, id) {
-        Ty::Sum { decl, .. } if db.is_user_node(decl) && !emitted.contains(&decl) => {
+    // MONOMORPHIC, CLOSED sum (multi-variant → `Ty::Sum` values; SINGLE-variant → erased `Ty::Nominal`
+    // values). A user-sum/nominal value whose decl IS in `emitted` proceeds; otherwise DECLINE (a GENERIC
+    // / OPEN sum, no decl emitted). Prelude sums (Option/Result — `is_user_node` false) are ambient and
+    // always proceed. (breaker-reported; decline-don't-miscompile.)
+    match &eff_ty {
+        Ty::Sum { decl, .. } if db.is_user_node(*decl) && !emitted.contains(decl) => {
             return Err(Reject::decline(
-                "the Cadenza backend does not yet re-emit this user sum value (generic / open / \
-                 single-variant sum — its `(type …)` declaration is not emitted) — a later slice"
+                "the Cadenza backend does not yet re-emit this user sum value (generic / open sum — \
+                 its `(type …)` declaration is not emitted) — a later slice"
                     .to_string(),
             ));
         }
-        Ty::Nominal { decl, .. } if db.is_user_node(decl) => {
-            return Err(Reject::decline(
-                "the Cadenza backend does not yet re-emit a user nominal (newtype) value — it erases \
-                 to its payload, losing the nominal — a later slice"
-                    .to_string(),
-            ));
+        // An ERASED single-variant sum (`Ty::Nominal`) — the newtype box is erased, so a nominal value and
+        // its inner value SHARE one Core node; the surface `(<Ctor> …)` must be re-inserted at EXACTLY the
+        // construction sites (where an inner value becomes the nominal), which the erased Core no longer
+        // marks. [`nominal_disposition`] classifies THIS node: a CONSTRUCTION site (a leaf/operator that
+        // yields the inner value — a literal, arithmetic, or a binder whose declared type is the inner) →
+        // re-emit `(<Ctor> <payload>)`, the payload peeled to `inner` via a `view` recursion; a PASS-THROUGH
+        // (control flow / a binder already holding the nominal — the `(<Ctor> …)` sits at the leaves inside,
+        // which the child emits handle) → fall through and emit the core AS-IS (no wrap — wrapping it would
+        // DOUBLE the constructor); anything else declines (an ambiguous site, e.g. a `Call` that could
+        // return either the inner or the nominal — decline-don't-miscompile).
+        Ty::Nominal { decl, inner, .. } if db.is_user_node(*decl) => {
+            let decl = *decl;
+            let inner = (**inner).clone();
+            if !emitted.contains(&decl) {
+                return Err(Reject::decline(
+                    "the Cadenza backend does not yet re-emit this user nominal (newtype) value (its \
+                     `(type …)` declaration is not emitted — a generic / open newtype)"
+                        .to_string(),
+                ));
+            }
+            match nominal_disposition(db, id, decl) {
+                NominalDisp::Construct => {
+                    let head = crate::lower::variant_head_ast(db, b, decl, 0).ok_or_else(|| {
+                        Reject::decline(
+                            "the Cadenza backend could not recover the constructor name for a \
+                                 newtype value"
+                                .to_string(),
+                        )
+                    })?;
+                    let payload = emit_expr_viewed(db, b, id, Some(inner), None, env, emitted)?;
+                    return Ok(b.list(vec![head, payload]));
+                }
+                // PASS-THROUGH: fall through to the core match (emit the core unwrapped — its own
+                // sub-values carry the nominal and re-insert the constructor at the true leaves).
+                NominalDisp::PassThrough => {}
+                NominalDisp::Decline => {
+                    return Err(Reject::decline(
+                        "the Cadenza backend does not yet re-emit a newtype value from this \
+                         construction site (an ambiguous inner-vs-nominal position)"
+                            .to_string(),
+                    ));
+                }
+            }
         }
         _ => {}
     }
@@ -331,17 +396,16 @@ fn emit_expr(
         // `Ty::Symbol` value came back a `String`, confirmed). So a plain scalar emits its literal and a
         // wrapper constant emits `(X.of …)`. (`Ty::Qty` — a scaled/unit-bearing wrapper — needs unit
         // reconstruction and still declines, a later slice.) `radix` is display-only (Core drops it).
-        Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::Int(_)) => Ok(b
-            .atom_leaf(Leaf::Int {
-                value: v,
-                radix: Radix::Dec,
-            })),
+        Core::ConstInt(v) if matches!(eff_ty, Ty::Int(_)) => Ok(b.atom_leaf(Leaf::Int {
+            value: v,
+            radix: Radix::Dec,
+        })),
         // A BigInt constant is a `ConstInt` typed `Ty::BigInt` — re-emit the DIRECT ascription
         // `(: <n> BigInt)`, NOT `(BigInt.of <n>)`: `BigInt.of` WIDENS a fixed-size `Int64`, so it cannot
         // hold a beyond-`Int64` literal (`(BigInt.of 9223372036854775808)` fails CDZ0201 "out of range
         // for Int64 … write the literal directly as a BigInt with (: … BigInt)"). The ascription form
         // takes the literal directly as a BigInt and round-trips at every magnitude.
-        Core::ConstInt(v) if matches!(crate::infer::type_of(db, id), Ty::BigInt) => {
+        Core::ConstInt(v) if matches!(eff_ty, Ty::BigInt) => {
             let colon = b.name(":");
             let n = b.atom_leaf(Leaf::Int {
                 value: v,
@@ -350,19 +414,15 @@ fn emit_expr(
             let ty = b.name("BigInt");
             Ok(b.list(vec![colon, n, ty]))
         }
-        Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::String) => {
-            Ok(b.atom_leaf(Leaf::Str(s)))
-        }
+        Core::ConstStr(s) if matches!(eff_ty, Ty::String) => Ok(b.atom_leaf(Leaf::Str(s))),
         // A Symbol constant shares a `ConstStr` core typed `Ty::Symbol` — re-emit `(Symbol.of "…")` so it
         // re-reads as a Symbol (a bare string would come back a `String`).
-        Core::ConstStr(s) if matches!(crate::infer::type_of(db, id), Ty::Symbol) => {
+        Core::ConstStr(s) if matches!(eff_ty, Ty::Symbol) => {
             let head = member_access(b, "Symbol", "of");
             let text = b.atom_leaf(Leaf::Str(s));
             Ok(b.list(vec![head, text]))
         }
-        Core::ConstFloat(d) if matches!(crate::infer::type_of(db, id), Ty::Float(_)) => {
-            Ok(b.atom_leaf(Leaf::Float(d)))
-        }
+        Core::ConstFloat(d) if matches!(eff_ty, Ty::Float(_)) => Ok(b.atom_leaf(Leaf::Float(d))),
         // An exact RATIONAL constant — its value-form `num/den` is not valid expression syntax, so
         // re-emit the CONSTRUCTOR `(Rational.of <num> <den>)` over the normalized pair. `Rational.of`
         // takes two `Int64` arguments, so a numerator/denominator BEYOND `Int64` cannot be expressed this
@@ -1003,6 +1063,60 @@ fn body_ctx(db: &mut Db, id: StructId, incoming: Option<Ty>) -> Option<Ty> {
         incoming
     } else {
         Some(own)
+    }
+}
+
+/// How a `Ty::Nominal` (erased single-variant sum) value at a node should be re-emitted — see the guard in
+/// [`emit_expr_viewed`].
+enum NominalDisp {
+    /// This node is a CONSTRUCTION site: emit `(<Ctor> <payload>)`, the payload peeled to `inner`.
+    Construct,
+    /// This node PASSES THROUGH the nominal from its sub-values: emit its core unwrapped (the constructor
+    /// re-inserts at the true leaves the children emit).
+    PassThrough,
+    /// An ambiguous site this slice cannot classify — decline.
+    Decline,
+}
+
+/// Classify how to re-emit a `Ty::Nominal` value at node `id` of the newtype `decl` (see [`NominalDisp`]).
+/// The rule follows where the inner→nominal transition can be: a value-producing LEAF/OPERATOR (a literal,
+/// arithmetic, boolean) intrinsically yields the INNER value, so it is the construction site (`Construct`);
+/// a binder (`Param`/`LocalRef`) is a construction only when its DECLARED type is the inner (a wrapped
+/// parameter) and a pass-through when it already holds the nominal; control flow (`If`/`Let`/`Match*`)
+/// passes the nominal through from its branches/body (`PassThrough` — the children construct at the leaves);
+/// any other core (`Call`, compound builders, …) is ambiguous (`Decline`).
+fn nominal_disposition(db: &mut Db, id: StructId, decl: StructId) -> NominalDisp {
+    match core_of(db, id) {
+        // Intrinsically inner-valued producers → the constructor is erased HERE.
+        Core::ConstInt(_)
+        | Core::ConstRational(..)
+        | Core::ConstBool(_)
+        | Core::ConstChar(_)
+        | Core::ConstStr(_)
+        | Core::ConstFloat(_)
+        | Core::Unit
+        | Core::Arith { .. }
+        | Core::Compare { .. }
+        | Core::StrCmp { .. }
+        | Core::FloatCompare { .. }
+        | Core::Not { .. }
+        | Core::And { .. } => NominalDisp::Construct,
+        // A binder: construction iff its DECLARED type is NOT already this nominal (a wrapped inner value);
+        // a binder already typed as the nominal is a pass-through (emit the bare name).
+        Core::Param { binder } | Core::LocalRef { binder } => {
+            match crate::infer::type_of(db, binder) {
+                Ty::Nominal { decl: bd, .. } if bd == decl => NominalDisp::PassThrough,
+                _ => NominalDisp::Construct,
+            }
+        }
+        // Control flow / binding carry the nominal through from their sub-expressions.
+        Core::If { .. }
+        | Core::Let { .. }
+        | Core::Match { .. }
+        | Core::MatchSum { .. }
+        | Core::MatchList { .. } => NominalDisp::PassThrough,
+        // Anything else (a `Call` that may return inner OR nominal, a compound builder, …) is ambiguous.
+        _ => NominalDisp::Decline,
     }
 }
 
