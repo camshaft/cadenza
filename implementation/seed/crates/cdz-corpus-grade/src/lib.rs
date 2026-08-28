@@ -1040,6 +1040,12 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     let mut second_call: Option<Vec<String>> = None;
     let mut drop_handle = false;
     let mut expect: Option<GExpect> = None;
+    // The diagnostic-QUALITY facets (`(fix …)` / `(no-fix)` / `(count N)` / `(once)`) that pin more than the
+    // code + message on an `(expect-error …)` / `(expect-warning …)` case — accumulated into a `DiagExpect`
+    // below. Absent clauses leave the facet unconstrained (an all-absent `DiagExpect` grades as a no-op Pass).
+    let mut diag_fix: Option<FixExpect> = None;
+    let mut diag_no_fix = false;
+    let mut diag_count: Option<u32> = None;
     for &child in items {
         match a.head_name(child) {
             Some("call") => {
@@ -1118,6 +1124,20 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
                     .and_then(|id| str_leaf(a, id));
                 expect = Some(GExpect::Declines(msg));
             }
+            // `(count N)` — the fault-count the `(severity, code)` set must match exactly; `(once)` is the
+            // common `(count 1)` shorthand.
+            Some("count") => {
+                diag_count = a
+                    .as_form(child, "count")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|id| str_leaf(a, id))
+                    .and_then(|s| s.trim().parse::<u32>().ok());
+            }
+            Some("once") => diag_count = Some(1),
+            // `(no-fix)` — the matched fault must carry NO repair (mutually exclusive with `(fix …)`).
+            Some("no-fix") => diag_no_fix = true,
+            // `(fix (kind K)? (replacement R)? / (replacement-contains S)? (verified|unverified)?)`.
+            Some("fix") => diag_fix = Some(decode_fix_expect(a, child)),
             _ => {}
         }
     }
@@ -1134,13 +1154,58 @@ fn decode_trial(a: &Arenas, id: StructId) -> Option<GTrial> {
     } else {
         None
     };
+    // Fold the diagnostic-quality facets into a `DiagExpect`, or `None` when the case pinned none (the
+    // common code+message-only form) — `None` and an empty `DiagExpect` both grade as a no-op quality Pass,
+    // but `None` keeps the shredded `test-run.ast` clause-free.
+    let diag = {
+        let d = DiagExpect {
+            fix: diag_fix,
+            no_fix: diag_no_fix,
+            count: diag_count,
+        };
+        (!d.is_empty()).then_some(d)
+    };
     Some(GTrial {
         call,
         expect: expect?,
-        // The `(fix …)`/`(no-fix)`/`(count …)` diagnostic-quality clauses decode into `diag` in a
-        // follow-up slice (they need the structured-diagnostics wire fed to the grader); `None` here.
-        diag: None,
+        diag,
     })
+}
+
+/// Decode a `(fix (kind K)? (replacement R)? / (replacement-contains S)? (verified|unverified)?)` clause
+/// into a [`FixExpect`]. Each sub-clause is optional (an absent facet is unconstrained); `(replacement R)`
+/// pins an EXACT match and `(replacement-contains S)` a SUBSTRING (mutually exclusive — the last one wins if
+/// both appear, an authoring slip). A bare `(fix)` constrains nothing but still requires SOME fix be present.
+fn decode_fix_expect(a: &Arenas, id: StructId) -> FixExpect {
+    let mut fx = FixExpect::default();
+    for &child in a.as_form(id, "fix").unwrap_or(&[]) {
+        match a.head_name(child) {
+            Some("kind") => {
+                fx.kind = a
+                    .as_form(child, "kind")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid));
+            }
+            Some("replacement") => {
+                fx.replacement = a
+                    .as_form(child, "replacement")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid))
+                    .map(ReplMatch::Exact);
+            }
+            Some("replacement-contains") => {
+                fx.replacement = a
+                    .as_form(child, "replacement-contains")
+                    .and_then(|t| t.first().copied())
+                    .and_then(|cid| str_leaf(a, cid))
+                    .map(ReplMatch::Contains);
+            }
+            Some("verified") => fx.verified = Some(true),
+            Some("unverified") => fx.verified = Some(false),
+            _ => {}
+        }
+    }
+    fx
 }
 
 /// A form's children after the head (`items[1..]`), or empty for a non-list / headless node.
@@ -2075,5 +2140,107 @@ mod tests {
         assert_eq!(tr.live_objects, None);
         assert!(!tr.live_objects_known_leak);
         assert_eq!(tr.live_objects_per_call, None);
+    }
+
+    /// `decode_trial` reads the diagnostic-QUALITY clauses `(fix …)` / `(no-fix)` / `(count N)` / `(once)`
+    /// into `GTrial.diag` (a `DiagExpect`), and leaves it `None` when the trial pins only code + message.
+    /// The decoded facets are exactly what `grade_diag_quality` grades against — this is the parse end of
+    /// C1's "corpus expresses fixes" capability, the counterpart to the shred/authoring render in cdz-corpus.
+    #[test]
+    fn decode_reads_diag_quality_clauses() {
+        use cadenza_syntax::ast::{Builder, Leaf};
+        use std::sync::Arc;
+        // Build a `(test-run … (trials (trial (expect-error CDZ0101) <extra…>)))` and return the decoded
+        // trial's `diag`. `mk_extra` builds the trial's diagnostic-quality clause forms in the owned builder.
+        let decode_diag = |mk_extra: &dyn Fn(
+            &mut Builder,
+        ) -> Vec<cadenza_syntax::ast::StructId>|
+         -> Option<DiagExpect> {
+            let mut b = Builder::new();
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let extra = mk_extra(&mut b);
+            let head = b.name("test-run");
+            let dh = b.name("description");
+            let dv = s(&mut b, "case");
+            let desc = b.list(vec![dh, dv]);
+            let th = b.name("trial");
+            let eh = b.name("expect-error");
+            let ec = s(&mut b, "CDZ0101");
+            let expect = b.list(vec![eh, ec]);
+            let mut trial_kids = vec![th, expect];
+            trial_kids.extend(extra);
+            let trial = b.list(trial_kids);
+            let trials_head = b.name("trials");
+            let trials = b.list(vec![trials_head, trial]);
+            let root = b.list(vec![head, desc, trials]);
+            let bytes = codec::encode(&b.finish(root));
+            decode_test_run(&bytes)
+                .unwrap()
+                .trials
+                .into_iter()
+                .next()
+                .unwrap()
+                .diag
+        };
+
+        // A full `(fix (kind replace) (replacement "foo") (verified))` + `(count 1)`.
+        let diag = decode_diag(&|b| {
+            let s = |b: &mut Builder, t: &str| b.atom_leaf(Leaf::Str(Arc::from(t)));
+            let fh = b.name("fix");
+            let kh = b.name("kind");
+            let kv = s(b, "replace");
+            let kind = b.list(vec![kh, kv]);
+            let rh = b.name("replacement");
+            let rv = s(b, "foo");
+            let repl = b.list(vec![rh, rv]);
+            let vh = b.name("verified");
+            let ver = b.list(vec![vh]);
+            let fix = b.list(vec![fh, kind, repl, ver]);
+            let ch = b.name("count");
+            let cv = s(b, "1");
+            let count = b.list(vec![ch, cv]);
+            vec![fix, count]
+        })
+        .expect("diag present");
+        assert_eq!(diag.count, Some(1));
+        assert!(!diag.no_fix);
+        let fx = diag.fix.expect("fix present");
+        assert_eq!(fx.kind.as_deref(), Some("replace"));
+        assert_eq!(fx.replacement, Some(ReplMatch::Exact("foo".into())));
+        assert_eq!(fx.verified, Some(true));
+
+        // `(no-fix)` + `(once)` (== count 1).
+        let diag = decode_diag(&|b| {
+            let nfh = b.name("no-fix");
+            let no_fix = b.list(vec![nfh]);
+            let oh = b.name("once");
+            let once = b.list(vec![oh]);
+            vec![no_fix, once]
+        })
+        .expect("diag present");
+        assert!(diag.no_fix);
+        assert_eq!(diag.count, Some(1));
+        assert!(diag.fix.is_none());
+
+        // A bare `(fix (replacement-contains "bar") (unverified))`.
+        let diag = decode_diag(&|b| {
+            let fh = b.name("fix");
+            let rch = b.name("replacement-contains");
+            let rcv = b.atom_leaf(Leaf::Str(Arc::from("bar")));
+            let rcontains = b.list(vec![rch, rcv]);
+            let uvh = b.name("unverified");
+            let unver = b.list(vec![uvh]);
+            let fix = b.list(vec![fh, rcontains, unver]);
+            vec![fix]
+        })
+        .expect("diag present");
+        let fx = diag.fix.expect("fix present");
+        assert_eq!(fx.replacement, Some(ReplMatch::Contains("bar".into())));
+        assert_eq!(fx.verified, Some(false));
+        assert_eq!(fx.kind, None);
+        assert_eq!(diag.count, None);
+
+        // No quality clause at all → diag is None (the common code+message-only form).
+        assert_eq!(decode_diag(&|_| vec![]), None);
     }
 }
