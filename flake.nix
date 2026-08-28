@@ -3997,9 +3997,18 @@
               if name == "cdz" then [ "crate-cdz" ]
               else [ "test-${name}" "clippy-${name}" ];
             # bash `case` arms mapping a crate DIR PREFIX → its space-joined check attrs (for git-diff detect).
+            # MOST-SPECIFIC FIRST: sort crates by dir-path LENGTH descending so a crate NESTED under
+            # another (e.g. `xtask/crates/xtask-mandates` under `xtask`) emits its `…/*)` arm BEFORE the
+            # parent's broad `xtask/*)`. bash `case` takes the FIRST matching pattern, so without this the
+            # broad arm shadows the specific one → shellcheck SC2221/SC2222 fails the cdz-fast-gate build
+            # (breaking `nix run .#fast-gate` + `cargo xtask dev-gate` fleet-wide) AND a real mis-grade: an
+            # edit under the sub-crate would run the PARENT crate's checks. Length-desc guarantees the
+            # prefix invariant (a nested path is strictly longer than the parent it extends). (#5056 fallout)
             dirCaseArms = pkgs.lib.concatStringsSep "\n" (map
               (c: ''            ${rootWorkspaceCrates.${c}}/*) echo "${pkgs.lib.concatStringsSep " " (crateChecks c)}" ;;'')
-              rootCrateNames);
+              (pkgs.lib.sort
+                (a: b: builtins.stringLength rootWorkspaceCrates.${a} > builtins.stringLength rootWorkspaceCrates.${b})
+                rootCrateNames));
             # bash `case` arms mapping an explicit crate NAME arg → its check attrs.
             nameCaseArms = pkgs.lib.concatStringsSep "\n" (map
               (c: ''            ${c}) echo "${pkgs.lib.concatStringsSep " " (crateChecks c)}" ;;'')
