@@ -11,6 +11,7 @@
 //! Multi-export: every `(export …)` in the layout is emitted, each by its signature ABI, under its
 //! verbatim name — no single hard-coded entry.
 
+pub mod coalesce;
 pub mod dwarf;
 pub mod encode;
 pub mod envelope;
