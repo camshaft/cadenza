@@ -8670,6 +8670,7 @@ fn emit_bytes_roundtrip_apply_body(
     result_desc: &[u8],
     member_body_abs: u32,
     import_index: &std::collections::HashMap<&str, u32>,
+    const_result: Option<&[u8]>,
 ) -> Vec<u8> {
     use crate::backend::wasm::wasm_abi::op;
     let call_op = |name: &str, out: &mut Vec<u8>| {
@@ -8683,6 +8684,40 @@ fn emit_bytes_roundtrip_apply_body(
     // Output region begins after the 8-byte retarea. Safe against the input at `ptr` because the copy-IN
     // loop below consumes the input into `bh` BEFORE the copy-OUT loop writes at OUT.
     const OUT: i64 = 8;
+    // PRE-ENCODE (Axis 2, provider path): a member whose RESULT is a compile-time CONSTANT (independent of the
+    // event) has its canonical bare value-form bytes precomputed at compile time (`constant_value_form_bare` —
+    // byte-identical to the runtime `value-encode` op for the same constant). Emit an apply body that IGNORES
+    // the incoming event, writes those constant bytes straight to OUT, and returns — NO value-decode, NO member
+    // body call, NO per-event value-encode + NO heap alloc/drop. The persistent reducer instance answers every
+    // event with a memory write of static bytes. (The input list the host lowered via `cabi_realloc` sits above
+    // OUT and is simply left unread.)
+    if let Some(cbytes) = const_result {
+        let mut body = Vec::new();
+        uleb128(0, &mut body); // no locals
+        for (j, &b) in cbytes.iter().enumerate() {
+            const_i32(OUT + j as i64, &mut body); // address
+            const_i32(b as i64, &mut body); // value
+            body.push(op::I32_STORE8);
+            body.push(0x00); // align
+            body.push(0x00); // offset
+        }
+        // retarea: mem[0] = OUT (ptr), mem[4] = len; return retptr 0.
+        const_i32(0, &mut body);
+        const_i32(OUT, &mut body);
+        body.push(op::I32_STORE);
+        body.push(0x02);
+        body.push(0x00);
+        const_i32(4, &mut body);
+        const_i32(cbytes.len() as i64, &mut body);
+        body.push(op::I32_STORE);
+        body.push(0x02);
+        body.push(0x00);
+        const_i32(0, &mut body); // return retptr 0
+        body.push(op::END);
+        let mut e = uleb_bytes(body.len() as u64);
+        e.extend_from_slice(&body);
+        return e;
+    }
     let mut body = Vec::new();
     // Locals after params (ptr=0, len=1): bh, pdesc, rep, result, rdesc, doc, n, i — one group of 8 i32.
     uleb128(1, &mut body);
@@ -8891,6 +8926,7 @@ pub(crate) fn emit_bump_realloc_body(bump_global: u32) -> Vec<u8> {
 /// import base of `imports.len()`, so a `CallImport(i)` resolves to `call i` and a self/body call to
 /// `k + its emission position`). This increment handles the closure-free, host-import-free member; the
 /// caller declines the fused shapes for now.
+#[allow(clippy::too_many_arguments)]
 pub fn bytes_roundtrip_core_module(
     funcs: &[SelectedFunc],
     imports: &[&RtOp],
@@ -8899,6 +8935,9 @@ pub fn bytes_roundtrip_core_module(
     result_desc: &[u8],
     member_name: &str,
     layout: &Layout,
+    // PRE-ENCODE: `Some(bytes)` when the member RESULT is a compile-time constant — the apply body writes these
+    // precomputed bare value-form bytes and skips decode/body/encode entirely (per-event serialization gone).
+    const_result: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
     use crate::backend::wasm::wasm_abi::op;
     let k = imports.len();
@@ -9039,6 +9078,7 @@ pub fn bytes_roundtrip_core_module(
         result_desc,
         member_body_abs,
         &import_index,
+        const_result,
     ));
     code_items.extend_from_slice(&emit_bump_realloc_body(bump_global));
     // The `start` init body LAST (when there are static globals): build each constant ONCE, mark it immortal,
@@ -9274,6 +9314,7 @@ pub fn bytes_roundtrip_host_core_module(
         result_desc,
         member_body_abs,
         &import_index,
+        None, // host-fused constant-result pre-encode is a later slice
     ));
     // The `start` init body LAST (when there are statics): build each constant ONCE + mark-immortal +
     // global.set — identical to the pure envelope's init, resolved through the same `import_index`.

@@ -14982,6 +14982,24 @@ pub fn constant_value_form(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
     Some(crate::codec::encode(&b.finish(root)))
 }
 
+/// The BARE canonical value document of a fully-constant compound at `id` — [`constant_value_form`] WITHOUT
+/// the `(: value type)` frame: just the value node (`(tuple …)` / `(record …)` / `(list …)` / a variant / a
+/// scalar leaf), codec-encoded. This is the form the runtime `value-encode` op emits for a value crossing the
+/// REDUCER/PROVIDER boundary — that boundary is BARE both directions (the kernel's `build_event_document`
+/// reads/writes the bare value form; `value-encode` frames only a `Named`/`Framed` descriptor root, so a bare
+/// `bare_shape_descriptor` root yields the bare doc — v-ah+v-runtime ruling 2026-08-12). So for a member whose
+/// RESULT is a compile-time constant, this is EXACTLY the wire bytes the per-event value-encode walk would
+/// produce, precomputed once at compile time (pre-encode / Axis 2, provider path): emit these as a `(data)`
+/// segment + memcpy at the boundary, skipping the runtime build AND the per-event encode. `None` when the node
+/// is not a compile-time-constant compound (`const_value_ast` declines — a runtime value keeps the walking
+/// encoder). The codec is canonical (one byte encoding per value), so these bytes are byte-IDENTICAL to the
+/// runtime bare `value-encode` output for the same constant.
+pub fn constant_value_form_bare(db: &mut Db, id: StructId) -> Option<Vec<u8>> {
+    let mut b = crate::ast::Builder::new();
+    let value = const_value_ast(db, &mut b, id)?;
+    Some(crate::codec::encode(&b.finish(value)))
+}
+
 /// A RUNTIME leaf hole in a value-form byte template: the byte OFFSET in the template where the leaf's
 /// runtime value is written, the WALK PATH of `arr-get` indices from the root heap handle to the leaf,
 /// and its KIND (how many bytes / which encoding). The template bakes everything static (structure,

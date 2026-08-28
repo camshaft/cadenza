@@ -41410,6 +41410,125 @@ mod r2_runtime_resource {
     }
 
     #[test]
+    fn constant_value_form_bare_is_the_framed_value_without_the_type_frame() {
+        // The bare compile-time encoder (Axis-2 provider-path foundation) must produce EXACTLY the runtime
+        // `value-encode` op's bare output for a constant. Verified at the AST level (codec is canonical, so
+        // AST equivalence ⇒ byte equivalence): the bare doc is the framed `constant_value_form`'s value node
+        // WITHOUT the `(: value Type)` frame, carrying the same constant leaves. Both derive the value from
+        // the SAME `const_value_ast` the corpus-verified framed path uses, and the reducer boundary is bare
+        // (v-ah+v-runtime ruling 2026-08-12), so these bytes are what the per-event value-encode would emit.
+        use crate::lower::{constant_value_form, constant_value_form_bare};
+        use crate::testkit::parse;
+        let src = "(module m (def (main) (tuple 3 1)) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("body");
+        let bare = constant_value_form_bare(&mut db, body).expect("bare value form");
+        let framed = constant_value_form(&mut db, body).expect("framed value form");
+        let bare_a = crate::codec::decode(&bare).expect("bare decodes");
+        let framed_a = crate::codec::decode(&framed).expect("framed decodes");
+        let names = |a: &crate::ast::Arenas| -> std::collections::BTreeSet<String> {
+            a.leaves
+                .iter()
+                .filter_map(|l| match l {
+                    crate::ast::Leaf::Name(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let ints = |a: &crate::ast::Arenas| -> std::collections::BTreeSet<i64> {
+            a.leaves
+                .iter()
+                .filter_map(|l| match l {
+                    crate::ast::Leaf::Int { value, .. } => value.to_i64(),
+                    _ => None,
+                })
+                .collect()
+        };
+        let want_ints: std::collections::BTreeSet<i64> = [1, 3].into_iter().collect();
+        // BARE: the tuple value + its constants, with NO `(: value Type)` frame.
+        assert!(names(&bare_a).contains("tuple"), "bare doc is the tuple value");
+        assert!(
+            !names(&bare_a).contains(":"),
+            "the bare doc carries NO `(: value type)` frame"
+        );
+        assert_eq!(ints(&bare_a), want_ints, "bare carries the constants 3 and 1");
+        // FRAMED: the SAME value, WITH the `:` frame — the contrast that shows bare = framed minus the frame.
+        assert!(
+            names(&framed_a).contains(":"),
+            "the framed doc has the `(: value type)` frame"
+        );
+        assert!(names(&framed_a).contains("tuple"));
+        assert_eq!(ints(&framed_a), want_ints);
+    }
+
+    #[test]
+    fn a_bytes_provider_member_with_a_constant_result_pre_encodes_and_runs() {
+        // §2d PRE-ENCODE (Axis 2, PROVIDER path): a reducer whose result is a compile-time constant (ignores
+        // its event) emits an apply body that writes the precomputed bare value-form bytes and returns — no
+        // per-event value-decode / body / value-encode. End-to-end proof: RUN the compiled reducer with an
+        // ARBITRARY (ignored) input and assert its output list<u8> is EXACTLY `constant_value_form_bare` of the
+        // result — the pre-encoded bytes ARE what the boundary emits.
+        use crate::testkit::parse;
+        let src = "(module m \
+                     (world reducer (export fold (member apply \
+                       (func (param input (\"list\" (u8))) (result (\"list\" (u8))))))) \
+                     (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) \
+                     (export apply))";
+        let out = crate::compile::compile(
+            &[
+                crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "main",
+                    crate::codec::encode(&parse(src)),
+                ),
+                crate::cli::component_name_artifact("cadenza:reducer/api"),
+            ],
+            &[crate::backend::Target::Wasm],
+        );
+        assert!(
+            !out.has_error(),
+            "constant-result reducer compiles: {:?}",
+            out.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        let wasm = out
+            .artifact(crate::backend::Target::Wasm.artifact_kind())
+            .expect("emits a bytes-roundtrip provider component")
+            .to_vec();
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&wasm)
+            .expect("constant-result provider validates");
+        // Expected: the bare value form of the constant result `(record (a 1) (b 2))`.
+        let mut db = crate::db::Db::load(parse(
+            "(module m (def (apply (: e (Record (n Int64)))) (record (a 1) (b 2))) (export apply))",
+        ));
+        let d = db.def_by_name("apply").expect("apply");
+        let body = db.defs[d].body.expect("body");
+        let cbytes = crate::lower::constant_value_form_bare(&mut db, body).expect("constant result");
+        // Run with an ARBITRARY input (the constant apply ignores it) → output IS the pre-encoded bytes.
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping reducer run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: None,
+            args: vec![],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        let got = cdz_run::run_reducer_bytes(&wasm, "cadenza:reducer/api", "apply", &[], &opts)
+            .expect("run constant-result reducer");
+        assert_eq!(
+            got, cbytes,
+            "the reducer emits EXACTLY the pre-encoded constant bytes"
+        );
+    }
+
+    #[test]
     fn a_runtime_qty_over_int_at_reference_unit_templates_with_the_unit_baked() {
         // A RUNTIME Qty over an Int64 at the REFERENCE unit (scale 1/1) gets a value-form template whose
         // unit label is BAKED as a compile-time constant and whose ONE leaf hole is the erased inner scalar,

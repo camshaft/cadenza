@@ -10560,6 +10560,16 @@ fn emit_bytes_provider_member(
         .abs(export_def)
         .ok_or_else(|| Reject::decline("the bytes-crossing member is not in the emission order"))?;
 
+    // PRE-ENCODE (Axis 2): if the member's RESULT is a compile-time constant (independent of the incoming
+    // event), precompute its canonical BARE value-form bytes — byte-identical to the runtime `value-encode`
+    // op's output for the same constant (canonical codec). The apply body then just writes these bytes and
+    // returns, skipping value-decode + body + per-event value-encode entirely. `None` for a runtime-dependent
+    // result (the usual reducer) — byte-identical to before.
+    let const_result = {
+        let body = def_body(db, export_def)?;
+        crate::lower::constant_value_form_bare(db, body)
+    };
+
     if host_imports.is_empty() {
         // PURE (host/peer-import-free) member — owns its memory, imports only the runtime.
         let core = serialize::bytes_roundtrip_core_module(
@@ -10570,6 +10580,7 @@ fn emit_bytes_provider_member(
             &result_desc,
             &member_name,
             layout,
+            const_result.as_deref(),
         )
         .map_err(Reject::decline)?;
         return Ok(envelope::assemble_bytes_roundtrip_provider(
