@@ -1,0 +1,23 @@
+# xtask-support — the SHARED foundation lib for the decomposed xtask commands (v-xtask-decompose,
+# operator 2026-08-28 "small per-command crates"). The pipeline machinery that multiple commands reuse
+# (content-addressing here; the corpus/Tools/convert machinery follows) lives ONCE here so each
+# per-command crate (xtask-roundtrip / xtask-gate / xtask-bench) depends on this instead of duplicating
+# it. This is FOUNDATION, not a per-command crate: xtask depends on it too (for its not-yet-extracted
+# commands), which is fine — editing a command's OWN crate rebuilds only that crate; only a rare change
+# to this shared foundation rebuilds its dependents.
+[package]
+name = "xtask-support"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The platform content-address primitive — `content_address` delegates to `Hash::of(Blob, bytes)`, the
+# single string the store key / compose-dep `+hash` / REQUIRED_RUNTIME_HASH all share (design §8).
+cdz-contract = { path = "../../../implementation/seed/crates/cdz-contract" }
+# SHA-256 for the local build-cache tree fingerprint (`hash_tree`) — an internal cache key, no
+# cross-boundary contract (distinct from the content-address digest, which is cdz-contract's blake3).
+sha2 = "0.10"
