@@ -203,10 +203,49 @@ pub fn generate_host_unit_effect(entropy: &[u8]) -> Program {
     Program { source }
 }
 
+/// Coerce entropy into a MODULE library + importing ENTRY pair for the CROSS-MODULE WIT-binding decline
+/// surface (via [`crate::oracle::compile_modules_catching`]). The module `lib` exports an identity
+/// `(def (f (: x T)) x)` over a FULLY-ALGEBRAIC WIT type `T` ([`gen_wit`]); the entry imports `f` and
+/// calls it with a matching `T` literal — so `T` crosses the module link (as both the param and the
+/// return). A not-yet-emitted cross-module type-crossing cleanly DECLINES (a WIT-binding gap); a supported
+/// one compiles. Returns `(module_src, entry_src)`.
+pub fn generate_module_program(entropy: &[u8]) -> (String, String) {
+    let mut c = Cursor::new(entropy);
+    let t = gen_wit(&mut c, MAX_TYPE_DEPTH);
+    let module_src = format!("(do (def (f (: x {})) x) (export f))", t.ty);
+    let entry_src = format!(
+        "(do (import \"lib\" (f)) (def (main) (f {})) (export main))",
+        t.lit
+    );
+    (module_src, entry_src)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oracle::{Verdict, compile_catching};
+    use crate::oracle::{Verdict, compile_catching, compile_modules_catching};
+
+    /// Every `generate_module_program` pair is CLEANLY HANDLED by the multi-module oracle — it COMPILES
+    /// (a cross-module type-crossing the linker supports) or cleanly DECLINES (a WIT-binding gap) — never
+    /// a crash / invalid wasm / parse error. The decline-hunting invariant for the cross-module surface.
+    #[test]
+    fn module_programs_are_cleanly_handled() {
+        for seed in 0u64..128 {
+            let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(11);
+            let mut bytes = Vec::new();
+            for _ in 0..12 {
+                x ^= x >> 30;
+                x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                bytes.push((x >> 24) as u8);
+            }
+            let (module_src, entry_src) = generate_module_program(&bytes);
+            let verdict = compile_modules_catching(&[("lib".to_string(), module_src)], &entry_src);
+            assert!(
+                matches!(verdict, Verdict::Compiled { .. } | Verdict::Declined { .. }),
+                "module program must be cleanly handled, got {verdict:?} for entry: {entry_src}"
+            );
+        }
+    }
 
     /// Every `generate_host_unit_effect` program COMPILES to a value (the gradeable Unit-effect shape rcdzc
     /// lowers + runs to `unit`) — so a Lean value-differential campaign over it actually GRADES (not
