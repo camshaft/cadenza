@@ -1991,26 +1991,9 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
         imports_value_heap_runtime(&bytes),
         "a runtime map must build on the value heap (import the runtime)"
     );
-    let Some(runtime) = find_runtime_wasm() else {
-        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
-        return;
-    };
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec!["4".to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run(&bytes, &opts).expect("run") {
-        cdz_run::Outcome::Value(s) => assert_eq!(
-            s, "45",
-            "shared key-2 lookup (20+20) plus a still-live size (5) = 45"
-        ),
-        cdz_run::Outcome::Trap(t) => {
-            panic!("CSE-shared map lookup trapped (refcount miscompile?): {t}")
-        }
-    }
+    // The RUN — the shared key-2 lookup (20+20) plus a still-live Map.len (5) = 45, proving the CSE-shared
+    // borrow leaves the map live — is corpus-covered by 05-compound-types "a repeated same-key Map.lookup
+    // shared by CSE leaves the map live for a later size read"; this test keeps the builds-on-the-heap pin.
 }
 
 #[test]

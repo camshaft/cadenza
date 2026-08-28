@@ -16470,6 +16470,24 @@
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 30 Int64)))
 
+(case "a repeated same-key Map.lookup shared by CSE leaves the map live for a later size read"
+  (doc    "A refcount/CSE-correctness pin: `(Option.expect (Map.lookup mp 2))` appears TWICE over the SAME map
+           and key, so CSE shares it to ONE `map-lookup` (an O(log n) CHAMP walk). `Map.lookup` BORROWS mp, so
+           the share must leave mp fully live — the program adds the two shared reads AND reads `Map.len mp`
+           after. A premature drop or double-consume of the shared boxed value would corrupt the later size
+           read. mp is built at run time = {0:0,1:10,2:20,3:30,4:40}; lookup 2 = 20, so 20 + 20 + len(5) = 45.
+           Relocated from rcdzc a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live.")
+  (input  (do
+            (def (build (: n Int64) (: acc (Map Int64 Int64)))
+              (if (< n 0) acc (build (- n 1) (Map.insert acc n (* n 10)))))
+            (def (f (: mp (Map Int64 Int64)))
+              (+ (+ (Option.expect (Map.lookup mp 2) "v") (Option.expect (Map.lookup mp 2) "v"))
+                 (Map.len mp)))
+            (def (main (: n Int64)) (f (build n Map.empty)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 45 Int64)))
+
 (case "a keyed lookup of an updated map is not shared with the original's"
   (doc    "`(expect (Map.lookup m 1))` = 10 and `(expect (Map.lookup (Map.insert m 1 99) 1))` = 99 — the
            SAME key, but the second lookup targets a DIFFERENT map value (the persistent update's result):
