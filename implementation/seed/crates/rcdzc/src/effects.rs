@@ -10057,7 +10057,7 @@ fn node_refs_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
     }
 }
 
-fn subtree_references_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
+pub(crate) fn subtree_references_binder(db: &mut Db, node: StructId, binder: StructId) -> bool {
     // Existence check: SHORT-CIRCUIT on the first hit (unlike `count_param_refs`, which counts the whole
     // tree). Reuses `node_refs_binder` — the same ref-chain predicate `count_param_refs` uses — so the two
     // stay single-source-of-truth AND this keeps its early-exit (github-liaison/Copilot #2128 review: the
