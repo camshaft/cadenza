@@ -25,9 +25,12 @@
 //! - **B1a**: PARAMETERS — a def signature `(<name> (: <p> <Ty>)…)` (param types via lower's canonical
 //!   `type_ast`) and a `Core::Param`/`LocalRef` reference (the bare binder name). A parameter of a type
 //!   with no value-form surface (function/unsolved) declines.
+//! - **B1b**: OPERATORS + CONTROL — the runtime binary operators (`Arith`/`Compare`/`StrCmp`/
+//!   `FloatCompare`, re-emitted `(<op> l r)` via the `Prim`→surface reverse-map), boolean `Not`
+//!   (`(not x)`), short-circuit `And`/`or` (`(and|or l r)`), and the conditional `If` (`(if c t e)`).
 //!
-//! Still declining, for later increments: ops/control (Arith/Compare/If/And/Not — B1b/c), binding
-//! (Let/Seq/Block — B2), calls (Call/Closure — B3), and data (Record/Tuple/sums/collections — B4).
+//! Still declining, for later increments: binding (Let/Seq/Block — B2), calls (Call/Closure — B3),
+//! and data (Record/Tuple/sums/collections — B4), plus scalar `Match` (a later slice).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
 use crate::core::Core;
@@ -169,11 +172,88 @@ fn emit_expr(db: &mut Db, b: &mut Builder, id: StructId) -> Result<StructId, Rej
             })?;
             Ok(b.name(nm))
         }
+        // A runtime binary operator — arithmetic, integer/bool comparison, string ordering, or float
+        // comparison. All four carry `{op, lhs, rhs}` (FloatCompare also a width, ignored — the surface
+        // operator is width-agnostic), and all re-emit as `(<operator> <lhs> <rhs>)`. The surface
+        // operator is recovered from the prim; the INTERNAL float prims (`FAdd`/`FEq`/…) share the same
+        // one surface operator as their integer counterparts (the author writes one `+`/`=`/`<`, `lower`
+        // picks the prim by solved type), so re-emitting the shared operator re-solves to the same prim.
+        Core::Arith { op, lhs, rhs }
+        | Core::Compare { op, lhs, rhs }
+        | Core::StrCmp { op, lhs, rhs }
+        | Core::FloatCompare {
+            op,
+            lhs,
+            rhs,
+            width: _,
+        } => {
+            let sym = prim_operator(op).ok_or_else(|| {
+                Reject::decline(format!(
+                    "the Cadenza backend does not yet lower the operator prim {op:?}"
+                ))
+            })?;
+            let head = b.name(sym);
+            // Operands FIRST would reverse head-first order — build the head atom, then each operand
+            // sub-tree left-to-right, then the list (children hold the ids; the head is already pushed).
+            let l = emit_expr(db, b, lhs)?;
+            let r = emit_expr(db, b, rhs)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        // Boolean negation `(not x)`.
+        Core::Not { operand } => {
+            let head = b.name("not");
+            let x = emit_expr(db, b, operand)?;
+            Ok(b.list(vec![head, x]))
+        }
+        // Short-circuiting conjunction / disjunction — `is_and` picks `and` vs `or`.
+        Core::And { lhs, rhs, is_and } => {
+            let head = b.name(if is_and { "and" } else { "or" });
+            let l = emit_expr(db, b, lhs)?;
+            let r = emit_expr(db, b, rhs)?;
+            Ok(b.list(vec![head, l, r]))
+        }
+        // A two-way conditional `(if cond then else)`.
+        Core::If { cond, then_, else_ } => {
+            let head = b.name("if");
+            let c = emit_expr(db, b, cond)?;
+            let t = emit_expr(db, b, then_)?;
+            let e = emit_expr(db, b, else_)?;
+            Ok(b.list(vec![head, c, t, e]))
+        }
         other => Err(Reject::decline(format!(
             "the Cadenza backend does not yet lower this Core node back to Cadenza: {}",
             core_node_kind(&other)
         ))),
     }
+}
+
+/// The SURFACE operator a runtime-operator prim re-emits as, or `None` for a prim that is not a binary
+/// operator (defensive — such a prim never appears in `Arith`/`Compare`/`StrCmp`/`FloatCompare`). The
+/// reverse of `Prim::from_name` for the operator subset. Each INTERNAL float prim maps to the SAME
+/// surface operator as its integer twin (`FAdd`→`+`, `FEq`→`=`, `FLt`→`<`, …): the author writes one
+/// operator and `lower` selects the prim by the operands' solved type, so re-emitting the shared surface
+/// operator re-solves to the same prim on recompile — the property round-trip idempotence rests on.
+fn prim_operator(op: crate::resolved::Prim) -> Option<&'static str> {
+    use crate::resolved::Prim::*;
+    Some(match op {
+        Add | FAdd => "+",
+        Sub | FSub => "-",
+        Mul | FMul => "*",
+        Div | FDiv => "/",
+        Rem => "%",
+        Shl => "<<",
+        Shr => ">>",
+        BitAnd => "&",
+        BitOr => "|",
+        BitXor => "^",
+        Lt | FLt => "<",
+        Gt | FGt => ">",
+        Le | FLe => "<=",
+        Ge | FGe => ">=",
+        Eq | FEq => "=",
+        Compare => "compare",
+        _ => return None,
+    })
 }
 
 /// A short human-readable kind name for a `Core` node, for the decline message (so a decline says WHICH

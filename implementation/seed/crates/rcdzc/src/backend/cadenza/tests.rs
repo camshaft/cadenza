@@ -112,12 +112,12 @@ fn a_multi_parameter_identity_projection_round_trips() {
 }
 
 #[test]
-fn a_non_constant_body_declines_cleanly() {
-    // A body the optimizer cannot fold and that the backend does not YET lower: `(+ x 1)` over a
-    // parameter is a runtime `Core::Arith` (arithmetic emit is B1b). B1a now ACCEPTS the parameter
-    // signature `(: x Int64)`, so the decline here is attributed to the Arith body, not the param.
-    let err = compile_cadenza("(module m (def (inc (: x Int64)) (+ x 1)) (export inc))")
-        .expect_err("an arithmetic body must decline until B1b");
+fn a_not_yet_lowered_body_declines_cleanly() {
+    // A body the optimizer cannot fold and that the backend does not YET lower: `(tuple x x)` over a
+    // parameter is a runtime `Core::Tuple` (compound emit is B4). Confirms the decline path still fires
+    // for an un-covered node now that params + operators + control are handled.
+    let err = compile_cadenza("(module m (def (pair (: x Int64)) (tuple x x)) (export pair))")
+        .expect_err("a compound body must decline until B4");
     assert!(
         err.iter().any(|m| m.contains("does not yet")),
         "expected a Cadenza-backend decline, got: {err:?}"
@@ -126,3 +126,54 @@ fn a_non_constant_body_declines_cleanly() {
 // (A function-typed-parameter decline path exists in `emit_def` — `type_ast` returns `None` — but a
 // higher-order program that reaches it needs closures/calls (B3), so it is witnessed there, not here:
 // an exported fn-param def is rejected at the boundary before the backend anyway.)
+
+// ── B1b: operators (arithmetic / comparison / string-order / float) + control (if / and / or / not) ──
+
+#[test]
+fn integer_arithmetic_and_comparison_round_trip() {
+    // Each body is a runtime `Core::Arith`/`Core::Compare` over a parameter (non-foldable), re-emitted
+    // `(<op> l r)`. Covers a spread of arithmetic + comparison operators in one program.
+    assert_roundtrips(
+        "(module m \
+           (def (add1 (: x Int64)) (+ x 1)) \
+           (def (sub1 (: x Int64)) (- x 1)) \
+           (def (dbl  (: x Int64)) (* x 2)) \
+           (def (lt10 (: x Int64)) (< x 10)) \
+           (def (eq0  (: x Int64)) (= x 0)) \
+           (def (ge5  (: x Int64)) (>= x 5)) \
+           (export add1) (export sub1) (export dbl) (export lt10) (export eq0) (export ge5))",
+    );
+}
+
+#[test]
+fn control_flow_if_and_or_not_round_trip() {
+    assert_roundtrips(
+        "(module m \
+           (def (clamp0 (: x Int64)) (if (< x 0) 0 x)) \
+           (def (both (: a Bool) (: b Bool)) (and a b)) \
+           (def (either (: a Bool) (: b Bool)) (or a b)) \
+           (def (neg (: b Bool)) (not b)) \
+           (export clamp0) (export both) (export either) (export neg))",
+    );
+}
+
+#[test]
+fn float_operators_round_trip() {
+    // Float arithmetic + equality: the operands solve to `Float`, so `lower` selects the INTERNAL float
+    // prims (`FMul`/`FAdd`/`FEq`), which re-emit as the SAME `*`/`+`/`=` surface operators — and re-solve
+    // to the same prims on recompile (the shared-operator round-trip property).
+    assert_roundtrips(
+        "(module m \
+           (def (scale (: x Float64)) (* x 2.0)) \
+           (def (bump  (: x Float64)) (+ x 1.0)) \
+           (def (isone (: x Float64)) (= x 1.0)) \
+           (export scale) (export bump) (export isone))",
+    );
+}
+
+#[test]
+fn string_ordering_round_trips() {
+    // `<` on `String` operands is a `Core::StrCmp` (content-lexicographic), distinct from integer
+    // `Compare`; it re-emits as the same `<` surface operator.
+    assert_roundtrips("(module m (def (early (: s String)) (< s \"m\")) (export early))");
+}
