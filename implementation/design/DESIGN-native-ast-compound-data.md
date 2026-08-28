@@ -545,12 +545,30 @@ list/tuple/record/map + HOF-safety; set via 74f3f6e1f. Unambiguous string-head `
 are directly-safe. Migration MUST pass `cdz corpus check` + the ML round-trip harness (`xtask roundtrip`),
 not just the gate.
 
+**FORM-BY-FORM, not whole-file (tick14 full-corpus rehearsal).** The corpus files are a MULTI-FORM sequence
+of `(case "…" (doc …) (input …) (output …))` test-harness forms (NOT one Cadenza program) with `;` comments.
+`convert`'s single-form `read` errors "trailing input" on the 2nd form; and a whole-file `read_all`→ml fails
+("expected `)`") because a bare top-level sequence of `case(…)` is not a valid ML PROGRAM. So the migration
+converts EACH top-level `(case …)` form INDIVIDUALLY (proven: a real 05-compound-types case round-trips —
+`(record (= x 1) (= y 2))`→`#record((= x 1) (= y 2))`, `p.x`→native `(. p x)` Member, `(case …)` harness +
+`(doc …)` preserved). The tooling must split each file into its top-level forms (respecting comments), convert
+each `(case …)` via sexpr→ml→sexpr, and reassemble — OR hook the corpus harness's per-case read. ⚠ CAVEAT:
+ml-convert REFORMATS (re-indents; a multi-line `(doc "…")` string's literal newlines become `\n` escapes —
+VALUE-preserving, TEXT-changing) → the migration diff is a WHOLE-FILE reformat, not minimal. If a minimal
+diff is wanted (preserve doc formatting/comments, rewrite only literal heads), the alternative is a
+RESOLVE-AWARE targeted head rewrite (walk each form, resolve to distinguish `(map …)` literal from the def'd
+`map` HOF call, rewrite only literal heads) — more work but structure-preserving. DECISION for assembly:
+correct-by-construction reformat (ml-convert, form-by-form) vs minimal-diff (resolve-aware) — coordinate with
+the metaprog/corpus lane; the ml-convert route is validated + simplest.
+
 ### 12.3 Ordered assembly steps
 1. Rebase the integration branch onto current origin/main. Drop the transiently-folded STALE peer arms
    (early v-syntax cadenza-syntax fold; any v-runtime provisional decode/hash arm).
 2. Fold FINAL peer `--ref`s onto the integration base (squash-not-merge): v-syntax `74f3f6e1f`, v-runtime
    op62 (final tip), v-spec-oracle spec arm, v-static-data byte-EQ test.
-3. Run the corpus migration: `cdz convert sexpr→ml→sexpr` over `spec/semantics/*.sexp` (all 34). Diff-review.
+3. Run the corpus migration FORM-BY-FORM (§12.2): for each `spec/semantics/*.sexp` (all 34), convert each
+   top-level `(case …)` via sexpr→ml→sexpr (whole-file fails — the ML surface needs program structure) and
+   reassemble; expect a whole-file reformat diff. Diff-review.
 4. Verify: `cdz corpus check` + `xtask roundtrip` (ML round-trip) green across all 34.
 5. Regenerate `verify_kernel.bin` (`REGEN_VERIFY_KERNEL_BIN=1`) — const_value_ast + op62 + reader all shifted
    kernel bytes.
