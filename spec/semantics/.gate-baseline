@@ -1796,6 +1796,7 @@ pass	a constant multi-payload variant match reaches each payload and dispatches 
 pass	a constant nested tuple is returned as a program result
 pass	a constant rational with a zero denominator is rejected and names the nonzero-denominator repair
 pass	a constant record is returned as a program result
+pass	a constant shift by an OUT-OF-RANGE count is rejected at compile time with CDZ0304
 pass	a constant shift count at or beyond the width over a high UInt64 still rejects
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
