@@ -58,7 +58,10 @@
 //!   to its binder, and nested list matches recurse. A GUARDED arm, or a NESTED/variant element sub-pattern
 //!   (a deeper `SumPayload` path this slice does not register), declines.
 //! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
-//!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
+//!   (name-sorted), `Core::ListNew`→`(list …)`, `Core::MapNew`→`(map (<k> <v>)…)` and `Core::SetOf`→
+//!   `((. Set of) (list …))` (map/set entries emit in STORED order — the value is unordered, so the
+//!   round-trip is VALUE-equivalence, order-independent; the keys are runtime, no canonical sort applies);
+//!   and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
 //!   e.g. a bare `(None unit)`; `type_ast` declines a free-type-arg sum). All mirror lower's value surface.
 //!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
@@ -543,6 +546,42 @@ fn emit_expr(
                 children.push(emit_expr(db, b, e, env, emitted)?);
             }
             Ok(b.list(children))
+        }
+        // A runtime MAP value `(map (<k> <v>)…)` — the entries are runtime operands (a fully-constant map
+        // bakes via lower's constant escape, so a surviving `Core::MapNew` is a runtime value). Entries are
+        // emitted in their STORED order, NOT re-sorted into canonical key order: a map is UNORDERED, so the
+        // reconstructed value equals the original regardless of entry order (and the keys are runtime, so no
+        // compile-time canonical sort is available anyway) — the round-trip is VALUE-equivalence, which a
+        // map's order-independent identity satisfies. Each entry is the pair-list `(<k> <v>)` (distinct from
+        // a record's `(= k v)`), key then value emitted left-to-right. Mirrors lower's constant map surface.
+        Core::MapNew { entries, .. } => {
+            let head = b.name("map");
+            let mut children = Vec::with_capacity(1 + entries.len());
+            children.push(head);
+            for &(k, v) in entries.iter() {
+                let kv = emit_expr(db, b, k, env, emitted)?;
+                let vv = emit_expr(db, b, v, env, emitted)?;
+                children.push(b.list(vec![kv, vv]));
+            }
+            Ok(b.list(children))
+        }
+        // A runtime SET value `((. Set of) (list <e>…))` — the `Set.of` application over a `(list …)` of the
+        // elements (a fully-constant set bakes via lower's constant escape; a surviving `Core::SetOf` is a
+        // runtime value). Like the map, elements emit in STORED order (a set is unordered, so value-identity
+        // is order-independent). `Set.of` is the member access `(. Set of)`, matching lower's set surface.
+        Core::SetOf { elems, .. } => {
+            let list_head = b.name("list");
+            let mut list_children = Vec::with_capacity(1 + elems.len());
+            list_children.push(list_head);
+            for e in elems.iter().copied() {
+                list_children.push(emit_expr(db, b, e, env, emitted)?);
+            }
+            let inner_list = b.list(list_children);
+            let dot = b.name(".");
+            let set_mod = b.name("Set");
+            let of_key = b.name("of");
+            let set_of = b.list(vec![dot, set_mod, of_key]);
+            Ok(b.list(vec![set_of, inner_list]))
         }
         // A runtime SUM (variant) value `(<Variant> <payload>)` — a constructed variant built from a
         // runtime payload. The variant NAME is recovered from the discriminant against the node's solved
