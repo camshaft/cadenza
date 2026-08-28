@@ -1664,6 +1664,30 @@
                   (+ (B.step) (A.get))))) (export main)))
   (output (: 21 Int64)))
 
+(case "the agent-harness loop spine runs model-ask then value-dispatches a tool over turns"
+  (doc    "The native agent-harness loop SPINE (DESIGN-agent-harness.md) as a single-shot tail-resumptive
+           program with NO ABI dependency: a recursive `loop` drives N turns; each turn performs `Model.ask`
+           (a MOCK handler standing in for the Bedrock peer — the nearer-handler-wins override swaps the real
+           peer in later) then DISPATCHES a tool BY VALUE — an `= 0` check on the answer routes to `Tools.stop`
+           (return the accumulator) vs `Tools.step` (accumulate + recurse). Both effects are handled IN-PROGRAM
+           via NESTED handlers; the Tools handler threads the running total. main runs 3 turns: turn i asks→i,
+           i≠0 so step accumulates i and recurses; at i=0 ask→0 so stop returns 3+2+1 = 6. Exercises
+           nested-handler dispatch + single-shot resume + handler-state threading + value-dispatch in one
+           spine. Relocated from rcdzc an_agent_loop_shape_runs_model_ask_then_tool_dispatch_over_turns.")
+  (input  (do
+            (effect Model (op ask (-> Int64 Int64)))
+            (effect Tools (op step (-> Int64 Int64)) (op stop (-> Int64 Int64)))
+            (def (loop (: i Int64) (: acc Int64))
+              (if (= (Model.ask i) 0)
+                  (Tools.stop acc)
+                  (loop (- i 1) (Tools.step (+ acc i)))))
+            (def (main)
+              (handle Model 0 ((ask (q) s (resume q s)))
+                (handle Tools 0 ((step (a) s (resume a a)) (stop (a) s (resume a a)))
+                  (loop 3 0))))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a SIX-deep alternating A-B perform chain threads both nested states through every crossing"
   (doc    "The deep-interleave stress of the two-frame nesting above: six performs alternate A-B-A-B-A-B
            where each perform's ARGUMENT is the previous perform's result — `(B.b (A.a (B.b (A.a (B.b
