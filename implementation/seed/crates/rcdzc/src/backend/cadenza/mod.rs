@@ -51,6 +51,12 @@
 //!   A disc-FOLDED / nested-`Switch` / `Guarded` / `LitTest` decision tree, or a DEFAULT (`disc: None`)
 //!   arm, declines. A match over a user sum whose `(type …)` was not re-emitted declines; prelude sums
 //!   (Option/Result) are ambient.
+//! - **M4b**: list `Core::MatchList` → surface `(match <scrutinee> (<list-pattern> <body>)…)`
+//!   ([`emit_match_list`]): a length-dispatch arm — `LenEq(n)`→`(list b0 … b_{n-1})`, `LenGe(lead)`→
+//!   `(list b0 … b_{lead-1} .. rest)`, `Any`→`_`. Leading element binders register at `[Elem(i)]`, the
+//!   rest binder at `[RestFrom(lead)]` (same `env.payloads` map M4a uses); a `Core::SumPayload` resolves
+//!   to its binder, and nested list matches recurse. A GUARDED arm, or a NESTED/variant element sub-pattern
+//!   (a deeper `SumPayload` path this slice does not register), declines.
 //! - **DATA**: runtime compound VALUES — `Core::Tuple`→`(tuple …)`, `Core::Record`→`(record (= k v)…)`
 //!   (name-sorted), `Core::ListNew`→`(list …)`; and a `Core::SumNew` variant →
 //!   `(: (<Variant> <payload-or-unit>) <sum-type>)` (the type ascription pins an under-determined sum,
@@ -62,8 +68,8 @@
 //!   emitted (`emitted` set), so there is never an unbound-type recompile.
 //!
 //! Still declining, for later increments: closures (Closure/Captured/CallClosure), sequencing
-//! (Seq/Block/Break), map/set values, LIST matches (MatchList), richer sum-match decision trees
-//! (guarded / literal-test / nested-switch / default arms), non-scalar scalar-match probes, and a
+//! (Seq/Block/Break), map/set values, richer MATCH decision trees (guarded / literal-test / nested-switch /
+//! default sum arms; guarded / nested-element list arms), non-scalar scalar-match probes, and a
 //! multi-argument variant CONSTRUCTOR (`SumNew` — the match side already binds multi-payload slots).
 
 use crate::ast::{Builder, Leaf, Radix, StructId};
@@ -593,10 +599,17 @@ fn emit_expr(
         // scrutinee's OWN discriminant, every arm an explicit variant with a bare LEAF body; a disc-folded /
         // nested / guarded / literal-test tree, or a default (wildcard) arm, declines (a later slice).
         Core::MatchSum { scrutinee, root } => emit_match_sum(db, b, scrutinee, &root, env, emitted),
-        // A sum-match PAYLOAD read — its surface is the binder name the enclosing `MatchSum` arm minted for
-        // this `(scrutinee, path)` and recorded in `env.payloads`. A `SumPayload` is reached ONLY inside the
-        // arm body that bound it (a single-level match arm emitted directly by [`emit_match_sum`]); a payload
-        // read whose binder is not in scope (a shape this slice does not emit) declines.
+        // A match over a runtime LIST scrutinee — re-emit `(match <scrutinee> (<list-pattern> <body>)…)`
+        // ([`emit_match_list`]): a length-`LenEq`/`LenGe`/`Any` arm with PLAIN leading-element + rest binders.
+        // A guarded arm, or a nested/variant element sub-pattern (a deeper `SumPayload` path), declines.
+        Core::MatchList { scrutinee, arms } => {
+            emit_match_list(db, b, scrutinee, &arms, env, emitted)
+        }
+        // A match PAYLOAD read — its surface is the binder name the enclosing `MatchSum`/`MatchList` arm
+        // minted for this `(scrutinee, path)` and recorded in `env.payloads` (a sum variant payload at
+        // `[Payload]`/`[Payload, Elem(i)]`, or a list element/rest at `[Elem(i)]`/`[RestFrom(k)]`). Reached
+        // ONLY inside the arm body that bound it; a read whose binder is not in scope (a nested sub-pattern
+        // this slice does not emit) declines.
         Core::SumPayload { scrutinee, path } => {
             let nm = env
                 .payloads
@@ -720,6 +733,79 @@ fn emit_match_sum(
         let pattern = b.list(pat_children);
         // The body is emitted with this arm's payload binders in scope.
         let body_node = emit_expr(db, b, body, env, emitted)?;
+        children.push(b.list(vec![pattern, body_node]));
+    }
+    Ok(b.list(children))
+}
+
+/// Reconstruct the surface `(match <scrutinee> (<list-pattern> <body>)…)` for a `Core::MatchList` — a match
+/// dispatched by the list's LENGTH. Each arm's [`ListArmCond`] maps to a surface list pattern: `LenEq(n)` →
+/// `(list b0 … b_{n-1})` (a fixed-arity pattern binding exactly `n` elements), `LenGe(lead)` →
+/// `(list b0 … b_{lead-1} .. rest)` (a rest pattern binding `lead` leading elements + the tail sublist), and
+/// `Any` → the bare wildcard `_` (a whole-list catch-all; a body that reads the whole list does so through
+/// the scrutinee's OWN name, which A-normal form guarantees is a binder). A leading element binder is
+/// registered under `[Elem(i)]` and the rest binder under `[RestFrom(lead)]` (the same `SumPayload` key the
+/// body carries — see `resolve.rs`), so a `Core::SumPayload` read resolves to its binder. Only PLAIN binders
+/// are emitted: a NESTED element sub-pattern (`(list (Mk x) …)` / `(list (list a ..) ..)`) resolves its
+/// binder at a DEEPER path (`[Elem(i), Payload]` / `[Elem(i), Elem(j)]`) that this slice does not register,
+/// so its body read misses the env and DECLINES rather than emit a wrong pattern. A GUARDED arm declines.
+/// Arm order + conditions mirror the Core exactly, so the emitted match stays exhaustive (no CDZ0210).
+fn emit_match_list(
+    db: &mut Db,
+    b: &mut Builder,
+    scrutinee: StructId,
+    arms: &[crate::core::ListArm],
+    env: &mut BinderEnv,
+    emitted: &std::collections::HashSet<StructId>,
+) -> Result<StructId, Reject> {
+    use crate::core::{ListArmCond, PathStep};
+    let match_head = b.name("match");
+    let scrut_node = emit_expr(db, b, scrutinee, env, emitted)?;
+    let mut children = vec![match_head, scrut_node];
+    for arm in arms {
+        if arm.guard.is_some() {
+            return Err(Reject::decline(
+                "the Cadenza backend does not yet lower a GUARDED list-match arm".to_string(),
+            ));
+        }
+        // Build the arm's surface pattern, registering each binder's `SumPayload` path for the body.
+        let pattern = match arm.cond {
+            ListArmCond::LenEq(n) => {
+                let list_head = b.name("list");
+                let mut pat = vec![list_head];
+                for i in 0..n {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    env.payloads
+                        .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
+                    pat.push(b.name(name));
+                }
+                b.list(pat)
+            }
+            ListArmCond::LenGe(lead) => {
+                let list_head = b.name("list");
+                let mut pat = vec![list_head];
+                for i in 0..lead {
+                    let name = synth_payload_name(env.next_payload);
+                    env.next_payload += 1;
+                    env.payloads
+                        .insert((scrutinee, vec![PathStep::Elem(i)]), name.clone());
+                    pat.push(b.name(name));
+                }
+                // The `..` separator, then the rest binder (the tail sublist from `lead` onward).
+                pat.push(b.name(".."));
+                let rest = synth_payload_name(env.next_payload);
+                env.next_payload += 1;
+                env.payloads
+                    .insert((scrutinee, vec![PathStep::RestFrom(lead)]), rest.clone());
+                pat.push(b.name(rest));
+                b.list(pat)
+            }
+            // A whole-list catch-all — the bare wildcard `_`. The whole-list value, if the body reads it,
+            // comes through the scrutinee's own name (not a `SumPayload`), so no binder is registered.
+            ListArmCond::Any => b.name("_"),
+        };
+        let body_node = emit_expr(db, b, arm.body, env, emitted)?;
         children.push(b.list(vec![pattern, body_node]));
     }
     Ok(b.list(children))
