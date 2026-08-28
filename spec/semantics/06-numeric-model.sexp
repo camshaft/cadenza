@@ -11879,3 +11879,15 @@
         beyond-Int64 magnitude.")
   (input (do (def (v) (: 99999999999999999999999999 BigInt)) (export v)))
   (call v) (output (: 99999999999999999999999999 BigInt)))
+
+(case "cdzw10 the cadenza backend round-trips a scalar Match — literal arms, arm selection, and a binder else"
+  (doc "Fresh cadenza slice #4900 (scalar Match → an if/= probe chain; last arm = unconditional else): a scalar
+        `match` with two literal arms + a binder else must re-emit + round-trip preserving ARM SELECTION and the
+        binder-else binding. `classify 1` → 200 (literal arm 1); `classify 7` → the binder `m` → 10·7+5 = 75;
+        `1000·200 + 75` = 200075. Dual-path verified (sexp→cadenza→wasm == direct). Additive over cdzw1-9 (no
+        Match). A regression mis-ordering the if-chain probes or dropping the binder-else would move the value.")
+  (input (do
+    (def (classify (: x Int64)) (match x (0 100) (1 200) (m (+ (* 10 m) 5))))
+    (def (main (: n Int64)) (+ (* 1000 (classify 1)) (classify n)))
+    (export main)))
+  (call main (: 7 Int64)) (output (: 200075 Int64)))
