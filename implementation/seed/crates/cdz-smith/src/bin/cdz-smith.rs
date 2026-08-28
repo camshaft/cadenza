@@ -599,6 +599,10 @@ const FILTERED_DECLINE_SIGNATURES: &[&str] = &[
     "the-host-operation-has-a-result",
     "the-host-operation-has-an-argument",
     "a-closures-parameter-type-has-no",
+    // WIT-world export PARAM whose type has no component-boundary form (only aliased int widths, Bool,
+    // Float cross as entry params) — breaker triaged LEGIT frontier + flip-watched (the PARAM twin of the
+    // Unit RESULT cell #4903 closed; documented non-scalar-entry-param gap family, v-rust-backend emit lane).
+    "export--parameter-type-has-no",
 ];
 
 /// Dedup declines by signature and write ONE minimal (shortest) repro `.sexp` + `.reason.txt` per
