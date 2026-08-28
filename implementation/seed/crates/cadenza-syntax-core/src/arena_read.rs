@@ -9,7 +9,7 @@
 use crate::ast::{Arenas, Leaf, StructId};
 
 /// The children of a list node (`(a b c)` → `[a, b, c]`), or empty for a non-list.
-pub(crate) fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
+pub fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
     match a.get(id) {
         crate::ast::Struct::List(items) => items.clone(),
         _ => Vec::new(),
@@ -18,7 +18,7 @@ pub(crate) fn list_items(a: &Arenas, id: StructId) -> Vec<StructId> {
 
 /// The TAIL of a list node — its children after the head (`(head a b)` → `[a, b]`), or empty for a
 /// non-list / a head-only list. Saturating so a zero-child list yields `[]` rather than panicking.
-pub(crate) fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
+pub fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
     match a.get(id) {
         crate::ast::Struct::List(items) => items[1.min(items.len())..].to_vec(),
         _ => Vec::new(),
@@ -27,12 +27,12 @@ pub(crate) fn child_tail(a: &Arenas, id: StructId) -> Vec<StructId> {
 
 /// The string a `Str`/`Name` leaf denotes (via the arena's `as_str` accessor), owned; `None` for a
 /// non-string node.
-pub(crate) fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
+pub fn str_leaf(a: &Arenas, id: StructId) -> Option<String> {
     a.as_str(id).map(str::to_string)
 }
 
 /// The `i64` an `Int` leaf denotes, or `None` for a non-int / out-of-`i64`-range value.
-pub(crate) fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
+pub fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
     match a.get(id) {
         crate::ast::Struct::Atom(l) => match a.leaf(*l) {
             Leaf::Int { value, .. } => value.to_i64(),
@@ -43,7 +43,7 @@ pub(crate) fn int_leaf(a: &Arenas, id: StructId) -> Option<i64> {
 }
 
 /// The `bool` a `Bool` leaf denotes, or `None` for a non-bool node.
-pub(crate) fn bool_leaf(a: &Arenas, id: StructId) -> Option<bool> {
+pub fn bool_leaf(a: &Arenas, id: StructId) -> Option<bool> {
     match a.get(id) {
         crate::ast::Struct::Atom(l) => match a.leaf(*l) {
             Leaf::Bool(b) => Some(*b),

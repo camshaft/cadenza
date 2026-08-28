@@ -288,7 +288,9 @@ pub fn write_with(arenas: &Arenas, to: Format, opts: Options) -> Result<Vec<u8>,
         // root becomes a `//`-comment block over its ML rendering (see `cedar::print`), so `--to cedar`
         // stays total.
         #[cfg(feature = "cedar")]
-        Format::Cedar => Ok(crate::cedar::print(arenas, opts.width).into_bytes()),
+        Format::Cedar => {
+            Ok(crate::cedar::print(arenas, opts.width, crate::printer::print).into_bytes())
+        }
         // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
         #[cfg(not(feature = "cedar"))]
         Format::Cedar => Err(ConvertError(

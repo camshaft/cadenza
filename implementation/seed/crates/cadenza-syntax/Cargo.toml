@@ -27,11 +27,16 @@ edition = "2024"
 # cdz-calc/cdz-run/cdz-smith) is UNCHANGED. A `--no-default-features` build keeps full ML + embedded json/toml
 # + markdown + query + doc surface, dropping only cedar-policy + clap.
 [features]
-default = ["cedar", "cli"]
-# The Cedar authorization-policy surface (`mod cedar`) — the ONLY cedar-policy user; its transitive tree
-# (stacker/psm/chrono/lalrpop) is the biggest thing a lean reducer build sheds. Referenced by the Format
-# driver (query.rs) + convert's Format enum only, NOT the ML-embedding core.
-cedar = ["dep:cedar-policy"]
+# `cedar` is NO LONGER default — its heavy transitive tree (cedar-policy → stacker/psm/chrono/lalrpop)
+# now lives in the `cadenza-syntax-cedar` crate, so a targeted build that does not enable this feature
+# (a runner / reducer / grader) never compiles it. `cli` stays default. Consumers that need the Cedar
+# CONVERSION surface (`cdz`, `cdz-wasm`) enable `cadenza-syntax/cedar` explicitly; every other consumer
+# is now lean by default. (Feature-off, `convert(Format::Cedar)` returns a clean "not compiled" error.)
+default = ["cli"]
+# The Cedar authorization-policy surface — re-exported as `cadenza_syntax::cedar` from the split-out
+# `cadenza-syntax-cedar` crate (which owns `cedar-policy`). Referenced by the Format driver (query.rs) +
+# convert's Format enum only, NOT the ML-embedding core.
+cedar = ["dep:cadenza-syntax-cedar"]
 # The `cdz-syntax` command surface (`mod cli`) — the ONLY clap user; CLI-shaped, not reducer-relevant.
 cli = ["dep:clap"]
 
@@ -40,6 +45,10 @@ cli = ["dep:clap"]
 # agent-harness kernel depend on the same wire format). `cadenza-syntax` RE-EXPORTS what moved there
 # (e.g. `cadenza_syntax::leb128`), keeping its public API byte-stable.
 cadenza-ast = { path = "../cadenza-ast" }
+# The dependency-light shared bottom (source spans + arena read-helpers), below every surface crate.
+# `cadenza-syntax` re-exports its `span`/`spans`/`arena_read` so the public API + internal `crate::`
+# paths stay byte-stable.
+cadenza-syntax-core = { path = "../cadenza-syntax-core" }
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand
@@ -57,6 +66,7 @@ toml_edit = { version = "0.22", default-features = false, features = ["parse", "
 # policy language). Same REFERENCE-only rationale as pulldown-cmark/toml_edit: the durable artifact is
 # the `cedar-*` node vocabulary + round-trip, not this parser. We use only its syntax layer
 # (PolicySet::from_str -> pst -> Display); NO evaluation/authorization engine is pulled into meaning.
-cedar-policy = { version = "4", optional = true }
+# Enabled by the `cedar` feature; re-exported as `cadenza_syntax::cedar`. `cedar-policy` lives THERE now.
+cadenza-syntax-cedar = { path = "../cadenza-syntax-cedar", optional = true }
 # Used ONLY by the `cdz-syntax` bin for arg parsing; the library itself takes no CLI dependency.
 clap = { version = "4", features = ["derive"], optional = true }

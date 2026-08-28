@@ -1,0 +1,17 @@
+# cadenza-syntax-core — the dependency-light shared bottom of the syntax front-end.
+#
+# Sits BELOW every surface crate (`cadenza-syntax-cedar`, and the others as they split out) and above
+# `cadenza-ast`. Holds the surface-agnostic infra every reader/printer needs but that is NOT itself a
+# syntax: source spans (`span`/`spans`) and the shared arena read-helpers (`arena_read`). A surface crate
+# depends on this instead of on the `cadenza-syntax` facade, so the facade can re-export the surface
+# crates without a dependency cycle.
+#
+# DEP FLOOR is deliberately tiny (only `cadenza-ast`) — the heavy surface deps (cedar-policy, pulldown,
+# toml_edit, clap) never reach here. A member of the seed workspace (`crates/*` glob).
+[package]
+name = "cadenza-syntax-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cadenza-ast = { path = "../cadenza-ast" }

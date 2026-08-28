@@ -45,10 +45,10 @@
 //! identity. A rewrite of any arena node reflects in the printed output (the arena is the
 //! representation), which is the whole point for structural editing.
 
-use crate::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
-use crate::ast::{Arenas, Builder, Leaf, Radix, StructId};
-use crate::span::Span;
-use crate::spans::{FileId, SpanTable};
+use cadenza_syntax_core::arena_read::{bool_leaf, child_tail, int_leaf, list_items, str_leaf};
+use cadenza_syntax_core::ast::{Arenas, Builder, Leaf, Radix, StructId};
+use cadenza_syntax_core::span::Span;
+use cadenza_syntax_core::spans::{FileId, SpanTable};
 use cedar_policy::pst;
 use std::sync::Arc;
 
@@ -407,7 +407,7 @@ impl<'b> Cedar<'b> {
             pst::Literal::Long(n) => {
                 let head = self.mk_name("lit-long");
                 let v = self.mk_atom_leaf(Leaf::Int {
-                    value: crate::ast::IntValue::from_i64(*n),
+                    value: cadenza_syntax_core::ast::IntValue::from_i64(*n),
                     radix: Radix::Dec,
                 });
                 self.mk_list(vec![head, v])
@@ -564,20 +564,26 @@ fn slot_name(s: pst::SlotId) -> &'static str {
 /// surface-layer uniformity and ignored (Cedar's formatter fixes layout). A NON-Cedar root (a bare
 /// program handed to `--to cedar`) becomes a single `//`-comment block over its ML rendering — a Cedar
 /// file of only comments is valid and re-reads to an empty policy set, so `--to cedar` stays total.
-pub fn print(arenas: &Arenas, width: usize) -> String {
+///
+/// `ml_print` renders an arbitrary arena as ML text — INJECTED (not called directly) so this crate
+/// stays BELOW the ML surface: `cadenza-syntax-cedar` must not depend on the ML printer (the facade
+/// re-exports this crate, so a dependency the other way would cycle). It is only ever invoked on the
+/// non-Cedar fallback path; a genuine `(cedar-policyset …)` root never touches it. The facade passes
+/// `cadenza_syntax::printer::print`.
+pub fn print(arenas: &Arenas, width: usize, ml_print: fn(&Arenas, usize) -> String) -> String {
     if arenas.head_name(arenas.root) == Some("cedar-policyset") {
         match build_and_render(arenas) {
             Ok(s) => s,
-            Err(_) => fallback(arenas, width),
+            Err(_) => fallback(arenas, width, ml_print),
         }
     } else {
-        fallback(arenas, width)
+        fallback(arenas, width, ml_print)
     }
 }
 
 /// Carry a non-Cedar program's ML text as Cedar line-comments (total, re-reads to an empty set).
-fn fallback(arenas: &Arenas, width: usize) -> String {
-    let ml = crate::printer::print(arenas, width);
+fn fallback(arenas: &Arenas, width: usize, ml_print: fn(&Arenas, usize) -> String) -> String {
+    let ml = ml_print(arenas, width);
     let mut out = String::new();
     for line in ml.lines() {
         out.push_str("// ");
@@ -957,7 +963,7 @@ mod tests {
     /// pst drops comments/formatting, so byte identity is NOT required — but the TREE is stable.
     fn assert_idempotent(src: &str) {
         let a1 = read(src).expect("valid cedar");
-        let printed = print(&a1, 100);
+        let printed = print(&a1, 100, |_, _| String::new());
         let a2 =
             read(&printed).unwrap_or_else(|e| panic!("reprint did not parse: {}\n{printed}", e.0));
         assert!(
@@ -1067,7 +1073,7 @@ mod tests {
             // find the (effect permit) node's `permit` name leaf and rename it to `forbid`
             if a.head_name(id) == Some("effect") {
                 let items = list_items(&a, id);
-                if let crate::ast::Struct::Atom(l) = *a.get(items[1])
+                if let cadenza_syntax_core::ast::Struct::Atom(l) = *a.get(items[1])
                     && a.leaf(l) == &Leaf::Name("permit".into())
                 {
                     a.leaves[l.0 as usize] = Leaf::Name("forbid".into());
@@ -1076,7 +1082,7 @@ mod tests {
             }
         }
         assert!(changed, "found and flipped the effect name leaf");
-        let printed = print(&a, 100);
+        let printed = print(&a, 100, |_, _| String::new());
         assert!(
             printed.contains("forbid") && !printed.contains("permit"),
             "the rewrite reflects in output: {printed}"
@@ -1104,28 +1110,18 @@ mod tests {
     fn cedar_to_binary_round_trips() {
         let src = "@id(\"p\")\npermit (principal in Group::\"g\", action == Action::\"read\", resource) when { resource.public == true };";
         let a1 = read(src).unwrap();
-        let bin = crate::codec::encode(&a1);
-        let a2 = crate::codec::decode(&bin).expect("decodes");
+        let bin = cadenza_ast::codec::encode(&a1);
+        let a2 = cadenza_ast::codec::decode(&bin).expect("decodes");
         assert!(a1.structurally_eq(&a2));
-        let printed = print(&a2, 100);
+        // A cedar-policyset root never touches `ml_print`, so a stub suffices here.
+        let printed = print(&a2, 100, |_, _| String::new());
         let a3 = read(&printed).unwrap();
         assert!(a1.structurally_eq(&a3));
     }
 
-    #[test]
-    fn non_cedar_root_falls_back_to_comments() {
-        // A bare program handed to `--to cedar` becomes a `//`-comment block that re-reads to an
-        // empty policy set (total, never errors).
-        let prog = crate::sexpr::read("(+ 1 2)").unwrap();
-        let out = print(&prog, 100);
-        assert!(
-            out.starts_with("// "),
-            "fallback yields a comment block, got {out}"
-        );
-        let back = read(&out).expect("comment-only cedar is valid");
-        assert_eq!(back.head_name(back.root), Some("cedar-policyset"));
-        assert_eq!(child_tail(&back, back.root).len(), 0, "empty set");
-    }
+    // NOTE: `non_cedar_root_falls_back_to_comments` moved to `cadenza-syntax/tests/cedar_surface.rs` —
+    // it exercises the ML-printer fallback (a non-Cedar root → `//`-comment block) which needs the ML
+    // printer + the sexpr reader, neither of which this below-the-surface crate may depend on.
 
     #[test]
     fn span_table_is_total_and_ordered() {
@@ -1260,8 +1256,8 @@ mod tests {
             for _ in 0..600 {
                 let src = gen_cedar(&mut rng);
                 let a1 = read(&src).expect("generated Cedar parses");
-                let bin = crate::codec::encode(&a1);
-                let a2 = crate::codec::decode(&bin)
+                let bin = cadenza_ast::codec::encode(&a1);
+                let a2 = cadenza_ast::codec::decode(&bin)
                     .expect("a Cedar arena decodes from its own encoding");
                 assert!(
                     a1.structurally_eq(&a2),
@@ -1270,12 +1266,13 @@ mod tests {
                 // Determinism: re-encoding the decoded arena reproduces the exact bytes (the bijection).
                 assert_eq!(
                     bin,
-                    crate::codec::encode(&a2),
+                    cadenza_ast::codec::encode(&a2),
                     "binary encode is deterministic for:\n{src}"
                 );
                 // The decoded arena prints back to a tree that re-reads identically (arena-idempotence
                 // through the codec).
-                let a3 = read(&print(&a2, 100)).expect("decoded-then-printed Cedar re-reads");
+                let a3 = read(&print(&a2, 100, |_, _| String::new()))
+                    .expect("decoded-then-printed Cedar re-reads");
                 assert!(
                     a1.structurally_eq(&a3),
                     "Cedar survives binary → print → re-read for:\n{src}"
@@ -1352,7 +1349,7 @@ mod tests {
             );
         }
         fn walk(a: &Arenas, id: StructId) {
-            if let crate::ast::Struct::List(kids) = a.get(id) {
+            if let cadenza_syntax_core::ast::Struct::List(kids) = a.get(id) {
                 for &c in kids {
                     assert!(
                         (c.0 as usize) < a.structure.len(),

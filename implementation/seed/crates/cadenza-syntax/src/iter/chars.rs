@@ -15,10 +15,13 @@ impl From<Char> for Span {
     }
 }
 
-impl From<(Char, Char)> for Span {
-    fn from(val: (Char, Char)) -> Self {
-        let (a, b) = val;
-        a.span.merge(b.span)
+impl Char {
+    /// The span from `self`'s start through `end`'s end. Was `impl From<(Char, Char)> for Span`, but
+    /// `Span` now lives in `cadenza-syntax-core` (a foreign type), and the orphan rule forbids
+    /// implementing the foreign `From` for it over a `(Char, Char)` tuple (a tuple is not fundamental,
+    /// so the local `Char` inside it doesn't confer locality). An inherent method is equivalent.
+    pub fn span_to(self, end: Char) -> Span {
+        self.span.merge(end.span)
     }
 }
 

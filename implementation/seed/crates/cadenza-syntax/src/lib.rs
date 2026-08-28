@@ -14,15 +14,16 @@
 // `::fxhash`/`::leb128`) and the internal `crate::` paths stay byte-stable. `canon`/`codec`'s
 // SURFACE-dependent tests (which build inputs via the readers below) relocated to `tests/`.
 pub use cadenza_ast::{ast, canon, codec, fxhash};
-/// Shared arena read-helpers (`list_items`/`child_tail`/`str_leaf`/`int_leaf`/`bool_leaf`) the surface
-/// readers project the arena through — one set instead of a byte-identical copy per surface.
-pub(crate) mod arena_read;
-/// The Cedar surface: an authorization-policy document (`(cedar-policyset (cedar-policy …)…)`,
-/// mirroring Cedar's `pst`) is a projection of the same arena the code surfaces use — so an agent can
-/// structurally construct/modify a policy with Cadenza's tools. Data, not a program; no authorization
-/// engine. Arena-idempotent (comments/formatting not preserved).
+/// The Cedar surface — split into the `cadenza-syntax-cedar` crate (which owns the heavy `cedar-policy`
+/// tree), re-exported here as `cadenza_syntax::cedar` behind the `cedar` feature so callers + the Format
+/// driver are unchanged. A `(cedar-policyset (cedar-policy …)…)` document (mirroring Cedar's `pst`) is a
+/// projection of the same arena the code surfaces use — data, not a program; no authorization engine.
 #[cfg(feature = "cedar")]
-pub mod cedar;
+pub use cadenza_syntax_cedar as cedar;
+/// Shared arena read-helpers (`list_items`/`child_tail`/`str_leaf`/`int_leaf`/`bool_leaf`) the surface
+/// readers project the arena through — moved to `cadenza-syntax-core`, re-exported so `crate::arena_read`
+/// (and every surface's use of it) stays byte-stable.
+pub(crate) use cadenza_syntax_core::arena_read;
 /// The `cdz-syntax` command surface, factored into the library so both the standalone `cdz-syntax`
 /// bin and the unified `cdz` bin drive one implementation.
 #[cfg(feature = "cli")]
@@ -60,8 +61,9 @@ pub mod query;
 /// never drift in how the program is built.
 pub mod repl;
 pub mod sexpr;
-pub mod span;
-pub mod spans;
+/// Source spans + the `StructId → Span` table — moved to `cadenza-syntax-core`, re-exported so
+/// `cadenza_syntax::span`/`::spans` (public API) + internal `crate::span`/`crate::spans` are unchanged.
+pub use cadenza_syntax_core::{span, spans};
 pub mod token;
 /// The TOML surface: a source-faithful config document (`(toml-document …)` — comments, whitespace,
 /// and each scalar's raw spelling stored as `Str`-leaf "decor" nodes) is a projection of the same
@@ -76,3 +78,8 @@ pub use ast::{Arenas, Builder, Decimal, Leaf, LeafId, Radix, Struct, StructId};
 // no-integration-tests directive — same coverage, compiled with the lib, no separate binary).
 #[cfg(test)]
 mod roundtrip_tests;
+// Surface tests relocated up from the split-out `cadenza-syntax-core` / `cadenza-syntax-cedar` bottom
+// crates (they need a surface reader + `canon`, or the ML-printer fallback, which those below-the-surface
+// crates may not depend on). In-crate per the no-integration-tests house style.
+#[cfg(test)]
+mod surface_tests;

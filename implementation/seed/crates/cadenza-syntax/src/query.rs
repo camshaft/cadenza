@@ -1928,7 +1928,7 @@ pub mod driver {
             Format::Json => Ok(crate::json::print(arena, width)),
             Format::Toml => Ok(crate::toml_surface::print(arena, width)),
             #[cfg(feature = "cedar")]
-            Format::Cedar => Ok(crate::cedar::print(arena, width)),
+            Format::Cedar => Ok(crate::cedar::print(arena, width, crate::printer::print)),
             // Lean build (no `cedar` feature): the Cedar surface isn't compiled — a clean error, not a panic.
             #[cfg(not(feature = "cedar"))]
             Format::Cedar => Err(
