@@ -4221,3 +4221,24 @@
            `(* 5 2)`=10 and the surrounding `(+ 1 …)` folds to 11.")
   (input (do (def (main) (let ((x 5)) (+ 1 (eval (quasiquote (* (unquote x) 2)))))) (export main)))
   (call main) (output (: 11 Int64)))
+
+; ── breaker batch 593: quasiquote SPLICE census (the 12-file pins level-machine VALUES; this is
+; the runtime-tree-BUILD census face). A quasiquote splicing a runtime Ast value into a template
+; per frame builds a real tree; the value is exact (depth 2 x 50 = 100) and the built trees +
+; walks leak LINEARLY (10/frame: 100@n10, 500@n50) — the quasiquote face of the walk-leak family
+; alongside aq (hoisted quote), ac (constructor build), stt (tree eval). Flips with the reclaim arc.
+
+(case "qqb1 fifty quasiquote-spliced runtime-Ast trees are value-exact and leak linearly (the splice-build face)"
+  (input (do
+(def (depth (: node Ast)) (match node
+  ((Ast.List es) (match es ((list) 1) ((list h .. rest) (+ 1 (depth h)))))
+  (_ 1)))
+(def (frames (: k Int64))
+  (if (= k 0) 0
+      (+ (depth (let ((x (Ast.Int (BigInt.of k)))) `(f (g ,x))))
+         (frames (- k 1)))))
+(def (main (: n Int64)) (frames n))
+(export main)))
+  (call main (: 50 Int64))
+  (output (: 100 Int64))
+  (live-objects known-leak 500))
