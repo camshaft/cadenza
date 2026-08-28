@@ -75,14 +75,16 @@
 //!   A bare `(None)` NESTED as a variant PAYLOAD (`(Some (None))`) recovers its type from the variant's
 //!   INSTANTIATED payload type ([`sum_payload_expected`] via `infer::payload_ty_at_instantiation`), so a
 //!   nested-`Option`/`Result` round-trips too. All mirror lower's value surface.
-//!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (for a
-//!   MONOMORPHIC, CLOSED sum of ANY arity — recursive payloads OK) and its values then round-trip. A
+//!   A USER sum is re-declared: `emit` emits its `(type <Name> (<Variant> <PayloadTy>…)…)` decl (a CLOSED
+//!   sum of any arity; a GENERIC sum too — head `(<Name> p0 p1…)`, a bare type-param payload re-emits its
+//!   name, so `(type (Box a) (Mk a))` round-trips and its values/matches unblock) and its values then
+//!   round-trip; a compound-with-param payload (`(List a)`) or an OPEN sum still declines. A
 //!   SINGLE-variant sum is the ERASED `Ty::Nominal` newtype: its value re-emits the CONSTRUCTOR
 //!   `(<Ctor> <payload>)` at the construction sites [`nominal_disposition`] classifies — a value-producing
 //!   leaf/operator OR a COMPOUND-value builder (`(Mk (list …))`/`(tuple …)`/`(record …)`/`(map …)`/`Set.of`)
 //!   OR a binder whose declared type is the inner — with the payload peeled to `inner` via a `view`
 //!   recursion; pass-through positions (control flow, a binder already holding the nominal) emit unwrapped
-//!   so the constructor is not doubled. A GENERIC / OPEN user sum still DECLINES (no decl emitted). PRELUDE sums
+//!   so the constructor is not doubled. An OPEN user sum (row tail) still DECLINES (no decl emitted). PRELUDE sums
 //!   (Option/Result/…) are ambient (no decl). A user-sum/nominal value emits ⇔ its decl was emitted
 //!   (`emitted` set), so there is never an unbound-type recompile.
 //! - **WRAPPING ARITH**: `Core::Arith` with a `WrappingAdd`/`Sub`/`Mul` prim → `((. <IntType> wrapping-add)
@@ -224,19 +226,41 @@ pub fn emit(db: &mut Db, layout: &Layout) -> Result<Vec<u8>, Reject> {
 /// declaration occurrences via `typeval_of` + lower's `type_ast`; a nullary variant is `(<Variant>)`.
 /// `decl` is an owned clone (so `typeval_of`'s `&mut db` does not alias a `db.type_decls` borrow).
 fn emit_type_decl(db: &mut Db, b: &mut Builder, decl: &crate::db::TypeDecl) -> Option<StructId> {
-    if !decl.params.is_empty() || decl.open_tail.is_some() || decl.variants.is_empty() {
+    // Emit any CLOSED sum of arity ≥1. A GENERIC sum (`decl.params` non-empty) is now handled: its head is
+    // `(<Name> p0 p1…)` and a bare type-parameter payload re-emits its name. An OPEN sum (row tail) still
+    // declines (its `.. r` surface is a later slice).
+    if decl.open_tail.is_some() || decl.variants.is_empty() {
         return None;
     }
     let type_head = b.name("type");
-    let name = b.name(decl.name.as_str());
-    let mut children = vec![type_head, name];
+    // The type NAME position: bare `Name` for a monomorphic sum, or `(Name p0 p1…)` for a generic one (the
+    // params are the sum's type parameters in first-appearance order, `(type (Box a) …)`).
+    let name_node = if decl.params.is_empty() {
+        b.name(decl.name.as_str())
+    } else {
+        let mut head = vec![b.name(decl.name.as_str())];
+        for p in &decl.params {
+            head.push(b.name(p.as_str()));
+        }
+        b.list(head)
+    };
+    let mut children = vec![type_head, name_node];
     for v in &decl.variants {
         let vname = b.name(v.name.as_str());
         let mut vchildren = vec![vname];
         for &p in &v.payloads {
-            let ty = crate::eval::typeval_of(db, p)?;
-            let ncx = db.name_ctx();
-            let ty_node = crate::lower::type_ast(b, &ty, &ncx)?;
+            // A BARE-NAME payload — a type parameter (`a`) or a concrete type name (`Int64`, `MyType`) —
+            // re-emits its source spelling (a type param has no value-form `Ty` surface, so it must come
+            // from the name, not `type_ast`). A COMPOUND payload (`(List a)`, `(Option Int64)`) renders via
+            // `typeval_of` + `type_ast` — concrete only; a param nested in a compound has no surface and
+            // declines the whole decl (a later slice).
+            let ty_node = if let Some(nm) = db.ast.as_name(p) {
+                b.name(nm)
+            } else {
+                let ty = crate::eval::typeval_of(db, p)?;
+                let ncx = db.name_ctx();
+                crate::lower::type_ast(b, &ty, &ncx)?
+            };
             vchildren.push(ty_node);
         }
         children.push(b.list(vchildren));
