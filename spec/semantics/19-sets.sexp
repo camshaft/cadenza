@@ -2693,7 +2693,7 @@
            (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime slice PROBING a Map keyed by flat Bytes must hit by content"
   (input (do
@@ -2707,7 +2707,7 @@
   (output (: 42 Int64))
   (call main (: 0 Int64))
   (output (: -1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "a runtime slice STORED as a Map key must be found by a flat Bytes probe"
   (input (do
@@ -2731,7 +2731,7 @@
            (export main)))
   (call main (: 1 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "CONTROL: a CONST-start slice as a Map-lookup key hits on wasm"
   (input (do
@@ -2829,7 +2829,7 @@
   (output (: 0 Int64))
   (call   main (: 0 Int64))
   (output (: 1 Int64))
-  (live-objects known-leak 2))
+  (live-objects 0))
 
 (case "Map.take by a slice-view key yields the flat-keyed value"
   (doc    "The value-yielding-remove face: `(Map.take {flat↦42} s)` — the hit binds `(Some 42)` with an
