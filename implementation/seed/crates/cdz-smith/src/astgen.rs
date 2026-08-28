@@ -278,8 +278,9 @@ fn gen_compound<C: Choice>(
 /// lowering + the checked-conversion ops that the Int64-only expression grammar never hits; the float arm
 /// ([`gen_float_body`]) returns a `Float64`/`Float32` value, reaching float value/arith/compare/if-join/let
 /// lowering (uniform-width, so it stays on the compile path); the type-diverse-compound arm
-/// ([`gen_typed_compound`]) returns a HETEROGENEOUS tuple or a non-Int64 homogeneous list — the first
-/// type-directed step past the Int64-element compounds `gen_compound` builds.
+/// ([`gen_typed_compound`]) returns a HETEROGENEOUS tuple / non-Int64 list / heterogeneous record /
+/// `Option` / annotated `Result` — the type-directed step past the Int64-element compounds `gen_compound`
+/// builds (named-record + Option/Result sum value lowering).
 fn gen_main_body<C: Choice>(
     c: &mut C,
     scope: &mut Vec<String>,
@@ -420,6 +421,19 @@ enum ScalarTy {
     Bool,
 }
 
+impl ScalarTy {
+    /// The Cadenza type name — for a type annotation (e.g. a `Result` payload) that a bare value needs.
+    fn name(self) -> &'static str {
+        match self {
+            ScalarTy::Int64 => "Int64",
+            ScalarTy::Float64 => "Float64",
+            ScalarTy::Float32 => "Float32",
+            ScalarTy::Bool => "Bool",
+            ScalarTy::Sized(t) => t,
+        }
+    }
+}
+
 /// Pick a scalar type uniformly (Int64 / Float64 / Float32 / Bool / a sized int).
 fn pick_scalar_ty<C: Choice>(c: &mut C) -> ScalarTy {
     match c.variant(5) {
@@ -450,31 +464,69 @@ fn gen_scalar_leaf<C: Choice>(c: &mut C, ty: ScalarTy, out: &mut String) {
     }
 }
 
-/// A TYPE-DIVERSE compound body: a `(tuple …)` whose 2–3 elements each have an INDEPENDENTLY-chosen
-/// scalar type (heterogeneous product — Int64/float/bool/sized mixed), or a homogeneous `(list …)` of a
-/// single chosen scalar type. The existing [`gen_compound`] only builds Int64-element compounds; this
-/// reaches heterogeneous-product + non-Int64-list value lowering (a codec/emit surface Int64 compounds
-/// never exercise). Leaf elements keep it bounded + type-correct (increment 1 of type-directed gen).
+/// A TYPE-DIVERSE compound body over independently-typed scalar leaves — the type-directed step past the
+/// Int64-element compounds [`gen_compound`] builds. One of: a heterogeneous `(tuple …)` (2–3 mixed-type
+/// leaves); a homogeneous non-Int64 `(list …)`; a heterogeneous `(record (= a …) …)`; an `(Some …)`
+/// (Option, inferable bare); or an annotated `(: (Ok/Err …) (Result T E))` (a sum needs the annotation).
+/// Reaches heterogeneous-product / non-Int64-list / named-record / Option+Result sum value+codec+emit
+/// lowering (surfaces the tuple/list arms + Int64 compounds never exercise). Leaf payloads keep it
+/// bounded + type-correct.
 fn gen_typed_compound<C: Choice>(c: &mut C, out: &mut String) {
-    if c.variant(2) == 0 {
+    match c.variant(5) {
         // Heterogeneous tuple of 2 or 3 independently-typed leaves.
-        let n = 2 + c.variant(2);
-        out.push_str("(tuple");
-        for _ in 0..n {
-            out.push(' ');
+        0 => {
+            let n = 2 + c.variant(2);
+            out.push_str("(tuple");
+            for _ in 0..n {
+                out.push(' ');
+                let ty = pick_scalar_ty(c);
+                gen_scalar_leaf(c, ty, out);
+            }
+            out.push(')');
+        }
+        // Homogeneous list of one chosen scalar type (3 elements).
+        1 => {
+            let ty = pick_scalar_ty(c);
+            out.push_str("(list");
+            for _ in 0..3 {
+                out.push(' ');
+                gen_scalar_leaf(c, ty, out);
+            }
+            out.push(')');
+        }
+        // Heterogeneous record of 2 or 3 named fields (a/b/c), each an independently-typed leaf.
+        2 => {
+            let n = 2 + c.variant(2);
+            out.push_str("(record");
+            for i in 0..n {
+                let field = ["a", "b", "c"][i];
+                write!(out, " (= {field} ").ok();
+                let ty = pick_scalar_ty(c);
+                gen_scalar_leaf(c, ty, out);
+                out.push(')');
+            }
+            out.push(')');
+        }
+        // (Some <leaf>) — Option, inferable bare from its payload.
+        3 => {
+            out.push_str("(Some ");
             let ty = pick_scalar_ty(c);
             gen_scalar_leaf(c, ty, out);
+            out.push(')');
         }
-        out.push(')');
-    } else {
-        // Homogeneous list of one chosen scalar type (3 elements).
-        let ty = pick_scalar_ty(c);
-        out.push_str("(list");
-        for _ in 0..3 {
-            out.push(' ');
-            gen_scalar_leaf(c, ty, out);
+        // (: (Ok/Err <leaf>) (Result T E)) — a sum needs a type annotation to infer both arms.
+        _ => {
+            let ok = pick_scalar_ty(c);
+            let err = pick_scalar_ty(c);
+            let (ctor, payload) = if c.variant(2) == 0 {
+                ("Ok", ok)
+            } else {
+                ("Err", err)
+            };
+            write!(out, "(: ({ctor} ").ok();
+            gen_scalar_leaf(c, payload, out);
+            write!(out, ") (Result {} {}))", ok.name(), err.name()).ok();
         }
-        out.push(')');
     }
 }
 
